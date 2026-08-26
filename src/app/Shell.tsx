@@ -35,11 +35,12 @@ export function Shell({ activeSurface, children }: ShellProps) {
     }
   }
 
+  // Pointer movement only ever CLOSES the crescent. Opening is reserved to the
+  // 13px sliver and to keyboard focus: an open-on-move band across the top of
+  // the window would shift and dim the page while the pointer is still aiming
+  // at the surface toolbar underneath it.
   function handlePointerMove(event: PointerEvent<HTMLElement>) {
-    const y = event.clientY;
-    if (y <= 110) {
-      setNavOpen(true);
-    } else if (navOpen && y > 150) {
+    if (navOpen && event.clientY > 150) {
       setNavOpen(false);
     }
   }
