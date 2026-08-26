@@ -1,0 +1,176 @@
+# M1a — report di consegna
+
+Data: 26 agosto 2026
+Repository: `Aspis0/devboule-v2`
+Remote configurato: `https://github.com/Aspis0/devboule-v2`
+Push eseguito: no
+
+## Cosa è stato creato
+
+- Scaffold Tauri v2 + React + TypeScript strict + Vite con `pnpm`.
+- React e ReactDOM bloccati a `18.3.1`; Zustand `5.0.15` è l’unico store globale.
+- Nessun router, Tailwind o CSS-in-JS.
+- Workspace Cargo con `src-tauri` come membro e `crates/README.md` come segnaposto per
+  `devboule-daemon` e `oracle-core`.
+- `src/lib/tauri.ts` come unico confine frontend per `invoke` e `Channel`, con wrapper
+  tipizzati per il protocollo iniziale di sessioni, provider e Oracle.
+- Guscio UI M1a: finestra minima 1280px, palette in variabili CSS, font OFL locali,
+  sei placeholder navigabili e nav a mezzaluna.
+- Mezzaluna con peek zone da 110px, sliver da 13px, `pageShift`/`pageDim`, apertura in hover,
+  chiusura oltre 150px o all’uscita dalla finestra.
+- `LICENSE`, `NOTICE`, `THIRD_PARTY.md`, Dependabot, CI Windows, toolchain pin, audit
+  exceptions file e controllo automatico degli `npm-shrinkwrap.json`.
+- Icona Windows copiata come asset in `src-tauri/icons/icon.ico`; `old-devboule` non è stato
+  modificato.
+
+## Componenti Tauri verificati
+
+| Componente | Versione effettiva | Fonte |
+| --- | ---: | --- |
+| crate Rust `tauri` | `2.11.5` | `cargo tree -p devboule` |
+| crate Rust `tauri-build` | `2.6.3` | `cargo tree -p devboule` |
+| npm `@tauri-apps/cli` | `2.11.4` | `pnpm-lock.yaml` |
+| npm `@tauri-apps/api` | `2.11.1` | `pnpm-lock.yaml` |
+
+I crate Rust e i pacchetti npm seguono cicli di rilascio indipendenti; il commento è vicino
+al pin in `src-tauri/Cargo.toml`. Inoltre, la verifica del registry ha dato:
+
+```text
+cargo info tauri@2.6.3
+error: could not find `tauri@2.6.3` in registry `https://github.com/rust-lang/crates.io-index`
+
+cargo info tauri-build@2.6.3
+version: 2.6.3
+```
+
+Per questo il crate `tauri` è fissato all’ultima versione pubblicata disponibile (`2.11.5`),
+mentre `tauri-build` resta fissato a `2.6.3`. Non è stato inserito un pin non installabile.
+
+## Dipendenze aggiunte e motivazione
+
+Runtime:
+
+- `@tauri-apps/api@2.11.1` — unico accesso TS a IPC e Channel Tauri.
+- `react@18.3.1` — runtime UI; React 18 è il vincolo deliberato per il futuro porting Polis.
+- `react-dom@18.3.1` — renderer React per la webview.
+- `zustand@5.0.15` — unico store globale per la superficie attiva.
+
+Tooling:
+
+- `@tauri-apps/cli@2.11.4` — comandi `tauri dev/build`.
+- `@types/node@26.3.0` — tipi per configurazione Vite e script Node.
+- `@types/react@18.3.31` — tipi compatibili con React 18.
+- `@types/react-dom@18.3.7` — tipi compatibili con ReactDOM 18.
+- `@vitejs/plugin-react@6.1.0` — trasformazione JSX React per Vite.
+- `typescript@5.9.3` — type-checking strict separato dal bundling.
+- `vite@8.2.2` — server di sviluppo e build frontend.
+
+Rust:
+
+- `tauri@2.11.5` — shell desktop Windows e registrazione comandi.
+- `tauri-build@2.6.3` — build script Tauri; versione Rust indipendente dal CLI/API npm.
+
+I font sono stati vendorizzati da tre pacchetti Fontsource Variable `5.3.0`, ma quei pacchetti
+non sono dipendenze del progetto: solo i tre `.woff2` Latin normal sono nel repository. Le
+licenze OFL sono in `THIRD_PARTY.md`.
+
+## Verifica reale
+
+Tutti i comandi sono stati eseguiti in `C:\Users\gualt\Desktop\New devboule\devboule-v2`.
+
+### `pnpm install`
+
+```text
+Packages: +32
+Done in 2.4s using pnpm v10.33.2
+EXIT_CODE=0
+ELAPSED_SECONDS=2.71
+```
+
+Installazione finale riproducibile:
+
+```text
+Lockfile is up to date, resolution step is skipped
+Already up to date
+Done in 894ms using pnpm v10.33.2
+EXIT_CODE=0
+ELAPSED_SECONDS=1.22
+```
+
+### `pnpm build`
+
+```text
+> devboule-v2@0.1.0 build
+> tsc --noEmit && vite build
+
+vite v8.2.2 building client environment for production...
+✓ 22 modules transformed.
+✓ built in 2.23s
+EXIT_CODE=0
+ELAPSED_SECONDS=7.32
+```
+
+Output `dist/`: 6 file, 277,961 byte totali. Il bundle principale è 145.98 kB
+(47.73 kB gzip); i tre font risultano inclusi come asset locali.
+
+### `cargo build` dentro `src-tauri`
+
+```text
+Compiling devboule v0.1.0 (...\devboule-v2\src-tauri)
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.79s
+EXIT_CODE=0
+ELAPSED_SECONDS=15.00
+```
+
+Artefatto: `target\debug\devboule.exe`, 12,300,288 byte.
+
+### `pnpm tauri build --no-bundle`
+
+```text
+> devboule-v2@0.1.0 tauri
+> tauri "build" "--no-bundle"
+
+Running beforeBuildCommand `pnpm build`
+✓ built in 294ms
+Finished `release` profile [optimized] target(s) in 1m 04s
+Built application at: ...\devboule-v2\target\release\devboule.exe
+EXIT_CODE=0
+```
+
+Artefatto release: `target\release\devboule.exe`, 8,525,824 byte.
+
+### Controlli CI riprodotti localmente
+
+```text
+pnpm run check:shrinkwrap
+No npm-shrinkwrap.json files found inside node_modules.
+EXIT_CODE=0
+
+pnpm audit --audit-level high
+No known vulnerabilities found
+EXIT_CODE=0
+
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.52s
+EXIT_CODE=0
+
+cargo audit
+warning: 17 allowed warnings found
+EXIT_CODE=0
+```
+
+`cargo audit` mostra 17 avvisi transitive `unmaintained`/`unsound` provenienti soprattutto
+dallo stack GTK/Tauri e da crate Unicode; non ha trovato vulnerabilità bloccanti. Il tentativo
+più severo `cargo audit --deny warnings` fallisce proprio su questi avvisi, quindi la CI usa
+il comportamento standard: vulnerabilità effettive bloccanti, avvisi di manutenzione visibili.
+
+## Non fatto / incompleto
+
+- Le sei superfici sono placeholder: non sono stati portati Workspace, Polis, Oracle, Design,
+  Pubvia o Settings reali.
+- Nessun daemon, PTY, ACP/provider adapter, journal, Oracle runtime, atlas Polis o plugin loader.
+- Nessuna chiamata IPC viene eseguita dalla UI M1a: il confine tipizzato è predisposto e il
+  backend espone solo il comando minimale `app_identity` per il bootstrap.
+- Nessun push GitHub è stato eseguito.
+- `old-devboule` è stato usato solo in lettura; alla verifica finale il suo worktree risultava
+  già non pulito con file marcati `D`, e non ho eseguito reset, checkout o scritture su quel tree.
