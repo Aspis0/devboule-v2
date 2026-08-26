@@ -1,0 +1,23 @@
+[package]
+name = "devboule"
+version = "0.1.0"
+description = "Devboule desktop shell"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "devboule_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "devboule"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+# Rust crates and npm packages follow separate release trains; do not align these versions.
+tauri = { version = "=2.11.5", features = [] }
