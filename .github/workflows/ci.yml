@@ -34,6 +34,9 @@ jobs:
       - name: Lint frontend
         run: pnpm run lint
 
+      - name: Test frontend
+        run: pnpm run test
+
       - name: Build frontend
         run: pnpm exec vite build
 
