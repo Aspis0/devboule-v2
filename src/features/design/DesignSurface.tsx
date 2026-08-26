@@ -106,6 +106,9 @@ interface InspectorProps {
   flat: boolean;
   onRadiusChange: (radius: number) => void;
   onElevationChange: (flat: boolean) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  canDelete: boolean;
 }
 
 interface AssistantProps {
@@ -156,6 +159,13 @@ function cloneMessages(): DesignMessage[] {
       nodeIds: [...message.nodeIds],
     };
   });
+}
+
+function cloneLayers(): DesignLayer[] {
+  return MOCK_DESIGN_LAYERS.map((layer) => ({
+    ...layer,
+    transform: { ...layer.transform },
+  }));
 }
 
 function isHidden(hiddenLayerIds: readonly string[], layerId: string): boolean {
@@ -366,7 +376,16 @@ const DesignCanvas = memo(function DesignCanvas({ hiddenLayerIds, selectedLayerI
   );
 });
 
-const InspectorPanel = memo(function InspectorPanel({ layer, radiusOptions, flat, onRadiusChange, onElevationChange }: InspectorProps) {
+const InspectorPanel = memo(function InspectorPanel({
+  layer,
+  radiusOptions,
+  flat,
+  onRadiusChange,
+  onElevationChange,
+  onDuplicate,
+  onDelete,
+  canDelete,
+}: InspectorProps) {
   const transformFields = [
     ['X', layer.transform.x],
     ['Y', layer.transform.y],
@@ -439,8 +458,8 @@ const InspectorPanel = memo(function InspectorPanel({ layer, radiusOptions, flat
       </div>
 
       <div className="design-inspector-actions">
-        <button type="button">Duplicate</button>
-        <button type="button" className="design-delete-action" aria-label="Delete layer">Delete</button>
+        <button type="button" onClick={onDuplicate}>Duplicate</button>
+        <button type="button" className="design-delete-action" aria-label="Delete layer" onClick={onDelete} disabled={!canDelete}>Delete</button>
       </div>
       <div className="design-inspector-footer">{MOCK_DESIGN_DOCUMENT.tokenFooter}</div>
     </section>
@@ -551,6 +570,7 @@ const DesignAssistant = memo(function DesignAssistant({
 export function DesignSurface() {
   const [history, setHistory] = useState<DesignHistory>(INITIAL_HISTORY);
   const [viewState, setViewState] = useState<DesignViewState>(INITIAL_VIEW_STATE);
+  const [layers, setLayers] = useState<DesignLayer[]>(cloneLayers);
   const [composerContextLayerId, setComposerContextLayerId] = useState<string | null>(INITIAL_VIEW_STATE.selectedLayerId);
   const [grounded, setGrounded] = useState(MOCK_DESIGN_INITIAL_STATE.grounded);
   const [draft, setDraft] = useState(MOCK_DESIGN_INITIAL_STATE.draft);
@@ -558,6 +578,7 @@ export function DesignSurface() {
   const [messages, setMessages] = useState<DesignMessage[]>(cloneMessages);
 
   const generationTimerRef = useRef<number | null>(null);
+  const layerCopyCounterRef = useRef(0);
   const assistantRef = useRef<HTMLDivElement>(null);
   const designSurfaceRef = useRef<HTMLElement>(null);
 
@@ -576,24 +597,24 @@ export function DesignSurface() {
   }, [messages, busy]);
 
   const selectedLayer = useMemo(
-    () => MOCK_DESIGN_LAYERS.find((layer) => layer.id === selectedLayerId) ?? MOCK_DESIGN_LAYERS[0],
-    [selectedLayerId],
+    () => layers.find((layer) => layer.id === selectedLayerId) ?? layers[0],
+    [layers, selectedLayerId],
   );
 
   const composerContextLayerName = useMemo(
     () => composerContextLayerId
-      ? MOCK_DESIGN_LAYERS.find((layer) => layer.id === composerContextLayerId)?.name ?? null
+      ? layers.find((layer) => layer.id === composerContextLayerId)?.name ?? null
       : null,
-    [composerContextLayerId],
+    [composerContextLayerId, layers],
   );
 
   const layerRows = useMemo(
-    () => MOCK_DESIGN_LAYERS.map((layer) => ({
+    () => layers.map((layer) => ({
       ...layer,
       selected: layer.id === selectedLayerId,
       hidden: isHidden(snapshot.hiddenLayerIds, layer.id),
     })),
-    [selectedLayerId, snapshot.hiddenLayerIds],
+    [layers, selectedLayerId, snapshot.hiddenLayerIds],
   );
 
   const radiusOptions = useMemo(
@@ -647,6 +668,40 @@ export function DesignSurface() {
     setViewState((current) => current.selectedLayerId === layerId ? current : { ...current, selectedLayerId: layerId });
     setComposerContextLayerId(layerId);
   }, []);
+
+  const duplicateLayer = useCallback(() => {
+    const source = layers.find((layer) => layer.id === selectedLayerId);
+    if (!source) return;
+
+    layerCopyCounterRef.current += 1;
+    const copy: DesignLayer = {
+      ...source,
+      id: `${source.id}-copy-${layerCopyCounterRef.current}`,
+      name: `${source.name} copy`,
+      transform: {
+        ...source.transform,
+        x: source.transform.x + 16,
+        y: source.transform.y + 16,
+      },
+    };
+    setLayers((current) => [...current, copy]);
+    selectLayer(copy.id);
+  }, [layers, selectedLayerId, selectLayer]);
+
+  const deleteLayer = useCallback(() => {
+    if (layers.length <= 1) return;
+
+    const selectedIndex = layers.findIndex((layer) => layer.id === selectedLayerId);
+    const nextLayer = layers[selectedIndex + 1] ?? layers[selectedIndex - 1];
+    if (!nextLayer) return;
+
+    setLayers((current) => current.filter((layer) => layer.id !== selectedLayerId));
+    selectLayer(nextLayer.id);
+    commitSnapshot((current) => ({
+      ...current,
+      hiddenLayerIds: current.hiddenLayerIds.filter((id) => id !== selectedLayerId),
+    }));
+  }, [commitSnapshot, layers, selectedLayerId, selectLayer]);
 
   const toggleLayerVisibility = useCallback((layerId: string) => {
     commitSnapshot((current) => ({
@@ -867,7 +922,16 @@ export function DesignSurface() {
             <button type="button" title="Drag a region, then let the AI analyze and fix it" aria-pressed={tool === 'ai'} className={tool === 'ai' ? 'design-tool-selected' : ''} onClick={setAiTool}>Spot Edit</button>
           </div>
           <ZoomControls zoom={zoom} canZoomIn={zoom < 3} canZoomOut={zoom > 0.2} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset} onFit={fitCanvas} />
-          <InspectorPanel layer={selectedLayer} radiusOptions={radiusOptions} flat={snapshot.flat} onRadiusChange={setRadius} onElevationChange={setElevation} />
+          <InspectorPanel
+            layer={selectedLayer}
+            radiusOptions={radiusOptions}
+            flat={snapshot.flat}
+            onRadiusChange={setRadius}
+            onElevationChange={setElevation}
+            onDuplicate={duplicateLayer}
+            onDelete={deleteLayer}
+            canDelete={layers.length > 1}
+          />
         </div>
 
         <DesignAssistant

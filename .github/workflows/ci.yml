@@ -31,6 +31,9 @@ jobs:
       - name: Type-check
         run: pnpm exec tsc --noEmit
 
+      - name: Lint frontend
+        run: pnpm run lint
+
       - name: Build frontend
         run: pnpm exec vite build
 
@@ -43,11 +46,14 @@ jobs:
       - name: Show pinned Rust toolchain
         run: rustup show active-toolchain
 
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
       - name: Build Rust workspace
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Install pinned cargo-audit
         shell: pwsh

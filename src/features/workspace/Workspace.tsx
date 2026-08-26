@@ -15,7 +15,7 @@ import {
 import './Workspace.css';
 
 type ActiveTab = 'agent' | 'terminal';
-type ActiveSurface = MockSurface['id'];
+type ActiveSidePanel = MockSurface['id'];
 type PermissionState = 'waiting' | 'allowed' | 'denied';
 type DiffState = 'unstaged' | 'staged' | 'discarded';
 type ResizeSide = 'left' | 'right';
@@ -64,7 +64,7 @@ export function Workspace() {
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>('agent');
-  const [activeSurface, setActiveSurface] = useState<ActiveSurface>('changes');
+  const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>('changes');
   const [surfaceMenuOpen, setSurfaceMenuOpen] = useState(false);
   const [messages, setMessages] = useState<MockWorkspaceMessage[]>(cloneMessages);
   const [input, setInput] = useState('');
@@ -161,6 +161,7 @@ export function Workspace() {
     const id = `mock-workspace-${Date.now()}`;
     const workspace: MockWorkspace = {
       id,
+      projectId: projectName,
       title: 'new-workspace',
       meta: 'idle · 0 d',
       isolation: 'worktree',
@@ -245,7 +246,7 @@ export function Workspace() {
     [projects, query],
   );
 
-  const selectedSurface = MOCK_SURFACES.find((surface) => surface.id === activeSurface) ?? MOCK_SURFACES[0];
+  const selectedSurface = MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
   const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
   const handleOpenPullRequest = useCallback(() => setPrLabel('Opened #412 on GitHub'), []);
@@ -576,11 +577,11 @@ export function Workspace() {
                     <button
                       type="button"
                       role="option"
-                      aria-selected={activeSurface === surface.id}
-                      className={`workspace-surface-option${activeSurface === surface.id ? ' workspace-surface-option-selected' : ''}`}
+                      aria-selected={activeSidePanel === surface.id}
+                      className={`workspace-surface-option${activeSidePanel === surface.id ? ' workspace-surface-option-selected' : ''}`}
                       key={surface.id}
                       onClick={() => {
-                        setActiveSurface(surface.id);
+                        setActiveSidePanel(surface.id);
                         setSurfaceMenuOpen(false);
                       }}
                     >
@@ -594,15 +595,15 @@ export function Workspace() {
             ) : null}
 
             <div className="workspace-scroll workspace-side-scroll">
-              {activeSurface === 'changes' ? (
+              {activeSidePanel === 'changes' ? (
                 <ChangesSurface diffState={diffState} onDiffStateChange={handleDiffStateChange} />
               ) : null}
-              {activeSurface === 'files' ? <FilesSurface /> : null}
-              {activeSurface === 'app' ? (
+              {activeSidePanel === 'files' ? <FilesSurface /> : null}
+              {activeSidePanel === 'app' ? (
                 <AppSurface appBuild={appBuild} onReload={handleAppReload} />
               ) : null}
-              {activeSurface === 'design' ? <DesignSurface /> : null}
-              {activeSurface === 'pr' ? (
+              {activeSidePanel === 'design' ? <DesignSurface /> : null}
+              {activeSidePanel === 'pr' ? (
                 <PullRequestSurface prLabel={prLabel} onOpen={handleOpenPullRequest} />
               ) : null}
             </div>

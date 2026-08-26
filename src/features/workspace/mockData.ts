@@ -1,24 +1,24 @@
-// MOCK DATA ONLY — replace these values with the typed Tauri adapters when the
-// workspace commands are available. Keeping the fixture shape close to the
-// future IPC entities makes that replacement mechanical.
+import type { Project, Workspace } from '../../types/ipc';
 
-export type WorkspaceIsolation = 'worktree' | 'local';
+// MOCK DATA ONLY — this is a UI view model over the future IPC entities. The
+// shared entity fields stay aligned, while presentation fields remain local to
+// the Workspace surface.
 
-export interface MockWorkspace {
-  id: string;
-  title: string;
+export type WorkspaceIsolation = Workspace['isolation'];
+
+export interface MockWorkspace extends Workspace {
   meta: string;
-  isolation: WorkspaceIsolation;
   dotTone: 'terracotta' | 'green' | 'border';
 }
 
-export interface MockProject {
-  name: string;
+export interface MockProject extends Project {
   workspaces: MockWorkspace[];
 }
 
 export type WorkspaceMessageRole = 'user' | 'tool' | 'agent';
 
+// This is the transcript row rendered by the UI, corresponding to the
+// message variant of SessionEvent rather than the Session metadata object.
 export interface MockWorkspaceMessage {
   id: number;
   role: WorkspaceMessageRole;
@@ -35,10 +35,13 @@ export interface MockSurface {
 
 export const MOCK_PROJECTS: MockProject[] = [
   {
+    id: 'devboule',
     name: 'devboule',
+    path: '~/dev/devboule',
     workspaces: [
       {
         id: 'rust-core',
+        projectId: 'devboule',
         title: 'rust-core',
         meta: '2 sessions · 7 dirty',
         isolation: 'worktree',
@@ -46,6 +49,7 @@ export const MOCK_PROJECTS: MockProject[] = [
       },
       {
         id: 'main',
+        projectId: 'devboule',
         title: 'main',
         meta: '1 terminal',
         isolation: 'local',
@@ -53,6 +57,7 @@ export const MOCK_PROJECTS: MockProject[] = [
       },
       {
         id: 'windows-port',
+        projectId: 'devboule',
         title: 'windows-port',
         meta: 'idle · 3 d',
         isolation: 'worktree',
@@ -61,10 +66,13 @@ export const MOCK_PROJECTS: MockProject[] = [
     ],
   },
   {
+    id: 'oracle-core',
     name: 'oracle-core',
+    path: '~/dev/oracle-core',
     workspaces: [
       {
         id: 'bench-embedder',
+        projectId: 'oracle-core',
         title: 'bench-embedder',
         meta: '1 session',
         isolation: 'worktree',
