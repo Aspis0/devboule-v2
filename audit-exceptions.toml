@@ -1,0 +1,13 @@
+# Deliberately empty for M1a.
+#
+# If an advisory must be temporarily accepted, add one block per advisory:
+#
+# [advisory."RUSTSEC-YYYY-NNNN"]
+# package = "crate-name"
+# reason = "Concrete, reproducible reason and mitigation."
+# introduced = "YYYY-MM-DD"
+# expires = "YYYY-MM-DD"
+# owner = "github-handle"
+#
+# npm advisories use the same shape with the advisory id and package name. Every
+# exception must be reviewed before expiry and reflected in the CI command.
