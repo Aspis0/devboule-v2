@@ -23,12 +23,22 @@ import './design.css';
 type MessageAction = 'stop' | 'retry' | 'select' | 'regenerate';
 
 interface DesignSnapshot {
-  selectedLayerId: string;
   hiddenLayerIds: readonly string[];
   radius: number;
   flat: boolean;
+}
+
+interface DesignViewState {
+  selectedLayerId: string;
   tool: DesignTool;
   zoom: number;
+}
+
+interface DesignHistory {
+  present: DesignSnapshot;
+  past: DesignSnapshot[];
+  future: DesignSnapshot[];
+  saved: boolean;
 }
 
 interface LayerViewModel extends DesignLayer {
@@ -82,6 +92,8 @@ interface CanvasNodeProps {
 
 interface ZoomControlsProps {
   zoom: number;
+  canZoomIn: boolean;
+  canZoomOut: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onZoomReset: () => void;
@@ -98,7 +110,7 @@ interface InspectorProps {
 
 interface AssistantProps {
   generationLabel: string;
-  selectedLayerName: string;
+  contextLayerName: string | null;
   provider: string;
   draft: string;
   draftPlaceholder: string;
@@ -110,17 +122,30 @@ interface AssistantProps {
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
   onVisualCheck: () => void;
+  onClearContext: () => void;
   onMessageAction: (action: MessageAction, message: DesignMessage) => void;
 }
 
-const INITIAL_SNAPSHOT: DesignSnapshot = {
-  selectedLayerId: MOCK_DESIGN_INITIAL_STATE.selectedLayerId,
+const INITIAL_DOCUMENT_SNAPSHOT: DesignSnapshot = {
   hiddenLayerIds: MOCK_DESIGN_INITIAL_STATE.hiddenLayerIds,
   radius: MOCK_DESIGN_INITIAL_STATE.radius,
   flat: MOCK_DESIGN_INITIAL_STATE.flat,
+};
+
+const INITIAL_VIEW_STATE: DesignViewState = {
+  selectedLayerId: MOCK_DESIGN_INITIAL_STATE.selectedLayerId,
   tool: MOCK_DESIGN_INITIAL_STATE.tool,
   zoom: MOCK_DESIGN_INITIAL_STATE.zoom,
 };
+
+const INITIAL_HISTORY: DesignHistory = {
+  present: INITIAL_DOCUMENT_SNAPSHOT,
+  past: [],
+  future: [],
+  saved: MOCK_DESIGN_INITIAL_STATE.saved,
+};
+
+type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
 
 function cloneMessages(): DesignMessage[] {
   return MOCK_DESIGN_MESSAGES.map((message) => {
@@ -299,14 +324,14 @@ const CanvasNode = memo(function CanvasNode({ node, hidden, selected, onSelect }
   );
 });
 
-const ZoomControls = memo(function ZoomControls({ zoom, onZoomIn, onZoomOut, onZoomReset, onFit }: ZoomControlsProps) {
+const ZoomControls = memo(function ZoomControls({ zoom, canZoomIn, canZoomOut, onZoomIn, onZoomOut, onZoomReset, onFit }: ZoomControlsProps) {
   const zoomLabel = `${Math.round(zoom * 100)}%`;
 
   return (
     <div className="design-zoom-controls" aria-label="Canvas zoom">
-      <button type="button" title="Zoom out" aria-label="Zoom out" onClick={onZoomOut}>−</button>
-      <button className="design-zoom-value" type="button" title="Reset to 100%" onClick={onZoomReset}>{zoomLabel}</button>
-      <button type="button" title="Zoom in" aria-label="Zoom in" onClick={onZoomIn}>+</button>
+      <button type="button" title="Zoom out" aria-label="Zoom out" onClick={onZoomOut} disabled={!canZoomOut}>−</button>
+      <button className="design-zoom-value" type="button" title="Reset to 100%" aria-label="Reset zoom to 100%" onClick={onZoomReset}>{zoomLabel}</button>
+      <button type="button" title="Zoom in" aria-label="Zoom in" onClick={onZoomIn} disabled={!canZoomIn}>+</button>
       <button className="design-fit-button" type="button" title="Fit canvas" onClick={onFit}>Fit</button>
     </div>
   );
@@ -406,16 +431,16 @@ const InspectorPanel = memo(function InspectorPanel({ layer, radiusOptions, flat
       <div className="design-inspector-section">
         <div className="design-inspector-label">Arrange</div>
         <div className="design-arrange-actions">
-          <button type="button" title="Send to back">⤓</button>
-          <button type="button" title="Move backward">↓</button>
-          <button type="button" title="Move forward">↑</button>
-          <button type="button" title="Bring to front">⤒</button>
+          <button type="button" title="Send to back" aria-label="Send layer to back">⤓</button>
+          <button type="button" title="Move backward" aria-label="Move layer backward">↓</button>
+          <button type="button" title="Move forward" aria-label="Move layer forward">↑</button>
+          <button type="button" title="Bring to front" aria-label="Bring layer to front">⤒</button>
         </div>
       </div>
 
       <div className="design-inspector-actions">
         <button type="button">Duplicate</button>
-        <button type="button" className="design-delete-action">Delete</button>
+        <button type="button" className="design-delete-action" aria-label="Delete layer">Delete</button>
       </div>
       <div className="design-inspector-footer">{MOCK_DESIGN_DOCUMENT.tokenFooter}</div>
     </section>
@@ -465,7 +490,7 @@ const DesignMessageCard = memo(function DesignMessageCard({
 
 const DesignAssistant = memo(function DesignAssistant({
   generationLabel,
-  selectedLayerName,
+  contextLayerName,
   provider,
   draft,
   draftPlaceholder,
@@ -477,6 +502,7 @@ const DesignAssistant = memo(function DesignAssistant({
   onComposerKeyDown,
   onSend,
   onVisualCheck,
+  onClearContext,
   onMessageAction,
 }: AssistantProps) {
   return (
@@ -494,10 +520,12 @@ const DesignAssistant = memo(function DesignAssistant({
 
       <div className="design-composer-wrap">
         <div className="design-composer">
-          <div className="design-composer-context">
-            <span>{MOCK_DESIGN_DOCUMENT.contextPrefix} {selectedLayerName}</span>
-            <button type="button" title="Clear context" aria-label="Clear editing context">✕</button>
-          </div>
+          {contextLayerName ? (
+            <div className="design-composer-context">
+              <span>{MOCK_DESIGN_DOCUMENT.contextPrefix} {contextLayerName}</span>
+              <button type="button" title="Clear context" aria-label="Clear editing context" onClick={onClearContext}>✕</button>
+            </div>
+          ) : null}
           <textarea
             value={draft}
             onChange={onDraftChange}
@@ -521,10 +549,9 @@ const DesignAssistant = memo(function DesignAssistant({
 });
 
 export function DesignSurface() {
-  const [snapshot, setSnapshot] = useState<DesignSnapshot>(INITIAL_SNAPSHOT);
-  const [past, setPast] = useState<DesignSnapshot[]>([]);
-  const [future, setFuture] = useState<DesignSnapshot[]>([]);
-  const [saved, setSaved] = useState(MOCK_DESIGN_INITIAL_STATE.saved);
+  const [history, setHistory] = useState<DesignHistory>(INITIAL_HISTORY);
+  const [viewState, setViewState] = useState<DesignViewState>(INITIAL_VIEW_STATE);
+  const [composerContextLayerId, setComposerContextLayerId] = useState<string | null>(INITIAL_VIEW_STATE.selectedLayerId);
   const [grounded, setGrounded] = useState(MOCK_DESIGN_INITIAL_STATE.grounded);
   const [draft, setDraft] = useState(MOCK_DESIGN_INITIAL_STATE.draft);
   const [busy, setBusy] = useState(false);
@@ -532,6 +559,11 @@ export function DesignSurface() {
 
   const generationTimerRef = useRef<number | null>(null);
   const assistantRef = useRef<HTMLDivElement>(null);
+  const designSurfaceRef = useRef<HTMLElement>(null);
+
+  const snapshot = history.present;
+  const saved = history.saved;
+  const { selectedLayerId, tool, zoom } = viewState;
 
   useEffect(() => {
     return () => {
@@ -544,17 +576,24 @@ export function DesignSurface() {
   }, [messages, busy]);
 
   const selectedLayer = useMemo(
-    () => MOCK_DESIGN_LAYERS.find((layer) => layer.id === snapshot.selectedLayerId) ?? MOCK_DESIGN_LAYERS[0],
-    [snapshot.selectedLayerId],
+    () => MOCK_DESIGN_LAYERS.find((layer) => layer.id === selectedLayerId) ?? MOCK_DESIGN_LAYERS[0],
+    [selectedLayerId],
+  );
+
+  const composerContextLayerName = useMemo(
+    () => composerContextLayerId
+      ? MOCK_DESIGN_LAYERS.find((layer) => layer.id === composerContextLayerId)?.name ?? null
+      : null,
+    [composerContextLayerId],
   );
 
   const layerRows = useMemo(
     () => MOCK_DESIGN_LAYERS.map((layer) => ({
       ...layer,
-      selected: layer.id === snapshot.selectedLayerId,
+      selected: layer.id === selectedLayerId,
       hidden: isHidden(snapshot.hiddenLayerIds, layer.id),
     })),
-    [snapshot.hiddenLayerIds, snapshot.selectedLayerId],
+    [selectedLayerId, snapshot.hiddenLayerIds],
   );
 
   const radiusOptions = useMemo(
@@ -587,67 +626,122 @@ export function DesignSurface() {
   );
 
   const generationLabel = `${generationCount} ${generationCount === 1 ? 'generation' : 'generations'}`;
-  const canUndo = past.length > 0;
-  const canRedo = future.length > 0;
+  const canUndo = history.past.length > 0;
+  const canRedo = history.future.length > 0;
 
-  const commitSnapshot = useCallback((next: DesignSnapshot) => {
-    setPast((history) => [...history, snapshot]);
-    setFuture([]);
-    setSnapshot(next);
-    setSaved(false);
-  }, [snapshot]);
+  const commitSnapshot = useCallback((change: SnapshotChange) => {
+    setHistory((current) => {
+      const next = change(current.present);
+      if (next === null) return current;
+      return {
+        ...current,
+        present: next,
+        past: [...current.past, current.present],
+        future: [],
+        saved: false,
+      };
+    });
+  }, []);
 
   const selectLayer = useCallback((layerId: string) => {
-    setSnapshot((current) => ({ ...current, selectedLayerId: layerId }));
+    setViewState((current) => current.selectedLayerId === layerId ? current : { ...current, selectedLayerId: layerId });
+    setComposerContextLayerId(layerId);
   }, []);
 
   const toggleLayerVisibility = useCallback((layerId: string) => {
-    setSnapshot((current) => ({
+    commitSnapshot((current) => ({
       ...current,
       hiddenLayerIds: current.hiddenLayerIds.includes(layerId)
         ? current.hiddenLayerIds.filter((id) => id !== layerId)
         : [...current.hiddenLayerIds, layerId],
     }));
-  }, []);
+  }, [commitSnapshot]);
 
   const setRadius = useCallback((radius: number) => {
-    if (radius === snapshot.radius) return;
-    commitSnapshot({ ...snapshot, radius });
-  }, [commitSnapshot, snapshot]);
+    commitSnapshot((current) => current.radius === radius ? null : { ...current, radius });
+  }, [commitSnapshot]);
 
   const setElevation = useCallback((flat: boolean) => {
-    if (flat === snapshot.flat) return;
-    commitSnapshot({ ...snapshot, flat });
-  }, [commitSnapshot, snapshot]);
+    commitSnapshot((current) => current.flat === flat ? null : { ...current, flat });
+  }, [commitSnapshot]);
 
-  const setMoveTool = useCallback(() => setSnapshot((current) => ({ ...current, tool: 'move' })), []);
-  const setAiTool = useCallback(() => setSnapshot((current) => ({ ...current, tool: 'ai' })), []);
+  const setMoveTool = useCallback(() => setViewState((current) => current.tool === 'move' ? current : { ...current, tool: 'move' }), []);
+  const setAiTool = useCallback(() => setViewState((current) => current.tool === 'ai' ? current : { ...current, tool: 'ai' }), []);
 
-  const setZoom = useCallback((zoom: number) => setSnapshot((current) => ({ ...current, zoom })), []);
-  const zoomIn = useCallback(() => setZoom(Math.min(3, Number((snapshot.zoom + 0.1).toFixed(1)))), [setZoom, snapshot.zoom]);
-  const zoomOut = useCallback(() => setZoom(Math.max(0.2, Number((snapshot.zoom - 0.1).toFixed(1)))), [setZoom, snapshot.zoom]);
+  const setZoom = useCallback((nextZoom: number | ((currentZoom: number) => number)) => {
+    setViewState((current) => {
+      const next = typeof nextZoom === 'function' ? nextZoom(current.zoom) : nextZoom;
+      return current.zoom === next ? current : { ...current, zoom: next };
+    });
+  }, []);
+  const zoomIn = useCallback(() => setZoom((currentZoom) => Math.min(3, Number((currentZoom + 0.1).toFixed(1)))), [setZoom]);
+  const zoomOut = useCallback(() => setZoom((currentZoom) => Math.max(0.2, Number((currentZoom - 0.1).toFixed(1)))), [setZoom]);
   const zoomReset = useCallback(() => setZoom(1), [setZoom]);
   const fitCanvas = useCallback(() => setZoom(0.8), [setZoom]);
 
   const undo = useCallback(() => {
-    if (past.length === 0) return;
-    const previous = past[past.length - 1];
-    setPast((history) => history.slice(0, -1));
-    setFuture((history) => [snapshot, ...history]);
-    setSnapshot(previous);
-    setSaved(false);
-  }, [past, snapshot]);
+    if (!canUndo) return;
+    setHistory((current) => {
+      if (current.past.length === 0) return current;
+      const previous = current.past[current.past.length - 1];
+      return {
+        ...current,
+        present: previous,
+        past: current.past.slice(0, -1),
+        future: [current.present, ...current.future],
+        saved: false,
+      };
+    });
+  }, [canUndo]);
 
   const redo = useCallback(() => {
-    if (future.length === 0) return;
-    const next = future[0];
-    setFuture((history) => history.slice(1));
-    setPast((history) => [...history, snapshot]);
-    setSnapshot(next);
-    setSaved(false);
-  }, [future, snapshot]);
+    if (!canRedo) return;
+    setHistory((current) => {
+      if (current.future.length === 0) return current;
+      const next = current.future[0];
+      return {
+        ...current,
+        present: next,
+        past: [...current.past, current.present],
+        future: current.future.slice(1),
+        saved: false,
+      };
+    });
+  }, [canRedo]);
 
-  const save = useCallback(() => setSaved(true), []);
+  useEffect(() => {
+    const surface = designSurfaceRef.current;
+    if (!surface) return;
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (!event.ctrlKey || event.altKey || event.key.toLowerCase() !== 'z') return;
+
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (event.shiftKey) {
+        if (!canRedo) return;
+        event.preventDefault();
+        redo();
+        return;
+      }
+
+      if (!canUndo) return;
+      event.preventDefault();
+      undo();
+    };
+
+    surface.addEventListener('keydown', handleKeyDown);
+    return () => surface.removeEventListener('keydown', handleKeyDown);
+  }, [canRedo, canUndo, redo, undo]);
+
+  const save = useCallback(() => setHistory((current) => current.saved ? current : { ...current, saved: true }), []);
   const toggleGrounding = useCallback(() => setGrounded((value) => !value), []);
 
   const clearGenerationTimer = useCallback(() => {
@@ -666,7 +760,9 @@ export function DesignSurface() {
       id: userId,
       role: 'user',
       text: prompt,
-      ctx: `${MOCK_DESIGN_DOCUMENT.contextPrefix} ${selectedLayer.name}`,
+      ctx: composerContextLayerName
+        ? `${MOCK_DESIGN_DOCUMENT.contextPrefix} ${composerContextLayerName}`
+        : undefined,
     };
     const assistantMessage: DesignAssistantMessage = {
       id: assistantId,
@@ -688,10 +784,10 @@ export function DesignSurface() {
           : message
       )));
       setBusy(false);
-      setSaved(false);
+      setHistory((current) => current.saved ? { ...current, saved: false } : current);
       generationTimerRef.current = null;
     }, 900);
-  }, [busy, clearGenerationTimer, selectedLayer.name]);
+  }, [busy, clearGenerationTimer, composerContextLayerName]);
 
   const send = useCallback(() => {
     const text = draft.trim();
@@ -739,8 +835,10 @@ export function DesignSurface() {
     startGeneration(MOCK_DESIGN_GENERATION_RESULTS.regenerate, MOCK_DESIGN_GENERATION_RESULTS.regenerate.prompt);
   }, [clearGenerationTimer, selectLayer, startGeneration]);
 
+  const clearComposerContext = useCallback(() => setComposerContextLayerId(null), []);
+
   return (
-    <section className="surface-card design-surface" data-screen-label="Design" aria-labelledby="design-surface-title">
+    <section ref={designSurfaceRef} className="surface-card design-surface" data-screen-label="Design" aria-labelledby="design-surface-title">
       <h1 className="design-sr-only" id="design-surface-title">Design</h1>
       <DesignToolbar
         grounded={grounded}
@@ -758,26 +856,26 @@ export function DesignSurface() {
         <div className="design-workspace">
           <DesignCanvas
             hiddenLayerIds={snapshot.hiddenLayerIds}
-            selectedLayerId={snapshot.selectedLayerId}
-            tool={snapshot.tool}
-            zoom={snapshot.zoom}
+            selectedLayerId={selectedLayerId}
+            tool={tool}
+            zoom={zoom}
             onSelectLayer={selectLayer}
           />
           <LayerPanel layers={layerRows} onSelect={selectLayer} onToggleVisibility={toggleLayerVisibility} />
           <div className="design-tool-controls" aria-label="Canvas tools">
-            <button type="button" title="Move / select" aria-pressed={snapshot.tool === 'move'} className={snapshot.tool === 'move' ? 'design-tool-selected' : ''} onClick={setMoveTool}>Move</button>
-            <button type="button" title="Drag a region, then let the AI analyze and fix it" aria-pressed={snapshot.tool === 'ai'} className={snapshot.tool === 'ai' ? 'design-tool-selected' : ''} onClick={setAiTool}>Spot Edit</button>
+            <button type="button" title="Move / select" aria-pressed={tool === 'move'} className={tool === 'move' ? 'design-tool-selected' : ''} onClick={setMoveTool}>Move</button>
+            <button type="button" title="Drag a region, then let the AI analyze and fix it" aria-pressed={tool === 'ai'} className={tool === 'ai' ? 'design-tool-selected' : ''} onClick={setAiTool}>Spot Edit</button>
           </div>
-          <ZoomControls zoom={snapshot.zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset} onFit={fitCanvas} />
+          <ZoomControls zoom={zoom} canZoomIn={zoom < 3} canZoomOut={zoom > 0.2} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset} onFit={fitCanvas} />
           <InspectorPanel layer={selectedLayer} radiusOptions={radiusOptions} flat={snapshot.flat} onRadiusChange={setRadius} onElevationChange={setElevation} />
         </div>
 
         <DesignAssistant
           generationLabel={generationLabel}
-          selectedLayerName={selectedLayer.name}
+          contextLayerName={composerContextLayerName}
           provider={MOCK_DESIGN_DOCUMENT.provider}
           draft={draft}
-          draftPlaceholder={MOCK_DESIGN_DOCUMENT.draftPlaceholder}
+          draftPlaceholder={composerContextLayerName ? MOCK_DESIGN_DOCUMENT.draftPlaceholder : MOCK_DESIGN_DOCUMENT.noContextPlaceholder}
           sendLabel={busy ? 'Working…' : 'Generate'}
           busy={busy}
           messages={messageViews}
@@ -786,6 +884,7 @@ export function DesignSurface() {
           onComposerKeyDown={handleComposerKeyDown}
           onSend={send}
           onVisualCheck={visualCheck}
+          onClearContext={clearComposerContext}
           onMessageAction={handleMessageAction}
         />
       </div>
