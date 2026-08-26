@@ -1,0 +1,596 @@
+.oracle-panel {
+  min-width: 0;
+}
+
+.oracle-health {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.oracle-server-state,
+.oracle-checks,
+.oracle-check,
+.oracle-folder-row,
+.oracle-job-heading,
+.oracle-actions,
+.oracle-file-heading,
+.oracle-file-tabs,
+.oracle-secondary-card,
+.oracle-secondary-state {
+  display: flex;
+  align-items: center;
+}
+
+.oracle-server-state {
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.oracle-server-dot,
+.oracle-check-dot {
+  flex: none;
+  border-radius: 999px;
+}
+
+.oracle-server-dot {
+  width: 8px;
+  height: 8px;
+}
+
+.oracle-server-dot-indexing,
+.oracle-check-dot-idle {
+  background: var(--ochre);
+}
+
+.oracle-server-dot-running,
+.oracle-check-dot-ok {
+  background: var(--green);
+}
+
+.oracle-server-dot-starting {
+  background: var(--border-strong);
+}
+
+.oracle-checks {
+  gap: 9px;
+}
+
+.oracle-check {
+  gap: 5px;
+  color: var(--silence);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+}
+
+.oracle-check-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.oracle-check-dot-failed {
+  background: var(--danger);
+}
+
+.oracle-health-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+}
+
+.oracle-health-summary {
+  color: var(--ink-soft);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+}
+
+.oracle-doctor-button {
+  margin-left: auto;
+}
+
+.oracle-search {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 20px;
+  padding: 11px 15px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface-muted);
+}
+
+.oracle-search-mark {
+  color: var(--terracotta);
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 15px;
+}
+
+.oracle-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+.oracle-button {
+  display: grid;
+  flex: none;
+  place-items: center;
+  height: 30px;
+  padding: 0 13px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.oracle-button-primary {
+  height: 30px;
+  color: var(--surface);
+  background: var(--terracotta);
+}
+
+.oracle-button-primary:hover,
+.oracle-button-primary:focus-visible {
+  background: color-mix(in srgb, var(--terracotta) 84%, var(--ink));
+}
+
+.oracle-button-secondary {
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.oracle-button-secondary:hover,
+.oracle-button-secondary:focus-visible {
+  color: var(--terracotta);
+  border-color: var(--terracotta);
+}
+
+.oracle-answer-card,
+.oracle-workspace-card,
+.oracle-file-list,
+.oracle-secondary-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-muted);
+}
+
+.oracle-answer-card {
+  margin-top: 12px;
+  padding: 14px 15px;
+}
+
+.oracle-answer {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+.oracle-caret {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--terracotta);
+  animation: oracle-caret 1s steps(1) infinite;
+}
+
+@keyframes oracle-caret {
+  0%, 45% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+.oracle-retrieval-banner,
+.oracle-job-note {
+  color: color-mix(in srgb, var(--ochre) 70%, var(--ink));
+  background: color-mix(in srgb, var(--ochre) 15%, var(--surface-muted));
+}
+
+.oracle-retrieval-banner {
+  margin-top: 9px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.oracle-citations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 11px;
+}
+
+.oracle-citation {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.oracle-citation:hover,
+.oracle-citation:focus-visible {
+  color: var(--terracotta);
+  border-color: var(--terracotta);
+}
+
+.oracle-answer-by {
+  margin-top: 11px;
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.oracle-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 26px 0 10px;
+}
+
+.oracle-section-heading > span:first-child {
+  color: var(--silence);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.oracle-section-heading > span:nth-child(2) {
+  color: var(--silence);
+  font-size: 11px;
+}
+
+.oracle-watch-badge {
+  display: grid;
+  height: 20px;
+  place-items: center;
+  margin-left: auto;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.oracle-watch-badge-running {
+  color: color-mix(in srgb, var(--ochre) 70%, var(--ink));
+  background: color-mix(in srgb, var(--ochre) 15%, var(--surface-muted));
+}
+
+.oracle-watch-badge-watching {
+  color: color-mix(in srgb, var(--green) 72%, var(--ink));
+  background: color-mix(in srgb, var(--green) 12%, var(--surface-muted));
+}
+
+.oracle-watch-badge-idle {
+  color: var(--silence);
+  background: var(--surface-muted);
+}
+
+.oracle-workspace-card {
+  padding: 12px 14px;
+}
+
+.oracle-eyebrow {
+  color: var(--silence);
+  font-size: 9.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.oracle-folder-row {
+  gap: 10px;
+  margin-top: 5px;
+}
+
+.oracle-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.oracle-change-button {
+  height: 24px;
+  margin-left: auto;
+  padding: 0 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.oracle-folder-meta,
+.oracle-folder-ok {
+  margin-top: 7px;
+  font-size: 10px;
+}
+
+.oracle-folder-meta {
+  color: var(--silence);
+}
+
+.oracle-folder-meta span {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.oracle-folder-ok {
+  color: var(--green);
+  font-size: 10.5px;
+}
+
+.oracle-job {
+  margin-top: 12px;
+}
+
+.oracle-job-heading {
+  gap: 8px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.oracle-job-heading > span:last-child {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.oracle-muted {
+  color: var(--silence);
+}
+
+.oracle-progress-track {
+  height: 6px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--sand);
+}
+
+.oracle-progress-fill {
+  width: 31%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--terracotta);
+}
+
+.oracle-job-note {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.oracle-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.oracle-stat {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.oracle-stat-value {
+  color: var(--ink);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+}
+
+.oracle-stat-value-warning {
+  color: var(--ochre);
+}
+
+.oracle-stat-value-ink-soft {
+  color: var(--ink-soft);
+}
+
+.oracle-stat-label {
+  margin-top: 2px;
+  color: var(--silence);
+  font-size: 9.5px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.oracle-actions {
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.oracle-stop-button:hover,
+.oracle-stop-button:focus-visible {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.oracle-file-heading {
+  gap: 4px;
+  margin: 26px 0 10px;
+}
+
+.oracle-file-tabs {
+  gap: 4px;
+}
+
+.oracle-file-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 11px;
+  color: var(--ink-soft);
+  background: transparent;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.oracle-file-tab > span:last-child {
+  color: var(--silence);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+}
+
+.oracle-file-tab-active,
+.oracle-file-tab:hover,
+.oracle-file-tab:focus-visible {
+  background: var(--selection);
+}
+
+.oracle-file-tab-active > span:first-child {
+  color: var(--ink);
+}
+
+.oracle-filter-pill {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  margin-left: auto;
+  padding: 0 11px;
+  color: var(--silence);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10.5px;
+}
+
+.oracle-file-list {
+  overflow: hidden;
+}
+
+.oracle-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--border);
+}
+
+.oracle-file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.oracle-file-detail,
+.oracle-file-when {
+  flex: none;
+  color: var(--silence);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+}
+
+.oracle-file-detail {
+  margin-left: auto;
+}
+
+.oracle-file-when {
+  width: 62px;
+  text-align: right;
+}
+
+.oracle-page-label {
+  padding: 8px 13px;
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.oracle-secondary-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 20px;
+}
+
+.oracle-secondary-card {
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+}
+
+.oracle-secondary-card-button {
+  width: 100%;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.oracle-secondary-card-button:hover,
+.oracle-secondary-card-button:focus-visible {
+  border-color: var(--border-strong);
+}
+
+.oracle-secondary-card > span:first-child {
+  min-width: 0;
+}
+
+.oracle-secondary-title,
+.oracle-secondary-line {
+  display: block;
+}
+
+.oracle-secondary-title {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.oracle-secondary-line {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--silence);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oracle-secondary-state {
+  flex: none;
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+}
+
+.oracle-secondary-state-ready {
+  color: var(--green);
+}
+
+.oracle-secondary-state-missing {
+  color: var(--ochre);
+}
+
+.oracle-secondary-chevron {
+  flex: none;
+  color: var(--silence);
+  font-size: 10px;
+}
