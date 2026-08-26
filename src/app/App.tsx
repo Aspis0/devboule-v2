@@ -23,12 +23,18 @@ const LazySettings = lazy(() =>
   })),
 );
 
+const LazyDesign = lazy(() =>
+  import('../features/design/DesignSurface').then(({ DesignSurface }) => ({
+    default: (_props: SurfaceRendererProps) => <DesignSurface />,
+  })),
+);
+
 const SURFACE_COMPONENTS: Record<SurfaceKey, SurfaceComponent> = {
   workspace: LazyWorkspace,
   polis: SurfacePlaceholder,
   oracle: SurfacePlaceholder,
   pubvia: SurfacePlaceholder,
-  design: SurfacePlaceholder,
+  design: LazyDesign,
   settings: LazySettings,
 };
 
