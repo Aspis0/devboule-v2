@@ -1,5 +1,6 @@
 import { Shell } from './Shell';
 import { SurfacePlaceholder } from './SurfacePlaceholder';
+import { Workspace } from '../features/workspace/Workspace';
 import { useAppStore } from '../store/appStore';
 import { SURFACES } from '../types/surface';
 
@@ -9,7 +10,7 @@ export function App() {
 
   return (
     <Shell activeSurface={surface.key}>
-      <SurfacePlaceholder surface={surface} />
+      {activeSurface === 'workspace' ? <Workspace /> : <SurfacePlaceholder surface={surface} />}
     </Shell>
   );
 }
