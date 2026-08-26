@@ -1,0 +1,106 @@
+import { Channel, invoke } from '@tauri-apps/api/core';
+import { memo, useEffect, useRef, useState } from 'react';
+import type { SessionEvent } from '../../types/ipc';
+import { TerminalSession, type TerminalBanner } from './terminalSession';
+
+interface TerminalSurfaceProps {
+  workspaceId: string | null;
+  id?: string;
+}
+
+function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  return invoke<T>(command, args);
+}
+
+function createTerminalChannel(onEvent: (event: SessionEvent) => void): Channel<SessionEvent> {
+  return new Channel<SessionEvent>(onEvent);
+}
+
+function bannerText(banner: TerminalBanner): string | null {
+  if (banner === null) return null;
+  if (banner.kind === 'error') return banner.message;
+  return banner.code === null
+    ? 'The terminal process exited.'
+    : `The terminal process exited with code ${banner.code}.`;
+}
+
+export const TerminalSurface = memo(function TerminalSurface({ workspaceId, id }: TerminalSurfaceProps) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const sessionRef = useRef<TerminalSession | null>(null);
+  const [banner, setBanner] = useState<TerminalBanner>(null);
+  const [ctrlCArmed, setCtrlCArmed] = useState(false);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (host === null) return;
+
+    let mounted = true;
+    setBanner(null);
+    setCtrlCArmed(false);
+
+    const session = new TerminalSession({
+      workspaceId,
+      host,
+      createView: async (viewHost, options) => {
+        const { createTerminalView } = await import('./createTerminalView');
+        return createTerminalView(viewHost, options);
+      },
+      invoke: invokeCommand,
+      createChannel: createTerminalChannel,
+      onBanner: (nextBanner) => {
+        if (mounted) setBanner(nextBanner);
+      },
+      onCtrlCArmed: (armed) => {
+        if (mounted) setCtrlCArmed(armed);
+      },
+    });
+    sessionRef.current = session;
+
+    void session.start().catch(() => {
+      if (mounted) setBanner({ kind: 'error', message: 'Could not start the terminal.' });
+    });
+
+    return () => {
+      mounted = false;
+      if (sessionRef.current === session) sessionRef.current = null;
+      session.dispose();
+    };
+  }, [workspaceId]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    const session = sessionRef.current;
+    if (host === null || session === null || typeof ResizeObserver === 'undefined') return;
+
+    const observer = new ResizeObserver(() => session.requestResize());
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [workspaceId]);
+
+  const message = bannerText(banner);
+
+  return (
+    <div id={id} className="workspace-terminal-shell" role="tabpanel" aria-label="Terminal output">
+      <div className="workspace-terminal-toolbar">
+        <span className="workspace-status-dot workspace-dot-green" />
+        <span className="workspace-terminal-title">Terminal</span>
+        <span className="workspace-terminal-status">{message ?? 'Connected to the local shell'}</span>
+        <button
+          type="button"
+          className="workspace-terminal-interrupt"
+          onClick={() => sessionRef.current?.requestCtrlC()}
+          disabled={banner?.kind === 'exited'}
+          aria-pressed={ctrlCArmed}
+        >
+          {ctrlCArmed ? 'Press Ctrl+C again' : 'Ctrl+C'}
+        </button>
+      </div>
+      <div ref={hostRef} className="workspace-terminal-host" aria-label="Interactive terminal" />
+      {message !== null ? (
+        <div className="workspace-terminal-banner" role="status">
+          {message}
+        </div>
+      ) : null}
+    </div>
+  );
+});

@@ -1,7 +1,6 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   AnswerChunk,
-  Cursor,
   FileTab,
   Id,
   IndexedFile,
@@ -9,7 +8,6 @@ import type {
   PermissionOutcome,
   Project,
   ProviderInfo,
-  SendIntent,
   Session,
   SessionEvent,
   SessionKind,
@@ -22,9 +20,9 @@ type CommandArgs = {
   project_add: { path: string };
   workspaces_list: { project_id: Id };
   workspace_create: { project_id: Id; isolation: Workspace['isolation']; branch?: string | null };
-  session_create: { workspace_id: Id; kind: SessionKind };
-  session_attach: { id: Id; from_cursor?: Cursor | null; ch: SessionChannel };
-  session_send: { id: Id; text: string; intent: SendIntent };
+  session_create: { workspace_id: Id | null; kind: SessionKind };
+  session_attach: { id: Id; from_cursor: number | null; ch: SessionChannel };
+  session_send: { id: Id; text: string };
   session_interrupt: { id: Id };
   session_permission_respond: { id: Id; request_id: Id; outcome: PermissionOutcome };
   session_resize: { id: Id; cols: number; rows: number };
@@ -74,9 +72,7 @@ export type SessionChannel = Channel<SessionEvent>;
 export type AnswerChannel = Channel<AnswerChunk>;
 
 export function createSessionChannel(onEvent?: (event: SessionEvent) => void): SessionChannel {
-  const channel = new Channel<SessionEvent>();
-  channel.onmessage = onEvent ?? (() => undefined);
-  return channel;
+  return new Channel<SessionEvent>(onEvent ?? (() => undefined));
 }
 
 export function createAnswerChannel(onChunk?: (chunk: AnswerChunk) => void): AnswerChannel {
@@ -103,12 +99,12 @@ export const workspaceCreate = (
   isolation: Workspace['isolation'],
   branch?: string,
 ) => invokeTyped('workspace_create', { project_id: projectId, isolation, branch });
-export const sessionCreate = (workspaceId: Id, kind: SessionKind) =>
+export const sessionCreate = (workspaceId: Id | null, kind: SessionKind = 'terminal') =>
   invokeTyped('session_create', { workspace_id: workspaceId, kind });
-export const sessionAttach = (id: Id, fromCursor: Cursor | null, ch: SessionChannel) =>
+export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChannel) =>
   invokeTyped('session_attach', { id, from_cursor: fromCursor, ch });
-export const sessionSend = (id: Id, text: string, intent: SendIntent) =>
-  invokeTyped('session_send', { id, text, intent });
+export const sessionSend = (id: Id, text: string) =>
+  invokeTyped('session_send', { id, text });
 export const sessionInterrupt = (id: Id) => invokeTyped('session_interrupt', { id });
 export const sessionPermissionRespond = (
   id: Id,

@@ -1,0 +1,331 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TerminalViewHandle } from './createTerminalView';
+import {
+  TerminalSession,
+  type TerminalBanner,
+  type TerminalChannel,
+  type TerminalEvent,
+  type TerminalSessionDeps,
+} from './terminalSession';
+
+interface MockView extends TerminalViewHandle {
+  written: string[];
+  fitCount: number;
+  disposeCount: number;
+  fitOk: { value: boolean };
+  geometry: { cols: number; rows: number };
+}
+
+interface Harness {
+  session: TerminalSession;
+  view: MockView;
+  invoke: ReturnType<typeof vi.fn>;
+  emit: (event: TerminalEvent) => void;
+  flushFrame: () => void;
+  resolveAttach: () => void;
+  banners: TerminalBanner[];
+  ctrlCStates: boolean[];
+}
+
+function makeHarness(options?: { deferAttach?: boolean }): Harness {
+  const written: string[] = [];
+  const fitOk = { value: true };
+  const geometry = { cols: 80, rows: 24 };
+  let fitCount = 0;
+  let disposeCount = 0;
+  let eventHandler: (event: TerminalEvent) => void = () => undefined;
+  let frameCallback: (() => void) | null = null;
+  let resolveAttach!: () => void;
+  const attachGate = new Promise<void>((resolve) => {
+    resolveAttach = resolve;
+  });
+
+  const view: MockView = {
+    write: (data) => written.push(data),
+    fit: () => {
+      fitCount += 1;
+      return fitOk.value;
+    },
+    dispose: () => {
+      disposeCount += 1;
+    },
+    cols: () => geometry.cols,
+    rows: () => geometry.rows,
+    written,
+    get fitCount() {
+      return fitCount;
+    },
+    get disposeCount() {
+      return disposeCount;
+    },
+    fitOk,
+    geometry,
+  };
+
+  const invoke = vi.fn(async (command: string) => {
+    if (command === 'session_create') {
+      return {
+        id: 'session-1',
+        workspaceId: 'rust-core',
+        kind: 'terminal',
+        title: 'Terminal',
+      };
+    }
+    if (command === 'session_attach' && options?.deferAttach) {
+      await attachGate;
+    }
+    return undefined;
+  });
+
+  const channel = {
+    onmessage: eventHandler,
+  } as unknown as TerminalChannel;
+  const deps: TerminalSessionDeps = {
+    workspaceId: 'rust-core',
+    host: {} as HTMLElement,
+    createView: async () => view,
+    invoke: invoke as unknown as TerminalSessionDeps['invoke'],
+    createChannel: (handler) => {
+      eventHandler = handler;
+      Object.defineProperty(channel, 'onmessage', {
+        configurable: true,
+        get: () => eventHandler,
+        set: (nextHandler: (event: TerminalEvent) => void) => {
+          eventHandler = nextHandler;
+        },
+      });
+      return channel;
+    },
+    onBanner: (banner) => banners.push(banner),
+    onCtrlCArmed: (armed) => ctrlCStates.push(armed),
+    setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds) as unknown as number,
+    clearTimeout: (id) => clearTimeout(id),
+    scheduleFrame: (callback) => {
+      frameCallback = callback;
+      return 1;
+    },
+    cancelFrame: () => {
+      frameCallback = null;
+    },
+  };
+  const banners: TerminalBanner[] = [];
+  const ctrlCStates: boolean[] = [];
+
+  return {
+    session: new TerminalSession(deps),
+    view,
+    invoke,
+    emit: (event) => eventHandler(event),
+    flushFrame: () => {
+      const callback = frameCallback;
+      frameCallback = null;
+      callback?.();
+    },
+    resolveAttach,
+    banners,
+    ctrlCStates,
+  };
+}
+
+const outputEvent = (seq: number, data: string): TerminalEvent => ({ type: 'output', seq, data });
+const exitEvent = (code: number | null): TerminalEvent => ({ type: 'exit', code });
+
+describe('TerminalSession startup and channel ordering', () => {
+  it('creates a terminal and attaches with a fresh null cursor', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    expect(harness.invoke).toHaveBeenNthCalledWith(1, 'session_create', {
+      workspace_id: 'rust-core',
+      kind: 'terminal',
+    });
+    expect(harness.invoke).toHaveBeenNthCalledWith(2, 'session_attach', expect.objectContaining({
+      id: 'session-1',
+      from_cursor: null,
+      ch: expect.anything(),
+    }));
+  });
+
+  it('batches channel output into one xterm write per animation frame', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit(outputEvent(1, 'one\n'));
+    harness.emit(outputEvent(2, 'two\n'));
+    harness.emit(outputEvent(3, 'three\n'));
+    expect(harness.view.written).toEqual([]);
+
+    harness.flushFrame();
+    expect(harness.view.written).toEqual(['one\ntwo\nthree\n']);
+  });
+
+  it('ignores a duplicate or stale sequence number', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit(outputEvent(4, 'new'));
+    harness.emit(outputEvent(4, 'duplicate'));
+    harness.emit(outputEvent(3, 'stale'));
+    harness.flushFrame();
+
+    expect(harness.view.written).toEqual(['new']);
+  });
+});
+
+describe('TerminalSession lifecycle and errors', () => {
+  it('handles attach errors and closes the created session', async () => {
+    const harness = makeHarness();
+    harness.invoke.mockImplementation(async (command: string) => {
+      if (command === 'session_create') {
+        return {
+          id: 'session-1',
+          workspaceId: 'rust-core',
+          kind: 'terminal',
+          title: 'Terminal',
+        };
+      }
+      if (command === 'session_attach') throw 'No session with that id.';
+      return undefined;
+    });
+
+    await harness.session.start();
+    expect(harness.banners).toContainEqual({
+      kind: 'error',
+      message: 'Could not attach to the terminal: No session with that id.',
+    });
+    expect(harness.view.disposeCount).toBe(1);
+    expect(harness.invoke).toHaveBeenCalledWith('session_close', { id: 'session-1' });
+  });
+
+  it('closes exactly once when disposed during an in-flight attach', async () => {
+    const harness = makeHarness({ deferAttach: true });
+    const startPromise = harness.session.start();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    harness.session.dispose();
+    harness.resolveAttach();
+    await startPromise;
+
+    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(1);
+    expect(harness.view.disposeCount).toBe(1);
+  });
+
+  it('marks exit once and ignores writes after exit', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit(exitEvent(7));
+    harness.emit(exitEvent(7));
+    harness.invoke.mockClear();
+    await harness.session.writeToPty('ignored');
+
+    expect(harness.banners).toContainEqual({ kind: 'exited', code: 7 });
+    expect(harness.invoke).not.toHaveBeenCalled();
+  });
+
+  it('makes dispose idempotent and suppresses late output', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.session.dispose();
+    harness.session.dispose();
+    harness.emit(outputEvent(1, 'late'));
+    harness.flushFrame();
+
+    expect(harness.view.disposeCount).toBe(1);
+    expect(harness.view.written).toEqual([]);
+    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(1);
+  });
+});
+
+describe('TerminalSession resize and Ctrl+C', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('resizes once at startup and coalesces subsequent changes', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    const initialFitCount = harness.view.fitCount;
+    harness.invoke.mockClear();
+
+    harness.session.requestResize();
+    harness.session.requestResize();
+    harness.session.requestResize();
+    vi.advanceTimersByTime(149);
+    expect(harness.view.fitCount).toBe(initialFitCount);
+
+    vi.advanceTimersByTime(1);
+    expect(harness.view.fitCount).toBe(initialFitCount + 1);
+    expect(harness.invoke).toHaveBeenCalledTimes(1);
+    expect(harness.invoke).toHaveBeenCalledWith('session_resize', {
+      id: 'session-1',
+      cols: 80,
+      rows: 24,
+    });
+  });
+
+  it('does not report geometry when fit fails or dimensions are degenerate', async () => {
+    const fitHarness = makeHarness();
+    fitHarness.view.fitOk.value = false;
+    await fitHarness.session.start();
+    expect(fitHarness.invoke).not.toHaveBeenCalledWith('session_resize', expect.anything());
+
+    const sizeHarness = makeHarness();
+    sizeHarness.view.geometry.cols = 0;
+    sizeHarness.view.geometry.rows = 0;
+    await sizeHarness.session.start();
+    expect(sizeHarness.invoke).not.toHaveBeenCalledWith('session_resize', expect.anything());
+  });
+
+  it('arms Ctrl+C first and sends ETX only on confirmation', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.invoke.mockClear();
+
+    harness.session.requestCtrlC();
+    expect(harness.ctrlCStates).toEqual([true]);
+    expect(harness.invoke).not.toHaveBeenCalledWith('session_send', { id: 'session-1', text: '\x03' });
+
+    harness.session.requestCtrlC();
+    await Promise.resolve();
+    expect(harness.ctrlCStates).toEqual([true, false]);
+    expect(harness.invoke).toHaveBeenCalledWith('session_send', { id: 'session-1', text: '\x03' });
+  });
+
+  it('auto-disarms Ctrl+C without sending after three seconds', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.invoke.mockClear();
+
+    harness.session.requestCtrlC();
+    vi.advanceTimersByTime(3000);
+
+    expect(harness.ctrlCStates).toEqual([true, false]);
+    expect(harness.invoke).not.toHaveBeenCalledWith('session_send', expect.anything());
+  });
+});
+
+describe('TerminalSession write failures', () => {
+  it('catches backend errors and surfaces a banner after repeated failures', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.invoke.mockImplementation(async (command: string) => {
+      if (command === 'session_create') {
+        return {
+          id: 'session-1',
+          workspaceId: 'rust-core',
+          kind: 'terminal',
+          title: 'Terminal',
+        };
+      }
+      if (command === 'session_send') throw new Error('dead pipe');
+      return undefined;
+    });
+
+    await harness.session.writeToPty('a');
+    expect(harness.banners).not.toContainEqual({ kind: 'error', message: 'Could not send input to the terminal.' });
+    await harness.session.writeToPty('b');
+    expect(harness.banners).toContainEqual({ kind: 'error', message: 'Could not send input to the terminal.' });
+  });
+});
