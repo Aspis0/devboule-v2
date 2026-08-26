@@ -12,6 +12,10 @@
   "app": {
     "windows": [
       {
+        // Explicit: capabilities/default.json grants core:default to the window
+        // labelled "main". Tauri only defaults the label to "main" when it is
+        // omitted, so leaving it implicit couples IPC to an undeclared default.
+        "label": "main",
         "title": "Devboule",
         "width": 1280,
         "height": 800,
