@@ -479,10 +479,25 @@ fn new_session_id() -> String {
     )
 }
 
+enum ReaderMode {
+    Channel,
+    #[cfg(test)]
+    AtomicByteCounter(Arc<AtomicUsize>),
+}
+
 fn spawn_session(
     state: &SessionState,
     metadata: Session,
     command: PtyCommand,
+) -> Result<(), String> {
+    spawn_session_with_reader_mode(state, metadata, command, ReaderMode::Channel)
+}
+
+fn spawn_session_with_reader_mode(
+    state: &SessionState,
+    metadata: Session,
+    command: PtyCommand,
+    reader_mode: ReaderMode,
 ) -> Result<(), String> {
     // On Windows portable-pty selects ConPTY internally. The frontend must keep
     // xterm stdin/onData enabled: ConPTY may issue a DSR query (`ESC[6n`) at
@@ -556,7 +571,7 @@ fn spawn_session(
     let reader_runtime = Arc::clone(&runtime);
     let reader_handle = match std::thread::Builder::new()
         .name(format!("session-pty-{id}"))
-        .spawn(move || reader_loop(reader_state, reader_id, reader, reader_runtime))
+        .spawn(move || reader_loop(reader_state, reader_id, reader, reader_runtime, reader_mode))
     {
         Ok(handle) => handle,
         Err(_) => {
@@ -585,12 +600,21 @@ fn reader_loop(
     id: String,
     mut reader: Box<dyn Read + Send>,
     runtime: Arc<SessionRuntime>,
+    reader_mode: ReaderMode,
 ) {
     let mut buf = [0u8; READ_CHUNK];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) => runtime.publish_output(&String::from_utf8_lossy(&buf[..n])),
+            Ok(n) => match &reader_mode {
+                ReaderMode::Channel => {
+                    runtime.publish_output(&String::from_utf8_lossy(&buf[..n]));
+                }
+                #[cfg(test)]
+                ReaderMode::AtomicByteCounter(counter) => {
+                    counter.fetch_add(n, Ordering::Relaxed);
+                }
+            },
             Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
@@ -1002,6 +1026,224 @@ mod tests {
     }
 
     #[cfg(windows)]
+    struct ChannelTransportMetrics {
+        bytes: usize,
+        wall: Duration,
+        chunk_sizes: Vec<usize>,
+        seq_reordered: bool,
+        peak_ring_bytes: usize,
+        teardown: Duration,
+        child_reaped: bool,
+        clean: bool,
+    }
+
+    #[cfg(windows)]
+    fn summarize_chunk_sizes(chunk_sizes: &[usize]) -> (usize, f64, usize) {
+        let mut sorted = chunk_sizes.to_vec();
+        sorted.sort_unstable();
+        let min = *sorted.first().expect("transport produced no chunks");
+        let max = *sorted.last().unwrap();
+        let middle = sorted.len() / 2;
+        let median = if sorted.len().is_multiple_of(2) {
+            (sorted[middle - 1] + sorted[middle]) as f64 / 2.0
+        } else {
+            sorted[middle] as f64
+        };
+        (min, median, max)
+    }
+
+    #[cfg(windows)]
+    fn benchmark_file_command(file_path: &Path) -> PtyCommand {
+        // The test temp path is deliberately a simple filename. portable-pty
+        // quotes each argv entry, while cmd.exe applies its own /c quoting rules.
+        PtyCommand::new(
+            "cmd.exe",
+            vec!["/c".to_string(), format!("type {}", file_path.display())],
+            std::env::current_dir().unwrap(),
+            Vec::new(),
+        )
+    }
+
+    #[cfg(windows)]
+    fn run_channel_transport(
+        state: &SessionState,
+        id: &str,
+        file_path: &Path,
+        expected_file_bytes: usize,
+        reader_mode: ReaderMode,
+    ) -> ChannelTransportMetrics {
+        let session = Session {
+            id: id.to_string(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            title: "Terminal".to_string(),
+        };
+        spawn_session_with_reader_mode(
+            state,
+            session,
+            benchmark_file_command(file_path),
+            reader_mode,
+        )
+        .unwrap();
+        let runtime = {
+            let map = state.inner.lock().unwrap();
+            Arc::clone(&map.get(id).unwrap().runtime)
+        };
+        let writer_for_channel = {
+            let map = state.inner.lock().unwrap();
+            Arc::clone(&map.get(id).unwrap().writer)
+        };
+        let observed = Arc::new(Mutex::new((
+            0usize,
+            Vec::<usize>::new(),
+            None::<u64>,
+            false,
+        )));
+        let observed_for_channel = Arc::clone(&observed);
+        let start = Instant::now();
+        runtime.attach(
+            None,
+            Channel::new(move |body| {
+                let event: SessionEvent = body.deserialize()?;
+                if let SessionEvent::Output { seq, data } = event {
+                    if data.contains("\x1b[6n") {
+                        let mut writer = writer_for_channel.lock().unwrap();
+                        let _ = writer.write_all(b"\x1b[1;1R");
+                        let _ = writer.flush();
+                    }
+                    let mut observed = observed_for_channel.lock().unwrap();
+                    let expected = observed.2.map_or(seq, |last| last + 1);
+                    if seq != expected {
+                        observed.3 = true;
+                    }
+                    observed.2 = Some(seq);
+                    observed.0 += data.len();
+                    observed.1.push(data.len());
+                }
+                Ok(())
+            }),
+        );
+        let (stop_dsr, dsr_thread) = start_test_dsr_pump(state, id);
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline {
+            if observed.lock().unwrap().0 >= expected_file_bytes {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let complete = observed.lock().unwrap().0 >= expected_file_bytes;
+        if !complete {
+            close_session(state, id);
+            stop_test_dsr_pump(stop_dsr, dsr_thread);
+            panic!(
+                "channel transport did not finish: bytes={} expected_file_bytes={expected_file_bytes}",
+                observed.lock().unwrap().0
+            );
+        }
+
+        let wall = start.elapsed();
+        let (bytes, chunk_sizes, seq_reordered) = {
+            let observed = observed.lock().unwrap();
+            (observed.0, observed.1.clone(), observed.3)
+        };
+        let peak_ring_bytes = runtime.peak_ring_bytes.load(Ordering::Relaxed);
+        let close_start = Instant::now();
+        close_session(state, id);
+        let teardown = close_start.elapsed();
+        stop_test_dsr_pump(stop_dsr, dsr_thread);
+        let child_reaped = runtime.child_reaped.load(Ordering::Acquire);
+        let clean = state.inner.lock().unwrap().is_empty()
+            && runtime.reader_finished.load(Ordering::Acquire)
+            && child_reaped;
+        ChannelTransportMetrics {
+            bytes,
+            wall,
+            chunk_sizes,
+            seq_reordered,
+            peak_ring_bytes,
+            teardown,
+            child_reaped,
+            clean,
+        }
+    }
+
+    #[cfg(windows)]
+    struct AtomicTransportMetrics {
+        bytes: usize,
+        wall: Duration,
+        peak_ring_bytes: usize,
+        teardown: Duration,
+        child_reaped: bool,
+        clean: bool,
+    }
+
+    #[cfg(windows)]
+    fn run_atomic_transport(
+        state: &SessionState,
+        id: &str,
+        file_path: &Path,
+        expected_file_bytes: usize,
+    ) -> AtomicTransportMetrics {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let session = Session {
+            id: id.to_string(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            title: "Terminal".to_string(),
+        };
+        spawn_session_with_reader_mode(
+            state,
+            session,
+            benchmark_file_command(file_path),
+            ReaderMode::AtomicByteCounter(Arc::clone(&counter)),
+        )
+        .unwrap();
+        // B has no Channel callback to answer ConPTY's startup DSR query.
+        answer_test_dsr(state, id);
+        let (stop_dsr, dsr_thread) = start_test_dsr_pump(state, id);
+        let runtime = {
+            let map = state.inner.lock().unwrap();
+            Arc::clone(&map.get(id).unwrap().runtime)
+        };
+        let start = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline {
+            if counter.load(Ordering::Acquire) >= expected_file_bytes {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let bytes = counter.load(Ordering::Acquire);
+        if bytes < expected_file_bytes {
+            close_session(state, id);
+            stop_test_dsr_pump(stop_dsr, dsr_thread);
+            panic!(
+                "atomic transport did not finish: bytes={bytes} expected_file_bytes={expected_file_bytes}"
+            );
+        }
+
+        let wall = start.elapsed();
+        let peak_ring_bytes = runtime.peak_ring_bytes.load(Ordering::Relaxed);
+        let close_start = Instant::now();
+        close_session(state, id);
+        let teardown = close_start.elapsed();
+        stop_test_dsr_pump(stop_dsr, dsr_thread);
+        let child_reaped = runtime.child_reaped.load(Ordering::Acquire);
+        let clean = state.inner.lock().unwrap().is_empty()
+            && runtime.reader_finished.load(Ordering::Acquire)
+            && child_reaped;
+        AtomicTransportMetrics {
+            bytes,
+            wall,
+            peak_ring_bytes,
+            teardown,
+            child_reaped,
+            clean,
+        }
+    }
+
+    #[cfg(windows)]
     #[test]
     #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
     fn real_pty_channel_flood_correctness() {
@@ -1113,14 +1355,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
-    fn real_pty_channel_file_transport_benchmark() {
+    fn real_pty_channel_file_transport_ab_benchmark() {
         const DATA_LINES: usize = 200_000;
         const PAYLOAD: &str = "DEVBOULE_TRANSPORT_0123456789abcdefghijklmnopqrstuvwxyz0123456789";
-        const START: &str = "DEVBOULE_TRANSPORT_START";
-        const DONE: &str = "DEVBOULE_TRANSPORT_DONE";
 
-        let state = test_state();
-        let id = "session-test-transport".to_string();
         let file_path = std::env::temp_dir().join(format!(
             "devboule-pty-transport-{}-{}.txt",
             std::process::id(),
@@ -1133,190 +1371,75 @@ mod tests {
                 file.write_all(PAYLOAD.as_bytes()).unwrap();
                 file.write_all(b"\r\n").unwrap();
             }
-            file.write_all(DONE.as_bytes()).unwrap();
-            file.write_all(b"\r\n").unwrap();
             file.flush().unwrap();
         }
         let expected_file_bytes = std::fs::metadata(&file_path).unwrap().len() as usize;
 
-        let session = Session {
-            id: id.clone(),
-            workspace_id: None,
-            kind: SessionKind::Terminal,
-            title: "Terminal".to_string(),
-        };
-        // The one-second loop gives the test time to attach before `type` starts.
-        // The START marker is immediately before `type`, so the measured interval
-        // excludes file setup, shell startup, and that synchronization delay.
-        let command_line = format!(
-            "ping 127.0.0.1 -n 2 >nul & echo {START} & type {}",
-            file_path.display()
+        // A and B use the same file, command line, PTY size, and 16 KiB reader.
+        // A retains the production Channel path; B replaces publication with one
+        // atomic raw-byte counter and therefore performs no serialization or send.
+        let channel = run_channel_transport(
+            &test_state(),
+            "session-test-transport-channel",
+            &file_path,
+            expected_file_bytes,
+            ReaderMode::Channel,
         );
-        let command = PtyCommand::new(
-            "cmd.exe",
-            vec!["/c".to_string(), command_line],
-            std::env::current_dir().unwrap(),
-            Vec::new(),
+        let atomic = run_atomic_transport(
+            &test_state(),
+            "session-test-transport-counter",
+            &file_path,
+            expected_file_bytes,
         );
-        if let Err(error) = spawn_session(&state, session, command) {
-            let _ = std::fs::remove_file(&file_path);
-            panic!("could not spawn transport benchmark: {error}");
-        }
-        answer_test_dsr(&state, &id);
-        let (stop_dsr, dsr_thread) = start_test_dsr_pump(&state, &id);
-        let runtime = {
-            let map = state.inner.lock().unwrap();
-            Arc::clone(&map.get(&id).unwrap().runtime)
-        };
-
-        #[derive(Default)]
-        struct TransportObservation {
-            bytes: usize,
-            chunk_sizes: Vec<usize>,
-            last_seq: Option<u64>,
-            seq_reordered: bool,
-            started: bool,
-            start_time: Option<Instant>,
-            start_tail: String,
-            done_tail: String,
-            done: bool,
-        }
-
-        let observed = Arc::new(Mutex::new(TransportObservation::default()));
-        let observed_for_channel = Arc::clone(&observed);
-        let writer_for_channel = {
-            let map = state.inner.lock().unwrap();
-            Arc::clone(&map.get(&id).unwrap().writer)
-        };
-        runtime.attach(
-            None,
-            Channel::new(move |body| {
-                let event: SessionEvent = body.deserialize()?;
-                if let SessionEvent::Output { seq, data } = event {
-                    if data.contains("\x1b[6n") {
-                        let mut writer = writer_for_channel.lock().unwrap();
-                        let _ = writer.write_all(b"\x1b[1;1R");
-                        let _ = writer.flush();
-                    }
-                    let mut observed = observed_for_channel.lock().unwrap();
-                    let expected = observed.last_seq.map_or(seq, |last| last + 1);
-                    if seq != expected {
-                        observed.seq_reordered = true;
-                    }
-                    observed.last_seq = Some(seq);
-
-                    let payload = if observed.started {
-                        Some(data)
-                    } else {
-                        observed.start_tail.push_str(&data);
-                        observed.start_tail.find(START).map(|start| {
-                            observed.started = true;
-                            observed.start_time = Some(Instant::now());
-                            let payload_start = start + START.len();
-                            observed.start_tail[payload_start..]
-                                .trim_start_matches(['\r', '\n'])
-                                .to_string()
-                        })
-                    };
-
-                    if !observed.started && observed.start_tail.len() >= START.len() {
-                        let keep_from = observed.start_tail.len() - (START.len() - 1);
-                        observed.start_tail.drain(..keep_from);
-                    }
-
-                    if let Some(payload) = payload {
-                        if !payload.is_empty() {
-                            observed.bytes += payload.len();
-                            observed.chunk_sizes.push(payload.len());
-                            observed.done_tail.push_str(&payload);
-                            if observed.done_tail.contains(DONE) {
-                                observed.done = true;
-                            }
-                            if observed.done_tail.len() >= DONE.len() {
-                                let keep_from = observed.done_tail.len() - (DONE.len() - 1);
-                                observed.done_tail.drain(..keep_from);
-                            }
-                        }
-                    }
-                }
-                Ok(())
-            }),
-        );
-
-        let deadline = Instant::now() + Duration::from_secs(120);
-        while Instant::now() < deadline {
-            let observed = observed.lock().unwrap();
-            if observed.started && observed.done && observed.bytes >= expected_file_bytes {
-                break;
-            }
-            drop(observed);
-            std::thread::sleep(Duration::from_millis(20));
-        }
-
-        let complete = {
-            let observed = observed.lock().unwrap();
-            observed.started && observed.done && observed.bytes >= expected_file_bytes
-        };
-        if !complete {
-            close_session(&state, &id);
-            stop_test_dsr_pump(stop_dsr, dsr_thread);
-            let _ = std::fs::remove_file(&file_path);
-            let observed = observed.lock().unwrap();
-            panic!(
-                "transport benchmark did not finish: started={} done={} bytes={} expected_file_bytes={expected_file_bytes}",
-                observed.started,
-                observed.done,
-                observed.bytes
-            );
-        }
-
-        let (bytes, chunk_sizes, wall, seq_reordered) = {
-            let observed = observed.lock().unwrap();
-            (
-                observed.bytes,
-                observed.chunk_sizes.clone(),
-                observed.start_time.unwrap().elapsed(),
-                observed.seq_reordered,
-            )
-        };
-        let peak_ring_bytes = runtime.peak_ring_bytes.load(Ordering::Relaxed);
-        let close_start = Instant::now();
-        close_session(&state, &id);
-        let teardown = close_start.elapsed();
-        stop_test_dsr_pump(stop_dsr, dsr_thread);
-        let clean = state.inner.lock().unwrap().is_empty()
-            && runtime.reader_finished.load(Ordering::Acquire)
-            && runtime.child_reaped.load(Ordering::Acquire);
-        let mut sorted_chunk_sizes = chunk_sizes.clone();
-        sorted_chunk_sizes.sort_unstable();
-        let chunk_min = *sorted_chunk_sizes.first().unwrap();
-        let chunk_max = *sorted_chunk_sizes.last().unwrap();
-        let midpoint = sorted_chunk_sizes.len() / 2;
-        let chunk_median = if sorted_chunk_sizes.len() % 2 == 0 {
-            (sorted_chunk_sizes[midpoint - 1] + sorted_chunk_sizes[midpoint]) as f64 / 2.0
-        } else {
-            sorted_chunk_sizes[midpoint] as f64
-        };
-        let output_complete = bytes >= expected_file_bytes;
+        let (channel_min, channel_median, channel_max) =
+            summarize_chunk_sizes(&channel.chunk_sizes);
+        let channel_mib_s = channel.bytes as f64 / (1024.0 * 1024.0) / channel.wall.as_secs_f64();
+        let atomic_mib_s = atomic.bytes as f64 / (1024.0 * 1024.0) / atomic.wall.as_secs_f64();
         println!(
-            "PTY_TRANSPORT bytes={bytes} expected_file_bytes={expected_file_bytes} wall_ms={} mib_s={:.2} chunks={} chunk_min={} chunk_median={chunk_median:.1} chunk_max={} messages_per_s={:.2} peak_ring_bytes={peak_ring_bytes} output_complete={output_complete} seq_reordered={seq_reordered} child_reaped={} teardown_ms={} clean={clean}",
-            wall.as_millis(),
-            bytes as f64 / (1024.0 * 1024.0) / wall.as_secs_f64(),
-            chunk_sizes.len(),
-            chunk_min,
-            chunk_max,
-            chunk_sizes.len() as f64 / wall.as_secs_f64(),
-            runtime.child_reaped.load(Ordering::Acquire),
-            teardown.as_millis(),
+            "PTY_AB scenario=channel bytes={} expected_file_bytes={expected_file_bytes} wall_ms={} mib_s={channel_mib_s:.2} messages={} messages_per_s={:.2} chunk_min={channel_min} chunk_median={channel_median:.1} chunk_max={channel_max} peak_ring_bytes={} seq_reordered={} child_reaped={} teardown_ms={} clean={}",
+            channel.bytes,
+            channel.wall.as_millis(),
+            channel.chunk_sizes.len(),
+            channel.chunk_sizes.len() as f64 / channel.wall.as_secs_f64(),
+            channel.peak_ring_bytes,
+            channel.seq_reordered,
+            channel.child_reaped,
+            channel.teardown.as_millis(),
+            channel.clean,
         );
-        let _ = std::fs::remove_file(&file_path);
-        assert!(output_complete, "the file output was truncated");
-        assert!(!seq_reordered, "output sequence was dropped or reordered");
-        assert!(peak_ring_bytes <= RING_CAPACITY);
+        println!(
+            "PTY_AB scenario=atomic_counter bytes={} expected_file_bytes={expected_file_bytes} wall_ms={} mib_s={atomic_mib_s:.2} messages=n/a peak_ring_bytes={} seq_continuity=n/a child_reaped={} teardown_ms={} clean={}",
+            atomic.bytes,
+            atomic.wall.as_millis(),
+            atomic.peak_ring_bytes,
+            atomic.child_reaped,
+            atomic.teardown.as_millis(),
+            atomic.clean,
+        );
+        println!(
+            "PTY_AB comparison atomic_over_channel_speedup={:.2}",
+            atomic_mib_s / channel_mib_s
+        );
+
         assert!(
-            runtime.child_reaped.load(Ordering::Acquire),
-            "child wait did not reap a status"
+            channel.bytes >= expected_file_bytes,
+            "Channel output was truncated"
         );
-        assert!(clean, "teardown left a session or reader thread");
+        assert!(
+            !channel.seq_reordered,
+            "Channel output was dropped or reordered"
+        );
+        assert!(channel.peak_ring_bytes <= RING_CAPACITY);
+        assert!(channel.child_reaped && channel.clean);
+        assert!(
+            atomic.bytes >= expected_file_bytes,
+            "atomic output was truncated"
+        );
+        assert_eq!(atomic.peak_ring_bytes, 0);
+        assert!(atomic.child_reaped && atomic.clean);
+
+        println!("PTY_COALESCING skipped=atomic_counter_within_20_percent_of_channel");
+
+        let _ = std::fs::remove_file(&file_path);
     }
 }
