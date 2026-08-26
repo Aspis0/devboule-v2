@@ -26,6 +26,7 @@
   --sand: #E7E0D2;
   --ink: #1C1A17;
   --terracotta: #C8532B;
+  --terracotta-deep: #8A3A1B;
   --selection: #E8C4B4;
   --green: #3F7A56;
   --purple: #6B5B95;
@@ -454,6 +455,16 @@ button:focus-visible {
 @keyframes pgin {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+@keyframes caret {
+  0%, 45% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent, MouseEvent } from 'react';
 import {
   MOCK_AGENT_REPLY,
@@ -24,6 +24,10 @@ const MIN_PANEL_WIDTH = 180;
 const MAX_PANEL_WIDTH = 460;
 const INITIAL_LEFT_WIDTH = 252;
 const INITIAL_RIGHT_WIDTH = 366;
+const WORKSPACE_AGENT_TAB_ID = 'workspace-tab-agent';
+const WORKSPACE_TERMINAL_TAB_ID = 'workspace-tab-terminal';
+const WORKSPACE_AGENT_PANEL_ID = 'workspace-panel-agent';
+const WORKSPACE_TERMINAL_PANEL_ID = 'workspace-panel-terminal';
 
 const PERMISSION_LABELS: Record<PermissionState, string> = {
   waiting: 'Waiting on you',
@@ -118,7 +122,7 @@ export function Workspace() {
     }
   }, [messages, streaming]);
 
-  function startDrag(side: ResizeSide, event: MouseEvent<HTMLButtonElement>) {
+  const startDrag = useCallback((side: ResizeSide, event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
     resizeRef.current = {
       side,
@@ -126,9 +130,9 @@ export function Workspace() {
       startWidth: side === 'left' ? leftWidth : rightWidth,
     };
     document.body.classList.add('workspace-is-resizing');
-  }
+  }, [leftWidth, rightWidth]);
 
-  function handleResizeKey(side: ResizeSide, event: KeyboardEvent<HTMLButtonElement>) {
+  const handleResizeKey = useCallback((side: ResizeSide, event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       if (side === 'left') setLeftCollapsed((collapsed) => !collapsed);
@@ -151,9 +155,9 @@ export function Workspace() {
       if (side === 'left') setLeftWidth(width);
       else setRightWidth(width);
     }
-  }
+  }, [leftWidth, rightWidth]);
 
-  function addWorkspace(projectName: string = 'devboule') {
+  const addWorkspace = useCallback((projectName: string = 'devboule') => {
     const id = `mock-workspace-${Date.now()}`;
     const workspace: MockWorkspace = {
       id,
@@ -171,9 +175,9 @@ export function Workspace() {
       ),
     );
     setSelectedWorkspace(id);
-  }
+  }, []);
 
-  function handleSend() {
+  const handleSend = useCallback(() => {
     const text = input.trim();
     if (!text) return;
 
@@ -215,30 +219,36 @@ export function Workspace() {
         }
       }, 24);
     }, 240);
-  }
+  }, [input]);
 
-  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+  const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       handleSend();
     }
-  }
+  }, [handleSend]);
 
   function handleSearchChange(event: ChangeEvent<HTMLInputElement>) {
     setSearch(event.target.value);
   }
 
-  const query = search.trim().toLowerCase();
-  const visibleProjects = projects
-    .map((project) => ({
-      ...project,
-      workspaces: project.workspaces.filter((workspace) =>
-        !query || `${project.name} ${workspace.title} ${workspace.meta}`.toLowerCase().includes(query),
-      ),
-    }))
-    .filter((project) => !query || project.workspaces.length > 0 || project.name.toLowerCase().includes(query));
+  const query = useMemo(() => search.trim().toLowerCase(), [search]);
+  const visibleProjects = useMemo(
+    () => projects
+      .map((project) => ({
+        ...project,
+        workspaces: project.workspaces.filter((workspace) =>
+          !query || `${project.name} ${workspace.title} ${workspace.meta}`.toLowerCase().includes(query),
+        ),
+      }))
+      .filter((project) => !query || project.workspaces.length > 0 || project.name.toLowerCase().includes(query)),
+    [projects, query],
+  );
 
   const selectedSurface = MOCK_SURFACES.find((surface) => surface.id === activeSurface) ?? MOCK_SURFACES[0];
+  const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
+  const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
+  const handleOpenPullRequest = useCallback(() => setPrLabel('Opened #412 on GitHub'), []);
 
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
@@ -358,7 +368,9 @@ export function Workspace() {
           <button
             type="button"
             role="tab"
+            id={WORKSPACE_AGENT_TAB_ID}
             aria-selected={activeTab === 'agent'}
+            aria-controls={WORKSPACE_AGENT_PANEL_ID}
             className={`workspace-session-tab${activeTab === 'agent' ? ' workspace-session-tab-selected' : ''}`}
             onClick={() => setActiveTab('agent')}
           >
@@ -369,7 +381,9 @@ export function Workspace() {
           <button
             type="button"
             role="tab"
+            id={WORKSPACE_TERMINAL_TAB_ID}
             aria-selected={activeTab === 'terminal'}
+            aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
             className={`workspace-session-tab${activeTab === 'terminal' ? ' workspace-session-tab-selected' : ''}`}
             onClick={() => setActiveTab('terminal')}
           >
@@ -391,7 +405,7 @@ export function Workspace() {
         </div>
 
         {activeTab === 'terminal' ? (
-          <div className="workspace-terminal workspace-scroll" aria-label="Terminal output">
+          <div id={WORKSPACE_TERMINAL_PANEL_ID} className="workspace-terminal workspace-scroll" role="tabpanel" aria-label="Terminal output">
             <div className="workspace-terminal-muted">~/dev/devboule · rust-core</div>
             <div><span className="workspace-terminal-command">$</span> cargo build --release -p oracle-core</div>
             <div>   Compiling oracle-core v0.4.0</div>
@@ -401,7 +415,7 @@ export function Workspace() {
           </div>
         ) : (
           <>
-            <div className="workspace-conversation workspace-scroll" ref={conversationRef}>
+            <div id={WORKSPACE_AGENT_PANEL_ID} className="workspace-conversation workspace-scroll" role="tabpanel" aria-label="Agent conversation" ref={conversationRef}>
               {messages.map((message, index) => {
                 const isStreamingMessage = message.role === 'agent' && streaming && index === messages.length - 1;
                 if (message.role === 'user') {
@@ -581,15 +595,15 @@ export function Workspace() {
 
             <div className="workspace-scroll workspace-side-scroll">
               {activeSurface === 'changes' ? (
-                <ChangesSurface diffState={diffState} onDiffStateChange={setDiffState} />
+                <ChangesSurface diffState={diffState} onDiffStateChange={handleDiffStateChange} />
               ) : null}
               {activeSurface === 'files' ? <FilesSurface /> : null}
               {activeSurface === 'app' ? (
-                <AppSurface appBuild={appBuild} onReload={() => setAppBuild((build) => build + 1)} />
+                <AppSurface appBuild={appBuild} onReload={handleAppReload} />
               ) : null}
               {activeSurface === 'design' ? <DesignSurface /> : null}
               {activeSurface === 'pr' ? (
-                <PullRequestSurface prLabel={prLabel} onOpen={() => setPrLabel('Opened #412 on GitHub')} />
+                <PullRequestSurface prLabel={prLabel} onOpen={handleOpenPullRequest} />
               ) : null}
             </div>
           </div>
@@ -604,7 +618,7 @@ interface ChangesSurfaceProps {
   onDiffStateChange: (state: DiffState) => void;
 }
 
-function ChangesSurface({ diffState, onDiffStateChange }: ChangesSurfaceProps) {
+const ChangesSurface = memo(function ChangesSurface({ diffState, onDiffStateChange }: ChangesSurfaceProps) {
   return (
     <div>
       <div className="workspace-file-changes">
@@ -660,9 +674,9 @@ function ChangesSurface({ diffState, onDiffStateChange }: ChangesSurfaceProps) {
       </div>
     </div>
   );
-}
+});
 
-function FilesSurface() {
+const FilesSurface = memo(function FilesSurface() {
   return (
     <div className="workspace-files-tree">
       <div>oracle-core/</div>
@@ -673,14 +687,14 @@ function FilesSurface() {
       <button type="button" className="workspace-tree-file">tools.rs</button>
     </div>
   );
-}
+});
 
 interface AppSurfaceProps {
   appBuild: number;
   onReload: () => void;
 }
 
-function AppSurface({ appBuild, onReload }: AppSurfaceProps) {
+const AppSurface = memo(function AppSurface({ appBuild, onReload }: AppSurfaceProps) {
   return (
     <div>
       <div className="workspace-browser-card">
@@ -710,9 +724,9 @@ function AppSurface({ appBuild, onReload }: AppSurfaceProps) {
       <div className="workspace-browser-status"><span className="workspace-status-dot workspace-dot-green" />vite dev · hot reload on agent write</div>
     </div>
   );
-}
+});
 
-function DesignSurface() {
+const DesignSurface = memo(function DesignSurface() {
   return (
     <div>
       <div className="workspace-grounding-row">
@@ -745,14 +759,14 @@ function DesignSurface() {
       <div className="workspace-design-note">Generations land on the Design canvas in this worktree; Save to repo writes them back as components.</div>
     </div>
   );
-}
+});
 
 interface PullRequestSurfaceProps {
   prLabel: string;
   onOpen: () => void;
 }
 
-function PullRequestSurface({ prLabel, onOpen }: PullRequestSurfaceProps) {
+const PullRequestSurface = memo(function PullRequestSurface({ prLabel, onOpen }: PullRequestSurfaceProps) {
   return (
     <div>
       <div className="workspace-pr-summary">
@@ -777,4 +791,4 @@ function PullRequestSurface({ prLabel, onOpen }: PullRequestSurfaceProps) {
       <button type="button" className="workspace-open-pr" onClick={onOpen}>{prLabel}</button>
     </div>
   );
-}
+});

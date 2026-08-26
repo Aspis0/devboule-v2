@@ -1,9 +1,61 @@
 /** M1b mock boundary. Replace these values with typed settings IPC responses. */
 
-import { MOCK_PROVIDERS, type MockProvider } from '../oracle/mockData';
-
 export type SettingsTab = 'general' | 'projects' | 'oracle' | 'providers' | 'devices' | 'labs';
+export interface MockProvider {
+  id: 'claude' | 'codex' | 'opencode' | 'local';
+  name: string;
+  initial: string;
+  tone: 'purple' | 'terracotta' | 'green' | 'ochre';
+  detail: string;
+  installed: boolean;
+  authenticated: boolean;
+  enabled: boolean;
+}
+
 export type ProviderId = MockProvider['id'];
+
+export const MOCK_PROVIDERS: readonly MockProvider[] = [
+  {
+    id: 'claude',
+    name: 'Claude Code',
+    initial: 'C',
+    tone: 'purple',
+    detail: 'claude · 2.1.4 · subscription',
+    installed: true,
+    authenticated: true,
+    enabled: true,
+  },
+  {
+    id: 'codex',
+    name: 'Codex CLI',
+    initial: 'X',
+    tone: 'terracotta',
+    detail: 'codex · 0.9.2 · api key',
+    installed: true,
+    authenticated: true,
+    enabled: true,
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode',
+    initial: 'O',
+    tone: 'green',
+    detail: 'opencode · not on PATH',
+    installed: false,
+    authenticated: false,
+    enabled: false,
+  },
+  {
+    id: 'local',
+    name: 'Local · Ollama',
+    initial: 'L',
+    tone: 'ochre',
+    detail: 'qwen3-8b, bge-small · loopback only',
+    installed: true,
+    authenticated: true,
+    enabled: true,
+  },
+];
 
 export const MOCK_SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] = [
   { id: 'general', label: 'General' },
