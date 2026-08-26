@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import type { PointerEvent, ReactNode } from 'react';
+import { useRef, useState } from 'react';
+import type { KeyboardEvent, PointerEvent, ReactNode } from 'react';
 import { useAppStore } from '../store/appStore';
 import { SURFACES, type SurfaceKey } from '../types/surface';
 
@@ -9,19 +9,31 @@ interface ShellProps {
 }
 
 const NAV_POINTS = [
-  { key: 'workspace', x: 260, y: 39 },
-  { key: 'polis', x: 344, y: 68 },
-  { key: 'oracle', x: 430, y: 87 },
-  { key: 'pubvia', x: 516, y: 87 },
-  { key: 'design', x: 602, y: 68 },
-  { key: 'settings', x: 686, y: 39 },
+  { key: 'workspace', x: 277, y: 44 },
+  { key: 'polis', x: 371, y: 80 },
+  { key: 'pubvia', x: 470, y: 92 },
+  { key: 'design', x: 569, y: 80 },
+  { key: 'settings', x: 662, y: 44 },
 ] as const satisfies readonly { key: SurfaceKey; x: number; y: number }[];
 
 export function Shell({ activeSurface, children }: ShellProps) {
   const selectSurface = useAppStore((state) => state.selectSurface);
   const [navOpen, setNavOpen] = useState(false);
-  const pageShift = navOpen ? '42px' : '0px';
-  const pageDim = navOpen ? 0.78 : 1;
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const pageShift = navOpen ? '34px' : '0px';
+  const pageDim = navOpen ? 0.34 : 1;
+
+  function closeNav() {
+    setNavOpen(false);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeNav();
+      triggerRef.current?.focus();
+    }
+  }
 
   function handlePointerMove(event: PointerEvent<HTMLElement>) {
     const y = event.clientY;
@@ -36,7 +48,8 @@ export function Shell({ activeSurface, children }: ShellProps) {
     <main
       className="app-shell"
       onPointerMove={handlePointerMove}
-      onPointerLeave={() => setNavOpen(false)}
+      onPointerLeave={closeNav}
+      onKeyDown={handleKeyDown}
     >
       <div
         className="page-layer"
@@ -45,28 +58,38 @@ export function Shell({ activeSurface, children }: ShellProps) {
         {children}
       </div>
 
-      <div className="crescent-shell" aria-label="Devboule surfaces">
+      <div className="crescent-shell" role="navigation" aria-label="Devboule surfaces">
         <button
           type="button"
+          ref={triggerRef}
           className="crescent-sliver"
           aria-label="Reveal navigation"
           aria-expanded={navOpen}
-          onMouseEnter={() => setNavOpen(true)}
+          aria-controls="devboule-crescent-navigation"
+          onPointerEnter={() => setNavOpen(true)}
+          onFocus={() => setNavOpen(true)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown') {
+              event.preventDefault();
+              setNavOpen(true);
+            }
+          }}
         />
 
         <div
+          id="devboule-crescent-navigation"
           className={`crescent-nav${navOpen ? ' crescent-nav-open' : ''}`}
-          onMouseEnter={() => setNavOpen(true)}
-          onMouseLeave={(event) => {
+          onPointerEnter={() => setNavOpen(true)}
+          onPointerLeave={(event) => {
             if (event.clientY > 150) {
-              setNavOpen(false);
+              closeNav();
             }
           }}
         >
           <div className="crescent-glow" aria-hidden="true" />
           <svg className="crescent-arc" viewBox="0 0 880 150" aria-hidden="true">
-            <path d="M 222 21.9 A 410 410 0 0 0 724 21.9" />
-            <path className="crescent-arc-border" d="M 222 21.9 A 410 410 0 0 0 724 21.9" />
+            <path d="M 240.8 21.9 A 410 410 0 0 0 699.2 21.9" />
+            <path className="crescent-arc-border" d="M 240.8 21.9 A 410 410 0 0 0 699.2 21.9" />
           </svg>
 
           {NAV_POINTS.map((point) => {
@@ -81,9 +104,11 @@ export function Shell({ activeSurface, children }: ShellProps) {
                 style={{ left: point.x, top: point.y }}
                 onClick={() => {
                   selectSurface(surface.key);
-                  setNavOpen(false);
+                  closeNav();
+                  triggerRef.current?.focus();
                 }}
-                tabIndex={navOpen ? 0 : -1}
+                onFocus={() => setNavOpen(true)}
+                tabIndex={0}
                 aria-current={isActive ? 'page' : undefined}
               >
                 <span className="nav-point-circle">

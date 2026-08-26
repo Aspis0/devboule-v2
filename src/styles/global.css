@@ -257,6 +257,32 @@ button:focus-visible {
   line-height: 1.7;
 }
 
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.settings-tab {
+  padding: 7px 11px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.settings-tab:hover,
+.settings-tab:focus-visible,
+.settings-tab-active {
+  color: var(--ink);
+  background: var(--selection);
+  border-color: var(--terracotta);
+}
+
 .placeholder-note {
   margin-top: 5px;
 }
@@ -265,7 +291,7 @@ button:focus-visible {
   position: absolute;
   top: 0;
   left: 50%;
-  z-index: 10;
+  z-index: 40;
   width: 880px;
   height: 150px;
   margin-left: -440px;
@@ -304,7 +330,7 @@ button:focus-visible {
   left: 0;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-18px);
+  transform: translateY(-46px);
   transition: opacity 0.32s ease, transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
 }
 
@@ -353,15 +379,14 @@ button:focus-visible {
 .nav-point {
   position: absolute;
   display: flex;
-  width: 68px;
-  height: 65px;
+  width: 28px;
+  height: 28px;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  margin: -14px 0 0 -14px;
   padding: 0;
   cursor: pointer;
   background: transparent;
-  transform: translate(-50%, -14px);
 }
 
 .nav-point-circle {
@@ -393,10 +418,14 @@ button:focus-visible {
 }
 
 .nav-point-label {
+  position: absolute;
+  top: 34px;
+  left: 50%;
   color: var(--ink-soft);
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.04em;
+  transform: translateX(-50%);
   white-space: nowrap;
 }
 
@@ -408,7 +437,7 @@ button:focus-visible {
   height: 40px;
   overflow: hidden;
   pointer-events: none;
-  opacity: 0.9;
+  opacity: 0.55;
   transition: opacity 0.3s ease;
 }
 
