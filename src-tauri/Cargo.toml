@@ -16,8 +16,8 @@ name = "devboule"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "=2.6.3", features = [] }
+tauri-build = { version = "=2.6.3", features = ["config-json5"] }
 
 [dependencies]
 # Rust crates and npm packages follow separate release trains; do not align these versions.
-tauri = { version = "=2.11.5", features = [] }
+tauri = { version = "=2.11.5", features = ["config-json5"] }

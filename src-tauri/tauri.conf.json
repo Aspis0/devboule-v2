@@ -25,11 +25,13 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "connect-src": "'self' ipc: http://ipc.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:6767 ws://127.0.0.1:6767",
         "font-src": "'self'",
         "img-src": "'self' data:",
+        // M5: PixiJS will require 'unsafe-eval' in script-src for its runtime; keep it out until that milestone needs it.
         "script-src": "'self'",
-        "style-src": "'self' 'unsafe-inline'"
+        "style-src": "'self' 'unsafe-inline'",
+        "worker-src": "'self' blob:"
       }
     }
   },
