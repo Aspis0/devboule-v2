@@ -12,16 +12,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # pnpm must be installed BEFORE setup-node: `cache: pnpm` resolves the store
+      # path by running `pnpm store path`, which fails if pnpm is not on PATH yet.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.2
 
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
