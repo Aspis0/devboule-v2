@@ -18,22 +18,20 @@ export interface Workspace {
   isolation: 'local' | 'worktree';
 }
 
-export type SessionKind = 'agent' | 'terminal';
+export type SessionKind = 'terminal' | 'acp';
 export type SendIntent = 'interrupt' | 'steer' | 'queue';
 export type PermissionOutcome = 'allow_once' | 'deny';
 
 export interface Session {
   id: Id;
-  workspaceId: Id;
+  workspaceId: Id | null;
   kind: SessionKind;
   title: string;
 }
 
 export type SessionEvent =
-  | { type: 'snapshot'; cursor: Cursor; session: Session }
-  | { type: 'message'; cursor: Cursor; text: string; role: 'user' | 'agent' | 'tool' }
-  | { type: 'permission'; cursor: Cursor; requestId: Id; command: string }
-  | { type: 'closed'; cursor: Cursor; reason: string };
+  | { type: 'output'; seq: number; data: string }
+  | { type: 'exit'; code: number | null };
 
 export interface ProviderInfo {
   id: string;

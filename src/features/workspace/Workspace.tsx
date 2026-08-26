@@ -12,6 +12,7 @@ import {
   type MockWorkspace,
   type MockWorkspaceMessage,
 } from './mockData';
+import { TerminalSurface } from '../terminal/TerminalSurface';
 import './Workspace.css';
 
 type ActiveTab = 'agent' | 'terminal';
@@ -406,14 +407,7 @@ export function Workspace() {
         </div>
 
         {activeTab === 'terminal' ? (
-          <div id={WORKSPACE_TERMINAL_PANEL_ID} className="workspace-terminal workspace-scroll" role="tabpanel" aria-label="Terminal output">
-            <div className="workspace-terminal-muted">~/dev/devboule · rust-core</div>
-            <div><span className="workspace-terminal-command">$</span> cargo build --release -p oracle-core</div>
-            <div>   Compiling oracle-core v0.4.0</div>
-            <div>   Compiling devboule-mcp v0.4.0</div>
-            <div className="workspace-terminal-success">    Finished `release` profile in 41.06s</div>
-            <div><span className="workspace-terminal-command">$</span> <span className="workspace-terminal-caret" /></div>
-          </div>
+          <TerminalSurface id={WORKSPACE_TERMINAL_PANEL_ID} workspaceId={selectedWorkspace} />
         ) : (
           <>
             <div id={WORKSPACE_AGENT_PANEL_ID} className="workspace-conversation workspace-scroll" role="tabpanel" aria-label="Agent conversation" ref={conversationRef}>

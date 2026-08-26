@@ -462,7 +462,6 @@
 .workspace-permission-context,
 .workspace-permission-command,
 .workspace-steer-hint,
-.workspace-terminal,
 .workspace-diff-header,
 .workspace-diff-lines,
 .workspace-test-meta,
@@ -505,36 +504,94 @@
   white-space: nowrap;
 }
 
-.workspace-terminal {
+.workspace-terminal-shell {
+  display: flex;
   flex: 1;
   min-height: 0;
-  padding: 16px 18px;
-  overflow-y: auto;
-  color: var(--ink-soft);
   background: var(--surface-muted);
+  flex-direction: column;
+}
+
+.workspace-terminal-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 39px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-terminal-toolbar .workspace-status-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.workspace-terminal-title {
+  flex: none;
+  color: var(--ink);
   font-size: 11.5px;
-  line-height: 1.85;
+  font-weight: 600;
 }
 
-.workspace-terminal-muted {
+.workspace-terminal-status {
+  min-width: 0;
+  overflow: hidden;
   color: var(--silence);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.workspace-terminal-command {
+.workspace-terminal-interrupt {
+  flex: none;
+  height: 24px;
+  margin-left: auto;
+  padding: 0 9px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+}
+
+.workspace-terminal-interrupt:hover,
+.workspace-terminal-interrupt:focus-visible,
+.workspace-terminal-interrupt[aria-pressed='true'] {
   color: var(--terracotta);
+  border-color: var(--terracotta);
 }
 
-.workspace-terminal-success {
-  color: var(--green);
+.workspace-terminal-interrupt:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
-.workspace-terminal-caret {
-  display: inline-block;
-  width: 7px;
-  height: 12px;
-  vertical-align: -1px;
-  background: var(--terracotta);
-  animation: caret 1s steps(1) infinite;
+.workspace-terminal-host {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 14px 16px;
+  overflow: hidden;
+  background: var(--ink);
+}
+
+.workspace-terminal-host .xterm {
+  width: 100%;
+  height: 100%;
+}
+
+.workspace-terminal-banner {
+  flex: none;
+  padding: 7px 14px;
+  color: var(--danger);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
 }
 
 .workspace-conversation {
