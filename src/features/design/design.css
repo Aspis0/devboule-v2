@@ -85,8 +85,12 @@
 }
 
 .design-path {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   max-width: 260px;
-  padding: 5px 10px;
+  height: 24px;
+  padding: 0 10px;
   overflow: hidden;
   color: var(--ink-soft);
   text-overflow: ellipsis;
@@ -599,9 +603,14 @@
   font-size: 13px;
 }
 
-.design-zoom-controls button:hover,
-.design-zoom-controls button:focus-visible {
+.design-zoom-controls button:hover:not(:disabled),
+.design-zoom-controls button:focus-visible:not(:disabled) {
   background: var(--selection);
+}
+
+.design-zoom-controls button:disabled {
+  color: var(--border-strong);
+  cursor: not-allowed;
 }
 
 .design-zoom-controls .design-zoom-value {
@@ -629,7 +638,6 @@
 .design-inspector-heading {
   height: 35px;
   padding: 0 11px;
-  cursor: move;
 }
 
 .design-inspector-name {
