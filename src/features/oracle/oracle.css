@@ -185,12 +185,7 @@
   margin-left: 3px;
   vertical-align: -2px;
   background: var(--terracotta);
-  animation: oracle-caret 1s steps(1) infinite;
-}
-
-@keyframes oracle-caret {
-  0%, 45% { opacity: 1; }
-  50%, 100% { opacity: 0; }
+  animation: caret 1s steps(1) infinite;
 }
 
 .oracle-retrieval-banner,

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
 import {
   getOracleChecks,
@@ -17,6 +17,8 @@ import {
   type OracleFileTab,
 } from './mockData';
 import './oracle.css';
+
+const ORACLE_FILE_PANEL_ID = 'oracle-file-panel';
 
 export function OraclePanel() {
   const [oracleQuery, setOracleQuery] = useState('');
@@ -78,6 +80,14 @@ export function OraclePanel() {
     : ORACLE_LLM.readyLine;
   const orLlmState = orRetrievalOnly ? 'missing api key' : 'configured';
   const orAnswerBy = orRetrievalOnly ? ORACLE_LLM.missingAnswerBy : ORACLE_LLM.readyAnswerBy;
+  const stats = useMemo(
+    () => ORACLE_STATS.map((stat) => (
+      stat.label === 'Pending'
+        ? { ...stat, value: jobActive ? '902' : '0', kind: jobActive ? 'warning' as const : 'normal' as const }
+        : stat
+    )),
+    [jobActive],
+  );
 
   return (
     <div className="oracle-panel">
@@ -173,17 +183,7 @@ export function OraclePanel() {
         )}
 
         <div className="oracle-stats">
-          {ORACLE_STATS.slice(0, 2).map((stat) => (
-            <div className="oracle-stat" key={stat.label}>
-              <div className="oracle-stat-value">{stat.value}</div>
-              <div className="oracle-stat-label">{stat.label}</div>
-            </div>
-          ))}
-          <div className="oracle-stat" key="Pending">
-            <div className={`oracle-stat-value${jobActive ? ' oracle-stat-value-warning' : ''}`}>{jobActive ? '902' : '0'}</div>
-            <div className="oracle-stat-label">Pending</div>
-          </div>
-          {ORACLE_STATS.slice(2).map((stat) => (
+          {stats.map((stat) => (
             <div className="oracle-stat" key={stat.label}>
               <div className={`oracle-stat-value oracle-stat-value-${stat.kind}`}>{stat.value}</div>
               <div className="oracle-stat-label">{stat.label}</div>
@@ -206,6 +206,8 @@ export function OraclePanel() {
               type="button"
               role="tab"
               aria-selected={fileTab === tab.id}
+              aria-controls={ORACLE_FILE_PANEL_ID}
+              id={`oracle-file-tab-${tab.id}`}
               key={tab.id}
               onClick={() => setFileTab(tab.id)}
             >
@@ -217,7 +219,7 @@ export function OraclePanel() {
         <span className="oracle-filter-pill">Filter files</span>
       </div>
 
-      <div className="oracle-file-list">
+      <div id={ORACLE_FILE_PANEL_ID} className="oracle-file-list" role="tabpanel" aria-label="Oracle files">
         {orFiles2.map((file) => (
           <div className="oracle-file-row" key={file.path}>
             <span className="oracle-file-path">{file.path}</span>

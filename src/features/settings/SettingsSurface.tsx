@@ -7,13 +7,13 @@ import {
   MOCK_GENERAL_SETTINGS,
   MOCK_LABS,
   MOCK_PROJECTS,
+  MOCK_PROVIDERS,
   MOCK_PROVIDER_ENABLED,
   MOCK_SETTINGS_TABS,
   MOCK_WORKTREE_DEFAULTS,
   type ProviderId,
   type SettingsTab,
 } from './mockData';
-import { MOCK_PROVIDERS } from '../oracle/mockData';
 import './settings.css';
 
 export function SettingsSurface() {
@@ -24,13 +24,6 @@ export function SettingsSurface() {
     ...tab,
     active: activeTab === tab.id,
   }));
-  const setIsGeneral = activeTab === 'general';
-  const setIsProjects = activeTab === 'projects';
-  const setIsOracle = activeTab === 'oracle';
-  const setIsProviders = activeTab === 'providers';
-  const setIsDevices = activeTab === 'devices';
-  const setIsLabs = activeTab === 'labs';
-
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
     const currentIndex = MOCK_SETTINGS_TABS.findIndex((tab) => tab.id === activeTab);
     let nextIndex = currentIndex;
@@ -76,6 +69,65 @@ export function SettingsSurface() {
     };
   });
 
+  function renderActivePanel() {
+    switch (activeTab) {
+      case 'providers':
+        return (
+          <div id="settings-panel-providers" role="tabpanel" aria-label="Providers and models">
+            <SettingsHeading
+              title="Providers & models"
+              description="Devboule wraps the CLIs already installed on this machine. Enable one and it appears in the workspace composer."
+            />
+            <div className="provider-list">
+              {providers.map((provider) => (
+                <div className="provider-card" key={provider.id}>
+                  <span className={`provider-mark provider-mark-${provider.tone}`} aria-hidden="true">{provider.initial}</span>
+                  <span className="provider-copy">
+                    <span className="provider-name">{provider.name}</span>
+                    <span className="provider-detail">{provider.detail}</span>
+                  </span>
+                  <span className="provider-controls">
+                    <span className={`provider-status provider-status-${provider.statusTone}`}>{provider.status}</span>
+                    <button
+                      className={`provider-switch${provider.on ? ' provider-switch-on' : ''}`}
+                      type="button"
+                      role="switch"
+                      aria-checked={provider.on}
+                      aria-label={`Enable ${provider.name}`}
+                      onClick={() => toggleProvider(provider.id)}
+                    >
+                      <span className="provider-switch-knob" aria-hidden="true" />
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="settings-subheading">Default model per surface</div>
+            <div className="default-model-grid">
+              {MOCK_DEFAULT_MODELS.map((model) => (
+                <ModelChoice key={model.title} title={model.title} value={model.value} />
+              ))}
+            </div>
+          </div>
+        );
+      case 'oracle':
+        return (
+          <div id="settings-panel-oracle" role="tabpanel" aria-label="Oracle administration">
+            <OraclePanel />
+          </div>
+        );
+      case 'projects':
+        return <ProjectsPanel />;
+      case 'devices':
+        return <DevicesPanel />;
+      case 'general':
+        return <GeneralPanel />;
+      case 'labs':
+        return <LabsPanel />;
+    }
+  }
+
   return (
     <section className="surface-card settings-surface" aria-labelledby="settings-title">
       <header className="settings-header">
@@ -106,56 +158,7 @@ export function SettingsSurface() {
 
       <div className="settings-content settings-scroll">
         <div className="settings-content-inner">
-          {setIsProviders && (
-            <div id="settings-panel-providers" role="tabpanel" aria-label="Providers and models">
-              <SettingsHeading
-                title="Providers & models"
-                description="Devboule wraps the CLIs already installed on this machine. Enable one and it appears in the workspace composer."
-              />
-              <div className="provider-list">
-                {providers.map((provider) => (
-                  <div className="provider-card" key={provider.id}>
-                    <span className={`provider-mark provider-mark-${provider.tone}`} aria-hidden="true">{provider.initial}</span>
-                    <span className="provider-copy">
-                      <span className="provider-name">{provider.name}</span>
-                      <span className="provider-detail">{provider.detail}</span>
-                    </span>
-                    <span className="provider-controls">
-                      <span className={`provider-status provider-status-${provider.statusTone}`}>{provider.status}</span>
-                      <button
-                        className={`provider-switch${provider.on ? ' provider-switch-on' : ''}`}
-                        type="button"
-                        role="switch"
-                        aria-checked={provider.on}
-                        aria-label={`Enable ${provider.name}`}
-                        onClick={() => toggleProvider(provider.id)}
-                      >
-                        <span className="provider-switch-knob" aria-hidden="true" />
-                      </button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="settings-subheading">Default model per surface</div>
-              <div className="default-model-grid">
-                {MOCK_DEFAULT_MODELS.map((model) => (
-                  <ModelChoice key={model.title} title={model.title} value={model.value} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {setIsOracle && (
-            <div id="settings-panel-oracle" role="tabpanel" aria-label="Oracle administration">
-              <OraclePanel />
-            </div>
-          )}
-
-          {setIsProjects && <ProjectsPanel />}
-          {setIsDevices && <DevicesPanel />}
-          {setIsGeneral && <GeneralPanel />}
-          {setIsLabs && <LabsPanel />}
+          {renderActivePanel()}
         </div>
       </div>
     </section>
