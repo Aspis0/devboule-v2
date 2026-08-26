@@ -103,7 +103,9 @@ licenze OFL sono in `THIRD_PARTY.md`.
 
 ## Verifica reale
 
-Tutti i comandi sono stati eseguiti in `C:\Users\gualt\Desktop\New devboule\devboule-v2`.
+I comandi `pnpm` e `cargo audit` sono stati eseguiti dalla root
+`C:\Users\gualt\Desktop\New devboule\devboule-v2`; `cargo build` e `cargo clippy` dalla
+sottocartella `src-tauri` dove indicato.
 
 ### `pnpm install`
 
@@ -152,10 +154,10 @@ Output finale `dist/`: 6 file, 279,284 byte totali. Il bundle principale è 146.
 
 ```text
 Compiling devboule v0.1.0 (C:\Users\gualt\Desktop\New devboule\devboule-v2\src-tauri)
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.99s
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.53s
 DEBUG_EXE_BYTES=12300288
 EXIT_CODE=0
-ELAPSED_SECONDS=12.16
+ELAPSED_SECONDS=11.73
 ```
 
 Artefatto: `target\debug\devboule.exe`, 12,300,288 byte.
