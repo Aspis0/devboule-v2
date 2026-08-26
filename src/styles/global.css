@@ -44,7 +44,6 @@
   --terracotta-pressed: #A8421F;
   --white: #FFFFFF;
   --terracotta-rgb: 200, 83, 43;
-  --sand-rgb: 231, 224, 210;
   --surface-muted-rgb: 245, 241, 232;
   --ink-rgb: 28, 26, 23;
 }
@@ -108,6 +107,22 @@ button:focus-visible {
   min-height: 0;
   padding: 7px;
   transition: transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1), opacity 0.3s ease;
+}
+
+.surface-loading {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  place-items: center;
+  color: var(--silence);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(var(--ink-rgb), 0.06), 0 8px 24px rgba(var(--ink-rgb), 0.07);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  animation: pgin 0.3s ease both;
 }
 
 .surface-card {

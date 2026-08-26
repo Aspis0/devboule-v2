@@ -1,7 +1,6 @@
 export type SurfaceKey =
   | 'workspace'
   | 'polis'
-  | 'oracle'
   | 'pubvia'
   | 'design'
   | 'settings';
@@ -30,13 +29,6 @@ export const SURFACES = [
     eyebrow: 'the codebase as a city',
     description: 'The Polis surface will mount the isometric codebase view from the v1 port.',
     tone: 'purple',
-  },
-  {
-    key: 'oracle',
-    label: 'Oracle',
-    eyebrow: 'semantic memory · retrieval',
-    description: 'The Oracle surface will expose indexing, health, files, and grounded answers.',
-    tone: 'green',
   },
   {
     key: 'pubvia',

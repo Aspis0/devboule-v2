@@ -1,3 +1,5 @@
+import type { IndexedFile } from '../../types/ipc';
+
 /**
  * M1b mock boundary.
  *
@@ -6,9 +8,7 @@
 
 export type OracleFileTab = 'indexed' | 'pending' | 'stale';
 
-export interface OracleFile {
-  path: string;
-  chunks: string;
+export interface OracleFile extends Pick<IndexedFile, 'path' | 'chunks'> {
   when: string;
 }
 
@@ -47,16 +47,16 @@ export const ORACLE_CITATIONS = [
 
 export const ORACLE_FILES: Record<OracleFileTab, readonly OracleFile[]> = {
   indexed: [
-    { path: 'src/components/views/WorkspaceView.tsx', chunks: '31', when: '2m ago' },
-    { path: 'src-tauri/src/oracle/prefs.rs', chunks: '12', when: '2m ago' },
-    { path: 'oracle/server/index_status.py', chunks: '8', when: '14m ago' },
-    { path: 'devboule-mcp/src/tools.rs', chunks: '19', when: '1h ago' },
+    { path: 'src/components/views/WorkspaceView.tsx', chunks: 31, when: '2m ago' },
+    { path: 'src-tauri/src/oracle/prefs.rs', chunks: 12, when: '2m ago' },
+    { path: 'oracle/server/index_status.py', chunks: 8, when: '14m ago' },
+    { path: 'devboule-mcp/src/tools.rs', chunks: 19, when: '1h ago' },
   ],
   pending: [],
   stale: [
-    { path: 'src-tauri/src/oracle/mod.rs', chunks: '14', when: '6d ago' },
-    { path: 'oracle-core/src/lib.rs', chunks: '9', when: '8d ago' },
-    { path: 'rig/world.py', chunks: '6', when: '12d ago' },
+    { path: 'src-tauri/src/oracle/mod.rs', chunks: 14, when: '6d ago' },
+    { path: 'oracle-core/src/lib.rs', chunks: 9, when: '8d ago' },
+    { path: 'rig/world.py', chunks: 6, when: '12d ago' },
   ],
 };
 
