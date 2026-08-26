@@ -1004,7 +1004,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
-    fn real_pty_channel_load_reports_throughput_and_clean_teardown() {
+    fn real_pty_channel_flood_correctness() {
         const LINES: usize = 50_000;
         const PAYLOAD: &str = "DEVBOULE_LOAD_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         const DONE: &str = "DEVBOULE_LOAD_DONE";
@@ -1092,9 +1092,8 @@ mod tests {
             && runtime.reader_finished.load(Ordering::Acquire)
             && runtime.child_reaped.load(Ordering::Acquire);
         println!(
-            "PTY_LOAD lines={LINES} expected_min_bytes={expected_bytes} bytes={bytes} chunks={chunks} wall_ms={} throughput_mib_s={:.2} peak_ring_bytes={peak_ring_bytes} output_complete={output_complete} seq_reordered={reordered} child_reaped={} teardown_ms={} clean={clean}",
+            "PTY_CORRECTNESS lines={LINES} expected_min_bytes={expected_bytes} bytes={bytes} chunks={chunks} wall_ms={} peak_ring_bytes={peak_ring_bytes} output_complete={output_complete} seq_reordered={reordered} child_reaped={} teardown_ms={} clean={clean}",
             wall.as_millis(),
-            bytes as f64 / (1024.0 * 1024.0) / wall.as_secs_f64(),
             runtime.child_reaped.load(Ordering::Acquire),
             teardown.as_millis(),
         );
@@ -1103,6 +1102,216 @@ mod tests {
             "the generator did not deliver its expected flood"
         );
         assert!(!reordered, "output sequence was dropped or reordered");
+        assert!(peak_ring_bytes <= RING_CAPACITY);
+        assert!(
+            runtime.child_reaped.load(Ordering::Acquire),
+            "child wait did not reap a status"
+        );
+        assert!(clean, "teardown left a session or reader thread");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+    fn real_pty_channel_file_transport_benchmark() {
+        const DATA_LINES: usize = 200_000;
+        const PAYLOAD: &str = "DEVBOULE_TRANSPORT_0123456789abcdefghijklmnopqrstuvwxyz0123456789";
+        const START: &str = "DEVBOULE_TRANSPORT_START";
+        const DONE: &str = "DEVBOULE_TRANSPORT_DONE";
+
+        let state = test_state();
+        let id = "session-test-transport".to_string();
+        let file_path = std::env::temp_dir().join(format!(
+            "devboule-pty-transport-{}-{}.txt",
+            std::process::id(),
+            SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        {
+            let file = std::fs::File::create(&file_path).unwrap();
+            let mut file = std::io::BufWriter::new(file);
+            for _ in 0..DATA_LINES {
+                file.write_all(PAYLOAD.as_bytes()).unwrap();
+                file.write_all(b"\r\n").unwrap();
+            }
+            file.write_all(DONE.as_bytes()).unwrap();
+            file.write_all(b"\r\n").unwrap();
+            file.flush().unwrap();
+        }
+        let expected_file_bytes = std::fs::metadata(&file_path).unwrap().len() as usize;
+
+        let session = Session {
+            id: id.clone(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            title: "Terminal".to_string(),
+        };
+        // The one-second loop gives the test time to attach before `type` starts.
+        // The START marker is immediately before `type`, so the measured interval
+        // excludes file setup, shell startup, and that synchronization delay.
+        let command_line = format!(
+            "ping 127.0.0.1 -n 2 >nul & echo {START} & type {}",
+            file_path.display()
+        );
+        let command = PtyCommand::new(
+            "cmd.exe",
+            vec!["/c".to_string(), command_line],
+            std::env::current_dir().unwrap(),
+            Vec::new(),
+        );
+        if let Err(error) = spawn_session(&state, session, command) {
+            let _ = std::fs::remove_file(&file_path);
+            panic!("could not spawn transport benchmark: {error}");
+        }
+        answer_test_dsr(&state, &id);
+        let (stop_dsr, dsr_thread) = start_test_dsr_pump(&state, &id);
+        let runtime = {
+            let map = state.inner.lock().unwrap();
+            Arc::clone(&map.get(&id).unwrap().runtime)
+        };
+
+        #[derive(Default)]
+        struct TransportObservation {
+            bytes: usize,
+            chunk_sizes: Vec<usize>,
+            last_seq: Option<u64>,
+            seq_reordered: bool,
+            started: bool,
+            start_time: Option<Instant>,
+            start_tail: String,
+            done_tail: String,
+            done: bool,
+        }
+
+        let observed = Arc::new(Mutex::new(TransportObservation::default()));
+        let observed_for_channel = Arc::clone(&observed);
+        let writer_for_channel = {
+            let map = state.inner.lock().unwrap();
+            Arc::clone(&map.get(&id).unwrap().writer)
+        };
+        runtime.attach(
+            None,
+            Channel::new(move |body| {
+                let event: SessionEvent = body.deserialize()?;
+                if let SessionEvent::Output { seq, data } = event {
+                    if data.contains("\x1b[6n") {
+                        let mut writer = writer_for_channel.lock().unwrap();
+                        let _ = writer.write_all(b"\x1b[1;1R");
+                        let _ = writer.flush();
+                    }
+                    let mut observed = observed_for_channel.lock().unwrap();
+                    let expected = observed.last_seq.map_or(seq, |last| last + 1);
+                    if seq != expected {
+                        observed.seq_reordered = true;
+                    }
+                    observed.last_seq = Some(seq);
+
+                    let payload = if observed.started {
+                        Some(data)
+                    } else {
+                        observed.start_tail.push_str(&data);
+                        observed.start_tail.find(START).map(|start| {
+                            observed.started = true;
+                            observed.start_time = Some(Instant::now());
+                            let payload_start = start + START.len();
+                            observed.start_tail[payload_start..]
+                                .trim_start_matches(['\r', '\n'])
+                                .to_string()
+                        })
+                    };
+
+                    if !observed.started && observed.start_tail.len() >= START.len() {
+                        let keep_from = observed.start_tail.len() - (START.len() - 1);
+                        observed.start_tail.drain(..keep_from);
+                    }
+
+                    if let Some(payload) = payload {
+                        if !payload.is_empty() {
+                            observed.bytes += payload.len();
+                            observed.chunk_sizes.push(payload.len());
+                            observed.done_tail.push_str(&payload);
+                            if observed.done_tail.contains(DONE) {
+                                observed.done = true;
+                            }
+                            if observed.done_tail.len() >= DONE.len() {
+                                let keep_from = observed.done_tail.len() - (DONE.len() - 1);
+                                observed.done_tail.drain(..keep_from);
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }),
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline {
+            let observed = observed.lock().unwrap();
+            if observed.started && observed.done && observed.bytes >= expected_file_bytes {
+                break;
+            }
+            drop(observed);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let complete = {
+            let observed = observed.lock().unwrap();
+            observed.started && observed.done && observed.bytes >= expected_file_bytes
+        };
+        if !complete {
+            close_session(&state, &id);
+            stop_test_dsr_pump(stop_dsr, dsr_thread);
+            let _ = std::fs::remove_file(&file_path);
+            let observed = observed.lock().unwrap();
+            panic!(
+                "transport benchmark did not finish: started={} done={} bytes={} expected_file_bytes={expected_file_bytes}",
+                observed.started,
+                observed.done,
+                observed.bytes
+            );
+        }
+
+        let (bytes, chunk_sizes, wall, seq_reordered) = {
+            let observed = observed.lock().unwrap();
+            (
+                observed.bytes,
+                observed.chunk_sizes.clone(),
+                observed.start_time.unwrap().elapsed(),
+                observed.seq_reordered,
+            )
+        };
+        let peak_ring_bytes = runtime.peak_ring_bytes.load(Ordering::Relaxed);
+        let close_start = Instant::now();
+        close_session(&state, &id);
+        let teardown = close_start.elapsed();
+        stop_test_dsr_pump(stop_dsr, dsr_thread);
+        let clean = state.inner.lock().unwrap().is_empty()
+            && runtime.reader_finished.load(Ordering::Acquire)
+            && runtime.child_reaped.load(Ordering::Acquire);
+        let mut sorted_chunk_sizes = chunk_sizes.clone();
+        sorted_chunk_sizes.sort_unstable();
+        let chunk_min = *sorted_chunk_sizes.first().unwrap();
+        let chunk_max = *sorted_chunk_sizes.last().unwrap();
+        let midpoint = sorted_chunk_sizes.len() / 2;
+        let chunk_median = if sorted_chunk_sizes.len() % 2 == 0 {
+            (sorted_chunk_sizes[midpoint - 1] + sorted_chunk_sizes[midpoint]) as f64 / 2.0
+        } else {
+            sorted_chunk_sizes[midpoint] as f64
+        };
+        let output_complete = bytes >= expected_file_bytes;
+        println!(
+            "PTY_TRANSPORT bytes={bytes} expected_file_bytes={expected_file_bytes} wall_ms={} mib_s={:.2} chunks={} chunk_min={} chunk_median={chunk_median:.1} chunk_max={} messages_per_s={:.2} peak_ring_bytes={peak_ring_bytes} output_complete={output_complete} seq_reordered={seq_reordered} child_reaped={} teardown_ms={} clean={clean}",
+            wall.as_millis(),
+            bytes as f64 / (1024.0 * 1024.0) / wall.as_secs_f64(),
+            chunk_sizes.len(),
+            chunk_min,
+            chunk_max,
+            chunk_sizes.len() as f64 / wall.as_secs_f64(),
+            runtime.child_reaped.load(Ordering::Acquire),
+            teardown.as_millis(),
+        );
+        let _ = std::fs::remove_file(&file_path);
+        assert!(output_complete, "the file output was truncated");
+        assert!(!seq_reordered, "output sequence was dropped or reordered");
         assert!(peak_ring_bytes <= RING_CAPACITY);
         assert!(
             runtime.child_reaped.load(Ordering::Acquire),
