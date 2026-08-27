@@ -579,12 +579,23 @@ dependencies = [
 name = "devboule"
 version = "0.1.0"
 dependencies = [
+ "devboule-daemon",
  "devboule-protocol",
  "portable-pty",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
+]
+
+[[package]]
+name = "devboule-daemon"
+version = "0.1.0"
+dependencies = [
+ "devboule-protocol",
+ "serde",
+ "serde_json",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
