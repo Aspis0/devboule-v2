@@ -88,12 +88,16 @@ function makeHarness(options?: {
   };
 
   const invoke = vi.fn(async (command: string) => {
+    if (command === 'sessions_list') {
+      return [];
+    }
     if (command === 'session_create') {
       return {
         id: 'session-1',
         workspaceId: 'rust-core',
         kind: 'terminal',
         title: 'Terminal',
+        state: { type: 'live', generation: 1 },
       };
     }
     if (command === 'session_attach' && options?.deferAttach) {
@@ -165,11 +169,12 @@ describe('TerminalSession startup and channel ordering', () => {
     const harness = makeHarness();
     await harness.session.start();
 
-    expect(harness.invoke).toHaveBeenNthCalledWith(1, 'session_create', {
+    expect(harness.invoke).toHaveBeenNthCalledWith(1, 'sessions_list');
+    expect(harness.invoke).toHaveBeenNthCalledWith(2, 'session_create', {
       workspace_id: 'rust-core',
       kind: 'terminal',
     });
-    expect(harness.invoke).toHaveBeenNthCalledWith(2, 'session_attach', expect.objectContaining({
+    expect(harness.invoke).toHaveBeenNthCalledWith(3, 'session_attach', expect.objectContaining({
       id: 'session-1',
       from_cursor: null,
       ch: expect.anything(),
@@ -188,6 +193,30 @@ describe('TerminalSession startup and channel ordering', () => {
       ch: expect.anything(),
     }));
     expect(harness.registry.register).not.toHaveBeenCalled();
+  });
+
+  it('attaches a recovered transcript instead of creating a new shell', async () => {
+    const harness = makeHarness();
+    harness.invoke.mockImplementation(async (command: string) => {
+      if (command === 'sessions_list') {
+        return [
+          {
+            id: 's.old.1',
+            workspaceId: 'rust-core',
+            kind: 'terminal',
+            title: 'Terminal',
+            state: { type: 'recovered', generation: 1, truncated: false },
+          },
+        ];
+      }
+      return undefined;
+    });
+    await harness.session.start();
+    expect(harness.invoke).not.toHaveBeenCalledWith('session_create', expect.anything());
+    expect(harness.invoke).toHaveBeenCalledWith('session_attach', expect.objectContaining({
+      id: 's.old.1',
+      from_cursor: null,
+    }));
   });
 
   it('batches channel output into one xterm write per animation frame', async () => {
@@ -220,12 +249,14 @@ describe('TerminalSession lifecycle and errors', () => {
   it('handles attach errors without closing the runtime-owned session', async () => {
     const harness = makeHarness();
     harness.invoke.mockImplementation(async (command: string) => {
+      if (command === 'sessions_list') return [];
       if (command === 'session_create') {
         return {
           id: 'session-1',
           workspaceId: 'rust-core',
           kind: 'terminal',
           title: 'Terminal',
+          state: { type: 'live', generation: 1 },
         };
       }
       if (command === 'session_attach') throw 'No session with that id.';
@@ -269,6 +300,27 @@ describe('TerminalSession lifecycle and errors', () => {
     expect(harness.banners).toContainEqual({ kind: 'exited', code: 7 });
     expect(harness.registry.remove).toHaveBeenCalledWith('rust-core', 'session-1');
     expect(harness.invoke).not.toHaveBeenCalled();
+  });
+
+  it('marks a recovered transcript without treating it as a live exit', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit(outputEvent(1, 'scrollback'));
+    harness.flushFrame();
+    harness.emit({ type: 'recovered', truncated: false });
+    expect(harness.view.written).toEqual(['scrollback']);
+    expect(harness.banners).toContainEqual({ kind: 'recovered', truncated: false });
+    harness.invoke.mockClear();
+    await harness.session.writeToPty('ignored');
+    expect(harness.invoke).not.toHaveBeenCalled();
+  });
+
+  it('ignores unknown event types instead of treating them as output', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({ type: 'permission' } as unknown as TerminalEvent);
+    harness.flushFrame();
+    expect(harness.view.written).toEqual([]);
   });
 
   it('makes dispose idempotent and suppresses late output', async () => {
@@ -386,12 +438,14 @@ describe('TerminalSession write failures', () => {
     const harness = makeHarness();
     await harness.session.start();
     harness.invoke.mockImplementation(async (command: string) => {
+      if (command === 'sessions_list') return [];
       if (command === 'session_create') {
         return {
           id: 'session-1',
           workspaceId: 'rust-core',
           kind: 'terminal',
           title: 'Terminal',
+          state: { type: 'live', generation: 1 },
         };
       }
       if (command === 'session_send') throw new Error('dead pipe');

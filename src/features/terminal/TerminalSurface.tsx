@@ -21,6 +21,11 @@ function bannerText(banner: TerminalBanner): string | null {
   if (banner === null) return null;
   if (banner.kind === 'error') return banner.message;
   if (banner.kind === 'closed') return 'The terminal session was closed.';
+  if (banner.kind === 'recovered') {
+    return banner.truncated
+      ? 'The previous terminal process is gone. Some output was not saved.'
+      : 'The previous terminal process is gone.';
+  }
   return banner.code === null
     ? 'The terminal process exited.'
     : `The terminal process exited with code ${banner.code}.`;
@@ -92,7 +97,7 @@ export const TerminalSurface = memo(function TerminalSurface({ workspaceId, id }
           type="button"
           className="workspace-terminal-interrupt"
           onClick={() => sessionRef.current?.requestCtrlC()}
-          disabled={banner?.kind === 'exited'}
+          disabled={banner?.kind === 'exited' || banner?.kind === 'recovered'}
           aria-pressed={ctrlCArmed}
         >
           {ctrlCArmed ? 'Press Ctrl+C again' : 'Ctrl+C'}
