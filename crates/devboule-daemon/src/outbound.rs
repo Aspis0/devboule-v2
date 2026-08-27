@@ -60,23 +60,6 @@ impl ConnOut {
         self.cvar.notify_all();
     }
 
-    /// Wait without a polling timeout. The generation check closes the race
-    /// between the writer's last pull and entering the condition variable.
-    #[allow(dead_code)]
-    pub fn wait_for_notify(&self) -> bool {
-        let generation = self.wake_generation();
-        self.wait_for_notify_since(generation, None)
-    }
-
-    /// Wait for a notification, or for a one-shot deadline such as the PTY
-    /// exit-drain deadline. Normal idle connections pass `None` and do not
-    /// wake periodically.
-    #[allow(dead_code)]
-    pub fn wait_for_notify_timeout(&self, timeout: Option<Duration>) -> bool {
-        let generation = self.wake_generation();
-        self.wait_for_notify_since(generation, timeout)
-    }
-
     /// Wait until the outbound state changes after `generation`, or until the
     /// optional one-shot deadline. The caller captures `generation` before it
     /// drains session events and requests. This lock-protected re-check makes
@@ -112,8 +95,9 @@ mod tests {
     #[test]
     fn close_unblocks_notification_wait() {
         let out = ConnOut::new();
+        let generation = out.wake_generation();
         out.close();
-        assert!(!out.wait_for_notify());
+        assert!(!out.wait_for_notify_since(generation, None));
     }
 
     #[test]
