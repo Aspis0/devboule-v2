@@ -54,6 +54,14 @@
 //! Replaying across a generation change is a
 //! [`ErrorCode::SessionGenerationMismatch`], never a silent continuation.
 //!
+//! # Screen snapshots (M3.5)
+//!
+//! On attach the daemon sends a [`SessionEvent::Snapshot`] with the current
+//! emulator state instead of replaying past frames. Its `as_of_seq` field
+//! is the sequence boundary on **application to the emulator**; the type's
+//! documentation carries the invariant and the reason it is not allowed to
+//! drift to pipe write, journal commit, or client receipt.
+//!
 //! # Idempotency
 //!
 //! `session_create`, `session_send`, and `session_permission_respond` carry an
@@ -79,8 +87,8 @@ pub use ids::{
 };
 pub use messages::{ClientMessage, DaemonMessage, DaemonStatusBody, SessionEventEnvelope};
 pub use session::{
-    cursor_replay_ok, Cursor, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
-    Session, SessionEvent, SessionKind, SessionState,
+    cursor_replay_ok, Cursor, CursorShape, PermissionOutcome, Persistence, PersistenceKind,
+    ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionState,
 };
 
 /// Current protocol dialect spoken by this crate.
@@ -108,6 +116,12 @@ pub const IDEMPOTENCY_TTL_SECS: u64 = 15 * 60;
 pub const IDEMPOTENCY_MAX_ENTRIES: usize = 4096;
 
 /// Compact JSON frames larger than this are a protocol error (1 MiB).
+///
+/// The largest ordinary frame is a screen snapshot: a dense 200x50 screen
+/// where every cell repaints its 24-bit colours escapes to roughly 490 KiB
+/// of JSON. That fits, but it is orders of magnitude larger than a typical
+/// output frame — see the frame-cap test in the `session` module before
+/// assuming snapshots are always small.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Capabilities this crate's daemon and app currently serve.
