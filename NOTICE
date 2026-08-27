@@ -13,4 +13,4 @@ No third-party library source code is copied into this repository. This does
 not mean that linked dependency code is absent from a built binary; the
 Cargo and npm dependencies identified in THIRD_PARTY.md are compiled or
 bundled according to their respective licences. The three checked-in fonts
-and the unresolved icon asset are listed separately there.
+and the application icon asset are listed separately there.

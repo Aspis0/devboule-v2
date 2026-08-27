@@ -6,9 +6,9 @@ It distinguishes linked dependencies, source copied into the repository, and non
 
 ## How this inventory was built
 
-The Rust inventory is the complete set of 454 registry packages resolved by the workspace Cargo.toml files and Cargo.lock with all features enabled. The JavaScript inventory is the complete set of 218 package records in pnpm-lock.yaml. Direct versus transitive/build/test/optional status is derived from the workspace manifests and package.json.
+The Rust inventory is the complete set of 470 registry packages resolved by the workspace Cargo.toml files and Cargo.lock with all features enabled. The JavaScript inventory is the complete set of 156 package records in pnpm-lock.yaml. Direct versus transitive/build/test/optional status is derived from the workspace manifests and package.json.
 
-The licence column preserves the package-declared licence expression. OR and AND are not rewritten into a simpler label. The Rust metadata comes from cargo metadata; npm metadata comes from the installed package metadata, with the optional platform packages not materialized on this Windows checkout resolved from their exact registry package metadata. The lockfiles remain the version and source authority.
+The licence column preserves the package-declared licence expression. OR and AND are not rewritten into a simpler label. The Rust metadata comes from cargo metadata; npm metadata comes from the package metadata of the exact versions pinned in pnpm-lock.yaml, read from the local install where materialized and from the exact registry package metadata for the same version otherwise. The local pnpm store still holds directories for packages the lockfile no longer references after the frontend toolchain change, so the installed tree was not used to decide which records belong in the inventory. The lockfiles remain the version and source authority.
 
 The lockfile inventories include conditional platform packages. A package listed in the lockfile is not necessarily linked into every target artifact; on Windows, only the Windows target branches are selected. Build/test dependencies are not shipped as application runtime code.
 
@@ -18,7 +18,7 @@ No third-party library source code is checked into this repository. There is no 
 
 The esaxx-rs one-line CRT patch mentioned in the separate architecture document is not present here: this repository has no esaxx-rs reference, no oracle-core member, no fastembed dependency, and no corresponding build.rs patch. The oracle-core names in mock UI data are not source code.
 
-The application does link/compile code from the registry dependencies listed below. In particular, rusqlite is enabled with bundled: libsqlite3-sys builds the SQLite amalgamation supplied by that dependency into the Rust artifact. That source is not checked into this repository, but it is part of the linked build input; rusqlite and libsqlite3-sys declare MIT, while SQLite itself is distributed by SQLite under its public-domain dedication.
+The application does link/compile code from the registry dependencies listed below. In particular, rusqlite 0.40.2 is enabled with bundled: libsqlite3-sys 0.38.2 compiles the SQLite amalgamation it ships, SQLite 3.53.2, into the daemon artifact. That source is not checked into this repository, but it is part of the linked build input; rusqlite and libsqlite3-sys declare MIT, while the bundled SQLite amalgamation itself is distributed by SQLite under its public-domain dedication.
 
 ## Non-code assets
 
@@ -124,27 +124,27 @@ These are the dependencies declared directly by the workspace manifests or packa
 
 | Name | Version | Kind | Licence |
 | --- | --- | --- | --- |
+| alacritty_terminal | 0.26.0 | Rust direct optional server | Apache-2.0 |
 | portable-pty | 0.9.0 | Rust direct optional server | MIT |
-| rusqlite | 0.32.1 | Rust direct optional server; bundled SQLite | MIT |
+| rusqlite | 0.40.2 | Rust direct optional server; bundled SQLite | MIT |
 | serde | 1.0.229 | Rust direct runtime | MIT OR Apache-2.0 |
 | serde_json | 1.0.151 | Rust direct runtime/test | MIT OR Apache-2.0 |
 | tauri | 2.11.5 | Rust direct runtime | Apache-2.0 OR MIT |
 | tauri-build | 2.6.3 | Rust direct build | Apache-2.0 OR MIT |
-| windows-sys | 0.59.0 | Rust direct Windows | MIT OR Apache-2.0 |
+| windows-sys | 0.61.2 | Rust direct Windows | MIT OR Apache-2.0 |
 | @tauri-apps/api | 2.11.1 | npm direct runtime | Apache-2.0 OR MIT |
 | @tauri-apps/cli | 2.11.4 | npm direct build/test | Apache-2.0 OR MIT |
-| @types/node | 26.3.0 | npm direct build/test | MIT |
-| @types/react | 18.3.31 | npm direct build/test | MIT |
-| @types/react-dom | 18.3.7 | npm direct build/test | MIT |
+| @types/node | 26.4.0 | npm direct build/test | MIT |
+| @types/react | 19.2.18 | npm direct build/test | MIT |
+| @types/react-dom | 19.2.5 | npm direct build/test | MIT |
 | @vitejs/plugin-react | 6.1.0 | npm direct build/test | MIT |
 | @xterm/addon-fit | 0.11.0 | npm direct runtime | MIT |
 | @xterm/xterm | 6.0.0 | npm direct runtime | MIT |
-| eslint | 10.9.1 | npm direct build/test | MIT |
-| eslint-plugin-react-hooks | 7.1.1 | npm direct build/test | MIT |
-| react | 18.3.1 | npm direct runtime | MIT |
-| react-dom | 18.3.1 | npm direct runtime | MIT |
-| typescript | 5.9.3 | npm direct build/test | Apache-2.0 |
-| typescript-eslint | 8.68.0 | npm direct build/test | MIT |
+| oxfmt | 0.65.0 | npm direct build/test | MIT |
+| oxlint | 1.80.0 | npm direct build/test | MIT |
+| react | 19.2.8 | npm direct runtime | MIT |
+| react-dom | 19.2.8 | npm direct runtime | MIT |
+| typescript | 7.0.2 | npm direct build/test | Apache-2.0 |
 | vite | 8.2.2 | npm direct build/test | MIT |
 | vitest | 4.1.11 | npm direct build/test | MIT |
 | zustand | 5.0.15 | npm direct runtime | MIT |
@@ -154,27 +154,27 @@ These are the dependencies declared directly by the workspace manifests or packa
 No package in the current Cargo or npm license metadata declares GPL or AGPL as its only or required licence. The graph is not an Apache/MIT/BSD-only graph, however:
 
 - MPL-2.0 (weak copyleft): Rust cssparser 0.36.0, cssparser-macros 0.6.1, dtoa-short 0.3.5, option-ext 0.2.0, selectors 0.36.1; npm lightningcss 1.33.0, lightningcss-android-arm64 1.33.0, lightningcss-darwin-arm64 1.33.0, lightningcss-darwin-x64 1.33.0, lightningcss-freebsd-x64 1.33.0, lightningcss-linux-arm-gnueabihf 1.33.0, lightningcss-linux-arm64-gnu 1.33.0, lightningcss-linux-arm64-musl 1.33.0, lightningcss-linux-x64-gnu 1.33.0, lightningcss-linux-x64-musl 1.33.0, lightningcss-win32-arm64-msvc 1.33.0, lightningcss-win32-x64-msvc 1.33.0. Rust reachability is through Tauri tauri-utils/dom_query and dirs; npm reachability is through Vite. These are transitive, but MPL source/notice obligations still need to be respected if the covered code is redistributed.
-- CC-BY-4.0 data: npm caniuse-lite 1.0.30001810. This is Browserslist compatibility data, not application code, but its attribution condition is not interchangeable with a software permissive licence.
-- BlueOak-1.0.0: npm minimatch 10.2.6. Blue Oak is a permissive licence, but it is nonstandard relative to the project policy and requires passing along the licence text or its official link; it should be explicitly allowlisted.
+- Removed since the previous inventory: npm caniuse-lite 1.0.30001810 (CC-BY-4.0, reached through the Browserslist compatibility-data chain) and npm minimatch 10.2.6 (BlueOak-1.0.0, reached through the removed ESLint tooling). Neither package appears in the current pnpm-lock.yaml.
 - Unicode-3.0: Rust icu_collections 2.3.0, icu_locale_core 2.3.0, icu_normalizer 2.3.0, icu_normalizer_data 2.3.0, icu_properties 2.3.0, icu_properties_data 2.3.0, icu_provider 2.3.1, litemap 0.8.3, potential_utf 0.1.6, tinystr 0.8.4, writeable 0.6.4, yoke 0.8.3, yoke-derive 0.8.2, zerofrom 0.1.8, zerofrom-derive 0.1.7, zerotrie 0.2.5, zerovec 0.11.8, zerovec-derive 0.11.6. These Unicode data/library crates are permissive but carry a separate notice regime; keep the declared licence instead of normalizing it to MIT.
 - LGPL appears only as an option in r-efi 5.3.0 and 6.0.0 licence expressions: r-efi 5.3.0 (MIT OR Apache-2.0 OR LGPL-2.1-or-later), r-efi 6.0.0 (MIT OR Apache-2.0 OR LGPL-2.1-or-later). The same expressions also offer MIT or Apache-2.0; confirm the selected downstream option in any binary notice process.
 - Unlicense appears in Rust dual/alternative expressions including aho-corasick 1.1.5, byteorder 1.5.0, jiff 0.2.35, jiff-core 0.1.0, jiff-static 0.2.35, jiff-tzdb 0.1.8, jiff-tzdb-platform 0.1.3, memchr 2.8.3, same-file 1.0.6, walkdir 2.5.0, winapi-util 0.1.11. This is not copyleft, but the project should retain the exact expression because the legal treatment of public-domain dedications can vary by jurisdiction.
 
-The unresolved icon provenance is the highest-priority asset issue: unlike the fonts, it has no package name, copyright holder, licence file, or reproducible source reference in the repository.
+No unresolved asset provenance remains: the icon is original project artwork carrying this project's own Apache-2.0 licence (see the asset table above), and the fonts are attributed with package, upstream project, copyright, and licence.
 
 ## Complete resolved inventory
 
-### Rust registry packages (Cargo.lock; 454 records)
+### Rust registry packages (Cargo.lock; 470 records)
 
 | Name | Version | Kind | Licence |
 | --- | --- | --- | --- |
 | adler2 | 2.0.1 | Rust transitive (lockfile) | 0BSD OR MIT OR Apache-2.0 |
-| ahash | 0.8.12 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | aho-corasick | 1.1.5 | Rust transitive (lockfile) | Unlicense OR MIT |
+| alacritty_terminal | 0.26.0 | Rust direct optional server | Apache-2.0 |
 | alloc-no-stdlib | 2.0.4 | Rust transitive (lockfile) | BSD-3-Clause |
 | alloc-stdlib | 0.2.4 | Rust transitive (lockfile) | BSD-3-Clause |
 | android_system_properties | 0.1.6 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | anyhow | 1.0.104 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| arrayvec | 0.7.8 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | atk | 0.18.2 | Rust transitive (lockfile) | MIT |
 | atk-sys | 0.18.2 | Rust transitive (lockfile) | MIT |
 | atomic-waker | 1.1.2 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
@@ -208,6 +208,7 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | cfg-if | 1.0.4 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | chrono | 0.4.45 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | combine | 4.6.8 | Rust transitive (lockfile) | MIT |
+| concurrent-queue | 2.5.0 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | cookie | 0.18.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | core-foundation | 0.10.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | core-foundation-sys | 0.8.7 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -222,6 +223,7 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | cssparser-macros | 0.6.1 | Rust transitive (lockfile) | MPL-2.0 |
 | ctor | 0.8.0 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | ctor-proc-macro | 0.0.7 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
+| cursor-icon | 1.2.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 OR Zlib |
 | darling | 0.23.0 | Rust transitive (lockfile) | MIT |
 | darling_core | 0.23.0 | Rust transitive (lockfile) | MIT |
 | darling_macro | 0.23.0 | Rust transitive (lockfile) | MIT |
@@ -252,6 +254,7 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | embed-resource | 3.0.11 | Rust transitive (lockfile) | MIT |
 | equivalent | 1.0.2 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | erased-serde | 0.4.10 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| errno | 0.3.14 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | fallible-iterator | 0.3.0 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | fallible-streaming-iterator | 0.1.9 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | fastrand | 2.5.0 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
@@ -296,12 +299,14 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | gtk-sys | 0.18.2 | Rust transitive (lockfile) | MIT |
 | gtk3-macros | 0.18.2 | Rust transitive (lockfile) | MIT |
 | hashbrown | 0.12.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| hashbrown | 0.14.5 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| hashbrown | 0.16.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | hashbrown | 0.17.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| hashlink | 0.9.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| hashlink | 0.12.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | heck | 0.4.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | heck | 0.5.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| hermit-abi | 0.5.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | hex | 0.4.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| home | 0.5.12 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | html5ever | 0.38.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | http | 1.5.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | http-body | 1.1.0 | Rust transitive (lockfile) | MIT |
@@ -350,7 +355,8 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | libdbus-sys | 0.2.7 | Rust transitive (lockfile) | Apache-2.0/MIT |
 | libloading | 0.7.4 | Rust transitive (lockfile) | ISC |
 | libredox | 0.1.20 | Rust transitive (lockfile) | MIT |
-| libsqlite3-sys | 0.30.1 | Rust transitive (lockfile) | MIT |
+| libsqlite3-sys | 0.38.2 | Rust transitive (lockfile) | MIT |
+| linux-raw-sys | 0.12.1 | Rust transitive (lockfile) | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Rust transitive (lockfile) | Unicode-3.0 |
 | lock_api | 0.4.14 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | log | 0.4.34 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -360,6 +366,7 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | mime | 0.3.17 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | miniz_oxide | 0.8.9 | Rust transitive (lockfile) | MIT OR Zlib OR Apache-2.0 |
 | mio | 1.2.2 | Rust transitive (lockfile) | MIT |
+| miow | 0.6.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | muda | 0.19.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | ndk | 0.9.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | ndk-sys | 0.6.0+11769913 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -403,10 +410,12 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | phf_macros | 0.13.1 | Rust transitive (lockfile) | MIT |
 | phf_shared | 0.13.1 | Rust transitive (lockfile) | MIT |
 | pin-project-lite | 0.2.17 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
+| piper | 0.2.5 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | pkg-config | 0.3.34 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | plist | 1.10.0 | Rust transitive (lockfile) | MIT |
 | png | 0.17.16 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | png | 0.18.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| polling | 3.11.0 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | portable-atomic | 1.15.0 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | portable-atomic-util | 0.2.7 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | portable-pty | 0.9.0 | Rust direct optional server | MIT |
@@ -432,9 +441,12 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | regex-automata | 0.4.18 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | reqwest | 0.13.4 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| rusqlite | 0.32.1 | Rust direct optional server; bundled SQLite | MIT |
+| rsqlite-vfs | 0.1.1 | Rust transitive (lockfile) | MIT |
+| rusqlite | 0.40.2 | Rust direct optional server; bundled SQLite | MIT |
 | rustc_version | 0.4.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | rustc-hash | 2.1.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
+| rustix | 1.1.4 | Rust transitive (lockfile) | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| rustix-openpty | 0.2.0 | Rust transitive (lockfile) | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustversion | 1.0.23 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | same-file | 1.0.6 | Rust transitive (lockfile) | Unlicense/MIT |
 | schemars | 0.8.22 | Rust transitive (lockfile) | MIT |
@@ -463,6 +475,8 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | shared_library | 0.1.9 | Rust transitive (lockfile) | Apache-2.0/MIT |
 | shell-words | 1.1.1 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | shlex | 2.0.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| signal-hook | 0.4.4 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| signal-hook-registry | 1.4.8 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | simd-adler32 | 0.3.10 | Rust transitive (lockfile) | MIT |
 | siphasher | 1.0.3 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | slab | 0.4.12 | Rust transitive (lockfile) | MIT |
@@ -471,6 +485,7 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | softbuffer | 0.4.8 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | soup3 | 0.5.0 | Rust transitive (lockfile) | MIT |
 | soup3-sys | 0.5.0 | Rust transitive (lockfile) | MIT |
+| sqlite-wasm-rs | 0.5.5 | Rust transitive (lockfile) | MIT |
 | stable_deref_trait | 1.2.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | string_cache | 0.9.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | string_cache_codegen | 0.6.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -535,6 +550,7 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | unic-ucd-version | 0.9.0 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | unicode-ident | 1.0.24 | Rust transitive (lockfile) | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| unicode-width | 0.2.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | url | 2.5.8 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | urlpattern | 0.3.0 | Rust transitive (lockfile) | MIT |
 | utf8_iter | 1.0.4 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
@@ -544,6 +560,7 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | version-compare | 0.2.1 | Rust transitive (lockfile) | MIT |
 | vswhom | 0.1.0 | Rust transitive (lockfile) | MIT |
 | vswhom-sys | 0.1.3 | Rust transitive (lockfile) | MIT |
+| vte | 0.15.0 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | walkdir | 2.5.0 | Rust transitive (lockfile) | Unlicense/MIT |
 | want | 0.3.1 | Rust transitive (lockfile) | MIT |
 | wasi | 0.11.1+wasi-snapshot-preview1 | Rust transitive (lockfile) | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -596,8 +613,8 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | windows-strings | 0.4.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | windows-strings | 0.5.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | windows-sys | 0.45.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| windows-sys | 0.59.0 | Rust direct Windows | MIT OR Apache-2.0 |
-| windows-sys | 0.61.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| windows-sys | 0.59.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| windows-sys | 0.61.2 | Rust direct Windows | MIT OR Apache-2.0 |
 | windows-targets | 0.42.2 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | windows-targets | 0.52.6 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | windows-threading | 0.1.0 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
@@ -614,8 +631,6 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | x11-dl | 2.21.0 | Rust transitive (lockfile) | MIT |
 | yoke | 0.8.3 | Rust transitive (lockfile) | Unicode-3.0 |
 | yoke-derive | 0.8.2 | Rust transitive (lockfile) | Unicode-3.0 |
-| zerocopy | 0.8.56 | Rust transitive (lockfile) | BSD-2-Clause OR Apache-2.0 OR MIT |
-| zerocopy-derive | 0.8.56 | Rust transitive (lockfile) | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zerofrom | 0.1.8 | Rust transitive (lockfile) | Unicode-3.0 |
 | zerofrom-derive | 0.1.7 | Rust transitive (lockfile) | Unicode-3.0 |
 | zerotrie | 0.2.5 | Rust transitive (lockfile) | Unicode-3.0 |
@@ -623,44 +638,50 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | zerovec-derive | 0.11.6 | Rust transitive (lockfile) | Unicode-3.0 |
 | zmij | 1.0.23 | Rust transitive (lockfile) | MIT |
 
-### npm packages (pnpm-lock.yaml; 218 records)
+### npm packages (pnpm-lock.yaml; 156 records)
 
 | Name | Version | Kind | Licence |
 | --- | --- | --- | --- |
-| @babel/code-frame | 7.29.7 | npm transitive | MIT |
-| @babel/compat-data | 7.29.7 | npm transitive | MIT |
-| @babel/core | 7.29.7 | npm transitive | MIT |
-| @babel/generator | 7.29.8 | npm transitive | MIT |
-| @babel/helper-compilation-targets | 7.29.7 | npm transitive | MIT |
-| @babel/helper-globals | 7.29.7 | npm transitive | MIT |
-| @babel/helper-module-imports | 7.29.7 | npm transitive | MIT |
-| @babel/helper-module-transforms | 7.29.7 | npm transitive | MIT |
-| @babel/helper-string-parser | 7.29.7 | npm transitive | MIT |
-| @babel/helper-validator-identifier | 7.29.7 | npm transitive | MIT |
-| @babel/helper-validator-option | 7.29.7 | npm transitive | MIT |
-| @babel/helpers | 7.29.7 | npm transitive | MIT |
-| @babel/parser | 7.29.8 | npm transitive | MIT |
-| @babel/template | 7.29.7 | npm transitive | MIT |
-| @babel/traverse | 7.29.8 | npm transitive | MIT |
-| @babel/types | 7.29.8 | npm transitive | MIT |
-| @eslint-community/eslint-utils | 4.10.1 | npm transitive | MIT |
-| @eslint-community/regexpp | 4.12.2 | npm transitive | MIT |
-| @eslint/config-array | 0.23.5 | npm transitive | Apache-2.0 |
-| @eslint/config-helpers | 0.7.0 | npm transitive | Apache-2.0 |
-| @eslint/core | 1.2.1 | npm transitive | Apache-2.0 |
-| @eslint/object-schema | 3.0.5 | npm transitive | Apache-2.0 |
-| @eslint/plugin-kit | 0.7.2 | npm transitive | Apache-2.0 |
-| @humanfs/core | 0.19.2 | npm transitive | Apache-2.0 |
-| @humanfs/node | 0.16.8 | npm transitive | Apache-2.0 |
-| @humanfs/types | 0.15.0 | npm transitive | Apache-2.0 |
-| @humanwhocodes/module-importer | 1.0.1 | npm transitive | Apache-2.0 |
-| @humanwhocodes/retry | 0.4.3 | npm transitive | Apache-2.0 |
-| @jridgewell/gen-mapping | 0.3.13 | npm transitive | MIT |
-| @jridgewell/remapping | 2.3.5 | npm transitive | MIT |
-| @jridgewell/resolve-uri | 3.1.2 | npm transitive | MIT |
 | @jridgewell/sourcemap-codec | 1.5.5 | npm transitive | MIT |
-| @jridgewell/trace-mapping | 0.3.31 | npm transitive | MIT |
 | @oxc-project/types | 0.147.0 | npm transitive | MIT |
+| @oxfmt/binding-android-arm-eabi | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-android-arm64 | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-darwin-arm64 | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-darwin-x64 | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-freebsd-x64 | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm-gnueabihf | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm-musleabihf | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm64-gnu | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-arm64-musl | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-ppc64-gnu | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-riscv64-gnu | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-riscv64-musl | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-s390x-gnu | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-x64-gnu | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-linux-x64-musl | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-openharmony-arm64 | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-arm64-msvc | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-ia32-msvc | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxfmt/binding-win32-x64-msvc | 0.65.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-android-arm-eabi | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-android-arm64 | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-darwin-arm64 | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-darwin-x64 | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-freebsd-x64 | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-arm-gnueabihf | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-arm-musleabihf | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-arm64-gnu | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-arm64-musl | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-ppc64-gnu | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-riscv64-gnu | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-riscv64-musl | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-s390x-gnu | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-x64-gnu | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-linux-x64-musl | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-openharmony-arm64 | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-win32-arm64-msvc | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-win32-ia32-msvc | 1.80.0 | npm transitive optional/platform | MIT |
+| @oxlint/binding-win32-x64-msvc | 1.80.0 | npm transitive optional/platform | MIT |
 | @rolldown/binding-android-arm-eabi | 1.2.6 | npm transitive optional/platform | MIT |
 | @rolldown/binding-android-arm64 | 1.2.6 | npm transitive optional/platform | MIT |
 | @rolldown/binding-darwin-arm64 | 1.2.6 | npm transitive optional/platform | MIT |
@@ -693,23 +714,30 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | @tauri-apps/cli-win32-x64-msvc | 2.11.4 | npm transitive optional/platform | Apache-2.0 OR MIT |
 | @types/chai | 5.2.3 | npm transitive | MIT |
 | @types/deep-eql | 4.0.2 | npm transitive | MIT |
-| @types/esrecurse | 4.3.1 | npm transitive | MIT |
 | @types/estree | 1.0.9 | npm transitive | MIT |
-| @types/json-schema | 7.0.15 | npm transitive | MIT |
-| @types/node | 26.3.0 | npm direct build/test | MIT |
-| @types/prop-types | 15.7.15 | npm transitive | MIT |
-| @types/react | 18.3.31 | npm direct build/test | MIT |
-| @types/react-dom | 18.3.7 | npm direct build/test | MIT |
-| @typescript-eslint/eslint-plugin | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/parser | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/project-service | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/scope-manager | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/tsconfig-utils | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/type-utils | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/types | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/typescript-estree | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/utils | 8.68.0 | npm transitive | MIT |
-| @typescript-eslint/visitor-keys | 8.68.0 | npm transitive | MIT |
+| @types/node | 26.4.0 | npm direct build/test | MIT |
+| @types/react | 19.2.18 | npm direct build/test | MIT |
+| @types/react-dom | 19.2.5 | npm direct build/test | MIT |
+| @typescript/typescript-aix-ppc64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-darwin-arm64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-darwin-x64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-freebsd-arm64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-freebsd-x64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-linux-arm | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-linux-arm64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-linux-loong64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-linux-mips64el | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-linux-ppc64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-linux-riscv64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-linux-s390x | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-linux-x64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-netbsd-arm64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-netbsd-x64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-openbsd-arm64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-openbsd-x64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-sunos-x64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-win32-arm64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
+| @typescript/typescript-win32-x64 | 7.0.2 | npm transitive optional/platform | Apache-2.0 |
 | @vitejs/plugin-react | 6.1.0 | npm direct build/test | MIT |
 | @vitest/expect | 4.1.11 | npm transitive | MIT |
 | @vitest/mocker | 4.1.11 | npm transitive | MIT |
@@ -720,65 +748,16 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | @vitest/utils | 4.1.11 | npm transitive | MIT |
 | @xterm/addon-fit | 0.11.0 | npm direct runtime | MIT |
 | @xterm/xterm | 6.0.0 | npm direct runtime | MIT |
-| acorn | 8.18.0 | npm transitive | MIT |
-| acorn-jsx | 5.3.2 | npm transitive | MIT |
-| ajv | 6.15.0 | npm transitive | MIT |
 | assertion-error | 2.0.1 | npm transitive | MIT |
-| balanced-match | 4.0.4 | npm transitive | MIT |
-| baseline-browser-mapping | 2.11.19 | npm transitive | Apache-2.0 |
-| brace-expansion | 5.0.9 | npm transitive | MIT |
-| browserslist | 4.28.8 | npm transitive | MIT |
-| caniuse-lite | 1.0.30001810 | npm transitive | CC-BY-4.0 |
 | chai | 6.2.2 | npm transitive | MIT |
 | convert-source-map | 2.0.0 | npm transitive | MIT |
-| cross-spawn | 7.0.6 | npm transitive | MIT |
 | csstype | 3.2.3 | npm transitive | MIT |
-| debug | 4.4.3 | npm transitive | MIT |
-| deep-is | 0.1.4 | npm transitive | MIT |
 | detect-libc | 2.1.2 | npm transitive | Apache-2.0 |
-| electron-to-chromium | 1.5.415 | npm transitive | ISC |
 | es-module-lexer | 2.3.2 | npm transitive | MIT |
-| escalade | 3.2.0 | npm transitive | MIT |
-| escape-string-regexp | 4.0.0 | npm transitive | MIT |
-| eslint | 10.9.1 | npm direct build/test | MIT |
-| eslint-plugin-react-hooks | 7.1.1 | npm direct build/test | MIT |
-| eslint-scope | 9.1.2 | npm transitive | BSD-2-Clause |
-| eslint-visitor-keys | 3.4.3 | npm transitive | Apache-2.0 |
-| eslint-visitor-keys | 5.0.1 | npm transitive | Apache-2.0 |
-| espree | 11.2.0 | npm transitive | BSD-2-Clause |
-| esquery | 1.7.0 | npm transitive | BSD-3-Clause |
-| esrecurse | 4.3.0 | npm transitive | BSD-2-Clause |
-| estraverse | 5.3.0 | npm transitive | BSD-2-Clause |
 | estree-walker | 3.0.3 | npm transitive | MIT |
-| esutils | 2.0.3 | npm transitive | BSD-2-Clause |
 | expect-type | 1.4.0 | npm transitive | Apache-2.0 |
-| fast-deep-equal | 3.1.3 | npm transitive | MIT |
-| fast-json-stable-stringify | 2.1.0 | npm transitive | MIT |
-| fast-levenshtein | 2.0.6 | npm transitive | MIT |
 | fdir | 6.5.0 | npm transitive | MIT |
-| file-entry-cache | 8.0.0 | npm transitive | MIT |
-| find-up | 5.0.0 | npm transitive | MIT |
-| flat-cache | 4.0.1 | npm transitive | MIT |
-| flatted | 3.4.4 | npm transitive | ISC |
 | fsevents | 2.3.3 | npm transitive optional/platform | MIT |
-| gensync | 1.0.0-beta.2 | npm transitive | MIT |
-| glob-parent | 6.0.2 | npm transitive | ISC |
-| hermes-estree | 0.25.1 | npm transitive | MIT |
-| hermes-parser | 0.25.1 | npm transitive | MIT |
-| ignore | 5.3.2 | npm transitive | MIT |
-| ignore | 7.0.6 | npm transitive | MIT |
-| imurmurhash | 0.1.4 | npm transitive | MIT |
-| is-extglob | 2.1.1 | npm transitive | MIT |
-| is-glob | 4.0.3 | npm transitive | MIT |
-| isexe | 2.0.0 | npm transitive | ISC |
-| js-tokens | 4.0.0 | npm transitive | MIT |
-| jsesc | 3.1.0 | npm transitive | MIT |
-| json-buffer | 3.0.1 | npm transitive | MIT |
-| json-schema-traverse | 0.4.1 | npm transitive | MIT |
-| json-stable-stringify-without-jsonify | 1.0.1 | npm transitive | MIT |
-| json5 | 2.2.3 | npm transitive | MIT |
-| keyv | 4.5.4 | npm transitive | MIT |
-| levn | 0.4.1 | npm transitive | MIT |
 | lightningcss | 1.33.0 | npm transitive | MPL-2.0 |
 | lightningcss-android-arm64 | 1.33.0 | npm transitive optional/platform | MPL-2.0 |
 | lightningcss-darwin-arm64 | 1.33.0 | npm transitive optional/platform | MPL-2.0 |
@@ -791,35 +770,19 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | lightningcss-linux-x64-musl | 1.33.0 | npm transitive optional/platform | MPL-2.0 |
 | lightningcss-win32-arm64-msvc | 1.33.0 | npm transitive optional/platform | MPL-2.0 |
 | lightningcss-win32-x64-msvc | 1.33.0 | npm transitive optional/platform | MPL-2.0 |
-| locate-path | 6.0.0 | npm transitive | MIT |
-| loose-envify | 1.4.0 | npm transitive | MIT |
-| lru-cache | 5.1.1 | npm transitive | ISC |
 | magic-string | 0.30.21 | npm transitive | MIT |
-| minimatch | 10.2.6 | npm transitive | BlueOak-1.0.0 |
-| ms | 2.1.3 | npm transitive | MIT |
 | nanoid | 3.3.18 | npm transitive | MIT |
-| natural-compare | 1.4.0 | npm transitive | MIT |
-| node-releases | 2.0.53 | npm transitive | MIT |
 | obug | 2.1.4 | npm transitive | MIT |
-| optionator | 0.9.4 | npm transitive | MIT |
-| p-limit | 3.1.0 | npm transitive | MIT |
-| p-locate | 5.0.0 | npm transitive | MIT |
-| path-exists | 4.0.0 | npm transitive | MIT |
-| path-key | 3.1.1 | npm transitive | MIT |
+| oxfmt | 0.65.0 | npm direct build/test | MIT |
+| oxlint | 1.80.0 | npm direct build/test | MIT |
 | pathe | 2.0.3 | npm transitive | MIT |
 | picocolors | 1.1.1 | npm transitive | ISC |
 | picomatch | 4.0.7 | npm transitive | MIT |
 | postcss | 8.5.26 | npm transitive | MIT |
-| prelude-ls | 1.2.1 | npm transitive | MIT |
-| punycode | 2.3.1 | npm transitive | MIT |
-| react | 18.3.1 | npm direct runtime | MIT |
-| react-dom | 18.3.1 | npm direct runtime | MIT |
+| react | 19.2.8 | npm direct runtime | MIT |
+| react-dom | 19.2.8 | npm direct runtime | MIT |
 | rolldown | 1.2.6 | npm transitive | MIT |
-| scheduler | 0.23.2 | npm transitive | MIT |
-| semver | 6.3.1 | npm transitive | ISC |
-| semver | 7.8.5 | npm transitive | ISC |
-| shebang-command | 2.0.0 | npm transitive | MIT |
-| shebang-regex | 3.0.0 | npm transitive | MIT |
+| scheduler | 0.27.0 | npm transitive | MIT |
 | siginfo | 2.0.0 | npm transitive | ISC |
 | source-map-js | 1.2.1 | npm transitive | BSD-3-Clause |
 | stackback | 0.0.2 | npm transitive | MIT |
@@ -827,27 +790,17 @@ The unresolved icon provenance is the highest-priority asset issue: unlike the f
 | tinybench | 2.9.0 | npm transitive | MIT |
 | tinyexec | 1.3.0 | npm transitive | MIT |
 | tinyglobby | 0.2.17 | npm transitive | MIT |
+| tinypool | 2.1.0 | npm transitive | MIT |
 | tinyrainbow | 3.1.1 | npm transitive | MIT |
-| ts-api-utils | 2.5.0 | npm transitive | MIT |
-| type-check | 0.4.0 | npm transitive | MIT |
-| typescript | 5.9.3 | npm direct build/test | Apache-2.0 |
-| typescript-eslint | 8.68.0 | npm direct build/test | MIT |
+| typescript | 7.0.2 | npm direct build/test | Apache-2.0 |
 | undici-types | 8.3.0 | npm transitive | MIT |
-| update-browserslist-db | 1.3.1 | npm transitive | MIT |
-| uri-js | 4.4.1 | npm transitive | BSD-2-Clause |
 | vite | 8.2.2 | npm direct build/test | MIT |
 | vitest | 4.1.11 | npm direct build/test | MIT |
-| which | 2.0.2 | npm transitive | ISC |
 | why-is-node-running | 2.3.0 | npm transitive | MIT |
-| word-wrap | 1.2.5 | npm transitive | MIT |
-| yallist | 3.1.1 | npm transitive | ISC |
-| yocto-queue | 0.1.0 | npm transitive | MIT |
-| zod | 4.4.3 | npm transitive | MIT |
-| zod-validation-error | 4.0.2 | npm transitive | MIT |
 | zustand | 5.0.15 | npm direct runtime | MIT |
 
 ## License text and redistribution
 
-The repository LICENSE and NOTICE cover Devboule project code. This file identifies the third-party package and asset licences; it does not relicense them. For a binary release, retain the relevant package license/notice texts and the attribution requirements identified above alongside the application notice. In particular, do not omit MPL-2.0, CC-BY-4.0, BlueOak-1.0.0, Unicode-3.0, or OFL-1.1 material just because the package is transitive or the asset is loaded by a build step.
+The repository LICENSE and NOTICE cover Devboule project code. This file identifies the third-party package and asset licences; it does not relicense them. For a binary release, retain the relevant package license/notice texts and the attribution requirements identified above alongside the application notice. In particular, do not omit MPL-2.0, Unicode-3.0, or OFL-1.1 material just because the package is transitive or the asset is loaded by a build step.
 
-Useful canonical licence texts: Apache-2.0 https://www.apache.org/licenses/LICENSE-2.0, MPL-2.0 https://www.mozilla.org/en-US/MPL/2.0/, CC BY 4.0 https://creativecommons.org/licenses/by/4.0/, Blue Oak 1.0.0 https://blueoakcouncil.org/license/1.0.0, Unicode licence https://www.unicode.org/license.txt, and SIL OFL 1.1 https://scripts.sil.org/OFL.
+Useful canonical licence texts: Apache-2.0 https://www.apache.org/licenses/LICENSE-2.0, MPL-2.0 https://www.mozilla.org/en-US/MPL/2.0/, Unicode licence https://www.unicode.org/license.txt, and SIL OFL 1.1 https://scripts.sil.org/OFL.
