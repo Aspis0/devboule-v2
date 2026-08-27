@@ -7,6 +7,7 @@ import {
   type TerminalEvent,
   type TerminalSessionDeps,
 } from './terminalSession';
+import type { TerminalSessionRecord, TerminalSessionRegistry } from './terminalRegistry';
 
 interface MockView extends TerminalViewHandle {
   written: string[];
@@ -25,9 +26,10 @@ interface Harness {
   resolveAttach: () => void;
   banners: TerminalBanner[];
   ctrlCStates: boolean[];
+  registry: TerminalSessionRegistry;
 }
 
-function makeHarness(options?: { deferAttach?: boolean }): Harness {
+function makeHarness(options?: { deferAttach?: boolean; existingSessionId?: string }): Harness {
   const written: string[] = [];
   const fitOk = { value: true };
   const geometry = { cols: 80, rows: 24 };
@@ -39,6 +41,25 @@ function makeHarness(options?: { deferAttach?: boolean }): Harness {
   const attachGate = new Promise<void>((resolve) => {
     resolveAttach = resolve;
   });
+  let registeredSessionId = options?.existingSessionId ?? null;
+  const registry: TerminalSessionRegistry = {
+    get: vi.fn((): TerminalSessionRecord | null =>
+      registeredSessionId === null
+        ? null
+        : {
+            workspaceId: 'rust-core',
+            sessionId: registeredSessionId,
+            lastSeenSeq: null,
+          },
+    ),
+    register: vi.fn((...args: [string | null, string]) => {
+      registeredSessionId = args[1];
+    }),
+    updateCursor: vi.fn(),
+    remove: vi.fn((...args: [string | null, string]) => {
+      if (registeredSessionId === args[1]) registeredSessionId = null;
+    }),
+  };
 
   const view: MockView = {
     write: (data) => written.push(data),
@@ -85,6 +106,7 @@ function makeHarness(options?: { deferAttach?: boolean }): Harness {
     host: {} as HTMLElement,
     createView: async () => view,
     invoke: invoke as unknown as TerminalSessionDeps['invoke'],
+    registry,
     createChannel: (handler) => {
       eventHandler = handler;
       Object.defineProperty(channel, 'onmessage', {
@@ -124,6 +146,7 @@ function makeHarness(options?: { deferAttach?: boolean }): Harness {
     resolveAttach,
     banners,
     ctrlCStates,
+    registry,
   };
 }
 
@@ -144,6 +167,20 @@ describe('TerminalSession startup and channel ordering', () => {
       from_cursor: null,
       ch: expect.anything(),
     }));
+    expect(harness.registry.register).toHaveBeenCalledWith('rust-core', 'session-1');
+  });
+
+  it('adopts the registered session without creating another shell', async () => {
+    const harness = makeHarness({ existingSessionId: 'existing-session' });
+    await harness.session.start();
+
+    expect(harness.invoke).not.toHaveBeenCalledWith('session_create', expect.anything());
+    expect(harness.invoke).toHaveBeenCalledWith('session_attach', expect.objectContaining({
+      id: 'existing-session',
+      from_cursor: null,
+      ch: expect.anything(),
+    }));
+    expect(harness.registry.register).not.toHaveBeenCalled();
   });
 
   it('batches channel output into one xterm write per animation frame', async () => {
@@ -173,7 +210,7 @@ describe('TerminalSession startup and channel ordering', () => {
 });
 
 describe('TerminalSession lifecycle and errors', () => {
-  it('handles attach errors and closes the created session', async () => {
+  it('handles attach errors without closing the runtime-owned session', async () => {
     const harness = makeHarness();
     harness.invoke.mockImplementation(async (command: string) => {
       if (command === 'session_create') {
@@ -194,10 +231,10 @@ describe('TerminalSession lifecycle and errors', () => {
       message: 'Could not attach to the terminal: No session with that id.',
     });
     expect(harness.view.disposeCount).toBe(1);
-    expect(harness.invoke).toHaveBeenCalledWith('session_close', { id: 'session-1' });
+    expect(harness.invoke).not.toHaveBeenCalledWith('session_close', expect.anything());
   });
 
-  it('closes exactly once when disposed during an in-flight attach', async () => {
+  it('detaches without closing when disposed during an in-flight attach', async () => {
     const harness = makeHarness({ deferAttach: true });
     const startPromise = harness.session.start();
     await Promise.resolve();
@@ -207,7 +244,7 @@ describe('TerminalSession lifecycle and errors', () => {
     harness.resolveAttach();
     await startPromise;
 
-    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(1);
+    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(0);
     expect(harness.view.disposeCount).toBe(1);
   });
 
@@ -221,6 +258,7 @@ describe('TerminalSession lifecycle and errors', () => {
     await harness.session.writeToPty('ignored');
 
     expect(harness.banners).toContainEqual({ kind: 'exited', code: 7 });
+    expect(harness.registry.remove).toHaveBeenCalledWith('rust-core', 'session-1');
     expect(harness.invoke).not.toHaveBeenCalled();
   });
 
@@ -235,7 +273,19 @@ describe('TerminalSession lifecycle and errors', () => {
 
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.view.written).toEqual([]);
+    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(0);
+  });
+
+  it('closes the session only when explicitly requested', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.session.close();
+    harness.session.close();
+
+    expect(harness.registry.remove).toHaveBeenCalledWith('rust-core', 'session-1');
     expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(1);
+    expect(harness.view.disposeCount).toBe(1);
   });
 });
 
@@ -249,7 +299,6 @@ describe('TerminalSession resize and Ctrl+C', () => {
     const initialFitCount = harness.view.fitCount;
     harness.invoke.mockClear();
 
-    harness.session.requestResize();
     harness.session.requestResize();
     harness.session.requestResize();
     vi.advanceTimersByTime(149);
