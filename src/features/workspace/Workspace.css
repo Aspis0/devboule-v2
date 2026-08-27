@@ -147,7 +147,7 @@
 }
 
 .workspace-search:focus-within {
-  border-color: var(--border-strong);
+  border-color: var(--terracotta);
 }
 
 .workspace-add-button {
@@ -558,13 +558,15 @@
 .workspace-terminal-interrupt:hover,
 .workspace-terminal-interrupt:focus-visible,
 .workspace-terminal-interrupt[aria-pressed='true'] {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   background: var(--selection);
 }
 
-.workspace-terminal-interrupt:disabled {
+.workspace-terminal-interrupt:disabled,
+.workspace-terminal-close:disabled {
+  color: var(--silence);
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 1;
 }
 
 .workspace-terminal-close {
@@ -583,12 +585,7 @@
 .workspace-terminal-close:hover,
 .workspace-terminal-close:focus-visible {
   color: var(--danger);
-  background: var(--selection);
-}
-
-.workspace-terminal-close:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
+  background: transparent;
 }
 
 .workspace-terminal-host {
@@ -778,6 +775,13 @@
   font-size: 11px;
 }
 
+.workspace-row-selected .workspace-row-meta,
+.workspace-row-selected .workspace-isolation,
+.workspace-session-tab-selected .workspace-tab-meta,
+.workspace-surface-option-selected .workspace-surface-option-meta {
+  color: var(--ink-soft);
+}
+
 .workspace-secondary-action,
 .workspace-primary-action {
   display: grid;
@@ -812,7 +816,17 @@
 .workspace-secondary-action:disabled,
 .workspace-primary-action:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 1;
+}
+
+.workspace-secondary-action:disabled {
+  color: var(--silence);
+}
+
+.workspace-primary-action:disabled {
+  color: var(--silence);
+  background: var(--surface-muted);
+  border-color: var(--silence);
 }
 
 .workspace-composer-wrap {
@@ -916,7 +930,8 @@
 
 .workspace-composer-select:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  color: var(--silence);
+  opacity: 1;
 }
 
 .workspace-steer-hint {
@@ -938,8 +953,11 @@
 }
 
 .workspace-send-action:disabled {
+  color: var(--silence);
+  background: var(--surface-muted);
+  border-color: var(--silence);
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 1;
 }
 
 .workspace-effort-control {
@@ -1052,7 +1070,7 @@
 .workspace-mode-toggle:focus-visible {
   color: var(--ink);
   background: var(--surface-muted);
-  box-shadow: 0 0 0 2px var(--selection);
+  box-shadow: 0 0 0 2px var(--terracotta);
 }
 
 .workspace-mode-toggle-active,
@@ -1939,7 +1957,12 @@
 
 .workspace-project-dialog input:focus {
   border-color: var(--terracotta);
-  box-shadow: 0 0 0 2px var(--selection);
+  box-shadow: 0 0 0 2px var(--terracotta);
+}
+
+.workspace-project-dialog input::placeholder {
+  color: var(--silence);
+  opacity: 1;
 }
 
 .workspace-project-dialog input[aria-invalid='true'] {
