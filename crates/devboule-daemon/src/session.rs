@@ -43,7 +43,7 @@
 //! sequence range and emits an in-band [`SessionEvent::OutputGap`] rather than
 //! presenting a silently incomplete transcript.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
 #[cfg(windows)]
 use std::path::Path;
@@ -280,58 +280,111 @@ impl Scrollback {
         self.record_loss(seq, seq, dropped_bytes, false);
     }
 
-    fn replay_after(&self, from_cursor: Option<u64>) -> Vec<SessionEvent> {
+    fn needs_journal_replay(&self, from_cursor: Option<u64>, next_seq: u64) -> bool {
         let cursor = from_cursor.unwrap_or(0);
-        let mut chunks = self.chunks.iter();
-        let mut losses = self.losses.iter();
-        let mut next_chunk = chunks.next();
-        let mut next_loss = losses.next();
-        let mut events = Vec::new();
+        self.losses.iter().any(|loss| loss.to_seq > cursor)
+            || self
+                .chunks
+                .front()
+                .map(|chunk| chunk.seq > cursor.saturating_add(1))
+                .unwrap_or(next_seq > cursor.saturating_add(1))
+    }
 
-        loop {
-            while next_chunk.is_some_and(|chunk| chunk.seq <= cursor) {
-                next_chunk = chunks.next();
-            }
-            while next_loss.is_some_and(|loss| loss.to_seq <= cursor) {
-                next_loss = losses.next();
-            }
-            match (next_chunk, next_loss) {
-                (None, None) => break,
-                (Some(chunk), None) => {
-                    events.push(SessionEvent::Output {
-                        seq: chunk.seq,
-                        data: String::from_utf8_lossy(&chunk.data).into_owned(),
-                    });
-                    next_chunk = chunks.next();
-                }
-                (None, Some(loss)) => {
-                    events.push(SessionEvent::OutputGap {
-                        from_seq: loss.from_seq.max(cursor.saturating_add(1)),
-                        to_seq: loss.to_seq,
-                        dropped_bytes: loss.dropped_bytes,
-                        dropped_frames: loss.dropped_frames,
-                    });
-                    next_loss = losses.next();
-                }
-                (Some(chunk), Some(loss)) if loss.from_seq <= chunk.seq => {
-                    events.push(SessionEvent::OutputGap {
-                        from_seq: loss.from_seq.max(cursor.saturating_add(1)),
-                        to_seq: loss.to_seq,
-                        dropped_bytes: loss.dropped_bytes,
-                        dropped_frames: loss.dropped_frames,
-                    });
-                    next_loss = losses.next();
-                }
-                (Some(chunk), Some(_loss)) => {
-                    events.push(SessionEvent::Output {
-                        seq: chunk.seq,
-                        data: String::from_utf8_lossy(&chunk.data).into_owned(),
-                    });
-                    next_chunk = chunks.next();
-                }
+    #[cfg(test)]
+    fn replay_after(&self, from_cursor: Option<u64>) -> Vec<SessionEvent> {
+        self.replay_after_with_journal(from_cursor, &[])
+    }
+
+    fn replay_after_with_journal(
+        &self,
+        from_cursor: Option<u64>,
+        journal_outputs: &[(u64, String)],
+    ) -> Vec<SessionEvent> {
+        let cursor = from_cursor.unwrap_or(0);
+        let mut outputs = BTreeMap::<u64, String>::new();
+        for chunk in &self.chunks {
+            if chunk.seq > cursor {
+                outputs.insert(chunk.seq, String::from_utf8_lossy(&chunk.data).into_owned());
             }
         }
-        events
+        // Prefer the journal copy for a sequence present in both sources. It
+        // is the durable copy and makes the seam a set union, never two
+        // envelopes for one sequence.
+        for (seq, data) in journal_outputs {
+            if *seq > cursor {
+                outputs.insert(*seq, data.clone());
+            }
+        }
+
+        let mut timeline = BTreeMap::<u64, SessionEvent>::new();
+        for (seq, data) in outputs {
+            timeline.insert(seq, SessionEvent::Output { seq, data });
+        }
+
+        for loss in &self.losses {
+            let from_seq = loss.from_seq.max(cursor.saturating_add(1));
+            if from_seq > loss.to_seq {
+                continue;
+            }
+            let recovered: Vec<u64> = timeline
+                .range(from_seq..=loss.to_seq)
+                .filter_map(|(seq, event)| match event {
+                    SessionEvent::Output { .. } => Some(*seq),
+                    _ => None,
+                })
+                .collect();
+            let mut segment_start = from_seq;
+            let mut missing_frames = loss.to_seq.saturating_sub(from_seq).saturating_add(1);
+            let recovered_frames = recovered.len() as u64;
+            let recovered_bytes: u64 = recovered
+                .iter()
+                .filter_map(|seq| timeline.get(seq))
+                .filter_map(|event| match event {
+                    SessionEvent::Output { data, .. } => Some(data.len() as u64),
+                    _ => None,
+                })
+                .sum();
+            let mut missing_bytes = loss.dropped_bytes.saturating_sub(recovered_bytes);
+            missing_frames = missing_frames.saturating_sub(recovered_frames);
+
+            for seq in recovered {
+                if segment_start < seq {
+                    let segment_end = seq - 1;
+                    let segment_frames = segment_end - segment_start + 1;
+                    let segment_bytes = if missing_frames == segment_frames {
+                        missing_bytes
+                    } else {
+                        missing_bytes.saturating_mul(segment_frames) / missing_frames.max(1)
+                    };
+                    timeline.insert(
+                        segment_start,
+                        SessionEvent::OutputGap {
+                            from_seq: segment_start,
+                            to_seq: segment_end,
+                            dropped_bytes: segment_bytes,
+                            dropped_frames: segment_frames,
+                        },
+                    );
+                    missing_bytes = missing_bytes.saturating_sub(segment_bytes);
+                    missing_frames = missing_frames.saturating_sub(segment_frames);
+                }
+                segment_start = seq.saturating_add(1);
+            }
+            if segment_start <= loss.to_seq {
+                let segment_frames = loss.to_seq - segment_start + 1;
+                timeline.insert(
+                    segment_start,
+                    SessionEvent::OutputGap {
+                        from_seq: segment_start,
+                        to_seq: loss.to_seq,
+                        dropped_bytes: missing_bytes,
+                        dropped_frames: segment_frames,
+                    },
+                );
+            }
+        }
+
+        timeline.into_values().collect()
     }
 }
 
@@ -383,6 +436,7 @@ struct SessionRuntime {
     peak_ring_bytes: AtomicUsize,
     ring_evicted_bytes: AtomicU64,
     ring_dropped_frames: AtomicU64,
+    journal_replays: AtomicU64,
     reader_finished: AtomicBool,
     child_reaped: AtomicBool,
     published_frames: AtomicU64,
@@ -415,6 +469,7 @@ impl SessionRuntime {
             peak_ring_bytes: AtomicUsize::new(0),
             ring_evicted_bytes: AtomicU64::new(0),
             ring_dropped_frames: AtomicU64::new(0),
+            journal_replays: AtomicU64::new(0),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
             published_frames: AtomicU64::new(0),
@@ -558,6 +613,51 @@ impl SessionRuntime {
 
     fn journal_degraded(&self) -> bool {
         self.journal_degraded.load(Ordering::Acquire)
+    }
+
+    fn replay_journal_outputs(&self, from_seq: u64, generation: u64) -> Vec<(u64, String)> {
+        let Some(journal) = &self.journal else {
+            return Vec::new();
+        };
+        let replay = match journal.replay(&self.session_id, from_seq) {
+            Ok(replay) => replay,
+            Err(error) => {
+                self.mark_journal_degraded();
+                eprintln!(
+                    "journal replay failed for live session {} from seq {}: {error}",
+                    self.session_id, from_seq
+                );
+                return Vec::new();
+            }
+        };
+        if replay.generation != generation {
+            self.mark_journal_degraded();
+            eprintln!(
+                "journal replay generation mismatch for live session {}: journal={} live={}",
+                self.session_id, replay.generation, generation
+            );
+            return Vec::new();
+        }
+        if replay.truncated {
+            self.mark_journal_degraded();
+        }
+        self.journal_replays.fetch_add(1, Ordering::Relaxed);
+        replay
+            .events
+            .into_iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { seq, data } => Some((seq, data)),
+                SessionEvent::Exit { .. }
+                | SessionEvent::Recovered { .. }
+                | SessionEvent::JournalDegraded
+                | SessionEvent::OutputGap { .. } => None,
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn journal_replay_count(&self) -> u64 {
+        self.journal_replays.load(Ordering::Relaxed)
     }
 
     /// Register this connection as the single attached viewer. A second
@@ -861,12 +961,31 @@ impl ConnHandle {
             .unwrap_or_else(|error| error.into_inner());
         let mut events = Vec::new();
         for (session_id, pull) in map.iter_mut() {
+            let cursor = pull.sent_seq;
+            let needs_journal = {
+                let stream = pull
+                    .runtime
+                    .stream
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                stream
+                    .scrollback
+                    .needs_journal_replay(cursor, stream.next_seq)
+            };
+            let journal_outputs = if needs_journal {
+                pull.runtime
+                    .replay_journal_outputs(cursor.unwrap_or(0), pull.generation)
+            } else {
+                Vec::new()
+            };
             let stream = pull
                 .runtime
                 .stream
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let replay = stream.scrollback.replay_after(pull.sent_seq);
+            let replay = stream
+                .scrollback
+                .replay_after_with_journal(cursor, &journal_outputs);
             for event in replay {
                 events.push(PendingEvent {
                     session_id: session_id.clone(),
@@ -2135,6 +2254,107 @@ mod tests {
             conn.event_sent(event);
         }
         assert!(conn.pull_events().is_empty());
+    }
+
+    #[test]
+    fn live_reattach_reads_evicted_prefix_from_journal_before_ring_seam() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-reattach-journal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        journal
+            .upsert_blocking(new_session_record(
+                "s.reattach.1",
+                "S-1-5-21-1",
+                None,
+                SessionKind::Terminal,
+                "Terminal",
+            ))
+            .unwrap();
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            "s.reattach.1".into(),
+            Some(Arc::clone(&journal)),
+        ));
+        let payload = "x".repeat(8192);
+        for _ in 1..=300 {
+            runtime.publish_output(&payload);
+        }
+        journal.flush().unwrap();
+        let ring_first_seq = runtime
+            .stream
+            .lock()
+            .unwrap()
+            .scrollback
+            .chunks
+            .front()
+            .map(|chunk| chunk.seq)
+            .expect("ring retained a suffix");
+        assert!(ring_first_seq > 1, "test did not evict a ring prefix");
+
+        // This frame is intentionally not flushed to SQLite. It must come
+        // from the live ring and join the journal prefix at the seam.
+        runtime.publish_output("live-seam");
+
+        let conn = ConnHandle::new(1);
+        let generation = runtime
+            .try_attach(
+                Some(Cursor {
+                    generation: 1,
+                    seq: 0,
+                }),
+                &conn,
+            )
+            .unwrap();
+        conn.track("s.reattach.1", Arc::clone(&runtime), Some(0), generation);
+        let started = Instant::now();
+        let events = conn.pull_events();
+        let elapsed = started.elapsed();
+        let output_seqs: Vec<u64> = events
+            .iter()
+            .filter_map(|event| match event.envelope.event {
+                SessionEvent::Output { seq, .. } => Some(seq),
+                SessionEvent::OutputGap { .. }
+                | SessionEvent::Exit { .. }
+                | SessionEvent::Recovered { .. }
+                | SessionEvent::JournalDegraded => None,
+            })
+            .collect();
+        assert_eq!(runtime.journal_replay_count(), 1);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event.envelope.event, SessionEvent::OutputGap { .. })),
+            "journal-covered ring eviction was declared as a gap: {events:?}"
+        );
+        assert_eq!(output_seqs, (1..=301).collect::<Vec<_>>());
+        assert_eq!(
+            output_seqs
+                .windows(2)
+                .filter(|pair| pair[0] == pair[1])
+                .count(),
+            0,
+            "journal/ring seam duplicated an output sequence"
+        );
+        for event in &events {
+            conn.event_sent(event);
+        }
+        assert!(conn.pull_events().is_empty());
+        println!(
+            "JOURNAL_REATTACH persisted_frames=300 ring_first_seq={ring_first_seq} delivered_frames={} journal_replays={} wall_ms={}",
+            output_seqs.len(),
+            runtime.journal_replay_count(),
+            elapsed.as_millis(),
+        );
+        drop(conn);
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
