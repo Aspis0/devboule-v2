@@ -57,9 +57,11 @@ export class TerminalSession {
   private view: TerminalViewHandle | null = null;
   private started = false;
   private disposed = false;
-  private closeRequested = false;
   private exited = false;
   private lastSeenSeq: number | null = null;
+  private attachPending = false;
+  private backendTeardown: 'detach' | 'close' | null = null;
+  private backendTeardownSent = false;
 
   private readonly pendingOutput: string[] = [];
   private outputFrame: number | null = null;
@@ -103,10 +105,7 @@ export class TerminalSession {
 
     this.sessionId = sessionId;
     if (this.disposed) {
-      if (this.closeRequested) {
-        this.closeBackendSession(sessionId);
-        this.sessionId = null;
-      }
+      this.requestBackendTeardown();
       return;
     }
 
@@ -118,6 +117,7 @@ export class TerminalSession {
       });
     } catch (error: unknown) {
       this.showError(`Could not open the terminal view: ${errorMessage(error)}`);
+      this.requestBackendTeardown();
       return;
     }
 
@@ -137,6 +137,9 @@ export class TerminalSession {
     }
     this.channel = channel;
 
+    let attachFailed = false;
+    let attachError: unknown;
+    this.attachPending = true;
     try {
       await this.deps.invoke<void>('session_attach', {
         id: sessionId,
@@ -146,15 +149,23 @@ export class TerminalSession {
         ch: channel,
       });
     } catch (error: unknown) {
+      attachFailed = true;
+      attachError = error;
+    } finally {
+      this.attachPending = false;
+      this.requestBackendTeardown();
+    }
+
+    if (attachFailed) {
       this.disposeViewAndChannel();
-      if (adopted && isMissingSessionError(error) && !this.disposed) {
+      if (adopted && isMissingSessionError(attachError) && !this.disposed) {
         this.deps.registry.remove(this.deps.workspaceId, sessionId);
         this.sessionId = null;
         this.started = false;
         await this.start();
         return;
       }
-      this.showError(`Could not attach to the terminal: ${errorMessage(error)}`);
+      this.showError(`Could not attach to the terminal: ${errorMessage(attachError)}`);
       return;
     }
 
@@ -214,11 +225,27 @@ export class TerminalSession {
     }
   }
 
-  /** Detach the view and channel, leaving the runtime-owned session alive. */
+  /** Detach the view, channel, and backend subscription, leaving the session alive. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
 
+    this.disposeLocal();
+    this.backendTeardown = 'detach';
+    this.requestBackendTeardown();
+  }
+
+  /** Explicitly close the runtime-owned session and detach this view. */
+  close(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+
+    this.disposeLocal();
+    this.backendTeardown = 'close';
+    this.requestBackendTeardown();
+  }
+
+  private disposeLocal(): void {
     if (this.ctrlCTimer !== null) {
       this.clearTimer(this.ctrlCTimer);
       this.ctrlCTimer = null;
@@ -236,18 +263,6 @@ export class TerminalSession {
     }
     this.pendingOutput.length = 0;
     this.disposeViewAndChannel();
-  }
-
-  /** Explicitly close the runtime-owned session and detach this view. */
-  close(): void {
-    if (this.closeRequested) return;
-    const sessionId = this.sessionId;
-    this.dispose();
-    this.closeRequested = true;
-    if (sessionId === null) return;
-
-    this.closeBackendSession(sessionId);
-    this.sessionId = null;
   }
 
   private handleViewData(data: string): void {
@@ -330,9 +345,26 @@ export class TerminalSession {
     if (!this.disposed) this.deps.onBanner({ kind: 'error', message });
   }
 
-  private closeBackendSession(sessionId: string): void {
-    this.deps.registry.remove(this.deps.workspaceId, sessionId);
-    void this.deps.invoke<void>('session_close', { id: sessionId }).catch(() => undefined);
+  private requestBackendTeardown(): void {
+    if (
+      this.backendTeardown === null ||
+      this.backendTeardownSent ||
+      this.attachPending ||
+      this.sessionId === null
+    ) {
+      return;
+    }
+
+    const sessionId = this.sessionId;
+    const teardown = this.backendTeardown;
+    this.backendTeardownSent = true;
+    if (teardown === 'close') {
+      this.deps.registry.remove(this.deps.workspaceId, sessionId);
+      void this.deps.invoke<void>('session_close', { id: sessionId }).catch(() => undefined);
+      return;
+    }
+
+    void this.deps.invoke<void>('session_detach', { id: sessionId }).catch(() => undefined);
   }
 }
 
