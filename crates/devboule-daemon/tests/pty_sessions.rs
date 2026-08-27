@@ -179,7 +179,7 @@ fn cmd_keep() -> PtyCommand {
 
 fn cmd_spawn_long_lived_child(marker: &str) -> PtyCommand {
     let script = format!(
-        "$p = Start-Process -FilePath ping.exe -ArgumentList '-t','127.0.0.1' -PassThru; Write-Output ('{marker}' + $p.Id); Wait-Process -Id $p.Id"
+        "Start-Sleep -Milliseconds 250; $p = Start-Process -FilePath ping.exe -ArgumentList '-t','127.0.0.1' -PassThru; Write-Output ('{marker}' + $p.Id); Wait-Process -Id $p.Id"
     );
     PtyCommand::new(
         "powershell.exe",
