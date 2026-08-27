@@ -10,7 +10,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # pnpm must be installed BEFORE setup-node: `cache: pnpm` resolves the store
       # path by running `pnpm store path`, which fails if pnpm is not on PATH yet.
