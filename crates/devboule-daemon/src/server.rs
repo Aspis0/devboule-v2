@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -14,16 +14,24 @@ use crate::idempotency::IdempotencyStore;
 use crate::lock::SingleInstanceLock;
 use crate::paths::RuntimePaths;
 use crate::transport::{self, Listener};
+use crate::IDLE_SHUTDOWN_GRACE;
 
-const LAST_CLIENT_GRACE: Duration = Duration::from_secs(1);
 const JOIN_SLICE: Duration = Duration::from_millis(10);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
+
+#[derive(Default)]
+struct Lifecycle {
+    clients: u32,
+    sessions: u32,
+    shutting_down: bool,
+    idle_generation: u64,
+}
 
 pub struct ServerState {
     instance_id: String,
     started: Instant,
     stop: Arc<AtomicBool>,
-    clients: Arc<AtomicU32>,
+    lifecycle: Mutex<Lifecycle>,
     shutdown_flag: Arc<Mutex<bool>>,
     shutdown_cvar: Arc<Condvar>,
     /// Remembered create/send/permission-response keys. M3a does not serve
@@ -39,7 +47,7 @@ impl ServerState {
             instance_id,
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
-            clients: Arc::new(AtomicU32::new(0)),
+            lifecycle: Mutex::new(Lifecycle::default()),
             shutdown_flag: Arc::new(Mutex::new(false)),
             shutdown_cvar: Arc::new(Condvar::new()),
             idempotency: Mutex::new(IdempotencyStore::default()),
@@ -47,6 +55,15 @@ impl ServerState {
     }
 
     pub fn request_shutdown(&self) {
+        {
+            let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
+            lifecycle.shutting_down = true;
+            lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
+        }
+        self.signal_shutdown();
+    }
+
+    fn signal_shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
         let mut flag = self
             .shutdown_flag
@@ -69,18 +86,76 @@ impl ServerState {
         }
     }
 
-    fn client_connected(&self) {
-        self.clients.fetch_add(1, Ordering::SeqCst);
+    fn is_shutting_down(&self) -> bool {
+        self.lifecycle
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .shutting_down
     }
 
-    fn client_disconnected(&self) {
-        let previous = self.clients.fetch_sub(1, Ordering::SeqCst);
-        if previous == 1 && !self.stop.load(Ordering::SeqCst) {
-            arm_idle_shutdown(self);
+    /// Admit a client unless shutdown has started. A reconnect that wins this
+    /// lock invalidates any idle timer armed by the previous connection.
+    fn client_connected(&self) -> bool {
+        let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
+        if lifecycle.shutting_down {
+            return false;
+        }
+        lifecycle.clients = lifecycle.clients.saturating_add(1);
+        lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
+        true
+    }
+
+    fn client_disconnected(self: &Arc<Self>) {
+        let generation = {
+            let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
+            lifecycle.clients = lifecycle.clients.saturating_sub(1);
+            if lifecycle.clients == 0 && lifecycle.sessions == 0 && !lifecycle.shutting_down {
+                lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
+                Some(lifecycle.idle_generation)
+            } else {
+                None
+            }
+        };
+        if let Some(generation) = generation {
+            arm_idle_shutdown(Arc::clone(self), generation);
+        }
+    }
+
+    /// Register a live daemon-owned session. M3b must call this for create and
+    /// call [`Self::session_finished`] only when close/stop actually ends the
+    /// session. Detach deliberately does neither: it only removes a view.
+    #[allow(dead_code)]
+    pub fn session_started(&self) -> bool {
+        let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
+        if lifecycle.shutting_down {
+            return false;
+        }
+        lifecycle.sessions = lifecycle.sessions.saturating_add(1);
+        lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
+        true
+    }
+
+    /// Mark a daemon-owned session as no longer alive. This may arm the idle
+    /// shutdown timer when no client remains attached to the daemon.
+    #[allow(dead_code)]
+    pub fn session_finished(self: &Arc<Self>) {
+        let generation = {
+            let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
+            lifecycle.sessions = lifecycle.sessions.saturating_sub(1);
+            if lifecycle.clients == 0 && lifecycle.sessions == 0 && !lifecycle.shutting_down {
+                lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
+                Some(lifecycle.idle_generation)
+            } else {
+                None
+            }
+        };
+        if let Some(generation) = generation {
+            arm_idle_shutdown(Arc::clone(self), generation);
         }
     }
 
     fn status_body(&self, request_id: u64) -> DaemonMessage {
+        let lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         DaemonMessage::Status {
             id: request_id,
             body: DaemonStatusBody {
@@ -89,30 +164,39 @@ impl ServerState {
                 daemon_version: env!("CARGO_PKG_VERSION").to_string(),
                 pid: std::process::id(),
                 uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                clients: self.clients.load(Ordering::SeqCst),
-                sessions: 0,
+                clients: lifecycle.clients,
+                sessions: lifecycle.sessions,
                 capabilities: m3a_daemon_capabilities(),
             },
         }
     }
 }
 
-/// Last-client grace. M3c's journal flush hooks `request_shutdown`, which is
-/// the only deliberate process-exit path besides a fatal error.
-fn arm_idle_shutdown(state: &ServerState) {
-    let stop = Arc::clone(&state.stop);
-    let clients = Arc::clone(&state.clients);
-    let flag = Arc::clone(&state.shutdown_flag);
-    let cvar = Arc::clone(&state.shutdown_cvar);
+/// Begin shutdown only if the lifecycle snapshot that armed this timer is
+/// still current. The lifecycle mutex makes the final check and the shutdown
+/// transition atomic with client reconnects and session transitions.
+fn arm_idle_shutdown(state: Arc<ServerState>, generation: u64) {
     let _ = std::thread::Builder::new()
         .name("daemon-idle".into())
         .spawn(move || {
-            std::thread::sleep(LAST_CLIENT_GRACE);
-            if clients.load(Ordering::SeqCst) == 0 && !stop.load(Ordering::SeqCst) {
-                stop.store(true, Ordering::SeqCst);
-                let mut locked = flag.lock().unwrap_or_else(|err| err.into_inner());
-                *locked = true;
-                cvar.notify_all();
+            std::thread::sleep(IDLE_SHUTDOWN_GRACE);
+            let should_shutdown = {
+                let mut lifecycle = state
+                    .lifecycle
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                let should_shutdown = lifecycle.idle_generation == generation
+                    && lifecycle.clients == 0
+                    && lifecycle.sessions == 0
+                    && !lifecycle.shutting_down;
+                if should_shutdown {
+                    lifecycle.shutting_down = true;
+                    lifecycle.idle_generation = lifecycle.idle_generation.wrapping_add(1);
+                }
+                should_shutdown
+            };
+            if should_shutdown {
+                state.signal_shutdown();
             }
         });
 }
@@ -171,11 +255,10 @@ fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) 
         }
         match listener.accept() {
             Ok(stream) => {
-                if state.stop.load(Ordering::SeqCst) {
-                    drop(stream);
+                if !state.client_connected() {
+                    reject_shutting_down(stream);
                     break;
                 }
-                state.client_connected();
                 let conn_state = Arc::clone(&state);
                 match std::thread::Builder::new()
                     .name("daemon-client".into())
@@ -205,6 +288,10 @@ fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) 
 }
 
 fn handle_client(mut framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonError> {
+    if state.is_shutting_down() {
+        send_shutting_down(&mut framed, None)?;
+        return Ok(());
+    }
     let hello: ClientMessage = framed.recv()?;
     let ClientMessage::Hello(client_hello) = hello else {
         framed.send(&DaemonMessage::Error(WireError::new(
@@ -213,6 +300,10 @@ fn handle_client(mut framed: Framed, state: Arc<ServerState>) -> Result<(), Daem
         )))?;
         return Ok(());
     };
+    if state.is_shutting_down() {
+        send_shutting_down(&mut framed, None)?;
+        return Ok(());
+    }
     let daemon_hello = daemon_hello(&state);
     match negotiate(&client_hello, &daemon_hello) {
         Ok(_agreed) => {
@@ -258,6 +349,19 @@ fn handle_client(mut framed: Framed, state: Arc<ServerState>) -> Result<(), Daem
     }
 }
 
+fn reject_shutting_down(stream: std::fs::File) {
+    let mut framed = Framed::new(stream);
+    let _ = send_shutting_down(&mut framed, None);
+}
+
+fn send_shutting_down(framed: &mut Framed, id: Option<u64>) -> Result<(), DaemonError> {
+    let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
+    if let Some(id) = id {
+        error = error.with_id(id);
+    }
+    framed.send(&DaemonMessage::Error(error))
+}
+
 fn daemon_hello(state: &ServerState) -> DaemonHello {
     DaemonHello {
         protocol_version: PROTOCOL_VERSION,
@@ -270,12 +374,14 @@ fn daemon_hello(state: &ServerState) -> DaemonHello {
 }
 
 fn dispatch(state: &ServerState, _owner: &OwnerId, request: ClientMessage) -> DaemonMessage {
-    if state.stop.load(Ordering::SeqCst) && !matches!(request, ClientMessage::Shutdown { .. }) {
-        let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
-        if let Some(id) = request.request_id() {
-            error = error.with_id(id);
-        }
-        return DaemonMessage::Error(error);
+    if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
+        return DaemonMessage::Error({
+            let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
+            if let Some(id) = request.request_id() {
+                error = error.with_id(id);
+            }
+            error
+        });
     }
     match request {
         ClientMessage::Hello(_) => DaemonMessage::Error(WireError::new(
@@ -321,5 +427,84 @@ fn bounded_join(handle: JoinHandle<()>, budget: Duration) {
     }
     if handle.is_finished() {
         let _ = handle.join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use devboule_protocol::{ClientMessage, OwnerId};
+
+    fn state() -> Arc<ServerState> {
+        ServerState::new("test-instance".to_string())
+    }
+
+    fn wait_for_shutdown(state: &ServerState) {
+        let deadline = Instant::now() + IDLE_SHUTDOWN_GRACE + Duration::from_millis(500);
+        while !state.is_shutting_down() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(state.is_shutting_down(), "idle daemon did not shut down");
+    }
+
+    #[test]
+    fn idle_daemon_exits_after_grace_period() {
+        let state = state();
+        assert!(state.client_connected());
+        state.client_disconnected();
+        wait_for_shutdown(&state);
+    }
+
+    #[test]
+    fn connected_client_prevents_idle_shutdown() {
+        let state = state();
+        assert!(state.client_connected());
+        std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(100));
+        assert!(!state.is_shutting_down());
+        state.client_disconnected();
+        wait_for_shutdown(&state);
+    }
+
+    #[test]
+    fn live_session_prevents_shutdown_even_without_a_client() {
+        let state = state();
+        assert!(state.session_started());
+        std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(100));
+        assert!(!state.is_shutting_down());
+        state.session_finished();
+        wait_for_shutdown(&state);
+    }
+
+    #[test]
+    fn reconnect_inside_grace_invalidates_idle_shutdown() {
+        let state = state();
+        assert!(state.client_connected());
+        state.client_disconnected();
+        std::thread::sleep(IDLE_SHUTDOWN_GRACE / 2);
+        assert!(state.client_connected());
+        std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(100));
+        assert!(!state.is_shutting_down());
+        state.client_disconnected();
+        wait_for_shutdown(&state);
+    }
+
+    #[test]
+    fn shutting_down_rejects_new_client_with_stable_error() {
+        let state = state();
+        state.request_shutdown();
+        assert!(!state.client_connected());
+        let reply = dispatch(
+            &state,
+            &OwnerId::new("test-user", "test-client").expect("owner"),
+            ClientMessage::Ping { id: 7 },
+        );
+        assert!(matches!(
+            reply,
+            DaemonMessage::Error(WireError {
+                code: ErrorCode::ShuttingDown,
+                id: Some(7),
+                ..
+            })
+        ));
     }
 }

@@ -3,7 +3,7 @@ use std::io;
 use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
@@ -16,7 +16,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW, PIPE_READMODE_BYTE,
+    ConnectNamedPipe, CreateNamedPipeW, WaitNamedPipeW, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
@@ -28,30 +28,19 @@ const PIPE_BUFFER: u32 = 64 * 1024;
 const MAX_INSTANCES: u32 = 16;
 const WAIT_MS: u32 = 1000;
 
-#[derive(Clone, Copy)]
-struct SendHandle(HANDLE);
-unsafe impl Send for SendHandle {}
-
 #[derive(Clone)]
 pub struct ListenerShutdown {
     stop: Arc<AtomicBool>,
-    pending: Arc<Mutex<Option<SendHandle>>>,
     pipe_name: String,
 }
 
 impl ListenerShutdown {
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        let pending = {
-            let slot = self.pending.lock().unwrap_or_else(|err| err.into_inner());
-            *slot
-        };
-        if let Some(SendHandle(handle)) = pending {
-            unsafe {
-                DisconnectNamedPipe(handle);
-            }
-        }
-        let _ = connect_pipe(&self.pipe_name);
+        // A one-shot connect wakes ConnectNamedPipe without making process
+        // shutdown wait through the normal client retry loop. It covers the
+        // small window where accept has not yet observed the stop flag.
+        let _ = connect_pipe_once(&self.pipe_name);
     }
 }
 
@@ -59,7 +48,6 @@ pub struct NamedPipeListener {
     pipe_name: String,
     security: PipeSecurity,
     stop: Arc<AtomicBool>,
-    pending: Arc<Mutex<Option<SendHandle>>>,
     first: bool,
 }
 
@@ -70,7 +58,6 @@ impl NamedPipeListener {
             pipe_name: paths.pipe_name.clone(),
             security,
             stop,
-            pending: Arc::new(Mutex::new(None)),
             first: true,
         })
     }
@@ -111,7 +98,6 @@ impl NamedPipeListener {
     pub fn shutdown_handle(&self) -> ListenerShutdown {
         ListenerShutdown {
             stop: Arc::clone(&self.stop),
-            pending: Arc::clone(&self.pending),
             pipe_name: self.pipe_name.clone(),
         }
     }
@@ -128,15 +114,7 @@ impl Listener for NamedPipeListener {
             ));
         }
         let handle = self.create_instance()?;
-        {
-            let mut pending = self.pending.lock().unwrap_or_else(|err| err.into_inner());
-            *pending = Some(SendHandle(handle));
-        }
         let connected = unsafe { ConnectNamedPipe(handle, ptr::null_mut()) };
-        {
-            let mut pending = self.pending.lock().unwrap_or_else(|err| err.into_inner());
-            *pending = None;
-        }
         if connected == 0 {
             let err = last_os_error();
             if err.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
@@ -147,14 +125,10 @@ impl Listener for NamedPipeListener {
             }
         }
         if self.stop.load(Ordering::SeqCst) {
-            unsafe {
-                DisconnectNamedPipe(handle);
-                CloseHandle(handle);
-            }
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "listener shutting down",
-            ));
+            // Return the connected stream so the accept loop can send the
+            // stable `shutting_down` handshake error to a real client that
+            // raced the transition. The shutdown wake connection follows the
+            // same path and is closed after its rejected frame.
         }
         // SAFETY: CreateNamedPipeW returned a new owned handle. File takes
         // exclusive ownership and closes it on drop.
@@ -169,33 +143,17 @@ impl Listener for NamedPipeListener {
 }
 
 pub fn connect_pipe(pipe_name: &str) -> io::Result<File> {
-    let name = wide(pipe_name);
     for _ in 0..20 {
-        let handle = unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                0,
-                ptr::null(),
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                ptr::null_mut(),
-            )
-        };
-        if handle != INVALID_HANDLE_VALUE {
-            unsafe {
-                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
-            }
-            // SAFETY: CreateFileW returned a new owned handle.
-            return Ok(unsafe { File::from_raw_handle(handle as RawHandle) });
-        }
-        let err = last_os_error();
-        match err.raw_os_error().map(|code| code as u32) {
-            Some(ERROR_PIPE_BUSY) => {
-                let _ = unsafe { WaitNamedPipeW(name.as_ptr(), WAIT_MS) };
-            }
-            Some(ERROR_FILE_NOT_FOUND) => return Err(err),
-            _ => return Err(err),
+        match connect_pipe_once(pipe_name) {
+            Ok(file) => return Ok(file),
+            Err(error) => match error.raw_os_error().map(|code| code as u32) {
+                Some(ERROR_PIPE_BUSY) => {
+                    let name = wide(pipe_name);
+                    let _ = unsafe { WaitNamedPipeW(name.as_ptr(), WAIT_MS) };
+                }
+                Some(ERROR_FILE_NOT_FOUND) => return Err(error),
+                _ => return Err(error),
+            },
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -203,6 +161,29 @@ pub fn connect_pipe(pipe_name: &str) -> io::Result<File> {
         io::ErrorKind::TimedOut,
         "named pipe is busy",
     ))
+}
+
+fn connect_pipe_once(pipe_name: &str) -> io::Result<File> {
+    let name = wide(pipe_name);
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_os_error());
+    }
+    unsafe {
+        SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+    }
+    // SAFETY: CreateFileW returned a new owned handle.
+    Ok(unsafe { File::from_raw_handle(handle as RawHandle) })
 }
 
 pub fn inspect_pipe_dacl(file: &File) -> io::Result<String> {

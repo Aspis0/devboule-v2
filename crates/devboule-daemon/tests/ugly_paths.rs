@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use devboule_daemon::{
     connect, connect_or_spawn, current_user_sid, dacl_is_current_user_only, spawn_daemon,
-    DaemonClient, RuntimePaths,
+    DaemonClient, RuntimePaths, IDLE_SHUTDOWN_GRACE,
 };
 use devboule_protocol::{ClientHello, ClientMessage, ErrorCode, OwnerId, PROTOCOL_VERSION};
 
@@ -52,13 +52,13 @@ fn unique_paths() -> (RuntimePaths, PathBuf) {
 struct Harness {
     paths: RuntimePaths,
     dir: PathBuf,
-    child: Option<Child>,
+    child: Option<ChildGuard>,
 }
 
 impl Harness {
     fn spawn() -> Self {
         let (paths, dir) = unique_paths();
-        let child = spawn_daemon(&daemon_bin(), &paths).expect("spawn daemon");
+        let child = ChildGuard::spawn(&paths);
         let mut harness = Self {
             paths,
             dir,
@@ -89,16 +89,78 @@ impl Harness {
     fn client(&self, name: &str) -> DaemonClient {
         connect(&self.paths, test_hello(name)).expect("connect")
     }
+
+    fn wait_until_exit(&mut self) -> std::process::ExitStatus {
+        let deadline = Instant::now() + IDLE_SHUTDOWN_GRACE + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Some(child) = &mut self.child {
+                if let Some(status) = child.try_wait().expect("wait for daemon") {
+                    return status;
+                }
+            } else {
+                panic!("daemon child handle was already taken");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("daemon did not exit after becoming idle");
+    }
 }
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        drop(self.child.take());
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// Own every process this integration test starts. Dropping a `Child` only
+/// drops its handle on Windows; it does not stop the process. This guard makes
+/// cleanup unconditional, including when an assertion panics.
+struct ChildGuard {
+    child: Child,
+}
+
+impl ChildGuard {
+    fn spawn(paths: &RuntimePaths) -> Self {
+        Self {
+            child: spawn_daemon(&daemon_bin(), paths).expect("spawn daemon"),
+        }
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    fn kill_and_wait(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.kill_and_wait();
+    }
+}
+
+fn connect_when_ready(
+    paths: &RuntimePaths,
+    hello: ClientHello,
+    process: &mut ChildGuard,
+) -> DaemonClient {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match connect(paths, hello.clone()) {
+            Ok(client) => return client,
+            Err(error) => {
+                if let Ok(Some(status)) = process.try_wait() {
+                    panic!("daemon exited before listen: {status} ({error})");
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("daemon did not accept within 5s at {}", paths.dir.display());
 }
 
 fn test_hello(client: &str) -> ClientHello {
@@ -114,13 +176,16 @@ fn test_hello(client: &str) -> ClientHello {
 #[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
 fn daemon_not_running_then_spawn_connects() {
     let (paths, dir) = unique_paths();
+    let mut process = ChildGuard::spawn(&paths);
     let hello = test_hello("spawn");
-    let mut client = connect_or_spawn(&paths, hello, Some(&daemon_bin())).expect("spawn+connect");
+    let mut client = connect_when_ready(&paths, hello, &mut process);
     client.ping().expect("ping");
     let status = client.status().expect("status");
     assert_eq!(status.protocol_version, PROTOCOL_VERSION);
     assert!(status.pid > 0);
     let _ = client.shutdown();
+    drop(client);
+    drop(process);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -129,7 +194,7 @@ fn daemon_not_running_then_spawn_connects() {
 fn daemon_already_running_does_not_start_a_second() {
     let harness = Harness::spawn();
     let first_pid = harness.client("a").status().expect("status").pid;
-    let mut second = spawn_daemon(&daemon_bin(), &harness.paths).expect("second spawn");
+    let mut second = ChildGuard::spawn(&harness.paths);
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut exited = None;
     while Instant::now() < deadline {
@@ -142,8 +207,6 @@ fn daemon_already_running_does_not_start_a_second() {
     let status = match exited {
         Some(status) => status,
         None => {
-            let _ = second.kill();
-            let _ = second.wait();
             panic!("second daemon must exit, not stay as a rival");
         }
     };
@@ -210,8 +273,8 @@ fn daemon_killed_while_connected_reports_without_hang() {
     let mut client = harness.client("kill");
     client.ping().expect("before kill");
     let mut child = harness.child.take().expect("child");
-    child.kill().expect("kill");
-    child.wait().expect("reap");
+    child.child.kill().expect("kill");
+    child.child.wait().expect("reap");
     let started = Instant::now();
     let result = client.ping();
     assert!(
@@ -232,10 +295,13 @@ fn stale_lock_file_from_a_crashed_daemon_is_recovered() {
         "pid=1\ninstance=dead\npipe=\\\\.\\pipe\\stale\n",
     )
     .expect("stale lock");
+    let mut process = ChildGuard::spawn(&paths);
     let hello = test_hello("stale");
-    let mut client = connect_or_spawn(&paths, hello, Some(&daemon_bin())).expect("recover");
+    let mut client = connect_when_ready(&paths, hello, &mut process);
     client.ping().expect("ping after stale lock");
     let _ = client.shutdown();
+    drop(client);
+    drop(process);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -283,4 +349,42 @@ fn connect_or_spawn_reuses_a_live_daemon() {
     let mut reused =
         connect_or_spawn(&harness.paths, test_hello("reuse"), Some(&daemon_bin())).expect("reuse");
     assert_eq!(reused.status().expect("status").pid, first_pid);
+}
+
+#[test]
+#[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
+fn idle_daemon_exits_after_last_client_disconnects() {
+    let mut harness = Harness::spawn();
+    let client = harness.client("idle");
+    drop(client);
+    assert!(
+        harness.wait_until_exit().success(),
+        "idle daemon must exit successfully"
+    );
+}
+
+#[test]
+#[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
+fn connected_client_keeps_daemon_alive_past_idle_grace() {
+    let harness = Harness::spawn();
+    let mut client = harness.client("connected");
+    std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(200));
+    client.ping().expect("connected client keeps daemon alive");
+}
+
+#[test]
+#[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
+fn reconnect_inside_idle_grace_keeps_daemon_alive() {
+    let harness = Harness::spawn();
+    let client = harness.client("blink");
+    drop(client);
+    std::thread::sleep(IDLE_SHUTDOWN_GRACE / 2);
+    let mut reconnected = harness.client("blink-reconnect");
+    reconnected
+        .ping()
+        .expect("reconnect inside grace must succeed");
+    std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(200));
+    reconnected
+        .ping()
+        .expect("reconnected client keeps daemon alive");
 }
