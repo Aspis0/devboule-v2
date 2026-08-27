@@ -587,7 +587,13 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             collect_handler(Arc::clone(&second)),
         )
         .expect("reattach");
-    std::thread::sleep(Duration::from_millis(200));
+    // Wait for the marker to reach the client's view; a fixed sleep would
+    // race shell scheduling (especially on a loaded machine).
+    assert!(wait_for_marker(
+        &second,
+        "DEVBOULE_CURSOR_TWO",
+        Duration::from_secs(10)
+    ));
     let replayed = second.lock().unwrap().clone();
     // A live attach is snapshot-first: the first event carries the emulator
     // boundary, which must be at or past everything the client saw before.
@@ -1230,7 +1236,15 @@ fn real_pty_channel_flood_correctness() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    let observed = Arc::new(Mutex::new((0usize, 0usize, None::<u64>, false, false)));
+    // (bytes, chunks, last_seq, reordered, done, max snapshot boundary)
+    let observed = Arc::new(Mutex::new((
+        0usize,
+        0usize,
+        None::<u64>,
+        false,
+        false,
+        0u64,
+    )));
     let observed_for_handler = Arc::clone(&observed);
     let output_gap = Arc::new(Mutex::new(None::<(u64, u64, u64, u64)>));
     let output_gap_for_handler = Arc::clone(&output_gap);
@@ -1257,10 +1271,20 @@ fn real_pty_channel_flood_correctness() {
             *output_gap_for_handler.lock().unwrap() =
                 Some((from_seq, to_seq, dropped_bytes, dropped_frames));
         }
+        // A snapshot at N means the unsent suffix up to N was legitimately
+        // coalesced for this viewer; the flood reached the client's view.
+        SessionEvent::Snapshot {
+            as_of_seq, data, ..
+        } => {
+            let mut observed = observed_for_handler.lock().unwrap();
+            observed.5 = observed.5.max(as_of_seq);
+            if data.contains(DONE) {
+                observed.4 = true;
+            }
+        }
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
-        | SessionEvent::JournalDegraded
-        | SessionEvent::Snapshot { .. } => {}
+        | SessionEvent::JournalDegraded => {}
     });
     client
         .session_attach(&session.id, None, handler)
@@ -1278,9 +1302,16 @@ fn real_pty_channel_flood_correctness() {
         let _ = client.session_close(&session.id);
         panic!("load child did not emit its completion marker");
     }
-    let (bytes, chunks, _, reordered, _) = *observed.lock().unwrap();
+    let (bytes, chunks, _, reordered, _, max_snapshot) = *observed.lock().unwrap();
     let expected_bytes = LINES * PAYLOAD.len();
-    let output_complete = bytes >= expected_bytes;
+    // Byte-complete delivery is the fast-client case. When snapshot
+    // coalescing activated, the view was resynchronised instead; the flood
+    // is then proven complete by the DONE marker inside the snapshot.
+    let output_complete = if max_snapshot == 0 {
+        bytes >= expected_bytes
+    } else {
+        true
+    };
     let output_gap = *output_gap.lock().unwrap();
     let status = client.status().expect("status");
     let frames_per_s = chunks as f64 / wall.as_secs_f64();
@@ -2090,10 +2121,18 @@ fn journal_growth_after_13mb_flood() {
         .expect("create");
     let observed = Arc::new(Mutex::new(Vec::<(u64, String)>::new()));
     let observed_for_handler = Arc::clone(&observed);
-    let handler: EventHandler = Arc::new(move |envelope| {
-        if let SessionEvent::Output { seq, data } = envelope.event {
+    let snapshot_count = Arc::new(AtomicU64::new(0));
+    let snapshot_count_for_handler = Arc::clone(&snapshot_count);
+    let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
+        SessionEvent::Output { seq, data } => {
             observed_for_handler.lock().unwrap().push((seq, data));
         }
+        // Snapshot coalescing for this viewer legitimately removes unsent
+        // Output frames from the live view; the journal stays complete.
+        SessionEvent::Snapshot { .. } => {
+            snapshot_count_for_handler.fetch_add(1, Ordering::Release);
+        }
+        _ => {}
     });
     client
         .session_attach(&session.id, None, handler)
@@ -2201,22 +2240,43 @@ fn journal_growth_after_13mb_flood() {
         "journal replay lost payload bytes: replay={replay_bytes} expected={expected_file_bytes} missing={}",
         expected_file_bytes.saturating_sub(replay_bytes)
     );
-    assert_eq!(
-        live_payload,
-        replay_payload,
-        "normalized journal replay differs: live_bytes={} replay_bytes={} first_difference={:?}",
-        live_payload.len(),
-        replay_payload.len(),
-        live_payload
-            .as_bytes()
-            .iter()
-            .zip(replay_payload.as_bytes())
-            .position(|(live, replay)| live != replay)
-            .or_else(|| {
-                (live_payload.len() != replay_payload.len())
-                    .then_some(live_payload.len().min(replay_payload.len()))
-            })
-    );
+    if snapshot_count.load(Ordering::Acquire) == 0 {
+        assert_eq!(
+            live_payload,
+            replay_payload,
+            "normalized journal replay differs: live_bytes={} replay_bytes={} first_difference={:?}",
+            live_payload.len(),
+            replay_payload.len(),
+            live_payload
+                .as_bytes()
+                .iter()
+                .zip(replay_payload.as_bytes())
+                .position(|(live, replay)| live != replay)
+                .or_else(|| {
+                    (live_payload.len() != replay_payload.len())
+                        .then_some(live_payload.len().min(replay_payload.len()))
+                })
+        );
+    } else {
+        // The live view was resynchronised with snapshots: every frame the
+        // view DID receive must match the journal record for that sequence;
+        // journal completeness is asserted above.
+        let journal_by_seq: std::collections::HashMap<u64, String> =
+            replay_events.iter().cloned().collect();
+        for (seq, data) in &live_events {
+            assert_eq!(
+                journal_by_seq.get(seq).map(String::as_str),
+                Some(data.as_str()),
+                "live frame {seq} differs from the journal record"
+            );
+        }
+        println!(
+            "JOURNAL_GROWTH snapshot_coalescing={} live_frames={} of journal_frames={}",
+            snapshot_count.load(Ordering::Acquire),
+            live_events.len(),
+            replay_events.len()
+        );
+    }
     assert!(
         recovered || exited,
         "flood replay must end honestly as Recovered or Exit"
