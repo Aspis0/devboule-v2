@@ -1,6 +1,10 @@
 //! Real ConPTY + daemon pipe tests. Ignored by default, same pattern as
 //! the M2 tests that lived in `session_tests.rs`.
 //!
+//! Since M3.5 the daemon answers terminal queries (DSR/CPR) itself and is
+//! the single responder; these tests deliberately do NOT answer `ESC[6n`.
+//! A test only passes here if the daemon-side reply path works.
+//!
 //! Run: `cargo test -p devboule-daemon -- --ignored --nocapture`
 
 #![cfg(windows)]
@@ -14,9 +18,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_daemon::current_user_sid;
+use devboule_daemon::Screen;
 use devboule_daemon::{
     connect, spawn_daemon, write_test_pty_command, DaemonClient, EventHandler, PtyCommand,
-    RuntimePaths, IDLE_SHUTDOWN_GRACE, RING_CAPACITY,
+    RuntimePaths, IDLE_SHUTDOWN_GRACE, PENDING_OUTPUT_BUDGET_BYTES,
 };
 use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, ErrorCode, OwnerId, Persistence, PersistenceKind,
@@ -28,6 +33,10 @@ use windows_sys::Win32::System::Threading::{
     GetProcessHandleCount, OpenProcess, WaitForSingleObject, PROCESS_QUERY_INFORMATION,
     PROCESS_SYNCHRONIZE,
 };
+
+/// The historical 256 KiB live ring. Journal tests still use its size as
+/// the "more bytes than any screen window" floor a transcript must exceed.
+const LEGACY_RING_CAPACITY: usize = 256 * 1024;
 
 fn daemon_bin() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_daemon") {
@@ -224,23 +233,36 @@ fn powershell_command(script: String) -> PtyCommand {
     )
 }
 
-fn answer_dsr(client: &DaemonClient, id: &str) {
-    let _ = client.session_send(id, "\x1b[1;1R");
+/// A marker counts as observed when it reached the client as live output OR
+/// when it is part of the screen state the client received: content applied
+/// before a snapshot boundary legitimately shows up inside the snapshot's
+/// rendered ANSI instead of an Output frame.
+fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
+    match event {
+        SessionEvent::Output { data, .. } | SessionEvent::Snapshot { data, .. } => {
+            data.contains(marker)
+        }
+        SessionEvent::Exit { .. }
+        | SessionEvent::Recovered { .. }
+        | SessionEvent::JournalDegraded
+        | SessionEvent::OutputGap { .. } => false,
+    }
 }
 
-fn start_dsr_pump(
-    client: Arc<DaemonClient>,
-    id: String,
-) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_for_thread = Arc::clone(&stop);
-    let handle = std::thread::spawn(move || {
-        while !stop_for_thread.load(Ordering::Acquire) {
-            let _ = client.session_send(&id, "\x1b[1;1R");
-            std::thread::sleep(Duration::from_millis(25));
+fn wait_for_marker(received: &Mutex<Vec<SessionEvent>>, marker: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event_carries_marker(event, marker))
+        {
+            return true;
         }
-    });
-    (stop, handle)
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
 }
 
 #[derive(Clone)]
@@ -248,13 +270,10 @@ struct BenchmarkDiagnostics {
     attach_succeeded: bool,
     output_events: u64,
     last_output_at_ms: Option<u128>,
-    inline_dsr_inflight: bool,
     exit_seen: bool,
     exit_code: Option<u32>,
     last_error: Option<String>,
     last_error_at_ms: Option<u128>,
-    dsr_attempts: u64,
-    dsr_successes: u64,
     cleanup_error: Option<String>,
 }
 
@@ -264,33 +283,11 @@ impl BenchmarkDiagnostics {
             attach_succeeded: false,
             output_events: 0,
             last_output_at_ms: None,
-            inline_dsr_inflight: false,
             exit_seen: false,
             exit_code: None,
             last_error: None,
             last_error_at_ms: None,
-            dsr_attempts: 0,
-            dsr_successes: 0,
             cleanup_error: None,
-        }
-    }
-
-    fn record_dsr_result(
-        &mut self,
-        phase: &str,
-        result: Result<(), devboule_daemon::DaemonError>,
-        started: Instant,
-    ) {
-        self.dsr_attempts += 1;
-        if phase == "inline DSR" {
-            self.inline_dsr_inflight = false;
-        }
-        match result {
-            Ok(()) => self.dsr_successes += 1,
-            Err(error) => {
-                self.last_error = Some(format!("{phase}: {error}"));
-                self.last_error_at_ms = Some(started.elapsed().as_millis());
-            }
         }
     }
 
@@ -317,45 +314,6 @@ impl BenchmarkDiagnostics {
     fn record_cleanup_error(&mut self, phase: &str, error: &devboule_daemon::DaemonError) {
         self.cleanup_error = Some(format!("{phase}: {error}"));
     }
-}
-
-fn start_dsr_pump_with_diagnostics(
-    client: Arc<DaemonClient>,
-    id: String,
-    diagnostics: Arc<Mutex<BenchmarkDiagnostics>>,
-    started: Instant,
-) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_for_thread = Arc::clone(&stop);
-    let handle = std::thread::spawn(move || {
-        while !stop_for_thread.load(Ordering::Acquire) {
-            let result = client.session_send(&id, "\x1b[1;1R");
-            diagnostics
-                .lock()
-                .unwrap()
-                .record_dsr_result("background DSR", result, started);
-            std::thread::sleep(Duration::from_millis(25));
-        }
-    });
-    (stop, handle)
-}
-
-fn stop_dsr_pump(stop: Arc<AtomicBool>, handle: std::thread::JoinHandle<()>) {
-    stop.store(true, Ordering::Release);
-    let _ = handle.join();
-}
-
-fn wait_for_marker(received: &Mutex<Vec<SessionEvent>>, marker: &str, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if received.lock().unwrap().iter().any(
-            |event| matches!(event, SessionEvent::Output { data, .. } if data.contains(marker)),
-        ) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    false
 }
 
 fn wait_for_pid_file(path: &Path, timeout: Duration) -> u32 {
@@ -414,9 +372,6 @@ fn real_pty_spawn_read_resize_and_teardown() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
@@ -424,14 +379,13 @@ fn real_pty_spawn_read_resize_and_teardown() {
     client.session_resize(&session.id, 100, 30).expect("resize");
     let saw_marker = wait_for_marker(&received, "DEVBOULE_PTY_OK", Duration::from_secs(10));
     client.session_close(&session.id).expect("close");
-    stop_dsr_pump(stop_dsr, dsr_thread);
     assert!(saw_marker);
     assert!(client.sessions_list().expect("list").is_empty());
 }
 
 #[test]
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
-fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
+fn real_pty_detach_keeps_screen_state_and_close_reaps_child() {
     const MARKER: &str = "DEVBOULE_DETACH_BUFFER";
     let harness = Harness::spawn();
     queue_command(&harness.paths, cmd_keep());
@@ -439,13 +393,16 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
         .expect("attach");
+    // Attach always enqueues a snapshot; let it arrive before sampling so
+    // the assertion below cannot count an in-flight pre-detach event.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && received.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let received_before_detach = received.lock().unwrap().len();
 
     client.session_detach(&session.id).expect("detach");
@@ -455,6 +412,9 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
         "detach must leave the session alive"
     );
 
+    // Output produced while detached goes to the journal and the emulator.
+    // The reattaching client synchronises through a screen snapshot, so the
+    // detached command's text must be part of the snapshot's ANSI.
     client
         .session_send(&session.id, &format!("echo {MARKER}\r\n"))
         .expect("send while detached");
@@ -468,83 +428,69 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
             .session_attach(&session.id, None, collect_handler(Arc::clone(&replayed)))
             .expect("reattach");
         std::thread::sleep(Duration::from_millis(50));
-        saw_marker = replayed.lock().unwrap().iter().any(
-            |event| matches!(event, SessionEvent::Output { data, .. } if data.contains(MARKER)),
-        );
+        saw_marker = replayed
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event_carries_marker(event, MARKER));
         if saw_marker {
             break;
         }
         client.session_detach(&session.id).expect("detach to retry");
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(saw_marker, "detached output was not retained in the ring");
-    assert_eq!(received.lock().unwrap().len(), received_before_detach);
+    assert!(
+        saw_marker,
+        "output from the detached window was not in the reattached screen state"
+    );
+    assert_eq!(
+        received.lock().unwrap().len(),
+        received_before_detach,
+        "a detached client must receive nothing further"
+    );
 
-    let expected_replay: Vec<(u64, String)> = replayed
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|event| match event {
-            SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-            SessionEvent::Exit { .. }
-            | SessionEvent::Recovered { .. }
-            | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. }
-            | SessionEvent::Snapshot { .. } => None,
-        })
-        .collect();
+    // A second attach must also be snapshot-first, with live output strictly
+    // after the snapshot boundary and no gaps anywhere.
     client
         .session_detach(&session.id)
         .expect("detach before close");
     let second = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&second)))
-        .expect("replay attach");
+        .expect("second attach");
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        let actual: Vec<(u64, String)> = second
-            .lock()
-            .unwrap()
+        let events = second.lock().unwrap();
+        if events
             .iter()
-            .filter_map(|event| match event {
-                SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-                SessionEvent::Exit { .. }
-                | SessionEvent::Recovered { .. }
-                | SessionEvent::JournalDegraded
-                | SessionEvent::OutputGap { .. }
-                | SessionEvent::Snapshot { .. } => None,
-            })
-            .collect();
-        if actual == expected_replay {
+            .any(|event| matches!(event, SessionEvent::Snapshot { .. }))
+        {
             break;
         }
+        drop(events);
         std::thread::sleep(Duration::from_millis(20));
     }
-    let actual: Vec<(u64, String)> = second
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|event| match event {
-            SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-            SessionEvent::Exit { .. }
-            | SessionEvent::Recovered { .. }
-            | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. }
-            | SessionEvent::Snapshot { .. } => None,
-        })
-        .collect();
-    assert!(
-        actual.len() >= expected_replay.len(),
-        "reattach replay was shorter than the ring captured while detached"
-    );
-    assert_eq!(
-        &actual[..expected_replay.len()],
-        &expected_replay[..],
-        "reattach must replay previously retained chunks first"
-    );
+    let events = second.lock().unwrap().clone();
+    let first = events
+        .first()
+        .expect("attach must deliver the snapshot first");
+    let as_of_seq = match first {
+        SessionEvent::Snapshot { as_of_seq, .. } => *as_of_seq,
+        other => panic!("first event must be a snapshot, got {other:?}"),
+    };
+    for event in &events {
+        match event {
+            SessionEvent::Output { seq, .. } => {
+                assert!(*seq > as_of_seq, "live output before the snapshot boundary");
+            }
+            SessionEvent::OutputGap { .. } => {
+                panic!("live attach must never declare a gap: {events:?}")
+            }
+            _ => {}
+        }
+    }
 
     client.session_close(&session.id).expect("close");
-    stop_dsr_pump(stop_dsr, dsr_thread);
     assert!(client.sessions_list().expect("list").is_empty());
 }
 
@@ -557,16 +503,12 @@ fn output_flows_to_an_attached_client() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
         .expect("attach");
     let saw = wait_for_marker(&received, "DEVBOULE_ATTACHED", Duration::from_secs(10));
     client.session_close(&session.id).expect("close");
-    stop_dsr_pump(stop_dsr, dsr_thread);
     assert!(saw);
 }
 
@@ -579,9 +521,6 @@ fn detach_stops_delivery_without_killing_the_process() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
@@ -595,21 +534,17 @@ fn detach_stops_delivery_without_killing_the_process() {
     assert_eq!(received.lock().unwrap().len(), after);
     assert_eq!(client.sessions_list().expect("list").len(), 1);
     client.session_close(&session.id).expect("close");
-    stop_dsr_pump(stop_dsr, dsr_thread);
 }
 
 #[test]
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
-fn reattach_with_a_cursor_replays_only_after() {
+fn reattach_with_a_cursor_synchronises_screen_state() {
     let harness = Harness::spawn();
     queue_command(&harness.paths, cmd_keep());
     let client = harness.client("cursor");
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let first = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&first)))
@@ -654,25 +589,34 @@ fn reattach_with_a_cursor_replays_only_after() {
         .expect("reattach");
     std::thread::sleep(Duration::from_millis(200));
     let replayed = second.lock().unwrap().clone();
+    // A live attach is snapshot-first: the first event carries the emulator
+    // boundary, which must be at or past everything the client saw before.
+    let as_of_seq = match replayed.first().expect("reattach delivered nothing") {
+        SessionEvent::Snapshot { as_of_seq, .. } => *as_of_seq,
+        other => panic!("first event must be the snapshot, got {other:?}"),
+    };
     assert!(
-        replayed.iter().any(|event| {
-            matches!(event, SessionEvent::Output { data, .. } if data.contains("DEVBOULE_CURSOR_TWO"))
-        }),
-        "cursor replay missed later output: {replayed:?}"
+        as_of_seq >= last_seq,
+        "snapshot boundary {as_of_seq} behind the client cursor {last_seq}"
     );
     assert!(
         replayed.iter().all(|event| match event {
-            SessionEvent::Output { seq, .. } => *seq > last_seq,
-            SessionEvent::Exit { .. }
-            | SessionEvent::Recovered { .. }
-            | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. }
-            | SessionEvent::Snapshot { .. } => true,
+            SessionEvent::Output { seq, .. } => *seq > as_of_seq,
+            SessionEvent::OutputGap { .. } => false,
+            _ => true,
         }),
-        "cursor replay included seq <= last_seq"
+        "live output after the snapshot must be strictly newer and gap-free: {replayed:?}"
+    );
+    // Cursor or no cursor, the client's view must show the output produced
+    // while it was away: either inside the snapshot's screen state, or as a
+    // later live event.
+    assert!(
+        replayed
+            .iter()
+            .any(|event| event_carries_marker(event, "DEVBOULE_CURSOR_TWO")),
+        "reattached view missed output produced after the cursor: {replayed:?}"
     );
     client.session_close(&session.id).expect("close");
-    stop_dsr_pump(stop_dsr, dsr_thread);
 }
 
 #[test]
@@ -686,9 +630,6 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
 
     let delivered = Arc::new(Mutex::new(Vec::<u64>::new()));
     let first_received = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
@@ -710,8 +651,11 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
         )
         .expect("attach");
 
+    // With M3.5 the first event of an attach is the screen snapshot, which
+    // carries no sequence. Sample the cursor only after at least one real
+    // output frame was delivered.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && first_received.lock().unwrap().is_empty() {
+    while Instant::now() < deadline && delivered.lock().unwrap().is_empty() {
         std::thread::sleep(Duration::from_millis(10));
     }
     client.session_detach(&session.id).expect("initial detach");
@@ -733,8 +677,8 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
     client
         .session_send(&session.id, &flood)
         .expect("send flood");
-    // Let the detached process fill the ring before the first cursor replay.
-    // The final marker below is still required after every attach, so this
+    // Let the detached process accumulate output before the reattach. The
+    // final marker below is still required after every attach, so this
     // pause cannot make the test accept a partial flood.
     std::thread::sleep(Duration::from_millis(750));
 
@@ -833,7 +777,6 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
         "a sequence was delivered twice across detach/reattach: {delivered:?}"
     );
     client.session_close(&session.id).expect("close");
-    stop_dsr_pump(stop_dsr, dsr_thread);
 }
 
 #[test]
@@ -847,9 +790,6 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
 
     let baseline = Arc::new(Mutex::new(Vec::<u64>::new()));
     let baseline_for_handler = Arc::clone(&baseline);
@@ -961,8 +901,6 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
         "Shutdown duplicated a pending sequence: {output_seqs:?}"
     );
     assert!(output_seqs.iter().all(|seq| *seq > cursor_seq));
-
-    stop_dsr_pump(stop_dsr, dsr_thread);
 }
 
 #[test]
@@ -975,9 +913,6 @@ fn two_clients_cannot_both_attach() {
     let session = a
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&a, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     a.session_attach(
         &session.id,
         None,
@@ -997,7 +932,6 @@ fn two_clients_cannot_both_attach() {
         "unexpected error: {message}"
     );
     a.session_close(&session.id).expect("close");
-    stop_dsr_pump(stop_dsr, dsr_thread);
 }
 
 #[test]
@@ -1046,9 +980,6 @@ fn session_process_exit_reports_through_the_envelope() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
@@ -1068,7 +999,6 @@ fn session_process_exit_reports_through_the_envelope() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    stop_dsr_pump(stop_dsr, dsr_thread);
     assert!(saw_exit, "process exit did not arrive as an envelope");
     let listed = client.sessions_list().expect("list ended session");
     assert!(listed.iter().any(|listed| {
@@ -1094,16 +1024,12 @@ fn closing_session_kills_its_grandchild_at_the_os() {
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&_received)))
         .expect("attach tree session");
-    let dsr_client = Arc::new(harness.client("tree-close-dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(dsr_client, session.id.clone());
-    answer_dsr(&client, &session.id);
     let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
     assert!(process_is_alive(pid), "grandchild {pid} never became live");
 
     client
         .session_close(&session.id)
         .expect("close tree session");
-    stop_dsr_pump(stop_dsr, dsr_thread);
     wait_for_process_exit(pid, Duration::from_secs(5));
     println!("JOB_TREE session_close grandchild_pid={pid} os_alive=false");
 }
@@ -1126,16 +1052,12 @@ fn killing_daemon_kills_every_session_tree_at_the_os() {
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&_received)))
         .expect("attach daemon tree session");
-    let dsr_client = Arc::new(harness.client("tree-daemon-kill-dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(dsr_client, session.id.clone());
-    answer_dsr(&client, &session.id);
     let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
     assert!(process_is_alive(pid), "grandchild {pid} never became live");
 
     let mut daemon = harness.child.take().expect("daemon child");
     daemon.child.kill().expect("kill daemon without cleanup");
     daemon.child.wait().expect("reap daemon");
-    stop_dsr_pump(stop_dsr, dsr_thread);
     wait_for_process_exit(pid, Duration::from_secs(5));
     drop(client);
     println!("JOB_TREE daemon_kill grandchild_pid={pid} os_alive=false");
@@ -1165,9 +1087,6 @@ fn closing_one_session_does_not_kill_the_other_session_tree() {
             collect_handler(Arc::clone(&_first_received)),
         )
         .expect("attach first tree session");
-    let first_dsr_client = Arc::new(harness.client("tree-first-dsr"));
-    let (stop_first_dsr, first_dsr_thread) = start_dsr_pump(first_dsr_client, first.id.clone());
-    answer_dsr(&client, &first.id);
     let first_pid = wait_for_pid_file(&first_pid_file, Duration::from_secs(10));
 
     let second_pid_file = harness.dir.join("isolation-second.pid");
@@ -1186,9 +1105,6 @@ fn closing_one_session_does_not_kill_the_other_session_tree() {
             collect_handler(Arc::clone(&_second_received)),
         )
         .expect("attach second tree session");
-    let second_dsr_client = Arc::new(harness.client("tree-second-dsr"));
-    let (stop_second_dsr, second_dsr_thread) = start_dsr_pump(second_dsr_client, second.id.clone());
-    answer_dsr(&client, &second.id);
     let second_pid = wait_for_pid_file(&second_pid_file, Duration::from_secs(10));
     assert!(process_is_alive(first_pid));
     assert!(process_is_alive(second_pid));
@@ -1205,8 +1121,6 @@ fn closing_one_session_does_not_kill_the_other_session_tree() {
     client
         .session_close(&second.id)
         .expect("close second tree session");
-    stop_dsr_pump(stop_first_dsr, first_dsr_thread);
-    stop_dsr_pump(stop_second_dsr, second_dsr_thread);
     wait_for_process_exit(second_pid, Duration::from_secs(5));
     println!(
         "JOB_TREE isolation first_pid={first_pid} second_pid={second_pid} first_dead=true second_alive_after_first_close=true"
@@ -1316,20 +1230,12 @@ fn real_pty_channel_flood_correctness() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    answer_dsr(&client, &session.id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let observed = Arc::new(Mutex::new((0usize, 0usize, None::<u64>, false, false)));
     let observed_for_handler = Arc::clone(&observed);
     let output_gap = Arc::new(Mutex::new(None::<(u64, u64, u64, u64)>));
     let output_gap_for_handler = Arc::clone(&output_gap);
-    let writer = Arc::new(harness.client("dsr-inline"));
-    let session_id = session.id.clone();
     let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
         SessionEvent::Output { seq, data } => {
-            if data.contains("\x1b[6n") {
-                let _ = writer.session_send(&session_id, "\x1b[1;1R");
-            }
             let mut observed = observed_for_handler.lock().unwrap();
             let expected = observed.2.map_or(seq, |last| last + 1);
             if seq != expected {
@@ -1370,7 +1276,6 @@ fn real_pty_channel_flood_correctness() {
     let wall = start.elapsed();
     if !observed.lock().unwrap().4 {
         let _ = client.session_close(&session.id);
-        stop_dsr_pump(stop_dsr, dsr_thread);
         panic!("load child did not emit its completion marker");
     }
     let (bytes, chunks, _, reordered, _) = *observed.lock().unwrap();
@@ -1382,7 +1287,6 @@ fn real_pty_channel_flood_correctness() {
     let close_start = Instant::now();
     client.session_close(&session.id).expect("close");
     let teardown = close_start.elapsed();
-    stop_dsr_pump(stop_dsr, dsr_thread);
     println!(
         "PTY_CORRECTNESS lines={LINES} expected_min_bytes={expected_bytes} bytes={bytes} chunks={chunks} frames_per_s={frames_per_s:.2} wall_ms={} peak_ring_bytes={} ring_evicted_bytes={} ring_dropped_frames={} output_gap={output_gap:?} output_complete={output_complete} seq_reordered={reordered} child_reaped=n/a teardown_ms={} clean={}",
         wall.as_millis(),
@@ -1576,21 +1480,17 @@ fn daemon_echo_timings() -> Vec<EchoTiming> {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create latency session");
-    let writer = Arc::new(harness.client("latency-dsr"));
     let (tx, rx) = mpsc::channel::<(Instant, String)>();
-    let session_id = session.id.clone();
     let handler: EventHandler = Arc::new(move |envelope| {
         if let SessionEvent::Output { data, .. } = envelope.event {
-            if data.contains("\x1b[6n") {
-                let _ = writer.session_send(&session_id, "\x1b[1;1R");
-            }
+            // The daemon answers terminal queries itself; every Output event
+            // here is echo content.
             let _ = tx.send((Instant::now(), data));
         }
     });
     client
         .session_attach(&session.id, None, handler)
         .expect("attach latency session");
-    answer_dsr(&client, &session.id);
     std::thread::sleep(Duration::from_millis(750));
     while rx.try_recv().is_ok() {}
 
@@ -1716,8 +1616,6 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    let writer = Arc::new(harness.client("dsr-inline"));
-    let session_id = session.id.clone();
     let diagnostics = Arc::new(Mutex::new(BenchmarkDiagnostics::new()));
     let observed = Arc::new(Mutex::new((
         0usize,
@@ -1731,15 +1629,6 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
         SessionEvent::Output { seq, data } => {
             diagnostics_for_handler.lock().unwrap().record_output(start);
-            if data.contains("\x1b[6n") {
-                diagnostics_for_handler.lock().unwrap().inline_dsr_inflight = true;
-                let result = writer.session_send(&session_id, "\x1b[1;1R");
-                diagnostics_for_handler.lock().unwrap().record_dsr_result(
-                    "inline DSR",
-                    result,
-                    start,
-                );
-            }
             let mut observed = observed_for_handler.lock().unwrap();
             let expected = observed.2.map_or(seq, |last| last + 1);
             if seq != expected {
@@ -1771,13 +1660,6 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         );
     }
     diagnostics.lock().unwrap().attach_succeeded = true;
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump_with_diagnostics(
-        Arc::clone(&pump_client),
-        session.id.clone(),
-        Arc::clone(&diagnostics),
-        start,
-    );
 
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
@@ -1796,19 +1678,17 @@ fn real_pty_channel_file_transport_ab_benchmark() {
                 .unwrap()
                 .record_cleanup_error("close during failure cleanup", &error);
         }
-        stop_dsr_pump(stop_dsr, dsr_thread);
         let total_elapsed_ms = start.elapsed().as_millis();
         let observed_bytes = observed.lock().unwrap().0;
         let cleanup_error = diagnostics.lock().unwrap().cleanup_error.clone();
         panic!(
-            "daemon transport did not finish: bytes={observed_bytes} expected_file_bytes={expected_file_bytes} elapsed_ms={wait_elapsed_ms} cleanup_elapsed_ms={} total_elapsed_ms={total_elapsed_ms} attach_succeeded={} output_events={} last_output_at_ms={} inline_dsr_inflight={} exit_seen={} exit_code={} last_error={} last_error_at_ms={} dsr_attempts={} dsr_successes={} cleanup_error={}",
+            "daemon transport did not finish: bytes={observed_bytes} expected_file_bytes={expected_file_bytes} elapsed_ms={wait_elapsed_ms} cleanup_elapsed_ms={} total_elapsed_ms={total_elapsed_ms} attach_succeeded={} output_events={} last_output_at_ms={} exit_seen={} exit_code={} last_error={} last_error_at_ms={} cleanup_error={}",
             total_elapsed_ms.saturating_sub(wait_elapsed_ms),
             transport_diagnostics.attach_succeeded,
             transport_diagnostics.output_events,
             transport_diagnostics
                 .last_output_at_ms
                 .map_or_else(|| "none".to_string(), |value| value.to_string()),
-            transport_diagnostics.inline_dsr_inflight,
             transport_diagnostics.exit_seen,
             transport_diagnostics
                 .exit_code
@@ -1817,8 +1697,6 @@ fn real_pty_channel_file_transport_ab_benchmark() {
             transport_diagnostics
                 .last_error_at_ms
                 .map_or_else(|| "none".to_string(), |value| value.to_string()),
-            transport_diagnostics.dsr_attempts,
-            transport_diagnostics.dsr_successes,
             cleanup_error.as_deref().unwrap_or("none"),
         );
     }
@@ -1830,12 +1708,11 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     let close_start = Instant::now();
     client.session_close(&session.id).expect("close");
     let teardown = close_start.elapsed();
-    stop_dsr_pump(stop_dsr, dsr_thread);
     let (chunk_min, chunk_median, chunk_max) = summarize_chunk_sizes(&chunk_sizes);
     let mib_s = bytes as f64 / (1024.0 * 1024.0) / wall.as_secs_f64();
     let messages_per_s = chunk_sizes.len() as f64 / wall.as_secs_f64();
     println!(
-        "PTY_AB scenario=daemon_pipe bytes={bytes} expected_file_bytes={expected_file_bytes} wall_ms={} mib_s={mib_s:.2} messages={} messages_per_s={messages_per_s:.2} chunk_min={chunk_min} chunk_median={chunk_median:.1} chunk_max={chunk_max} peak_ring_bytes<={RING_CAPACITY} seq_reordered={seq_reordered} teardown_ms={} clean={}",
+        "PTY_AB scenario=daemon_pipe bytes={bytes} expected_file_bytes={expected_file_bytes} wall_ms={} mib_s={mib_s:.2} messages={} messages_per_s={messages_per_s:.2} chunk_min={chunk_min} chunk_median={chunk_median:.1} chunk_max={chunk_max} pending_budget_bytes<={PENDING_OUTPUT_BUDGET_BYTES} seq_reordered={seq_reordered} teardown_ms={} clean={}",
         wall.as_millis(),
         chunk_sizes.len(),
         teardown.as_millis(),
@@ -1909,7 +1786,6 @@ fn killed_daemon_replays_scrollback_as_recovered() {
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
     let session_id = session.id.clone();
-    answer_dsr(&client, &session_id);
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session_id, None, collect_handler(Arc::clone(&received)))
@@ -1987,7 +1863,6 @@ fn clean_exit_reopens_as_ended_not_recovered() {
     client
         .session_attach(&session_id, None, collect_handler(Arc::clone(&received)))
         .expect("attach");
-    answer_dsr(&client, &session_id);
     assert!(wait_for_marker(&received, MARKER, Duration::from_secs(10)));
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -2077,9 +1952,6 @@ fn journal_outlives_the_256kib_ring() {
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
     let session_id = session.id.clone();
-    answer_dsr(&client, &session_id);
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session_id.clone());
     let received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(&session_id, None, collect_handler(Arc::clone(&received)))
@@ -2095,11 +1967,10 @@ fn journal_outlives_the_256kib_ring() {
         })
         .sum();
     assert!(
-        live_bytes > RING_CAPACITY,
-        "live capture was only {live_bytes} bytes, need more than the ring"
+        live_bytes > LEGACY_RING_CAPACITY,
+        "live capture was only {live_bytes} bytes, need more than a screen window"
     );
     std::thread::sleep(Duration::from_millis(500));
-    stop_dsr_pump(stop_dsr, dsr_thread);
     drop(client);
     harness.restart();
 
@@ -2137,8 +2008,8 @@ fn journal_outlives_the_256kib_ring() {
         }
     }
     assert!(
-        bytes > RING_CAPACITY,
-        "journal replay was only {bytes} bytes, ring is {RING_CAPACITY}"
+        bytes > LEGACY_RING_CAPACITY,
+        "journal replay was only {bytes} bytes, floor is {LEGACY_RING_CAPACITY}"
     );
     for pair in seqs.windows(2) {
         assert_eq!(
@@ -2164,7 +2035,6 @@ fn stale_generation_on_recovered_session_is_a_mismatch() {
     client
         .session_attach(&session_id, None, collect_handler(Arc::clone(&received)))
         .expect("attach");
-    answer_dsr(&client, &session_id);
     assert!(wait_for_marker(&received, MARKER, Duration::from_secs(10)));
     std::thread::sleep(Duration::from_millis(400));
     drop(client);
@@ -2218,23 +2088,16 @@ fn journal_growth_after_13mb_flood() {
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    let session_id = session.id.clone();
-    let writer = Arc::new(harness.client("dsr-inline"));
     let observed = Arc::new(Mutex::new(Vec::<(u64, String)>::new()));
     let observed_for_handler = Arc::clone(&observed);
     let handler: EventHandler = Arc::new(move |envelope| {
         if let SessionEvent::Output { seq, data } = envelope.event {
-            if data.contains("\x1b[6n") {
-                let _ = writer.session_send(&session_id, "\x1b[1;1R");
-            }
             observed_for_handler.lock().unwrap().push((seq, data));
         }
     });
     client
         .session_attach(&session.id, None, handler)
         .expect("attach");
-    let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
         let live_bytes: usize = observed
@@ -2259,7 +2122,6 @@ fn journal_growth_after_13mb_flood() {
         "flood truncated: {live_bytes} < {expected_file_bytes}"
     );
     std::thread::sleep(Duration::from_millis(800));
-    stop_dsr_pump(stop_dsr, dsr_thread);
     let live_events = observed.lock().unwrap().clone();
     let live_bytes: usize = live_events.iter().map(|(_, data)| data.len()).sum();
     let live_frames = live_events.len();
@@ -2364,8 +2226,8 @@ fn journal_growth_after_13mb_flood() {
         "Recovered and Exit must not both fire"
     );
     assert!(
-        replay_bytes > RING_CAPACITY,
-        "journal replay {replay_bytes} did not outlive the ring"
+        replay_bytes > LEGACY_RING_CAPACITY,
+        "journal replay {replay_bytes} did not outlive the live capture window"
     );
     assert_eq!(
         replay_seqs.first(),
@@ -2391,4 +2253,259 @@ fn journal_growth_after_13mb_flood() {
         );
     }
     let _ = std::fs::remove_file(&file_path);
+}
+
+/// The M3.5 acceptance properties under a real ConPTY flood, on ONE session:
+/// 1. attach during the flood is snapshot-first, and across attach/detach
+///    cycles no output sequence is delivered twice and none is silently
+///    skipped (every sequence either arrives or is subsumed by a snapshot);
+/// 2. the client's reconstructed screen — snapshot plus subsequent live
+///    events — equals a fresh emulator fed the whole byte stream.
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn attach_during_flood_delivers_every_sequence_once() {
+    const LINES: usize = 40_000;
+    const PAYLOAD: &str = "DEVBOULE_ATTACH_FLOOD_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const DONE: &str = "DEVBOULE_ATTACH_FLOOD_DONE";
+    let harness = Harness::spawn();
+    queue_command(
+        &harness.paths,
+        PtyCommand::new(
+            "pwsh.exe",
+            vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                format!("$line = '{PAYLOAD}'; 1..{LINES} | ForEach-Object {{ $line }}; '{DONE}'"),
+            ],
+            std::env::current_dir().unwrap(),
+            Vec::new(),
+        ),
+    );
+    let client = harness.client("attach-flood");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+
+    // All events across every attach epoch, in arrival order.
+    let received = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let done = Arc::new(AtomicBool::new(false));
+    // Every attach epoch gets a fresh handler that BOTH collects events and
+    // watches for the completion marker, because attach replaces the
+    // subscription for the session.
+    let attach_epoch = || {
+        let received_for_handler = Arc::clone(&received);
+        let done_for_handler = Arc::clone(&done);
+        let handler: EventHandler = Arc::new(move |envelope| {
+            if event_carries_marker(&envelope.event, DONE) {
+                done_for_handler.store(true, Ordering::Release);
+            }
+            received_for_handler.lock().unwrap().push(envelope.event);
+        });
+        client
+            .session_attach(&session.id, None, handler)
+            .expect("attach during flood");
+    };
+
+    attach_epoch();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline && !done.load(Ordering::Acquire) {
+        // Repeatedly detach and reattach mid-flood; each reattach must begin
+        // with a snapshot and continue the stream without holes.
+        client.session_detach(&session.id).expect("detach");
+        std::thread::sleep(Duration::from_millis(30));
+        attach_epoch();
+        std::thread::sleep(Duration::from_millis(60));
+    }
+    assert!(
+        done.load(Ordering::Acquire),
+        "flood did not finish while cycling attachments"
+    );
+    client.session_detach(&session.id).expect("final detach");
+    let received = received.lock().unwrap().clone();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut covered_to = 0u64;
+    let mut screen: Option<Screen> = None;
+    for event in &received {
+        match event {
+            SessionEvent::Snapshot {
+                as_of_seq, data, ..
+            } => {
+                assert!(
+                    *as_of_seq >= covered_to,
+                    "snapshot boundary {as_of_seq} behind covered {covered_to}"
+                );
+                covered_to = *as_of_seq;
+                let term = screen.get_or_insert_with(|| Screen::new(120, 32));
+                term.process(data.as_bytes());
+            }
+            SessionEvent::Output { seq, data } => {
+                assert!(seen.insert(*seq), "sequence {seq} was delivered twice");
+                assert_eq!(
+                    *seq,
+                    covered_to + 1,
+                    "live stream skipped or reordered at {seq}"
+                );
+                covered_to = *seq;
+                screen
+                    .get_or_insert_with(|| Screen::new(120, 32))
+                    .process(data.as_bytes());
+            }
+            SessionEvent::OutputGap {
+                from_seq, to_seq, ..
+            } => panic!(
+                "a slow-viewer replacement must be a snapshot, not a gap {from_seq}..{to_seq}"
+            ),
+            SessionEvent::Exit { .. } => {}
+            SessionEvent::Recovered { .. } | SessionEvent::JournalDegraded => {}
+        }
+    }
+
+    // The reference: a fresh emulator fed the whole byte stream, i.e. every
+    // output chunk in sequence order.
+    let mut ordered: Vec<(u64, String)> = received
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
+            _ => None,
+        })
+        .collect();
+    ordered.sort_unstable_by_key(|(seq, _)| *seq);
+    let mut reference = Screen::new(120, 32);
+    for (_, data) in &ordered {
+        reference.process(data.as_bytes());
+    }
+    let expected_bytes: usize = ordered.iter().map(|(_, data)| data.len()).sum();
+    let screen = screen.expect("at least one snapshot must have been delivered");
+    assert_eq!(
+        screen.snapshot(),
+        reference.snapshot(),
+        "snapshot + subsequent events differ from a fresh emulator fed the whole stream"
+    );
+    println!(
+        "ATTACH_FLOOD outputs={} bytes={expected_bytes} covered_to={covered_to} unique={} snapshots={}",
+        ordered.len(),
+        seen.len(),
+        received
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::Snapshot { .. }))
+            .count(),
+    );
+    client.session_close(&session.id).expect("close");
+    assert!(client.sessions_list().expect("list").is_empty());
+}
+
+/// THE acceptance test for this milestone: while one session floods output
+/// through the pipe, control traffic (ping here; resize below) on the same
+/// connection is answered within a declared bound.
+///
+/// Bound: 1,000 ms. Healthy RTT on this pipe is single-digit milliseconds
+/// (see real_pty_echo_latency_benchmark's ping control). The defect this
+/// milestone removes surfaced as `TimedOut("waiting for a daemon reply")`
+/// against the client's 30,000 ms RPC timeout. A 1,000 ms bound sits two
+/// orders of magnitude above healthy latency and thirty times below the
+/// observed failure, so it can only fail when control traffic is actually
+/// starved.
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn control_traffic_is_answered_within_bound_during_flood() {
+    const CONTROL_BOUND: Duration = Duration::from_millis(1_000);
+    const LINES: usize = 100_000;
+    const PAYLOAD: &str = "DEVBOULE_CONTROL_FLOOD_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const DONE: &str = "DEVBOULE_CONTROL_FLOOD_DONE";
+
+    let harness = Harness::spawn();
+    queue_command(
+        &harness.paths,
+        PtyCommand::new(
+            "pwsh.exe",
+            vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                format!("$line = '{PAYLOAD}'; 1..{LINES} | ForEach-Object {{ $line }}; '{DONE}'"),
+            ],
+            std::env::current_dir().unwrap(),
+            Vec::new(),
+        ),
+    );
+    let client = Arc::new(harness.client("control"));
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+
+    let done = Arc::new(AtomicBool::new(false));
+    let gaps = Arc::new(AtomicU64::new(0));
+    let done_for_handler = Arc::clone(&done);
+    let gaps_for_handler = Arc::clone(&gaps);
+    let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
+        SessionEvent::Output { data, .. } => {
+            if data.contains(DONE) {
+                done_for_handler.store(true, Ordering::Release);
+            }
+        }
+        SessionEvent::OutputGap { .. } => {
+            gaps_for_handler.fetch_add(1, Ordering::Release);
+        }
+        _ => {}
+    });
+    client
+        .session_attach(&session.id, None, handler)
+        .expect("attach");
+
+    // Control traffic on the SAME connection whose writer is busy draining
+    // the flood — exactly the path that used to starve. Ping and resize
+    // alternate: ping exercises the dispatch turn, resize additionally
+    // serialises against emulator parsing under the session state lock.
+    let mut rtts: Vec<(Duration, &'static str)> = Vec::new();
+    let mut widest = true;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline {
+        if done.load(Ordering::Acquire) {
+            break;
+        }
+        let started = Instant::now();
+        if widest {
+            client.ping().expect("ping during flood");
+        } else {
+            client
+                .session_resize(&session.id, 100, 30)
+                .expect("resize during flood");
+        }
+        let rtt = started.elapsed();
+        assert!(
+            rtt <= CONTROL_BOUND,
+            "{} took {rtt:?} during flood; bound is {CONTROL_BOUND:?} (control traffic starved)",
+            if widest { "ping" } else { "resize" },
+        );
+        rtts.push((rtt, if widest { "ping" } else { "resize" }));
+        widest = !widest;
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let flood_done = done.load(Ordering::Acquire);
+    client.session_close(&session.id).expect("close");
+    assert!(flood_done, "flood did not finish within 120 s");
+    assert_eq!(
+        gaps.load(Ordering::Acquire),
+        0,
+        "live delivery must not declare gaps"
+    );
+    assert!(
+        rtts.len() >= 40,
+        "expected a sustained control stream during the flood, got {} requests",
+        rtts.len()
+    );
+    rtts.sort_by_key(|(rtt, _)| *rtt);
+    let p95 = rtts[rtts.len() * 95 / 100].0;
+    let p50 = rtts[rtts.len() / 2].0;
+    let max = rtts.last().expect("at least one control request").0;
+    println!(
+        "CONTROL_BOUND requests={} p50_ms={:.1} p95_ms={:.1} max_ms={:.1} bound_ms={}",
+        rtts.len(),
+        p50.as_secs_f64() * 1_000.0,
+        p95.as_secs_f64() * 1_000.0,
+        max.as_secs_f64() * 1_000.0,
+        CONTROL_BOUND.as_millis(),
+    );
 }
