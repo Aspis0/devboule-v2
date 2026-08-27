@@ -714,6 +714,28 @@ mod tests {
     }
 
     #[test]
+    fn wide_glyph_round_trip_at_final_column_preserves_every_cell() {
+        let mut source = Screen::new(5, 3);
+        source.process("abcd界XYZ".as_bytes());
+        let rendered = source.render_ansi();
+
+        let mut target = Screen::new(5, 3);
+        target.process(rendered.as_bytes());
+
+        let left = source.snapshot();
+        let right = target.snapshot();
+        for row in 0..left.rows {
+            for col in 0..left.cols {
+                assert_eq!(
+                    left.cell(row, col),
+                    right.cell(row, col),
+                    "cell mismatch at ({row}, {col})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn combining_marks_stay_on_their_base_cell() {
         let mut screen = Screen::new(8, 2);
         screen.process("e\u{301}\u{308}".as_bytes());

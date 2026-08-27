@@ -2720,6 +2720,21 @@ mod tests {
     }
 
     #[test]
+    fn pending_queue_never_exceeds_byte_or_frame_budget() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        attach_tracked(&runtime, &conn);
+        let payload = "x".repeat(COALESCE_MAX_BYTES);
+
+        for _ in 0..200 {
+            runtime.publish_output(&payload);
+            let stream = runtime.stream.lock().expect("stream lock");
+            assert!(stream.pending_bytes <= PENDING_OUTPUT_BUDGET_BYTES);
+            assert!(stream.pending_frames <= PENDING_OUTPUT_BUDGET_FRAMES);
+        }
+    }
+
+    #[test]
     fn dsr_reply_is_written_straight_to_the_pty() {
         let (runtime, received) = sink_runtime();
         // No attachment, no journal, no snapshot: the query is answered on
