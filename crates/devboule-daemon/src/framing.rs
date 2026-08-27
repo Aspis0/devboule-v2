@@ -65,6 +65,15 @@ impl Framed {
         self.send_with_deadline(value, None, true)
     }
 
+    pub(crate) fn send_unflushed<T: Serialize>(&self, value: &T) -> Result<(), DaemonError> {
+        // Event streaming must not call FlushFileBuffers. On Windows, when this
+        // handle is the server end of a named pipe, FlushFileBuffers waits for
+        // the client to read all buffered bytes. That is a teardown/control
+        // delivery barrier, not a per-event operation: using it in the hot path
+        // can park the daemon's event loop and starve request processing.
+        self.send_with_deadline(value, None, false)
+    }
+
     pub(crate) fn send_until<T: Serialize>(
         &self,
         value: &T,
@@ -90,7 +99,7 @@ impl Framed {
         #[cfg(not(windows))]
         {
             let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
-            write_frame(&mut file, value)
+            write_frame(&mut file, value, flush)
         }
     }
 
@@ -214,11 +223,13 @@ fn write_frame<T: Serialize>(
 }
 
 #[cfg(not(windows))]
-fn write_frame<T: Serialize>(file: &mut File, value: &T) -> Result<(), DaemonError> {
+fn write_frame<T: Serialize>(file: &mut File, value: &T, flush: bool) -> Result<(), DaemonError> {
     let bytes = frame_bytes(value)?;
     file.write_all(&bytes)?;
     file.write_all(b"\n")?;
-    file.flush()?;
+    if flush {
+        file.flush()?;
+    }
     Ok(())
 }
 

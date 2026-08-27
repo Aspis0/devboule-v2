@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
@@ -397,27 +398,66 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .name("daemon-client-request".into())
         .spawn(move || read_client_requests(reader_framed, request_tx, reader_wake))
         .map_err(DaemonError::from)?;
+    let mut pending_events = VecDeque::new();
     loop {
         if state.stop.load(Ordering::SeqCst) {
             break;
         }
         let observed_generation = conn.outbound.wake_generation();
-        for event in conn.pull_events() {
-            framed.send(&DaemonMessage::Event(event))?;
+        let (request, request_channel_closed) = match request_rx.try_recv() {
+            Ok(request) => (Some(request), false),
+            Err(TryRecvError::Empty) => (None, false),
+            Err(TryRecvError::Disconnected) => (None, true),
+        };
+        if request_channel_closed {
+            break;
         }
-        let request = match request_rx.try_recv() {
-            Ok(Ok(request)) => request,
-            Ok(Err(error)) if connection_closed(&error) || state.stop.load(Ordering::SeqCst) => {
+        if let Some(request) = request {
+            let request = match request {
+                Ok(request) => request,
+                Err(error) => {
+                    if connection_closed(&error) || state.stop.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    conn.detach_all(&state.sessions);
+                    conn.outbound.close();
+                    framed.cancel_read();
+                    bounded_join(reader, JOIN_BUDGET);
+                    return Err(error);
+                }
+            };
+            if drains_events_before_dispatch(&request) {
+                pending_events.extend(conn.pull_events());
+                while let Some(event) = pending_events.pop_front() {
+                    framed.send_unflushed(&DaemonMessage::Event(event))?;
+                }
+            }
+            if let ClientMessage::Hello(_) = request {
+                let id = request.request_id();
+                let mut error =
+                    WireError::new(ErrorCode::InvalidRequest, "hello already completed");
+                if let Some(id) = id {
+                    error = error.with_id(id);
+                }
+                framed.send(&DaemonMessage::Error(error))?;
+                continue;
+            }
+            let reply = dispatch(&state, &owner, request, &conn, sessions_ok);
+            let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
+            // Control/lifecycle replies retain the flush barrier. It makes the
+            // acknowledgement visible before teardown or a shutdown disconnect;
+            // the event stream below must never use that barrier per frame.
+            framed.send(&reply)?;
+            if shutting_down {
+                state.request_shutdown();
                 break;
             }
-            Ok(Err(error)) => {
-                conn.detach_all(&state.sessions);
-                conn.outbound.close();
-                framed.cancel_read();
-                bounded_join(reader, JOIN_BUDGET);
-                return Err(error);
-            }
-            Err(TryRecvError::Empty) => {
+            continue;
+        }
+
+        if pending_events.is_empty() {
+            pending_events.extend(conn.pull_events());
+            if pending_events.is_empty() {
                 if !conn
                     .outbound
                     .wait_for_notify_since(observed_generation, conn.next_exit_wake())
@@ -426,27 +466,15 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                 }
                 continue;
             }
-            Err(TryRecvError::Disconnected) => break,
-        };
-        if let ClientMessage::Hello(_) = request {
-            let id = request.request_id();
-            let mut error = WireError::new(ErrorCode::InvalidRequest, "hello already completed");
-            if let Some(id) = id {
-                error = error.with_id(id);
-            }
-            framed.send(&DaemonMessage::Error(error))?;
-            continue;
         }
-        let reply = dispatch(&state, &owner, request, &conn, sessions_ok);
-        let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
-        framed.send(&reply)?;
-        for event in conn.pull_events() {
-            framed.send(&DaemonMessage::Event(event))?;
-        }
-        if shutting_down {
-            state.request_shutdown();
-            break;
-        }
+
+        // Send at most one event before looking for control traffic again.
+        // In particular, no bulk output batch can hold a DSR, resize, or kill
+        // request behind a sequence of flushes.
+        let event = pending_events
+            .pop_front()
+            .expect("pending event queue was checked above");
+        framed.send_unflushed(&DaemonMessage::Event(event))?;
     }
     framed.cancel_read();
     conn.detach_all(&state.sessions);
@@ -481,6 +509,13 @@ fn connection_closed(error: &DaemonError) -> bool {
                 || error.kind() == std::io::ErrorKind::BrokenPipe
                 || error.kind() == std::io::ErrorKind::ConnectionReset
                 || error.raw_os_error() == Some(995)
+    )
+}
+
+fn drains_events_before_dispatch(request: &ClientMessage) -> bool {
+    matches!(
+        request,
+        ClientMessage::Shutdown { .. } | ClientMessage::SessionClose { .. }
     )
 }
 
