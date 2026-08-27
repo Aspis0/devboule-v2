@@ -24,6 +24,7 @@ use crate::IDLE_SHUTDOWN_GRACE;
 
 const JOIN_SLICE: Duration = Duration::from_millis(10);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 struct Lifecycle {
@@ -185,7 +186,18 @@ impl ServerState {
     }
 
     fn status_body(&self, request_id: u64) -> DaemonMessage {
+        self.sessions.refresh_journal_degradation();
         let lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
+        let journal_error = self
+            .journal_error
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+            .or_else(|| {
+                self.sessions.has_live_journal_degradation().then(|| {
+                    "Journal output is degraded; some terminal output may not be saved.".to_string()
+                })
+            });
         DaemonMessage::Status {
             id: request_id,
             body: DaemonStatusBody {
@@ -197,11 +209,7 @@ impl ServerState {
                 clients: lifecycle.clients,
                 sessions: lifecycle.sessions,
                 capabilities: m3a_daemon_capabilities(),
-                journal_error: self
-                    .journal_error
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .clone(),
+                journal_error,
             },
         }
     }
@@ -329,7 +337,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         send_shutting_down(&framed, None)?;
         return Ok(());
     }
-    let hello: ClientMessage = framed.recv()?;
+    let hello: ClientMessage = framed.recv_timeout(HANDSHAKE_TIMEOUT)?;
     let ClientMessage::Hello(client_hello) = hello else {
         framed.send(&DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
@@ -340,6 +348,16 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     if state.is_shutting_down() {
         send_shutting_down(&framed, None)?;
         return Ok(());
+    }
+    #[cfg(windows)]
+    let true_owner = transport::peer_owner(framed.as_file().as_ref()).map_err(DaemonError::Io)?;
+    #[cfg(not(windows))]
+    let true_owner = client_hello.owner.clone();
+    if client_hello.owner != true_owner {
+        eprintln!(
+            "client hello owner label {:?} did not match pipe peer {:?}",
+            client_hello.owner, true_owner
+        );
     }
     let daemon_hello = daemon_hello(&state);
     let agreed = match negotiate(&client_hello, &daemon_hello) {
@@ -356,7 +374,9 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::SESSIONS);
-    let owner = client_hello.owner;
+    // The hello owner is diagnostic only. All idempotency and session access
+    // below use the identity derived from the connected pipe's peer process.
+    let owner = true_owner;
     let conn = ConnHandle::new(state.alloc_conn());
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
@@ -560,30 +580,32 @@ fn dispatch_session(
             id,
             state
                 .sessions
-                .attach(&session_id, from_cursor, conn)
+                .attach(&session_id, from_cursor, conn, owner)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionDetach { id, session_id } => reply_result(
             id,
             state
                 .sessions
-                .detach(&session_id, conn)
+                .detach(&session_id, conn, owner)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
-        ClientMessage::SessionClose { id, session_id } => match state.sessions.close(&session_id) {
-            Ok(removed) => {
-                if removed {
-                    state.session_finished();
+        ClientMessage::SessionClose { id, session_id } => {
+            match state.sessions.close(&session_id, owner) {
+                Ok(removed) => {
+                    if removed {
+                        state.session_finished();
+                    }
+                    DaemonMessage::Ok { id }
                 }
-                DaemonMessage::Ok { id }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
-            Err(error) => DaemonMessage::Error(error.with_id(id)),
-        },
+        }
         ClientMessage::SessionStop { id, session_id } => reply_result(
             id,
             state
                 .sessions
-                .stop(&session_id)
+                .stop(&session_id, owner)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionSend {
@@ -601,7 +623,7 @@ fn dispatch_session(
             id,
             state
                 .sessions
-                .resize(&session_id, cols, rows)
+                .resize(&session_id, cols, rows, owner)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionsList { id } => match state.sessions.list() {
@@ -694,7 +716,7 @@ fn session_send(
     {
         return reply;
     }
-    match state.sessions.send(&session_id, &text) {
+    match state.sessions.send(&session_id, &text, owner) {
         Ok(()) => {
             let reply = DaemonMessage::Ok { id };
             remember(

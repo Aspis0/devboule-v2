@@ -236,6 +236,9 @@ struct SessionRuntime {
     session_id: String,
     journal: Option<Arc<Journal>>,
     stream: Mutex<StreamState>,
+    /// A failed journal write is a fact about this session, not about the
+    /// daemon or a later session. It remains true for the session lifetime.
+    journal_degraded: AtomicBool,
     peak_ring_bytes: AtomicUsize,
     reader_finished: AtomicBool,
     child_reaped: AtomicBool,
@@ -265,6 +268,7 @@ impl SessionRuntime {
                 exit_at: None,
                 disposition: Disposition::Running,
             }),
+            journal_degraded: AtomicBool::new(false),
             peak_ring_bytes: AtomicUsize::new(0),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
@@ -323,13 +327,33 @@ impl SessionRuntime {
         self.published_bytes
             .fetch_add(data.len(), Ordering::Relaxed);
         if let Some(journal) = &self.journal {
-            let _ = journal.try_append(output_record(
+            let accepted = journal.try_append(output_record(
                 self.session_id.clone(),
                 generation,
                 seq,
                 data.as_bytes(),
             ));
+            if !accepted || journal.is_session_degraded(&self.session_id) {
+                self.mark_journal_degraded();
+            }
         }
+    }
+
+    fn mark_journal_degraded(&self) {
+        if !self.journal_degraded.swap(true, Ordering::AcqRel) {
+            if let Some(journal) = &self.journal {
+                journal.note_session_degraded(&self.session_id);
+            }
+            if let Ok(stream) = self.stream.lock() {
+                if let Some(attached) = &stream.attached {
+                    attached.outbound.notify();
+                }
+            }
+        }
+    }
+
+    fn journal_degraded(&self) -> bool {
+        self.journal_degraded.load(Ordering::Acquire)
     }
 
     /// Register this connection as the single attached viewer. A second
@@ -388,7 +412,13 @@ impl SessionRuntime {
         // that the process was observed, but do not freeze last_seq: drain
         // frames still need seqs. Ended (exit row) is written at EOF.
         if let Some(journal) = &self.journal {
-            let _ = journal.mark_reaped(&self.session_id, code);
+            if let Err(error) = journal.mark_reaped(&self.session_id, code) {
+                self.mark_journal_degraded();
+                eprintln!(
+                    "journal could not record process exit for {}: {error}",
+                    self.session_id
+                );
+            }
         }
     }
 
@@ -596,6 +626,7 @@ impl ConnHandle {
 /// the endpoints/runtime they need after releasing the map lock.
 struct PtySession {
     metadata: Session,
+    owner: OwnerId,
     process_job: JobObject,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
@@ -612,6 +643,7 @@ struct PtySession {
 
 struct TranscriptSession {
     metadata: Session,
+    owner: OwnerId,
     runtime: Arc<SessionRuntime>,
 }
 
@@ -621,6 +653,13 @@ enum RegistryEntry {
 }
 
 impl RegistryEntry {
+    fn owner(&self) -> &OwnerId {
+        match self {
+            Self::Live(session) => &session.owner,
+            Self::Transcript(session) => &session.owner,
+        }
+    }
+
     fn runtime(&self) -> Arc<SessionRuntime> {
         match self {
             Self::Live(session) => Arc::clone(&session.runtime),
@@ -672,6 +711,33 @@ fn live_session_view(session: &PtySession) -> Session {
 
 fn process_gone() -> WireError {
     WireError::new(ErrorCode::InvalidRequest, "This terminal process is gone.")
+}
+
+fn unauthorized() -> WireError {
+    WireError::new(
+        ErrorCode::Unauthorized,
+        "This client is not authorized to use that session.",
+    )
+}
+
+fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireError> {
+    let mut parts = session_id.splitn(3, '.');
+    if parts.next() != Some("s") {
+        return Err(unauthorized());
+    }
+    let client = parts.next().ok_or_else(unauthorized)?;
+    if parts.next().is_none() {
+        return Err(unauthorized());
+    }
+    OwnerId::new(user, client).map_err(|_| unauthorized())
+}
+
+fn check_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> {
+    if entry.owner() == owner {
+        Ok(())
+    } else {
+        Err(unauthorized())
+    }
 }
 
 #[derive(Clone)]
@@ -740,7 +806,7 @@ impl SessionRegistry {
             record.status = PersistStatus::Live;
             journal.try_upsert(record);
         }
-        spawn_session(state, self, metadata.clone(), command)?;
+        spawn_session(state, self, metadata.clone(), owner.clone(), command)?;
         Ok(metadata)
     }
 
@@ -749,17 +815,27 @@ impl SessionRegistry {
         session_id: &str,
         from_cursor: Option<Cursor>,
         conn: &ConnHandle,
+        owner: &OwnerId,
     ) -> Result<(), WireError> {
-        if let Ok(runtime) = self.runtime(session_id) {
+        let runtime = match self.runtime_for_owner(session_id, owner) {
+            Ok(runtime) => runtime,
+            Err(error) if error.code == ErrorCode::SessionNotFound => {
+                return self
+                    .hydrate_transcript(session_id, from_cursor, owner)
+                    .and_then(|runtime| {
+                        let generation = runtime.try_attach(from_cursor, conn)?;
+                        let from_seq = from_cursor.map(|cursor| cursor.seq);
+                        conn.track(session_id, runtime, from_seq, generation);
+                        Ok(())
+                    });
+            }
+            Err(error) => return Err(error),
+        };
+        {
             let generation = runtime.try_attach(from_cursor, conn)?;
             let from_seq = from_cursor.map(|cursor| cursor.seq);
             conn.track(session_id, runtime, from_seq, generation);
-            return Ok(());
         }
-        let runtime = self.hydrate_transcript(session_id, from_cursor)?;
-        let generation = runtime.try_attach(from_cursor, conn)?;
-        let from_seq = from_cursor.map(|cursor| cursor.seq);
-        conn.track(session_id, runtime, from_seq, generation);
         Ok(())
     }
 
@@ -767,10 +843,20 @@ impl SessionRegistry {
         &self,
         session_id: &str,
         from_cursor: Option<Cursor>,
+        owner: &OwnerId,
     ) -> Result<Arc<SessionRuntime>, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let journal = self.journal.as_ref().ok_or_else(not_found)?;
+        let record = journal
+            .list()?
+            .into_iter()
+            .find(|row| row.id == session_id)
+            .ok_or_else(not_found)?;
+        let session_owner = owner_from_session_id(session_id, &record.owner)?;
+        if &session_owner != owner {
+            return Err(unauthorized());
+        }
         journal.pin(session_id)?;
         let from_seq = from_cursor.map(|cursor| cursor.seq).unwrap_or(0);
         let replay = match journal.replay(session_id, from_seq) {
@@ -786,21 +872,7 @@ impl SessionRegistry {
                 return Err(error);
             }
         }
-        let metadata = journal
-            .list()
-            .ok()
-            .and_then(|rows| rows.into_iter().find(|row| row.id == session_id))
-            .map(|row| row.to_session())
-            .unwrap_or_else(|| Session {
-                id: session_id.to_string(),
-                workspace_id: None,
-                kind: SessionKind::Terminal,
-                title: "Terminal".to_string(),
-                state: SessionState::Recovered {
-                    generation: replay.generation,
-                    truncated: replay.truncated,
-                },
-            });
+        let metadata = record.to_session();
         let runtime =
             SessionRuntime::from_replay(session_id.to_string(), Some(Arc::clone(journal)), replay);
         {
@@ -809,6 +881,7 @@ impl SessionRegistry {
                 return Err(internal("Session state is unavailable."));
             };
             if let Some(existing) = map.get(session_id) {
+                check_owner(existing, owner)?;
                 journal.unpin(session_id);
                 return Ok(existing.runtime());
             }
@@ -816,6 +889,7 @@ impl SessionRegistry {
                 session_id.to_string(),
                 RegistryEntry::Transcript(TranscriptSession {
                     metadata,
+                    owner: session_owner,
                     runtime: Arc::clone(&runtime),
                 }),
             );
@@ -823,8 +897,13 @@ impl SessionRegistry {
         Ok(runtime)
     }
 
-    pub fn detach(&self, session_id: &str, conn: &ConnHandle) -> Result<(), WireError> {
-        let runtime = self.runtime(session_id)?;
+    pub fn detach(
+        &self,
+        session_id: &str,
+        conn: &ConnHandle,
+        owner: &OwnerId,
+    ) -> Result<(), WireError> {
+        let runtime = self.runtime_for_owner(session_id, owner)?;
         runtime.detach_if_conn(conn.id);
         conn.untrack(session_id);
         self.drop_transcript_if_idle(session_id);
@@ -859,14 +938,19 @@ impl SessionRegistry {
         }
     }
 
-    pub fn close(&self, session_id: &str) -> Result<bool, WireError> {
+    pub fn close(&self, session_id: &str, owner: &OwnerId) -> Result<bool, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let session = self
-            .inner
-            .lock()
-            .map_err(|_| internal("Session state is unavailable."))?
-            .remove(session_id);
+        let session = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            if let Some(entry) = map.get(session_id) {
+                check_owner(entry, owner)?;
+            }
+            map.remove(session_id)
+        };
         match session {
             Some(RegistryEntry::Live(session)) => {
                 if let Some(journal) = &self.journal {
@@ -885,11 +969,12 @@ impl SessionRegistry {
             }
             None => {
                 if let Some(journal) = &self.journal {
-                    let known = journal
-                        .list()
-                        .ok()
-                        .is_some_and(|rows| rows.iter().any(|row| row.id == session_id));
-                    if known {
+                    let known = journal.list()?.into_iter().find(|row| row.id == session_id);
+                    if let Some(record) = known {
+                        let session_owner = owner_from_session_id(session_id, &record.owner)?;
+                        if &session_owner != owner {
+                            return Err(unauthorized());
+                        }
                         journal.try_mark_closed(session_id);
                         return Ok(false);
                     }
@@ -899,7 +984,7 @@ impl SessionRegistry {
         }
     }
 
-    pub fn stop(&self, session_id: &str) -> Result<(), WireError> {
+    pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let mut killer = {
@@ -907,11 +992,9 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map
-                .get_mut(session_id)
-                .ok_or_else(not_found)?
-                .as_live_mut()
-                .ok_or_else(process_gone)?;
+            let session = map.get_mut(session_id).ok_or_else(not_found)?;
+            check_owner(session, owner)?;
+            let session = session.as_live_mut().ok_or_else(process_gone)?;
             session.preserve_on_exit.store(true, Ordering::SeqCst);
             session.killer.clone_killer()
         };
@@ -919,7 +1002,7 @@ impl SessionRegistry {
         Ok(())
     }
 
-    pub fn send(&self, session_id: &str, text: &str) -> Result<(), WireError> {
+    pub fn send(&self, session_id: &str, text: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         if text.len() > MAX_WRITE_BYTES {
@@ -933,11 +1016,9 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map
-                .get(session_id)
-                .ok_or_else(not_found)?
-                .as_live()
-                .ok_or_else(process_gone)?;
+            let entry = map.get(session_id).ok_or_else(not_found)?;
+            check_owner(entry, owner)?;
+            let session = entry.as_live().ok_or_else(process_gone)?;
             Arc::clone(&session.writer)
         };
         let mut writer = writer
@@ -951,7 +1032,13 @@ impl SessionRegistry {
             .map_err(|_| WireError::new(ErrorCode::Io, "Could not flush input to the terminal."))
     }
 
-    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), WireError> {
+    pub fn resize(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+        owner: &OwnerId,
+    ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let master = {
@@ -959,11 +1046,9 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map
-                .get(session_id)
-                .ok_or_else(not_found)?
-                .as_live()
-                .ok_or_else(process_gone)?;
+            let entry = map.get(session_id).ok_or_else(not_found)?;
+            check_owner(entry, owner)?;
+            let session = entry.as_live().ok_or_else(process_gone)?;
             Arc::clone(&session.master)
         };
         let master = master
@@ -1000,6 +1085,31 @@ impl SessionRegistry {
         Ok(sessions)
     }
 
+    /// Pull asynchronous journal-loop failures into live runtimes so their
+    /// attached event channels can report degradation even when the PTY has
+    /// gone quiet since the failed write.
+    pub fn refresh_journal_degradation(&self) {
+        let runtimes = self
+            .inner
+            .lock()
+            .map(|map| map.values().map(RegistryEntry::runtime).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for runtime in runtimes {
+            if let Some(journal) = &runtime.journal {
+                if journal.is_session_degraded(&runtime.session_id) {
+                    runtime.mark_journal_degraded();
+                }
+            }
+        }
+    }
+
+    pub fn has_live_journal_degradation(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|map| map.values().any(|entry| entry.runtime().journal_degraded()))
+            .unwrap_or(true)
+    }
+
     fn runtime(&self, session_id: &str) -> Result<Arc<SessionRuntime>, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -1010,12 +1120,29 @@ impl SessionRegistry {
         let session = map.get(session_id).ok_or_else(not_found)?;
         Ok(session.runtime())
     }
+
+    fn runtime_for_owner(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+    ) -> Result<Arc<SessionRuntime>, WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let session = map.get(session_id).ok_or_else(not_found)?;
+        check_owner(session, owner)?;
+        Ok(session.runtime())
+    }
 }
 
 pub fn spawn_session(
     state: &Arc<ServerState>,
     registry: &SessionRegistry,
     metadata: Session,
+    owner: OwnerId,
     command: PtyCommand,
 ) -> Result<(), WireError> {
     // On Windows portable-pty selects ConPTY internally. The frontend must
@@ -1134,6 +1261,7 @@ pub fn spawn_session(
         .ok();
     let session = PtySession {
         metadata,
+        owner: owner.clone(),
         process_job,
         master,
         killer,
@@ -1165,7 +1293,7 @@ pub fn spawn_session(
     {
         Ok(handle) => Some(handle),
         Err(_) => {
-            let _ = registry.close(&id);
+            let _ = registry.close(&id, &owner);
             return Err(WireError::new(
                 ErrorCode::Internal,
                 "Could not start the terminal reader.",
@@ -1191,7 +1319,7 @@ pub fn spawn_session(
         }) {
         Ok(handle) => handle,
         Err(_) => {
-            let _ = registry.close(&id);
+            let _ = registry.close(&id, &owner);
             return Err(WireError::new(
                 ErrorCode::Internal,
                 "Could not start the terminal reader.",
@@ -1307,7 +1435,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
         let coalesce = session.coalesce_handle.take();
         session.exited.store(true, Ordering::SeqCst);
         drop(map);
-        bounded_join(coalesce);
+        join_coalesce(coalesce, runtime);
         journal_mark_ended(registry, runtime);
         runtime.close_output();
         return false;
@@ -1332,7 +1460,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     drop(writer);
     drop(master);
     bounded_join(child_wait);
-    bounded_join(coalesce);
+    join_coalesce(coalesce, runtime);
     let _ = session_runtime;
     journal_mark_ended(registry, runtime);
     runtime.close_output();
@@ -1343,14 +1471,23 @@ fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
     let Some(journal) = &registry.journal else {
         return;
     };
-    let (generation, code) = match runtime.stream.lock() {
-        Ok(stream) => (stream.generation, stream.exit_code),
-        Err(_) => return,
+    let (generation, code) = {
+        let stream = match runtime.stream.lock() {
+            Ok(stream) => stream,
+            Err(_) => return,
+        };
+        (stream.generation, stream.exit_code)
     };
     // EOF path: waiting on the journal here does not stall a live PTY. The
     // terminal marker is critical and must not be dropped behind a full
     // output queue.
-    let _ = journal.mark_ended_blocking(&runtime.session_id, generation, code);
+    if let Err(error) = journal.mark_ended_blocking(&runtime.session_id, generation, code) {
+        runtime.mark_journal_degraded();
+        eprintln!(
+            "journal could not record terminal exit for {}: {error}",
+            runtime.session_id
+        );
+    }
 }
 
 fn wait_child(mut child: Box<dyn Child + Send + Sync>) -> Option<u32> {
@@ -1380,6 +1517,7 @@ fn teardown_session(session: PtySession) {
         coalesce_handle,
         runtime,
         exited: _,
+        owner: _,
         metadata: _,
         preserve_on_exit: _,
     } = session;
@@ -1407,12 +1545,27 @@ fn teardown_session(session: PtySession) {
     //    endpoint close above makes the reader finish promptly, while this
     //    small budget prevents shutdown from accumulating a hang across
     //    sessions.
-    bounded_join(coalesce_handle);
+    // The order above is intentional: the coalescer gets every chance to
+    // publish before output is closed. If its bounded join still gives up,
+    // any pending bytes may be discarded by the later finish(). Surface that
+    // loss through the same per-session degradation signal used for journal
+    // failures instead of silently claiming completeness.
+    join_coalesce(coalesce_handle, &runtime);
     bounded_join(reader_handle);
     runtime.finish(None);
 }
 
-fn bounded_join<T>(handle: Option<JoinHandle<T>>) {
+fn join_coalesce(handle: Option<JoinHandle<()>>, runtime: &SessionRuntime) {
+    if !bounded_join(handle) {
+        runtime.mark_journal_degraded();
+        eprintln!(
+            "session {} coalesce thread exceeded teardown join budget; scrollback may be truncated",
+            runtime.session_id
+        );
+    }
+}
+
+fn bounded_join<T>(handle: Option<JoinHandle<T>>) -> bool {
     if let Some(handle) = handle {
         let deadline = Instant::now() + READER_JOIN_BUDGET;
         while !handle.is_finished() && Instant::now() < deadline {
@@ -1420,8 +1573,11 @@ fn bounded_join<T>(handle: Option<JoinHandle<T>>) {
         }
         if handle.is_finished() {
             let _ = handle.join();
+            return true;
         }
+        return false;
     }
+    true
 }
 
 fn resolve_pty_command(paths: &RuntimePaths) -> Result<PtyCommand, WireError> {

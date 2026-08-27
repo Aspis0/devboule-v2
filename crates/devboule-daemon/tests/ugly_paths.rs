@@ -5,6 +5,7 @@
 
 #![cfg(windows)]
 
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -264,6 +265,30 @@ fn version_mismatch_is_a_clear_error_not_a_hang() {
         }
         other => panic!("expected Handshake, got {other:?}"),
     }
+}
+
+#[test]
+#[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
+fn silent_pipe_client_is_closed_after_handshake_deadline() {
+    let harness = Harness::spawn();
+    let mute = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&harness.paths.pipe_name)
+        .expect("open mute pipe client");
+    std::thread::sleep(Duration::from_millis(2500));
+
+    let started = Instant::now();
+    harness
+        .client("after-mute")
+        .ping()
+        .expect("daemon still serves clients");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a silent handshake stalled the daemon: {:?}",
+        started.elapsed()
+    );
+    drop(mute);
 }
 
 #[test]

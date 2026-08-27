@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -53,6 +53,9 @@ pub const JOURNAL_MAX_AGE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 const RPC_WAIT: Duration = Duration::from_secs(10);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
+/// Keep room for the degradation, reaped, and ended control records even
+/// while output is arriving faster than SQLite can commit it.
+const CONTROL_RESERVE: usize = 3;
 
 #[derive(Clone, Copy, Debug)]
 pub struct JournalLimits {
@@ -285,11 +288,13 @@ enum JournalCmd {
     MarkReaped {
         session_id: String,
         code: Option<u32>,
+        degraded: bool,
     },
     MarkEnded {
         session_id: String,
         generation: u64,
         code: Option<u32>,
+        degraded: bool,
     },
     MarkClosed {
         session_id: String,
@@ -324,7 +329,8 @@ enum JournalCmd {
 pub struct Journal {
     tx: SyncSender<JournalCmd>,
     join: Mutex<Option<JoinHandle<()>>>,
-    degraded: Arc<AtomicBool>,
+    queued: Arc<AtomicU64>,
+    degraded_sessions: Arc<Mutex<HashSet<String>>>,
     stats: Arc<JournalStats>,
     path: PathBuf,
 }
@@ -342,8 +348,10 @@ impl Journal {
         }
         let conn = open_connection(path)?;
         let (tx, rx) = mpsc::sync_channel(JOURNAL_QUEUE_CAP);
-        let degraded = Arc::new(AtomicBool::new(false));
-        let degraded_thread = Arc::clone(&degraded);
+        let queued = Arc::new(AtomicU64::new(0));
+        let queued_thread = Arc::clone(&queued);
+        let degraded_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let degraded_sessions_thread = Arc::clone(&degraded_sessions);
         let stats = Arc::new(JournalStats::default());
         let stats_thread = Arc::clone(&stats);
         let path_buf = path.to_path_buf();
@@ -351,13 +359,22 @@ impl Journal {
         let join = std::thread::Builder::new()
             .name("daemon-journal".into())
             .spawn(move || {
-                journal_loop(conn, rx, degraded_thread, stats_thread, limits, thread_path)
+                journal_loop(
+                    conn,
+                    rx,
+                    queued_thread,
+                    degraded_sessions_thread,
+                    stats_thread,
+                    limits,
+                    thread_path,
+                )
             })
             .map_err(|error| JournalError::Unavailable(error.to_string()))?;
         Ok(Self {
             tx,
             join: Mutex::new(Some(join)),
-            degraded,
+            queued,
+            degraded_sessions,
             stats,
             path: path_buf,
         })
@@ -367,15 +384,18 @@ impl Journal {
         &self.path
     }
 
-    pub fn is_degraded(&self) -> bool {
-        self.degraded.load(Ordering::SeqCst)
+    pub fn is_session_degraded(&self, session_id: &str) -> bool {
+        self.degraded_sessions
+            .lock()
+            .map(|sessions| sessions.contains(session_id))
+            .unwrap_or(true)
     }
 
     pub fn stats(&self) -> JournalStatsSnapshot {
         self.stats.snapshot()
     }
 
-    /// Never blocks. On a full queue or a dead writer the journal is marked
+    /// Never blocks. On a full queue or a dead writer the session is marked
     /// degraded and the PTY path continues.
     pub fn try_upsert(&self, record: SessionRecord) {
         self.try_send(JournalCmd::Upsert(record));
@@ -385,6 +405,12 @@ impl Journal {
     /// path never waits; a false return is a truncated journal.
     pub fn try_append(&self, record: EventRecord) -> bool {
         let payload_len = record.payload.len() as u64;
+        let session_id = record.session_id.clone();
+        if !self.reserve_output_slot() {
+            self.note_session_degraded(&record.session_id);
+            self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
         match self.tx.try_send(JournalCmd::Append(record)) {
             Ok(()) => {
                 self.stats.accepted_frames.fetch_add(1, Ordering::Relaxed);
@@ -393,16 +419,9 @@ impl Journal {
                     .fetch_add(payload_len, Ordering::Relaxed);
                 true
             }
-            Err(TrySendError::Full(JournalCmd::Append(record))) => {
-                self.degraded.store(true, Ordering::SeqCst);
-                self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
-                let _ = self.tx.try_send(JournalCmd::MarkDegraded {
-                    session_id: record.session_id,
-                });
-                false
-            }
-            Err(_) => {
-                self.degraded.store(true, Ordering::SeqCst);
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                self.release_slot();
+                self.note_session_degraded(&session_id);
                 self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
                 false
             }
@@ -415,6 +434,7 @@ impl Journal {
         self.try_send(JournalCmd::MarkReaped {
             session_id: session_id.to_string(),
             code,
+            degraded: self.is_session_degraded(session_id),
         });
     }
 
@@ -423,6 +443,7 @@ impl Journal {
             JournalCmd::MarkReaped {
                 session_id: session_id.to_string(),
                 code,
+                degraded: self.is_session_degraded(session_id),
             },
             RPC_WAIT,
         )?;
@@ -440,6 +461,7 @@ impl Journal {
                 session_id: session_id.to_string(),
                 generation,
                 code,
+                degraded: self.is_session_degraded(session_id),
             },
             RPC_WAIT,
         )?;
@@ -451,17 +473,12 @@ impl Journal {
             session_id: session_id.to_string(),
             generation,
             code,
+            degraded: self.is_session_degraded(session_id),
         });
     }
 
     pub fn try_mark_closed(&self, session_id: &str) {
         self.try_send(JournalCmd::MarkClosed {
-            session_id: session_id.to_string(),
-        });
-    }
-
-    pub fn try_mark_degraded(&self, session_id: &str) {
-        self.try_send(JournalCmd::MarkDegraded {
             session_id: session_id.to_string(),
         });
     }
@@ -528,31 +545,94 @@ impl Journal {
         let deadline = Instant::now() + wait;
         let mut pending = Some(cmd);
         while Instant::now() < deadline {
-            match self.tx.try_send(pending.take().expect("pending command")) {
+            let command = pending.take().expect("pending command");
+            if !self.reserve_slot() {
+                pending = Some(command);
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            match self.tx.try_send(command) {
                 Ok(()) => return Ok(()),
                 Err(TrySendError::Full(cmd)) => {
+                    self.release_slot();
                     pending = Some(cmd);
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                Err(TrySendError::Disconnected(_)) => return Err(JournalError::Stopped),
+                Err(TrySendError::Disconnected(_)) => {
+                    self.release_slot();
+                    return Err(JournalError::Stopped);
+                }
             }
         }
         Err(JournalError::Stopped)
     }
 
     fn try_send(&self, cmd: JournalCmd) {
+        if !self.reserve_slot() {
+            return;
+        }
         match self.tx.try_send(cmd) {
             Ok(()) => {}
-            Err(TrySendError::Full(JournalCmd::Append(record))) => {
-                self.degraded.store(true, Ordering::SeqCst);
-                let _ = self.tx.try_send(JournalCmd::MarkDegraded {
-                    session_id: record.session_id,
-                });
+            Err(TrySendError::Full(_)) => {
+                self.release_slot();
             }
-            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
-                self.degraded.store(true, Ordering::SeqCst);
+            Err(TrySendError::Disconnected(_)) => {
+                self.release_slot();
             }
         }
+    }
+
+    fn reserve_output_slot(&self) -> bool {
+        self.reserve_below(JOURNAL_QUEUE_CAP.saturating_sub(CONTROL_RESERVE))
+    }
+
+    fn reserve_slot(&self) -> bool {
+        self.reserve_below(JOURNAL_QUEUE_CAP)
+    }
+
+    fn reserve_below(&self, limit: usize) -> bool {
+        let limit = limit as u64;
+        let mut queued = self.queued.load(Ordering::Acquire);
+        loop {
+            if queued >= limit {
+                return false;
+            }
+            match self.queued.compare_exchange_weak(
+                queued,
+                queued + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(next) => queued = next,
+            }
+        }
+    }
+
+    fn release_slot(&self) {
+        self.queued
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                Some(value.saturating_sub(1))
+            })
+            .ok();
+    }
+
+    pub(crate) fn note_session_degraded(&self, session_id: &str) -> bool {
+        if let Ok(mut sessions) = self.degraded_sessions.lock() {
+            let first = sessions.insert(session_id.to_string());
+            drop(sessions);
+            if first {
+                self.queue_degraded_marker(session_id);
+            }
+            return first;
+        }
+        false
+    }
+
+    fn queue_degraded_marker(&self, session_id: &str) {
+        self.try_send(JournalCmd::MarkDegraded {
+            session_id: session_id.to_string(),
+        });
     }
 
     fn rpc<T>(
@@ -686,17 +766,24 @@ CREATE TABLE IF NOT EXISTS permissions (
 fn journal_loop(
     conn: Connection,
     rx: mpsc::Receiver<JournalCmd>,
-    degraded: Arc<AtomicBool>,
+    queued: Arc<AtomicU64>,
+    degraded_sessions: Arc<Mutex<HashSet<String>>>,
     stats: Arc<JournalStats>,
     limits: JournalLimits,
     path: PathBuf,
 ) {
     let mut pins: HashSet<String> = HashSet::new();
     while let Ok(cmd) = rx.recv() {
+        queued
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                Some(value.saturating_sub(1))
+            })
+            .ok();
         match cmd {
             JournalCmd::Upsert(record) => {
                 if let Err(error) = upsert_session(&conn, &record) {
-                    on_write_error(&degraded, &error);
+                    note_degraded(&degraded_sessions, &record.id);
+                    on_write_error(&error);
                 }
             }
             JournalCmd::Append(record) => {
@@ -706,7 +793,8 @@ fn journal_loop(
                     if is_output {
                         stats.failed_frames.fetch_add(1, Ordering::Relaxed);
                     }
-                    on_write_error(&degraded, &error);
+                    note_degraded(&degraded_sessions, &record.session_id);
+                    on_write_error(&error);
                     let _ = mark_degraded(&conn, &record.session_id);
                 } else if is_output {
                     stats.committed_frames.fetch_add(1, Ordering::Relaxed);
@@ -715,27 +803,37 @@ fn journal_loop(
                         .fetch_add(payload_len, Ordering::Relaxed);
                 }
             }
-            JournalCmd::MarkReaped { session_id, code } => {
-                if let Err(error) = mark_reaped(&conn, &session_id, code) {
-                    on_write_error(&degraded, &error);
+            JournalCmd::MarkReaped {
+                session_id,
+                code,
+                degraded,
+            } => {
+                if let Err(error) = mark_reaped(&conn, &session_id, code, degraded) {
+                    note_degraded(&degraded_sessions, &session_id);
+                    on_write_error(&error);
                 }
             }
             JournalCmd::MarkEnded {
                 session_id,
                 generation,
                 code,
+                degraded,
             } => {
-                if let Err(error) = mark_ended(&conn, &session_id, generation, code) {
-                    on_write_error(&degraded, &error);
+                if let Err(error) = mark_ended(&conn, &session_id, generation, code, degraded) {
+                    note_degraded(&degraded_sessions, &session_id);
+                    on_write_error(&error);
                 }
             }
             JournalCmd::MarkClosed { session_id } => {
                 if let Err(error) = mark_closed(&conn, &session_id) {
-                    on_write_error(&degraded, &error);
+                    note_degraded(&degraded_sessions, &session_id);
+                    on_write_error(&error);
                 }
             }
             JournalCmd::MarkDegraded { session_id } => {
-                let _ = mark_degraded(&conn, &session_id);
+                if let Err(error) = mark_degraded(&conn, &session_id) {
+                    on_write_error(&error);
+                }
             }
             JournalCmd::List { reply } => {
                 let _ = reply.send(list_sessions(&conn));
@@ -772,9 +870,14 @@ fn journal_loop(
     }
 }
 
-fn on_write_error(degraded: &AtomicBool, error: &JournalError) {
-    degraded.store(true, Ordering::SeqCst);
-    let _ = error;
+fn note_degraded(degraded_sessions: &Mutex<HashSet<String>>, session_id: &str) {
+    if let Ok(mut sessions) = degraded_sessions.lock() {
+        sessions.insert(session_id.to_string());
+    }
+}
+
+fn on_write_error(error: &JournalError) {
+    eprintln!("journal write failed: {error}");
 }
 
 fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), JournalError> {
@@ -792,7 +895,7 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             exit_code = excluded.exit_code,
             closed = excluded.closed,
             last_seq = excluded.last_seq,
-            degraded = excluded.degraded,
+            degraded = MAX(sessions.degraded, excluded.degraded),
             reaped = MAX(sessions.reaped, excluded.reaped)",
         params![
             record.id,
@@ -1061,10 +1164,20 @@ fn delete_session(conn: &rusqlite::Transaction<'_>, id: &str) -> Result<(), Jour
     Ok(())
 }
 
-fn mark_reaped(conn: &Connection, session_id: &str, code: Option<u32>) -> Result<(), JournalError> {
+fn mark_reaped(
+    conn: &Connection,
+    session_id: &str,
+    code: Option<u32>,
+    degraded: bool,
+) -> Result<(), JournalError> {
     let n = conn.execute(
-        "UPDATE sessions SET reaped = 1, exit_code = COALESCE(?1, exit_code), updated_at_ms = ?2 WHERE id = ?3",
-        params![code.map(|value| value as i64), now_ms() as i64, session_id],
+        "UPDATE sessions SET reaped = 1, exit_code = COALESCE(?1, exit_code), degraded = MAX(degraded, ?2), updated_at_ms = ?3 WHERE id = ?4",
+        params![
+            code.map(|value| value as i64),
+            if degraded { 1 } else { 0 },
+            now_ms() as i64,
+            session_id
+        ],
     )?;
     if n == 0 {
         Err(JournalError::SessionNotFound)
@@ -1078,6 +1191,7 @@ fn mark_ended(
     session_id: &str,
     generation: u64,
     code: Option<u32>,
+    degraded: bool,
 ) -> Result<(), JournalError> {
     let ts = now_ms();
     let (last_seq, status): (i64, String) = conn
@@ -1111,8 +1225,14 @@ fn mark_ended(
         ],
     )?;
     tx.execute(
-        "UPDATE sessions SET status = 'ended', exit_code = ?1, last_seq = ?2, updated_at_ms = ?3 WHERE id = ?4",
-        params![code.map(|value| value as i64), seq as i64, ts as i64, session_id],
+        "UPDATE sessions SET status = 'ended', exit_code = ?1, last_seq = ?2, degraded = MAX(degraded, ?3), updated_at_ms = ?4 WHERE id = ?5",
+        params![
+            code.map(|value| value as i64),
+            seq as i64,
+            if degraded { 1 } else { 0 },
+            ts as i64,
+            session_id
+        ],
     )?;
     tx.commit()?;
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
@@ -1637,6 +1757,39 @@ mod tests {
     }
 
     #[test]
+    fn degradation_is_scoped_to_a_session_and_journal_lifetime() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.a.1"))
+            .expect("upsert");
+        assert!(!journal.is_session_degraded("s.a.1"));
+        assert!(journal.note_session_degraded("s.a.1"));
+        assert!(journal.is_session_degraded("s.a.1"));
+        assert!(!journal.is_session_degraded("s.a.2"));
+        assert!(!journal.note_session_degraded("s.a.1"));
+        journal.flush().expect("degradation marker");
+        assert!(journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.a.1")
+            .is_some_and(|row| row.degraded));
+        drop(journal);
+
+        let journal = Journal::open(&path).expect("reopen");
+        assert!(!journal.is_session_degraded("s.a.1"));
+        assert!(journal
+            .list()
+            .expect("reopen list")
+            .into_iter()
+            .find(|row| row.id == "s.a.1")
+            .is_some_and(|row| row.degraded));
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn uncommitted_write_is_not_visible_after_reopen() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");
@@ -1721,6 +1874,7 @@ mod tests {
                     session_id: "s.ended".to_string(),
                     generation: 1,
                     code: Some(0),
+                    degraded: false,
                 },
                 RPC_WAIT,
             )

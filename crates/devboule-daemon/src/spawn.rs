@@ -26,10 +26,14 @@ pub fn resolve_daemon_binary() -> Result<PathBuf, DaemonError> {
     if sibling.is_file() {
         return Ok(sibling);
     }
-    Err(DaemonError::Protocol(format!(
+    eprintln!(
         "daemon binary not found next to {} (set DEVBOULE_DAEMON)",
         exe.display()
-    )))
+    );
+    Err(DaemonError::Protocol(
+        "Devboule daemon not found. Set DEVBOULE_DAEMON or install devboule-daemon.exe beside the app."
+            .to_string(),
+    ))
 }
 
 /// Spawn the daemon as a child of this process. No breakaway, no Service, no

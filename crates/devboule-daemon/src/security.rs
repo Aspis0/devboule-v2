@@ -20,7 +20,9 @@ use windows_sys::Win32::Security::{
     GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY,
     TOKEN_USER,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 #[cfg(feature = "server")]
 pub struct PipeSecurity {
@@ -75,44 +77,67 @@ pub fn user_only_sddl(sid: &str) -> String {
 }
 
 pub fn current_user_sid() -> io::Result<String> {
-    unsafe {
-        let mut token: HANDLE = INVALID_HANDLE_VALUE;
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            return Err(last_os_error());
-        }
-        let token = OwnedHandle::from_raw_handle(token as RawHandle);
+    unsafe { token_user_sid(current_process_token()?) }
+}
 
-        let mut needed = 0u32;
-        GetTokenInformation(
-            token.as_raw_handle() as HANDLE,
-            TokenUser,
-            ptr::null_mut(),
-            0,
-            &mut needed,
-        );
-        if needed == 0 {
+/// Resolve the user SID from a peer process rather than from a value supplied
+/// by that process in a protocol frame.
+pub fn process_user_sid(pid: u32) -> io::Result<String> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
             return Err(last_os_error());
         }
-        let mut buf = vec![0u8; needed as usize];
-        if GetTokenInformation(
-            token.as_raw_handle() as HANDLE,
-            TokenUser,
-            buf.as_mut_ptr().cast(),
-            needed,
-            &mut needed,
-        ) == 0
-        {
-            return Err(last_os_error());
-        }
-        let user = &*(buf.as_ptr() as *const TOKEN_USER);
-        let mut sid_str = ptr::null_mut();
-        if ConvertSidToStringSidW(user.User.Sid, &mut sid_str) == 0 {
-            return Err(last_os_error());
-        }
-        let text = pwstr_to_string(sid_str)?;
-        LocalFree(sid_str as _);
-        Ok(text)
+        let process = OwnedHandle::from_raw_handle(process as RawHandle);
+        token_user_sid(open_process_token(process.as_raw_handle() as HANDLE)?)
     }
+}
+
+unsafe fn current_process_token() -> io::Result<OwnedHandle> {
+    open_process_token(GetCurrentProcess())
+}
+
+unsafe fn open_process_token(process: HANDLE) -> io::Result<OwnedHandle> {
+    let mut token: HANDLE = INVALID_HANDLE_VALUE;
+    if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+        return Err(last_os_error());
+    }
+    Ok(OwnedHandle::from_raw_handle(token as RawHandle))
+}
+
+unsafe fn token_user_sid(token: OwnedHandle) -> io::Result<String> {
+    let token = token;
+
+    let mut needed = 0u32;
+    GetTokenInformation(
+        token.as_raw_handle() as HANDLE,
+        TokenUser,
+        ptr::null_mut(),
+        0,
+        &mut needed,
+    );
+    if needed == 0 {
+        return Err(last_os_error());
+    }
+    let mut buf = vec![0u8; needed as usize];
+    if GetTokenInformation(
+        token.as_raw_handle() as HANDLE,
+        TokenUser,
+        buf.as_mut_ptr().cast(),
+        needed,
+        &mut needed,
+    ) == 0
+    {
+        return Err(last_os_error());
+    }
+    let user = &*(buf.as_ptr() as *const TOKEN_USER);
+    let mut sid_str = ptr::null_mut();
+    if ConvertSidToStringSidW(user.User.Sid, &mut sid_str) == 0 {
+        return Err(last_os_error());
+    }
+    let text = pwstr_to_string(sid_str)?;
+    LocalFree(sid_str as _);
+    Ok(text)
 }
 
 /// DACL of a kernel object (the named pipe) as SDDL. Used to verify we did
@@ -160,6 +185,8 @@ pub fn dacl_is_current_user_only(sddl: &str, sid: &str) -> bool {
         ";;;AN)",
         ";;;BA)",
         ";;;S-1-1-0)",
+        ";;;NU)",
+        ";;;SY)",
     ];
     has_user && open_trustees.iter().all(|trustee| !sddl.contains(trustee))
 }
@@ -210,6 +237,14 @@ mod tests {
         ));
         assert!(!dacl_is_current_user_only(
             &format!("D:(A;;GA;;;{sid})(A;;GA;;;WD)"),
+            sid
+        ));
+        assert!(!dacl_is_current_user_only(
+            &format!("D:(A;;GA;;;{sid})(A;;GA;;;NU)"),
+            sid
+        ));
+        assert!(!dacl_is_current_user_only(
+            &format!("D:(A;;GA;;;{sid})(A;;GA;;;SY)"),
             sid
         ));
     }
