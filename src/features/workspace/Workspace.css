@@ -803,14 +803,13 @@
 .workspace-secondary-action {
   padding: 0 11px;
   color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 0;
 }
 
 .workspace-secondary-action:hover,
 .workspace-secondary-action:focus-visible {
   color: var(--danger);
-  border-color: var(--danger);
 }
 
 .workspace-primary-action {
