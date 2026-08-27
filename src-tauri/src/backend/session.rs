@@ -238,13 +238,16 @@ impl SessionRuntime {
     }
 
     /// Subscribe FIRST, then replay the ring through the SAME channel while the
-    /// stream mutex is held. The reader cannot publish a chunk between those two
-    /// operations, so no output is dropped in the attach startup window.
+    /// stream mutex is held. M2 has one attached view per session, so the prior
+    /// subscriber is replaced before registration. The reader cannot publish a
+    /// chunk between those two operations, so no output is dropped in the attach
+    /// startup window.
     fn attach(&self, from_cursor: Option<u64>, channel: Channel<SessionEvent>) {
         let Ok(mut stream) = self.stream.lock() else {
             return;
         };
         let channel_id = channel.id();
+        stream.subscribers.clear();
         stream.subscribers.push(channel.clone());
 
         let replay = stream.scrollback.replay_after(from_cursor);
@@ -262,6 +265,14 @@ impl SessionRuntime {
             stream
                 .subscribers
                 .retain(|subscriber| subscriber.id() != channel_id);
+        }
+    }
+
+    /// Detach only the view. The child, reader, and scrollback intentionally stay
+    /// alive so a later attach can replay output produced while no view existed.
+    fn detach(&self) {
+        if let Ok(mut stream) = self.stream.lock() {
+            stream.subscribers.clear();
         }
     }
 
@@ -291,6 +302,11 @@ impl SessionRuntime {
             .map(|chunk| (chunk.seq, String::from_utf8_lossy(&chunk.data).into_owned()))
             .collect();
         (chunks, stream.scrollback.bytes)
+    }
+
+    #[cfg(test)]
+    fn subscriber_count(&self) -> usize {
+        self.stream.lock().unwrap().subscribers.len()
     }
 }
 
@@ -354,19 +370,17 @@ pub fn session_attach(
     from_cursor: Option<u64>,
     ch: Channel<SessionEvent>,
 ) -> Result<(), String> {
-    validate_session_id(&id)?;
-    let runtime = {
-        let map = state
-            .inner
-            .lock()
-            .map_err(|_| "Session state is unavailable.".to_string())?;
-        let session = map
-            .get(&id)
-            .ok_or_else(|| "No session with that id.".to_string())?;
-        Arc::clone(&session.runtime)
-    };
+    let runtime = session_runtime(&state, &id)?;
     runtime.attach(from_cursor, ch);
     Ok(())
+}
+
+/// Detach the current view without touching the process, reader, registry, or
+/// scrollback. M2 deliberately permits one attached view; a later attach
+/// replaces any stale subscriber left behind by a view that failed to detach.
+#[tauri::command]
+pub fn session_detach(state: State<'_, SessionState>, id: String) -> Result<(), String> {
+    detach_session(&state, &id)
 }
 
 /// Send raw bytes to the terminal. No framing or intent handling is performed in M2.
@@ -454,6 +468,24 @@ pub fn sessions_list(state: State<'_, SessionState>) -> Result<Vec<Session>, Str
         .collect();
     sessions.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(sessions)
+}
+
+fn session_runtime(state: &SessionState, id: &str) -> Result<Arc<SessionRuntime>, String> {
+    validate_session_id(id)?;
+    let map = state
+        .inner
+        .lock()
+        .map_err(|_| "Session state is unavailable.".to_string())?;
+    let session = map
+        .get(id)
+        .ok_or_else(|| "No session with that id.".to_string())?;
+    Ok(Arc::clone(&session.runtime))
+}
+
+fn detach_session(state: &SessionState, id: &str) -> Result<(), String> {
+    let runtime = session_runtime(state, id)?;
+    runtime.detach();
+    Ok(())
 }
 
 /// App-exit reaper. Windows children do not necessarily die with the GUI, so
@@ -878,6 +910,120 @@ mod tests {
         );
     }
 
+    #[test]
+    fn attaching_twice_replaces_the_old_view_and_delivers_once() {
+        let runtime = SessionRuntime::new();
+        let first_received = Arc::new(Mutex::new(Vec::new()));
+        let second_received = Arc::new(Mutex::new(Vec::new()));
+        let first_for_channel = Arc::clone(&first_received);
+        let second_for_channel = Arc::clone(&second_received);
+        let first = Channel::new(move |body| {
+            let event: SessionEvent = body.deserialize()?;
+            first_for_channel.lock().unwrap().push(event);
+            Ok(())
+        });
+        let second = Channel::new(move |body| {
+            let event: SessionEvent = body.deserialize()?;
+            second_for_channel.lock().unwrap().push(event);
+            Ok(())
+        });
+
+        runtime.attach(None, first);
+        runtime.attach(None, second);
+        assert_eq!(runtime.subscriber_count(), 1);
+        runtime.publish_output("once");
+
+        assert!(first_received.lock().unwrap().is_empty());
+        assert_eq!(
+            *second_received.lock().unwrap(),
+            vec![SessionEvent::Output {
+                seq: 1,
+                data: "once".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn detach_stops_delivery_but_keeps_the_ring() {
+        let runtime = SessionRuntime::new();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_for_channel = Arc::clone(&received);
+        runtime.attach(
+            None,
+            Channel::new(move |body| {
+                let event: SessionEvent = body.deserialize()?;
+                received_for_channel.lock().unwrap().push(event);
+                Ok(())
+            }),
+        );
+        runtime.publish_output("before-detach");
+        runtime.detach();
+        runtime.publish_output("while-detached");
+
+        assert_eq!(runtime.subscriber_count(), 0);
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![SessionEvent::Output {
+                seq: 1,
+                data: "before-detach".to_string()
+            }]
+        );
+        assert_eq!(
+            runtime.snapshot().0,
+            vec![
+                (1, "before-detach".to_string()),
+                (2, "while-detached".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn detach_then_attach_replays_the_full_retained_ring() {
+        let runtime = SessionRuntime::new();
+        runtime.publish_output("first");
+        runtime.attach(
+            None,
+            Channel::new(|body| {
+                let _: SessionEvent = body.deserialize()?;
+                Ok(())
+            }),
+        );
+        runtime.detach();
+        runtime.publish_output("second");
+        let expected = runtime.snapshot().0;
+        let replayed = Arc::new(Mutex::new(Vec::new()));
+        let replayed_for_channel = Arc::clone(&replayed);
+        runtime.attach(
+            None,
+            Channel::new(move |body| {
+                replayed_for_channel
+                    .lock()
+                    .unwrap()
+                    .push(body.deserialize()?);
+                Ok(())
+            }),
+        );
+        let actual: Vec<(u64, String)> = replayed
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
+                SessionEvent::Exit { .. } => None,
+            })
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(runtime.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn detaching_an_unknown_session_is_a_clean_error() {
+        assert_eq!(
+            detach_session(&SessionState::new(), "session-missing"),
+            Err("No session with that id.".to_string())
+        );
+    }
+
     #[cfg(windows)]
     fn answer_test_dsr(state: &SessionState, id: &str) {
         let writer = {
@@ -999,6 +1145,108 @@ mod tests {
         stop_test_dsr_pump(stop_dsr, dsr_thread);
         assert!(saw_marker);
         assert!(state.inner.lock().unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+    fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
+        const MARKER: &str = "DEVBOULE_DETACH_BUFFER";
+        let state = test_state();
+        let id = "session-test-detach".to_string();
+        let session = Session {
+            id: id.clone(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            title: "Terminal".to_string(),
+        };
+        let command = PtyCommand::new(
+            "cmd.exe",
+            vec!["/k".to_string()],
+            std::env::current_dir().unwrap(),
+            Vec::new(),
+        );
+        spawn_session(&state, session, command).unwrap();
+        answer_test_dsr(&state, &id);
+        let (stop_dsr, dsr_thread) = start_test_dsr_pump(&state, &id);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        attach_collecting(&state, &id, Arc::clone(&received));
+        let runtime = {
+            let map = state.inner.lock().unwrap();
+            Arc::clone(&map.get(&id).unwrap().runtime)
+        };
+        let received_before_detach = received.lock().unwrap().len();
+
+        detach_session(&state, &id).unwrap();
+        assert_eq!(runtime.subscriber_count(), 0);
+        assert!(!runtime.reader_finished.load(Ordering::Acquire));
+        assert!(!runtime.child_reaped.load(Ordering::Acquire));
+        assert!(!state
+            .inner
+            .lock()
+            .unwrap()
+            .get(&id)
+            .unwrap()
+            .exited
+            .load(Ordering::Acquire));
+
+        let writer = {
+            let map = state.inner.lock().unwrap();
+            Arc::clone(&map.get(&id).unwrap().writer)
+        };
+        let mut writer = writer.lock().unwrap();
+        writer
+            .write_all(format!("echo {MARKER}\r\n").as_bytes())
+            .unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if runtime
+                .snapshot()
+                .0
+                .iter()
+                .any(|(_, data)| data.contains(MARKER))
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            runtime
+                .snapshot()
+                .0
+                .iter()
+                .any(|(_, data)| data.contains(MARKER)),
+            "detached output was not retained in the ring"
+        );
+        assert_eq!(received.lock().unwrap().len(), received_before_detach);
+        assert!(state.inner.lock().unwrap().contains_key(&id));
+        assert!(!runtime.reader_finished.load(Ordering::Acquire));
+        assert!(!runtime.child_reaped.load(Ordering::Acquire));
+
+        let expected_replay = runtime.snapshot().0;
+        let replayed = Arc::new(Mutex::new(Vec::new()));
+        attach_collecting(&state, &id, Arc::clone(&replayed));
+        let actual_replay: Vec<(u64, String)> = replayed
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
+                SessionEvent::Exit { .. } => None,
+            })
+            .collect();
+        assert_eq!(actual_replay, expected_replay);
+        assert_eq!(runtime.subscriber_count(), 1);
+
+        detach_session(&state, &id).unwrap();
+        close_session(&state, &id);
+        stop_test_dsr_pump(stop_dsr, dsr_thread);
+        assert!(state.inner.lock().unwrap().is_empty());
+        assert!(runtime.reader_finished.load(Ordering::Acquire));
+        assert!(runtime.child_reaped.load(Ordering::Acquire));
     }
 
     #[cfg(windows)]

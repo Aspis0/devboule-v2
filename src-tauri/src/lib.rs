@@ -19,6 +19,7 @@ pub fn run() {
             app_identity,
             backend::session::session_create,
             backend::session::session_attach,
+            backend::session::session_detach,
             backend::session::session_send,
             backend::session::session_resize,
             backend::session::session_close,
