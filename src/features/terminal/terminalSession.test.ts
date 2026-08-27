@@ -29,7 +29,11 @@ interface Harness {
   registry: TerminalSessionRegistry;
 }
 
-function makeHarness(options?: { deferAttach?: boolean; existingSessionId?: string }): Harness {
+function makeHarness(options?: {
+  deferAttach?: boolean;
+  existingSessionId?: string;
+  rejectDetach?: boolean;
+}): Harness {
   const written: string[] = [];
   const fitOk = { value: true };
   const geometry = { cols: 80, rows: 24 };
@@ -94,6 +98,9 @@ function makeHarness(options?: { deferAttach?: boolean; existingSessionId?: stri
     }
     if (command === 'session_attach' && options?.deferAttach) {
       await attachGate;
+    }
+    if (command === 'session_detach' && options?.rejectDetach) {
+      throw new Error('No session with that id.');
     }
     return undefined;
   });
@@ -245,6 +252,8 @@ describe('TerminalSession lifecycle and errors', () => {
     await startPromise;
 
     expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(0);
+    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_detach')).toHaveLength(1);
+    expect(harness.invoke).toHaveBeenCalledWith('session_detach', { id: 'session-1' });
     expect(harness.view.disposeCount).toBe(1);
   });
 
@@ -274,6 +283,22 @@ describe('TerminalSession lifecycle and errors', () => {
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.view.written).toEqual([]);
     expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(0);
+    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_detach')).toHaveLength(1);
+    expect(harness.invoke).toHaveBeenCalledWith('session_detach', { id: 'session-1' });
+  });
+
+  it('still disposes and removes the listener when detach is rejected', async () => {
+    const harness = makeHarness({ rejectDetach: true });
+    await harness.session.start();
+
+    harness.session.dispose();
+    harness.emit(outputEvent(1, 'late'));
+    harness.flushFrame();
+
+    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_detach')).toHaveLength(1);
+    expect(harness.view.disposeCount).toBe(1);
+    expect(harness.view.written).toEqual([]);
+    expect(harness.banners).not.toContainEqual({ kind: 'error', message: 'No session with that id.' });
   });
 
   it('closes the session only when explicitly requested', async () => {
@@ -285,6 +310,7 @@ describe('TerminalSession lifecycle and errors', () => {
 
     expect(harness.registry.remove).toHaveBeenCalledWith('rust-core', 'session-1');
     expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(1);
+    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_detach')).toHaveLength(0);
     expect(harness.view.disposeCount).toBe(1);
   });
 });
