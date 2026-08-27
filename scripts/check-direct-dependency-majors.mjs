@@ -1,15 +1,15 @@
-import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MAX_ATTEMPTS = 3;
 const REQUEST_TIMEOUT_MS = 15_000;
 const RETRY_DELAY_MS = 1_000;
-const CRATES_IO_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index';
+const CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index";
 
 /*
  * Exceptions are intentionally inline in the checker, not in a separate
@@ -29,11 +29,9 @@ const inlineExceptions = {
   cargo: {},
 };
 
-const npmRegistryUrl = (name) =>
-  `https://registry.npmjs.org/${encodeURIComponent(name)}/latest`;
+const npmRegistryUrl = (name) => `https://registry.npmjs.org/${encodeURIComponent(name)}/latest`;
 
-const cargoRegistryUrl = (name) =>
-  `https://crates.io/api/v1/crates/${encodeURIComponent(name)}`;
+const cargoRegistryUrl = (name) => `https://crates.io/api/v1/crates/${encodeURIComponent(name)}`;
 
 const sleep = (milliseconds) =>
   new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
@@ -42,28 +40,42 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// The unit of breaking change is not always the leading number. Under semver,
+// and under the caret/tilde rules that both Cargo and npm apply, a 0.x release
+// treats the MINOR as the major: 0.32 and 0.40 are incompatible, and 0.0.x
+// treats the PATCH that way. Reading only the leading integer reports every
+// 0.x dependency as current forever, which is precisely where staleness hides
+// in the Rust ecosystem. Returns a single comparable key, not a major number.
 function parseMajor(versionLike) {
-  if (typeof versionLike !== 'string') return null;
+  if (typeof versionLike !== "string") return null;
 
-  const match = versionLike.match(/(?:^|[^0-9])(\d+)(?:\.|$)/);
+  const match = versionLike.match(/(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
   if (!match) return null;
 
-  return Number(match[1]);
+  const major = Number(match[1]);
+  const minor = match[2] === undefined ? 0 : Number(match[2]);
+  const patch = match[3] === undefined ? 0 : Number(match[3]);
+
+  // Weighted so the three tiers never overlap: any 1.x outranks every 0.y,
+  // and any 0.y outranks every 0.0.z.
+  if (major > 0) return major * 1e12;
+  if (minor > 0) return minor * 1e6;
+  return patch;
 }
 
 function validateExceptions() {
   for (const [registry, exceptions] of Object.entries(inlineExceptions)) {
-    if (!exceptions || typeof exceptions !== 'object' || Array.isArray(exceptions)) {
+    if (!exceptions || typeof exceptions !== "object" || Array.isArray(exceptions)) {
       throw new Error(`Inline ${registry} exceptions must be an object.`);
     }
 
     for (const [name, exception] of Object.entries(exceptions)) {
       if (
         !exception ||
-        typeof exception.reason !== 'string' ||
-        exception.reason.trim() === '' ||
-        typeof exception.exitCondition !== 'string' ||
-        exception.exitCondition.trim() === ''
+        typeof exception.reason !== "string" ||
+        exception.reason.trim() === "" ||
+        typeof exception.exitCondition !== "string" ||
+        exception.exitCondition.trim() === ""
       ) {
         throw new Error(
           `Inline ${registry} exception for ${name} must include a non-empty reason and exitCondition.`,
@@ -80,8 +92,8 @@ async function fetchJson(url, description) {
     try {
       const response = await fetch(url, {
         headers: {
-          accept: 'application/json',
-          'user-agent': 'devboule-v2-direct-dependency-check',
+          accept: "application/json",
+          "user-agent": "devboule-v2-direct-dependency-check",
         },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
@@ -125,12 +137,10 @@ async function runWithConcurrency(items, worker, concurrency = 8) {
 }
 
 function readNpmDependencies() {
-  const packageJson = JSON.parse(
-    readFileSync(resolve(repoRoot, 'package.json'), 'utf8'),
-  );
+  const packageJson = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
   const dependencies = [];
 
-  for (const section of ['dependencies', 'devDependencies']) {
+  for (const section of ["dependencies", "devDependencies"]) {
     for (const [name, declaration] of Object.entries(packageJson[section] ?? {})) {
       const declaredMajor = parseMajor(declaration);
       if (declaredMajor === null) {
@@ -140,7 +150,7 @@ function readNpmDependencies() {
       }
 
       dependencies.push({
-        registry: 'npm',
+        registry: "npm",
         name,
         section,
         declaration,
@@ -158,8 +168,8 @@ async function readCargoDependencies() {
 
   try {
     const result = await execFileAsync(
-      'cargo',
-      ['metadata', '--no-deps', '--format-version', '1', '--locked'],
+      "cargo",
+      ["metadata", "--no-deps", "--format-version", "1", "--locked"],
       {
         cwd: repoRoot,
         maxBuffer: 16 * 1024 * 1024,
@@ -173,18 +183,16 @@ async function readCargoDependencies() {
 
   const expectedManifests = new Map(
     [
-      ['src-tauri/Cargo.toml', 'src-tauri'],
-      ['crates/devboule-protocol/Cargo.toml', 'crates/devboule-protocol'],
-      ['crates/devboule-daemon/Cargo.toml', 'crates/devboule-daemon'],
+      ["src-tauri/Cargo.toml", "src-tauri"],
+      ["crates/devboule-protocol/Cargo.toml", "crates/devboule-protocol"],
+      ["crates/devboule-daemon/Cargo.toml", "crates/devboule-daemon"],
     ].map(([manifest, label]) => [resolve(repoRoot, manifest).toLowerCase(), label]),
   );
   const dependencies = [];
   const foundManifests = new Set();
 
   for (const packageInfo of metadata.packages ?? []) {
-    const manifestLabel = expectedManifests.get(
-      resolve(packageInfo.manifest_path).toLowerCase(),
-    );
+    const manifestLabel = expectedManifests.get(resolve(packageInfo.manifest_path).toLowerCase());
     if (!manifestLabel) continue;
     foundManifests.add(manifestLabel);
 
@@ -193,7 +201,7 @@ async function readCargoDependencies() {
       const isCratesIoDependency = dependency.source === CRATES_IO_SOURCE;
 
       dependencies.push({
-        registry: 'cargo',
+        registry: "cargo",
         name: crateName,
         declaredAs: dependency.name,
         manifestLabel,
@@ -210,7 +218,7 @@ async function readCargoDependencies() {
   );
   if (missingManifests.length > 0) {
     throw new Error(
-      `cargo metadata did not report the required manifest(s): ${missingManifests.join(', ')}.`,
+      `cargo metadata did not report the required manifest(s): ${missingManifests.join(", ")}.`,
     );
   }
 
@@ -228,10 +236,7 @@ async function readCargoDependencies() {
 }
 
 async function checkNpmDependency(dependency) {
-  const metadata = await fetchJson(
-    npmRegistryUrl(dependency.name),
-    `npm ${dependency.name}`,
-  );
+  const metadata = await fetchJson(npmRegistryUrl(dependency.name), `npm ${dependency.name}`);
   const latestVersion = metadata.version;
   const latestMajor = parseMajor(latestVersion);
   if (latestMajor === null) {
@@ -248,7 +253,7 @@ async function checkNpmDependency(dependency) {
 
 async function checkCargoDependency(dependency) {
   if (!dependency.isCratesIoDependency) {
-    return { ...dependency, status: 'non-registry' };
+    return { ...dependency, status: "non-registry" };
   }
 
   const metadata = await fetchJson(
@@ -258,7 +263,7 @@ async function checkCargoDependency(dependency) {
   const maxStableVersion = metadata.crate?.max_stable_version;
 
   if (maxStableVersion === null || maxStableVersion === undefined) {
-    return { ...dependency, status: 'no-stable-release' };
+    return { ...dependency, status: "no-stable-release" };
   }
 
   const latestMajor = parseMajor(maxStableVersion);
@@ -273,7 +278,7 @@ async function checkCargoDependency(dependency) {
     latestVersion: maxStableVersion,
     latestMajor,
     behind: dependency.declaredMajor < latestMajor,
-    status: 'checked',
+    status: "checked",
   };
 }
 
@@ -283,10 +288,10 @@ function printNpmResult(result) {
     return;
   }
 
-  const prefix = result.behind && result.exception ? 'EXCEPTION' : result.behind ? 'FAIL' : 'OK';
+  const prefix = result.behind && result.exception ? "EXCEPTION" : result.behind ? "FAIL" : "OK";
   const suffix = result.exception
     ? `; reason: ${result.exception.reason}; exit condition: ${result.exception.exitCondition}`
-    : '';
+    : "";
   console.log(
     `${prefix} npm ${result.name}: ${result.declaration} -> latest ${result.latestVersion}${suffix}`,
   );
@@ -298,24 +303,24 @@ function printCargoResult(result) {
     return;
   }
 
-  if (result.status === 'non-registry') {
+  if (result.status === "non-registry") {
     console.log(
       `SKIP Cargo ${result.name} (${result.manifestLabel}): ${result.declaration} is a local or non-crates.io dependency; no crates.io comparison applies.`,
     );
     return;
   }
 
-  if (result.status === 'no-stable-release') {
+  if (result.status === "no-stable-release") {
     console.log(
       `NO STABLE Cargo ${result.name} (${result.manifestLabel}): crates.io max_stable_version is null/absent; no stable major comparison applies.`,
     );
     return;
   }
 
-  const prefix = result.behind && result.exception ? 'EXCEPTION' : result.behind ? 'FAIL' : 'OK';
+  const prefix = result.behind && result.exception ? "EXCEPTION" : result.behind ? "FAIL" : "OK";
   const suffix = result.exception
     ? `; reason: ${result.exception.reason}; exit condition: ${result.exception.exitCondition}`
-    : '';
+    : "";
   console.log(
     `${prefix} Cargo ${result.name} (${result.manifestLabel}): ${result.declaration} -> max stable ${result.latestVersion}${suffix}`,
   );
@@ -337,16 +342,13 @@ async function main() {
     `Checking ${npmDependencies.length} npm and ${cargoDependencies.length} Cargo direct dependencies against current registry metadata...`,
   );
 
-  const results = await runWithConcurrency(
-    registryDependencies,
-    async (dependency) => {
-      try {
-        return await dependency.check(dependency);
-      } catch (error) {
-        return { ...dependency, error: errorMessage(error) };
-      }
-    },
-  );
+  const results = await runWithConcurrency(registryDependencies, async (dependency) => {
+    try {
+      return await dependency.check(dependency);
+    } catch (error) {
+      return { ...dependency, error: errorMessage(error) };
+    }
+  });
   const resultsByKey = new Map(
     results.map((result) => [
       `${result.registry}:${result.name}:${result.manifestLabel ?? result.section}`,
@@ -358,7 +360,7 @@ async function main() {
     printNpmResult(
       resultsByKey.get(`npm:${dependency.name}:${dependency.section}`) ?? {
         ...dependency,
-        error: 'No registry result was produced.',
+        error: "No registry result was produced.",
       },
     );
   }
@@ -367,10 +369,8 @@ async function main() {
     printCargoResult(
       resultsByKey.get(`cargo:${dependency.name}:${dependency.manifestLabel}`) ?? {
         ...dependency,
-        status: dependency.isCratesIoDependency ? undefined : 'non-registry',
-        error: dependency.isCratesIoDependency
-          ? 'No registry result was produced.'
-          : undefined,
+        status: dependency.isCratesIoDependency ? undefined : "non-registry",
+        error: dependency.isCratesIoDependency ? "No registry result was produced." : undefined,
       },
     );
   }
@@ -389,7 +389,7 @@ async function main() {
     }
     if (behind.length > 0) {
       console.error(
-        `Dependency major-version check failed: ${behind.length} direct dependenc${behind.length === 1 ? 'y is' : 'ies are'} behind by a major version.`,
+        `Dependency major-version check failed: ${behind.length} direct dependenc${behind.length === 1 ? "y is" : "ies are"} behind by an incompatible version.`,
       );
     }
     process.exitCode = 1;
