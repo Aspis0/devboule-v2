@@ -2381,7 +2381,15 @@ fn attach_during_flood_delivers_every_sequence_once() {
         done.load(Ordering::Acquire),
         "flood did not finish while cycling attachments"
     );
+    // Resynchronise one last time so the view covers everything the child
+    // produced up to EOF, including any post-DONE drain tail.
     client.session_detach(&session.id).expect("final detach");
+    std::thread::sleep(Duration::from_millis(500));
+    attach_epoch();
+    std::thread::sleep(Duration::from_millis(500));
+    client
+        .session_detach(&session.id)
+        .expect("detach before compare");
     let received = received.lock().unwrap().clone();
 
     let mut seen = std::collections::HashSet::new();
@@ -2422,16 +2430,34 @@ fn attach_during_flood_delivers_every_sequence_once() {
         }
     }
 
-    // The reference: a fresh emulator fed the whole byte stream, i.e. every
-    // output chunk in sequence order.
-    let mut ordered: Vec<(u64, String)> = received
-        .iter()
+    // The reference: a fresh emulator fed the DURABLE byte stream from the
+    // journal. Output published during detached windows is never delivered
+    // as live Output frames (the reattach snapshot subsumed it), so the
+    // captured Outputs alone are not the whole stream; the journal is.
+    let journal =
+        devboule_daemon::Journal::open(&harness.paths.journal_file()).expect("open journal");
+    let replay = journal.replay(&session.id, 0).expect("journal replay");
+    let mut ordered: Vec<(u64, String)> = replay
+        .events
+        .into_iter()
         .filter_map(|event| match event {
-            SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
+            SessionEvent::Output { seq, data } => Some((seq, data)),
             _ => None,
         })
         .collect();
     ordered.sort_unstable_by_key(|(seq, _)| *seq);
+    for pair in ordered.windows(2) {
+        assert_eq!(
+            pair[1].0,
+            pair[0].0 + 1,
+            "journal stream has a hole: no sequence may be silently skipped"
+        );
+    }
+    assert_eq!(
+        ordered.last().map(|(seq, _)| *seq),
+        Some(covered_to),
+        "the client view must cover the entire journaled stream"
+    );
     let mut reference = Screen::new(120, 32);
     for (_, data) in &ordered {
         reference.process(data.as_bytes());
@@ -2441,10 +2467,10 @@ fn attach_during_flood_delivers_every_sequence_once() {
     assert_eq!(
         screen.snapshot(),
         reference.snapshot(),
-        "snapshot + subsequent events differ from a fresh emulator fed the whole stream"
+        "snapshot + subsequent events differ from a fresh emulator fed the journaled stream"
     );
     println!(
-        "ATTACH_FLOOD outputs={} bytes={expected_bytes} covered_to={covered_to} unique={} snapshots={}",
+        "ATTACH_FLOOD journal_frames={} bytes={expected_bytes} covered_to={covered_to} unique={} snapshots={}",
         ordered.len(),
         seen.len(),
         received
@@ -2452,6 +2478,7 @@ fn attach_during_flood_delivers_every_sequence_once() {
             .filter(|event| matches!(event, SessionEvent::Snapshot { .. }))
             .count(),
     );
+    drop(journal);
     client.session_close(&session.id).expect("close");
     assert!(client.sessions_list().expect("list").is_empty());
 }
