@@ -186,8 +186,25 @@ fn cmd_gated_exit(ready_file: &Path) -> PtyCommand {
 
 fn cmd_spawn_long_lived_child_with_pid_file(marker: &str, pid_file: &Path) -> PtyCommand {
     let pid_file = pid_file.display().to_string().replace('\'', "''");
+    // Start-Process always dispatches through ShellExecuteExW, which is licensed to
+    // pop its own modal error dialog when a launch fails. An explicit
+    // ProcessStartInfo with UseShellExecute = $false is the only PowerShell path
+    // guaranteed to reach CreateProcessW, where a failed spawn is an exception.
+    // The stability gate makes "PID published" imply "grandchild is alive", so a
+    // teardown waiting on the PID file can never race an in-flight launch.
     let script = format!(
-        "Start-Sleep -Milliseconds 250; $p = Start-Process -FilePath ping.exe -ArgumentList '-t','127.0.0.1' -PassThru; Set-Content -LiteralPath '{pid_file}' -Value $p.Id; Write-Output ('{marker}' + $p.Id); Wait-Process -Id $p.Id"
+        "Start-Sleep -Milliseconds 250; \
+         $psi = New-Object System.Diagnostics.ProcessStartInfo; \
+         $psi.FileName = Join-Path $env:SystemRoot 'System32\\PING.EXE'; \
+         $psi.Arguments = '-t 127.0.0.1'; \
+         $psi.UseShellExecute = $false; \
+         $psi.CreateNoWindow = $true; \
+         $p = [System.Diagnostics.Process]::Start($psi); \
+         Start-Sleep -Milliseconds 300; \
+         if ($p.HasExited) {{ throw 'grandchild exited during startup stability gate' }}; \
+         Set-Content -LiteralPath '{pid_file}' -Value $p.Id; \
+         Write-Output ('{marker}' + $p.Id); \
+         Wait-Process -Id $p.Id"
     );
     powershell_command(script)
 }
