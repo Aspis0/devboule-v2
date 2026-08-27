@@ -89,13 +89,20 @@ impl SessionState {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionEvent {
-    Output { seq: u64, data: String },
+    Output {
+        seq: u64,
+        data: String,
+    },
     /// Process was observed to exit while the daemon was alive.
-    Exit { code: Option<u32> },
+    Exit {
+        code: Option<u32>,
+    },
     /// Journal replay of a session whose process died with the daemon.
     /// Distinct from [`SessionEvent::Exit`]: Exit means the process was
     /// seen to die; Recovered means it was not, and this is a transcript.
-    Recovered { truncated: bool },
+    Recovered {
+        truncated: bool,
+    },
 }
 
 /// Replay position for a reconnecting client.
@@ -226,8 +233,8 @@ mod tests {
 
     #[test]
     fn recovered_event_is_distinct_from_exit() {
-        let recovered = serde_json::to_value(SessionEvent::Recovered { truncated: true })
-            .expect("json");
+        let recovered =
+            serde_json::to_value(SessionEvent::Recovered { truncated: true }).expect("json");
         let exit = serde_json::to_value(SessionEvent::Exit { code: None }).expect("json");
         assert_eq!(recovered["type"], "recovered");
         assert_eq!(recovered["truncated"], true);

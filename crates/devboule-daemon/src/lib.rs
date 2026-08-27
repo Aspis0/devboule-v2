@@ -27,17 +27,19 @@ mod transport;
 #[cfg(windows)]
 mod security;
 
+#[cfg(feature = "server")]
+pub use atomic::atomic_write;
 pub use client::{connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler};
 pub use error::DaemonError;
-pub use paths::RuntimePaths;
-#[cfg(feature = "server")]
-pub use server::run;
 #[cfg(feature = "server")]
 pub use journal::{
     Journal, JournalError, JournalLimits, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_BYTES,
     JOURNAL_MAX_SESSIONS, JOURNAL_QUEUE_CAP, JOURNAL_SCHEMA_VERSION, JOURNAL_SESSION_MAX_BYTES,
     SNAPSHOT_EVERY_BYTES,
 };
+pub use paths::RuntimePaths;
+#[cfg(feature = "server")]
+pub use server::run;
 #[cfg(feature = "server")]
 pub use session::{
     write_test_pty_command, PtyCommand, COALESCE_FLUSH, COALESCE_MAX_BYTES, RING_CAPACITY,

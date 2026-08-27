@@ -18,7 +18,10 @@ use devboule_daemon::{
     connect, spawn_daemon, write_test_pty_command, DaemonClient, EventHandler, PtyCommand,
     RuntimePaths, IDLE_SHUTDOWN_GRACE, RING_CAPACITY,
 };
-use devboule_protocol::{ClientHello, Cursor, ErrorCode, OwnerId, SessionEvent, SessionKind};
+use devboule_protocol::{
+    ClientHello, Cursor, ErrorCode, OwnerId, Persistence, PersistenceKind, ResumeResult,
+    SessionEvent, SessionKind, SessionState,
+};
 use portable_pty::{CommandBuilder, PtySize};
 
 fn daemon_bin() -> PathBuf {
@@ -88,6 +91,13 @@ impl Harness {
 
     fn client(&self, name: &str) -> DaemonClient {
         connect(&self.paths, test_hello(name)).expect("connect")
+    }
+
+    fn restart(&mut self) {
+        drop(self.child.take());
+        std::thread::sleep(Duration::from_millis(150));
+        self.child = Some(ChildGuard::spawn(&self.paths));
+        self.wait_until_up();
     }
 }
 
@@ -298,7 +308,7 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
             .iter()
             .filter_map(|event| match event {
                 SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-                SessionEvent::Exit { .. } => None,
+                SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => None,
             })
             .collect();
         if actual == expected_replay {
@@ -1099,4 +1109,440 @@ fn real_pty_echo_latency_benchmark() {
         percentile(&end_to_end, 95) <= MAX_ECHO_P95_MS,
         "human-cadence echo p95 exceeded {MAX_ECHO_P95_MS:.1} ms"
     );
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn pty_resume_is_not_supported() {
+    let harness = Harness::spawn();
+    let client = harness.client("resume");
+    let result = client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::None,
+            },
+            None,
+        )
+        .expect("resume rpc");
+    assert_eq!(result, ResumeResult::NotSupported);
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn killed_daemon_replays_scrollback_as_recovered() {
+    const MARKER: &str = "DEVBOULE_JOURNAL_ALIVE";
+    let mut harness = Harness::spawn();
+    queue_command(&harness.paths, cmd_keep());
+    let client = harness.client("journal-kill");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    let session_id = session.id.clone();
+    answer_dsr(&client, &session_id);
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session_id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach");
+    client
+        .session_send(&session_id, &format!("echo {MARKER}\r\n"))
+        .expect("send marker");
+    assert!(wait_for_marker(&received, MARKER, Duration::from_secs(10)));
+    std::thread::sleep(Duration::from_millis(400));
+    drop(client);
+    harness.restart();
+
+    let client = harness.client("journal-replay");
+    let listed = client.sessions_list().expect("list");
+    let recovered = listed
+        .iter()
+        .find(|session| session.id == session_id)
+        .expect("recovered session missing from list");
+    assert!(
+        matches!(recovered.state, SessionState::Recovered { .. }),
+        "expected recovered, got {:?}",
+        recovered.state
+    );
+
+    let replayed = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session_id, None, collect_handler(Arc::clone(&replayed)))
+        .expect("attach recovered");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let events = replayed.lock().unwrap().clone();
+        let recovered_event = events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::Recovered { .. }));
+        let has_marker = events.iter().any(
+            |event| matches!(event, SessionEvent::Output { data, .. } if data.contains(MARKER)),
+        );
+        if recovered_event && has_marker {
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!("recovered replay missing marker or Recovered event: {events:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        replayed
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|event| !matches!(event, SessionEvent::Exit { .. })),
+        "killed session must not look like a clean Exit"
+    );
+    let err = client
+        .session_send(&session_id, "echo no\r\n")
+        .expect_err("send to recovered");
+    assert!(
+        err.to_string().to_ascii_lowercase().contains("gone"),
+        "expected process-gone error, got {err}"
+    );
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn clean_exit_reopens_as_ended_not_recovered() {
+    const MARKER: &str = "DEVBOULE_JOURNAL_ENDED";
+    let mut harness = Harness::spawn();
+    queue_command(&harness.paths, cmd_echo(MARKER));
+    let client = harness.client("journal-end");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    let session_id = session.id.clone();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session_id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach");
+    answer_dsr(&client, &session_id);
+    assert!(wait_for_marker(&received, MARKER, Duration::from_secs(10)));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, SessionEvent::Exit { .. }))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    let before = client.sessions_list().expect("list before restart");
+    assert!(
+        before.iter().any(|session| {
+            session.id == session_id && matches!(session.state, SessionState::Ended { .. })
+        }),
+        "clean exit should be Ended before restart: {before:?}"
+    );
+    let _ = client.shutdown();
+    drop(client);
+    harness.restart();
+
+    let client = harness.client("journal-ended-replay");
+    let listed = client.sessions_list().expect("list");
+    let ended = listed
+        .iter()
+        .find(|session| session.id == session_id)
+        .expect("ended session missing");
+    assert!(
+        matches!(ended.state, SessionState::Ended { .. }),
+        "expected ended, got {:?}",
+        ended.state
+    );
+    let replayed = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session_id, None, collect_handler(Arc::clone(&replayed)))
+        .expect("attach ended");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let events = replayed.lock().unwrap().clone();
+        let saw_exit = events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::Exit { .. }));
+        let saw_recovered = events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::Recovered { .. }));
+        if saw_exit {
+            assert!(
+                !saw_recovered,
+                "clean exit must not emit Recovered: {events:?}"
+            );
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!("ended replay missing Exit: {events:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn journal_outlives_the_256kib_ring() {
+    const LINES: usize = 4_000;
+    const PAYLOAD: &str = "DEVBOULE_RING_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+    const DONE: &str = "DEVBOULE_RING_DONE";
+    let mut harness = Harness::spawn();
+    queue_command(
+        &harness.paths,
+        PtyCommand::new(
+            "pwsh.exe",
+            vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                format!("$line = '{PAYLOAD}'; 1..{LINES} | ForEach-Object {{ $line }}; '{DONE}'"),
+            ],
+            std::env::current_dir().unwrap(),
+            Vec::new(),
+        ),
+    );
+    let client = harness.client("ring");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    let session_id = session.id.clone();
+    answer_dsr(&client, &session_id);
+    let pump_client = Arc::new(harness.client("dsr"));
+    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session_id.clone());
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session_id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach");
+    assert!(wait_for_marker(&received, DONE, Duration::from_secs(30)));
+    let live_bytes: usize = received
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::Output { data, .. } => Some(data.len()),
+            _ => None,
+        })
+        .sum();
+    assert!(
+        live_bytes > RING_CAPACITY,
+        "live capture was only {live_bytes} bytes, need more than the ring"
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    stop_dsr_pump(stop_dsr, dsr_thread);
+    drop(client);
+    harness.restart();
+
+    let client = harness.client("ring-replay");
+    let replayed = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session_id, None, collect_handler(Arc::clone(&replayed)))
+        .expect("attach recovered");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if replayed.lock().unwrap().iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::Recovered { .. } | SessionEvent::Exit { .. }
+            )
+        }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let events = replayed.lock().unwrap().clone();
+    let mut seqs = Vec::new();
+    let mut bytes = 0usize;
+    for event in &events {
+        match event {
+            SessionEvent::Output { seq, data } => {
+                seqs.push(*seq);
+                bytes += data.len();
+            }
+            SessionEvent::Recovered { .. } | SessionEvent::Exit { .. } => {}
+        }
+    }
+    assert!(
+        bytes > RING_CAPACITY,
+        "journal replay was only {bytes} bytes, ring is {RING_CAPACITY}"
+    );
+    for pair in seqs.windows(2) {
+        assert_eq!(
+            pair[1],
+            pair[0] + 1,
+            "journal replay seq gap or duplicate: {seqs:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn stale_generation_on_recovered_session_is_a_mismatch() {
+    const MARKER: &str = "DEVBOULE_JOURNAL_GEN";
+    let mut harness = Harness::spawn();
+    queue_command(&harness.paths, cmd_echo(MARKER));
+    let client = harness.client("gen");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    let session_id = session.id.clone();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session_id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach");
+    answer_dsr(&client, &session_id);
+    assert!(wait_for_marker(&received, MARKER, Duration::from_secs(10)));
+    std::thread::sleep(Duration::from_millis(400));
+    drop(client);
+    harness.restart();
+
+    let client = harness.client("gen-mismatch");
+    let err = client
+        .session_attach(
+            &session_id,
+            Some(Cursor {
+                generation: 99,
+                seq: 0,
+            }),
+            collect_handler(Arc::new(Mutex::new(Vec::new()))),
+        )
+        .expect_err("stale generation");
+    match err {
+        devboule_daemon::DaemonError::Handshake(wire) => {
+            assert_eq!(wire.code, ErrorCode::SessionGenerationMismatch);
+        }
+        other => panic!("expected generation mismatch, got {other}"),
+    }
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn journal_growth_after_13mb_flood() {
+    const DATA_LINES: usize = 200_000;
+    const PAYLOAD: &str = "DEVBOULE_TRANSPORT_0123456789abcdefghijklmnopqrstuvwxyz0123456789";
+    let file_path = std::env::temp_dir().join(format!(
+        "devboule-journal-growth-{}-{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    {
+        let file = std::fs::File::create(&file_path).unwrap();
+        let mut file = std::io::BufWriter::new(file);
+        for _ in 0..DATA_LINES {
+            file.write_all(PAYLOAD.as_bytes()).unwrap();
+            file.write_all(b"\r\n").unwrap();
+        }
+        file.flush().unwrap();
+    }
+    let expected_file_bytes = std::fs::metadata(&file_path).unwrap().len() as usize;
+    let mut harness = Harness::spawn();
+    queue_command(&harness.paths, benchmark_file_command(&file_path));
+    let client = harness.client("growth");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    let session_id = session.id.clone();
+    let writer = Arc::new(harness.client("dsr-inline"));
+    let observed = Arc::new(Mutex::new(0usize));
+    let observed_for_handler = Arc::clone(&observed);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        if let SessionEvent::Output { data, .. } = envelope.event {
+            if data.contains("\x1b[6n") {
+                let _ = writer.session_send(&session_id, "\x1b[1;1R");
+            }
+            *observed_for_handler.lock().unwrap() += data.len();
+        }
+    });
+    client
+        .session_attach(&session.id, None, handler)
+        .expect("attach");
+    let pump_client = Arc::new(harness.client("dsr"));
+    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < deadline {
+        if *observed.lock().unwrap() >= expected_file_bytes {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let live_bytes = *observed.lock().unwrap();
+    assert!(
+        live_bytes >= expected_file_bytes,
+        "flood truncated: {live_bytes} < {expected_file_bytes}"
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    stop_dsr_pump(stop_dsr, dsr_thread);
+    drop(client);
+    harness.restart();
+
+    let journal_path = harness.paths.journal_file();
+    let db_bytes = std::fs::metadata(&journal_path)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let wal_bytes = std::fs::metadata(journal_path.with_extension("db-wal"))
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    println!(
+        "JOURNAL_GROWTH payload_bytes={expected_file_bytes} live_bytes={live_bytes} db_bytes={db_bytes} wal_bytes={wal_bytes} total_bytes={}",
+        db_bytes + wal_bytes
+    );
+
+    let client = harness.client("growth-replay");
+    let replayed = Arc::new(Mutex::new((0usize, Vec::<u64>::new(), false, false)));
+    let replayed_for_handler = Arc::clone(&replayed);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        let mut replayed = replayed_for_handler.lock().unwrap();
+        match envelope.event {
+            SessionEvent::Output { seq, data } => {
+                replayed.0 += data.len();
+                replayed.1.push(seq);
+            }
+            SessionEvent::Recovered { .. } => replayed.2 = true,
+            SessionEvent::Exit { .. } => replayed.3 = true,
+        }
+    });
+    client
+        .session_attach(&session.id, None, handler)
+        .expect("replay");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        let snap = replayed.lock().unwrap();
+        if snap.2 || snap.3 {
+            break;
+        }
+        drop(snap);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (replay_bytes, seqs, recovered, exited) = {
+        let snap = replayed.lock().unwrap();
+        (snap.0, snap.1.clone(), snap.2, snap.3)
+    };
+    println!(
+        "JOURNAL_GROWTH replay_bytes={replay_bytes} frames={} recovered={recovered} exited={exited}",
+        seqs.len()
+    );
+    assert!(
+        recovered || exited,
+        "flood replay must end honestly as Recovered or Exit"
+    );
+    assert!(
+        !(recovered && exited),
+        "Recovered and Exit must not both fire"
+    );
+    assert!(
+        replay_bytes > RING_CAPACITY,
+        "journal replay {replay_bytes} did not outlive the ring"
+    );
+    for pair in seqs.windows(2) {
+        assert_eq!(
+            pair[1],
+            pair[0] + 1,
+            "journal replay seq gap or duplicate around {} -> {}",
+            pair[0],
+            pair[1]
+        );
+    }
+    let _ = std::fs::remove_file(&file_path);
 }
