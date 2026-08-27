@@ -355,6 +355,16 @@ impl SessionRuntime {
         }
     }
 
+    fn refresh_journal_degradation(&self) {
+        if self
+            .journal
+            .as_ref()
+            .is_some_and(|journal| journal.is_session_degraded(&self.session_id))
+        {
+            self.mark_journal_degraded();
+        }
+    }
+
     fn journal_degraded(&self) -> bool {
         self.journal_degraded.load(Ordering::Acquire)
     }
@@ -890,22 +900,17 @@ impl SessionRegistry {
         let runtime = match self.runtime_for_owner(session_id, owner) {
             Ok(runtime) => runtime,
             Err(error) if error.code == ErrorCode::SessionNotFound => {
-                return self
-                    .hydrate_transcript(session_id, from_cursor, owner)
-                    .and_then(|runtime| {
-                        let generation = runtime.try_attach(from_cursor, conn)?;
-                        let from_seq = from_cursor.map(|cursor| cursor.seq);
-                        conn.track(session_id, runtime, from_seq, generation);
-                        Ok(())
-                    });
+                self.hydrate_transcript(session_id, from_cursor, owner)?
             }
             Err(error) => return Err(error),
         };
-        {
-            let generation = runtime.try_attach(from_cursor, conn)?;
-            let from_seq = from_cursor.map(|cursor| cursor.seq);
-            conn.track(session_id, runtime, from_seq, generation);
-        }
+        let generation = runtime.try_attach(from_cursor, conn)?;
+        let from_seq = from_cursor.map(|cursor| cursor.seq);
+        conn.track(session_id, Arc::clone(&runtime), from_seq, generation);
+        // The journal writer records asynchronous failures in shared state;
+        // attach must import that fact before returning even when the PTY is
+        // otherwise quiet and no status request or later output occurs.
+        runtime.refresh_journal_degradation();
         Ok(())
     }
 
@@ -1165,11 +1170,7 @@ impl SessionRegistry {
             .map(|map| map.values().map(RegistryEntry::runtime).collect::<Vec<_>>())
             .unwrap_or_default();
         for runtime in runtimes {
-            if let Some(journal) = &runtime.journal {
-                if journal.is_session_degraded(&runtime.session_id) {
-                    runtime.mark_journal_degraded();
-                }
-            }
+            runtime.refresh_journal_degradation();
         }
     }
 
