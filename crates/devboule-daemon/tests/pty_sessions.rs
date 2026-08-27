@@ -177,6 +177,13 @@ fn cmd_keep() -> PtyCommand {
     )
 }
 
+fn cmd_gated_exit(ready_file: &Path) -> PtyCommand {
+    let ready_file = ready_file.display().to_string().replace('\'', "''");
+    powershell_command(format!(
+        "while (-not (Test-Path -LiteralPath '{ready_file}')) {{ Start-Sleep -Milliseconds 25 }}; exit 0"
+    ))
+}
+
 fn cmd_spawn_long_lived_child_with_pid_file(marker: &str, pid_file: &Path) -> PtyCommand {
     let pid_file = pid_file.display().to_string().replace('\'', "''");
     let script = format!(
@@ -609,7 +616,8 @@ fn killing_the_daemon_surfaces_exit_on_the_attached_client() {
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
 fn session_process_exit_reports_through_the_envelope() {
     let harness = Harness::spawn();
-    queue_command(&harness.paths, cmd_keep());
+    let ready_file = harness.dir.join("normal-exit.ready");
+    queue_command(&harness.paths, cmd_gated_exit(&ready_file));
     let client = harness.client("exit");
     let session = client
         .session_create(None, SessionKind::Terminal, None)
@@ -621,9 +629,7 @@ fn session_process_exit_reports_through_the_envelope() {
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
         .expect("attach");
-    client
-        .session_send(&session.id, "exit\r\n")
-        .expect("normal exit");
+    std::fs::write(&ready_file, b"ready").expect("release normal exit");
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut saw_exit = false;
     while Instant::now() < deadline {
