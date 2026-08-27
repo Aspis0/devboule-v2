@@ -32,6 +32,7 @@ pub struct ConnOut {
 #[allow(dead_code)]
 struct Inner {
     rpc: VecDeque<DaemonMessage>,
+    wake_generation: u64,
 }
 
 #[allow(dead_code)]
@@ -40,6 +41,7 @@ impl ConnOut {
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 rpc: VecDeque::new(),
+                wake_generation: 0,
             }),
             cvar: Condvar::new(),
             closed: AtomicBool::new(false),
@@ -59,6 +61,7 @@ impl ConnOut {
             return;
         }
         inner.rpc.push_back(message);
+        inner.wake_generation = inner.wake_generation.wrapping_add(1);
         self.cvar.notify_all();
     }
 
@@ -73,12 +76,51 @@ impl ConnOut {
 
     /// Wake the writer so it will pull session output even when no RPC is queued.
     pub fn notify(&self) {
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        inner.wake_generation = inner.wake_generation.wrapping_add(1);
         self.cvar.notify_all();
     }
 
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        inner.wake_generation = inner.wake_generation.wrapping_add(1);
         self.cvar.notify_all();
+    }
+
+    /// Wait without a polling timeout. The generation check closes the race
+    /// between the writer's last pull and entering the condition variable.
+    pub fn wait_for_notify(&self) -> bool {
+        self.wait_for_notify_timeout(None)
+    }
+
+    /// Wait for a notification, or for a one-shot deadline such as the PTY
+    /// exit-drain deadline. Normal idle connections pass `None` and do not
+    /// wake periodically.
+    pub fn wait_for_notify_timeout(&self, timeout: Option<Duration>) -> bool {
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let generation = inner.wake_generation;
+        while inner.rpc.is_empty()
+            && !self.closed.load(Ordering::SeqCst)
+            && inner.wake_generation == generation
+        {
+            match timeout {
+                Some(timeout) => {
+                    let (guard, result) = self
+                        .cvar
+                        .wait_timeout(inner, timeout)
+                        .unwrap_or_else(|err| err.into_inner());
+                    inner = guard;
+                    if result.timed_out() {
+                        return true;
+                    }
+                }
+                None => {
+                    inner = self.cvar.wait(inner).unwrap_or_else(|err| err.into_inner());
+                }
+            }
+        }
+        !self.closed.load(Ordering::SeqCst) || !inner.rpc.is_empty()
     }
 
     /// Wait for RPC, a notify, or `timeout`. Returns false if closed and idle.

@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "server")]
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, WAIT_OBJECT_0,
+};
 use windows_sys::Win32::Foundation::{
     SetHandleInformation, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE,
     HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
@@ -17,8 +19,8 @@ use windows_sys::Win32::Foundation::{
 #[cfg(feature = "server")]
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING, SECURITY_IDENTIFICATION,
-    SECURITY_SQOS_PRESENT,
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+    SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
 };
 #[cfg(feature = "server")]
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
@@ -28,6 +30,10 @@ use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
     PIPE_TYPE_BYTE, PIPE_WAIT,
 };
+#[cfg(feature = "server")]
+use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+#[cfg(feature = "server")]
+use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 #[cfg(feature = "server")]
 use crate::paths::RuntimePaths;
@@ -83,7 +89,7 @@ impl NamedPipeListener {
 
     fn create_instance(&mut self) -> io::Result<HANDLE> {
         let name = wide(&self.pipe_name);
-        let mut open_mode = PIPE_ACCESS_DUPLEX;
+        let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
         if self.first {
             open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
         }
@@ -134,15 +140,48 @@ impl Listener for NamedPipeListener {
             ));
         }
         let handle = self.create_instance()?;
-        let connected = unsafe { ConnectNamedPipe(handle, ptr::null_mut()) };
+        let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        if event.is_null() {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(last_os_error());
+        }
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        overlapped.hEvent = event;
+        let connected = unsafe { ConnectNamedPipe(handle, &mut overlapped) };
         if connected == 0 {
             let err = last_os_error();
-            if err.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
+            if err.raw_os_error() == Some(ERROR_IO_PENDING as i32) {
+                let wait = unsafe { WaitForSingleObject(event, u32::MAX) };
+                if wait != WAIT_OBJECT_0 {
+                    unsafe {
+                        CloseHandle(event);
+                        CloseHandle(handle);
+                    }
+                    return Err(last_os_error());
+                }
+                let mut transferred = 0u32;
+                let completed =
+                    unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, 1) };
+                if completed == 0 {
+                    let error = last_os_error();
+                    unsafe {
+                        CloseHandle(event);
+                        CloseHandle(handle);
+                    }
+                    return Err(error);
+                }
+            } else if err.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
                 unsafe {
+                    CloseHandle(event);
                     CloseHandle(handle);
                 }
                 return Err(err);
             }
+        }
+        unsafe {
+            CloseHandle(event);
         }
         // Return the connected stream even if stop flipped while waiting so
         // the accept loop can send the stable `shutting_down` handshake error
@@ -190,7 +229,10 @@ fn connect_pipe_once(pipe_name: &str) -> io::Result<File> {
             0,
             ptr::null(),
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            FILE_ATTRIBUTE_NORMAL
+                | SECURITY_SQOS_PRESENT
+                | SECURITY_IDENTIFICATION
+                | FILE_FLAG_OVERLAPPED,
             ptr::null_mut(),
         )
     };

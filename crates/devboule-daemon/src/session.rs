@@ -70,13 +70,15 @@ const TEST_PTY_COMMAND_FILE: &str = ".test-pty-command";
 /// Accumulate reader output until this many bytes, then assign one seq.
 /// 8 KiB is half a ConPTY read and far under the 1 MiB frame cap.
 pub const COALESCE_MAX_BYTES: usize = 8 * 1024;
-/// Flush coalesced output after this much quiet. 4 ms is half a 120 Hz
-/// frame: felt as zero on keystroke echo, enough to merge a flood of
-/// 67-byte ConPTY chunks. Tune here, not inline.
+/// Flush multi-byte coalesced output after this much quiet. 4 ms is half a
+/// 120 Hz frame and enough to merge a flood of 67-byte ConPTY chunks. The
+/// one-byte interactive case uses [`COALESCE_EAGER_BYTES`] instead.
 pub const COALESCE_FLUSH: Duration = Duration::from_millis(4);
+/// A single-byte ConPTY read is the interactive keystroke case. Publish it
+/// immediately so a platform timer rounding the quiet wait cannot add a
+/// frame-sized delay; larger reads retain the flood coalescing path.
+pub const COALESCE_EAGER_BYTES: usize = 1;
 
-/// How long the writer waits for a notify before pulling again.
-pub const WRITER_IDLE: Duration = Duration::from_millis(20);
 /// After the child has been reaped, keep draining ConPTY for this long
 /// before emitting `exit`. `Child::wait` returns before the last bytes
 /// have been read; dropping them would truncate the live stream.
@@ -419,6 +421,26 @@ impl ConnHandle {
         if let Ok(mut map) = self.attached.lock() {
             map.remove(session_id);
         }
+    }
+
+    /// Return the next one-shot wake needed to emit an exit after its drain
+    /// window. Ordinary live sessions return `None`, so the connection writer
+    /// remains asleep until a request or PTY notification arrives.
+    pub fn next_exit_wake(&self) -> Option<Duration> {
+        let map = self.attached.lock().ok()?;
+        map.values()
+            .filter_map(|pull| {
+                let stream = pull.runtime.stream.lock().ok()?;
+                if stream.output_closed
+                    || !stream.process_exited
+                    || SessionRuntime::ready_for_exit(&stream)
+                {
+                    return None;
+                }
+                let origin = stream.last_publish.or(stream.exit_at)?;
+                Some(EXIT_DRAIN.saturating_sub(origin.elapsed()))
+            })
+            .min()
     }
 
     /// Drop every subscription this connection holds. The processes stay.
@@ -880,7 +902,7 @@ fn coalesce_loop(rx: mpsc::Receiver<Vec<u8>>, runtime: Arc<SessionRuntime>) {
         match received {
             Some(bytes) => {
                 pending.extend_from_slice(&bytes);
-                if pending.len() >= COALESCE_MAX_BYTES {
+                if pending.len() >= COALESCE_MAX_BYTES || pending.len() == COALESCE_EAGER_BYTES {
                     flush_coalesced(&mut pending, &runtime);
                 }
             }
