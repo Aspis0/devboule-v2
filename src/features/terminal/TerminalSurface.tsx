@@ -2,6 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core';
 import { memo, useEffect, useRef, useState } from 'react';
 import type { SessionEvent } from '../../types/ipc';
 import { TerminalSession, type TerminalBanner } from './terminalSession';
+import { terminalSessionRegistry } from './terminalRegistry';
 
 interface TerminalSurfaceProps {
   workspaceId: string | null;
@@ -19,6 +20,7 @@ function createTerminalChannel(onEvent: (event: SessionEvent) => void): Channel<
 function bannerText(banner: TerminalBanner): string | null {
   if (banner === null) return null;
   if (banner.kind === 'error') return banner.message;
+  if (banner.kind === 'closed') return 'The terminal session was closed.';
   return banner.code === null
     ? 'The terminal process exited.'
     : `The terminal process exited with code ${banner.code}.`;
@@ -47,6 +49,7 @@ export const TerminalSurface = memo(function TerminalSurface({ workspaceId, id }
       },
       invoke: invokeCommand,
       createChannel: createTerminalChannel,
+      registry: terminalSessionRegistry,
       onBanner: (nextBanner) => {
         if (mounted) setBanner(nextBanner);
       },
@@ -93,6 +96,17 @@ export const TerminalSurface = memo(function TerminalSurface({ workspaceId, id }
           aria-pressed={ctrlCArmed}
         >
           {ctrlCArmed ? 'Press Ctrl+C again' : 'Ctrl+C'}
+        </button>
+        <button
+          type="button"
+          className="workspace-terminal-close"
+          onClick={() => {
+            sessionRef.current?.close();
+            setBanner({ kind: 'closed' });
+          }}
+          disabled={banner?.kind === 'exited' || banner?.kind === 'closed'}
+        >
+          Close
         </button>
       </div>
       <div ref={hostRef} className="workspace-terminal-host" aria-label="Interactive terminal" />

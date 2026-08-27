@@ -1,12 +1,14 @@
 import type { Channel } from '@tauri-apps/api/core';
 import type { Session, SessionEvent } from '../../types/ipc';
 import type { TerminalViewHandle } from './createTerminalView';
+import type { TerminalSessionRegistry } from './terminalRegistry';
 
 export type TerminalEvent = SessionEvent;
 export type TerminalChannel = Channel<TerminalEvent>;
 
 export type TerminalBanner =
   | { kind: 'exited'; code: number | null }
+  | { kind: 'closed' }
   | { kind: 'error'; message: string }
   | null;
 
@@ -19,6 +21,7 @@ export interface TerminalSessionDeps {
   ) => Promise<TerminalViewHandle>;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   createChannel: (onEvent: (event: TerminalEvent) => void) => TerminalChannel;
+  registry: TerminalSessionRegistry;
   onBanner: (banner: TerminalBanner) => void;
   onCtrlCArmed: (armed: boolean) => void;
   onExited?: (code: number | null) => void;
@@ -74,25 +77,36 @@ export class TerminalSession {
     this.cancelFrame = deps.cancelFrame ?? ((id) => window.cancelAnimationFrame(id));
   }
 
-  /** Create, attach, and size the session. Every backend rejection is handled here. */
+  /** Adopt or create, attach, and size the session. Every backend rejection is handled here. */
   async start(): Promise<void> {
     if (this.disposed || this.started) return;
     this.started = true;
 
-    let session: Session;
-    try {
-      session = await this.deps.invoke<Session>('session_create', {
-        workspace_id: this.deps.workspaceId,
-        kind: 'terminal',
-      });
-    } catch (error: unknown) {
-      this.showError(`Could not create the terminal session: ${errorMessage(error)}`);
-      return;
+    const existing = this.deps.registry.get(this.deps.workspaceId);
+    const adopted = existing !== null;
+    let sessionId = existing?.sessionId ?? null;
+
+    if (sessionId === null) {
+      let session: Session;
+      try {
+        session = await this.deps.invoke<Session>('session_create', {
+          workspace_id: this.deps.workspaceId,
+          kind: 'terminal',
+        });
+      } catch (error: unknown) {
+        this.showError(`Could not create the terminal session: ${errorMessage(error)}`);
+        return;
+      }
+      sessionId = session.id;
+      this.deps.registry.register(this.deps.workspaceId, sessionId);
     }
 
-    this.sessionId = session.id;
+    this.sessionId = sessionId;
     if (this.disposed) {
-      this.requestClose(session.id);
+      if (this.closeRequested) {
+        this.closeBackendSession(sessionId);
+        this.sessionId = null;
+      }
       return;
     }
 
@@ -104,13 +118,11 @@ export class TerminalSession {
       });
     } catch (error: unknown) {
       this.showError(`Could not open the terminal view: ${errorMessage(error)}`);
-      this.requestClose(session.id);
       return;
     }
 
     if (this.disposed) {
       view.dispose();
-      this.requestClose(session.id);
       return;
     }
     this.view = view;
@@ -121,26 +133,35 @@ export class TerminalSession {
     } catch (error: unknown) {
       this.showError(`Could not open the terminal stream: ${errorMessage(error)}`);
       this.disposeViewAndChannel();
-      this.requestClose(session.id);
       return;
     }
     this.channel = channel;
 
     try {
       await this.deps.invoke<void>('session_attach', {
-        id: session.id,
-        from_cursor: this.lastSeenSeq,
+        id: sessionId,
+        // A new xterm host needs the retained scrollback replayed in full.
+        // The registry cursor is bookkeeping for a future resume path.
+        from_cursor: null,
         ch: channel,
       });
     } catch (error: unknown) {
-      this.showError(`Could not attach to the terminal: ${errorMessage(error)}`);
       this.disposeViewAndChannel();
-      this.requestClose(session.id);
+      if (adopted && isMissingSessionError(error) && !this.disposed) {
+        this.deps.registry.remove(this.deps.workspaceId, sessionId);
+        this.sessionId = null;
+        this.started = false;
+        await this.start();
+        return;
+      }
+      this.showError(`Could not attach to the terminal: ${errorMessage(error)}`);
       return;
     }
 
-    if (this.disposed) return;
-    this.doResize();
+    if (this.disposed || this.exited) return;
+    // The host may have just become visible. Let ResizeObserver/layout settle
+    // before fitting; doResize also ignores zero-sized hosts defensively.
+    this.requestResize();
   }
 
   /** The first Ctrl+C arms; a second press within three seconds sends ETX. */
@@ -193,7 +214,7 @@ export class TerminalSession {
     }
   }
 
-  /** Idempotent teardown. Closing the session also drops the Rust Channel. */
+  /** Detach the view and channel, leaving the runtime-owned session alive. */
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -215,9 +236,17 @@ export class TerminalSession {
     }
     this.pendingOutput.length = 0;
     this.disposeViewAndChannel();
+  }
 
+  /** Explicitly close the runtime-owned session and detach this view. */
+  close(): void {
+    if (this.closeRequested) return;
     const sessionId = this.sessionId;
-    if (sessionId !== null) this.requestClose(sessionId);
+    this.dispose();
+    this.closeRequested = true;
+    if (sessionId === null) return;
+
+    this.closeBackendSession(sessionId);
     this.sessionId = null;
   }
 
@@ -235,6 +264,9 @@ export class TerminalSession {
 
     if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
     this.lastSeenSeq = event.seq;
+    if (this.sessionId !== null) {
+      this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.seq);
+    }
     this.pendingOutput.push(event.data);
     this.scheduleOutputFlush();
   }
@@ -253,6 +285,8 @@ export class TerminalSession {
   private markExited(code: number | null): void {
     if (this.exited) return;
     this.exited = true;
+    const sessionId = this.sessionId;
+    if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
     this.deps.onBanner({ kind: 'exited', code });
     this.deps.onExited?.(code);
@@ -292,13 +326,16 @@ export class TerminalSession {
     }
   }
 
-  private requestClose(sessionId: string): void {
-    if (this.closeRequested) return;
-    this.closeRequested = true;
-    void this.deps.invoke<void>('session_close', { id: sessionId }).catch(() => undefined);
-  }
-
   private showError(message: string): void {
     if (!this.disposed) this.deps.onBanner({ kind: 'error', message });
   }
+
+  private closeBackendSession(sessionId: string): void {
+    this.deps.registry.remove(this.deps.workspaceId, sessionId);
+    void this.deps.invoke<void>('session_close', { id: sessionId }).catch(() => undefined);
+  }
+}
+
+function isMissingSessionError(error: unknown): boolean {
+  return errorMessage(error).toLowerCase().includes('no session with that id');
 }
