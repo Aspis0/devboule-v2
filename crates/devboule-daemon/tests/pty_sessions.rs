@@ -751,7 +751,10 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
     while Instant::now() < deadline && !second_started.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(second_started.load(Ordering::Acquire), "first replay did not arrive");
+    assert!(
+        second_started.load(Ordering::Acquire),
+        "first replay did not arrive"
+    );
 
     let ping_client = Arc::clone(&client);
     let ping_stop = Arc::new(AtomicBool::new(false));
@@ -793,7 +796,11 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
             }),
         )
         .expect("third attach");
-    assert!(wait_for_marker(&third_received, LAST_MARKER, Duration::from_secs(10)));
+    assert!(wait_for_marker(
+        &third_received,
+        LAST_MARKER,
+        Duration::from_secs(10)
+    ));
 
     let delivered = delivered.lock().unwrap().clone();
     let mut unique = delivered.clone();
@@ -1498,6 +1505,13 @@ fn benchmark_file_command(file_path: &Path) -> PtyCommand {
     )
 }
 
+fn normalize_journal_growth_output(data: &str) -> String {
+    // ConPTY may issue a device-status query while the shell starts. It is
+    // transport noise, not part of the file transcript; apply this exact
+    // filter to both the live and replay captures.
+    data.replace("\x1b[6n", "")
+}
+
 #[test]
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
 fn real_pty_channel_file_transport_ab_benchmark() {
@@ -2028,16 +2042,14 @@ fn journal_growth_after_13mb_flood() {
         .expect("create");
     let session_id = session.id.clone();
     let writer = Arc::new(harness.client("dsr-inline"));
-    let observed = Arc::new(Mutex::new((0usize, 0usize)));
+    let observed = Arc::new(Mutex::new(Vec::<(u64, String)>::new()));
     let observed_for_handler = Arc::clone(&observed);
     let handler: EventHandler = Arc::new(move |envelope| {
-        if let SessionEvent::Output { data, .. } = envelope.event {
+        if let SessionEvent::Output { seq, data } = envelope.event {
             if data.contains("\x1b[6n") {
                 let _ = writer.session_send(&session_id, "\x1b[1;1R");
             }
-            let mut observed = observed_for_handler.lock().unwrap();
-            observed.0 += data.len();
-            observed.1 += 1;
+            observed_for_handler.lock().unwrap().push((seq, data));
         }
     });
     client
@@ -2047,20 +2059,40 @@ fn journal_growth_after_13mb_flood() {
     let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
-        if observed.lock().unwrap().0 >= expected_file_bytes {
+        let live_bytes: usize = observed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, data)| data.len())
+            .sum();
+        if live_bytes >= expected_file_bytes {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let (live_bytes, live_frames) = *observed.lock().unwrap();
+    let live_bytes = observed
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, data)| data.len())
+        .sum::<usize>();
     assert!(
         live_bytes >= expected_file_bytes,
         "flood truncated: {live_bytes} < {expected_file_bytes}"
     );
     std::thread::sleep(Duration::from_millis(800));
     stop_dsr_pump(stop_dsr, dsr_thread);
+    let live_events = observed.lock().unwrap().clone();
+    let live_bytes: usize = live_events.iter().map(|(_, data)| data.len()).sum();
+    let live_frames = live_events.len();
     drop(client);
     harness.restart();
+
+    let live_seqs: Vec<u64> = live_events.iter().map(|(seq, _)| *seq).collect();
+    let live_raw: String = live_events.iter().map(|(_, data)| data.as_str()).collect();
+    let live_payload = normalize_journal_growth_output(&live_raw);
+    let expected_first_seq = *live_seqs.first().expect("live output sequence");
+    let expected_last_seq = *live_seqs.last().expect("live output sequence");
 
     let journal_path = harness.paths.journal_file();
     let db_bytes = std::fs::metadata(&journal_path)
@@ -2075,17 +2107,16 @@ fn journal_growth_after_13mb_flood() {
     );
 
     let client = harness.client("growth-replay");
-    let replayed = Arc::new(Mutex::new((0usize, Vec::<u64>::new(), false, false)));
+    let replayed = Arc::new(Mutex::new((Vec::<(u64, String)>::new(), false, false)));
     let replayed_for_handler = Arc::clone(&replayed);
     let handler: EventHandler = Arc::new(move |envelope| {
         let mut replayed = replayed_for_handler.lock().unwrap();
         match envelope.event {
             SessionEvent::Output { seq, data } => {
-                replayed.0 += data.len();
-                replayed.1.push(seq);
+                replayed.0.push((seq, data));
             }
-            SessionEvent::Recovered { .. } => replayed.2 = true,
-            SessionEvent::Exit { .. } => replayed.3 = true,
+            SessionEvent::Recovered { .. } => replayed.1 = true,
+            SessionEvent::Exit { .. } => replayed.2 = true,
             SessionEvent::JournalDegraded => {}
         }
     });
@@ -2097,7 +2128,7 @@ fn journal_growth_after_13mb_flood() {
     let mut replay_complete = false;
     while Instant::now() < deadline {
         let snap = replayed.lock().unwrap();
-        if snap.2 || snap.3 {
+        if snap.1 || snap.2 {
             replay_complete = true;
             break;
         }
@@ -2108,18 +2139,41 @@ fn journal_growth_after_13mb_flood() {
         replay_complete,
         "replay did not complete within {REPLAY_TIMEOUT_SECONDS}s"
     );
-    let (replay_bytes, seqs, recovered, exited) = {
+    let (replay_events, recovered, exited) = {
         let snap = replayed.lock().unwrap();
-        (snap.0, snap.1.clone(), snap.2, snap.3)
+        (snap.0.clone(), snap.1, snap.2)
     };
+    let replay_bytes: usize = replay_events.iter().map(|(_, data)| data.len()).sum();
+    let replay_seqs: Vec<u64> = replay_events.iter().map(|(seq, _)| *seq).collect();
+    let replay_raw: String = replay_events
+        .iter()
+        .map(|(_, data)| data.as_str())
+        .collect();
+    let replay_payload = normalize_journal_growth_output(&replay_raw);
     println!(
         "JOURNAL_GROWTH replay_bytes={replay_bytes} frames={} recovered={recovered} exited={exited} live_bytes={live_bytes}",
-        seqs.len()
+        replay_events.len()
     );
     assert!(
         replay_bytes >= expected_file_bytes,
         "journal replay lost payload bytes: replay={replay_bytes} expected={expected_file_bytes} missing={}",
         expected_file_bytes.saturating_sub(replay_bytes)
+    );
+    assert_eq!(
+        live_payload,
+        replay_payload,
+        "normalized journal replay differs: live_bytes={} replay_bytes={} first_difference={:?}",
+        live_payload.len(),
+        replay_payload.len(),
+        live_payload
+            .as_bytes()
+            .iter()
+            .zip(replay_payload.as_bytes())
+            .position(|(live, replay)| live != replay)
+            .or_else(|| {
+                (live_payload.len() != replay_payload.len())
+                    .then_some(live_payload.len().min(replay_payload.len()))
+            })
     );
     assert!(
         recovered || exited,
@@ -2133,7 +2187,21 @@ fn journal_growth_after_13mb_flood() {
         replay_bytes > RING_CAPACITY,
         "journal replay {replay_bytes} did not outlive the ring"
     );
-    for pair in seqs.windows(2) {
+    assert_eq!(
+        replay_seqs.first(),
+        Some(&expected_first_seq),
+        "journal replay start sequence changed"
+    );
+    assert_eq!(
+        replay_seqs.last(),
+        Some(&expected_last_seq),
+        "journal replay end sequence changed"
+    );
+    assert_eq!(
+        replay_seqs, live_seqs,
+        "journal replay sequence coverage differs from the live capture"
+    );
+    for pair in live_seqs.windows(2) {
         assert_eq!(
             pair[1],
             pair[0] + 1,

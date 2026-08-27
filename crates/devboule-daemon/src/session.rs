@@ -607,11 +607,7 @@ impl ConnHandle {
 
     /// Pull replay + live output + exit for every session this connection
     /// is attached to. Called from the writer thread; does not send.
-    pub(crate) fn event_is_current(
-        &self,
-        session_id: &str,
-        attachment_generation: u64,
-    ) -> bool {
+    pub(crate) fn event_is_current(&self, session_id: &str, attachment_generation: u64) -> bool {
         self.attached
             .lock()
             .ok()
