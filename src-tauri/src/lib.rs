@@ -1,4 +1,5 @@
 mod backend;
+mod client;
 
 use tauri::Manager;
 
@@ -15,8 +16,10 @@ fn app_identity(app: tauri::AppHandle) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(SessionState::new())
+        .manage(client::DaemonBridge::start())
         .invoke_handler(tauri::generate_handler![
             app_identity,
+            client::daemon_status,
             backend::session::session_create,
             backend::session::session_attach,
             backend::session::session_detach,
@@ -29,6 +32,8 @@ pub fn run() {
         .expect("error while building Devboule")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                let daemon = app_handle.state::<client::DaemonBridge>();
+                daemon.shutdown();
                 let sessions = app_handle.state::<SessionState>();
                 kill_all_on_exit(&sessions);
             }

@@ -33,6 +33,17 @@ export type SessionEvent =
   | { type: 'output'; seq: number; data: string }
   | { type: 'exit'; code: number | null };
 
+export type DaemonConnectionState = 'connected' | 'connecting' | 'disconnected' | 'error';
+
+export interface DaemonStatus {
+  state: DaemonConnectionState;
+  pid: number | null;
+  instanceId: string | null;
+  protocolVersion: number | null;
+  clients: number | null;
+  message: string | null;
+}
+
 export interface ProviderInfo {
   id: string;
   name: string;
