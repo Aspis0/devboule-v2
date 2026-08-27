@@ -29,13 +29,3 @@ devboule-protocol = { path = "../crates/devboule-protocol" }
 # Blocking client + spawn helper. Pulls the daemon as a library; the GUI never
 # runs the server in-process.
 devboule-daemon = { path = "../crates/devboule-daemon", default-features = false }
-
-[target.'cfg(windows)'.dependencies]
-# Window focus for single-instance behavior in src/single_instance.rs.
-# windows-sys =0.59.0 is already pinned in the lockfile via devboule-daemon;
-# this declares the same version directly. No new package enters the lockfile.
-windows-sys = { version = "=0.59.0", features = [
-    "Win32_Foundation",
-    "Win32_System_Threading",
-    "Win32_UI_WindowsAndMessaging",
-] }

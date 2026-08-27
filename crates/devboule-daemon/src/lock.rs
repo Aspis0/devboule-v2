@@ -3,7 +3,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
-use std::path::Path;
 
 use crate::error::DaemonError;
 use crate::paths::RuntimePaths;
@@ -26,21 +25,12 @@ pub struct SingleInstanceLock {
 impl SingleInstanceLock {
     pub fn acquire(paths: &RuntimePaths) -> Result<Self, DaemonError> {
         paths.ensure_dir()?;
-        Self::acquire_at(&paths.lock_file)
-    }
-
-    /// Take the exclusive OS lock on one specific file. The lock is a
-    /// byte-range lock (`LockFileEx` on Windows): the OS releases it when the
-    /// owning process dies, so a leftover file from a crashed process is
-    /// lockable again and never a deadlock. File content is irrelevant to the
-    /// lock; the identity written by `write_identity` is informational only.
-    pub fn acquire_at(lock_file: &Path) -> Result<Self, DaemonError> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(lock_file)?;
+            .open(&paths.lock_file)?;
         if !try_lock_exclusive(&file)? {
             return Err(DaemonError::AlreadyRunning);
         }
@@ -142,15 +132,6 @@ mod tests {
             Ok(_) => panic!("second lock succeeded"),
             Err(error) => panic!("expected AlreadyRunning, got {error}"),
         }
-    }
-
-    #[test]
-    fn daemon_and_app_locks_in_one_runtime_dir_do_not_conflict() {
-        // The GUI holds app.lock for its lifetime next to the daemon's
-        // daemon.lock. Locks are per file, so the two must never fight.
-        let (paths, _guard) = unique_dir();
-        let _daemon = SingleInstanceLock::acquire(&paths).expect("daemon lock");
-        let _app = SingleInstanceLock::acquire_at(&paths.dir.join("app.lock")).expect("app lock");
     }
 
     #[test]

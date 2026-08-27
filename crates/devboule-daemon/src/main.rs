@@ -38,7 +38,8 @@ fn main() {
                 .unwrap_or_else(|_| "<runtime folder could not be determined>".to_string());
             eprintln!(
                 "Devboule could not start: {error}. Runtime folder: {runtime_dir}. \
-                 If this keeps happening, delete the files in that folder and try again."
+                 That folder holds your session history, so do not delete it to \
+                 work around this. Report the error instead."
             );
             std::process::exit(1);
         }

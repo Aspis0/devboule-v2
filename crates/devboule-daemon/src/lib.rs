@@ -12,6 +12,7 @@ mod framing;
 mod idempotency;
 #[cfg(feature = "server")]
 mod journal;
+#[cfg(feature = "server")]
 mod lock;
 #[cfg(feature = "server")]
 mod outbound;
@@ -38,7 +39,6 @@ pub use journal::{
     JOURNAL_MAX_SESSIONS, JOURNAL_QUEUE_CAP, JOURNAL_SCHEMA_VERSION, JOURNAL_SESSION_MAX_BYTES,
     SNAPSHOT_EVERY_BYTES,
 };
-pub use lock::SingleInstanceLock;
 pub use paths::RuntimePaths;
 #[cfg(feature = "server")]
 pub use server::run;
