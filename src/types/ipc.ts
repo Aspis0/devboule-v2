@@ -39,7 +39,14 @@ export type SessionEvent =
   | { type: 'output'; seq: number; data: string }
   | { type: 'exit'; code: number | null }
   | { type: 'recovered'; truncated: boolean }
-  | { type: 'journal_degraded' };
+  | { type: 'journal_degraded' }
+  | {
+      type: 'output_gap';
+      fromSeq: number;
+      toSeq: number;
+      droppedBytes: number;
+      droppedFrames: number;
+    };
 
 export type DaemonConnectionState = 'connected' | 'connecting' | 'disconnected' | 'error';
 

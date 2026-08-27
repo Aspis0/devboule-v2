@@ -73,9 +73,10 @@ impl SessionState {
 /// Events sent over the Tauri Channel supplied to `session_attach`.
 ///
 /// `seq` starts at 1 and is contiguous for output chunks in one
-/// *generation* of a session. A cursor means "the last output sequence
-/// already received"; replay therefore sends chunks whose sequence is
-/// strictly greater than `from_cursor`.
+/// *generation* of a session unless an [`SessionEvent::OutputGap`] declares
+/// a missing range. A cursor means "the last output sequence received or
+/// explicitly accounted for by a gap"; replay therefore sends chunks whose
+/// sequence is strictly greater than `from_cursor`.
 ///
 /// Permission and ACP variants are intentionally reserved for M6: adding
 /// new tagged variants is additive for consumers that ignore unknown event
@@ -105,11 +106,27 @@ pub enum SessionEvent {
     },
     /// The journal has started dropping output for this live session.
     JournalDegraded,
+    /// Output in this sequence range is no longer available to replay.
+    ///
+    /// The range is declared in-band so a client can mark the transcript
+    /// incomplete instead of presenting a silently corrupted terminal.
+    OutputGap {
+        #[serde(rename = "fromSeq")]
+        from_seq: u64,
+        #[serde(rename = "toSeq")]
+        to_seq: u64,
+        #[serde(rename = "droppedBytes")]
+        dropped_bytes: u64,
+        #[serde(rename = "droppedFrames")]
+        dropped_frames: u64,
+    },
 }
 
 /// Replay position for a reconnecting client.
 ///
-/// `seq` is the last output sequence the client has **for `generation`**.
+/// `seq` is the last output sequence the client has accounted for **for
+/// `generation`**, including ranges explicitly declared unavailable by an
+/// [`SessionEvent::OutputGap`].
 /// A session whose process died and was recreated MUST bump `generation`
 /// so a client holding an old cursor cannot silently consume a different
 /// stream as if it were a continuation.
@@ -249,6 +266,24 @@ mod tests {
         let event = SessionEvent::JournalDegraded;
         let encoded = serde_json::to_value(&event).expect("json");
         assert_eq!(encoded["type"], "journal_degraded");
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn output_gap_event_round_trips_with_sequence_range() {
+        let event = SessionEvent::OutputGap {
+            from_seq: 4,
+            to_seq: 9,
+            dropped_bytes: 123,
+            dropped_frames: 6,
+        };
+        let encoded = serde_json::to_value(&event).expect("json");
+        assert_eq!(encoded["type"], "output_gap");
+        assert_eq!(encoded["fromSeq"], 4);
+        assert_eq!(encoded["toSeq"], 9);
+        assert_eq!(encoded["droppedBytes"], 123);
+        assert_eq!(encoded["droppedFrames"], 6);
         let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
         assert_eq!(decoded, event);
     }

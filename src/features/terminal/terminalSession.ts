@@ -10,6 +10,7 @@ export type TerminalBanner =
   | { kind: 'exited'; code: number | null }
   | { kind: 'recovered'; truncated: boolean }
   | { kind: 'journal_degraded' }
+  | { kind: 'output_gap'; fromSeq: number; toSeq: number }
   | { kind: 'closed' }
   | { kind: 'error'; message: string }
   | null;
@@ -296,6 +297,15 @@ export class TerminalSession {
         return;
       case 'journal_degraded':
         this.markJournalDegraded();
+        return;
+      case 'output_gap':
+        if (this.lastSeenSeq === null || event.toSeq > this.lastSeenSeq) {
+          this.lastSeenSeq = event.toSeq;
+          if (this.sessionId !== null) {
+            this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.toSeq);
+          }
+          this.deps.onBanner({ kind: 'output_gap', fromSeq: event.fromSeq, toSeq: event.toSeq });
+        }
         return;
       case 'output':
         if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;

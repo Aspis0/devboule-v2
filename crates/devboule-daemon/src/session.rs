@@ -39,9 +39,9 @@
 //! hydrate the journal without that ring cap, so there is no global byte cap
 //! for a connection; a future cap must define whether overflow disconnects or
 //! reports a replay gap. Blocking the PTY reader is wrong (it stalls the
-//! watched process). Dropping bytes from the ring is wrong (the scrollback
-//! would lie). If the writer lags past the ring, the client skips the same
-//! bytes a late attach would skip.
+//! watched process). The ring may evict old bytes, but it records the lost
+//! sequence range and emits an in-band [`SessionEvent::OutputGap`] rather than
+//! presenting a silently incomplete transcript.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -157,52 +157,181 @@ struct SequencedChunk {
     data: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OutputLoss {
+    from_seq: u64,
+    to_seq: u64,
+    dropped_bytes: u64,
+    dropped_frames: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ScrollbackPush {
+    evicted_bytes: u64,
+    dropped_frames: u64,
+}
+
 #[derive(Debug, Default)]
 struct Scrollback {
     chunks: VecDeque<SequencedChunk>,
     bytes: usize,
+    losses: VecDeque<OutputLoss>,
+    evicted_bytes: u64,
+    dropped_frames: u64,
 }
 
 impl Scrollback {
-    fn push(&mut self, seq: u64, data: &[u8]) {
-        self.push_with_cap(seq, data, RING_CAPACITY);
+    fn push(&mut self, seq: u64, data: &[u8]) -> ScrollbackPush {
+        self.push_with_cap(seq, data, RING_CAPACITY, true)
     }
 
     fn push_uncapped(&mut self, seq: u64, data: &[u8]) {
-        self.push_with_cap(seq, data, usize::MAX);
+        let _ = self.push_with_cap(seq, data, usize::MAX, false);
     }
 
-    fn push_with_cap(&mut self, seq: u64, data: &[u8], cap: usize) {
+    fn push_with_cap(
+        &mut self,
+        seq: u64,
+        data: &[u8],
+        cap: usize,
+        count_ring_eviction: bool,
+    ) -> ScrollbackPush {
+        let evicted_before = self.evicted_bytes;
+        let frames_before = self.dropped_frames;
         if data.is_empty() {
-            return;
+            return ScrollbackPush::default();
         }
-        let retained = if data.len() > cap {
-            data[data.len() - cap..].to_vec()
-        } else {
-            data.to_vec()
-        };
-        while self.bytes + retained.len() > cap {
+
+        // A frame larger than the ring is unavailable as a whole. Retaining
+        // only its tail would leave a healthy-looking sequence carrying a
+        // partial payload, so declare the complete frame lost instead.
+        if data.len() > cap {
+            while let Some(oldest) = self.chunks.pop_front() {
+                self.bytes = self.bytes.saturating_sub(oldest.data.len());
+                self.record_loss(
+                    oldest.seq,
+                    oldest.seq,
+                    oldest.data.len() as u64,
+                    count_ring_eviction,
+                );
+            }
+            self.record_loss(seq, seq, data.len() as u64, count_ring_eviction);
+            return ScrollbackPush {
+                evicted_bytes: self.evicted_bytes.saturating_sub(evicted_before),
+                dropped_frames: self.dropped_frames.saturating_sub(frames_before),
+            };
+        }
+
+        let retained = data.to_vec();
+        while self.bytes.saturating_add(retained.len()) > cap {
             let Some(oldest) = self.chunks.pop_front() else {
                 break;
             };
             self.bytes = self.bytes.saturating_sub(oldest.data.len());
+            self.record_loss(
+                oldest.seq,
+                oldest.seq,
+                oldest.data.len() as u64,
+                count_ring_eviction,
+            );
         }
         self.bytes += retained.len();
         self.chunks.push_back(SequencedChunk {
             seq,
             data: retained,
         });
+        ScrollbackPush {
+            evicted_bytes: self.evicted_bytes.saturating_sub(evicted_before),
+            dropped_frames: self.dropped_frames.saturating_sub(frames_before),
+        }
+    }
+
+    fn record_loss(
+        &mut self,
+        from_seq: u64,
+        to_seq: u64,
+        dropped_bytes: u64,
+        count_ring_eviction: bool,
+    ) {
+        let dropped_frames = to_seq.saturating_sub(from_seq).saturating_add(1);
+        if count_ring_eviction {
+            self.evicted_bytes = self.evicted_bytes.saturating_add(dropped_bytes);
+            self.dropped_frames = self.dropped_frames.saturating_add(dropped_frames);
+        }
+        if let Some(previous) = self.losses.back_mut() {
+            if previous.to_seq.saturating_add(1) == from_seq {
+                previous.to_seq = to_seq;
+                previous.dropped_bytes = previous.dropped_bytes.saturating_add(dropped_bytes);
+                previous.dropped_frames = previous.dropped_frames.saturating_add(dropped_frames);
+                return;
+            }
+        }
+        {
+            self.losses.push_back(OutputLoss {
+                from_seq,
+                to_seq,
+                dropped_bytes,
+                dropped_frames,
+            });
+        }
+    }
+
+    fn record_external_loss(&mut self, seq: u64, dropped_bytes: u64) {
+        self.record_loss(seq, seq, dropped_bytes, false);
     }
 
     fn replay_after(&self, from_cursor: Option<u64>) -> Vec<SessionEvent> {
-        self.chunks
-            .iter()
-            .filter(|chunk| from_cursor.is_none_or(|cursor| chunk.seq > cursor))
-            .map(|chunk| SessionEvent::Output {
-                seq: chunk.seq,
-                data: String::from_utf8_lossy(&chunk.data).into_owned(),
-            })
-            .collect()
+        let cursor = from_cursor.unwrap_or(0);
+        let mut chunks = self.chunks.iter();
+        let mut losses = self.losses.iter();
+        let mut next_chunk = chunks.next();
+        let mut next_loss = losses.next();
+        let mut events = Vec::new();
+
+        loop {
+            while next_chunk.is_some_and(|chunk| chunk.seq <= cursor) {
+                next_chunk = chunks.next();
+            }
+            while next_loss.is_some_and(|loss| loss.to_seq <= cursor) {
+                next_loss = losses.next();
+            }
+            match (next_chunk, next_loss) {
+                (None, None) => break,
+                (Some(chunk), None) => {
+                    events.push(SessionEvent::Output {
+                        seq: chunk.seq,
+                        data: String::from_utf8_lossy(&chunk.data).into_owned(),
+                    });
+                    next_chunk = chunks.next();
+                }
+                (None, Some(loss)) => {
+                    events.push(SessionEvent::OutputGap {
+                        from_seq: loss.from_seq.max(cursor.saturating_add(1)),
+                        to_seq: loss.to_seq,
+                        dropped_bytes: loss.dropped_bytes,
+                        dropped_frames: loss.dropped_frames,
+                    });
+                    next_loss = losses.next();
+                }
+                (Some(chunk), Some(loss)) if loss.from_seq <= chunk.seq => {
+                    events.push(SessionEvent::OutputGap {
+                        from_seq: loss.from_seq.max(cursor.saturating_add(1)),
+                        to_seq: loss.to_seq,
+                        dropped_bytes: loss.dropped_bytes,
+                        dropped_frames: loss.dropped_frames,
+                    });
+                    next_loss = losses.next();
+                }
+                (Some(chunk), Some(_loss)) => {
+                    events.push(SessionEvent::Output {
+                        seq: chunk.seq,
+                        data: String::from_utf8_lossy(&chunk.data).into_owned(),
+                    });
+                    next_chunk = chunks.next();
+                }
+            }
+        }
+        events
     }
 }
 
@@ -233,6 +362,13 @@ struct StreamState {
     disposition: Disposition,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct OutputMetrics {
+    pub(crate) peak_ring_bytes: u64,
+    pub(crate) ring_evicted_bytes: u64,
+    pub(crate) ring_dropped_frames: u64,
+}
+
 /// Stream state is one mutex on purpose. Holding it across attach
 /// registration makes attach ordering exact: the subscriber is registered
 /// and its pull cursor is set, and only then can the reader publish the
@@ -245,6 +381,8 @@ struct SessionRuntime {
     /// daemon or a later session. It remains true for the session lifetime.
     journal_degraded: AtomicBool,
     peak_ring_bytes: AtomicUsize,
+    ring_evicted_bytes: AtomicU64,
+    ring_dropped_frames: AtomicU64,
     reader_finished: AtomicBool,
     child_reaped: AtomicBool,
     published_frames: AtomicU64,
@@ -275,6 +413,8 @@ impl SessionRuntime {
             }),
             journal_degraded: AtomicBool::new(false),
             peak_ring_bytes: AtomicUsize::new(0),
+            ring_evicted_bytes: AtomicU64::new(0),
+            ring_dropped_frames: AtomicU64::new(0),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
             published_frames: AtomicU64::new(0),
@@ -307,6 +447,7 @@ impl SessionRuntime {
                     SessionEvent::JournalDegraded => {
                         runtime.journal_degraded.store(true, Ordering::Release);
                     }
+                    SessionEvent::OutputGap { .. } => {}
                 }
             }
         }
@@ -315,18 +456,39 @@ impl SessionRuntime {
 
     fn publish_output(&self, data: &str) {
         let Ok(mut stream) = self.stream.lock() else {
+            eprintln!(
+                "session {} dropped terminal output: stream lock unavailable",
+                self.session_id
+            );
             return;
         };
         if stream.output_closed {
+            let seq = stream.next_seq;
+            stream.next_seq = stream.next_seq.saturating_add(1);
+            stream
+                .scrollback
+                .record_external_loss(seq, data.len() as u64);
+            if let Some(attached) = &stream.attached {
+                attached.outbound.notify();
+            }
+            eprintln!(
+                "session {} dropped terminal output after EOF ({} bytes)",
+                self.session_id,
+                data.len()
+            );
             return;
         }
         let seq = stream.next_seq;
         stream.next_seq = stream.next_seq.saturating_add(1);
-        stream.scrollback.push(seq, data.as_bytes());
+        let push = stream.scrollback.push(seq, data.as_bytes());
         stream.last_publish = Some(Instant::now());
         let generation = stream.generation;
         self.peak_ring_bytes
             .fetch_max(stream.scrollback.bytes, Ordering::Relaxed);
+        self.ring_evicted_bytes
+            .fetch_add(push.evicted_bytes, Ordering::Relaxed);
+        self.ring_dropped_frames
+            .fetch_add(push.dropped_frames, Ordering::Relaxed);
         if let Some(attached) = &stream.attached {
             attached.outbound.notify();
         }
@@ -344,6 +506,30 @@ impl SessionRuntime {
             if !accepted || journal.is_session_degraded(&self.session_id) {
                 self.mark_journal_degraded();
             }
+        }
+    }
+
+    fn record_output_loss(&self, dropped_bytes: u64) {
+        let Ok(mut stream) = self.stream.lock() else {
+            eprintln!(
+                "session {} dropped terminal output: stream lock unavailable",
+                self.session_id
+            );
+            return;
+        };
+        let seq = stream.next_seq;
+        stream.next_seq = stream.next_seq.saturating_add(1);
+        stream.scrollback.record_external_loss(seq, dropped_bytes);
+        if let Some(attached) = &stream.attached {
+            attached.outbound.notify();
+        }
+    }
+
+    pub(crate) fn output_metrics(&self) -> OutputMetrics {
+        OutputMetrics {
+            peak_ring_bytes: self.peak_ring_bytes.load(Ordering::Relaxed) as u64,
+            ring_evicted_bytes: self.ring_evicted_bytes.load(Ordering::Relaxed),
+            ring_dropped_frames: self.ring_dropped_frames.load(Ordering::Relaxed),
         }
     }
 
@@ -549,39 +735,49 @@ impl ConnHandle {
         let attachment_generation = self
             .next_attachment_generation
             .fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut map) = self.attached.lock() {
-            map.insert(
-                session_id.to_string(),
-                PullState {
-                    runtime,
-                    sent_seq: from_seq,
-                    exit_sent: false,
-                    journal_degraded_sent: false,
-                    generation,
-                    attachment_generation,
-                },
-            );
-        }
+        let mut map = self
+            .attached
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        map.insert(
+            session_id.to_string(),
+            PullState {
+                runtime,
+                sent_seq: from_seq,
+                exit_sent: false,
+                journal_degraded_sent: false,
+                generation,
+                attachment_generation,
+            },
+        );
         self.outbound.notify();
     }
 
     fn untrack(&self, session_id: &str) {
-        if let Ok(mut map) = self.attached.lock() {
-            map.remove(session_id);
-        }
+        self.attached
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(session_id);
     }
 
     /// Return the next one-shot wake needed to emit an exit after its drain
     /// window. Ordinary live sessions return `None`, so the connection writer
     /// remains asleep until a request or PTY notification arrives.
     pub fn next_exit_wake(&self) -> Option<Duration> {
-        let map = self.attached.lock().ok()?;
+        let map = self
+            .attached
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         map.values()
             .filter_map(|pull| {
                 if pull.exit_sent {
                     return None;
                 }
-                let stream = pull.runtime.stream.lock().ok()?;
+                let stream = pull
+                    .runtime
+                    .stream
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 if SessionRuntime::ready_for_exit(&stream) {
                     // Drain elapsed (or EOF) since the last pull. There is no
                     // notify at that instant; a zero timeout makes the writer
@@ -615,17 +811,21 @@ impl ConnHandle {
     pub(crate) fn event_is_current(&self, session_id: &str, attachment_generation: u64) -> bool {
         self.attached
             .lock()
-            .ok()
-            .and_then(|map| map.get(session_id).map(|pull| pull.attachment_generation))
+            .map(|map| map.get(session_id).map(|pull| pull.attachment_generation))
+            .unwrap_or_else(|error| {
+                let map = error.into_inner();
+                map.get(session_id).map(|pull| pull.attachment_generation)
+            })
             == Some(attachment_generation)
     }
 
     /// Record delivery only after the corresponding envelope was written to
     /// the connection. A queued envelope is not yet part of the cursor.
     pub(crate) fn event_sent(&self, event: &PendingEvent) {
-        let Ok(mut map) = self.attached.lock() else {
-            return;
-        };
+        let mut map = self
+            .attached
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let remove = {
             let Some(pull) = map.get_mut(&event.session_id) else {
                 return;
@@ -638,6 +838,13 @@ impl ConnHandle {
                     pull.sent_seq = Some(*seq);
                     false
                 }
+                SessionEvent::OutputGap { to_seq, .. } => {
+                    // A gap declaration accounts for the unavailable range;
+                    // it is safe to advance only after that declaration was
+                    // itself written to the wire.
+                    pull.sent_seq = Some(*to_seq);
+                    false
+                }
                 SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
                 SessionEvent::JournalDegraded => false,
             }
@@ -648,14 +855,17 @@ impl ConnHandle {
     }
 
     pub(crate) fn pull_events(&self) -> Vec<PendingEvent> {
-        let Ok(mut map) = self.attached.lock() else {
-            return Vec::new();
-        };
+        let mut map = self
+            .attached
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut events = Vec::new();
         for (session_id, pull) in map.iter_mut() {
-            let Ok(stream) = pull.runtime.stream.lock() else {
-                continue;
-            };
+            let stream = pull
+                .runtime
+                .stream
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let replay = stream.scrollback.replay_after(pull.sent_seq);
             for event in replay {
                 events.push(PendingEvent {
@@ -835,6 +1045,25 @@ impl SessionRegistry {
             paths,
             journal,
         }
+    }
+
+    pub(crate) fn output_metrics(&self) -> OutputMetrics {
+        let Ok(map) = self.inner.lock() else {
+            return OutputMetrics::default();
+        };
+        map.values()
+            .map(RegistryEntry::runtime)
+            .map(|runtime| runtime.output_metrics())
+            .fold(OutputMetrics::default(), |mut total, metrics| {
+                total.peak_ring_bytes = total.peak_ring_bytes.max(metrics.peak_ring_bytes);
+                total.ring_evicted_bytes = total
+                    .ring_evicted_bytes
+                    .saturating_add(metrics.ring_evicted_bytes);
+                total.ring_dropped_frames = total
+                    .ring_dropped_frames
+                    .saturating_add(metrics.ring_dropped_frames);
+                total
+            })
     }
 
     pub fn flush_journal(&self) {
@@ -1432,10 +1661,18 @@ fn reader_loop(
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                let _ = coalesce_tx.send(buf[..n].to_vec());
+                if coalesce_tx.send(buf[..n].to_vec()).is_err() {
+                    runtime.record_output_loss(n as u64);
+                    eprintln!("session {id} dropped {n} terminal bytes: coalescer unavailable");
+                    break;
+                }
             }
             Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(_) => break,
+            Err(error) => {
+                runtime.record_output_loss(0);
+                eprintln!("session {id} stopped reading terminal output: {error}");
+                break;
+            }
         }
     }
     drop(coalesce_tx);
@@ -1845,6 +2082,62 @@ mod tests {
     }
 
     #[test]
+    fn scrollback_declares_evicted_sequence_range() {
+        let mut scrollback = Scrollback::default();
+        scrollback.push_with_cap(1, b"one!", 8, true);
+        scrollback.push_with_cap(2, b"two!", 8, true);
+        let push = scrollback.push_with_cap(3, b"three", 8, true);
+
+        assert_eq!(push.evicted_bytes, 8);
+        assert_eq!(push.dropped_frames, 2);
+        assert_eq!(scrollback.evicted_bytes, 8);
+        assert_eq!(scrollback.dropped_frames, 2);
+        assert_eq!(
+            scrollback.replay_after(None),
+            vec![
+                SessionEvent::OutputGap {
+                    from_seq: 1,
+                    to_seq: 2,
+                    dropped_bytes: 8,
+                    dropped_frames: 2,
+                },
+                SessionEvent::Output {
+                    seq: 3,
+                    data: "three".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn delivered_output_gap_advances_cursor_without_repeating() {
+        let runtime = Arc::new(SessionRuntime::new());
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.scrollback.push_with_cap(1, b"one!", 8, true);
+            stream.scrollback.push_with_cap(2, b"two!", 8, true);
+            stream.scrollback.push_with_cap(3, b"three", 8, true);
+        }
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn).unwrap();
+        conn.track("s.a.1", runtime, None, generation);
+
+        let events = conn.pull_events();
+        assert!(matches!(
+            events.first().map(|event| &event.envelope.event),
+            Some(SessionEvent::OutputGap {
+                from_seq: 1,
+                to_seq: 2,
+                ..
+            })
+        ));
+        for event in &events {
+            conn.event_sent(event);
+        }
+        assert!(conn.pull_events().is_empty());
+    }
+
+    #[test]
     fn ring_never_exceeds_256_kibibytes() {
         let runtime = SessionRuntime::new();
         runtime.publish_output(&"x".repeat(RING_CAPACITY / 2));
@@ -1937,6 +2230,7 @@ mod tests {
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::JournalDegraded => "journal_degraded",
+                SessionEvent::OutputGap { .. } => "output_gap",
             })
             .collect();
         assert_eq!(kinds, ["before", "after", "exit"]);
@@ -2095,6 +2389,7 @@ mod tests {
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::JournalDegraded => "journal_degraded",
+                SessionEvent::OutputGap { .. } => "output_gap",
             })
             .collect();
         assert_eq!(kinds, ["hello", "recovered"]);

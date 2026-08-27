@@ -488,7 +488,8 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
             SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
-            | SessionEvent::JournalDegraded => None,
+            | SessionEvent::JournalDegraded
+            | SessionEvent::OutputGap { .. } => None,
         })
         .collect();
     client
@@ -508,7 +509,8 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
                 SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
                 SessionEvent::Exit { .. }
                 | SessionEvent::Recovered { .. }
-                | SessionEvent::JournalDegraded => None,
+                | SessionEvent::JournalDegraded
+                | SessionEvent::OutputGap { .. } => None,
             })
             .collect();
         if actual == expected_replay {
@@ -524,7 +526,8 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
             SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
-            | SessionEvent::JournalDegraded => None,
+            | SessionEvent::JournalDegraded
+            | SessionEvent::OutputGap { .. } => None,
         })
         .collect();
     assert!(
@@ -624,7 +627,8 @@ fn reattach_with_a_cursor_replays_only_after() {
             SessionEvent::Output { seq, .. } => Some(*seq),
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
-            | SessionEvent::JournalDegraded => None,
+            | SessionEvent::JournalDegraded
+            | SessionEvent::OutputGap { .. } => None,
         })
         .max()
         .expect("seq");
@@ -657,7 +661,8 @@ fn reattach_with_a_cursor_replays_only_after() {
             SessionEvent::Output { seq, .. } => *seq > last_seq,
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
-            | SessionEvent::JournalDegraded => true,
+            | SessionEvent::JournalDegraded
+            | SessionEvent::OutputGap { .. } => true,
         }),
         "cursor replay included seq <= last_seq"
     );
@@ -704,13 +709,18 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
     while Instant::now() < deadline && first_received.lock().unwrap().is_empty() {
         std::thread::sleep(Duration::from_millis(10));
     }
-    let cursor_seq = delivered
-        .lock()
-        .unwrap()
-        .last()
-        .copied()
-        .expect("initial output sequence");
     client.session_detach(&session.id).expect("initial detach");
+    // Detach is an ordinary request. Fairness may deliver one more output
+    // before its reply, so the cursor must be sampled after the reply rather
+    // than before sending the request. That is the last sequence the client
+    // has actually observed for the first attachment.
+    let (cursor_seq, delivered_before_reattach) = {
+        let delivered = delivered.lock().unwrap();
+        (
+            delivered.last().copied().expect("initial output sequence"),
+            delivered.len(),
+        )
+    };
 
     let flood = (0..2500)
         .map(|index| format!("echo DEVBOULE_DUP_{index:04}\r\n"))
@@ -803,6 +813,12 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
     ));
 
     let delivered = delivered.lock().unwrap().clone();
+    assert!(
+        delivered[delivered_before_reattach..]
+            .iter()
+            .all(|seq| *seq > cursor_seq),
+        "reattach replay included a sequence already observed before reattach: {delivered:?}"
+    );
     let mut unique = delivered.clone();
     unique.sort_unstable();
     unique.dedup();
@@ -811,8 +827,6 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
         delivered.len(),
         "a sequence was delivered twice across detach/reattach: {delivered:?}"
     );
-    assert!(delivered.iter().all(|seq| *seq >= cursor_seq));
-
     client.session_close(&session.id).expect("close");
     stop_dsr_pump(stop_dsr, dsr_thread);
 }
@@ -928,7 +942,8 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             SessionEvent::Output { seq, .. } => Some(*seq),
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
-            | SessionEvent::JournalDegraded => None,
+            | SessionEvent::JournalDegraded
+            | SessionEvent::OutputGap { .. } => None,
         })
         .collect();
     let mut unique = output_seqs.clone();
@@ -1300,10 +1315,12 @@ fn real_pty_channel_flood_correctness() {
     let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let observed = Arc::new(Mutex::new((0usize, 0usize, None::<u64>, false, false)));
     let observed_for_handler = Arc::clone(&observed);
+    let output_gap = Arc::new(Mutex::new(None::<(u64, u64, u64, u64)>));
+    let output_gap_for_handler = Arc::clone(&output_gap);
     let writer = Arc::new(harness.client("dsr-inline"));
     let session_id = session.id.clone();
-    let handler: EventHandler = Arc::new(move |envelope| {
-        if let SessionEvent::Output { seq, data } = envelope.event {
+    let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
+        SessionEvent::Output { seq, data } => {
             if data.contains("\x1b[6n") {
                 let _ = writer.session_send(&session_id, "\x1b[1;1R");
             }
@@ -1319,6 +1336,18 @@ fn real_pty_channel_flood_correctness() {
             observed.0 += data.len();
             observed.1 += 1;
         }
+        SessionEvent::OutputGap {
+            from_seq,
+            to_seq,
+            dropped_bytes,
+            dropped_frames,
+        } => {
+            *output_gap_for_handler.lock().unwrap() =
+                Some((from_seq, to_seq, dropped_bytes, dropped_frames));
+        }
+        SessionEvent::Exit { .. }
+        | SessionEvent::Recovered { .. }
+        | SessionEvent::JournalDegraded => {}
     });
     client
         .session_attach(&session.id, None, handler)
@@ -1340,13 +1369,19 @@ fn real_pty_channel_flood_correctness() {
     let (bytes, chunks, _, reordered, _) = *observed.lock().unwrap();
     let expected_bytes = LINES * PAYLOAD.len();
     let output_complete = bytes >= expected_bytes;
+    let output_gap = *output_gap.lock().unwrap();
+    let status = client.status().expect("status");
+    let frames_per_s = chunks as f64 / wall.as_secs_f64();
     let close_start = Instant::now();
     client.session_close(&session.id).expect("close");
     let teardown = close_start.elapsed();
     stop_dsr_pump(stop_dsr, dsr_thread);
     println!(
-        "PTY_CORRECTNESS lines={LINES} expected_min_bytes={expected_bytes} bytes={bytes} chunks={chunks} wall_ms={} peak_ring_bytes=n/a(daemon) output_complete={output_complete} seq_reordered={reordered} child_reaped=n/a teardown_ms={} clean={}",
+        "PTY_CORRECTNESS lines={LINES} expected_min_bytes={expected_bytes} bytes={bytes} chunks={chunks} frames_per_s={frames_per_s:.2} wall_ms={} peak_ring_bytes={} ring_evicted_bytes={} ring_dropped_frames={} output_gap={output_gap:?} output_complete={output_complete} seq_reordered={reordered} child_reaped=n/a teardown_ms={} clean={}",
         wall.as_millis(),
+        status.peak_ring_bytes,
+        status.ring_evicted_bytes,
+        status.ring_dropped_frames,
         teardown.as_millis(),
         client.sessions_list().expect("list").is_empty(),
     );
@@ -1355,6 +1390,10 @@ fn real_pty_channel_flood_correctness() {
         "the generator did not deliver its expected flood"
     );
     assert!(!reordered, "output sequence was dropped or reordered");
+    assert!(
+        output_gap.is_none(),
+        "output loss was declared: {output_gap:?}"
+    );
 }
 
 fn summarize_chunk_sizes(chunk_sizes: &[usize]) -> (usize, f64, usize) {
@@ -1706,7 +1745,9 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         SessionEvent::Exit { code } => {
             diagnostics_for_handler.lock().unwrap().record_exit(code);
         }
-        SessionEvent::Recovered { .. } | SessionEvent::JournalDegraded => {}
+        SessionEvent::Recovered { .. }
+        | SessionEvent::JournalDegraded
+        | SessionEvent::OutputGap { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
         let mut diagnostics = diagnostics.lock().unwrap();
@@ -2082,7 +2123,8 @@ fn journal_outlives_the_256kib_ring() {
             }
             SessionEvent::Recovered { .. }
             | SessionEvent::Exit { .. }
-            | SessionEvent::JournalDegraded => {}
+            | SessionEvent::JournalDegraded
+            | SessionEvent::OutputGap { .. } => {}
         }
     }
     assert!(
@@ -2245,6 +2287,7 @@ fn journal_growth_after_13mb_flood() {
             SessionEvent::Recovered { .. } => replayed.1 = true,
             SessionEvent::Exit { .. } => replayed.2 = true,
             SessionEvent::JournalDegraded => {}
+            SessionEvent::OutputGap { .. } => {}
         }
     });
     client

@@ -203,6 +203,15 @@ pub struct DaemonStatusBody {
     pub clients: u32,
     pub sessions: u32,
     pub capabilities: Vec<Capability>,
+    /// Highest live-session scrollback occupancy observed by the daemon.
+    #[serde(default)]
+    pub peak_ring_bytes: u64,
+    /// Aggregate live-session output evictions since those sessions started.
+    #[serde(default)]
+    pub ring_evicted_bytes: u64,
+    /// Aggregate live-session output frames evicted from scrollback.
+    #[serde(default)]
+    pub ring_dropped_frames: u64,
     /// Present when the conversation journal could not be opened or a live
     /// session has lost journal writes. Live sessions continue; recovery
     /// reports the per-session `truncated` state.

@@ -328,6 +328,25 @@ describe('TerminalSession lifecycle and errors', () => {
     expect(harness.registry.remove).not.toHaveBeenCalled();
   });
 
+  it('declares an output gap and advances the reconnect cursor', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: 'output_gap',
+      fromSeq: 2,
+      toSeq: 4,
+      droppedBytes: 30,
+      droppedFrames: 3,
+    });
+    harness.emit(outputEvent(5, 'after gap'));
+    harness.flushFrame();
+
+    expect(harness.banners).toContainEqual({ kind: 'output_gap', fromSeq: 2, toSeq: 4 });
+    expect(harness.registry.updateCursor).toHaveBeenCalledWith('rust-core', 'session-1', 4);
+    expect(harness.view.written).toEqual(['after gap']);
+  });
+
   it('ignores unknown event types instead of treating them as output', async () => {
     const harness = makeHarness();
     await harness.session.start();
