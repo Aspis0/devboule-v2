@@ -226,15 +226,19 @@ fn start_dsr_pump(
     (stop, handle)
 }
 
+#[derive(Clone)]
 struct BenchmarkDiagnostics {
     attach_succeeded: bool,
     output_events: u64,
     last_output_at_ms: Option<u128>,
     inline_dsr_inflight: bool,
+    exit_seen: bool,
+    exit_code: Option<u32>,
     last_error: Option<String>,
     last_error_at_ms: Option<u128>,
     dsr_attempts: u64,
     dsr_successes: u64,
+    cleanup_error: Option<String>,
 }
 
 impl BenchmarkDiagnostics {
@@ -244,10 +248,13 @@ impl BenchmarkDiagnostics {
             output_events: 0,
             last_output_at_ms: None,
             inline_dsr_inflight: false,
+            exit_seen: false,
+            exit_code: None,
             last_error: None,
             last_error_at_ms: None,
             dsr_attempts: 0,
             dsr_successes: 0,
+            cleanup_error: None,
         }
     }
 
@@ -283,6 +290,15 @@ impl BenchmarkDiagnostics {
     fn record_output(&mut self, started: Instant) {
         self.output_events += 1;
         self.last_output_at_ms = Some(started.elapsed().as_millis());
+    }
+
+    fn record_exit(&mut self, code: Option<u32>) {
+        self.exit_seen = true;
+        self.exit_code = code;
+    }
+
+    fn record_cleanup_error(&mut self, phase: &str, error: &devboule_daemon::DaemonError) {
+        self.cleanup_error = Some(format!("{phase}: {error}"));
     }
 }
 
@@ -1353,8 +1369,8 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     let observed_for_handler = Arc::clone(&observed);
     let diagnostics_for_handler = Arc::clone(&diagnostics);
     let start = Instant::now();
-    let handler: EventHandler = Arc::new(move |envelope| {
-        if let SessionEvent::Output { seq, data } = envelope.event {
+    let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
+        SessionEvent::Output { seq, data } => {
             diagnostics_for_handler.lock().unwrap().record_output(start);
             if data.contains("\x1b[6n") {
                 diagnostics_for_handler.lock().unwrap().inline_dsr_inflight = true;
@@ -1374,6 +1390,10 @@ fn real_pty_channel_file_transport_ab_benchmark() {
             observed.0 += data.len();
             observed.1.push(data.len());
         }
+        SessionEvent::Exit { code } => {
+            diagnostics_for_handler.lock().unwrap().record_exit(code);
+        }
+        SessionEvent::Recovered { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
         let mut diagnostics = diagnostics.lock().unwrap();
@@ -1407,31 +1427,37 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     let complete = observed.lock().unwrap().0 >= expected_file_bytes;
     if !complete {
         let wait_elapsed_ms = start.elapsed().as_millis();
+        let transport_diagnostics = diagnostics.lock().unwrap().clone();
         if let Err(error) = client.session_close(&session.id) {
             diagnostics
                 .lock()
                 .unwrap()
-                .record_error("close during failure cleanup", &error, start);
+                .record_cleanup_error("close during failure cleanup", &error);
         }
         stop_dsr_pump(stop_dsr, dsr_thread);
         let total_elapsed_ms = start.elapsed().as_millis();
         let observed_bytes = observed.lock().unwrap().0;
-        let diagnostics = diagnostics.lock().unwrap();
+        let cleanup_error = diagnostics.lock().unwrap().cleanup_error.clone();
         panic!(
-            "daemon transport did not finish: bytes={observed_bytes} expected_file_bytes={expected_file_bytes} elapsed_ms={wait_elapsed_ms} cleanup_elapsed_ms={} total_elapsed_ms={total_elapsed_ms} attach_succeeded={} output_events={} last_output_at_ms={} inline_dsr_inflight={} last_error={} last_error_at_ms={} dsr_attempts={} dsr_successes={}",
+            "daemon transport did not finish: bytes={observed_bytes} expected_file_bytes={expected_file_bytes} elapsed_ms={wait_elapsed_ms} cleanup_elapsed_ms={} total_elapsed_ms={total_elapsed_ms} attach_succeeded={} output_events={} last_output_at_ms={} inline_dsr_inflight={} exit_seen={} exit_code={} last_error={} last_error_at_ms={} dsr_attempts={} dsr_successes={} cleanup_error={}",
             total_elapsed_ms.saturating_sub(wait_elapsed_ms),
-            diagnostics.attach_succeeded,
-            diagnostics.output_events,
-            diagnostics
+            transport_diagnostics.attach_succeeded,
+            transport_diagnostics.output_events,
+            transport_diagnostics
                 .last_output_at_ms
                 .map_or_else(|| "none".to_string(), |value| value.to_string()),
-            diagnostics.inline_dsr_inflight,
-            diagnostics.last_error.as_deref().unwrap_or("none"),
-            diagnostics
+            transport_diagnostics.inline_dsr_inflight,
+            transport_diagnostics.exit_seen,
+            transport_diagnostics
+                .exit_code
+                .map_or_else(|| "none".to_string(), |value| value.to_string()),
+            transport_diagnostics.last_error.as_deref().unwrap_or("none"),
+            transport_diagnostics
                 .last_error_at_ms
                 .map_or_else(|| "none".to_string(), |value| value.to_string()),
-            diagnostics.dsr_attempts,
-            diagnostics.dsr_successes,
+            transport_diagnostics.dsr_attempts,
+            transport_diagnostics.dsr_successes,
+            cleanup_error.as_deref().unwrap_or("none"),
         );
     }
     let wall = start.elapsed();
