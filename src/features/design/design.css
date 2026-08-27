@@ -152,7 +152,7 @@
 }
 
 .design-history-button:disabled {
-  color: var(--border-strong);
+  color: var(--silence);
   cursor: not-allowed;
 }
 
@@ -530,6 +530,11 @@
   color: var(--silence);
 }
 
+.design-layer-row-selected .design-layer-kind,
+.design-layer-row-selected .design-layer-name-hidden {
+  color: var(--ink-soft);
+}
+
 .design-layer-visibility {
   display: grid;
   width: 18px;
@@ -609,7 +614,7 @@
 }
 
 .design-zoom-controls button:disabled {
-  color: var(--border-strong);
+  color: var(--silence);
   cursor: not-allowed;
 }
 
@@ -1151,8 +1156,11 @@
 }
 
 .design-generate-button:disabled {
+  color: var(--silence);
+  background: var(--surface-muted);
+  border-color: var(--silence);
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 1;
 }
 
 .design-composer-hint {

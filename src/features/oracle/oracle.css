@@ -103,6 +103,10 @@
   background: var(--surface-muted);
 }
 
+.oracle-search:focus-within {
+  border-color: var(--terracotta);
+}
+
 .oracle-search-mark {
   color: var(--terracotta);
   font-family: 'Fraunces', Georgia, serif;
@@ -116,6 +120,11 @@
   outline: 0;
   background: transparent;
   font-size: 13px;
+}
+
+.oracle-search input::placeholder {
+  color: var(--silence);
+  opacity: 1;
 }
 
 .oracle-button {
@@ -450,6 +459,10 @@
 
 .oracle-file-tab-active > span:first-child {
   color: var(--ink);
+}
+
+.oracle-file-tab-active > span:last-child {
+  color: var(--ink-soft);
 }
 
 .oracle-filter-pill {
