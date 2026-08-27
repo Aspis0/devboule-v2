@@ -617,7 +617,7 @@ fn killing_the_daemon_surfaces_exit_on_the_attached_client() {
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
 fn session_process_exit_reports_through_the_envelope() {
     let harness = Harness::spawn();
-    queue_command(&harness.paths, cmd_echo("DEVBOULE_EXIT"));
+    queue_command(&harness.paths, cmd_keep());
     let client = harness.client("exit");
     let session = client
         .session_create(None, SessionKind::Terminal, None)
@@ -629,6 +629,9 @@ fn session_process_exit_reports_through_the_envelope() {
     client
         .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
         .expect("attach");
+    client
+        .session_send(&session.id, "exit\r\n")
+        .expect("normal exit");
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut saw_exit = false;
     while Instant::now() < deadline {
