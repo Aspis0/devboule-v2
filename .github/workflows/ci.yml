@@ -65,9 +65,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Test Rust workspace
-        # Default suite only. Integration tests in pty_sessions.rs and
-        # ugly_paths.rs are #[ignore] because they spawn real Windows ConPTY
-        # sessions and named pipes; cargo test skips them unless --ignored.
+        # Default suite. Real ConPTY / named-pipe tests are #[ignore] and
+        # run in windows-integration with a ConPTY thread bound.
         run: cargo test --workspace --locked
 
       - name: Install pinned cargo-audit
@@ -83,3 +82,29 @@ jobs:
         # advisory notices remain visible without turning Tauri's transitive GTK
         # notices into a false-green workaround.
         run: cargo audit
+
+  # Separate job so a ConPTY timeout is visibly about integration, not mixed
+  # into fmt/clippy/frontend. Still blocking: no continue-on-error.
+  windows-integration:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Show pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      - name: Show runner cores
+        shell: pwsh
+        run: Write-Output "NUMBER_OF_PROCESSORS=$env:NUMBER_OF_PROCESSORS"
+
+      - name: Test ignored ConPTY and named-pipe suite
+        # windows-latest is 4 vCPU (public). Bound threads to that because
+        # ConPTY is a scarce OS resource: local default (22 cores) flakes
+        # ~1 in 3 as moving timeouts; --test-threads=4 did not. Isolated
+        # tests pass, so this is resource bounding, not a race workaround.
+        # --nocapture keeps flood-test summaries in the log if a deadline
+        # is missed.
+        run: cargo test --workspace --locked -- --ignored --test-threads=4 --nocapture
