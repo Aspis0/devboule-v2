@@ -38,10 +38,9 @@ portable-pty = { version = "=0.9.0", optional = true }
 # Conversation journal. No drop-in exists (ARCHITETTURA §1.4); we take
 # WAL/snapshot/retention invariants from wal3/ticktape and own the schema.
 # `bundled` compiles sqlite3.c so the app does not depend on a system
-# SQLite DLL — Windows does not ship one as a stable ABI. M4 brings
-# oracle-core which already uses rusqlite 0.32 with `bundled` (lockfile
-# 0.32.1); pinning the same version now avoids a duplicate sqlite at M4.
-rusqlite = { version = "=0.32.1", features = ["bundled"], optional = true }
+# SQLite DLL — Windows does not ship one as a stable ABI. The `bundled`
+# feature compiles SQLite into the daemon and keeps its database ABI explicit.
+rusqlite = { version = "=0.40.2", features = ["bundled"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Named pipe, DACL, and LockFileEx. Already in the lockfile transitively
