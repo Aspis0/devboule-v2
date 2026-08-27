@@ -19,7 +19,7 @@ use crate::lock::SingleInstanceLock;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
-use crate::session::{ConnHandle, SessionRegistry};
+use crate::session::{ConnHandle, PendingEvent, SessionRegistry};
 use crate::transport::{self, Listener};
 use crate::IDLE_SHUTDOWN_GRACE;
 
@@ -429,7 +429,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
             if drains_events_before_dispatch(&request) {
                 pending_events.extend(conn.pull_events());
                 while let Some(event) = pending_events.pop_front() {
-                    framed.send_unflushed(&DaemonMessage::Event(event))?;
+                    send_pending_event(&framed, &conn, event)?;
                 }
             } else {
                 // Give the event stream one turn before every ordinary
@@ -441,7 +441,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     pending_events.extend(conn.pull_events());
                 }
                 if let Some(event) = pending_events.pop_front() {
-                    framed.send_unflushed(&DaemonMessage::Event(event))?;
+                    send_pending_event(&framed, &conn, event)?;
                 }
             }
             if let ClientMessage::Hello(_) = request {
@@ -486,12 +486,28 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         let event = pending_events
             .pop_front()
             .expect("pending event queue was checked above");
-        framed.send_unflushed(&DaemonMessage::Event(event))?;
+        send_pending_event(&framed, &conn, event)?;
     }
     framed.cancel_read();
     conn.detach_all(&state.sessions);
     conn.outbound.close();
     bounded_join(reader, JOIN_BUDGET);
+    Ok(())
+}
+
+fn send_pending_event(
+    framed: &Framed,
+    conn: &ConnHandle,
+    event: PendingEvent,
+) -> Result<(), DaemonError> {
+    if !conn.event_is_current(&event.session_id, event.attachment_generation) {
+        return Ok(());
+    }
+    framed.send_unflushed(&DaemonMessage::Event(event.envelope.clone()))?;
+    // The cursor is advanced after the complete frame has been written. The
+    // clone above is only for the serialized message; the original envelope
+    // retains the acknowledgement metadata.
+    conn.event_sent(&event);
     Ok(())
 }
 

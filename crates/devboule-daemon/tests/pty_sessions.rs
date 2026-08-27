@@ -19,8 +19,8 @@ use devboule_daemon::{
     RuntimePaths, IDLE_SHUTDOWN_GRACE, RING_CAPACITY,
 };
 use devboule_protocol::{
-    ClientHello, Cursor, ErrorCode, OwnerId, Persistence, PersistenceKind, ResumeResult,
-    SessionEvent, SessionKind, SessionState,
+    ClientHello, ClientMessage, Cursor, ErrorCode, OwnerId, Persistence, PersistenceKind,
+    ResumeResult, SessionEvent, SessionKind, SessionState,
 };
 use portable_pty::{CommandBuilder, PtySize};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
@@ -661,6 +661,151 @@ fn reattach_with_a_cursor_replays_only_after() {
         }),
         "cursor replay included seq <= last_seq"
     );
+    client.session_close(&session.id).expect("close");
+    stop_dsr_pump(stop_dsr, dsr_thread);
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
+    const LAST_MARKER: &str = "DEVBOULE_DUP_2499";
+
+    let harness = Harness::spawn();
+    queue_command(&harness.paths, cmd_keep());
+    let client = Arc::new(harness.client("cursor-duplicate"));
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    answer_dsr(&client, &session.id);
+    let pump_client = Arc::new(harness.client("dsr"));
+    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
+
+    let delivered = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let first_received = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let first_received_for_handler = Arc::clone(&first_received);
+    let delivered_for_first_handler = Arc::clone(&delivered);
+    client
+        .session_attach(
+            &session.id,
+            None,
+            Arc::new(move |envelope| {
+                if let SessionEvent::Output { seq, .. } = envelope.event.clone() {
+                    delivered_for_first_handler.lock().unwrap().push(seq);
+                }
+                first_received_for_handler
+                    .lock()
+                    .unwrap()
+                    .push(envelope.event);
+            }),
+        )
+        .expect("attach");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && first_received.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let cursor_seq = delivered
+        .lock()
+        .unwrap()
+        .last()
+        .copied()
+        .expect("initial output sequence");
+    client.session_detach(&session.id).expect("initial detach");
+
+    let flood = (0..2500)
+        .map(|index| format!("echo DEVBOULE_DUP_{index:04}\r\n"))
+        .collect::<String>();
+    client
+        .session_send(&session.id, &flood)
+        .expect("send flood");
+    // Let the detached process fill the ring before the first cursor replay.
+    // The final marker below is still required after every attach, so this
+    // pause cannot make the test accept a partial flood.
+    std::thread::sleep(Duration::from_millis(750));
+
+    let second_received = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let second_received_for_handler = Arc::clone(&second_received);
+    let delivered_for_second_handler = Arc::clone(&delivered);
+    let second_started = Arc::new(AtomicBool::new(false));
+    let second_started_for_handler = Arc::clone(&second_started);
+    client
+        .session_attach(
+            &session.id,
+            Some(Cursor {
+                generation: 1,
+                seq: cursor_seq,
+            }),
+            Arc::new(move |envelope| {
+                if let SessionEvent::Output { seq, .. } = envelope.event.clone() {
+                    delivered_for_second_handler.lock().unwrap().push(seq);
+                }
+                second_received_for_handler
+                    .lock()
+                    .unwrap()
+                    .push(envelope.event);
+                second_started_for_handler.store(true, Ordering::Release);
+            }),
+        )
+        .expect("reattach");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && !second_started.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(second_started.load(Ordering::Acquire), "first replay did not arrive");
+
+    let ping_client = Arc::clone(&client);
+    let ping_stop = Arc::new(AtomicBool::new(false));
+    let ping_stop_for_thread = Arc::clone(&ping_stop);
+    let ping_thread = std::thread::spawn(move || {
+        while !ping_stop_for_thread.load(Ordering::Acquire) {
+            let _ = ping_client.write_frame(&ClientMessage::Ping { id: 10_000_000 });
+        }
+    });
+    std::thread::sleep(Duration::from_millis(25));
+    ping_stop.store(true, Ordering::Release);
+    let _ = ping_thread.join();
+    client.session_detach(&session.id).expect("second detach");
+    let cursor_after_first_replay = delivered
+        .lock()
+        .unwrap()
+        .last()
+        .copied()
+        .expect("first replay sequence");
+
+    let third_received = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let third_received_for_handler = Arc::clone(&third_received);
+    let delivered_for_third_handler = Arc::clone(&delivered);
+    client
+        .session_attach(
+            &session.id,
+            Some(Cursor {
+                generation: 1,
+                seq: cursor_after_first_replay,
+            }),
+            Arc::new(move |envelope| {
+                if let SessionEvent::Output { seq, .. } = envelope.event.clone() {
+                    delivered_for_third_handler.lock().unwrap().push(seq);
+                }
+                third_received_for_handler
+                    .lock()
+                    .unwrap()
+                    .push(envelope.event);
+            }),
+        )
+        .expect("third attach");
+    assert!(wait_for_marker(&third_received, LAST_MARKER, Duration::from_secs(10)));
+
+    let delivered = delivered.lock().unwrap().clone();
+    let mut unique = delivered.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        delivered.len(),
+        "a sequence was delivered twice across detach/reattach: {delivered:?}"
+    );
+    assert!(delivered.iter().all(|seq| *seq >= cursor_seq));
+
     client.session_close(&session.id).expect("close");
     stop_dsr_pump(stop_dsr, dsr_thread);
 }
