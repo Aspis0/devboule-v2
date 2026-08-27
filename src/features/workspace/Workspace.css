@@ -736,8 +736,7 @@
 
 .workspace-permission-heading {
   min-width: 0;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 14px 6px;
   font-size: 11.5px;
   font-weight: 600;
 }
@@ -773,14 +772,12 @@
 }
 
 .workspace-permission-command {
-  padding: 11px 12px;
-  background: var(--surface);
+  padding: 5px 14px 13px;
   font-size: 11.5px;
 }
 
 .workspace-permission-actions {
-  padding: 9px 12px;
-  border-top: 1px solid var(--border);
+  padding: 10px 14px 12px;
 }
 
 .workspace-permission-label,
@@ -1279,9 +1276,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 11px;
-  background: var(--surface-muted);
-  border-bottom: 1px solid var(--border);
+  padding: 11px 11px 7px;
   font-size: 10.5px;
 }
 
@@ -1299,6 +1294,7 @@
 }
 
 .workspace-diff-lines {
+  padding: 4px 0 6px;
   font-size: 10.5px;
   line-height: 1.8;
 }
@@ -1319,20 +1315,17 @@
 
 .workspace-diff-removed {
   color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 9%, var(--surface));
 }
 
 .workspace-diff-added {
   color: var(--green);
-  background: color-mix(in srgb, var(--green) 10%, var(--surface));
 }
 
 .workspace-diff-actions {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 11px;
-  border-top: 1px solid var(--border);
+  padding: 9px 11px 11px;
 }
 
 .workspace-diff-status {
@@ -1347,10 +1340,7 @@
 
 .workspace-test-card {
   margin-top: 13px;
-  padding: 10px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 11px;
+  padding: 5px 12px 0;
 }
 
 .workspace-test-heading {
