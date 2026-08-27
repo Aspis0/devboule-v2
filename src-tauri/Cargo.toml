@@ -29,7 +29,7 @@ portable-pty = "=0.9.0"
 devboule-protocol = { path = "../crates/devboule-protocol" }
 # Blocking client + spawn helper. Pulls the daemon as a library; the GUI never
 # runs the server in-process.
-devboule-daemon = { path = "../crates/devboule-daemon" }
+devboule-daemon = { path = "../crates/devboule-daemon", default-features = false }
 
 [dev-dependencies]
 # Already present transitively; used only to assert the wire-level SessionEvent tag.

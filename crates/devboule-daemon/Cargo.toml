@@ -6,6 +6,10 @@ edition = "2021"
 license = "Apache-2.0"
 publish = false
 
+[features]
+default = []
+server = []
+
 [lib]
 name = "devboule_daemon"
 path = "src/lib.rs"
@@ -13,6 +17,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "devboule-daemon"
 path = "src/main.rs"
+required-features = ["server"]
 
 [dependencies]
 devboule-protocol = { path = "../devboule-protocol" }

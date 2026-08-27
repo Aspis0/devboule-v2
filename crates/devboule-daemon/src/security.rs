@@ -7,11 +7,14 @@ use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{GetLastError, LocalFree, BOOL, HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(feature = "server")]
+use windows_sys::Win32::Foundation::BOOL;
+use windows_sys::Win32::Foundation::{GetLastError, LocalFree, HANDLE, INVALID_HANDLE_VALUE};
+#[cfg(feature = "server")]
+use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-    SE_KERNEL_OBJECT,
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, GetSecurityInfo,
+    SDDL_REVISION_1, SE_KERNEL_OBJECT,
 };
 use windows_sys::Win32::Security::{
     GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY,
@@ -19,14 +22,17 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+#[cfg(feature = "server")]
 pub struct PipeSecurity {
     descriptor: PSECURITY_DESCRIPTOR,
 }
 
 // The descriptor is owned, never aliased across threads except by moving the
 // listener into the accept thread before any accept runs.
+#[cfg(feature = "server")]
 unsafe impl Send for PipeSecurity {}
 
+#[cfg(feature = "server")]
 impl PipeSecurity {
     pub fn current_user_only() -> io::Result<Self> {
         let sid = current_user_sid()?;
@@ -52,6 +58,7 @@ impl PipeSecurity {
     }
 }
 
+#[cfg(feature = "server")]
 impl Drop for PipeSecurity {
     fn drop(&mut self) {
         if !self.descriptor.is_null() {

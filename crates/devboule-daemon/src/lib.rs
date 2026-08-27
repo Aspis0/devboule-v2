@@ -9,9 +9,12 @@ use std::time::Duration;
 mod client;
 mod error;
 mod framing;
+#[cfg(feature = "server")]
 mod idempotency;
+#[cfg(feature = "server")]
 mod lock;
 mod paths;
+#[cfg(feature = "server")]
 mod server;
 mod spawn;
 mod transport;
@@ -22,6 +25,7 @@ mod security;
 pub use client::{connect, connect_or_spawn, handshake, test_owner, DaemonClient};
 pub use error::DaemonError;
 pub use paths::RuntimePaths;
+#[cfg(feature = "server")]
 pub use server::run;
 pub use spawn::{daemon_file_name, resolve_daemon_binary, spawn_daemon};
 

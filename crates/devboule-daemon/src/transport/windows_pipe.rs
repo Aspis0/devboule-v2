@@ -2,38 +2,55 @@ use std::fs::File;
 use std::io;
 use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::ptr;
+#[cfg(feature = "server")]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "server")]
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "server")]
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_PIPE_CONNECTED};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, SetHandleInformation, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
-    GENERIC_READ, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    SetHandleInformation, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE,
+    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
 };
+#[cfg(feature = "server")]
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING,
-    PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING, SECURITY_IDENTIFICATION,
+    SECURITY_SQOS_PRESENT,
 };
+#[cfg(feature = "server")]
+use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+#[cfg(feature = "server")]
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, WaitNamedPipeW, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
+#[cfg(feature = "server")]
 use crate::paths::RuntimePaths;
-use crate::security::{self, last_os_error, wide, PipeSecurity};
+#[cfg(feature = "server")]
+use crate::security::PipeSecurity;
+use crate::security::{self, last_os_error, wide};
+#[cfg(feature = "server")]
 use crate::transport::Listener;
 
+#[cfg(feature = "server")]
 const PIPE_BUFFER: u32 = 64 * 1024;
+#[cfg(feature = "server")]
 const MAX_INSTANCES: u32 = 16;
 const WAIT_MS: u32 = 1000;
 
+#[cfg(feature = "server")]
 #[derive(Clone)]
 pub struct ListenerShutdown {
     stop: Arc<AtomicBool>,
     pipe_name: String,
 }
 
+#[cfg(feature = "server")]
 impl ListenerShutdown {
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -44,6 +61,7 @@ impl ListenerShutdown {
     }
 }
 
+#[cfg(feature = "server")]
 pub struct NamedPipeListener {
     pipe_name: String,
     security: PipeSecurity,
@@ -51,6 +69,7 @@ pub struct NamedPipeListener {
     first: bool,
 }
 
+#[cfg(feature = "server")]
 impl NamedPipeListener {
     pub fn bind(paths: &RuntimePaths, stop: Arc<AtomicBool>) -> io::Result<Self> {
         let security = PipeSecurity::current_user_only()?;
@@ -103,6 +122,7 @@ impl NamedPipeListener {
     }
 }
 
+#[cfg(feature = "server")]
 impl Listener for NamedPipeListener {
     type Stream = File;
 
@@ -124,12 +144,10 @@ impl Listener for NamedPipeListener {
                 return Err(err);
             }
         }
-        if self.stop.load(Ordering::SeqCst) {
-            // Return the connected stream so the accept loop can send the
-            // stable `shutting_down` handshake error to a real client that
-            // raced the transition. The shutdown wake connection follows the
-            // same path and is closed after its rejected frame.
-        }
+        // Return the connected stream even if stop flipped while waiting so
+        // the accept loop can send the stable `shutting_down` handshake error
+        // to a client that raced the transition. The shutdown wake connection
+        // follows the same path and is closed after its rejected frame.
         // SAFETY: CreateNamedPipeW returned a new owned handle. File takes
         // exclusive ownership and closes it on drop.
         let file = unsafe { File::from_raw_handle(handle as RawHandle) };
@@ -191,6 +209,7 @@ pub fn inspect_pipe_dacl(file: &File) -> io::Result<String> {
     security::dacl_sddl(file.as_raw_handle() as HANDLE)
 }
 
+#[cfg(feature = "server")]
 impl Drop for NamedPipeListener {
     fn drop(&mut self) {
         let _ = self.shutdown();
