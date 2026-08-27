@@ -57,7 +57,7 @@ function daemonDotTone(state: DaemonStatus['state']): string {
 function daemonLabel(status: DaemonStatus): string {
   if (status.state === 'connected') {
     const pid = status.pid !== null ? `pid ${status.pid}` : 'connected';
-    return `daemon · ${pid}`;
+    return status.message ? `daemon · ${pid} · ${status.message}` : `daemon · ${pid}`;
   }
   if (status.state === 'connecting') return 'daemon · connecting';
   if (status.message) return `daemon · ${status.message}`;

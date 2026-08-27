@@ -15,7 +15,7 @@ mod windows_pipe;
 #[cfg(windows)]
 pub use windows_pipe::{connect_pipe, inspect_pipe_dacl};
 #[cfg(all(windows, feature = "server"))]
-pub use windows_pipe::{ListenerShutdown, NamedPipeListener};
+pub use windows_pipe::{peer_owner, ListenerShutdown, NamedPipeListener};
 
 #[cfg(all(not(windows), feature = "server"))]
 #[derive(Clone)]

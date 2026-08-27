@@ -237,7 +237,7 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                                     instance_id: Some(body.instance_id),
                                     protocol_version: Some(body.protocol_version),
                                     clients: Some(body.clients),
-                                    message: None,
+                                    message: body.journal_error,
                                 },
                             );
                         }
@@ -301,11 +301,15 @@ fn locate_daemon_binary() -> Result<PathBuf, String> {
     if fallback.is_file() {
         return Ok(fallback);
     }
-    Err(format!(
+    eprintln!(
         "daemon binary not found next to {} or at {}",
         exe.display(),
         fallback.display()
-    ))
+    );
+    Err(
+        "Devboule daemon not found. Set DEVBOULE_DAEMON or install devboule-daemon.exe beside the app."
+            .to_string(),
+    )
 }
 
 fn set_status(status: &Mutex<UiDaemonStatus>, next: UiDaemonStatus) {

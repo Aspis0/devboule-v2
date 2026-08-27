@@ -27,8 +27,8 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIP
 use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 #[cfg(feature = "server")]
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 #[cfg(feature = "server")]
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
@@ -42,6 +42,8 @@ use crate::security::PipeSecurity;
 use crate::security::{self, last_os_error, wide};
 #[cfg(feature = "server")]
 use crate::transport::Listener;
+#[cfg(feature = "server")]
+use devboule_protocol::OwnerId;
 
 #[cfg(feature = "server")]
 const PIPE_BUFFER: u32 = 64 * 1024;
@@ -249,6 +251,20 @@ fn connect_pipe_once(pipe_name: &str) -> io::Result<File> {
 pub fn inspect_pipe_dacl(file: &File) -> io::Result<String> {
     use std::os::windows::io::AsRawHandle;
     security::dacl_sddl(file.as_raw_handle() as HANDLE)
+}
+
+#[cfg(feature = "server")]
+pub fn peer_owner(file: &File) -> io::Result<OwnerId> {
+    use std::os::windows::io::AsRawHandle;
+
+    let mut pid = 0u32;
+    let ok = unsafe { GetNamedPipeClientProcessId(file.as_raw_handle() as HANDLE, &mut pid) };
+    if ok == 0 {
+        return Err(last_os_error());
+    }
+    let sid = security::process_user_sid(pid)?;
+    OwnerId::new(sid, format!("process-{pid}"))
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))
 }
 
 #[cfg(feature = "server")]

@@ -203,8 +203,9 @@ pub struct DaemonStatusBody {
     pub clients: u32,
     pub sessions: u32,
     pub capabilities: Vec<Capability>,
-    /// Present when the conversation journal could not be opened. Live
-    /// sessions still run; recovered replay will fail with `journal`.
+    /// Present when the conversation journal could not be opened or a live
+    /// session has lost journal writes. Live sessions continue; recovery
+    /// reports the per-session `truncated` state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_error: Option<String>,
 }
