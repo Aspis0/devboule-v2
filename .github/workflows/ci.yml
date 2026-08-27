@@ -64,6 +64,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+      - name: Test Rust workspace
+        # Default suite only. Integration tests in pty_sessions.rs and
+        # ugly_paths.rs are #[ignore] because they spawn real Windows ConPTY
+        # sessions and named pipes; cargo test skips them unless --ignored.
+        run: cargo test --workspace --locked
+
       - name: Install pinned cargo-audit
         shell: pwsh
         run: |
