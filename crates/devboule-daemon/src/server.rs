@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -13,8 +14,9 @@ use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::idempotency::{IdempotencyOutcome, IdempotencyStore};
 use crate::lock::SingleInstanceLock;
+use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
-use crate::session::{ConnHandle, SessionRegistry, WRITER_IDLE};
+use crate::session::{ConnHandle, SessionRegistry};
 use crate::transport::{self, Listener};
 use crate::IDLE_SHUTDOWN_GRACE;
 
@@ -336,6 +338,13 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .any(|capability| capability.as_str() == caps::SESSIONS);
     let owner = client_hello.owner;
     let conn = ConnHandle::new(state.alloc_conn());
+    let (request_tx, request_rx) = mpsc::sync_channel(64);
+    let reader_wake = Arc::clone(&conn.outbound);
+    let reader_framed = framed.clone();
+    let reader = std::thread::Builder::new()
+        .name("daemon-client-request".into())
+        .spawn(move || read_client_requests(reader_framed, request_tx, reader_wake))
+        .map_err(DaemonError::from)?;
     loop {
         if state.stop.load(Ordering::SeqCst) {
             break;
@@ -343,21 +352,25 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         for event in conn.pull_events() {
             framed.send(&DaemonMessage::Event(event))?;
         }
-        let request: ClientMessage = match framed.recv_timeout(WRITER_IDLE) {
-            Ok(request) => request,
-            Err(DaemonError::TimedOut(_)) => continue,
-            Err(DaemonError::Io(error))
-                if error.kind() == std::io::ErrorKind::UnexpectedEof
-                    || error.kind() == std::io::ErrorKind::BrokenPipe
-                    || error.kind() == std::io::ErrorKind::ConnectionReset =>
-            {
+        let request = match request_rx.try_recv() {
+            Ok(Ok(request)) => request,
+            Ok(Err(error)) if connection_closed(&error) || state.stop.load(Ordering::SeqCst) => {
                 break;
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 conn.detach_all(&state.sessions);
                 conn.outbound.close();
+                framed.cancel_read();
+                bounded_join(reader, JOIN_BUDGET);
                 return Err(error);
             }
+            Err(TryRecvError::Empty) => {
+                if !conn.outbound.wait_for_notify_timeout(conn.next_exit_wake()) {
+                    break;
+                }
+                continue;
+            }
+            Err(TryRecvError::Disconnected) => break,
         };
         if let ClientMessage::Hello(_) = request {
             let id = request.request_id();
@@ -379,9 +392,40 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
             break;
         }
     }
+    framed.cancel_read();
     conn.detach_all(&state.sessions);
     conn.outbound.close();
+    bounded_join(reader, JOIN_BUDGET);
     Ok(())
+}
+
+fn read_client_requests(
+    framed: Framed,
+    inbox: SyncSender<Result<ClientMessage, DaemonError>>,
+    wake: Arc<ConnOut>,
+) {
+    loop {
+        let request = framed.recv::<ClientMessage>();
+        let finished = request.is_err();
+        if inbox.send(request).is_err() {
+            break;
+        }
+        wake.notify();
+        if finished {
+            break;
+        }
+    }
+}
+
+fn connection_closed(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::Io(error)
+            if error.kind() == std::io::ErrorKind::UnexpectedEof
+                || error.kind() == std::io::ErrorKind::BrokenPipe
+                || error.kind() == std::io::ErrorKind::ConnectionReset
+                || error.raw_os_error() == Some(995)
+    )
 }
 
 fn reject_shutting_down(stream: std::fs::File) {

@@ -706,7 +706,9 @@ fn summarize_chunk_sizes(chunk_sizes: &[usize]) -> (usize, f64, usize) {
 // second makes an interval poll visible instead of hiding it in a flood.
 const ECHO_SAMPLES: usize = 256;
 const ECHO_CADENCE: Duration = Duration::from_millis(125);
+const ECHO_TIMEOUT: Duration = Duration::from_secs(5);
 const ECHO_KEYS: &[u8] = b"qwertyuiopasdfghjklzxcvbnm";
+const MAX_ECHO_P95_MS: f64 = 10.0;
 
 #[derive(Clone, Copy)]
 struct EchoTiming {
@@ -815,16 +817,16 @@ fn direct_conpty_echo_timings() -> Vec<Duration> {
             writer.write_all(&[key]).expect("write direct ConPTY key");
             writer.flush().expect("flush direct ConPTY key");
         }
-        let deadline = sent + Duration::from_secs(2);
+        let deadline = sent + ECHO_TIMEOUT;
         loop {
             assert!(
                 Instant::now() < deadline,
-                "direct ConPTY did not echo {key:?}"
+                "direct ConPTY did not echo sample {index} {key:?}"
             );
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let (received, data) = rx
-                .recv_timeout(remaining)
-                .expect("receive direct ConPTY output");
+            let (received, data) = rx.recv_timeout(remaining).unwrap_or_else(|error| {
+                panic!("receive direct ConPTY output for sample {index}: {error:?}")
+            });
             if received >= sent && data.contains(&key) {
                 timings.push(received.saturating_duration_since(sent));
                 break;
@@ -892,13 +894,16 @@ fn daemon_echo_timings() -> Vec<EchoTiming> {
             .session_send(&session.id, &key.to_string())
             .expect("send latency key");
         let request_returned = Instant::now();
-        let deadline = sent + Duration::from_secs(2);
+        let deadline = sent + ECHO_TIMEOUT;
         loop {
-            assert!(Instant::now() < deadline, "daemon did not echo {key:?}");
+            assert!(
+                Instant::now() < deadline,
+                "daemon did not echo sample {index} {key:?}"
+            );
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let (received, data) = rx
-                .recv_timeout(remaining)
-                .expect("receive daemon PTY output");
+            let (received, data) = rx.recv_timeout(remaining).unwrap_or_else(|error| {
+                panic!("receive daemon PTY output for sample {index}: {error:?}")
+            });
             if received >= sent && data.contains(key) {
                 timings.push(EchoTiming {
                     end_to_end: received.saturating_duration_since(sent),
@@ -1079,7 +1084,7 @@ fn real_pty_echo_latency_benchmark() {
     let ping = daemon_ping_timings();
     print_distribution("daemon_ping_control", &ping);
     println!(
-        "PTY_LATENCY attribution conpty_floor_median_ms={:.3} request_path_median_ms={:.3} event_tail_median_ms={:.3} ping_control_median_ms={:.3} coalesce_flush_budget_ms=4 connection_writer_poll_budget_ms=20",
+        "PTY_LATENCY attribution conpty_floor_median_ms={:.3} request_path_median_ms={:.3} event_tail_median_ms={:.3} ping_control_median_ms={:.3} coalesce_flush_budget_ms=4 coalesce_eager_bytes=1 connection_wait=notification",
         percentile(&conpty, 50),
         percentile(&request_rtt, 50),
         percentile(&event_tail, 50),
@@ -1087,4 +1092,8 @@ fn real_pty_echo_latency_benchmark() {
     );
     assert_eq!(conpty.len(), ECHO_SAMPLES);
     assert_eq!(daemon.len(), ECHO_SAMPLES);
+    assert!(
+        percentile(&end_to_end, 95) <= MAX_ECHO_P95_MS,
+        "human-cadence echo p95 exceeded {MAX_ECHO_P95_MS:.1} ms"
+    );
 }

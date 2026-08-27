@@ -5,14 +5,16 @@
 //! JSON strings, so a compact `serde_json` frame never contains a raw
 //! newline. A 1 MiB cap bounds a client that omits the delimiter.
 //!
-//! The pipe is shared via `Arc<Mutex<File>>` rather than `File::try_clone`.
-//! Duplicating a Windows named-pipe handle and then reading on one copy
-//! while writing on the other does not deliver duplex traffic on this
-//! stack — ping timed out in 30s. One mutex, PeekNamedPipe before Read
-//! so a sender is never stuck behind a blocking recv.
+//! Windows named-pipe handles are opened for overlapped I/O. Each operation
+//! owns an event and waits for its own completion, so one blocking read does
+//! not hold the write lock. This is important because duplicating a named
+//! pipe handle and reading on one copy while writing on the other did not
+//! deliver duplex traffic on this stack.
 
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io;
+#[cfg(not(windows))]
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,12 +27,23 @@ use crate::error::DaemonError;
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 #[cfg(windows)]
-use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+#[cfg(windows)]
+use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 #[derive(Clone)]
 pub struct Framed {
+    #[cfg(windows)]
+    file: Arc<File>,
+    #[cfg(windows)]
+    write_lock: Arc<Mutex<()>>,
+    #[cfg(not(windows))]
     file: Arc<Mutex<File>>,
     buf: Arc<Mutex<Vec<u8>>>,
 }
@@ -38,14 +51,30 @@ pub struct Framed {
 impl Framed {
     pub fn new(file: File) -> Self {
         Self {
+            #[cfg(windows)]
+            file: Arc::new(file),
+            #[cfg(windows)]
+            write_lock: Arc::new(Mutex::new(())),
+            #[cfg(not(windows))]
             file: Arc::new(Mutex::new(file)),
             buf: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn send<T: Serialize>(&self, value: &T) -> Result<(), DaemonError> {
-        let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
-        write_frame(&mut file, value)
+        #[cfg(windows)]
+        {
+            let _write_lock = self
+                .write_lock
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            write_frame(&self.file, value)
+        }
+        #[cfg(not(windows))]
+        {
+            let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
+            write_frame(&mut file, value)
+        }
     }
 
     pub fn recv<T: DeserializeOwned>(&self) -> Result<T, DaemonError> {
@@ -58,9 +87,24 @@ impl Framed {
         Ok(serde_json::from_slice(&line)?)
     }
 
-    pub fn as_file(&self) -> std::sync::MutexGuard<'_, File> {
-        self.file.lock().unwrap_or_else(|err| err.into_inner())
+    #[cfg(windows)]
+    pub fn as_file(&self) -> Arc<File> {
+        Arc::clone(&self.file)
     }
+
+    /// Cancel a blocking server-side read during daemon shutdown.
+    #[cfg(windows)]
+    pub fn cancel_read(&self) {
+        unsafe {
+            let _ = windows_sys::Win32::System::IO::CancelIoEx(
+                self.file.as_raw_handle() as HANDLE,
+                std::ptr::null(),
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn cancel_read(&self) {}
 
     fn read_line(&self, deadline: Option<Instant>) -> Result<Vec<u8>, DaemonError> {
         loop {
@@ -75,20 +119,14 @@ impl Framed {
                 if now >= deadline {
                     return Err(DaemonError::timed_out("reading a protocol frame"));
                 }
-                let readable = {
-                    let file = self.file.lock().unwrap_or_else(|err| err.into_inner());
-                    peek_readable(&file)?
-                };
-                if !readable {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        return Err(DaemonError::timed_out("reading a protocol frame"));
-                    }
-                    std::thread::sleep(remaining.min(Duration::from_millis(2)));
-                    continue;
-                }
             }
             let mut chunk = [0u8; 8192];
+            #[cfg(windows)]
+            let read = match read_chunk(&self.file, &mut chunk, deadline)? {
+                Some(read) => read,
+                None => return Err(DaemonError::timed_out("reading a protocol frame")),
+            };
+            #[cfg(not(windows))]
             let read = {
                 let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
                 file.read(&mut chunk)?
@@ -106,22 +144,6 @@ impl Framed {
             buf.extend_from_slice(&chunk[..read]);
         }
     }
-}
-
-fn write_frame<T: Serialize>(file: &mut File, value: &T) -> Result<(), DaemonError> {
-    let bytes = serde_json::to_vec(value)?;
-    if bytes.len() > MAX_FRAME_BYTES {
-        return Err(DaemonError::Protocol("frame exceeds 1 MiB".to_string()));
-    }
-    if bytes.contains(&b'\n') {
-        return Err(DaemonError::Protocol(
-            "compact JSON contained a raw newline".to_string(),
-        ));
-    }
-    file.write_all(&bytes)?;
-    file.write_all(b"\n")?;
-    file.flush()?;
-    Ok(())
 }
 
 fn take_line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, DaemonError> {
@@ -142,28 +164,181 @@ fn take_line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, DaemonError> {
     Ok(Some(line))
 }
 
-#[cfg(windows)]
-fn peek_readable(file: &File) -> io::Result<bool> {
-    let mut available = 0u32;
-    let ok = unsafe {
-        PeekNamedPipe(
-            file.as_raw_handle() as HANDLE,
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            &mut available,
-            std::ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        return Err(io::Error::last_os_error());
+fn frame_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, DaemonError> {
+    let bytes = serde_json::to_vec(value)?;
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err(DaemonError::Protocol("frame exceeds 1 MiB".to_string()));
     }
-    Ok(available > 0)
+    if bytes.contains(&b'\n') {
+        return Err(DaemonError::Protocol(
+            "compact JSON contained a raw newline".to_string(),
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn write_frame<T: Serialize>(file: &File, value: &T) -> Result<(), DaemonError> {
+    let bytes = frame_bytes(value)?;
+    write_all_overlapped(file, &bytes)?;
+    write_all_overlapped(file, b"\n")?;
+    let ok = unsafe { FlushFileBuffers(file.as_raw_handle() as HANDLE) };
+    if ok == 0 {
+        return Err(DaemonError::Io(io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
-fn peek_readable(_file: &File) -> io::Result<bool> {
-    Ok(true)
+fn write_frame<T: Serialize>(file: &mut File, value: &T) -> Result<(), DaemonError> {
+    let bytes = frame_bytes(value)?;
+    file.write_all(&bytes)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+struct OperationEvent(HANDLE);
+
+#[cfg(windows)]
+impl OperationEvent {
+    fn new() -> io::Result<Self> {
+        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if handle.is_null() {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Self(handle))
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OperationEvent {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_operation(
+    handle: HANDLE,
+    event: HANDLE,
+    overlapped: &OVERLAPPED,
+    deadline: Option<Instant>,
+) -> io::Result<Option<u32>> {
+    let wait = match deadline {
+        Some(deadline) => {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let millis = remaining.as_millis().min(u32::MAX as u128) as u32;
+            unsafe { WaitForSingleObject(event, millis.max(1)) }
+        }
+        None => unsafe { WaitForSingleObject(event, u32::MAX) },
+    };
+    if wait == WAIT_TIMEOUT {
+        unsafe {
+            let _ = windows_sys::Win32::System::IO::CancelIoEx(handle, overlapped);
+        }
+        let mut transferred = 0u32;
+        let _ = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
+        return Ok(None);
+    }
+    if wait != WAIT_OBJECT_0 {
+        let error = io::Error::last_os_error();
+        unsafe {
+            let _ = windows_sys::Win32::System::IO::CancelIoEx(handle, overlapped);
+        }
+        let mut transferred = 0u32;
+        let _ = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
+        return Err(error);
+    }
+    let mut transferred = 0u32;
+    let ok = unsafe { GetOverlappedResult(handle, overlapped, &mut transferred, 1) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Some(transferred))
+}
+
+#[cfg(windows)]
+fn read_chunk(
+    file: &File,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<Option<usize>> {
+    let event = OperationEvent::new()?;
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    overlapped.hEvent = event.0;
+    let mut read = 0u32;
+    let started = unsafe {
+        ReadFile(
+            file.as_raw_handle() as HANDLE,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            &mut read,
+            &mut overlapped,
+        )
+    };
+    if started != 0 {
+        return Ok(Some(read as usize));
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+        return Ok(Some(0));
+    }
+    if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+        return Err(error);
+    }
+    match wait_for_operation(
+        file.as_raw_handle() as HANDLE,
+        event.0,
+        &overlapped,
+        deadline,
+    )? {
+        Some(read) => Ok(Some(read as usize)),
+        None => Ok(None),
+    }
+}
+
+#[cfg(windows)]
+fn write_all_overlapped(file: &File, bytes: &[u8]) -> io::Result<()> {
+    let mut written_total = 0usize;
+    while written_total < bytes.len() {
+        let event = OperationEvent::new()?;
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        overlapped.hEvent = event.0;
+        let mut written = 0u32;
+        let started = unsafe {
+            WriteFile(
+                file.as_raw_handle() as HANDLE,
+                bytes[written_total..].as_ptr(),
+                (bytes.len() - written_total) as u32,
+                &mut written,
+                &mut overlapped,
+            )
+        };
+        if started == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                return Err(error);
+            }
+            written =
+                wait_for_operation(file.as_raw_handle() as HANDLE, event.0, &overlapped, None)?
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::TimedOut, "pipe write timed out")
+                    })?;
+        }
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "named pipe write made no progress",
+            ));
+        }
+        written_total += written as usize;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
