@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
@@ -242,7 +242,8 @@ impl DaemonClient {
                 .unwrap_or_else(|err| err.into_inner());
             pending.insert(id, tx);
         }
-        if let Err(error) = self.write_frame(&message) {
+        let deadline = Instant::now() + RPC_TIMEOUT;
+        if let Err(error) = self.inner.framed.send_until(&message, deadline) {
             self.inner
                 .pending
                 .lock()
@@ -250,7 +251,7 @@ impl DaemonClient {
                 .remove(&id);
             return Err(error);
         }
-        match rx.recv_timeout(RPC_TIMEOUT) {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(message) => Ok(message),
             Err(RecvTimeoutError::Timeout) => {
                 self.inner

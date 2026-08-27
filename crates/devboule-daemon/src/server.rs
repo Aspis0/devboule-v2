@@ -308,7 +308,9 @@ fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) 
                 match std::thread::Builder::new()
                     .name("daemon-client".into())
                     .spawn(move || {
-                        let _ = handle_client(Framed::new(stream), conn_state.clone());
+                        if let Err(error) = handle_client(Framed::new(stream), conn_state.clone()) {
+                            eprintln!("daemon client connection failed: {error}");
+                        }
                         conn_state.client_disconnected();
                     }) {
                     Ok(handle) => threads.push(handle),
@@ -350,7 +352,17 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         return Ok(());
     }
     #[cfg(windows)]
-    let true_owner = transport::peer_owner(framed.as_file().as_ref()).map_err(DaemonError::Io)?;
+    let true_owner = match transport::peer_owner(framed.as_file().as_ref()) {
+        Ok(owner) => owner,
+        Err(error) => {
+            eprintln!("could not derive named-pipe peer identity: {error}");
+            let _ = framed.send(&DaemonMessage::Error(WireError::new(
+                ErrorCode::Io,
+                "Could not verify the daemon client identity.",
+            )));
+            return Err(DaemonError::Io(error));
+        }
+    };
     #[cfg(not(windows))]
     let true_owner = client_hello.owner.clone();
     if client_hello.owner != true_owner {

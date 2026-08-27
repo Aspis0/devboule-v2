@@ -226,6 +226,87 @@ fn start_dsr_pump(
     (stop, handle)
 }
 
+struct BenchmarkDiagnostics {
+    attach_succeeded: bool,
+    output_events: u64,
+    last_output_at_ms: Option<u128>,
+    inline_dsr_inflight: bool,
+    last_error: Option<String>,
+    last_error_at_ms: Option<u128>,
+    dsr_attempts: u64,
+    dsr_successes: u64,
+}
+
+impl BenchmarkDiagnostics {
+    fn new() -> Self {
+        Self {
+            attach_succeeded: false,
+            output_events: 0,
+            last_output_at_ms: None,
+            inline_dsr_inflight: false,
+            last_error: None,
+            last_error_at_ms: None,
+            dsr_attempts: 0,
+            dsr_successes: 0,
+        }
+    }
+
+    fn record_dsr_result(
+        &mut self,
+        phase: &str,
+        result: Result<(), devboule_daemon::DaemonError>,
+        started: Instant,
+    ) {
+        self.dsr_attempts += 1;
+        if phase == "inline DSR" {
+            self.inline_dsr_inflight = false;
+        }
+        match result {
+            Ok(()) => self.dsr_successes += 1,
+            Err(error) => {
+                self.last_error = Some(format!("{phase}: {error}"));
+                self.last_error_at_ms = Some(started.elapsed().as_millis());
+            }
+        }
+    }
+
+    fn record_error(
+        &mut self,
+        phase: &str,
+        error: &devboule_daemon::DaemonError,
+        started: Instant,
+    ) {
+        self.last_error = Some(format!("{phase}: {error}"));
+        self.last_error_at_ms = Some(started.elapsed().as_millis());
+    }
+
+    fn record_output(&mut self, started: Instant) {
+        self.output_events += 1;
+        self.last_output_at_ms = Some(started.elapsed().as_millis());
+    }
+}
+
+fn start_dsr_pump_with_diagnostics(
+    client: Arc<DaemonClient>,
+    id: String,
+    diagnostics: Arc<Mutex<BenchmarkDiagnostics>>,
+    started: Instant,
+) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
+    let handle = std::thread::spawn(move || {
+        while !stop_for_thread.load(Ordering::Acquire) {
+            let result = client.session_send(&id, "\x1b[1;1R");
+            diagnostics
+                .lock()
+                .unwrap()
+                .record_dsr_result("background DSR", result, started);
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    });
+    (stop, handle)
+}
+
 fn stop_dsr_pump(stop: Arc<AtomicBool>, handle: std::thread::JoinHandle<()>) {
     stop.store(true, Ordering::Release);
     let _ = handle.join();
@@ -1262,6 +1343,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         .expect("create");
     let writer = Arc::new(harness.client("dsr-inline"));
     let session_id = session.id.clone();
+    let diagnostics = Arc::new(Mutex::new(BenchmarkDiagnostics::new()));
     let observed = Arc::new(Mutex::new((
         0usize,
         Vec::<usize>::new(),
@@ -1269,11 +1351,19 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         false,
     )));
     let observed_for_handler = Arc::clone(&observed);
+    let diagnostics_for_handler = Arc::clone(&diagnostics);
     let start = Instant::now();
     let handler: EventHandler = Arc::new(move |envelope| {
         if let SessionEvent::Output { seq, data } = envelope.event {
+            diagnostics_for_handler.lock().unwrap().record_output(start);
             if data.contains("\x1b[6n") {
-                let _ = writer.session_send(&session_id, "\x1b[1;1R");
+                diagnostics_for_handler.lock().unwrap().inline_dsr_inflight = true;
+                let result = writer.session_send(&session_id, "\x1b[1;1R");
+                diagnostics_for_handler.lock().unwrap().record_dsr_result(
+                    "inline DSR",
+                    result,
+                    start,
+                );
             }
             let mut observed = observed_for_handler.lock().unwrap();
             let expected = observed.2.map_or(seq, |last| last + 1);
@@ -1285,11 +1375,27 @@ fn real_pty_channel_file_transport_ab_benchmark() {
             observed.1.push(data.len());
         }
     });
-    client
-        .session_attach(&session.id, None, handler)
-        .expect("attach");
+    if let Err(error) = client.session_attach(&session.id, None, handler) {
+        let mut diagnostics = diagnostics.lock().unwrap();
+        diagnostics.record_error("attach", &error, start);
+        panic!(
+            "daemon transport attach failed: elapsed_ms={} attach_succeeded={} last_error={} last_error_at_ms={}",
+            start.elapsed().as_millis(),
+            diagnostics.attach_succeeded,
+            diagnostics.last_error.as_deref().unwrap_or("none"),
+            diagnostics
+                .last_error_at_ms
+                .map_or_else(|| "none".to_string(), |value| value.to_string()),
+        );
+    }
+    diagnostics.lock().unwrap().attach_succeeded = true;
     let pump_client = Arc::new(harness.client("dsr"));
-    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
+    let (stop_dsr, dsr_thread) = start_dsr_pump_with_diagnostics(
+        Arc::clone(&pump_client),
+        session.id.clone(),
+        Arc::clone(&diagnostics),
+        start,
+    );
 
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
@@ -1300,11 +1406,32 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     }
     let complete = observed.lock().unwrap().0 >= expected_file_bytes;
     if !complete {
-        let _ = client.session_close(&session.id);
+        let wait_elapsed_ms = start.elapsed().as_millis();
+        if let Err(error) = client.session_close(&session.id) {
+            diagnostics
+                .lock()
+                .unwrap()
+                .record_error("close during failure cleanup", &error, start);
+        }
         stop_dsr_pump(stop_dsr, dsr_thread);
+        let total_elapsed_ms = start.elapsed().as_millis();
+        let observed_bytes = observed.lock().unwrap().0;
+        let diagnostics = diagnostics.lock().unwrap();
         panic!(
-            "daemon transport did not finish: bytes={} expected_file_bytes={expected_file_bytes}",
-            observed.lock().unwrap().0
+            "daemon transport did not finish: bytes={observed_bytes} expected_file_bytes={expected_file_bytes} elapsed_ms={wait_elapsed_ms} cleanup_elapsed_ms={} total_elapsed_ms={total_elapsed_ms} attach_succeeded={} output_events={} last_output_at_ms={} inline_dsr_inflight={} last_error={} last_error_at_ms={} dsr_attempts={} dsr_successes={}",
+            total_elapsed_ms.saturating_sub(wait_elapsed_ms),
+            diagnostics.attach_succeeded,
+            diagnostics.output_events,
+            diagnostics
+                .last_output_at_ms
+                .map_or_else(|| "none".to_string(), |value| value.to_string()),
+            diagnostics.inline_dsr_inflight,
+            diagnostics.last_error.as_deref().unwrap_or("none"),
+            diagnostics
+                .last_error_at_ms
+                .map_or_else(|| "none".to_string(), |value| value.to_string()),
+            diagnostics.dsr_attempts,
+            diagnostics.dsr_successes,
         );
     }
     let wall = start.elapsed();
