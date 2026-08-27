@@ -30,9 +30,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
+
+pub use devboule_protocol::{validate_session_id, Session, SessionEvent, SessionKind};
 
 const RING_CAPACITY: usize = 256 * 1024;
 const READ_CHUNK: usize = 16 * 1024;
@@ -43,41 +44,6 @@ const READER_JOIN_BUDGET: Duration = Duration::from_millis(150);
 const SHELL_OVERRIDE_ENV: &str = "DEVBOULE_SHELL";
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// M2 implements Terminal; ACP/Agent can be added as another serialized variant
-/// without changing the command signatures or the existing `terminal` wire value.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionKind {
-    Terminal,
-    Acp,
-}
-
-/// Public session metadata returned by `session_create` and `sessions_list`.
-/// `workspace_id` is optional in M2 because workspace lookup is not implemented
-/// yet; the terminal starts in the app process's current directory.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct Session {
-    pub id: String,
-    pub workspace_id: Option<String>,
-    pub kind: SessionKind,
-    pub title: String,
-}
-
-/// Events sent over the Tauri Channel supplied to `session_attach`.
-///
-/// `seq` starts at 1 and is contiguous for output chunks in one session. A
-/// cursor means “the last output sequence already received”; replay therefore
-/// sends chunks whose sequence is strictly greater than `from_cursor`.
-/// Permission and ACP variants are intentionally reserved for M6: adding new
-/// tagged variants is additive for consumers that ignore unknown event types.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SessionEvent {
-    Output { seq: u64, data: String },
-    Exit { code: Option<u32> },
-}
 
 /// Everything needed to spawn one PTY child, independent of the session kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -787,21 +753,6 @@ fn executable_on_path(program: &str) -> bool {
         let candidate = Path::new(&directory).join(program);
         candidate.is_file()
     })
-}
-
-/// Validate an externally supplied session id before using it as a map key.
-pub fn validate_session_id(id: &str) -> Result<(), String> {
-    if id.is_empty() || id.len() > 64 {
-        return Err("Invalid session id.".to_string());
-    }
-    if id
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        Ok(())
-    } else {
-        Err("Invalid session id.".to_string())
-    }
 }
 
 #[cfg(test)]
