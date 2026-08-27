@@ -238,6 +238,8 @@ struct SessionRuntime {
     peak_ring_bytes: AtomicUsize,
     reader_finished: AtomicBool,
     child_reaped: AtomicBool,
+    published_frames: AtomicU64,
+    published_bytes: AtomicUsize,
 }
 
 impl SessionRuntime {
@@ -265,6 +267,8 @@ impl SessionRuntime {
             peak_ring_bytes: AtomicUsize::new(0),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
+            published_frames: AtomicU64::new(0),
+            published_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -314,8 +318,11 @@ impl SessionRuntime {
             attached.outbound.notify();
         }
         drop(stream);
+        self.published_frames.fetch_add(1, Ordering::Relaxed);
+        self.published_bytes
+            .fetch_add(data.len(), Ordering::Relaxed);
         if let Some(journal) = &self.journal {
-            journal.try_append(output_record(
+            let _ = journal.try_append(output_record(
                 self.session_id.clone(),
                 generation,
                 seq,
@@ -372,16 +379,15 @@ impl SessionRuntime {
         stream.exit_code = code;
         stream.exit_at = Some(Instant::now());
         stream.disposition = Disposition::Exited;
-        let generation = stream.generation;
         if let Some(attached) = &stream.attached {
             attached.outbound.notify();
         }
         drop(stream);
-        // Child::wait returns before ConPTY EOFs (ARCHITETTURA §1.7). Exit is
-        // emitted after the drain window; the journal must record ended here
-        // or a kill before EOF reopens the session as Recovered.
+        // Child::wait returns before ConPTY EOFs (ARCHITETTURA §1.7). Record
+        // that the process was observed, but do not freeze last_seq: drain
+        // frames still need seqs. Ended (exit row) is written at EOF.
         if let Some(journal) = &self.journal {
-            journal.try_mark_ended(&self.session_id, generation, code);
+            let _ = journal.mark_reaped(&self.session_id, code);
         }
     }
 
@@ -507,11 +513,17 @@ impl ConnHandle {
         let map = self.attached.lock().ok()?;
         map.values()
             .filter_map(|pull| {
+                if pull.exit_sent {
+                    return None;
+                }
                 let stream = pull.runtime.stream.lock().ok()?;
-                if stream.output_closed
-                    || !stream.process_exited
-                    || SessionRuntime::ready_for_exit(&stream)
-                {
+                if SessionRuntime::ready_for_exit(&stream) {
+                    // Drain elapsed (or EOF) since the last pull. There is no
+                    // notify at that instant; a zero timeout makes the writer
+                    // loop instead of waiting forever.
+                    return Some(Duration::ZERO);
+                }
+                if !stream.process_exited {
                     return None;
                 }
                 let origin = stream.last_publish.or(stream.exit_at)?;
@@ -1285,9 +1297,10 @@ fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
         Ok(stream) => (stream.generation, stream.exit_code),
         Err(_) => return,
     };
-    journal.try_mark_ended(&runtime.session_id, generation, code);
-    // EOF path: waiting on the journal here does not stall a live PTY.
-    let _ = journal.flush();
+    // EOF path: waiting on the journal here does not stall a live PTY. The
+    // terminal marker is critical and must not be dropped behind a full
+    // output queue.
+    let _ = journal.mark_ended_blocking(&runtime.session_id, generation, code);
 }
 
 fn wait_child(mut child: Box<dyn Child + Send + Sync>) -> Option<u32> {
@@ -1658,11 +1671,20 @@ mod tests {
                 _ => None,
             })
             .sum();
+        let stats = journal.stats();
         println!(
-            "JOURNAL_TRACE ring_frames={} journal_frames={} ring_bytes={live_bytes} replay_bytes={replay_bytes}",
+            "JOURNAL_TRACE ring_frames={} published_frames={} journal_accepted_frames={} journal_committed_frames={} journal_failed_frames={} ring_bytes={live_bytes} replay_bytes={replay_bytes}",
             live_chunks.len(),
-            journal_frames,
+            runtime.published_frames.load(Ordering::Relaxed),
+            stats.accepted_frames,
+            stats.committed_frames,
+            stats.failed_frames,
         );
+        assert_eq!(runtime.published_frames.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.accepted_frames, 2);
+        assert_eq!(stats.committed_frames, 2);
+        assert_eq!(stats.failed_frames, 0);
+        assert_eq!(journal_frames, 2);
         assert_eq!(live_bytes, 4 + 3953, "ring must keep the drain tail");
         assert_eq!(
             replay_bytes,

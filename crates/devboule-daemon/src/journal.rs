@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -175,11 +175,17 @@ pub struct SessionRecord {
     pub last_seq: u64,
     pub degraded: bool,
     pub payload_bytes: u64,
+    /// Child::wait returned. Output may still be arriving (ConPTY drain).
+    pub reaped: bool,
 }
 
 impl SessionRecord {
     pub fn to_session(&self) -> Session {
         let state = match self.status {
+            PersistStatus::Live if self.reaped => SessionState::Ended {
+                generation: self.generation,
+                code: self.exit_code,
+            },
             PersistStatus::Live => SessionState::Live {
                 generation: self.generation,
             },
@@ -243,9 +249,43 @@ pub struct Replay {
     pub truncated: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JournalStatsSnapshot {
+    pub accepted_frames: u64,
+    pub accepted_bytes: u64,
+    pub committed_frames: u64,
+    pub committed_bytes: u64,
+    pub failed_frames: u64,
+}
+
+#[derive(Default)]
+struct JournalStats {
+    accepted_frames: AtomicU64,
+    accepted_bytes: AtomicU64,
+    committed_frames: AtomicU64,
+    committed_bytes: AtomicU64,
+    failed_frames: AtomicU64,
+}
+
+impl JournalStats {
+    fn snapshot(&self) -> JournalStatsSnapshot {
+        JournalStatsSnapshot {
+            accepted_frames: self.accepted_frames.load(Ordering::Relaxed),
+            accepted_bytes: self.accepted_bytes.load(Ordering::Relaxed),
+            committed_frames: self.committed_frames.load(Ordering::Relaxed),
+            committed_bytes: self.committed_bytes.load(Ordering::Relaxed),
+            failed_frames: self.failed_frames.load(Ordering::Relaxed),
+        }
+    }
+}
+
 enum JournalCmd {
     Upsert(SessionRecord),
     Append(EventRecord),
+    MarkReaped {
+        session_id: String,
+        code: Option<u32>,
+    },
     MarkEnded {
         session_id: String,
         generation: u64,
@@ -285,6 +325,7 @@ pub struct Journal {
     tx: SyncSender<JournalCmd>,
     join: Mutex<Option<JoinHandle<()>>>,
     degraded: Arc<AtomicBool>,
+    stats: Arc<JournalStats>,
     path: PathBuf,
 }
 
@@ -303,16 +344,21 @@ impl Journal {
         let (tx, rx) = mpsc::sync_channel(JOURNAL_QUEUE_CAP);
         let degraded = Arc::new(AtomicBool::new(false));
         let degraded_thread = Arc::clone(&degraded);
+        let stats = Arc::new(JournalStats::default());
+        let stats_thread = Arc::clone(&stats);
         let path_buf = path.to_path_buf();
         let thread_path = path_buf.clone();
         let join = std::thread::Builder::new()
             .name("daemon-journal".into())
-            .spawn(move || journal_loop(conn, rx, degraded_thread, limits, thread_path))
+            .spawn(move || {
+                journal_loop(conn, rx, degraded_thread, stats_thread, limits, thread_path)
+            })
             .map_err(|error| JournalError::Unavailable(error.to_string()))?;
         Ok(Self {
             tx,
             join: Mutex::new(Some(join)),
             degraded,
+            stats,
             path: path_buf,
         })
     }
@@ -325,14 +371,79 @@ impl Journal {
         self.degraded.load(Ordering::SeqCst)
     }
 
+    pub fn stats(&self) -> JournalStatsSnapshot {
+        self.stats.snapshot()
+    }
+
     /// Never blocks. On a full queue or a dead writer the journal is marked
     /// degraded and the PTY path continues.
     pub fn try_upsert(&self, record: SessionRecord) {
         self.try_send(JournalCmd::Upsert(record));
     }
 
-    pub fn try_append(&self, record: EventRecord) {
-        self.try_send(JournalCmd::Append(record));
+    /// Returns false if the queue was full or the writer is dead. The PTY
+    /// path never waits; a false return is a truncated journal.
+    pub fn try_append(&self, record: EventRecord) -> bool {
+        let payload_len = record.payload.len() as u64;
+        match self.tx.try_send(JournalCmd::Append(record)) {
+            Ok(()) => {
+                self.stats.accepted_frames.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .accepted_bytes
+                    .fetch_add(payload_len, Ordering::Relaxed);
+                true
+            }
+            Err(TrySendError::Full(JournalCmd::Append(record))) => {
+                self.degraded.store(true, Ordering::SeqCst);
+                self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+                let _ = self.tx.try_send(JournalCmd::MarkDegraded {
+                    session_id: record.session_id,
+                });
+                false
+            }
+            Err(_) => {
+                self.degraded.store(true, Ordering::SeqCst);
+                self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+    }
+
+    /// Child::wait returned. Does not freeze last_seq and does not write an
+    /// exit row: ConPTY may still deliver drain frames that need seqs.
+    pub fn try_mark_reaped(&self, session_id: &str, code: Option<u32>) {
+        self.try_send(JournalCmd::MarkReaped {
+            session_id: session_id.to_string(),
+            code,
+        });
+    }
+
+    pub fn mark_reaped(&self, session_id: &str, code: Option<u32>) -> Result<(), JournalError> {
+        self.send_cmd(
+            JournalCmd::MarkReaped {
+                session_id: session_id.to_string(),
+                code,
+            },
+            RPC_WAIT,
+        )?;
+        self.flush()
+    }
+
+    pub fn mark_ended_blocking(
+        &self,
+        session_id: &str,
+        generation: u64,
+        code: Option<u32>,
+    ) -> Result<(), JournalError> {
+        self.send_cmd(
+            JournalCmd::MarkEnded {
+                session_id: session_id.to_string(),
+                generation,
+                code,
+            },
+            RPC_WAIT,
+        )?;
+        self.flush()
     }
 
     pub fn try_mark_ended(&self, session_id: &str, generation: u64, code: Option<u32>) {
@@ -490,6 +601,17 @@ fn open_connection(path: &Path) -> Result<Connection, JournalError> {
         conn.execute_batch(SCHEMA_SQL)?;
         conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
     }
+    let _ = conn.execute(
+        "ALTER TABLE sessions ADD COLUMN reaped INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // Reaped-but-still-live: the process was observed to exit, then the
+    // daemon died during ConPTY drain. That is Ended (we saw the child),
+    // not Recovered (we did not lose the process unobserved).
+    conn.execute(
+        "UPDATE sessions SET status = 'ended' WHERE status = 'live' AND reaped = 1",
+        [],
+    )?;
     conn.execute(
         "UPDATE sessions SET status = 'interrupted' WHERE status = 'live'",
         [],
@@ -513,7 +635,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_seq INTEGER NOT NULL DEFAULT 0,
     degraded INTEGER NOT NULL DEFAULT 0,
     payload_bytes INTEGER NOT NULL DEFAULT 0,
-    unsnapshotted_bytes INTEGER NOT NULL DEFAULT 0
+    unsnapshotted_bytes INTEGER NOT NULL DEFAULT 0,
+    reaped INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS events (
     session_id TEXT NOT NULL,
@@ -564,6 +687,7 @@ fn journal_loop(
     conn: Connection,
     rx: mpsc::Receiver<JournalCmd>,
     degraded: Arc<AtomicBool>,
+    stats: Arc<JournalStats>,
     limits: JournalLimits,
     path: PathBuf,
 ) {
@@ -576,9 +700,24 @@ fn journal_loop(
                 }
             }
             JournalCmd::Append(record) => {
+                let is_output = record.kind == EventKind::Output;
+                let payload_len = record.payload.len() as u64;
                 if let Err(error) = append_event(&conn, &record, &pins, limits) {
+                    if is_output {
+                        stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+                    }
                     on_write_error(&degraded, &error);
                     let _ = mark_degraded(&conn, &record.session_id);
+                } else if is_output {
+                    stats.committed_frames.fetch_add(1, Ordering::Relaxed);
+                    stats
+                        .committed_bytes
+                        .fetch_add(payload_len, Ordering::Relaxed);
+                }
+            }
+            JournalCmd::MarkReaped { session_id, code } => {
+                if let Err(error) = mark_reaped(&conn, &session_id, code) {
+                    on_write_error(&degraded, &error);
                 }
             }
             JournalCmd::MarkEnded {
@@ -643,8 +782,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
         "INSERT INTO sessions (
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
             generation, status, exit_code, closed, last_seq, degraded, payload_bytes,
-            unsnapshotted_bytes
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0)
+            unsnapshotted_bytes, reaped
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, ?15)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -653,7 +792,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             exit_code = excluded.exit_code,
             closed = excluded.closed,
             last_seq = excluded.last_seq,
-            degraded = excluded.degraded",
+            degraded = excluded.degraded,
+            reaped = MAX(sessions.reaped, excluded.reaped)",
         params![
             record.id,
             record.owner,
@@ -669,6 +809,7 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             record.last_seq as i64,
             if record.degraded { 1 } else { 0 },
             record.payload_bytes as i64,
+            if record.reaped { 1 } else { 0 },
         ],
     )?;
     Ok(())
@@ -920,6 +1061,18 @@ fn delete_session(conn: &rusqlite::Transaction<'_>, id: &str) -> Result<(), Jour
     Ok(())
 }
 
+fn mark_reaped(conn: &Connection, session_id: &str, code: Option<u32>) -> Result<(), JournalError> {
+    let n = conn.execute(
+        "UPDATE sessions SET reaped = 1, exit_code = COALESCE(?1, exit_code), updated_at_ms = ?2 WHERE id = ?3",
+        params![code.map(|value| value as i64), now_ms() as i64, session_id],
+    )?;
+    if n == 0 {
+        Err(JournalError::SessionNotFound)
+    } else {
+        Ok(())
+    }
+}
+
 fn mark_ended(
     conn: &Connection,
     session_id: &str,
@@ -989,7 +1142,7 @@ fn mark_degraded(conn: &Connection, session_id: &str) -> Result<(), JournalError
 fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
     let mut stmt = conn.prepare(
         "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
-                generation, status, exit_code, closed, last_seq, degraded, payload_bytes
+                generation, status, exit_code, closed, last_seq, degraded, payload_bytes, reaped
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -1013,6 +1166,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         last_seq: row.get::<_, i64>(11)? as u64,
         degraded: row.get::<_, i64>(12)? != 0,
         payload_bytes: row.get::<_, i64>(13)? as u64,
+        reaped: row.get::<_, i64>(14)? != 0,
     })
 }
 
@@ -1024,7 +1178,7 @@ fn replay_session(
     let record = conn
         .query_row(
             "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
-                    generation, status, exit_code, closed, last_seq, degraded, payload_bytes
+                    generation, status, exit_code, closed, last_seq, degraded, payload_bytes, reaped
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,
@@ -1122,6 +1276,11 @@ fn replay_session(
 
     match record.status {
         PersistStatus::Ended => {
+            events.push(exit_event.unwrap_or(SessionEvent::Exit {
+                code: record.exit_code,
+            }));
+        }
+        PersistStatus::Live if record.reaped => {
             events.push(exit_event.unwrap_or(SessionEvent::Exit {
                 code: record.exit_code,
             }));
@@ -1232,6 +1391,7 @@ pub fn new_session_record(
         last_seq: 0,
         degraded: false,
         payload_bytes: 0,
+        reaped: false,
     }
 }
 
@@ -1499,6 +1659,49 @@ mod tests {
             SessionEvent::Output { seq, .. } => *seq != 99,
             _ => true,
         }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn drain_output_after_process_exit_is_not_dropped() {
+        // ConPTY keeps delivering after Child::wait (ARCHITETTURA §1.7).
+        // Marking the journal ended at wait-time steals last_seq+1 for the
+        // exit row; the drain frame then collides and vanishes. This is the
+        // silent tail loss: live ring has the bytes, replay does not.
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.drain.1"))
+            .expect("upsert");
+        journal
+            .append_blocking(output_record("s.drain.1", 1, 1, b"HEAD"))
+            .expect("head");
+        // Waiter path: process reaped, output still live.
+        journal.try_mark_reaped("s.drain.1", Some(0));
+        journal.flush().expect("flush reaped");
+        let drain = vec![b'X'; 3953];
+        journal
+            .append_blocking(output_record("s.drain.1", 1, 2, &drain))
+            .expect("drain append must succeed; an exit row must not occupy seq 2");
+        // EOF path: now freeze last_seq with the exit row.
+        journal.try_mark_ended("s.drain.1", 1, Some(0));
+        journal.flush().expect("flush ended");
+        let replay = journal.replay("s.drain.1", 0).expect("replay");
+        let output: String = replay
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { data, .. } => Some(data.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            output.len(),
+            4 + 3953,
+            "journal silently lost the drain tail: {output:?}"
+        );
+        assert!(output.starts_with("HEAD"), "{output:?}");
+        assert!(output.ends_with(&"X".repeat(3953)), "drain tail missing");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
