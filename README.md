@@ -1,0 +1,124 @@
+# Devboule
+
+**A desktop workspace for the coding agents you already have.**
+
+Devboule does not ship a model, an agent, or an API key. It drives the coding
+agent CLIs already installed on your machine — the ones you use in a terminal
+today — and gives them a place to live: real terminals, sessions owned by
+something other than the window they happen to be drawn in, and a view of what
+each agent is actually doing.
+
+The idea is that the interesting part was never the chat box. It is everything
+around it: knowing where an agent is working, what it changed, whether it is
+still alive, and being able to walk away and come back.
+
+Built with Rust and TypeScript. Tauri v2 for the shell, React for the surface,
+a background daemon in Rust for anything that has to outlive the window.
+
+## Status
+
+**Early, and openly unfinished.** This repository is under active development
+and nothing here is stable yet — not the interfaces, not the storage formats,
+not the layout. It is public because there is no reason for it not to be, not
+because it is ready to use.
+
+What works today:
+
+- **Workspace** — the main surface, with terminal sessions attached to real
+  PTYs.
+- **Terminal sessions** — owned by a background daemon rather than by the view,
+  so moving to another surface, detaching and coming back leaves the process
+  untouched. Output is journalled, so reattaching replays what was missed
+  rather than showing a blank screen.
+
+  Sessions do not outlive the application yet: on exit, Devboule asks the
+  daemon to shut down. Surviving a full restart is the next step, and it is
+  what the daemon and the journal were built for.
+- **Settings** — providers, projects, devices and Oracle administration.
+
+What is drawn but not wired: the agent conversation, the provider inventory,
+and the Oracle panel all still read from fixed sample data. The boundary
+between those and real IPC is deliberate and marked in the source.
+
+Developed and tested on Windows. Tauri itself is cross-platform, but no other
+platform has been verified, so treat them as unsupported for now.
+
+## Oracle
+
+Oracle is the foundation the rest leans on: a local RAG over the code and files
+in your repositories, meant to help agents find their way around a codebase
+instead of guessing at it. Ask where something lives, what calls what, or which
+file to open first, and get an answer grounded in citations you can follow.
+
+It is meant to be suggestive rather than binding. An agent is free to ignore it
+and read the repository itself, the way it would without any of this. Oracle
+points at places worth opening; it does not stand between the agent and the
+files, and it is never the authority on what the code says — the code is. A
+stale index should cost a wasted lookup, never a confident wrong answer.
+
+It is meant to run locally: indexing and retrieval on your machine, with the
+index belonging to the project it describes.
+
+The administration panel is in place; the engine behind it is being written,
+and is the next substantial piece of work.
+
+## Polis
+
+Polis draws a repository as an isometric city. Directories become districts,
+files become buildings, dependencies become roads. As the code changes, the
+city changes with it.
+
+It sounds like a toy and it is partly a toy, but a large codebase is genuinely
+hard to hold in your head, and a map you can recognise at a glance turns out to
+be a real way to navigate one — and a way to point an agent at a place rather
+than a path.
+
+Not yet ported into this repository.
+
+## Plugins
+
+Devboule is meant to host surfaces that have little to do with each other, run
+out of process, and can be developed independently. Polis is one. The next is
+**Pubvia**, a tool for academic writing — document model, citation handling,
+DOI and Crossref lookups, Word export — which has no relationship to writing
+software at all.
+
+That is the point. The plugins these tools usually offer are variations on the
+same theme: another model provider, another git view, another diff. The ones
+here are meant to be genuinely different kinds of work sharing one shell.
+
+Pubvia is not available yet.
+
+## Building from source
+
+Requirements are pinned in the repository: Node **26.7.0** (`.nvmrc`), pnpm
+**10.33.2** (`packageManager`), Rust **1.97.1** (`rust-toolchain.toml`). Tauri
+also needs the usual platform prerequisites — see the
+[Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/).
+
+```sh
+pnpm install
+pnpm tauri dev      # run the app
+```
+
+Other useful commands:
+
+```sh
+pnpm build          # type-check and build the frontend
+pnpm lint           # eslint
+pnpm test           # vitest
+cargo test --workspace
+```
+
+The Cargo workspace holds the Tauri application (`src-tauri`) plus two crates:
+`devboule-protocol` for the wire types shared with the daemon, and
+`devboule-daemon` for the session host itself.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Third-party dependencies, their licences and the attribution required by them
+are inventoried in [THIRD_PARTY.md](THIRD_PARTY.md), which covers linked
+crates and packages as well as the fonts and assets bundled in the
+application.
