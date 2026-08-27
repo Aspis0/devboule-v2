@@ -120,7 +120,7 @@ interface AssistantProps {
   sendLabel: string;
   busy: boolean;
   messages: readonly MessageViewModel[];
-  assistantRef: RefObject<HTMLDivElement>;
+  assistantRef: RefObject<HTMLDivElement | null>;
   onDraftChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
