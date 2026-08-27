@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import type { KeyboardEvent } from 'react';
-import { OraclePanel } from '../oracle/OraclePanel';
+import { useState } from "react";
+import type { KeyboardEvent } from "react";
+import { OraclePanel } from "../oracle/OraclePanel";
 import {
   MOCK_DEFAULT_MODELS,
   MOCK_DEVICES,
@@ -13,11 +13,11 @@ import {
   MOCK_WORKTREE_DEFAULTS,
   type ProviderId,
   type SettingsTab,
-} from './mockData';
-import './settings.css';
+} from "./mockData";
+import "./settings.css";
 
 export function SettingsSurface() {
-  const [activeTab, setActiveTab] = useState<SettingsTab>('providers');
+  const [activeTab, setActiveTab] = useState<SettingsTab>("providers");
   const [providerEnabled, setProviderEnabled] = useState(MOCK_PROVIDER_ENABLED);
 
   const settingsTabs = MOCK_SETTINGS_TABS.map((tab) => ({
@@ -28,13 +28,13 @@ export function SettingsSurface() {
     const currentIndex = MOCK_SETTINGS_TABS.findIndex((tab) => tab.id === activeTab);
     let nextIndex = currentIndex;
 
-    if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
       nextIndex = (currentIndex + 1) % MOCK_SETTINGS_TABS.length;
-    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
       nextIndex = (currentIndex - 1 + MOCK_SETTINGS_TABS.length) % MOCK_SETTINGS_TABS.length;
-    } else if (event.key === 'Home') {
+    } else if (event.key === "Home") {
       nextIndex = 0;
-    } else if (event.key === 'End') {
+    } else if (event.key === "End") {
       nextIndex = MOCK_SETTINGS_TABS.length - 1;
     } else {
       return;
@@ -55,11 +55,12 @@ export function SettingsSurface() {
     const on = providerEnabled[provider.id];
     // PATH discovery and authentication are separate mock facts by design.
     const status = !provider.installed
-      ? 'not installed'
+      ? "not installed"
       : on && provider.authenticated
-        ? 'ready'
-        : 'disabled';
-    const statusTone = status === 'ready' ? 'ready' : status === 'not installed' ? 'missing' : 'disabled';
+        ? "ready"
+        : "disabled";
+    const statusTone =
+      status === "ready" ? "ready" : status === "not installed" ? "missing" : "disabled";
 
     return {
       ...provider,
@@ -71,7 +72,7 @@ export function SettingsSurface() {
 
   function renderActivePanel() {
     switch (activeTab) {
-      case 'providers':
+      case "providers":
         return (
           <div id="settings-panel-providers" role="tabpanel" aria-label="Providers and models">
             <SettingsHeading
@@ -81,15 +82,22 @@ export function SettingsSurface() {
             <div className="provider-list">
               {providers.map((provider) => (
                 <div className="provider-card" key={provider.id}>
-                  <span className={`provider-mark provider-mark-${provider.tone}`} aria-hidden="true">{provider.initial}</span>
+                  <span
+                    className={`provider-mark provider-mark-${provider.tone}`}
+                    aria-hidden="true"
+                  >
+                    {provider.initial}
+                  </span>
                   <span className="provider-copy">
                     <span className="provider-name">{provider.name}</span>
                     <span className="provider-detail">{provider.detail}</span>
                   </span>
                   <span className="provider-controls">
-                    <span className={`provider-status provider-status-${provider.statusTone}`}>{provider.status}</span>
+                    <span className={`provider-status provider-status-${provider.statusTone}`}>
+                      {provider.status}
+                    </span>
                     <button
-                      className={`provider-switch${provider.on ? ' provider-switch-on' : ''}`}
+                      className={`provider-switch${provider.on ? " provider-switch-on" : ""}`}
                       type="button"
                       role="switch"
                       aria-checked={provider.on}
@@ -111,19 +119,19 @@ export function SettingsSurface() {
             </div>
           </div>
         );
-      case 'oracle':
+      case "oracle":
         return (
           <div id="settings-panel-oracle" role="tabpanel" aria-label="Oracle administration">
             <OraclePanel />
           </div>
         );
-      case 'projects':
+      case "projects":
         return <ProjectsPanel />;
-      case 'devices':
+      case "devices":
         return <DevicesPanel />;
-      case 'general':
+      case "general":
         return <GeneralPanel />;
-      case 'labs':
+      case "labs":
         return <LabsPanel />;
     }
   }
@@ -136,13 +144,15 @@ export function SettingsSurface() {
           <span className="settings-header-divider" aria-hidden="true" />
           <span className="settings-eyebrow">devboule 2.0 · rust · tauri shell</span>
         </div>
-        <button className="settings-lock-button" type="button">Lock app</button>
+        <button className="settings-lock-button" type="button">
+          Lock app
+        </button>
       </header>
 
       <div className="settings-tab-bar" role="tablist" aria-label="Settings sections">
         {settingsTabs.map((tab) => (
           <button
-            className={`settings-section-tab${tab.active ? ' settings-section-tab-active' : ''}`}
+            className={`settings-section-tab${tab.active ? " settings-section-tab-active" : ""}`}
             type="button"
             role="tab"
             aria-selected={tab.active}
@@ -157,9 +167,7 @@ export function SettingsSurface() {
       </div>
 
       <div className="settings-content settings-scroll">
-        <div className="settings-content-inner">
-          {renderActivePanel()}
-        </div>
+        <div className="settings-content-inner">{renderActivePanel()}</div>
       </div>
     </section>
   );
@@ -183,7 +191,11 @@ function ModelChoice({ title, value }: { title: string; value: string }) {
   return (
     <div className="model-choice">
       <div className="model-choice-title">{title}</div>
-      <button className="model-choice-control" type="button" aria-label={`Choose default model for ${title}`}>
+      <button
+        className="model-choice-control"
+        type="button"
+        aria-label={`Choose default model for ${title}`}
+      >
         {value}
         <span aria-hidden="true">▾</span>
       </button>
@@ -208,13 +220,20 @@ function ProjectsPanel() {
             <span className="settings-card-value">{project.workspaces}</span>
           </div>
         ))}
-        <button className="settings-dashed-action" type="button"><span aria-hidden="true">+</span>Add project</button>
+        <button className="settings-dashed-action" type="button">
+          <span aria-hidden="true">+</span>Add project
+        </button>
       </div>
 
       <div className="settings-subheading">Worktree defaults</div>
       <div className="settings-stack settings-stack-tight">
         {MOCK_WORKTREE_DEFAULTS.map((setting) => (
-          <SettingValue key={setting.label} label={setting.label} value={setting.value} tone={setting.tone} />
+          <SettingValue
+            key={setting.label}
+            label={setting.label}
+            value={setting.value}
+            tone={setting.tone}
+          />
         ))}
       </div>
     </div>
@@ -236,7 +255,9 @@ function DevicesPanel() {
             <span className="settings-card-value">{device.state}</span>
           </div>
         ))}
-        <button className="settings-dashed-action" type="button"><span aria-hidden="true">+</span>Pair a device</button>
+        <button className="settings-dashed-action" type="button">
+          <span aria-hidden="true">+</span>Pair a device
+        </button>
       </div>
     </div>
   );
@@ -248,7 +269,12 @@ function GeneralPanel() {
       <SettingsHeading title="General" />
       <div className="settings-stack settings-stack-tight settings-general-list">
         {MOCK_GENERAL_SETTINGS.map((setting) => (
-          <SettingValue key={setting.label} label={setting.label} value={setting.value} tone={setting.tone} />
+          <SettingValue
+            key={setting.label}
+            label={setting.label}
+            value={setting.value}
+            tone={setting.tone}
+          />
         ))}
       </div>
     </div>
@@ -271,7 +297,15 @@ function LabsPanel() {
   );
 }
 
-function SettingValue({ label, value, tone = 'default' }: { label: string; value: string; tone?: 'default' | 'green' | 'danger' | 'muted' }) {
+function SettingValue({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  tone?: "default" | "green" | "danger" | "muted";
+}) {
   return (
     <div className="settings-card settings-value-row">
       <span>{label}</span>

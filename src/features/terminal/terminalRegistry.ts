@@ -12,7 +12,7 @@ export interface TerminalSessionRegistry {
 }
 
 function registryKey(workspaceId: string | null): string {
-  return workspaceId === null ? 'workspace:null' : `workspace:${workspaceId}`;
+  return workspaceId === null ? "workspace:null" : `workspace:${workspaceId}`;
 }
 
 /**

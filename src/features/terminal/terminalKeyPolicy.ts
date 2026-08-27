@@ -11,17 +11,11 @@ export interface TerminalKeyboardEvent {
   key: string;
 }
 
-export function terminalKeyPolicy(
-  event: TerminalKeyboardEvent,
-  onCtrlC?: () => void,
-): boolean {
+export function terminalKeyPolicy(event: TerminalKeyboardEvent, onCtrlC?: () => void): boolean {
   const isPlainCtrlC =
-    event.ctrlKey &&
-    !event.shiftKey &&
-    !event.altKey &&
-    (event.key === 'c' || event.key === 'C');
+    event.ctrlKey && !event.shiftKey && !event.altKey && (event.key === "c" || event.key === "C");
 
   if (!isPlainCtrlC) return true;
-  if (event.type === 'keydown') onCtrlC?.();
+  if (event.type === "keydown") onCtrlC?.();
   return false;
 }

@@ -1,13 +1,16 @@
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   MOCK_PROVIDER_MANIFESTS,
   type MockEffortLevel,
   type MockProviderManifest,
-} from './mockData';
+} from "./mockData";
 
 export function getProviderManifest(providerId: string): MockProviderManifest {
-  return MOCK_PROVIDER_MANIFESTS.find((provider) => provider.id === providerId) ?? MOCK_PROVIDER_MANIFESTS[0];
+  return (
+    MOCK_PROVIDER_MANIFESTS.find((provider) => provider.id === providerId) ??
+    MOCK_PROVIDER_MANIFESTS[0]
+  );
 }
 
 interface WorkspaceComposerProps {
@@ -24,7 +27,7 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   onSend,
 }: WorkspaceComposerProps) {
   const provider = useMemo(() => getProviderManifest(providerId), [providerId]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const [modelId, setModelId] = useState(provider.defaults.modelId);
   const [modeState, setModeState] = useState<Record<string, boolean>>({});
   const [effort, setEffort] = useState<MockEffortLevel | null>(provider.defaults.effort);
@@ -42,17 +45,19 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     () => provider.effortLevels.filter((level) => selectedModel?.thinkingLevels.includes(level)),
     [provider, selectedModel],
   );
-  const effectiveModelId = selectedModel?.id ?? '';
-  const effectiveEffort = effort && effortLevels.includes(effort)
-    ? effort
-    : provider.defaults.effort && effortLevels.includes(provider.defaults.effort)
-      ? provider.defaults.effort
-      : effortLevels[0] ?? null;
+  const effectiveModelId = selectedModel?.id ?? "";
+  const effectiveEffort =
+    effort && effortLevels.includes(effort)
+      ? effort
+      : provider.defaults.effort && effortLevels.includes(provider.defaults.effort)
+        ? provider.defaults.effort
+        : (effortLevels[0] ?? null);
   const effectiveModes = useMemo(
-    () => provider.modes.reduce<Record<string, boolean>>((modes, mode) => {
-      modes[mode.id] = modeState[mode.id] ?? provider.defaults.modes[mode.id] ?? false;
-      return modes;
-    }, {}),
+    () =>
+      provider.modes.reduce<Record<string, boolean>>((modes, mode) => {
+        modes[mode.id] = modeState[mode.id] ?? provider.defaults.modes[mode.id] ?? false;
+        return modes;
+      }, {}),
     [modeState, provider],
   );
 
@@ -60,14 +65,16 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     () => provider.modes.filter((mode) => effectiveModes[mode.id]),
     [provider, effectiveModes],
   );
-  const modesSummary = activeModes.length === 0
-    ? 'Modes'
-    : activeModes.length === 1
-      ? activeModes[0].label
-      : `${activeModes[0].label} +${activeModes.length - 1}`;
-  const modesAriaLabel = activeModes.length === 0
-    ? 'Modes'
-    : `Modes: ${activeModes.map((mode) => mode.label).join(', ')}`;
+  const modesSummary =
+    activeModes.length === 0
+      ? "Modes"
+      : activeModes.length === 1
+        ? activeModes[0].label
+        : `${activeModes[0].label} +${activeModes.length - 1}`;
+  const modesAriaLabel =
+    activeModes.length === 0
+      ? "Modes"
+      : `Modes: ${activeModes.map((mode) => mode.label).join(", ")}`;
 
   useEffect(() => {
     setModelId(provider.defaults.modelId);
@@ -80,35 +87,51 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     const text = input.trim();
     if (!text) return;
     onSend(text);
-    setInput('');
+    setInput("");
   }, [input, onSend]);
 
-  const handleComposerKeyDown = useCallback((event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      sendInput();
-    }
-  }, [sendInput]);
+  const handleComposerKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendInput();
+      }
+    },
+    [sendInput],
+  );
 
-  const handleProviderChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    onProviderChange(event.target.value);
-  }, [onProviderChange]);
+  const handleProviderChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      onProviderChange(event.target.value);
+    },
+    [onProviderChange],
+  );
 
-  const handleModelChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    const nextModel = provider.models.find((model) => model.id === event.target.value);
-    if (!nextModel) return;
+  const handleModelChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const nextModel = provider.models.find((model) => model.id === event.target.value);
+      if (!nextModel) return;
 
-    setModelId(nextModel.id);
-    const nextEffortLevels = provider.effortLevels.filter((level) => nextModel.thinkingLevels.includes(level));
-    setEffort((currentEffort) => currentEffort && nextEffortLevels.includes(currentEffort)
-      ? currentEffort
-      : nextEffortLevels[0] ?? null);
-  }, [provider]);
+      setModelId(nextModel.id);
+      const nextEffortLevels = provider.effortLevels.filter((level) =>
+        nextModel.thinkingLevels.includes(level),
+      );
+      setEffort((currentEffort) =>
+        currentEffort && nextEffortLevels.includes(currentEffort)
+          ? currentEffort
+          : (nextEffortLevels[0] ?? null),
+      );
+    },
+    [provider],
+  );
 
-  const handleEffortChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
-    const nextEffort = event.target.value as MockEffortLevel;
-    if (effortLevels.includes(nextEffort)) setEffort(nextEffort);
-  }, [effortLevels]);
+  const handleEffortChange = useCallback(
+    (event: ChangeEvent<HTMLSelectElement>) => {
+      const nextEffort = event.target.value as MockEffortLevel;
+      if (effortLevels.includes(nextEffort)) setEffort(nextEffort);
+    },
+    [effortLevels],
+  );
 
   const toggleMode = useCallback((modeId: string) => {
     setModeState((currentModes) => ({
@@ -117,35 +140,42 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
     }));
   }, []);
 
-  const handleModesToggleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-    event.preventDefault();
-    if (modesOpen) {
-      firstModeToggleRef.current?.focus();
-      return;
-    }
-    setModesOpen(true);
-    requestAnimationFrame(() => firstModeToggleRef.current?.focus());
-  }, [modesOpen]);
+  const handleModesToggleKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      if (modesOpen) {
+        firstModeToggleRef.current?.focus();
+        return;
+      }
+      setModesOpen(true);
+      requestAnimationFrame(() => firstModeToggleRef.current?.focus());
+    },
+    [modesOpen],
+  );
 
   useEffect(() => {
     if (!modesOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
-      if (modesWrapRef.current && event.target instanceof Node && !modesWrapRef.current.contains(event.target)) {
+      if (
+        modesWrapRef.current &&
+        event.target instanceof Node &&
+        !modesWrapRef.current.contains(event.target)
+      ) {
         setModesOpen(false);
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === "Escape") {
         setModesOpen(false);
         modesToggleRef.current?.focus();
       }
     };
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
     };
   }, [modesOpen]);
 
@@ -171,7 +201,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
                 aria-label="Provider for this session"
               >
                 {MOCK_PROVIDER_MANIFESTS.map((manifest) => (
-                  <option value={manifest.id} key={manifest.id}>{manifest.name}</option>
+                  <option value={manifest.id} key={manifest.id}>
+                    {manifest.name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -185,7 +217,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
                 disabled={provider.models.length === 0}
               >
                 {provider.models.map((model) => (
-                  <option value={model.id} key={model.id}>{model.label}</option>
+                  <option value={model.id} key={model.id}>
+                    {model.label}
+                  </option>
                 ))}
               </select>
             </label>
@@ -193,11 +227,15 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               <label className="workspace-effort-control">
                 <span className="workspace-effort-label">Thinking</span>
                 <select
-                  value={effectiveEffort ?? ''}
+                  value={effectiveEffort ?? ""}
                   onChange={handleEffortChange}
                   aria-label="Thinking effort"
                 >
-                  {effortLevels.map((level) => <option value={level} key={level}>{level}</option>)}
+                  {effortLevels.map((level) => (
+                    <option value={level} key={level}>
+                      {level}
+                    </option>
+                  ))}
                 </select>
               </label>
             ) : null}
@@ -216,11 +254,15 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
               </button>
               {modesOpen ? (
                 <div className="workspace-modes-menu" id={modesMenuId}>
-                  <div className="workspace-composer-mode-group" role="group" aria-label={`Modes for ${provider.name}`}>
+                  <div
+                    className="workspace-composer-mode-group"
+                    role="group"
+                    aria-label={`Modes for ${provider.name}`}
+                  >
                     {provider.modes.map((mode, index) => (
                       <button
                         type="button"
-                        className={`workspace-mode-toggle${effectiveModes[mode.id] ? ' workspace-mode-toggle-active' : ''}`}
+                        className={`workspace-mode-toggle${effectiveModes[mode.id] ? " workspace-mode-toggle-active" : ""}`}
                         key={mode.id}
                         ref={index === 0 ? firstModeToggleRef : undefined}
                         onClick={() => toggleMode(mode.id)}
@@ -237,7 +279,9 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
                 </div>
               ) : null}
             </div>
-            {streaming ? <span className="workspace-steer-hint">goes into the running turn</span> : null}
+            {streaming ? (
+              <span className="workspace-steer-hint">goes into the running turn</span>
+            ) : null}
             <button
               type="button"
               className="workspace-primary-action workspace-send-action"

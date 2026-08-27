@@ -55,6 +55,9 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
+      - name: Check frontend formatting
+        run: pnpm run format:check
+
       - name: Build Rust workspace
         run: cargo build --workspace --locked
 

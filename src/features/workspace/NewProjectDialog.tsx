@@ -1,16 +1,20 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
 
-type ProjectCreationRoute = 'existing' | 'new' | 'clone';
+type ProjectCreationRoute = "existing" | "new" | "clone";
 
 const PROJECT_CREATION_ROUTES: readonly {
   id: ProjectCreationRoute;
   label: string;
   description: string;
 }[] = [
-  { id: 'existing', label: 'Existing folder', description: 'Open a repository or folder already on disk.' },
-  { id: 'new', label: 'New folder', description: 'Create a project folder at a path.' },
-  { id: 'clone', label: 'Clone from GitHub', description: 'Start from a GitHub repository URL.' },
+  {
+    id: "existing",
+    label: "Existing folder",
+    description: "Open a repository or folder already on disk.",
+  },
+  { id: "new", label: "New folder", description: "Create a project folder at a path." },
+  { id: "clone", label: "Clone from GitHub", description: "Start from a GitHub repository URL." },
 ];
 
 function isGitHubRepositoryUrl(value: string): boolean {
@@ -24,37 +28,45 @@ interface NewProjectDialogProps {
 }
 
 function getFocusableElements(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-  )).filter((element) => !element.hasAttribute('hidden') && element.getAttribute('aria-hidden') !== 'true');
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter(
+    (element) => !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true",
+  );
 }
 
-export const NewProjectDialog = memo(function NewProjectDialog({ open, onClose, onCreate }: NewProjectDialogProps) {
-  const [route, setRoute] = useState<ProjectCreationRoute>('existing');
-  const [value, setValue] = useState('');
+export const NewProjectDialog = memo(function NewProjectDialog({
+  open,
+  onClose,
+  onCreate,
+}: NewProjectDialogProps) {
+  const [route, setRoute] = useState<ProjectCreationRoute>("existing");
+  const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
 
-    setRoute('existing');
-    setValue('');
+    setRoute("existing");
+    setValue("");
     setError(null);
 
     const dialog = dialogRef.current;
     if (dialog === null) return;
 
-    const initialFocus = dialog.querySelector<HTMLElement>('[data-dialog-initial-focus]');
+    const initialFocus = dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]");
     initialFocus?.focus();
 
     const handleDialogKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      if (event.key === "Escape") {
         event.preventDefault();
         onClose();
         return;
       }
-      if (event.key !== 'Tab') return;
+      if (event.key !== "Tab") return;
 
       const focusableElements = getFocusableElements(dialog);
       if (focusableElements.length === 0) {
@@ -77,36 +89,46 @@ export const NewProjectDialog = memo(function NewProjectDialog({ open, onClose, 
       }
     };
 
-    document.addEventListener('keydown', handleDialogKeyDown);
-    return () => document.removeEventListener('keydown', handleDialogKeyDown);
+    document.addEventListener("keydown", handleDialogKeyDown);
+    return () => document.removeEventListener("keydown", handleDialogKeyDown);
   }, [onClose, open]);
 
   const handleRouteChange = useCallback((nextRoute: ProjectCreationRoute) => {
     setRoute(nextRoute);
-    setValue('');
+    setValue("");
     setError(null);
   }, []);
 
-  const handleSubmit = useCallback((event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const trimmedValue = value.trim();
-    if (!trimmedValue) {
-      setError(route === 'clone' ? 'Enter a GitHub repository URL.' : 'Enter a folder path.');
-      return;
-    }
-    if (route === 'clone' && !isGitHubRepositoryUrl(trimmedValue)) {
-      setError('Use a GitHub repository URL such as https://github.com/org/repo.');
-      return;
-    }
+  const handleSubmit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const trimmedValue = value.trim();
+      if (!trimmedValue) {
+        setError(route === "clone" ? "Enter a GitHub repository URL." : "Enter a folder path.");
+        return;
+      }
+      if (route === "clone" && !isGitHubRepositoryUrl(trimmedValue)) {
+        setError("Use a GitHub repository URL such as https://github.com/org/repo.");
+        return;
+      }
 
-    onCreate({ route, value: trimmedValue });
-  }, [onCreate, route, value]);
+      onCreate({ route, value: trimmedValue });
+    },
+    [onCreate, route, value],
+  );
 
   if (!open) return null;
 
-  const inputLabel = route === 'clone' ? 'GitHub repository URL' : route === 'new' ? 'Folder path to create' : 'Folder path';
-  const inputPlaceholder = route === 'clone' ? 'https://github.com/org/repo' : 'C:\\Users\\you\\project';
-  const submitLabel = route === 'clone' ? 'Clone project' : route === 'new' ? 'Create project' : 'Add project';
+  const inputLabel =
+    route === "clone"
+      ? "GitHub repository URL"
+      : route === "new"
+        ? "Folder path to create"
+        : "Folder path";
+  const inputPlaceholder =
+    route === "clone" ? "https://github.com/org/repo" : "C:\\Users\\you\\project";
+  const submitLabel =
+    route === "clone" ? "Clone project" : route === "new" ? "Create project" : "Add project";
 
   return (
     <div
@@ -128,28 +150,46 @@ export const NewProjectDialog = memo(function NewProjectDialog({ open, onClose, 
             <div className="workspace-dialog-eyebrow">Project</div>
             <h2 id="workspace-project-dialog-title">New project</h2>
           </div>
-          <button type="button" className="workspace-dialog-close" onClick={onClose} aria-label="Close new project dialog">×</button>
+          <button
+            type="button"
+            className="workspace-dialog-close"
+            onClick={onClose}
+            aria-label="Close new project dialog"
+          >
+            ×
+          </button>
         </div>
-        <p className="workspace-project-dialog-copy">A project is a repository or folder on disk. Workspaces and sessions are added after it exists.</p>
-        <div className="workspace-project-route-list" role="tablist" aria-label="Project creation route">
+        <p className="workspace-project-dialog-copy">
+          A project is a repository or folder on disk. Workspaces and sessions are added after it
+          exists.
+        </p>
+        <div
+          className="workspace-project-route-list"
+          role="tablist"
+          aria-label="Project creation route"
+        >
           {PROJECT_CREATION_ROUTES.map((projectRoute) => (
             <button
               type="button"
               role="tab"
               aria-selected={route === projectRoute.id}
               aria-controls={`workspace-project-route-${projectRoute.id}`}
-              className={`workspace-project-route${route === projectRoute.id ? ' workspace-project-route-selected' : ''}`}
+              className={`workspace-project-route${route === projectRoute.id ? " workspace-project-route-selected" : ""}`}
               key={projectRoute.id}
               onClick={() => handleRouteChange(projectRoute.id)}
             >
               <span className="workspace-project-route-label">{projectRoute.label}</span>
-              <span className="workspace-project-route-description">{projectRoute.description}</span>
+              <span className="workspace-project-route-description">
+                {projectRoute.description}
+              </span>
             </button>
           ))}
         </div>
         <form onSubmit={handleSubmit}>
           <div id={`workspace-project-route-${route}`} role="tabpanel" aria-label={inputLabel}>
-            <label className="workspace-project-input-label" htmlFor="workspace-project-input">{inputLabel}</label>
+            <label className="workspace-project-input-label" htmlFor="workspace-project-input">
+              {inputLabel}
+            </label>
             <input
               id="workspace-project-input"
               data-dialog-initial-focus="true"
@@ -160,14 +200,24 @@ export const NewProjectDialog = memo(function NewProjectDialog({ open, onClose, 
               }}
               placeholder={inputPlaceholder}
               aria-invalid={error !== null}
-              aria-describedby={error !== null ? 'workspace-project-error' : undefined}
+              aria-describedby={error !== null ? "workspace-project-error" : undefined}
             />
-            {error !== null ? <div id="workspace-project-error" className="workspace-project-error" role="alert">{error}</div> : null}
+            {error !== null ? (
+              <div id="workspace-project-error" className="workspace-project-error" role="alert">
+                {error}
+              </div>
+            ) : null}
           </div>
-          <div className="workspace-project-dialog-note">Mock only · no filesystem, git, or network access.</div>
+          <div className="workspace-project-dialog-note">
+            Mock only · no filesystem, git, or network access.
+          </div>
           <div className="workspace-project-dialog-actions">
-            <button type="button" className="workspace-secondary-action" onClick={onClose}>Cancel</button>
-            <button type="submit" className="workspace-primary-action">{submitLabel}</button>
+            <button type="button" className="workspace-secondary-action" onClick={onClose}>
+              Cancel
+            </button>
+            <button type="submit" className="workspace-primary-action">
+              {submitLabel}
+            </button>
           </div>
         </form>
       </div>

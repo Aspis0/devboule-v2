@@ -1,53 +1,53 @@
 @font-face {
-  font-family: 'Fraunces';
-  src: url('./fonts/Fraunces-Latin.woff2') format('woff2');
+  font-family: "Fraunces";
+  src: url("./fonts/Fraunces-Latin.woff2") format("woff2");
   font-style: normal;
   font-weight: 400 700;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'Inter';
-  src: url('./fonts/Inter-Latin.woff2') format('woff2');
+  font-family: "Inter";
+  src: url("./fonts/Inter-Latin.woff2") format("woff2");
   font-style: normal;
   font-weight: 100 900;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'JetBrains Mono';
-  src: url('./fonts/JetBrainsMono-Latin.woff2') format('woff2');
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Latin.woff2") format("woff2");
   font-style: normal;
   font-weight: 100 800;
   font-display: swap;
 }
 
 :root {
-  --sand: #E7E0D2;
-  --ink: #1C1A17;
-  --terracotta: #C8532B;
-  --terracotta-deep: #8A3A1B;
-  --selection: #E8C4B4;
-  --green: #3F7A56;
-  --green-deep: #315E43;    /* worst-case 4.62 */
-  --purple: #6B5B95;
-  --purple-deep: #5B4D7F;   /* worst-case 4.62 */
-  --ochre: #B8862E;
-  --ochre-deep: #6D4F1B;    /* worst-case 4.66 */
+  --sand: #e7e0d2;
+  --ink: #1c1a17;
+  --terracotta: #c8532b;
+  --terracotta-deep: #8a3a1b;
+  --selection: #e8c4b4;
+  --green: #3f7a56;
+  --green-deep: #315e43; /* worst-case 4.62 */
+  --purple: #6b5b95;
+  --purple-deep: #5b4d7f; /* worst-case 4.62 */
+  --ochre: #b8862e;
+  --ochre-deep: #6d4f1b; /* worst-case 4.66 */
   --silence: #686256;
-  --terminal-silence: #A9A294;
-  --border: #DED6C4;
-  --surface: #FBF8F1;
-  --surface-muted: #F5F1E8;
-  --ink-soft: #4A463E;
-  --border-strong: #C9BEA8;
-  --danger: #B23B2E;
-  --danger-deep: #983227;   /* worst-case 4.60 */
-  --design-canvas: #EFE8D9;
-  --design-grid: #C9BEA8;
-  --line-subtle: #EDE7DA;
-  --terracotta-pressed: #A8421F;
-  --white: #FFFFFF;
+  --terminal-silence: #a9a294;
+  --border: #ded6c4;
+  --surface: #fbf8f1;
+  --surface-muted: #f5f1e8;
+  --ink-soft: #4a463e;
+  --border-strong: #c9bea8;
+  --danger: #b23b2e;
+  --danger-deep: #983227; /* worst-case 4.60 */
+  --design-canvas: #efe8d9;
+  --design-grid: #c9bea8;
+  --line-subtle: #ede7da;
+  --terracotta-pressed: #a8421f;
+  --white: #ffffff;
   --terracotta-rgb: 200, 83, 43;
   --surface-muted-rgb: 245, 241, 232;
   --ink-rgb: 28, 26, 23;
@@ -71,7 +71,7 @@ body {
   overflow: hidden;
   color: var(--ink);
   background: var(--sand);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: "Inter", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -111,7 +111,9 @@ button:focus-visible {
   height: 100%;
   min-height: 0;
   padding: 7px;
-  transition: transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1), opacity 0.3s ease;
+  transition:
+    transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
+    opacity 0.3s ease;
 }
 
 .surface-loading {
@@ -123,8 +125,10 @@ button:focus-visible {
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 16px;
-  box-shadow: 0 1px 2px rgba(var(--ink-rgb), 0.06), 0 8px 24px rgba(var(--ink-rgb), 0.07);
-  font-family: 'JetBrains Mono', monospace;
+  box-shadow:
+    0 1px 2px rgba(var(--ink-rgb), 0.06),
+    0 8px 24px rgba(var(--ink-rgb), 0.07);
+  font-family: "JetBrains Mono", monospace;
   font-size: 11px;
   letter-spacing: 0.04em;
   animation: pgin 0.3s ease both;
@@ -139,7 +143,9 @@ button:focus-visible {
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 16px;
-  box-shadow: 0 1px 2px rgba(var(--ink-rgb), 0.06), 0 8px 24px rgba(var(--ink-rgb), 0.07);
+  box-shadow:
+    0 1px 2px rgba(var(--ink-rgb), 0.06),
+    0 8px 24px rgba(var(--ink-rgb), 0.07);
   animation: pgin 0.3s ease both;
 }
 
@@ -162,7 +168,7 @@ button:focus-visible {
 
 .surface-header h1 {
   margin: 0;
-  font-family: 'Fraunces', Georgia, serif;
+  font-family: "Fraunces", Georgia, serif;
   font-size: 18px;
   font-weight: 600;
 }
@@ -178,7 +184,7 @@ button:focus-visible {
 .placeholder-kicker,
 .placeholder-note {
   color: var(--silence);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
 }
 
@@ -263,14 +269,14 @@ button:focus-visible {
   place-items: center;
   color: #fff;
   border-radius: 11px;
-  font-family: 'Fraunces', Georgia, serif;
+  font-family: "Fraunces", Georgia, serif;
   font-size: 19px;
   font-weight: 600;
 }
 
 .placeholder-panel h2 {
   margin: 0;
-  font-family: 'Fraunces', Georgia, serif;
+  font-family: "Fraunces", Georgia, serif;
   font-size: 25px;
   font-weight: 600;
 }
@@ -342,7 +348,7 @@ button:focus-visible {
   right: 0;
   left: 0;
   height: 3px;
-  content: '';
+  content: "";
   background: var(--border-strong);
   border-radius: 999px;
   opacity: 0.8;
@@ -357,7 +363,9 @@ button:focus-visible {
   opacity: 0;
   pointer-events: none;
   transform: translateY(-46px);
-  transition: opacity 0.32s ease, transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
+  transition:
+    opacity 0.32s ease,
+    transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
 }
 
 .crescent-nav-open {
@@ -425,9 +433,12 @@ button:focus-visible {
   border: 1.25px solid var(--border-strong);
   border-radius: 999px;
   box-shadow: 0 2px 7px rgba(var(--ink-rgb), 0.1);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 10px;
-  transition: transform 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .nav-point:hover .nav-point-circle,
@@ -478,18 +489,34 @@ button:focus-visible {
 }
 
 @keyframes pgin {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes caret {
-  0%, 45% { opacity: 1; }
-  50%, 100% { opacity: 0; }
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
 }
 
 @keyframes rise {
-  from { opacity: 0; transform: translateY(5px); }
-  to { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

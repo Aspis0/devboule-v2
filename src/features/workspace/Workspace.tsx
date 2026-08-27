@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, KeyboardEvent, MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
 import {
   MOCK_AGENT_REPLY,
   MOCK_MESSAGES,
@@ -9,9 +9,9 @@ import {
   type MockSurface,
   type MockWorkspace,
   type MockWorkspaceMessage,
-} from './mockData';
-import { getProviderManifest, WorkspaceComposer } from './WorkspaceComposer';
-import { NewProjectDialog, type ProjectCreationRoute } from './NewProjectDialog';
+} from "./mockData";
+import { getProviderManifest, WorkspaceComposer } from "./WorkspaceComposer";
+import { NewProjectDialog, type ProjectCreationRoute } from "./NewProjectDialog";
 import {
   AppSurface,
   ChangesSurface,
@@ -19,66 +19,69 @@ import {
   FilesSurface,
   PullRequestSurface,
   type DiffState,
-} from './sidePanels';
-import { TerminalSurface } from '../terminal/TerminalSurface';
-import { daemonStatus } from '../../lib/tauri';
-import type { DaemonStatus } from '../../types/ipc';
-import './Workspace.css';
+} from "./sidePanels";
+import { TerminalSurface } from "../terminal/TerminalSurface";
+import { daemonStatus } from "../../lib/tauri";
+import type { DaemonStatus } from "../../types/ipc";
+import "./Workspace.css";
 
-type ActiveTab = 'agent' | 'terminal';
-type ActiveSidePanel = MockSurface['id'];
-type PermissionState = 'waiting' | 'allowed' | 'denied';
-type ResizeSide = 'left' | 'right';
+type ActiveTab = "agent" | "terminal";
+type ActiveSidePanel = MockSurface["id"];
+type PermissionState = "waiting" | "allowed" | "denied";
+type ResizeSide = "left" | "right";
 
 const MIN_PANEL_WIDTH = 180;
 const MAX_PANEL_WIDTH = 460;
 const INITIAL_LEFT_WIDTH = 252;
 const INITIAL_RIGHT_WIDTH = 366;
-const WORKSPACE_AGENT_TAB_ID = 'workspace-tab-agent';
-const WORKSPACE_TERMINAL_TAB_ID = 'workspace-tab-terminal';
-const WORKSPACE_AGENT_PANEL_ID = 'workspace-panel-agent';
-const WORKSPACE_TERMINAL_PANEL_ID = 'workspace-panel-terminal';
+const WORKSPACE_AGENT_TAB_ID = "workspace-tab-agent";
+const WORKSPACE_TERMINAL_TAB_ID = "workspace-tab-terminal";
+const WORKSPACE_AGENT_PANEL_ID = "workspace-panel-agent";
+const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
 
 const DISCONNECTED_DAEMON: DaemonStatus = {
-  state: 'disconnected',
+  state: "disconnected",
   pid: null,
   instanceId: null,
   protocolVersion: null,
   clients: null,
-  message: 'daemon unreachable',
+  message: "daemon unreachable",
 };
 
-function daemonDotTone(state: DaemonStatus['state']): string {
-  if (state === 'connected') return 'green';
-  if (state === 'connecting') return 'border';
-  return 'terracotta';
+function daemonDotTone(state: DaemonStatus["state"]): string {
+  if (state === "connected") return "green";
+  if (state === "connecting") return "border";
+  return "terracotta";
 }
 
 function daemonLabel(status: DaemonStatus): string {
-  if (status.state === 'connected') {
-    const pid = status.pid !== null ? `pid ${status.pid}` : 'connected';
+  if (status.state === "connected") {
+    const pid = status.pid !== null ? `pid ${status.pid}` : "connected";
     return status.message ? `daemon · ${pid} · ${status.message}` : `daemon · ${pid}`;
   }
-  if (status.state === 'connecting') return 'daemon · connecting';
+  if (status.state === "connecting") return "daemon · connecting";
   if (status.message) return `daemon · ${status.message}`;
-  return 'daemon · disconnected';
+  return "daemon · disconnected";
 }
 
 const PERMISSION_LABELS: Record<PermissionState, string> = {
-  waiting: 'Waiting on you',
-  allowed: 'Allowed once · running',
-  denied: 'Denied — the turn continues without it',
+  waiting: "Waiting on you",
+  allowed: "Allowed once · running",
+  denied: "Denied — the turn continues without it",
 };
 
 function projectNameFromDraft(route: ProjectCreationRoute, value: string): string {
-  if (route === 'clone') {
-    const repositoryPath = value.split(/[?#]/, 1)[0].replace(/\/+$/, '');
-    const repositoryName = repositoryPath.split('/').pop()?.replace(/\.git$/i, '');
-    return repositoryName || 'cloned-project';
+  if (route === "clone") {
+    const repositoryPath = value.split(/[?#]/, 1)[0].replace(/\/+$/, "");
+    const repositoryName = repositoryPath
+      .split("/")
+      .pop()
+      ?.replace(/\.git$/i, "");
+    return repositoryName || "cloned-project";
   }
 
-  const pathWithoutTrailingSeparators = value.replace(/[\\/]+$/, '');
-  return pathWithoutTrailingSeparators.split(/[\\/]/).pop() || 'new-project';
+  const pathWithoutTrailingSeparators = value.replace(/[\\/]+$/, "");
+  return pathWithoutTrailingSeparators.split(/[\\/]/).pop() || "new-project";
 }
 
 function cloneProjects(): MockProject[] {
@@ -97,22 +100,22 @@ function clampPanelWidth(width: number): number {
 
 export function Workspace() {
   const [projects, setProjects] = useState<MockProject[]>(cloneProjects);
-  const [selectedWorkspace, setSelectedWorkspace] = useState('rust-core');
-  const [search, setSearch] = useState('');
+  const [selectedWorkspace, setSelectedWorkspace] = useState("rust-core");
+  const [search, setSearch] = useState("");
   const [leftWidth, setLeftWidth] = useState(INITIAL_LEFT_WIDTH);
   const [rightWidth, setRightWidth] = useState(INITIAL_RIGHT_WIDTH);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [activeTab, setActiveTab] = useState<ActiveTab>('agent');
-  const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>('changes');
+  const [activeTab, setActiveTab] = useState<ActiveTab>("agent");
+  const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
   const [surfaceMenuOpen, setSurfaceMenuOpen] = useState(false);
   const [messages, setMessages] = useState<MockWorkspaceMessage[]>(cloneMessages);
   const [streaming, setStreaming] = useState(false);
-  const [permission, setPermission] = useState<PermissionState>('waiting');
-  const [diffState, setDiffState] = useState<DiffState>('unstaged');
+  const [permission, setPermission] = useState<PermissionState>("waiting");
+  const [diffState, setDiffState] = useState<DiffState>("unstaged");
   const [appBuild, setAppBuild] = useState(41);
-  const [prLabel, setPrLabel] = useState('Open #412 on GitHub');
-  const [agentProviderId, setAgentProviderId] = useState('claude');
+  const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
+  const [agentProviderId, setAgentProviderId] = useState("claude");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [daemon, setDaemon] = useState<DaemonStatus>(DISCONNECTED_DAEMON);
 
@@ -128,10 +131,10 @@ export function Workspace() {
       if (!resize) return;
 
       const distance = event.clientX - resize.startX;
-      const signedDistance = resize.side === 'left' ? distance : -distance;
+      const signedDistance = resize.side === "left" ? distance : -distance;
       const width = clampPanelWidth(resize.startWidth + signedDistance);
 
-      if (resize.side === 'left') {
+      if (resize.side === "left") {
         setLeftWidth(width);
       } else {
         setRightWidth(width);
@@ -140,15 +143,15 @@ export function Workspace() {
 
     const handleUp = () => {
       resizeRef.current = null;
-      document.body.classList.remove('workspace-is-resizing');
+      document.body.classList.remove("workspace-is-resizing");
     };
 
-    document.addEventListener('mousemove', handleMove);
-    document.addEventListener('mouseup', handleUp);
+    document.addEventListener("mousemove", handleMove);
+    document.addEventListener("mouseup", handleUp);
     return () => {
-      document.removeEventListener('mousemove', handleMove);
-      document.removeEventListener('mouseup', handleUp);
-      document.body.classList.remove('workspace-is-resizing');
+      document.removeEventListener("mousemove", handleMove);
+      document.removeEventListener("mouseup", handleUp);
+      document.body.classList.remove("workspace-is-resizing");
     };
   }, []);
 
@@ -184,50 +187,56 @@ export function Workspace() {
     };
   }, []);
 
-  const startDrag = useCallback((side: ResizeSide, event: MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    resizeRef.current = {
-      side,
-      startX: event.clientX,
-      startWidth: side === 'left' ? leftWidth : rightWidth,
-    };
-    document.body.classList.add('workspace-is-resizing');
-  }, [leftWidth, rightWidth]);
-
-  const handleResizeKey = useCallback((side: ResizeSide, event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === 'Enter' || event.key === ' ') {
+  const startDrag = useCallback(
+    (side: ResizeSide, event: MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
-      if (side === 'left') setLeftCollapsed((collapsed) => !collapsed);
-      else setRightCollapsed((collapsed) => !collapsed);
-      return;
-    }
+      resizeRef.current = {
+        side,
+        startX: event.clientX,
+        startWidth: side === "left" ? leftWidth : rightWidth,
+      };
+      document.body.classList.add("workspace-is-resizing");
+    },
+    [leftWidth, rightWidth],
+  );
 
-    const currentWidth = side === 'left' ? leftWidth : rightWidth;
-    let nextWidth: number | null = null;
-    if (event.key === 'Home') nextWidth = MIN_PANEL_WIDTH;
-    if (event.key === 'End') nextWidth = MAX_PANEL_WIDTH;
-    if (side === 'left' && event.key === 'ArrowLeft') nextWidth = currentWidth - 16;
-    if (side === 'left' && event.key === 'ArrowRight') nextWidth = currentWidth + 16;
-    if (side === 'right' && event.key === 'ArrowLeft') nextWidth = currentWidth + 16;
-    if (side === 'right' && event.key === 'ArrowRight') nextWidth = currentWidth - 16;
+  const handleResizeKey = useCallback(
+    (side: ResizeSide, event: KeyboardEvent<HTMLButtonElement>) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        if (side === "left") setLeftCollapsed((collapsed) => !collapsed);
+        else setRightCollapsed((collapsed) => !collapsed);
+        return;
+      }
 
-    if (nextWidth !== null) {
-      event.preventDefault();
-      const width = clampPanelWidth(nextWidth);
-      if (side === 'left') setLeftWidth(width);
-      else setRightWidth(width);
-    }
-  }, [leftWidth, rightWidth]);
+      const currentWidth = side === "left" ? leftWidth : rightWidth;
+      let nextWidth: number | null = null;
+      if (event.key === "Home") nextWidth = MIN_PANEL_WIDTH;
+      if (event.key === "End") nextWidth = MAX_PANEL_WIDTH;
+      if (side === "left" && event.key === "ArrowLeft") nextWidth = currentWidth - 16;
+      if (side === "left" && event.key === "ArrowRight") nextWidth = currentWidth + 16;
+      if (side === "right" && event.key === "ArrowLeft") nextWidth = currentWidth + 16;
+      if (side === "right" && event.key === "ArrowRight") nextWidth = currentWidth - 16;
 
-  const addWorkspace = useCallback((projectId: string = 'devboule') => {
+      if (nextWidth !== null) {
+        event.preventDefault();
+        const width = clampPanelWidth(nextWidth);
+        if (side === "left") setLeftWidth(width);
+        else setRightWidth(width);
+      }
+    },
+    [leftWidth, rightWidth],
+  );
+
+  const addWorkspace = useCallback((projectId: string = "devboule") => {
     const id = `mock-workspace-${Date.now()}`;
     const workspace: MockWorkspace = {
       id,
       projectId,
-      title: 'new-workspace',
-      meta: 'idle · 0 d',
-      isolation: 'worktree',
-      dotTone: 'border',
+      title: "new-workspace",
+      meta: "idle · 0 d",
+      isolation: "worktree",
+      dotTone: "border",
     };
 
     setProjects((currentProjects) =>
@@ -249,11 +258,8 @@ export function Workspace() {
     streamTimerRef.current = null;
     streamIntervalRef.current = null;
 
-    setMessages((currentMessages) => [
-      ...currentMessages,
-      { id: Date.now(), role: 'user', text },
-    ]);
-    setPermission('waiting');
+    setMessages((currentMessages) => [...currentMessages, { id: Date.now(), role: "user", text }]);
+    setPermission("waiting");
     setStreaming(false);
 
     streamTimerRef.current = window.setTimeout(() => {
@@ -262,7 +268,7 @@ export function Workspace() {
       setStreaming(true);
       setMessages((currentMessages) => [
         ...currentMessages,
-        { id: agentId, role: 'agent', text: '' },
+        { id: agentId, role: "agent", text: "" },
       ]);
 
       streamIntervalRef.current = window.setInterval(() => {
@@ -288,19 +294,22 @@ export function Workspace() {
     setProjectDialogOpen(false);
     newProjectTriggerRef.current?.focus();
   }, []);
-  const handleCreateProject = useCallback(({ route, value }: { route: ProjectCreationRoute; value: string }) => {
-    const trimmedValue = value.trim();
-    const project: MockProject = {
-      id: `mock-project-${Date.now()}`,
-      name: projectNameFromDraft(route, trimmedValue),
-      path: trimmedValue,
-      workspaces: [],
-    };
+  const handleCreateProject = useCallback(
+    ({ route, value }: { route: ProjectCreationRoute; value: string }) => {
+      const trimmedValue = value.trim();
+      const project: MockProject = {
+        id: `mock-project-${Date.now()}`,
+        name: projectNameFromDraft(route, trimmedValue),
+        path: trimmedValue,
+        workspaces: [],
+      };
 
-    setProjects((currentProjects) => [...currentProjects, project]);
-    setSearch('');
-    closeProjectDialog();
-  }, [closeProjectDialog]);
+      setProjects((currentProjects) => [...currentProjects, project]);
+      setSearch("");
+      closeProjectDialog();
+    },
+    [closeProjectDialog],
+  );
 
   function handleSearchChange(event: ChangeEvent<HTMLInputElement>) {
     setSearch(event.target.value);
@@ -308,29 +317,39 @@ export function Workspace() {
 
   const query = useMemo(() => search.trim().toLowerCase(), [search]);
   const visibleProjects = useMemo(
-    () => projects
-      .map((project) => ({
-        ...project,
-        workspaces: project.workspaces.filter((workspace) =>
-          !query || `${project.name} ${workspace.title} ${workspace.meta}`.toLowerCase().includes(query),
+    () =>
+      projects
+        .map((project) => ({
+          ...project,
+          workspaces: project.workspaces.filter(
+            (workspace) =>
+              !query ||
+              `${project.name} ${workspace.title} ${workspace.meta}`.toLowerCase().includes(query),
+          ),
+        }))
+        .filter(
+          (project) =>
+            !query || project.workspaces.length > 0 || project.name.toLowerCase().includes(query),
         ),
-      }))
-      .filter((project) => !query || project.workspaces.length > 0 || project.name.toLowerCase().includes(query)),
     [projects, query],
   );
 
   const agentProvider = useMemo(() => getProviderManifest(agentProviderId), [agentProviderId]);
-  const agentModelLabel = useMemo(() => agentProvider.models[0]?.label ?? 'No model', [agentProvider]);
-  const selectedSurface = MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
+  const agentModelLabel = useMemo(
+    () => agentProvider.models[0]?.label ?? "No model",
+    [agentProvider],
+  );
+  const selectedSurface =
+    MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
   const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
-  const handleOpenPullRequest = useCallback(() => setPrLabel('Opened #412 on GitHub'), []);
+  const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
 
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
       <aside
         className="workspace-panel workspace-left-panel"
-        style={{ width: leftCollapsed ? '30px' : `${leftWidth}px` }}
+        style={{ width: leftCollapsed ? "30px" : `${leftWidth}px` }}
         aria-label="Workspaces"
       >
         {leftCollapsed ? (
@@ -391,12 +410,14 @@ export function Workspace() {
                     {project.workspaces.map((workspace) => (
                       <button
                         type="button"
-                        className={`workspace-row${selectedWorkspace === workspace.id ? ' workspace-row-selected' : ''}`}
+                        className={`workspace-row${selectedWorkspace === workspace.id ? " workspace-row-selected" : ""}`}
                         key={workspace.id}
                         onClick={() => setSelectedWorkspace(workspace.id)}
                         aria-pressed={selectedWorkspace === workspace.id}
                       >
-                        <span className={`workspace-status-dot workspace-dot-${workspace.dotTone}`} />
+                        <span
+                          className={`workspace-status-dot workspace-dot-${workspace.dotTone}`}
+                        />
                         <span className="workspace-row-copy">
                           <span className="workspace-row-title">{workspace.title}</span>
                           <span className="workspace-row-meta">{workspace.meta}</span>
@@ -420,7 +441,9 @@ export function Workspace() {
             </div>
 
             <div className="workspace-daemon-status" title={daemon.message ?? undefined}>
-              <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />
+              <span
+                className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`}
+              />
               {daemonLabel(daemon)}
             </div>
           </div>
@@ -430,9 +453,9 @@ export function Workspace() {
       <button
         type="button"
         className="workspace-resize-handle"
-        onMouseDown={(event) => startDrag('left', event)}
+        onMouseDown={(event) => startDrag("left", event)}
         onDoubleClick={() => setLeftCollapsed((collapsed) => !collapsed)}
-        onKeyDown={(event) => handleResizeKey('left', event)}
+        onKeyDown={(event) => handleResizeKey("left", event)}
         title="Drag to resize · double-click to collapse"
         aria-label="Resize workspaces panel"
         aria-orientation="vertical"
@@ -447,10 +470,10 @@ export function Workspace() {
             type="button"
             role="tab"
             id={WORKSPACE_AGENT_TAB_ID}
-            aria-selected={activeTab === 'agent'}
+            aria-selected={activeTab === "agent"}
             aria-controls={WORKSPACE_AGENT_PANEL_ID}
-            className={`workspace-session-tab${activeTab === 'agent' ? ' workspace-session-tab-selected' : ''}`}
-            onClick={() => setActiveTab('agent')}
+            className={`workspace-session-tab${activeTab === "agent" ? " workspace-session-tab-selected" : ""}`}
+            onClick={() => setActiveTab("agent")}
           >
             <span className="workspace-status-dot workspace-dot-agent" />
             <span className="workspace-tab-label">{agentProvider.name}</span>
@@ -460,10 +483,10 @@ export function Workspace() {
             type="button"
             role="tab"
             id={WORKSPACE_TERMINAL_TAB_ID}
-            aria-selected={activeTab === 'terminal'}
+            aria-selected={activeTab === "terminal"}
             aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
-            className={`workspace-session-tab${activeTab === 'terminal' ? ' workspace-session-tab-selected' : ''}`}
-            onClick={() => setActiveTab('terminal')}
+            className={`workspace-session-tab${activeTab === "terminal" ? " workspace-session-tab-selected" : ""}`}
+            onClick={() => setActiveTab("terminal")}
           >
             <span className="workspace-status-dot workspace-dot-green" />
             <span className="workspace-tab-label">terminal</span>
@@ -472,24 +495,31 @@ export function Workspace() {
           <button
             type="button"
             className="workspace-session-add"
-            onClick={() => setActiveTab('terminal')}
+            onClick={() => setActiveTab("terminal")}
             title="New session in this workspace"
             aria-label="New session in this workspace"
           >
             +
           </button>
           <span className="workspace-tabs-spacer" />
-          <span className="workspace-rate">{streaming ? 'streaming · 48 tok/s' : 'turn idle'}</span>
+          <span className="workspace-rate">{streaming ? "streaming · 48 tok/s" : "turn idle"}</span>
         </div>
 
-        {activeTab === 'terminal' ? (
+        {activeTab === "terminal" ? (
           <TerminalSurface id={WORKSPACE_TERMINAL_PANEL_ID} workspaceId={selectedWorkspace} />
         ) : (
           <>
-            <div id={WORKSPACE_AGENT_PANEL_ID} className="workspace-conversation workspace-scroll" role="tabpanel" aria-label="Agent conversation" ref={conversationRef}>
+            <div
+              id={WORKSPACE_AGENT_PANEL_ID}
+              className="workspace-conversation workspace-scroll"
+              role="tabpanel"
+              aria-label="Agent conversation"
+              ref={conversationRef}
+            >
               {messages.map((message, index) => {
-                const isStreamingMessage = message.role === 'agent' && streaming && index === messages.length - 1;
-                if (message.role === 'user') {
+                const isStreamingMessage =
+                  message.role === "agent" && streaming && index === messages.length - 1;
+                if (message.role === "user") {
                   return (
                     <div className="workspace-message" key={message.id}>
                       <div className="workspace-user-message-wrap">
@@ -499,13 +529,15 @@ export function Workspace() {
                   );
                 }
 
-                if (message.role === 'tool') {
+                if (message.role === "tool") {
                   return (
                     <div className="workspace-message" key={message.id}>
                       <div className="workspace-tool-message">
                         <span className="workspace-tool-name">{message.tool}</span>
                         <span className="workspace-tool-copy">{message.text}</span>
-                        <span className="workspace-tool-check" aria-label="Complete">✓</span>
+                        <span className="workspace-tool-check" aria-label="Complete">
+                          ✓
+                        </span>
                       </div>
                     </div>
                   );
@@ -516,7 +548,9 @@ export function Workspace() {
                     <div className="workspace-agent-message">
                       <div className="workspace-agent-heading">
                         <span className="workspace-agent-mark">c</span>
-                        <span className="workspace-agent-meta">{agentProvider.name} · {agentModelLabel}</span>
+                        <span className="workspace-agent-meta">
+                          {agentProvider.name} · {agentModelLabel}
+                        </span>
                       </div>
                       <div className="workspace-agent-copy">
                         {message.text}
@@ -533,22 +567,26 @@ export function Workspace() {
                   <span>Permission — run a command</span>
                   <span className="workspace-permission-context">worktree · rust-core</span>
                 </div>
-                <div className="workspace-permission-command">cargo test -p oracle-core --all-features</div>
+                <div className="workspace-permission-command">
+                  cargo test -p oracle-core --all-features
+                </div>
                 <div className="workspace-permission-actions">
-                  <span className="workspace-permission-label">{PERMISSION_LABELS[permission]}</span>
+                  <span className="workspace-permission-label">
+                    {PERMISSION_LABELS[permission]}
+                  </span>
                   <button
                     type="button"
                     className="workspace-secondary-action workspace-deny-action"
-                    onClick={() => setPermission('denied')}
-                    disabled={permission !== 'waiting'}
+                    onClick={() => setPermission("denied")}
+                    disabled={permission !== "waiting"}
                   >
                     Deny
                   </button>
                   <button
                     type="button"
                     className="workspace-primary-action"
-                    onClick={() => setPermission('allowed')}
-                    disabled={permission !== 'waiting'}
+                    onClick={() => setPermission("allowed")}
+                    disabled={permission !== "waiting"}
                   >
                     Allow once
                   </button>
@@ -569,9 +607,9 @@ export function Workspace() {
       <button
         type="button"
         className="workspace-resize-handle"
-        onMouseDown={(event) => startDrag('right', event)}
+        onMouseDown={(event) => startDrag("right", event)}
         onDoubleClick={() => setRightCollapsed((collapsed) => !collapsed)}
-        onKeyDown={(event) => handleResizeKey('right', event)}
+        onKeyDown={(event) => handleResizeKey("right", event)}
         title="Drag to resize · double-click to collapse"
         aria-label="Resize side panel"
         aria-orientation="vertical"
@@ -582,7 +620,7 @@ export function Workspace() {
 
       <aside
         className="workspace-panel workspace-right-panel"
-        style={{ width: rightCollapsed ? '30px' : `${rightWidth}px` }}
+        style={{ width: rightCollapsed ? "30px" : `${rightWidth}px` }}
         aria-label="Workspace side panel"
       >
         {rightCollapsed ? (
@@ -615,15 +653,23 @@ export function Workspace() {
                 aria-haspopup="listbox"
                 aria-expanded={surfaceMenuOpen}
               >
-                <span className={`workspace-status-dot workspace-surface-dot-${selectedSurface.dotTone}`} />
+                <span
+                  className={`workspace-status-dot workspace-surface-dot-${selectedSurface.dotTone}`}
+                />
                 <span className="workspace-surface-name">{selectedSurface.name}</span>
                 <span className="workspace-surface-meta">{selectedSurface.meta}</span>
-                <span className="workspace-surface-chevron" aria-hidden="true">▾</span>
+                <span className="workspace-surface-chevron" aria-hidden="true">
+                  ▾
+                </span>
               </button>
             </div>
 
             {surfaceMenuOpen ? (
-              <div className="workspace-surface-menu" role="listbox" aria-label="Show in this panel">
+              <div
+                className="workspace-surface-menu"
+                role="listbox"
+                aria-label="Show in this panel"
+              >
                 <div className="workspace-menu-label">Show in this panel</div>
                 <div className="workspace-surface-options">
                   {MOCK_SURFACES.map((surface) => (
@@ -631,14 +677,16 @@ export function Workspace() {
                       type="button"
                       role="option"
                       aria-selected={activeSidePanel === surface.id}
-                      className={`workspace-surface-option${activeSidePanel === surface.id ? ' workspace-surface-option-selected' : ''}`}
+                      className={`workspace-surface-option${activeSidePanel === surface.id ? " workspace-surface-option-selected" : ""}`}
                       key={surface.id}
                       onClick={() => {
                         setActiveSidePanel(surface.id);
                         setSurfaceMenuOpen(false);
                       }}
                     >
-                      <span className={`workspace-status-dot workspace-surface-dot-${surface.dotTone}`} />
+                      <span
+                        className={`workspace-status-dot workspace-surface-dot-${surface.dotTone}`}
+                      />
                       <span className="workspace-surface-name">{surface.name}</span>
                       <span className="workspace-surface-option-meta">{surface.meta}</span>
                     </button>
@@ -648,15 +696,15 @@ export function Workspace() {
             ) : null}
 
             <div className="workspace-scroll workspace-side-scroll">
-              {activeSidePanel === 'changes' ? (
+              {activeSidePanel === "changes" ? (
                 <ChangesSurface diffState={diffState} onDiffStateChange={handleDiffStateChange} />
               ) : null}
-              {activeSidePanel === 'files' ? <FilesSurface /> : null}
-              {activeSidePanel === 'app' ? (
+              {activeSidePanel === "files" ? <FilesSurface /> : null}
+              {activeSidePanel === "app" ? (
                 <AppSurface appBuild={appBuild} onReload={handleAppReload} />
               ) : null}
-              {activeSidePanel === 'design' ? <DesignPanel /> : null}
-              {activeSidePanel === 'pr' ? (
+              {activeSidePanel === "design" ? <DesignPanel /> : null}
+              {activeSidePanel === "pr" ? (
                 <PullRequestSurface prLabel={prLabel} onOpen={handleOpenPullRequest} />
               ) : null}
             </div>

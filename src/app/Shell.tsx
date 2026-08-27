@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react';
-import type { KeyboardEvent, PointerEvent, ReactNode } from 'react';
-import { useAppStore } from '../store/appStore';
-import { SURFACES, type SurfaceKey } from '../types/surface';
+import { useRef, useState } from "react";
+import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
+import { useAppStore } from "../store/appStore";
+import { SURFACES, type SurfaceKey } from "../types/surface";
 
 interface ShellProps {
   activeSurface: SurfaceKey;
@@ -9,18 +9,18 @@ interface ShellProps {
 }
 
 const NAV_POINTS = [
-  { key: 'workspace', x: 277, y: 44 },
-  { key: 'polis', x: 371, y: 80 },
-  { key: 'pubvia', x: 470, y: 92 },
-  { key: 'design', x: 569, y: 80 },
-  { key: 'settings', x: 662, y: 44 },
+  { key: "workspace", x: 277, y: 44 },
+  { key: "polis", x: 371, y: 80 },
+  { key: "pubvia", x: 470, y: 92 },
+  { key: "design", x: 569, y: 80 },
+  { key: "settings", x: 662, y: 44 },
 ] as const satisfies readonly { key: SurfaceKey; x: number; y: number }[];
 
 export function Shell({ activeSurface, children }: ShellProps) {
   const selectSurface = useAppStore((state) => state.selectSurface);
   const [navOpen, setNavOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const pageShift = navOpen ? '34px' : '0px';
+  const pageShift = navOpen ? "34px" : "0px";
   const pageDim = navOpen ? 0.34 : 1;
 
   function closeNav() {
@@ -28,7 +28,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
-    if (event.key === 'Escape') {
+    if (event.key === "Escape") {
       event.preventDefault();
       closeNav();
       triggerRef.current?.focus();
@@ -70,7 +70,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
           onPointerEnter={() => setNavOpen(true)}
           onFocus={() => setNavOpen(true)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowDown') {
+            if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown") {
               event.preventDefault();
               setNavOpen(true);
             }
@@ -79,7 +79,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
 
         <div
           id="devboule-crescent-navigation"
-          className={`crescent-nav${navOpen ? ' crescent-nav-open' : ''}`}
+          className={`crescent-nav${navOpen ? " crescent-nav-open" : ""}`}
           onPointerEnter={() => setNavOpen(true)}
           onPointerLeave={(event) => {
             if (event.clientY > 150) {
@@ -101,7 +101,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
               <button
                 type="button"
                 key={surface.key}
-                className={`nav-point${isActive ? ' nav-point-active' : ''}`}
+                className={`nav-point${isActive ? " nav-point-active" : ""}`}
                 style={{ left: point.x, top: point.y }}
                 onClick={() => {
                   selectSurface(surface.key);
@@ -110,7 +110,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
                 }}
                 onFocus={() => setNavOpen(true)}
                 tabIndex={0}
-                aria-current={isActive ? 'page' : undefined}
+                aria-current={isActive ? "page" : undefined}
               >
                 <span className="nav-point-circle">
                   <span aria-hidden="true">{surface.label.slice(0, 1)}</span>
@@ -121,7 +121,11 @@ export function Shell({ activeSurface, children }: ShellProps) {
           })}
         </div>
 
-        <svg className={`crescent-hint${navOpen ? ' crescent-hint-hidden' : ''}`} viewBox="0 0 880 40" aria-hidden="true">
+        <svg
+          className={`crescent-hint${navOpen ? " crescent-hint-hidden" : ""}`}
+          viewBox="0 0 880 40"
+          aria-hidden="true"
+        >
           <path d="M 340 14 A 410 410 0 0 0 600 14" />
         </svg>
       </div>

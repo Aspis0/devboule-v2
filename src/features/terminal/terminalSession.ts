@@ -1,18 +1,18 @@
-import type { Channel } from '@tauri-apps/api/core';
-import type { Session, SessionEvent } from '../../types/ipc';
-import type { TerminalViewHandle } from './createTerminalView';
-import type { TerminalSessionRegistry } from './terminalRegistry';
+import type { Channel } from "@tauri-apps/api/core";
+import type { Session, SessionEvent } from "../../types/ipc";
+import type { TerminalViewHandle } from "./createTerminalView";
+import type { TerminalSessionRegistry } from "./terminalRegistry";
 
 export type TerminalEvent = SessionEvent;
 export type TerminalChannel = Channel<TerminalEvent>;
 
 export type TerminalBanner =
-  | { kind: 'exited'; code: number | null }
-  | { kind: 'recovered'; truncated: boolean }
-  | { kind: 'journal_degraded' }
-  | { kind: 'output_gap'; fromSeq: number; toSeq: number }
-  | { kind: 'closed' }
-  | { kind: 'error'; message: string }
+  | { kind: "exited"; code: number | null }
+  | { kind: "recovered"; truncated: boolean }
+  | { kind: "journal_degraded" }
+  | { kind: "output_gap"; fromSeq: number; toSeq: number }
+  | { kind: "closed" }
+  | { kind: "error"; message: string }
   | null;
 
 export interface TerminalSessionDeps {
@@ -39,9 +39,9 @@ const CTRL_C_ARM_MS = 3000;
 const WRITE_FAIL_THRESHOLD = 2;
 
 function errorMessage(error: unknown): string {
-  if (typeof error === 'string' && error.trim()) return error;
+  if (typeof error === "string" && error.trim()) return error;
   if (error instanceof Error && error.message) return error.message;
-  return 'Unknown terminal error.';
+  return "Unknown terminal error.";
 }
 
 /**
@@ -63,7 +63,7 @@ export class TerminalSession {
   private exited = false;
   private lastSeenSeq: number | null = null;
   private attachPending = false;
-  private backendTeardown: 'detach' | 'close' | null = null;
+  private backendTeardown: "detach" | "close" | null = null;
   private backendTeardownSent = false;
 
   private readonly pendingOutput: string[] = [];
@@ -93,7 +93,7 @@ export class TerminalSession {
 
     if (sessionId === null) {
       try {
-        const listed = await this.deps.invoke<Session[]>('sessions_list');
+        const listed = await this.deps.invoke<Session[]>("sessions_list");
         const restorable = pickRestorable(listed, this.deps.workspaceId);
         if (restorable !== null) {
           sessionId = restorable.id;
@@ -107,9 +107,9 @@ export class TerminalSession {
     if (sessionId === null) {
       let session: Session;
       try {
-        session = await this.deps.invoke<Session>('session_create', {
+        session = await this.deps.invoke<Session>("session_create", {
           workspace_id: this.deps.workspaceId,
-          kind: 'terminal',
+          kind: "terminal",
         });
       } catch (error: unknown) {
         this.showError(`Could not create the terminal session: ${errorMessage(error)}`);
@@ -157,7 +157,7 @@ export class TerminalSession {
     let attachError: unknown;
     this.attachPending = true;
     try {
-      await this.deps.invoke<void>('session_attach', {
+      await this.deps.invoke<void>("session_attach", {
         id: sessionId,
         // A new xterm host needs the retained scrollback replayed in full.
         // The registry cursor is bookkeeping for a future resume path.
@@ -197,7 +197,7 @@ export class TerminalSession {
 
     if (this.ctrlCArmed) {
       this.disarmCtrlC();
-      void this.writeToPty('\x03');
+      void this.writeToPty("\x03");
       return;
     }
 
@@ -230,13 +230,13 @@ export class TerminalSession {
     if (this.disposed || this.exited || this.sessionId === null) return;
     const sessionId = this.sessionId;
     try {
-      await this.deps.invoke<void>('session_send', { id: sessionId, text: data });
+      await this.deps.invoke<void>("session_send", { id: sessionId, text: data });
       this.writeFailCount = 0;
     } catch {
       if (this.disposed) return;
       this.writeFailCount += 1;
       if (this.writeFailCount >= WRITE_FAIL_THRESHOLD) {
-        this.showError('Could not send input to the terminal.');
+        this.showError("Could not send input to the terminal.");
       }
     }
   }
@@ -247,7 +247,7 @@ export class TerminalSession {
     this.disposed = true;
 
     this.disposeLocal();
-    this.backendTeardown = 'detach';
+    this.backendTeardown = "detach";
     this.requestBackendTeardown();
   }
 
@@ -257,7 +257,7 @@ export class TerminalSession {
     this.disposed = true;
 
     this.disposeLocal();
-    this.backendTeardown = 'close';
+    this.backendTeardown = "close";
     this.requestBackendTeardown();
   }
 
@@ -289,25 +289,25 @@ export class TerminalSession {
     if (this.disposed) return;
 
     switch (event.type) {
-      case 'exit':
+      case "exit":
         this.markExited(event.code);
         return;
-      case 'recovered':
+      case "recovered":
         this.markRecovered(event.truncated);
         return;
-      case 'journal_degraded':
+      case "journal_degraded":
         this.markJournalDegraded();
         return;
-      case 'output_gap':
+      case "output_gap":
         if (this.lastSeenSeq === null || event.toSeq > this.lastSeenSeq) {
           this.lastSeenSeq = event.toSeq;
           if (this.sessionId !== null) {
             this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.toSeq);
           }
-          this.deps.onBanner({ kind: 'output_gap', fromSeq: event.fromSeq, toSeq: event.toSeq });
+          this.deps.onBanner({ kind: "output_gap", fromSeq: event.fromSeq, toSeq: event.toSeq });
         }
         return;
-      case 'output':
+      case "output":
         if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
         this.lastSeenSeq = event.seq;
         if (this.sessionId !== null) {
@@ -327,7 +327,7 @@ export class TerminalSession {
       this.outputFrame = null;
       const view = this.view;
       if (view === null || this.pendingOutput.length === 0) return;
-      const output = this.pendingOutput.splice(0).join('');
+      const output = this.pendingOutput.splice(0).join("");
       view.write(output);
     });
   }
@@ -338,7 +338,7 @@ export class TerminalSession {
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
-    this.deps.onBanner({ kind: 'exited', code });
+    this.deps.onBanner({ kind: "exited", code });
     this.deps.onExited?.(code);
   }
 
@@ -348,13 +348,13 @@ export class TerminalSession {
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
-    this.deps.onBanner({ kind: 'recovered', truncated });
+    this.deps.onBanner({ kind: "recovered", truncated });
     this.deps.onExited?.(null);
   }
 
   private markJournalDegraded(): void {
     if (this.exited) return;
-    this.deps.onBanner({ kind: 'journal_degraded' });
+    this.deps.onBanner({ kind: "journal_degraded" });
   }
 
   private disarmCtrlC(): void {
@@ -376,7 +376,7 @@ export class TerminalSession {
     if (!fitted || cols <= 0 || rows <= 0) return;
 
     void this.deps
-      .invoke<void>('session_resize', { id: this.sessionId, cols, rows })
+      .invoke<void>("session_resize", { id: this.sessionId, cols, rows })
       .catch(() => undefined);
   }
 
@@ -392,7 +392,7 @@ export class TerminalSession {
   }
 
   private showError(message: string): void {
-    if (!this.disposed) this.deps.onBanner({ kind: 'error', message });
+    if (!this.disposed) this.deps.onBanner({ kind: "error", message });
   }
 
   private requestBackendTeardown(): void {
@@ -408,27 +408,27 @@ export class TerminalSession {
     const sessionId = this.sessionId;
     const teardown = this.backendTeardown;
     this.backendTeardownSent = true;
-    if (teardown === 'close') {
+    if (teardown === "close") {
       this.deps.registry.remove(this.deps.workspaceId, sessionId);
-      void this.deps.invoke<void>('session_close', { id: sessionId }).catch(() => undefined);
+      void this.deps.invoke<void>("session_close", { id: sessionId }).catch(() => undefined);
       return;
     }
 
-    void this.deps.invoke<void>('session_detach', { id: sessionId }).catch(() => undefined);
+    void this.deps.invoke<void>("session_detach", { id: sessionId }).catch(() => undefined);
   }
 }
 
 function isMissingSessionError(error: unknown): boolean {
-  return errorMessage(error).toLowerCase().includes('no session with that id');
+  return errorMessage(error).toLowerCase().includes("no session with that id");
 }
 
 function pickRestorable(sessions: Session[], workspaceId: string | null): Session | null {
   const same = sessions.filter(
-    (session) => session.kind === 'terminal' && (session.workspaceId ?? null) === workspaceId,
+    (session) => session.kind === "terminal" && (session.workspaceId ?? null) === workspaceId,
   );
-  const live = same.filter((session) => session.state.type === 'live');
+  const live = same.filter((session) => session.state.type === "live");
   if (live.length > 0) return live[live.length - 1] ?? null;
-  const recovered = same.filter((session) => session.state.type === 'recovered');
+  const recovered = same.filter((session) => session.state.type === "recovered");
   if (recovered.length > 0) return recovered[recovered.length - 1] ?? null;
   return null;
 }

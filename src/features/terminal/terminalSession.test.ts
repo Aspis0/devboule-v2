@@ -1,13 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TerminalViewHandle } from './createTerminalView';
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TerminalViewHandle } from "./createTerminalView";
 import {
   TerminalSession,
   type TerminalBanner,
   type TerminalChannel,
   type TerminalEvent,
   type TerminalSessionDeps,
-} from './terminalSession';
-import type { TerminalSessionRecord, TerminalSessionRegistry } from './terminalRegistry';
+} from "./terminalSession";
+import type { TerminalSessionRecord, TerminalSessionRegistry } from "./terminalRegistry";
 
 interface MockView extends TerminalViewHandle {
   written: string[];
@@ -51,7 +51,7 @@ function makeHarness(options?: {
       registeredSessionId === null
         ? null
         : {
-            workspaceId: 'rust-core',
+            workspaceId: "rust-core",
             sessionId: registeredSessionId,
             lastSeenSeq: null,
           },
@@ -88,23 +88,23 @@ function makeHarness(options?: {
   };
 
   const invoke = vi.fn(async (command: string) => {
-    if (command === 'sessions_list') {
+    if (command === "sessions_list") {
       return [];
     }
-    if (command === 'session_create') {
+    if (command === "session_create") {
       return {
-        id: 'session-1',
-        workspaceId: 'rust-core',
-        kind: 'terminal',
-        title: 'Terminal',
-        state: { type: 'live', generation: 1 },
+        id: "session-1",
+        workspaceId: "rust-core",
+        kind: "terminal",
+        title: "Terminal",
+        state: { type: "live", generation: 1 },
       };
     }
-    if (command === 'session_attach' && options?.deferAttach) {
+    if (command === "session_attach" && options?.deferAttach) {
       await attachGate;
     }
-    if (command === 'session_detach' && options?.rejectDetach) {
-      throw new Error('No session with that id.');
+    if (command === "session_detach" && options?.rejectDetach) {
+      throw new Error("No session with that id.");
     }
     return undefined;
   });
@@ -113,14 +113,14 @@ function makeHarness(options?: {
     onmessage: eventHandler,
   } as unknown as TerminalChannel;
   const deps: TerminalSessionDeps = {
-    workspaceId: 'rust-core',
+    workspaceId: "rust-core",
     host: {} as HTMLElement,
     createView: async () => view,
-    invoke: invoke as unknown as TerminalSessionDeps['invoke'],
+    invoke: invoke as unknown as TerminalSessionDeps["invoke"],
     registry,
     createChannel: (handler) => {
       eventHandler = handler;
-      Object.defineProperty(channel, 'onmessage', {
+      Object.defineProperty(channel, "onmessage", {
         configurable: true,
         get: () => eventHandler,
         set: (nextHandler: (event: TerminalEvent) => void) => {
@@ -161,118 +161,128 @@ function makeHarness(options?: {
   };
 }
 
-const outputEvent = (seq: number, data: string): TerminalEvent => ({ type: 'output', seq, data });
-const exitEvent = (code: number | null): TerminalEvent => ({ type: 'exit', code });
+const outputEvent = (seq: number, data: string): TerminalEvent => ({ type: "output", seq, data });
+const exitEvent = (code: number | null): TerminalEvent => ({ type: "exit", code });
 
-describe('TerminalSession startup and channel ordering', () => {
-  it('creates a terminal and attaches with a fresh null cursor', async () => {
+describe("TerminalSession startup and channel ordering", () => {
+  it("creates a terminal and attaches with a fresh null cursor", async () => {
     const harness = makeHarness();
     await harness.session.start();
 
-    expect(harness.invoke).toHaveBeenNthCalledWith(1, 'sessions_list');
-    expect(harness.invoke).toHaveBeenNthCalledWith(2, 'session_create', {
-      workspace_id: 'rust-core',
-      kind: 'terminal',
+    expect(harness.invoke).toHaveBeenNthCalledWith(1, "sessions_list");
+    expect(harness.invoke).toHaveBeenNthCalledWith(2, "session_create", {
+      workspace_id: "rust-core",
+      kind: "terminal",
     });
-    expect(harness.invoke).toHaveBeenNthCalledWith(3, 'session_attach', expect.objectContaining({
-      id: 'session-1',
-      from_cursor: null,
-      ch: expect.anything(),
-    }));
-    expect(harness.registry.register).toHaveBeenCalledWith('rust-core', 'session-1');
+    expect(harness.invoke).toHaveBeenNthCalledWith(
+      3,
+      "session_attach",
+      expect.objectContaining({
+        id: "session-1",
+        from_cursor: null,
+        ch: expect.anything(),
+      }),
+    );
+    expect(harness.registry.register).toHaveBeenCalledWith("rust-core", "session-1");
   });
 
-  it('adopts the registered session without creating another shell', async () => {
-    const harness = makeHarness({ existingSessionId: 'existing-session' });
+  it("adopts the registered session without creating another shell", async () => {
+    const harness = makeHarness({ existingSessionId: "existing-session" });
     await harness.session.start();
 
-    expect(harness.invoke).not.toHaveBeenCalledWith('session_create', expect.anything());
-    expect(harness.invoke).toHaveBeenCalledWith('session_attach', expect.objectContaining({
-      id: 'existing-session',
-      from_cursor: null,
-      ch: expect.anything(),
-    }));
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_create", expect.anything());
+    expect(harness.invoke).toHaveBeenCalledWith(
+      "session_attach",
+      expect.objectContaining({
+        id: "existing-session",
+        from_cursor: null,
+        ch: expect.anything(),
+      }),
+    );
     expect(harness.registry.register).not.toHaveBeenCalled();
   });
 
-  it('attaches a recovered transcript instead of creating a new shell', async () => {
+  it("attaches a recovered transcript instead of creating a new shell", async () => {
     const harness = makeHarness();
     harness.invoke.mockImplementation(async (command: string) => {
-      if (command === 'sessions_list') {
+      if (command === "sessions_list") {
         return [
           {
-            id: 's.old.1',
-            workspaceId: 'rust-core',
-            kind: 'terminal',
-            title: 'Terminal',
-            state: { type: 'recovered', generation: 1, truncated: false },
+            id: "s.old.1",
+            workspaceId: "rust-core",
+            kind: "terminal",
+            title: "Terminal",
+            state: { type: "recovered", generation: 1, truncated: false },
           },
         ];
       }
       return undefined;
     });
     await harness.session.start();
-    expect(harness.invoke).not.toHaveBeenCalledWith('session_create', expect.anything());
-    expect(harness.invoke).toHaveBeenCalledWith('session_attach', expect.objectContaining({
-      id: 's.old.1',
-      from_cursor: null,
-    }));
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_create", expect.anything());
+    expect(harness.invoke).toHaveBeenCalledWith(
+      "session_attach",
+      expect.objectContaining({
+        id: "s.old.1",
+        from_cursor: null,
+      }),
+    );
   });
 
-  it('batches channel output into one xterm write per animation frame', async () => {
+  it("batches channel output into one xterm write per animation frame", async () => {
     const harness = makeHarness();
     await harness.session.start();
 
-    harness.emit(outputEvent(1, 'one\n'));
-    harness.emit(outputEvent(2, 'two\n'));
-    harness.emit(outputEvent(3, 'three\n'));
+    harness.emit(outputEvent(1, "one\n"));
+    harness.emit(outputEvent(2, "two\n"));
+    harness.emit(outputEvent(3, "three\n"));
     expect(harness.view.written).toEqual([]);
 
     harness.flushFrame();
-    expect(harness.view.written).toEqual(['one\ntwo\nthree\n']);
+    expect(harness.view.written).toEqual(["one\ntwo\nthree\n"]);
   });
 
-  it('ignores a duplicate or stale sequence number', async () => {
+  it("ignores a duplicate or stale sequence number", async () => {
     const harness = makeHarness();
     await harness.session.start();
 
-    harness.emit(outputEvent(4, 'new'));
-    harness.emit(outputEvent(4, 'duplicate'));
-    harness.emit(outputEvent(3, 'stale'));
+    harness.emit(outputEvent(4, "new"));
+    harness.emit(outputEvent(4, "duplicate"));
+    harness.emit(outputEvent(3, "stale"));
     harness.flushFrame();
 
-    expect(harness.view.written).toEqual(['new']);
+    expect(harness.view.written).toEqual(["new"]);
   });
 });
 
-describe('TerminalSession lifecycle and errors', () => {
-  it('handles attach errors without closing the runtime-owned session', async () => {
+describe("TerminalSession lifecycle and errors", () => {
+  it("handles attach errors without closing the runtime-owned session", async () => {
     const harness = makeHarness();
     harness.invoke.mockImplementation(async (command: string) => {
-      if (command === 'sessions_list') return [];
-      if (command === 'session_create') {
+      if (command === "sessions_list") return [];
+      if (command === "session_create") {
         return {
-          id: 'session-1',
-          workspaceId: 'rust-core',
-          kind: 'terminal',
-          title: 'Terminal',
-          state: { type: 'live', generation: 1 },
+          id: "session-1",
+          workspaceId: "rust-core",
+          kind: "terminal",
+          title: "Terminal",
+          state: { type: "live", generation: 1 },
         };
       }
-      if (command === 'session_attach') throw 'No session with that id.';
+      if (command === "session_attach") throw "No session with that id.";
       return undefined;
     });
 
     await harness.session.start();
     expect(harness.banners).toContainEqual({
-      kind: 'error',
-      message: 'Could not attach to the terminal: No session with that id.',
+      kind: "error",
+      message: "Could not attach to the terminal: No session with that id.",
     });
     expect(harness.view.disposeCount).toBe(1);
-    expect(harness.invoke).not.toHaveBeenCalledWith('session_close', expect.anything());
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_close", expect.anything());
   });
 
-  it('detaches without closing when disposed during an in-flight attach', async () => {
+  it("detaches without closing when disposed during an in-flight attach", async () => {
     const harness = makeHarness({ deferAttach: true });
     const startPromise = harness.session.start();
     await Promise.resolve();
@@ -282,128 +292,145 @@ describe('TerminalSession lifecycle and errors', () => {
     harness.resolveAttach();
     await startPromise;
 
-    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(0);
-    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_detach')).toHaveLength(1);
-    expect(harness.invoke).toHaveBeenCalledWith('session_detach', { id: 'session-1' });
+    expect(
+      harness.invoke.mock.calls.filter(([command]) => command === "session_close"),
+    ).toHaveLength(0);
+    expect(
+      harness.invoke.mock.calls.filter(([command]) => command === "session_detach"),
+    ).toHaveLength(1);
+    expect(harness.invoke).toHaveBeenCalledWith("session_detach", { id: "session-1" });
     expect(harness.view.disposeCount).toBe(1);
   });
 
-  it('marks exit once and ignores writes after exit', async () => {
+  it("marks exit once and ignores writes after exit", async () => {
     const harness = makeHarness();
     await harness.session.start();
 
     harness.emit(exitEvent(7));
     harness.emit(exitEvent(7));
     harness.invoke.mockClear();
-    await harness.session.writeToPty('ignored');
+    await harness.session.writeToPty("ignored");
 
-    expect(harness.banners).toContainEqual({ kind: 'exited', code: 7 });
-    expect(harness.registry.remove).toHaveBeenCalledWith('rust-core', 'session-1');
+    expect(harness.banners).toContainEqual({ kind: "exited", code: 7 });
+    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
     expect(harness.invoke).not.toHaveBeenCalled();
   });
 
-  it('marks a recovered transcript without treating it as a live exit', async () => {
+  it("marks a recovered transcript without treating it as a live exit", async () => {
     const harness = makeHarness();
     await harness.session.start();
-    harness.emit(outputEvent(1, 'scrollback'));
+    harness.emit(outputEvent(1, "scrollback"));
     harness.flushFrame();
-    harness.emit({ type: 'recovered', truncated: false });
-    expect(harness.view.written).toEqual(['scrollback']);
-    expect(harness.banners).toContainEqual({ kind: 'recovered', truncated: false });
+    harness.emit({ type: "recovered", truncated: false });
+    expect(harness.view.written).toEqual(["scrollback"]);
+    expect(harness.banners).toContainEqual({ kind: "recovered", truncated: false });
     harness.invoke.mockClear();
-    await harness.session.writeToPty('ignored');
+    await harness.session.writeToPty("ignored");
     expect(harness.invoke).not.toHaveBeenCalled();
   });
 
-  it('shows the incomplete scrollback banner while the session is still live', async () => {
+  it("shows the incomplete scrollback banner while the session is still live", async () => {
     const harness = makeHarness();
     await harness.session.start();
 
-    harness.emit({ type: 'journal_degraded' });
-    harness.emit(outputEvent(1, 'output after degradation'));
+    harness.emit({ type: "journal_degraded" });
+    harness.emit(outputEvent(1, "output after degradation"));
     harness.flushFrame();
 
-    expect(harness.banners).toContainEqual({ kind: 'journal_degraded' });
-    expect(harness.view.written).toEqual(['output after degradation']);
+    expect(harness.banners).toContainEqual({ kind: "journal_degraded" });
+    expect(harness.view.written).toEqual(["output after degradation"]);
     expect(harness.registry.remove).not.toHaveBeenCalled();
   });
 
-  it('declares an output gap and advances the reconnect cursor', async () => {
+  it("declares an output gap and advances the reconnect cursor", async () => {
     const harness = makeHarness();
     await harness.session.start();
 
     harness.emit({
-      type: 'output_gap',
+      type: "output_gap",
       fromSeq: 2,
       toSeq: 4,
       droppedBytes: 30,
       droppedFrames: 3,
     });
-    harness.emit(outputEvent(5, 'after gap'));
+    harness.emit(outputEvent(5, "after gap"));
     harness.flushFrame();
 
-    expect(harness.banners).toContainEqual({ kind: 'output_gap', fromSeq: 2, toSeq: 4 });
-    expect(harness.registry.updateCursor).toHaveBeenCalledWith('rust-core', 'session-1', 4);
-    expect(harness.view.written).toEqual(['after gap']);
+    expect(harness.banners).toContainEqual({ kind: "output_gap", fromSeq: 2, toSeq: 4 });
+    expect(harness.registry.updateCursor).toHaveBeenCalledWith("rust-core", "session-1", 4);
+    expect(harness.view.written).toEqual(["after gap"]);
   });
 
-  it('ignores unknown event types instead of treating them as output', async () => {
+  it("ignores unknown event types instead of treating them as output", async () => {
     const harness = makeHarness();
     await harness.session.start();
-    harness.emit({ type: 'permission' } as unknown as TerminalEvent);
+    harness.emit({ type: "permission" } as unknown as TerminalEvent);
     harness.flushFrame();
     expect(harness.view.written).toEqual([]);
   });
 
-  it('makes dispose idempotent and suppresses late output', async () => {
+  it("makes dispose idempotent and suppresses late output", async () => {
     const harness = makeHarness();
     await harness.session.start();
 
     harness.session.dispose();
     harness.session.dispose();
-    harness.emit(outputEvent(1, 'late'));
+    harness.emit(outputEvent(1, "late"));
     harness.flushFrame();
 
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.view.written).toEqual([]);
-    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(0);
-    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_detach')).toHaveLength(1);
-    expect(harness.invoke).toHaveBeenCalledWith('session_detach', { id: 'session-1' });
+    expect(
+      harness.invoke.mock.calls.filter(([command]) => command === "session_close"),
+    ).toHaveLength(0);
+    expect(
+      harness.invoke.mock.calls.filter(([command]) => command === "session_detach"),
+    ).toHaveLength(1);
+    expect(harness.invoke).toHaveBeenCalledWith("session_detach", { id: "session-1" });
   });
 
-  it('still disposes and removes the listener when detach is rejected', async () => {
+  it("still disposes and removes the listener when detach is rejected", async () => {
     const harness = makeHarness({ rejectDetach: true });
     await harness.session.start();
 
     harness.session.dispose();
-    harness.emit(outputEvent(1, 'late'));
+    harness.emit(outputEvent(1, "late"));
     harness.flushFrame();
 
-    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_detach')).toHaveLength(1);
+    expect(
+      harness.invoke.mock.calls.filter(([command]) => command === "session_detach"),
+    ).toHaveLength(1);
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.view.written).toEqual([]);
-    expect(harness.banners).not.toContainEqual({ kind: 'error', message: 'No session with that id.' });
+    expect(harness.banners).not.toContainEqual({
+      kind: "error",
+      message: "No session with that id.",
+    });
   });
 
-  it('closes the session only when explicitly requested', async () => {
+  it("closes the session only when explicitly requested", async () => {
     const harness = makeHarness();
     await harness.session.start();
 
     harness.session.close();
     harness.session.close();
 
-    expect(harness.registry.remove).toHaveBeenCalledWith('rust-core', 'session-1');
-    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_close')).toHaveLength(1);
-    expect(harness.invoke.mock.calls.filter(([command]) => command === 'session_detach')).toHaveLength(0);
+    expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
+    expect(
+      harness.invoke.mock.calls.filter(([command]) => command === "session_close"),
+    ).toHaveLength(1);
+    expect(
+      harness.invoke.mock.calls.filter(([command]) => command === "session_detach"),
+    ).toHaveLength(0);
     expect(harness.view.disposeCount).toBe(1);
   });
 });
 
-describe('TerminalSession resize and Ctrl+C', () => {
+describe("TerminalSession resize and Ctrl+C", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('resizes once at startup and coalesces subsequent changes', async () => {
+  it("resizes once at startup and coalesces subsequent changes", async () => {
     const harness = makeHarness();
     await harness.session.start();
     const initialFitCount = harness.view.fitCount;
@@ -417,42 +444,45 @@ describe('TerminalSession resize and Ctrl+C', () => {
     vi.advanceTimersByTime(1);
     expect(harness.view.fitCount).toBe(initialFitCount + 1);
     expect(harness.invoke).toHaveBeenCalledTimes(1);
-    expect(harness.invoke).toHaveBeenCalledWith('session_resize', {
-      id: 'session-1',
+    expect(harness.invoke).toHaveBeenCalledWith("session_resize", {
+      id: "session-1",
       cols: 80,
       rows: 24,
     });
   });
 
-  it('does not report geometry when fit fails or dimensions are degenerate', async () => {
+  it("does not report geometry when fit fails or dimensions are degenerate", async () => {
     const fitHarness = makeHarness();
     fitHarness.view.fitOk.value = false;
     await fitHarness.session.start();
-    expect(fitHarness.invoke).not.toHaveBeenCalledWith('session_resize', expect.anything());
+    expect(fitHarness.invoke).not.toHaveBeenCalledWith("session_resize", expect.anything());
 
     const sizeHarness = makeHarness();
     sizeHarness.view.geometry.cols = 0;
     sizeHarness.view.geometry.rows = 0;
     await sizeHarness.session.start();
-    expect(sizeHarness.invoke).not.toHaveBeenCalledWith('session_resize', expect.anything());
+    expect(sizeHarness.invoke).not.toHaveBeenCalledWith("session_resize", expect.anything());
   });
 
-  it('arms Ctrl+C first and sends ETX only on confirmation', async () => {
+  it("arms Ctrl+C first and sends ETX only on confirmation", async () => {
     const harness = makeHarness();
     await harness.session.start();
     harness.invoke.mockClear();
 
     harness.session.requestCtrlC();
     expect(harness.ctrlCStates).toEqual([true]);
-    expect(harness.invoke).not.toHaveBeenCalledWith('session_send', { id: 'session-1', text: '\x03' });
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_send", {
+      id: "session-1",
+      text: "\x03",
+    });
 
     harness.session.requestCtrlC();
     await Promise.resolve();
     expect(harness.ctrlCStates).toEqual([true, false]);
-    expect(harness.invoke).toHaveBeenCalledWith('session_send', { id: 'session-1', text: '\x03' });
+    expect(harness.invoke).toHaveBeenCalledWith("session_send", { id: "session-1", text: "\x03" });
   });
 
-  it('auto-disarms Ctrl+C without sending after three seconds', async () => {
+  it("auto-disarms Ctrl+C without sending after three seconds", async () => {
     const harness = makeHarness();
     await harness.session.start();
     harness.invoke.mockClear();
@@ -461,32 +491,38 @@ describe('TerminalSession resize and Ctrl+C', () => {
     vi.advanceTimersByTime(3000);
 
     expect(harness.ctrlCStates).toEqual([true, false]);
-    expect(harness.invoke).not.toHaveBeenCalledWith('session_send', expect.anything());
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_send", expect.anything());
   });
 });
 
-describe('TerminalSession write failures', () => {
-  it('catches backend errors and surfaces a banner after repeated failures', async () => {
+describe("TerminalSession write failures", () => {
+  it("catches backend errors and surfaces a banner after repeated failures", async () => {
     const harness = makeHarness();
     await harness.session.start();
     harness.invoke.mockImplementation(async (command: string) => {
-      if (command === 'sessions_list') return [];
-      if (command === 'session_create') {
+      if (command === "sessions_list") return [];
+      if (command === "session_create") {
         return {
-          id: 'session-1',
-          workspaceId: 'rust-core',
-          kind: 'terminal',
-          title: 'Terminal',
-          state: { type: 'live', generation: 1 },
+          id: "session-1",
+          workspaceId: "rust-core",
+          kind: "terminal",
+          title: "Terminal",
+          state: { type: "live", generation: 1 },
         };
       }
-      if (command === 'session_send') throw new Error('dead pipe');
+      if (command === "session_send") throw new Error("dead pipe");
       return undefined;
     });
 
-    await harness.session.writeToPty('a');
-    expect(harness.banners).not.toContainEqual({ kind: 'error', message: 'Could not send input to the terminal.' });
-    await harness.session.writeToPty('b');
-    expect(harness.banners).toContainEqual({ kind: 'error', message: 'Could not send input to the terminal.' });
+    await harness.session.writeToPty("a");
+    expect(harness.banners).not.toContainEqual({
+      kind: "error",
+      message: "Could not send input to the terminal.",
+    });
+    await harness.session.writeToPty("b");
+    expect(harness.banners).toContainEqual({
+      kind: "error",
+      message: "Could not send input to the terminal.",
+    });
   });
 });

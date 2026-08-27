@@ -1,9 +1,9 @@
 // This module is loaded only through the terminal surface's dynamic import so
 // the xterm runtime and stylesheet stay out of the initial application chunk.
-import { FitAddon } from '@xterm/addon-fit';
-import { Terminal } from '@xterm/xterm';
-import '@xterm/xterm/css/xterm.css';
-import { terminalKeyPolicy } from './terminalKeyPolicy';
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
+import "@xterm/xterm/css/xterm.css";
+import { terminalKeyPolicy } from "./terminalKeyPolicy";
 
 const SCROLLBACK = 5000;
 const FONT_SIZE = 12;
@@ -11,34 +11,36 @@ const FONT_SIZE = 12;
 function paletteColor(host: HTMLElement, variable: string): string {
   const hostColor = getComputedStyle(host).getPropertyValue(variable).trim();
   if (hostColor) return hostColor;
-  return getComputedStyle(document.documentElement).getPropertyValue(variable).trim() || 'transparent';
+  return (
+    getComputedStyle(document.documentElement).getPropertyValue(variable).trim() || "transparent"
+  );
 }
 
 function terminalTheme(host: HTMLElement) {
   const color = (variable: string) => paletteColor(host, variable);
 
   return {
-    background: color('--ink'),
-    foreground: color('--surface'),
-    cursor: color('--terracotta'),
-    cursorAccent: color('--ink'),
-    selectionBackground: color('--selection'),
-    black: color('--ink'),
-    red: color('--danger'),
-    green: color('--green'),
-    yellow: color('--ochre'),
-    blue: color('--purple'),
-    magenta: color('--terracotta-deep'),
-    cyan: color('--green'),
-    white: color('--surface'),
-    brightBlack: color('--terminal-silence'),
-    brightRed: color('--danger'),
-    brightGreen: color('--green'),
-    brightYellow: color('--ochre'),
-    brightBlue: color('--purple'),
-    brightMagenta: color('--terracotta'),
-    brightCyan: color('--green'),
-    brightWhite: color('--white'),
+    background: color("--ink"),
+    foreground: color("--surface"),
+    cursor: color("--terracotta"),
+    cursorAccent: color("--ink"),
+    selectionBackground: color("--selection"),
+    black: color("--ink"),
+    red: color("--danger"),
+    green: color("--green"),
+    yellow: color("--ochre"),
+    blue: color("--purple"),
+    magenta: color("--terracotta-deep"),
+    cyan: color("--green"),
+    white: color("--surface"),
+    brightBlack: color("--terminal-silence"),
+    brightRed: color("--danger"),
+    brightGreen: color("--green"),
+    brightYellow: color("--ochre"),
+    brightBlue: color("--purple"),
+    brightMagenta: color("--terracotta"),
+    brightCyan: color("--green"),
+    brightWhite: color("--white"),
   };
 }
 

@@ -1,5 +1,5 @@
-import { create } from 'zustand';
-import type { SurfaceKey } from '../types/surface';
+import { create } from "zustand";
+import type { SurfaceKey } from "../types/surface";
 
 interface AppState {
   activeSurface: SurfaceKey;
@@ -7,6 +7,6 @@ interface AppState {
 }
 
 export const useAppStore = create<AppState>((set) => ({
-  activeSurface: 'workspace',
+  activeSurface: "workspace",
   selectSurface: (activeSurface) => set({ activeSurface }),
 }));

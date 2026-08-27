@@ -15,17 +15,17 @@ export interface Workspace {
   id: Id;
   projectId: Id;
   title: string;
-  isolation: 'local' | 'worktree';
+  isolation: "local" | "worktree";
 }
 
-export type SessionKind = 'terminal' | 'acp';
-export type SendIntent = 'interrupt' | 'steer' | 'queue';
-export type PermissionOutcome = 'allow_once' | 'deny';
+export type SessionKind = "terminal" | "acp";
+export type SendIntent = "interrupt" | "steer" | "queue";
+export type PermissionOutcome = "allow_once" | "deny";
 
 export type SessionState =
-  | { type: 'live'; generation: number }
-  | { type: 'ended'; generation: number; code: number | null }
-  | { type: 'recovered'; generation: number; truncated: boolean };
+  | { type: "live"; generation: number }
+  | { type: "ended"; generation: number; code: number | null }
+  | { type: "recovered"; generation: number; truncated: boolean };
 
 export interface Session {
   id: Id;
@@ -36,19 +36,19 @@ export interface Session {
 }
 
 export type SessionEvent =
-  | { type: 'output'; seq: number; data: string }
-  | { type: 'exit'; code: number | null }
-  | { type: 'recovered'; truncated: boolean }
-  | { type: 'journal_degraded' }
+  | { type: "output"; seq: number; data: string }
+  | { type: "exit"; code: number | null }
+  | { type: "recovered"; truncated: boolean }
+  | { type: "journal_degraded" }
   | {
-      type: 'output_gap';
+      type: "output_gap";
       fromSeq: number;
       toSeq: number;
       droppedBytes: number;
       droppedFrames: number;
     };
 
-export type DaemonConnectionState = 'connected' | 'connecting' | 'disconnected' | 'error';
+export type DaemonConnectionState = "connected" | "connecting" | "disconnected" | "error";
 
 export interface DaemonStatus {
   state: DaemonConnectionState;
@@ -72,7 +72,7 @@ export interface ModelInfo {
   thinkingLevels: string[];
 }
 
-export type FileTab = 'all' | 'recent' | 'stale';
+export type FileTab = "all" | "recent" | "stale";
 
 export interface IndexedFile {
   path: string;

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent } from "react";
 import {
   getOracleChecks,
   ORACLE_ANSWER,
@@ -15,20 +15,20 @@ import {
   ORACLE_LLM,
   ORACLE_STATS,
   type OracleFileTab,
-} from './mockData';
-import './oracle.css';
+} from "./mockData";
+import "./oracle.css";
 
-const ORACLE_FILE_PANEL_ID = 'oracle-file-panel';
+const ORACLE_FILE_PANEL_ID = "oracle-file-panel";
 
 export function OraclePanel() {
-  const [oracleQuery, setOracleQuery] = useState('');
+  const [oracleQuery, setOracleQuery] = useState("");
   const [oracleAnswer, setOracleAnswer] = useState(ORACLE_ANSWER);
   const [oracleStreaming, setOracleStreaming] = useState(false);
   const [providerKeyPresent, setProviderKeyPresent] = useState(true);
   const [doctorRun, setDoctorRun] = useState(false);
   const [watching, setWatching] = useState(true);
   const [jobActive, setJobActive] = useState(false);
-  const [fileTab, setFileTab] = useState<OracleFileTab>('indexed');
+  const [fileTab, setFileTab] = useState<OracleFileTab>("indexed");
   const streamTimerRef = useRef<number | null>(null);
 
   function clearOracleStream() {
@@ -42,7 +42,7 @@ export function OraclePanel() {
 
   function streamOracle() {
     clearOracleStream();
-    setOracleAnswer('');
+    setOracleAnswer("");
     setOracleStreaming(true);
 
     let index = 0;
@@ -64,28 +64,31 @@ export function OraclePanel() {
   }
 
   function handleQueryKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === 'Enter') {
+    if (event.key === "Enter") {
       event.preventDefault();
       oracleAsk();
     }
   }
 
   const orChecks = getOracleChecks(doctorRun, providerKeyPresent);
-  const orServerLabel = jobActive ? 'indexing' : watching ? 'running' : 'starting…';
-  const orWatchLabel = jobActive ? 'running' : watching ? 'watching' : 'idle';
+  const orServerLabel = jobActive ? "indexing" : watching ? "running" : "starting…";
+  const orWatchLabel = jobActive ? "running" : watching ? "watching" : "idle";
   const orFiles2 = ORACLE_FILES[fileTab];
   const orRetrievalOnly = !providerKeyPresent;
-  const orLlmLine = orRetrievalOnly
-    ? ORACLE_LLM.missingLine
-    : ORACLE_LLM.readyLine;
-  const orLlmState = orRetrievalOnly ? 'missing api key' : 'configured';
+  const orLlmLine = orRetrievalOnly ? ORACLE_LLM.missingLine : ORACLE_LLM.readyLine;
+  const orLlmState = orRetrievalOnly ? "missing api key" : "configured";
   const orAnswerBy = orRetrievalOnly ? ORACLE_LLM.missingAnswerBy : ORACLE_LLM.readyAnswerBy;
   const stats = useMemo(
-    () => ORACLE_STATS.map((stat) => (
-      stat.label === 'Pending'
-        ? { ...stat, value: jobActive ? '902' : '0', kind: jobActive ? 'warning' as const : 'normal' as const }
-        : stat
-    )),
+    () =>
+      ORACLE_STATS.map((stat) =>
+        stat.label === "Pending"
+          ? {
+              ...stat,
+              value: jobActive ? "902" : "0",
+              kind: jobActive ? ("warning" as const) : ("normal" as const),
+            }
+          : stat,
+      ),
     [jobActive],
   );
 
@@ -99,7 +102,7 @@ export function OraclePanel() {
       <div className="oracle-health" aria-label="Oracle health">
         <span className="oracle-server-state">
           <span
-            className={`oracle-server-dot oracle-server-dot-${jobActive ? 'indexing' : watching ? 'running' : 'starting'}`}
+            className={`oracle-server-dot oracle-server-dot-${jobActive ? "indexing" : watching ? "running" : "starting"}`}
             aria-hidden="true"
           />
           <span>{orServerLabel}</span>
@@ -108,20 +111,31 @@ export function OraclePanel() {
         <span className="oracle-checks" aria-label="Doctor checks">
           {orChecks.map((check) => (
             <span className="oracle-check" key={check.id} title={check.title}>
-              <span className={`oracle-check-dot oracle-check-dot-${check.ok ? 'ok' : doctorRun ? 'failed' : 'idle'}`} aria-hidden="true" />
+              <span
+                className={`oracle-check-dot oracle-check-dot-${check.ok ? "ok" : doctorRun ? "failed" : "idle"}`}
+                aria-hidden="true"
+              />
               <span>{check.id}</span>
             </span>
           ))}
         </span>
         <span className="oracle-health-divider" aria-hidden="true" />
-        <span className="oracle-health-summary">{ORACLE_FILE_COUNT} files · {ORACLE_CHUNK_COUNT} chunks · {ORACLE_BACKEND}</span>
-        <button className="oracle-button oracle-button-secondary oracle-doctor-button" type="button" onClick={() => setDoctorRun(true)}>
-          {doctorRun ? '5/6 checks pass' : 'Run doctor'}
+        <span className="oracle-health-summary">
+          {ORACLE_FILE_COUNT} files · {ORACLE_CHUNK_COUNT} chunks · {ORACLE_BACKEND}
+        </span>
+        <button
+          className="oracle-button oracle-button-secondary oracle-doctor-button"
+          type="button"
+          onClick={() => setDoctorRun(true)}
+        >
+          {doctorRun ? "5/6 checks pass" : "Run doctor"}
         </button>
       </div>
 
       <form className="oracle-search" onSubmit={oracleAsk}>
-        <span className="oracle-search-mark" aria-hidden="true">?</span>
+        <span className="oracle-search-mark" aria-hidden="true">
+          ?
+        </span>
         <input
           value={oracleQuery}
           onChange={(event) => setOracleQuery(event.target.value)}
@@ -129,7 +143,9 @@ export function OraclePanel() {
           placeholder="Ask the index — e.g. where the workspace root is resolved"
           aria-label="Ask the Oracle index"
         />
-        <button className="oracle-button oracle-button-primary" type="submit">Ask</button>
+        <button className="oracle-button oracle-button-primary" type="submit">
+          Ask
+        </button>
       </form>
 
       <div className="oracle-answer-card">
@@ -144,20 +160,25 @@ export function OraclePanel() {
         )}
         <div className="oracle-citations" aria-label="Answer citations">
           {ORACLE_CITATIONS.map((citation) => (
-            <button className="oracle-citation" type="button" key={citation.label} title={citation.title}>
+            <button
+              className="oracle-citation"
+              type="button"
+              key={citation.label}
+              title={citation.title}
+            >
               {citation.label}
             </button>
           ))}
         </div>
-        <div className="oracle-answer-by">
-          Answer by {orAnswerBy}
-        </div>
+        <div className="oracle-answer-by">Answer by {orAnswerBy}</div>
       </div>
 
       <div className="oracle-section-heading">
         <span>Workspace</span>
         <span>the folder Oracle indexes</span>
-        <span className={`oracle-watch-badge oracle-watch-badge-${jobActive ? 'running' : watching ? 'watching' : 'idle'}`}>
+        <span
+          className={`oracle-watch-badge oracle-watch-badge-${jobActive ? "running" : watching ? "watching" : "idle"}`}
+        >
           {orWatchLabel}
         </span>
       </div>
@@ -166,19 +187,33 @@ export function OraclePanel() {
         <div className="oracle-eyebrow">Indexed folder</div>
         <div className="oracle-folder-row">
           <span className="oracle-path">{ORACLE_INDEXED_FOLDER}</span>
-          <button className="oracle-button oracle-button-secondary oracle-change-button" type="button">Change</button>
+          <button
+            className="oracle-button oracle-button-secondary oracle-change-button"
+            type="button"
+          >
+            Change
+          </button>
         </div>
-        <div className="oracle-folder-meta">→ data in <span>{ORACLE_DATA_DIR}</span></div>
+        <div className="oracle-folder-meta">
+          → data in <span>{ORACLE_DATA_DIR}</span>
+        </div>
         <div className="oracle-folder-ok">✓ Workspace is set — Oracle indexes this folder.</div>
 
         {jobActive && (
           <div className="oracle-job" aria-label="Indexing progress">
             <div className="oracle-job-heading">
-              <span>Indexing… {ORACLE_INDEXING_PROGRESS.indexed} / {ORACLE_INDEXING_PROGRESS.expected}<span className="oracle-muted"> · {ORACLE_INDEXING_PROGRESS.eta}</span></span>
+              <span>
+                Indexing… {ORACLE_INDEXING_PROGRESS.indexed} / {ORACLE_INDEXING_PROGRESS.expected}
+                <span className="oracle-muted"> · {ORACLE_INDEXING_PROGRESS.eta}</span>
+              </span>
               <span>{ORACLE_INDEXING_PROGRESS.percentage}</span>
             </div>
-            <div className="oracle-progress-track"><div className="oracle-progress-fill" /></div>
-            <div className="oracle-job-note">The first batch is the slowest — the embedding model is warming up.</div>
+            <div className="oracle-progress-track">
+              <div className="oracle-progress-fill" />
+            </div>
+            <div className="oracle-job-note">
+              The first batch is the slowest — the embedding model is warming up.
+            </div>
           </div>
         )}
 
@@ -192,9 +227,30 @@ export function OraclePanel() {
         </div>
 
         <div className="oracle-actions">
-          <button className="oracle-button oracle-button-primary" type="button" onClick={() => setJobActive(true)}>Index now</button>
-          <button className="oracle-button oracle-button-secondary" type="button" onClick={() => setWatching(true)}>Watch</button>
-          <button className="oracle-button oracle-button-secondary oracle-stop-button" type="button" onClick={() => { setWatching(false); setJobActive(false); }}>Stop</button>
+          <button
+            className="oracle-button oracle-button-primary"
+            type="button"
+            onClick={() => setJobActive(true)}
+          >
+            Index now
+          </button>
+          <button
+            className="oracle-button oracle-button-secondary"
+            type="button"
+            onClick={() => setWatching(true)}
+          >
+            Watch
+          </button>
+          <button
+            className="oracle-button oracle-button-secondary oracle-stop-button"
+            type="button"
+            onClick={() => {
+              setWatching(false);
+              setJobActive(false);
+            }}
+          >
+            Stop
+          </button>
         </div>
       </div>
 
@@ -202,7 +258,7 @@ export function OraclePanel() {
         <div className="oracle-file-tabs" role="tablist" aria-label="Oracle files">
           {ORACLE_FILE_TABS.map((tab) => (
             <button
-              className={`oracle-file-tab${fileTab === tab.id ? ' oracle-file-tab-active' : ''}`}
+              className={`oracle-file-tab${fileTab === tab.id ? " oracle-file-tab-active" : ""}`}
               type="button"
               role="tab"
               aria-selected={fileTab === tab.id}
@@ -219,7 +275,12 @@ export function OraclePanel() {
         <span className="oracle-filter-pill">Filter files</span>
       </div>
 
-      <div id={ORACLE_FILE_PANEL_ID} className="oracle-file-list" role="tabpanel" aria-label="Oracle files">
+      <div
+        id={ORACLE_FILE_PANEL_ID}
+        className="oracle-file-list"
+        role="tabpanel"
+        aria-label="Oracle files"
+      >
         {orFiles2.map((file) => (
           <div className="oracle-file-row" key={file.path}>
             <span className="oracle-file-path">{file.path}</span>
@@ -228,7 +289,9 @@ export function OraclePanel() {
           </div>
         ))}
         <div className="oracle-page-label">
-          {fileTab === 'pending' ? 'Nothing pending — the watcher is caught up.' : 'Showing 100 per page'}
+          {fileTab === "pending"
+            ? "Nothing pending — the watcher is caught up."
+            : "Showing 100 per page"}
         </div>
       </div>
 
@@ -244,16 +307,26 @@ export function OraclePanel() {
             <span className="oracle-secondary-title">Oracle LLM</span>
             <span className="oracle-secondary-line">{orLlmLine}</span>
           </span>
-          <span className={`oracle-secondary-state oracle-secondary-state-${providerKeyPresent ? 'ready' : 'missing'}`}>{orLlmState}</span>
-          <span className="oracle-secondary-chevron" aria-hidden="true">▸</span>
+          <span
+            className={`oracle-secondary-state oracle-secondary-state-${providerKeyPresent ? "ready" : "missing"}`}
+          >
+            {orLlmState}
+          </span>
+          <span className="oracle-secondary-chevron" aria-hidden="true">
+            ▸
+          </span>
         </button>
         <div className="oracle-secondary-card">
           <span>
             <span className="oracle-secondary-title">CLI Agents</span>
-            <span className="oracle-secondary-line">Register the Oracle MCP server in the local Claude and Codex config.</span>
+            <span className="oracle-secondary-line">
+              Register the Oracle MCP server in the local Claude and Codex config.
+            </span>
           </span>
           <span className="oracle-secondary-state oracle-secondary-state-ready">2 registered</span>
-          <span className="oracle-secondary-chevron" aria-hidden="true">▸</span>
+          <span className="oracle-secondary-chevron" aria-hidden="true">
+            ▸
+          </span>
         </div>
       </div>
     </div>

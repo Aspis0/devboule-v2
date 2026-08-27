@@ -1,4 +1,4 @@
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AnswerChunk,
   DaemonStatus,
@@ -13,7 +13,7 @@ import type {
   SessionEvent,
   SessionKind,
   Workspace,
-} from '../types/ipc';
+} from "../types/ipc";
 
 type CommandArgs = {
   app_identity: undefined;
@@ -21,7 +21,7 @@ type CommandArgs = {
   projects_list: undefined;
   project_add: { path: string };
   workspaces_list: { project_id: Id };
-  workspace_create: { project_id: Id; isolation: Workspace['isolation']; branch?: string | null };
+  workspace_create: { project_id: Id; isolation: Workspace["isolation"]; branch?: string | null };
   session_create: { workspace_id: Id | null; kind: SessionKind };
   session_attach: { id: Id; from_cursor: number | null; ch: SessionChannel };
   session_send: { id: Id; text: string };
@@ -92,34 +92,32 @@ export function invokeTyped<K extends CommandName>(
   return invoke<CommandResults[K]>(command, payload as never);
 }
 
-export const appIdentity = () => invokeTyped('app_identity');
-export const daemonStatus = () => invokeTyped('daemon_status');
-export const projectsList = () => invokeTyped('projects_list');
-export const projectAdd = (path: string) => invokeTyped('project_add', { path });
+export const appIdentity = () => invokeTyped("app_identity");
+export const daemonStatus = () => invokeTyped("daemon_status");
+export const projectsList = () => invokeTyped("projects_list");
+export const projectAdd = (path: string) => invokeTyped("project_add", { path });
 export const workspacesList = (projectId: Id) =>
-  invokeTyped('workspaces_list', { project_id: projectId });
+  invokeTyped("workspaces_list", { project_id: projectId });
 export const workspaceCreate = (
   projectId: Id,
-  isolation: Workspace['isolation'],
+  isolation: Workspace["isolation"],
   branch?: string,
-) => invokeTyped('workspace_create', { project_id: projectId, isolation, branch });
-export const sessionCreate = (workspaceId: Id | null, kind: SessionKind = 'terminal') =>
-  invokeTyped('session_create', { workspace_id: workspaceId, kind });
+) => invokeTyped("workspace_create", { project_id: projectId, isolation, branch });
+export const sessionCreate = (workspaceId: Id | null, kind: SessionKind = "terminal") =>
+  invokeTyped("session_create", { workspace_id: workspaceId, kind });
 export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChannel) =>
-  invokeTyped('session_attach', { id, from_cursor: fromCursor, ch });
-export const sessionSend = (id: Id, text: string) =>
-  invokeTyped('session_send', { id, text });
-export const sessionInterrupt = (id: Id) => invokeTyped('session_interrupt', { id });
-export const sessionPermissionRespond = (
-  id: Id,
-  requestId: Id,
-  outcome: PermissionOutcome,
-) => invokeTyped('session_permission_respond', { id, request_id: requestId, outcome });
+  invokeTyped("session_attach", { id, from_cursor: fromCursor, ch });
+export const sessionSend = (id: Id, text: string) => invokeTyped("session_send", { id, text });
+export const sessionInterrupt = (id: Id) => invokeTyped("session_interrupt", { id });
+export const sessionPermissionRespond = (id: Id, requestId: Id, outcome: PermissionOutcome) =>
+  invokeTyped("session_permission_respond", { id, request_id: requestId, outcome });
 export const sessionResize = (id: Id, cols: number, rows: number) =>
-  invokeTyped('session_resize', { id, cols, rows });
-export const sessionDetach = (id: Id) => invokeTyped('session_detach', { id });
-export const sessionClose = (id: Id) => invokeTyped('session_close', { id });
-export const providersList = () => invokeTyped('providers_list');
-export const providerModels = (provider: string) => invokeTyped('provider_models', { provider });
-export const oracleFiles = (tab: FileTab, page: number) => invokeTyped('oracle_files', { tab, page });
-export const oracleAsk = (query: string, ch: AnswerChannel) => invokeTyped('oracle_ask', { query, ch });
+  invokeTyped("session_resize", { id, cols, rows });
+export const sessionDetach = (id: Id) => invokeTyped("session_detach", { id });
+export const sessionClose = (id: Id) => invokeTyped("session_close", { id });
+export const providersList = () => invokeTyped("providers_list");
+export const providerModels = (provider: string) => invokeTyped("provider_models", { provider });
+export const oracleFiles = (tab: FileTab, page: number) =>
+  invokeTyped("oracle_files", { tab, page });
+export const oracleAsk = (query: string, ch: AnswerChannel) =>
+  invokeTyped("oracle_ask", { query, ch });

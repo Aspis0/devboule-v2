@@ -1,4 +1,4 @@
-import type { SurfaceDefinition } from '../types/surface';
+import type { SurfaceDefinition } from "../types/surface";
 
 interface SurfacePlaceholderProps {
   surface: SurfaceDefinition;
@@ -25,7 +25,9 @@ export function SurfacePlaceholder({ surface }: SurfacePlaceholderProps) {
           </div>
           <h2 id={`${surface.key}-title`}>{surface.label} surface</h2>
           <p>{surface.description}</p>
-          <span className="placeholder-note">Navigation is live · content lands in its milestone</span>
+          <span className="placeholder-note">
+            Navigation is live · content lands in its milestone
+          </span>
         </div>
       </div>
     </section>

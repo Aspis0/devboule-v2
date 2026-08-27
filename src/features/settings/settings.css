@@ -21,7 +21,7 @@
 
 .settings-header h1 {
   margin: 0;
-  font-family: 'Fraunces', Georgia, serif;
+  font-family: "Fraunces", Georgia, serif;
   font-size: 16px;
   font-weight: 600;
 }
@@ -35,7 +35,7 @@
 .settings-eyebrow {
   overflow: hidden;
   color: var(--silence);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -128,7 +128,7 @@
 
 .settings-page-heading h2 {
   margin: 0;
-  font-family: 'Fraunces', Georgia, serif;
+  font-family: "Fraunces", Georgia, serif;
   font-size: 20px;
   font-weight: 600;
 }
@@ -180,15 +180,23 @@
   place-items: center;
   color: var(--surface);
   border-radius: 8px;
-  font-family: 'Fraunces', Georgia, serif;
+  font-family: "Fraunces", Georgia, serif;
   font-size: 12px;
   font-weight: 600;
 }
 
-.provider-mark-purple { background: var(--purple); }
-.provider-mark-terracotta { background: var(--terracotta-deep); }
-.provider-mark-green { background: var(--green); }
-.provider-mark-ochre { background: var(--ochre-deep); }
+.provider-mark-purple {
+  background: var(--purple);
+}
+.provider-mark-terracotta {
+  background: var(--terracotta-deep);
+}
+.provider-mark-green {
+  background: var(--green);
+}
+.provider-mark-ochre {
+  background: var(--ochre-deep);
+}
 
 .provider-copy,
 .settings-card-copy,
@@ -213,7 +221,7 @@
 .settings-card-meta {
   margin-top: 2px;
   color: var(--silence);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
 }
 
@@ -226,13 +234,19 @@
 }
 
 .provider-status {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
 }
 
-.provider-status-ready { color: var(--green-deep); }
-.provider-status-disabled { color: var(--silence); }
-.provider-status-missing { color: var(--ochre-deep); }
+.provider-status-ready {
+  color: var(--green-deep);
+}
+.provider-status-disabled {
+  color: var(--silence);
+}
+.provider-status-missing {
+  color: var(--ochre-deep);
+}
 
 .provider-switch {
   position: relative;
@@ -263,8 +277,8 @@
   height: 16px;
   border-radius: 999px;
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(var(--ink-rgb), .2);
-  transition: left .18s ease;
+  box-shadow: 0 1px 2px rgba(var(--ink-rgb), 0.2);
+  transition: left 0.18s ease;
 }
 
 .provider-switch-on .provider-switch-knob {
@@ -276,7 +290,7 @@
   color: var(--silence);
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: .12em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
@@ -308,7 +322,7 @@
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 9px;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 11px;
   text-align: left;
 }
@@ -343,7 +357,7 @@
   flex: none;
   margin-left: auto;
   color: var(--silence);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
 }
 
@@ -380,9 +394,15 @@
   color: var(--ink-soft);
 }
 
-.settings-value-row .settings-value-green { color: var(--green-deep); }
-.settings-value-row .settings-value-danger { color: var(--danger-deep); }
-.settings-value-row .settings-value-muted { color: var(--silence); }
+.settings-value-row .settings-value-green {
+  color: var(--green-deep);
+}
+.settings-value-row .settings-value-danger {
+  color: var(--danger-deep);
+}
+.settings-value-row .settings-value-muted {
+  color: var(--silence);
+}
 
 .settings-device-card {
   gap: 12px;
@@ -395,8 +415,12 @@
   border-radius: 999px;
 }
 
-.device-dot-ready { background: var(--green); }
-.device-dot-idle { background: var(--border-strong); }
+.device-dot-ready {
+  background: var(--green);
+}
+.device-dot-idle {
+  background: var(--border-strong);
+}
 
 .settings-device-name {
   font-size: 12.5px;
@@ -408,7 +432,7 @@
 }
 
 .settings-lab-description {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: "Inter", system-ui, sans-serif;
   font-size: 11px;
 }
 
