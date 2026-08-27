@@ -31,7 +31,7 @@ function terminalTheme(host: HTMLElement) {
     magenta: color('--terracotta-deep'),
     cyan: color('--green'),
     white: color('--surface'),
-    brightBlack: color('--silence'),
+    brightBlack: color('--terminal-silence'),
     brightRed: color('--danger'),
     brightGreen: color('--green'),
     brightYellow: color('--ochre'),
