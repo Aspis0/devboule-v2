@@ -150,8 +150,7 @@ mod tests {
         // daemon.lock. Locks are per file, so the two must never fight.
         let (paths, _guard) = unique_dir();
         let _daemon = SingleInstanceLock::acquire(&paths).expect("daemon lock");
-        let _app =
-            SingleInstanceLock::acquire_at(&paths.dir.join("app.lock")).expect("app lock");
+        let _app = SingleInstanceLock::acquire_at(&paths.dir.join("app.lock")).expect("app lock");
     }
 
     #[test]

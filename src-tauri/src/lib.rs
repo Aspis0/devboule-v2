@@ -18,9 +18,7 @@ pub fn run() {
     let _app_instance = match single_instance::acquire() {
         single_instance::StartupInstance::Acquired(guard) => guard,
         single_instance::StartupInstance::AlreadyRunning => {
-            eprintln!(
-                "Devboule is already running; bringing the existing window to the front."
-            );
+            eprintln!("Devboule is already running; bringing the existing window to the front.");
             if !single_instance::focus_existing_window() {
                 single_instance::notify_already_running();
             }

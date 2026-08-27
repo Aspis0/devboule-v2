@@ -153,14 +153,14 @@ pub fn notify_already_running() {
 mod focus_windows {
     use std::path::Path;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, BOOL};
+    use windows_sys::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-        MessageBoxW, SetForegroundWindow, ShowWindow, MB_ICONINFORMATION, MB_OK,
-        MB_SETFOREGROUND, SW_RESTORE,
+        MessageBoxW, SetForegroundWindow, ShowWindow, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
+        SW_RESTORE,
     };
 
     const WINDOW_TITLE: &str = "Devboule";
@@ -192,9 +192,7 @@ mod focus_windows {
     }
 
     pub fn notify_already_running() {
-        let text: Vec<u16> = "Devboule is already running.\0"
-            .encode_utf16()
-            .collect();
+        let text: Vec<u16> = "Devboule is already running.\0".encode_utf16().collect();
         let caption: Vec<u16> = "Devboule\0".encode_utf16().collect();
         unsafe {
             MessageBoxW(
