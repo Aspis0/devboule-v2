@@ -9,6 +9,7 @@ export type TerminalChannel = Channel<TerminalEvent>;
 export type TerminalBanner =
   | { kind: 'exited'; code: number | null }
   | { kind: 'recovered'; truncated: boolean }
+  | { kind: 'journal_degraded' }
   | { kind: 'closed' }
   | { kind: 'error'; message: string }
   | null;
@@ -293,6 +294,9 @@ export class TerminalSession {
       case 'recovered':
         this.markRecovered(event.truncated);
         return;
+      case 'journal_degraded':
+        this.markJournalDegraded();
+        return;
       case 'output':
         if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
         this.lastSeenSeq = event.seq;
@@ -336,6 +340,11 @@ export class TerminalSession {
     this.sessionId = null;
     this.deps.onBanner({ kind: 'recovered', truncated });
     this.deps.onExited?.(null);
+  }
+
+  private markJournalDegraded(): void {
+    if (this.exited) return;
+    this.deps.onBanner({ kind: 'journal_degraded' });
   }
 
   private disarmCtrlC(): void {

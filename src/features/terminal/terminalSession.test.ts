@@ -315,6 +315,19 @@ describe('TerminalSession lifecycle and errors', () => {
     expect(harness.invoke).not.toHaveBeenCalled();
   });
 
+  it('shows the incomplete scrollback banner while the session is still live', async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: 'journal_degraded' });
+    harness.emit(outputEvent(1, 'output after degradation'));
+    harness.flushFrame();
+
+    expect(harness.banners).toContainEqual({ kind: 'journal_degraded' });
+    expect(harness.view.written).toEqual(['output after degradation']);
+    expect(harness.registry.remove).not.toHaveBeenCalled();
+  });
+
   it('ignores unknown event types instead of treating them as output', async () => {
     const harness = makeHarness();
     await harness.session.start();

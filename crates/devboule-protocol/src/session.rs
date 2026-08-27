@@ -103,6 +103,8 @@ pub enum SessionEvent {
     Recovered {
         truncated: bool,
     },
+    /// The journal has started dropping output for this live session.
+    JournalDegraded,
 }
 
 /// Replay position for a reconnecting client.
@@ -240,6 +242,15 @@ mod tests {
         assert_eq!(recovered["truncated"], true);
         assert_eq!(exit["type"], "exit");
         assert_ne!(recovered["type"], exit["type"]);
+    }
+
+    #[test]
+    fn journal_degraded_event_round_trips() {
+        let event = SessionEvent::JournalDegraded;
+        let encoded = serde_json::to_value(&event).expect("json");
+        assert_eq!(encoded["type"], "journal_degraded");
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, event);
     }
 
     #[test]

@@ -299,6 +299,9 @@ impl SessionRuntime {
                     SessionEvent::Recovered { truncated } => {
                         stream.disposition = Disposition::Recovered { truncated };
                     }
+                    SessionEvent::JournalDegraded => {
+                        runtime.journal_degraded.store(true, Ordering::Release);
+                    }
                 }
             }
         }
@@ -498,6 +501,7 @@ struct PullState {
     runtime: Arc<SessionRuntime>,
     sent_seq: Option<u64>,
     exit_sent: bool,
+    journal_degraded_sent: bool,
     generation: u64,
 }
 
@@ -524,6 +528,7 @@ impl ConnHandle {
                     runtime,
                     sent_seq: from_seq,
                     exit_sent: false,
+                    journal_degraded_sent: false,
                     generation,
                 },
             );
@@ -598,6 +603,14 @@ impl ConnHandle {
                     generation: pull.generation,
                     event,
                 });
+            }
+            if !pull.journal_degraded_sent && pull.runtime.journal_degraded() {
+                events.push(SessionEventEnvelope {
+                    session_id: session_id.clone(),
+                    generation: pull.generation,
+                    event: SessionEvent::JournalDegraded,
+                });
+                pull.journal_degraded_sent = true;
             }
             if !pull.exit_sent && SessionRuntime::ready_for_exit(&stream) {
                 let event = match stream.disposition {
@@ -1833,6 +1846,7 @@ mod tests {
                 SessionEvent::Output { data, .. } => data.as_str(),
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
+                SessionEvent::JournalDegraded => "journal_degraded",
             })
             .collect();
         assert_eq!(kinds, ["before", "after", "exit"]);
@@ -1935,6 +1949,28 @@ mod tests {
     }
 
     #[test]
+    fn live_journal_degradation_reaches_attached_client_once() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn).expect("attach");
+        conn.track("s.a.1", Arc::clone(&runtime), None, generation);
+
+        runtime.publish_output("still live");
+        runtime.mark_journal_degraded();
+        runtime.mark_journal_degraded();
+
+        let events = conn.pull_events();
+        assert!(events
+            .iter()
+            .any(|envelope| matches!(envelope.event, SessionEvent::JournalDegraded)));
+        assert!(events
+            .iter()
+            .all(|envelope| !matches!(envelope.event, SessionEvent::Exit { .. })));
+        assert!(!runtime.stream.lock().unwrap().process_exited);
+        assert!(conn.pull_events().is_empty());
+    }
+
+    #[test]
     fn recovered_pull_ends_with_recovered_not_exit() {
         let replay = crate::journal::Replay {
             generation: 1,
@@ -1959,6 +1995,7 @@ mod tests {
                 SessionEvent::Output { data, .. } => data.as_str(),
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
+                SessionEvent::JournalDegraded => "journal_degraded",
             })
             .collect();
         assert_eq!(kinds, ["hello", "recovered"]);
