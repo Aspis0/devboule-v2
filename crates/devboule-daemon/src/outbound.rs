@@ -1,10 +1,11 @@
 //! Per-connection outbound path.
 //!
-//! Session output is **not** copied into an outbound queue: the 256 KiB ring
-//! is the live buffer and the writer thread pulls it. A slow client therefore
-//! cannot turn the daemon into an unbounded allocator. If it lags past the
-//! ring, it misses the same bytes a late attach would miss — honest, and the
-//! same cap M2 already had.
+//! Session output is pulled into one connection-local snapshot at a time. For
+//! live sessions the snapshot is sourced from the 256 KiB ring, so a slow
+//! client cannot accumulate snapshots while the writer is blocked. Recovered
+//! sessions currently source the snapshot from the uncapped journal replay;
+//! there is no global connection byte budget until overflow behavior
+//! (disconnect versus replay gap) is specified.
 //!
 //! Coalescing happens *before* seq is assigned (see `session.rs`). Merging
 //! already-sequenced frames would punch holes in `seq` and fail the flood

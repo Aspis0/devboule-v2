@@ -429,7 +429,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     // post-dispatch pull: teardown_session joins the
                     // coalescer and may publish its final output there.
                     if !close_request {
-                        pending_events.extend(conn.pull_events());
+                        refill_pending_events(&conn, &mut pending_events);
                     }
                     drain_pending_events(&framed, &conn, &mut pending_events)?;
                 } else {
@@ -438,9 +438,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     // drain: a continuously replenished request stream cannot
                     // starve output, while a DSR/control request waits behind
                     // at most the single event write already in progress.
-                    if pending_events.is_empty() {
-                        pending_events.extend(conn.pull_events());
-                    }
+                    refill_pending_events(&conn, &mut pending_events);
                     if let Some(event) = pending_events.pop_front() {
                         send_pending_event(&framed, &conn, event)?;
                     }
@@ -459,7 +457,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                 if close_request {
                     // SessionClose joins the coalescer and calls finish(),
                     // which can publish the teardown tail after the pre-drain.
-                    pending_events.extend(conn.pull_events());
+                    refill_pending_events(&conn, &mut pending_events);
                     drain_pending_events(&framed, &conn, &mut pending_events)?;
                 }
                 let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
@@ -476,7 +474,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
             }
 
             if pending_events.is_empty() {
-                pending_events.extend(conn.pull_events());
+                refill_pending_events(&conn, &mut pending_events);
                 if pending_events.is_empty() {
                     if !conn
                         .outbound
@@ -505,7 +503,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     framed.cancel_read();
     conn.outbound.close();
     bounded_join(reader, JOIN_BUDGET);
-    pending_events.extend(conn.pull_events());
+    refill_pending_events(&conn, &mut pending_events);
     let _ = drain_pending_events(&framed, &conn, &mut pending_events);
     // This is the deliberate teardown-only pipe barrier: it makes every frame
     // accepted above client-readable before the server drops this connection.
@@ -514,6 +512,15 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     let _ = framed.flush_pipe();
     conn.detach_all(&state.sessions);
     loop_result
+}
+
+fn refill_pending_events(conn: &ConnHandle, pending_events: &mut VecDeque<PendingEvent>) {
+    // pull_events() starts at the last successfully written sequence. A
+    // non-empty queue already owns every event after that cursor, so pulling
+    // again would append the same envelopes and duplicate them on the wire.
+    if pending_events.is_empty() {
+        pending_events.extend(conn.pull_events());
+    }
 }
 
 fn drain_pending_events(
