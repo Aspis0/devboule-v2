@@ -1,8 +1,16 @@
 Devboule v2
 Copyright 2026 Aspis0.
 
-This repository is licensed under the Apache License, Version 2.0. See LICENSE.
+This repository's own code is licensed under the Apache License, Version 2.0.
+See LICENSE.
 
-No third-party source code is copied into M1a. The vendored font files are
-third-party assets and are attributed, with their license text, in
-THIRD_PARTY.md.
+This distribution includes third-party linked dependencies and non-code
+assets. Their names, versions, declared licences, copyright attributions,
+and required notice information are documented in THIRD_PARTY.md, which is
+part of this distribution's notices.
+
+No third-party library source code is copied into this repository. This does
+not mean that linked dependency code is absent from a built binary; the
+Cargo and npm dependencies identified in THIRD_PARTY.md are compiled or
+bundled according to their respective licences. The three checked-in fonts
+and the unresolved icon asset are listed separately there.
