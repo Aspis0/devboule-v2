@@ -3,11 +3,15 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "server")]
+mod atomic;
 mod client;
 mod error;
 mod framing;
 #[cfg(feature = "server")]
 mod idempotency;
+#[cfg(feature = "server")]
+mod journal;
 #[cfg(feature = "server")]
 mod lock;
 #[cfg(feature = "server")]
@@ -28,6 +32,12 @@ pub use error::DaemonError;
 pub use paths::RuntimePaths;
 #[cfg(feature = "server")]
 pub use server::run;
+#[cfg(feature = "server")]
+pub use journal::{
+    Journal, JournalError, JournalLimits, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_BYTES,
+    JOURNAL_MAX_SESSIONS, JOURNAL_QUEUE_CAP, JOURNAL_SCHEMA_VERSION, JOURNAL_SESSION_MAX_BYTES,
+    SNAPSHOT_EVERY_BYTES,
+};
 #[cfg(feature = "server")]
 pub use session::{
     write_test_pty_command, PtyCommand, COALESCE_FLUSH, COALESCE_MAX_BYTES, RING_CAPACITY,

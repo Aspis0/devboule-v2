@@ -13,7 +13,9 @@ publish = false
 default = ["server"]
 # portable-pty moves here from src-tauri with M3b: the daemon owns the PTY.
 # Optional so a client-only build (the GUI process) does not link ConPTY.
-server = ["dep:portable-pty"]
+# rusqlite is the conversation journal (M3c). Optional for the same reason:
+# the GUI process never opens the database.
+server = ["dep:portable-pty", "dep:rusqlite"]
 
 [lib]
 name = "devboule_daemon"
@@ -33,6 +35,13 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 # Moved from src-tauri. Same pin. The daemon, not the GUI, now owns ConPTY.
 portable-pty = { version = "=0.9.0", optional = true }
+# Conversation journal. No drop-in exists (ARCHITETTURA §1.4); we take
+# WAL/snapshot/retention invariants from wal3/ticktape and own the schema.
+# `bundled` compiles sqlite3.c so the app does not depend on a system
+# SQLite DLL — Windows does not ship one as a stable ABI. M4 brings
+# oracle-core which already uses rusqlite 0.32 with `bundled` (lockfile
+# 0.32.1); pinning the same version now avoids a duplicate sqlite at M4.
+rusqlite = { version = "=0.32.1", features = ["bundled"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Named pipe, DACL, and LockFileEx. Already in the lockfile transitively

@@ -41,6 +41,12 @@ impl RuntimePaths {
     pub fn ensure_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)
     }
+
+    /// SQLite WAL journal. Lives next to the lock file so a test runtime
+    /// dir (including paths with spaces) owns its own database.
+    pub fn journal_file(&self) -> PathBuf {
+        self.dir.join("journal.db")
+    }
 }
 
 fn pipe_name_for(dir: &Path) -> String {
@@ -88,6 +94,10 @@ mod tests {
         assert_eq!(
             paths.lock_file,
             PathBuf::from(r"C:\Users\Name With Spaces\AppData\Local\Devboule\daemon.lock")
+        );
+        assert_eq!(
+            paths.journal_file(),
+            PathBuf::from(r"C:\Users\Name With Spaces\AppData\Local\Devboule\journal.db")
         );
     }
 }
