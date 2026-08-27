@@ -1,0 +1,14 @@
+# Line endings are normalised in the repository and on checkout.
+#
+# Without this, a Windows checkout with core.autocrlf=true materialises CRLF
+# while the repository stores LF, and every formatter that expects LF fails on
+# a clean clone while passing on a working tree it has already rewritten. That
+# is exactly how CI went red while local checks stayed green.
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.woff2 binary
+*.ico    binary
+*.png    binary
+*.jpg    binary
+*.pdf    binary
