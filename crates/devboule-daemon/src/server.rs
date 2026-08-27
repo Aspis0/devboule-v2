@@ -431,6 +431,18 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                 while let Some(event) = pending_events.pop_front() {
                     framed.send_unflushed(&DaemonMessage::Event(event))?;
                 }
+            } else {
+                // Give the event stream one turn before every ordinary
+                // request. This is deliberately one frame, not a bulk drain:
+                // a continuously replenished request stream cannot starve
+                // output, while a DSR/control request waits behind at most
+                // the single event write that is already in progress.
+                if pending_events.is_empty() {
+                    pending_events.extend(conn.pull_events());
+                }
+                if let Some(event) = pending_events.pop_front() {
+                    framed.send_unflushed(&DaemonMessage::Event(event))?;
+                }
             }
             if let ClientMessage::Hello(_) = request {
                 let id = request.request_id();
