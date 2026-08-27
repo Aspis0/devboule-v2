@@ -146,7 +146,6 @@ button:focus-visible {
   gap: 12px;
   min-height: 54px;
   padding: 0 18px;
-  border-bottom: 1px solid var(--border);
 }
 
 .surface-header-title {
@@ -222,7 +221,7 @@ button:focus-visible {
   min-height: 0;
   place-items: center;
   padding: 28px;
-  background: var(--surface);
+  background: transparent;
 }
 
 .placeholder-panel {
