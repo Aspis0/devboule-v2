@@ -17,6 +17,7 @@ use crate::journal::Journal;
 use crate::lock::SingleInstanceLock;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
+use crate::process_tree::JobObject;
 use crate::session::{ConnHandle, SessionRegistry};
 use crate::transport::{self, Listener};
 use crate::IDLE_SHUTDOWN_GRACE;
@@ -40,6 +41,7 @@ pub struct ServerState {
     shutdown_flag: Arc<Mutex<bool>>,
     shutdown_cvar: Arc<Condvar>,
     idempotency: Mutex<IdempotencyStore>,
+    pub(crate) process_job: JobObject,
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
@@ -54,15 +56,17 @@ impl ServerState {
                 std::env::temp_dir().join(format!("devboule-test-{}", std::process::id())),
             ),
         )
+        .expect("create daemon process job")
     }
 
-    pub fn with_paths(instance_id: String, paths: RuntimePaths) -> Arc<Self> {
+    pub fn with_paths(instance_id: String, paths: RuntimePaths) -> Result<Arc<Self>, DaemonError> {
         let _ = paths.ensure_dir();
+        let process_job = JobObject::new()?;
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             instance_id,
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
@@ -70,10 +74,11 @@ impl ServerState {
             shutdown_flag: Arc::new(Mutex::new(false)),
             shutdown_cvar: Arc::new(Condvar::new()),
             idempotency: Mutex::new(IdempotencyStore::default()),
+            process_job,
             sessions: SessionRegistry::new(paths, journal),
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
-        })
+        }))
     }
 
     pub fn alloc_conn(&self) -> u64 {
@@ -256,7 +261,7 @@ fn run_windows() -> Result<(), DaemonError> {
     );
     lock.write_identity(pid, &instance_id, &paths.pipe_name)?;
 
-    let state = ServerState::with_paths(instance_id, paths.clone());
+    let state = ServerState::with_paths(instance_id, paths.clone())?;
     let (listener, shutdown) = transport::bind(&paths, Arc::clone(&state.stop))?;
     let accept_state = Arc::clone(&state);
     let accept = std::thread::Builder::new()

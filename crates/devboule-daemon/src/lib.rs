@@ -18,6 +18,8 @@ mod lock;
 mod outbound;
 mod paths;
 #[cfg(feature = "server")]
+mod process_tree;
+#[cfg(feature = "server")]
 mod server;
 #[cfg(feature = "server")]
 mod session;
