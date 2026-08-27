@@ -8,10 +8,7 @@
   gap: 12px;
   flex-wrap: wrap;
   margin-top: 16px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  background: var(--surface-muted);
+  padding: 8px 0 0;
 }
 
 .oracle-server-state,
@@ -147,23 +144,27 @@
 
 .oracle-button-secondary {
   color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 0;
 }
 
 .oracle-button-secondary:hover,
 .oracle-button-secondary:focus-visible {
   color: var(--terracotta);
-  border-color: var(--terracotta);
 }
 
 .oracle-answer-card,
-.oracle-workspace-card,
-.oracle-file-list,
-.oracle-secondary-card {
+.oracle-workspace-card {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface-muted);
+}
+
+.oracle-file-list,
+.oracle-secondary-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .oracle-answer-card {
@@ -191,13 +192,11 @@
 .oracle-retrieval-banner,
 .oracle-job-note {
   color: color-mix(in srgb, var(--ochre) 70%, var(--ink));
-  background: color-mix(in srgb, var(--ochre) 15%, var(--surface-muted));
 }
 
 .oracle-retrieval-banner {
   margin-top: 9px;
-  padding: 6px 9px;
-  border-radius: 8px;
+  padding: 6px 0 0;
   font-size: 10.5px;
   line-height: 1.5;
 }
@@ -213,11 +212,10 @@
   display: flex;
   align-items: center;
   height: 22px;
-  padding: 0 9px;
+  padding: 0 2px;
   color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: transparent;
+  border: 0;
   cursor: pointer;
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
@@ -227,7 +225,6 @@
 .oracle-citation:hover,
 .oracle-citation:focus-visible {
   color: var(--terracotta);
-  border-color: var(--terracotta);
 }
 
 .oracle-answer-by {
@@ -261,8 +258,7 @@
   height: 20px;
   place-items: center;
   margin-left: auto;
-  padding: 0 9px;
-  border-radius: 7px;
+  padding: 0;
   font-size: 9.5px;
   font-weight: 600;
   letter-spacing: .04em;
@@ -271,17 +267,14 @@
 
 .oracle-watch-badge-running {
   color: color-mix(in srgb, var(--ochre) 70%, var(--ink));
-  background: color-mix(in srgb, var(--ochre) 15%, var(--surface-muted));
 }
 
 .oracle-watch-badge-watching {
   color: color-mix(in srgb, var(--green) 72%, var(--ink));
-  background: color-mix(in srgb, var(--green) 12%, var(--surface-muted));
 }
 
 .oracle-watch-badge-idle {
   color: var(--silence);
-  background: var(--surface-muted);
 }
 
 .oracle-workspace-card {
@@ -372,8 +365,7 @@
 
 .oracle-job-note {
   margin-top: 8px;
-  padding: 6px 9px;
-  border-radius: 8px;
+  padding: 6px 0 0;
   font-size: 10px;
   font-weight: 600;
 }
@@ -386,10 +378,7 @@
 }
 
 .oracle-stat {
-  padding: 9px 11px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface);
+  padding: 9px 0;
 }
 
 .oracle-stat-value {
@@ -484,8 +473,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 13px;
-  border-bottom: 1px solid var(--border);
+  padding: 9px 0;
 }
 
 .oracle-file-path {
@@ -515,7 +503,7 @@
 }
 
 .oracle-page-label {
-  padding: 8px 13px;
+  padding: 8px 0;
   color: var(--silence);
   font-size: 10px;
 }
@@ -530,7 +518,7 @@
 .oracle-secondary-card {
   gap: 10px;
   min-width: 0;
-  padding: 12px 14px;
+  padding: 12px 0;
 }
 
 .oracle-secondary-card-button {
@@ -542,7 +530,7 @@
 
 .oracle-secondary-card-button:hover,
 .oracle-secondary-card-button:focus-visible {
-  border-color: var(--border-strong);
+  color: var(--terracotta);
 }
 
 .oracle-secondary-card > span:first-child {
