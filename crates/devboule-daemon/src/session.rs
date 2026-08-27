@@ -7,12 +7,37 @@
 //! reader thread. v2 deliberately has no sandbox/AppContainer broker, so
 //! Windows and Unix use the same native portable-pty path.
 //!
-//! Live scrollback is a 256 KiB ring. Coalesced frames are also enqueued to
-//! the conversation journal off this thread (`try_send`, never a disk wait).
-//! A recovered session replays the journal, not this ring. Terminal bytes
-//! are converted with UTF-8-lossy at the coalesced-flush boundary so a read
-//! that splits a UTF-8 codepoint cannot panic; xterm.js consumes the
-//! resulting stream.
+//! SCREEN STATE (M3.5):
+//! Every output chunk is applied to a headless terminal emulator
+//! ([`crate::screen::Screen`]) under the session state lock. The emulator is
+//! the screen authority, the same shape Zed's pty-host RFC and tmux use: on
+//! attach the client gets one `Snapshot(as_of_seq)` of the visible grid, then
+//! ordinary live output chunks with strictly greater sequences. There is no
+//! byte replay for a live screen and no replay cursor. Coalesced frames are
+//! additionally enqueued to the conversation journal off this thread
+//! (`try_send`, never a disk wait); the journal stays the durable transcript.
+//! A recovered session has no emulator and replays the journal instead.
+//! Terminal bytes are converted with UTF-8-lossy at the coalesced-flush
+//! boundary so a read that splits a UTF-8 codepoint cannot panic.
+//!
+//! THE INVARIANT:
+//! A snapshot carrying `as_of_seq = N` is exactly the emulator state after
+//! every chunk with sequence `<= N` has been applied and before any chunk
+//! with sequence `> N`. The boundary is on application to the emulator — not
+//! the pipe write, not the journal commit, not client receipt. Capture of the
+//! screen and registration of a new attachment happen under ONE hold of the
+//! state lock, so output can never fall into neither the snapshot nor the
+//! attachment's unsent queue. When an attachment's unsent queue exceeds
+//! [`PENDING_OUTPUT_BUDGET_BYTES`], the unsent suffix is discarded and
+//! replaced by a fresh snapshot at the current boundary: a state
+//! resynchronisation, never an `OutputGap`.
+//!
+//! DEVICE STATUS REPLIES:
+//! The emulator answers terminal queries (ConPTY's startup `ESC[6n` among
+//! them) with `PtyWrite` events. Those replies go straight back to the PTY
+//! writer from the publish path — never through the journal, a snapshot, or
+//! a client pipe. ConPTY stalls its render pipeline until the query is
+//! answered; the daemon is the single responder.
 //!
 //! LOCKING ORDER:
 //! - The session registry lock is never held across blocking PTY I/O.
@@ -31,17 +56,13 @@
 //! per [`COALESCE_MAX_BYTES`] or [`COALESCE_FLUSH`], whichever comes first.
 //! Seq is assigned at flush so the stream stays contiguous.
 //!
-//! Live output is not copied into the per-connection queue until the
-//! connection writer pulls a snapshot. The refill invariant allows only one
-//! such snapshot at a time, so a blocked pipe cannot accumulate snapshots.
-//! For live sessions this bounds queued payload to one 256 KiB ring per
-//! attached session, plus envelope metadata. Recovered sessions currently
-//! hydrate the journal without that ring cap, so there is no global byte cap
-//! for a connection; a future cap must define whether overflow disconnects or
-//! reports a replay gap. Blocking the PTY reader is wrong (it stalls the
-//! watched process). The ring may evict old bytes, but it records the lost
-//! sequence range and emits an in-band [`SessionEvent::OutputGap`] rather than
-//! presenting a silently incomplete transcript.
+//! Unsent live output waits in one bounded per-attachment queue
+//! ([`StreamState::pending`]), not in a byte-history ring. The connection
+//! writer pulls at most [`PULL_BATCH`] items per turn, so a slow client
+//! leaves the bulk of the backlog inside the budgeted queue, where the
+//! snapshot replacement above can coalesce it. Blocking the PTY reader is
+//! wrong (it stalls ConPTY's render pipeline), so back-pressure is expressed
+//! as state: the slow viewer is resynchronised, the process is never stalled.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -50,24 +71,42 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use devboule_protocol::{
-    compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, OwnerId, Session,
-    SessionEvent, SessionEventEnvelope, SessionKind, SessionState, WireError,
+    compose_session_id, cursor_replay_ok, validate_session_id, Cursor, CursorShape, ErrorCode,
+    OwnerId, ScreenCursor, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionState,
+    WireError,
 };
 
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
+use crate::screen::{Screen, ScreenSnapshot, SnapshotCursorShape};
 use crate::server::ServerState;
 
-pub const RING_CAPACITY: usize = 256 * 1024;
+/// Unsent live output one attachment may hold before the unsent suffix is
+/// dropped and replaced by a fresh screen snapshot at the current sequence.
+///
+/// 256 KiB is the old ring's capacity: large enough that a healthy client is
+/// never resynchronised (32 full 8 KiB coalesce frames), small enough that a
+/// stalled client's queue stays bounded by roughly one worst-case snapshot.
+pub const PENDING_OUTPUT_BUDGET_BYTES: usize = 256 * 1024;
+/// Frame-count twin of [`PENDING_OUTPUT_BUDGET_BYTES`]: bounds the per-frame
+/// JSON envelope overhead of a backlog of tiny frames.
+pub const PENDING_OUTPUT_BUDGET_FRAMES: u64 = 64;
+
+/// Session events pulled from one session per connection-writer turn.
+/// Deliberately small: items left behind stay in the session's budgeted
+/// pending queue where slow-client coalescing can still replace them, and a
+/// pull never moves an unbounded batch into connection-local state.
+const PULL_BATCH: usize = 16;
+
 const READ_CHUNK: usize = 16 * 1024;
 const INITIAL_COLS: u16 = 120;
 const INITIAL_ROWS: u16 = 32;
@@ -157,137 +196,34 @@ struct SequencedChunk {
     data: Vec<u8>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct OutputLoss {
-    from_seq: u64,
-    to_seq: u64,
-    dropped_bytes: u64,
-    dropped_frames: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct ScrollbackPush {
-    evicted_bytes: u64,
-    dropped_frames: u64,
-}
-
+/// Transcript replay buffer for a recovered session.
+///
+/// A recovered session loads its journal records here once at hydration and
+/// serves cursor-based replays from the union of these chunks and a fresh
+/// journal read. It is NOT the live screen mechanism: a live attach receives
+/// a screen snapshot, never this buffer.
 #[derive(Debug, Default)]
 struct Scrollback {
     chunks: VecDeque<SequencedChunk>,
-    bytes: usize,
-    losses: VecDeque<OutputLoss>,
-    evicted_bytes: u64,
-    dropped_frames: u64,
 }
 
 impl Scrollback {
-    fn push(&mut self, seq: u64, data: &[u8]) -> ScrollbackPush {
-        self.push_with_cap(seq, data, RING_CAPACITY, true)
-    }
-
-    fn push_uncapped(&mut self, seq: u64, data: &[u8]) {
-        let _ = self.push_with_cap(seq, data, usize::MAX, false);
-    }
-
-    fn push_with_cap(
-        &mut self,
-        seq: u64,
-        data: &[u8],
-        cap: usize,
-        count_ring_eviction: bool,
-    ) -> ScrollbackPush {
-        let evicted_before = self.evicted_bytes;
-        let frames_before = self.dropped_frames;
+    fn push(&mut self, seq: u64, data: &[u8]) {
         if data.is_empty() {
-            return ScrollbackPush::default();
+            return;
         }
-
-        // A frame larger than the ring is unavailable as a whole. Retaining
-        // only its tail would leave a healthy-looking sequence carrying a
-        // partial payload, so declare the complete frame lost instead.
-        if data.len() > cap {
-            while let Some(oldest) = self.chunks.pop_front() {
-                self.bytes = self.bytes.saturating_sub(oldest.data.len());
-                self.record_loss(
-                    oldest.seq,
-                    oldest.seq,
-                    oldest.data.len() as u64,
-                    count_ring_eviction,
-                );
-            }
-            self.record_loss(seq, seq, data.len() as u64, count_ring_eviction);
-            return ScrollbackPush {
-                evicted_bytes: self.evicted_bytes.saturating_sub(evicted_before),
-                dropped_frames: self.dropped_frames.saturating_sub(frames_before),
-            };
-        }
-
-        let retained = data.to_vec();
-        while self.bytes.saturating_add(retained.len()) > cap {
-            let Some(oldest) = self.chunks.pop_front() else {
-                break;
-            };
-            self.bytes = self.bytes.saturating_sub(oldest.data.len());
-            self.record_loss(
-                oldest.seq,
-                oldest.seq,
-                oldest.data.len() as u64,
-                count_ring_eviction,
-            );
-        }
-        self.bytes += retained.len();
         self.chunks.push_back(SequencedChunk {
             seq,
-            data: retained,
+            data: data.to_vec(),
         });
-        ScrollbackPush {
-            evicted_bytes: self.evicted_bytes.saturating_sub(evicted_before),
-            dropped_frames: self.dropped_frames.saturating_sub(frames_before),
-        }
-    }
-
-    fn record_loss(
-        &mut self,
-        from_seq: u64,
-        to_seq: u64,
-        dropped_bytes: u64,
-        count_ring_eviction: bool,
-    ) {
-        let dropped_frames = to_seq.saturating_sub(from_seq).saturating_add(1);
-        if count_ring_eviction {
-            self.evicted_bytes = self.evicted_bytes.saturating_add(dropped_bytes);
-            self.dropped_frames = self.dropped_frames.saturating_add(dropped_frames);
-        }
-        if let Some(previous) = self.losses.back_mut() {
-            if previous.to_seq.saturating_add(1) == from_seq {
-                previous.to_seq = to_seq;
-                previous.dropped_bytes = previous.dropped_bytes.saturating_add(dropped_bytes);
-                previous.dropped_frames = previous.dropped_frames.saturating_add(dropped_frames);
-                return;
-            }
-        }
-        {
-            self.losses.push_back(OutputLoss {
-                from_seq,
-                to_seq,
-                dropped_bytes,
-                dropped_frames,
-            });
-        }
-    }
-
-    fn record_external_loss(&mut self, seq: u64, dropped_bytes: u64) {
-        self.record_loss(seq, seq, dropped_bytes, false);
     }
 
     fn needs_journal_replay(&self, from_cursor: Option<u64>, next_seq: u64) -> bool {
         let cursor = from_cursor.unwrap_or(0);
-        self.losses.iter().any(|loss| loss.to_seq > cursor)
-            || self
-                .chunks
-                .front()
-                .map(|chunk| chunk.seq > cursor.saturating_add(1))
-                .unwrap_or(next_seq > cursor.saturating_add(1))
+        self.chunks
+            .front()
+            .map(|chunk| chunk.seq > cursor.saturating_add(1))
+            .unwrap_or(next_seq > cursor.saturating_add(1))
     }
 
     #[cfg(test)]
@@ -315,82 +251,30 @@ impl Scrollback {
                 outputs.insert(*seq, data.clone());
             }
         }
-
-        let mut timeline = BTreeMap::<u64, SessionEvent>::new();
-        for (seq, data) in outputs {
-            timeline.insert(seq, SessionEvent::Output { seq, data });
-        }
-
-        for loss in &self.losses {
-            let from_seq = loss.from_seq.max(cursor.saturating_add(1));
-            if from_seq > loss.to_seq {
-                continue;
-            }
-            let recovered: Vec<u64> = timeline
-                .range(from_seq..=loss.to_seq)
-                .filter_map(|(seq, event)| match event {
-                    SessionEvent::Output { .. } => Some(*seq),
-                    _ => None,
-                })
-                .collect();
-            let mut segment_start = from_seq;
-            let mut missing_frames = loss.to_seq.saturating_sub(from_seq).saturating_add(1);
-            let recovered_frames = recovered.len() as u64;
-            let recovered_bytes: u64 = recovered
-                .iter()
-                .filter_map(|seq| timeline.get(seq))
-                .filter_map(|event| match event {
-                    SessionEvent::Output { data, .. } => Some(data.len() as u64),
-                    _ => None,
-                })
-                .sum();
-            let mut missing_bytes = loss.dropped_bytes.saturating_sub(recovered_bytes);
-            missing_frames = missing_frames.saturating_sub(recovered_frames);
-
-            for seq in recovered {
-                if segment_start < seq {
-                    let segment_end = seq - 1;
-                    let segment_frames = segment_end - segment_start + 1;
-                    let segment_bytes = if missing_frames == segment_frames {
-                        missing_bytes
-                    } else {
-                        missing_bytes.saturating_mul(segment_frames) / missing_frames.max(1)
-                    };
-                    timeline.insert(
-                        segment_start,
-                        SessionEvent::OutputGap {
-                            from_seq: segment_start,
-                            to_seq: segment_end,
-                            dropped_bytes: segment_bytes,
-                            dropped_frames: segment_frames,
-                        },
-                    );
-                    missing_bytes = missing_bytes.saturating_sub(segment_bytes);
-                    missing_frames = missing_frames.saturating_sub(segment_frames);
-                }
-                segment_start = seq.saturating_add(1);
-            }
-            if segment_start <= loss.to_seq {
-                let segment_frames = loss.to_seq - segment_start + 1;
-                timeline.insert(
-                    segment_start,
-                    SessionEvent::OutputGap {
-                        from_seq: segment_start,
-                        to_seq: loss.to_seq,
-                        dropped_bytes: missing_bytes,
-                        dropped_frames: segment_frames,
-                    },
-                );
-            }
-        }
-
-        timeline.into_values().collect()
+        outputs
+            .into_iter()
+            .map(|(seq, data)| SessionEvent::Output { seq, data })
+            .collect()
     }
 }
 
 struct Attachment {
     conn_id: u64,
     outbound: Arc<ConnOut>,
+}
+
+/// One item queued for the attached viewer, in wire order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingItem {
+    /// Screen state at `as_of_seq`. Always the first item of an attachment;
+    /// also the replacement emitted when a slow viewer's queue exceeds the
+    /// budget. The owned grid is rendered to ANSI outside every lock.
+    Snapshot {
+        as_of_seq: u64,
+        screen: ScreenSnapshot,
+    },
+    /// An applied output chunk, forwarded verbatim.
+    Output { seq: u64, data: String },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -401,10 +285,31 @@ enum Disposition {
 }
 
 struct StreamState {
+    /// Session-wide monotonic output counter. Labels journal records and
+    /// live events; it is NOT a replay cursor and never advances because a
+    /// frame was written to a pipe.
     next_seq: u64,
+    /// Greatest sequence whose complete chunk has been applied to the
+    /// emulator. This is the snapshot boundary (`as_of_seq`).
+    last_applied_seq: u64,
     generation: u64,
-    scrollback: Scrollback,
+    /// The headless emulator. `None` for a recovered transcript, which has
+    /// no live process and serves cursor-based journal replays instead.
+    screen: Option<Screen>,
+    /// The single attached viewer, if any.
     attached: Option<Attachment>,
+    /// Unsent items for the attachment, in wire order. Bounded: when the
+    /// Output extent exceeds the budget, the whole queue is replaced by one
+    /// fresh snapshot (state resynchronisation, never an `OutputGap`).
+    pending: VecDeque<PendingItem>,
+    /// Byte extent of `pending`'s Output items (snapshots are not counted;
+    /// a replacement resets this to zero).
+    pending_bytes: usize,
+    /// Frame count of `pending`'s Output items.
+    pending_frames: u64,
+    /// Transcript replay buffer. Unused by live sessions, which never
+    /// replay bytes to synchronise a screen.
+    scrollback: Scrollback,
     /// Reader has seen EOF. Further publish_output is dropped.
     output_closed: bool,
     /// Child::wait returned. Output may still be in the ConPTY buffer.
@@ -417,25 +322,37 @@ struct StreamState {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct OutputMetrics {
-    pub(crate) peak_ring_bytes: u64,
-    pub(crate) ring_evicted_bytes: u64,
-    pub(crate) ring_dropped_frames: u64,
+    /// Peak byte extent of one session's unsent attachment queue.
+    pub(crate) peak_pending_bytes: u64,
+    /// Bytes discarded when a slow viewer's queue was replaced by a fresh
+    /// snapshot. Not lost screen state — subsumed by the snapshot — but
+    /// useful as pressure telemetry.
+    pub(crate) coalesced_bytes: u64,
+    /// Frames discarded by the same replacement.
+    pub(crate) coalesced_frames: u64,
 }
 
-/// Stream state is one mutex on purpose. Holding it across attach
-/// registration makes attach ordering exact: the subscriber is registered
-/// and its pull cursor is set, and only then can the reader publish the
-/// next live chunk. Subscribe-before-replay.
+/// Stream state is one mutex on purpose. Every step that must be atomic
+/// with respect to output application happens under this single hold:
+/// apply-to-emulator + boundary update + per-attachment enqueue, and screen
+/// capture + attachment registration. Holding it across attach registration
+/// makes attach ordering exact: the subscriber is registered with its
+/// snapshot already captured, and only then can the reader publish the next
+/// live chunk. Subscribe-with-state, subscribe-before-live.
 struct SessionRuntime {
     session_id: String,
     journal: Option<Arc<Journal>>,
     stream: Mutex<StreamState>,
+    /// The PTY input side, for emulator-generated replies (DSR/CPR). Writes
+    /// here are the fast path: never behind the journal, a snapshot, or a
+    /// client. `None` for transcript sessions and before spawn finishes.
+    pty_writer: OnceLock<Arc<Mutex<Box<dyn Write + Send>>>>,
     /// A failed journal write is a fact about this session, not about the
     /// daemon or a later session. It remains true for the session lifetime.
     journal_degraded: AtomicBool,
-    peak_ring_bytes: AtomicUsize,
-    ring_evicted_bytes: AtomicU64,
-    ring_dropped_frames: AtomicU64,
+    peak_pending_bytes: AtomicUsize,
+    coalesced_bytes: AtomicU64,
+    coalesced_frames: AtomicU64,
     journal_replays: AtomicU64,
     reader_finished: AtomicBool,
     child_reaped: AtomicBool,
@@ -455,9 +372,14 @@ impl SessionRuntime {
             journal,
             stream: Mutex::new(StreamState {
                 next_seq: 1,
+                last_applied_seq: 0,
                 generation: 1,
-                scrollback: Scrollback::default(),
+                screen: Some(Screen::new(INITIAL_COLS, INITIAL_ROWS)),
                 attached: None,
+                pending: VecDeque::new(),
+                pending_bytes: 0,
+                pending_frames: 0,
+                scrollback: Scrollback::default(),
                 output_closed: false,
                 process_exited: false,
                 exit_code: None,
@@ -465,10 +387,11 @@ impl SessionRuntime {
                 exit_at: None,
                 disposition: Disposition::Running,
             }),
+            pty_writer: OnceLock::new(),
             journal_degraded: AtomicBool::new(false),
-            peak_ring_bytes: AtomicUsize::new(0),
-            ring_evicted_bytes: AtomicU64::new(0),
-            ring_dropped_frames: AtomicU64::new(0),
+            peak_pending_bytes: AtomicUsize::new(0),
+            coalesced_bytes: AtomicU64::new(0),
+            coalesced_frames: AtomicU64::new(0),
             journal_replays: AtomicU64::new(0),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
@@ -482,15 +405,20 @@ impl SessionRuntime {
         if let Ok(mut stream) = runtime.stream.lock() {
             stream.generation = replay.generation;
             stream.next_seq = replay.last_seq.saturating_add(1);
+            stream.last_applied_seq = replay.last_seq;
             stream.output_closed = true;
             stream.process_exited = true;
             stream.disposition = Disposition::Recovered {
                 truncated: replay.truncated,
             };
+            // A recovered session is a transcript, not a live process: no
+            // emulator, no snapshot, no live queue. Cursor-based journal
+            // replay below serves its attaches.
+            stream.screen = None;
             for event in replay.events {
                 match event {
                     SessionEvent::Output { seq, data } => {
-                        stream.scrollback.push_uncapped(seq, data.as_bytes());
+                        stream.scrollback.push(seq, data.as_bytes());
                     }
                     SessionEvent::Exit { code } => {
                         stream.exit_code = code;
@@ -512,48 +440,77 @@ impl SessionRuntime {
         runtime
     }
 
+    /// True when this runtime is a recovered transcript (no emulator, no
+    /// live process). Attaches to it replay the journal instead of
+    /// synchronising a screen.
+    fn is_transcript(&self) -> bool {
+        self.stream
+            .lock()
+            .map(|stream| stream.screen.is_none())
+            .unwrap_or(true)
+    }
+
     fn publish_output(&self, data: &str) {
-        let Ok(mut stream) = self.stream.lock() else {
-            eprintln!(
-                "session {} dropped terminal output: stream lock unavailable",
-                self.session_id
-            );
-            return;
-        };
-        if stream.output_closed {
-            let seq = stream.next_seq;
+        let pty_replies;
+        let seq;
+        let generation;
+        {
+            let Ok(mut stream) = self.stream.lock() else {
+                eprintln!(
+                    "session {} dropped terminal output: stream lock unavailable",
+                    self.session_id
+                );
+                return;
+            };
+            if stream.output_closed {
+                // Bytes after EOF are neither applied nor journalled; no
+                // sequence is consumed for them.
+                if let Some(attached) = &stream.attached {
+                    attached.outbound.notify();
+                }
+                eprintln!(
+                    "session {} dropped terminal output after EOF ({} bytes)",
+                    self.session_id,
+                    data.len()
+                );
+                return;
+            }
+            // ONE critical section: allocate the sequence, apply the complete
+            // chunk to the emulator, then — only after parsing completed —
+            // advance the boundary and enqueue the live update. Releasing the
+            // lock anywhere before the boundary update would let an attach
+            // capture a snapshot that claims a chunk that was only queued.
+            seq = stream.next_seq;
             stream.next_seq = stream.next_seq.saturating_add(1);
-            stream
-                .scrollback
-                .record_external_loss(seq, data.len() as u64);
+            pty_replies = match stream.screen.as_mut() {
+                Some(screen) => screen.feed(data.as_bytes()),
+                // Transcript runtimes have no reader thread; unreachable, but
+                // the boundary must still stay honest if it ever happened.
+                None => Vec::new(),
+            };
+            stream.last_applied_seq = seq;
+            stream.last_publish = Some(Instant::now());
+            generation = stream.generation;
+            let (coalesced_bytes, coalesced_frames) = enqueue_output(&mut stream, seq, data);
+            self.peak_pending_bytes
+                .fetch_max(stream.pending_bytes, Ordering::Relaxed);
+            self.coalesced_bytes
+                .fetch_add(coalesced_bytes, Ordering::Relaxed);
+            self.coalesced_frames
+                .fetch_add(coalesced_frames, Ordering::Relaxed);
             if let Some(attached) = &stream.attached {
                 attached.outbound.notify();
             }
-            eprintln!(
-                "session {} dropped terminal output after EOF ({} bytes)",
-                self.session_id,
-                data.len()
-            );
-            return;
         }
-        let seq = stream.next_seq;
-        stream.next_seq = stream.next_seq.saturating_add(1);
-        let push = stream.scrollback.push(seq, data.as_bytes());
-        stream.last_publish = Some(Instant::now());
-        let generation = stream.generation;
-        self.peak_ring_bytes
-            .fetch_max(stream.scrollback.bytes, Ordering::Relaxed);
-        self.ring_evicted_bytes
-            .fetch_add(push.evicted_bytes, Ordering::Relaxed);
-        self.ring_dropped_frames
-            .fetch_add(push.dropped_frames, Ordering::Relaxed);
-        if let Some(attached) = &stream.attached {
-            attached.outbound.notify();
-        }
-        drop(stream);
+        // Terminal query replies (DSR/CPR) go straight back to the PTY:
+        // ConPTY stalls its render pipeline until they are answered, so they
+        // must not wait for the journal, snapshot encoding, or a client.
+        self.write_pty_replies(&pty_replies);
         self.published_frames.fetch_add(1, Ordering::Relaxed);
         self.published_bytes
             .fetch_add(data.len(), Ordering::Relaxed);
+        // The journal append is asynchronous exactly as before: its failure
+        // degrades the transcript, never the screen boundary.
         if let Some(journal) = &self.journal {
             let accepted = journal.try_append(output_record(
                 self.session_id.clone(),
@@ -567,17 +524,57 @@ impl SessionRuntime {
         }
     }
 
-    fn record_output_loss(&self, dropped_bytes: u64) {
-        let Ok(mut stream) = self.stream.lock() else {
+    /// Forward emulator-generated replies to the PTY input side. Best
+    /// effort: a dead PTY has a dead reader that ends the session anyway.
+    fn write_pty_replies(&self, replies: &[String]) {
+        if replies.is_empty() {
+            return;
+        }
+        let Some(writer) = self.pty_writer.get() else {
+            eprintln!(
+                "session {} dropped {} terminal query replies: PTY writer unavailable",
+                self.session_id,
+                replies.len()
+            );
+            return;
+        };
+        let Ok(mut writer) = writer.lock() else {
+            eprintln!(
+                "session {} dropped terminal query replies: PTY writer lock unavailable",
+                self.session_id
+            );
+            return;
+        };
+        for reply in replies {
+            if let Err(error) = writer.write_all(reply.as_bytes()) {
+                eprintln!(
+                    "session {} could not answer a terminal query: {error}",
+                    self.session_id
+                );
+                return;
+            }
+        }
+        if let Err(error) = writer.flush() {
+            eprintln!(
+                "session {} could not flush a terminal query reply: {error}",
+                self.session_id
+            );
+        }
+    }
+
+    fn record_output_loss(&self) {
+        let Ok(stream) = self.stream.lock() else {
             eprintln!(
                 "session {} dropped terminal output: stream lock unavailable",
                 self.session_id
             );
             return;
         };
-        let seq = stream.next_seq;
-        stream.next_seq = stream.next_seq.saturating_add(1);
-        stream.scrollback.record_external_loss(seq, dropped_bytes);
+        // Bytes lost between the reader and the emulator were never applied
+        // to the screen and never journalled, so no sequence is consumed:
+        // seq counts applied chunks, and the boundary stays an honest
+        // statement about the emulator. The lost bytes are simply absent
+        // from the transcript.
         if let Some(attached) = &stream.attached {
             attached.outbound.notify();
         }
@@ -585,9 +582,9 @@ impl SessionRuntime {
 
     pub(crate) fn output_metrics(&self) -> OutputMetrics {
         OutputMetrics {
-            peak_ring_bytes: self.peak_ring_bytes.load(Ordering::Relaxed) as u64,
-            ring_evicted_bytes: self.ring_evicted_bytes.load(Ordering::Relaxed),
-            ring_dropped_frames: self.ring_dropped_frames.load(Ordering::Relaxed),
+            peak_pending_bytes: self.peak_pending_bytes.load(Ordering::Relaxed) as u64,
+            coalesced_bytes: self.coalesced_bytes.load(Ordering::Relaxed),
+            coalesced_frames: self.coalesced_frames.load(Ordering::Relaxed),
         }
     }
 
@@ -666,9 +663,19 @@ impl SessionRuntime {
         self.journal_replays.load(Ordering::Relaxed)
     }
 
-    /// Register this connection as the single attached viewer. A second
-    /// different connection is rejected. The same connection re-attaching
-    /// replaces its cursor.
+    /// Register this connection as the single attached viewer and synchronise
+    /// it with the current screen state.
+    ///
+    /// A second different connection is rejected. The same connection
+    /// re-attaching replaces its stream with a fresh snapshot.
+    ///
+    /// THE LOAD-BEARING SECTION: screen capture and attachment registration
+    /// happen under ONE hold of the state lock. Building the copy first and
+    /// registering afterwards would let output fall into the interval and
+    /// land in neither the snapshot nor the queue — the exact bug class M3
+    /// shipped. After this function returns, the attachment's first outbound
+    /// item is `Snapshot(as_of_seq)` and every subsequent publish enqueues an
+    /// Output with a strictly greater sequence.
     fn try_attach(&self, from_cursor: Option<Cursor>, conn: &ConnHandle) -> Result<u64, WireError> {
         let Ok(mut stream) = self.stream.lock() else {
             return Err(internal("Session state is unavailable."));
@@ -681,13 +688,27 @@ impl SessionRuntime {
                 ));
             }
         }
+        // A live attach starts at the current screen snapshot: the cursor's
+        // sequence is ignored, but its generation must still match so a
+        // client holding a cursor from a recreated process gets a loud error
+        // instead of a silently different stream.
         if let Some(cursor) = from_cursor {
             cursor_replay_ok(stream.generation, cursor)?;
         }
+        let as_of_seq = stream.last_applied_seq;
+        let screen = stream.screen.as_ref().map(Screen::snapshot);
         stream.attached = Some(Attachment {
             conn_id: conn.id,
             outbound: Arc::clone(&conn.outbound),
         });
+        stream.pending.clear();
+        stream.pending_bytes = 0;
+        stream.pending_frames = 0;
+        if let Some(screen) = screen {
+            stream
+                .pending
+                .push_back(PendingItem::Snapshot { as_of_seq, screen });
+        }
         Ok(stream.generation)
     }
 
@@ -699,6 +720,12 @@ impl SessionRuntime {
                 .is_some_and(|attached| attached.conn_id == conn_id)
             {
                 stream.attached = None;
+                // The unsent queue belonged to the departing viewer. A new
+                // attach must start from a fresh snapshot, not from a stale
+                // stream assembled for a client that is gone.
+                stream.pending.clear();
+                stream.pending_bytes = 0;
+                stream.pending_frames = 0;
             }
         }
     }
@@ -765,6 +792,13 @@ impl SessionRuntime {
         };
         stream.generation = stream.generation.saturating_add(1);
         stream.next_seq = 1;
+        stream.last_applied_seq = 0;
+        // A new generation is a new process: a fresh emulator, not the old
+        // grid carrying over.
+        stream.screen = Some(Screen::new(INITIAL_COLS, INITIAL_ROWS));
+        stream.pending.clear();
+        stream.pending_bytes = 0;
+        stream.pending_frames = 0;
         stream.output_closed = false;
         stream.process_exited = false;
         stream.exit_code = None;
@@ -775,15 +809,19 @@ impl SessionRuntime {
     }
 
     #[cfg(test)]
-    fn snapshot(&self) -> (Vec<(u64, String)>, usize) {
+    fn transcript_chunks(&self) -> Vec<(u64, String)> {
         let stream = self.stream.lock().unwrap();
-        let chunks = stream
+        stream
             .scrollback
             .chunks
             .iter()
             .map(|chunk| (chunk.seq, String::from_utf8_lossy(&chunk.data).into_owned()))
-            .collect();
-        (chunks, stream.scrollback.bytes)
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn last_applied_seq(&self) -> u64 {
+        self.stream.lock().unwrap().last_applied_seq
     }
 
     #[cfg(test)]
@@ -797,6 +835,70 @@ impl SessionRuntime {
     }
 }
 
+/// Enqueue one applied chunk for the attached viewer and enforce the
+/// slow-viewer budget. Called with the state lock held, after the emulator
+/// boundary advanced.
+///
+/// When the unsent Output extent exceeds the budget, the WHOLE unsent queue
+/// is discarded and replaced by a fresh snapshot at the current boundary.
+/// That is a state resynchronisation, not an [`SessionEvent::OutputGap`]:
+/// pipe order still delivers the newer snapshot after anything older that
+/// already reached the wire, and the snapshot subsumes everything before it.
+fn enqueue_output(stream: &mut StreamState, seq: u64, data: &str) -> (u64, u64) {
+    if stream.attached.is_none() {
+        return (0, 0);
+    }
+    stream.pending.push_back(PendingItem::Output {
+        seq,
+        data: data.to_owned(),
+    });
+    stream.pending_bytes += data.len();
+    stream.pending_frames += 1;
+    if stream.pending_bytes <= PENDING_OUTPUT_BUDGET_BYTES
+        && stream.pending_frames <= PENDING_OUTPUT_BUDGET_FRAMES
+    {
+        return (0, 0);
+    }
+    let as_of_seq = stream.last_applied_seq;
+    let screen = stream.screen.as_ref().map(Screen::snapshot);
+    let discarded_bytes = stream.pending_bytes as u64;
+    let discarded_frames = stream.pending_frames;
+    stream.pending.clear();
+    stream.pending_bytes = 0;
+    stream.pending_frames = 0;
+    if let Some(screen) = screen {
+        stream
+            .pending
+            .push_back(PendingItem::Snapshot { as_of_seq, screen });
+    }
+    (discarded_bytes, discarded_frames)
+}
+
+/// Render an owned captured screen into the wire snapshot event. Called with
+/// no locks held: the ANSI presenter is O(rows x cols) and must never run
+/// inside the state mutex.
+fn snapshot_event(as_of_seq: u64, screen: ScreenSnapshot) -> SessionEvent {
+    SessionEvent::Snapshot {
+        as_of_seq,
+        cols: screen.cols,
+        rows: screen.rows,
+        data: screen.render_ansi(),
+        cursor: ScreenCursor {
+            row: screen.cursor.row,
+            col: screen.cursor.col,
+            visible: screen.cursor.visible,
+            shape: match screen.cursor.shape {
+                SnapshotCursorShape::Block => CursorShape::Block,
+                SnapshotCursorShape::Underline => CursorShape::Underline,
+                SnapshotCursorShape::Bar => CursorShape::Bar,
+            },
+        },
+        alternate_screen: screen.alternate_screen,
+        bracketed_paste: screen.bracketed_paste,
+        title: screen.title,
+    }
+}
+
 /// Per-connection handle: RPC outbound plus the sessions this client pulls.
 pub struct ConnHandle {
     pub id: u64,
@@ -807,7 +909,13 @@ pub struct ConnHandle {
 
 struct PullState {
     runtime: Arc<SessionRuntime>,
-    sent_seq: Option<u64>,
+    /// Whether this pull follows the transcript replay contract (recovered
+    /// session) or the live snapshot contract.
+    transcript: bool,
+    /// Transcript-only: last replay sequence the client accounted for.
+    /// Live sessions keep no replay cursor; their screen boundary is the
+    /// snapshot's `as_of_seq`.
+    transcript_cursor: Option<u64>,
     exit_sent: bool,
     journal_degraded_sent: bool,
     generation: u64,
@@ -835,7 +943,8 @@ impl ConnHandle {
         &self,
         session_id: &str,
         runtime: Arc<SessionRuntime>,
-        from_seq: Option<u64>,
+        transcript: bool,
+        transcript_cursor: Option<u64>,
         generation: u64,
     ) {
         let attachment_generation = self
@@ -849,7 +958,8 @@ impl ConnHandle {
             session_id.to_string(),
             PullState {
                 runtime,
-                sent_seq: from_seq,
+                transcript,
+                transcript_cursor,
                 exit_sent: false,
                 journal_degraded_sent: false,
                 generation,
@@ -926,7 +1036,9 @@ impl ConnHandle {
     }
 
     /// Record delivery only after the corresponding envelope was written to
-    /// the connection. A queued envelope is not yet part of the cursor.
+    /// the connection. Only the transcript replay cursor advances here: live
+    /// screen state is synchronised by snapshots, so an Output written to a
+    /// live stream must not look like a replay position.
     pub(crate) fn event_sent(&self, event: &PendingEvent) {
         let mut map = self
             .attached
@@ -941,21 +1053,22 @@ impl ConnHandle {
             }
             match &event.envelope.event {
                 SessionEvent::Output { seq, .. } => {
-                    pull.sent_seq = Some(*seq);
+                    if let Some(cursor) = pull.transcript_cursor.as_mut() {
+                        *cursor = *seq;
+                    }
                     false
                 }
                 SessionEvent::OutputGap { to_seq, .. } => {
                     // A gap declaration accounts for the unavailable range;
                     // it is safe to advance only after that declaration was
                     // itself written to the wire.
-                    pull.sent_seq = Some(*to_seq);
+                    if let Some(cursor) = pull.transcript_cursor.as_mut() {
+                        *cursor = *to_seq;
+                    }
                     false
                 }
                 SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
-                SessionEvent::JournalDegraded => false,
-                // Snapshot delivery is not wired into this legacy cursor
-                // path yet, and a screen boundary must not advance sent_seq.
-                SessionEvent::Snapshot { .. } => false,
+                SessionEvent::JournalDegraded | SessionEvent::Snapshot { .. } => false,
             }
         };
         if remove {
@@ -970,74 +1083,172 @@ impl ConnHandle {
             .unwrap_or_else(|error| error.into_inner());
         let mut events = Vec::new();
         for (session_id, pull) in map.iter_mut() {
-            let cursor = pull.sent_seq;
-            let needs_journal = {
-                let stream = pull
-                    .runtime
-                    .stream
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                stream
-                    .scrollback
-                    .needs_journal_replay(cursor, stream.next_seq)
-            };
-            let journal_outputs = if needs_journal {
-                pull.runtime
-                    .replay_journal_outputs(cursor.unwrap_or(0), pull.generation)
+            if pull.transcript {
+                pull_transcript_events(session_id, pull, &mut events);
             } else {
-                Vec::new()
-            };
-            let stream = pull
-                .runtime
-                .stream
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let replay = stream
-                .scrollback
-                .replay_after_with_journal(cursor, &journal_outputs);
-            for event in replay {
-                events.push(PendingEvent {
-                    session_id: session_id.clone(),
-                    attachment_generation: pull.attachment_generation,
-                    envelope: SessionEventEnvelope {
-                        session_id: session_id.clone(),
-                        generation: pull.generation,
-                        event,
-                    },
-                });
-            }
-            if !pull.journal_degraded_sent && pull.runtime.journal_degraded() {
-                events.push(PendingEvent {
-                    session_id: session_id.clone(),
-                    attachment_generation: pull.attachment_generation,
-                    envelope: SessionEventEnvelope {
-                        session_id: session_id.clone(),
-                        generation: pull.generation,
-                        event: SessionEvent::JournalDegraded,
-                    },
-                });
-                pull.journal_degraded_sent = true;
-            }
-            if !pull.exit_sent && SessionRuntime::ready_for_exit(&stream) {
-                let event = match stream.disposition {
-                    Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
-                    Disposition::Running | Disposition::Exited => SessionEvent::Exit {
-                        code: stream.exit_code,
-                    },
-                };
-                events.push(PendingEvent {
-                    session_id: session_id.clone(),
-                    attachment_generation: pull.attachment_generation,
-                    envelope: SessionEventEnvelope {
-                        session_id: session_id.clone(),
-                        generation: pull.generation,
-                        event,
-                    },
-                });
-                pull.exit_sent = true;
+                pull_live_events(session_id, pull, &mut events);
             }
         }
         events
+    }
+}
+
+/// Live pull: drain a bounded batch from the attachment's pending queue and
+/// convert it to wire events. Snapshot ANSI is rendered HERE, with no locks
+/// held — never inside the state mutex. Only when the queue is fully empty
+/// may JournalDegraded or the exit event be appended, so neither can
+/// overtake output that is still queued.
+fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
+    let mut drained = Vec::with_capacity(PULL_BATCH);
+    let degraded;
+    let mut exit_event = None;
+    {
+        let Ok(mut stream) = pull.runtime.stream.lock() else {
+            return;
+        };
+        while drained.len() < PULL_BATCH {
+            let Some(item) = stream.pending.pop_front() else {
+                break;
+            };
+            match &item {
+                PendingItem::Output { data, .. } => {
+                    stream.pending_bytes = stream.pending_bytes.saturating_sub(data.len());
+                    stream.pending_frames = stream.pending_frames.saturating_sub(1);
+                }
+                PendingItem::Snapshot { .. } => {}
+            }
+            drained.push(item);
+        }
+        degraded = !pull.journal_degraded_sent && pull.runtime.journal_degraded();
+        if degraded {
+            pull.journal_degraded_sent = true;
+        }
+        if !pull.exit_sent && stream.pending.is_empty() && SessionRuntime::ready_for_exit(&stream) {
+            exit_event = Some(match stream.disposition {
+                Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
+                Disposition::Running | Disposition::Exited => SessionEvent::Exit {
+                    code: stream.exit_code,
+                },
+            });
+            pull.exit_sent = true;
+        }
+    }
+    for item in drained {
+        let event = match item {
+            PendingItem::Snapshot { as_of_seq, screen } => snapshot_event(as_of_seq, screen),
+            PendingItem::Output { seq, data } => SessionEvent::Output { seq, data },
+        };
+        events.push(PendingEvent {
+            session_id: session_id.to_string(),
+            attachment_generation: pull.attachment_generation,
+            envelope: SessionEventEnvelope {
+                session_id: session_id.to_string(),
+                generation: pull.generation,
+                event,
+            },
+        });
+    }
+    if degraded {
+        events.push(PendingEvent {
+            session_id: session_id.to_string(),
+            attachment_generation: pull.attachment_generation,
+            envelope: SessionEventEnvelope {
+                session_id: session_id.to_string(),
+                generation: pull.generation,
+                event: SessionEvent::JournalDegraded,
+            },
+        });
+    }
+    if let Some(event) = exit_event {
+        events.push(PendingEvent {
+            session_id: session_id.to_string(),
+            attachment_generation: pull.attachment_generation,
+            envelope: SessionEventEnvelope {
+                session_id: session_id.to_string(),
+                generation: pull.generation,
+                event,
+            },
+        });
+    }
+}
+
+/// Transcript pull: cursor-based journal/scrollback replay for a recovered
+/// session. This is the M2/M3 replay contract, kept for transcripts only.
+fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
+    let cursor = pull.transcript_cursor;
+    let needs_journal = {
+        let stream = pull
+            .runtime
+            .stream
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        stream
+            .scrollback
+            .needs_journal_replay(cursor, stream.next_seq)
+    };
+    let journal_outputs = if needs_journal {
+        pull.runtime
+            .replay_journal_outputs(cursor.unwrap_or(0), pull.generation)
+    } else {
+        Vec::new()
+    };
+    let replay = {
+        let stream = pull
+            .runtime
+            .stream
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        stream
+            .scrollback
+            .replay_after_with_journal(cursor, &journal_outputs)
+    };
+    for event in replay {
+        events.push(PendingEvent {
+            session_id: session_id.to_string(),
+            attachment_generation: pull.attachment_generation,
+            envelope: SessionEventEnvelope {
+                session_id: session_id.to_string(),
+                generation: pull.generation,
+                event,
+            },
+        });
+    }
+    if !pull.journal_degraded_sent && pull.runtime.journal_degraded() {
+        events.push(PendingEvent {
+            session_id: session_id.to_string(),
+            attachment_generation: pull.attachment_generation,
+            envelope: SessionEventEnvelope {
+                session_id: session_id.to_string(),
+                generation: pull.generation,
+                event: SessionEvent::JournalDegraded,
+            },
+        });
+        pull.journal_degraded_sent = true;
+    }
+    if !pull.exit_sent {
+        let stream = pull
+            .runtime
+            .stream
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if SessionRuntime::ready_for_exit(&stream) {
+            let event = match stream.disposition {
+                Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
+                Disposition::Running | Disposition::Exited => SessionEvent::Exit {
+                    code: stream.exit_code,
+                },
+            };
+            events.push(PendingEvent {
+                session_id: session_id.to_string(),
+                attachment_generation: pull.attachment_generation,
+                envelope: SessionEventEnvelope {
+                    session_id: session_id.to_string(),
+                    generation: pull.generation,
+                    event,
+                },
+            });
+            pull.exit_sent = true;
+        }
     }
 }
 
@@ -1183,13 +1394,13 @@ impl SessionRegistry {
             .map(RegistryEntry::runtime)
             .map(|runtime| runtime.output_metrics())
             .fold(OutputMetrics::default(), |mut total, metrics| {
-                total.peak_ring_bytes = total.peak_ring_bytes.max(metrics.peak_ring_bytes);
-                total.ring_evicted_bytes = total
-                    .ring_evicted_bytes
-                    .saturating_add(metrics.ring_evicted_bytes);
-                total.ring_dropped_frames = total
-                    .ring_dropped_frames
-                    .saturating_add(metrics.ring_dropped_frames);
+                total.peak_pending_bytes = total.peak_pending_bytes.max(metrics.peak_pending_bytes);
+                total.coalesced_bytes = total
+                    .coalesced_bytes
+                    .saturating_add(metrics.coalesced_bytes);
+                total.coalesced_frames = total
+                    .coalesced_frames
+                    .saturating_add(metrics.coalesced_frames);
                 total
             })
     }
@@ -1263,8 +1474,23 @@ impl SessionRegistry {
             Err(error) => return Err(error),
         };
         let generation = runtime.try_attach(from_cursor, conn)?;
-        let from_seq = from_cursor.map(|cursor| cursor.seq);
-        conn.track(session_id, Arc::clone(&runtime), from_seq, generation);
+        // A live attach synchronises the screen (snapshot first, live after)
+        // and keeps no replay cursor. A transcript attach replays the journal
+        // from the cursor. These are different products and must not share a
+        // replay state machine.
+        let transcript = runtime.is_transcript();
+        let transcript_cursor = if transcript {
+            Some(from_cursor.map(|cursor| cursor.seq).unwrap_or(0))
+        } else {
+            None
+        };
+        conn.track(
+            session_id,
+            Arc::clone(&runtime),
+            transcript,
+            transcript_cursor,
+            generation,
+        );
         // The journal writer records asynchronous failures in shared state;
         // attach must import that fact before returning even when the PTY is
         // otherwise quiet and no status request or later output occurs.
@@ -1474,7 +1700,7 @@ impl SessionRegistry {
     ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let master = {
+        let (runtime, master) = {
             let map = self
                 .inner
                 .lock()
@@ -1482,19 +1708,42 @@ impl SessionRegistry {
             let entry = map.get(session_id).ok_or_else(not_found)?;
             check_owner(entry, owner)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
-            Arc::clone(&session.master)
+            (Arc::clone(&session.runtime), Arc::clone(&session.master))
         };
+        // Resize is serialized with emulator parsing under the SAME state
+        // lock as publish_output, in one defined order: emulator dimensions
+        // first, then the PTY. A snapshot therefore sees the resize as wholly
+        // before or wholly after itself, and no chunk is parsed into a grid
+        // that is mid-resize.
+        let mut stream = runtime
+            .stream
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let Some(screen) = stream.screen.as_mut() else {
+            return Err(process_gone());
+        };
+        let (previous_cols, previous_rows) = screen.dimensions();
+        screen.resize(cols.max(1), rows.max(1));
         let master = master
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
-        master
+        if master
             .resize(PtySize {
                 rows: rows.max(1),
                 cols: cols.max(1),
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|_| WireError::new(ErrorCode::Io, "Could not resize the terminal."))
+            .is_err()
+        {
+            // Keep emulator and PTY in agreement: undo the grid change.
+            screen.resize(previous_cols, previous_rows);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                "Could not resize the terminal.",
+            ));
+        }
+        Ok(())
     }
 
     pub fn list(&self) -> Result<Vec<Session>, WireError> {
@@ -1574,10 +1823,11 @@ pub fn spawn_session(
     owner: OwnerId,
     command: PtyCommand,
 ) -> Result<(), WireError> {
-    // On Windows portable-pty selects ConPTY internally. The frontend must
-    // keep xterm stdin/onData enabled: ConPTY may issue a DSR query
-    // (`ESC[6n`) at startup and stalls its render pipeline until the
-    // terminal answers it.
+    // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
+    // DSR query (`ESC[6n`) at startup and stalls its render pipeline until it
+    // is answered. The DAEMON is the single responder: publish_output routes
+    // the emulator's PtyWrite replies straight back to this writer. Clients
+    // must not answer DSR themselves (a second reply would reach the child).
     let pty_system = portable_pty::native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -1675,6 +1925,13 @@ pub fn spawn_session(
     let exited = Arc::new(AtomicBool::new(false));
     let master = Arc::new(Mutex::new(pair.master));
     let writer = Arc::new(Mutex::new(writer));
+    // Register before the reader thread starts: ConPTY's startup DSR can be
+    // read within milliseconds, and the reply path needs the writer.
+    runtime
+        .pty_writer
+        .set(Arc::clone(&writer))
+        .ok()
+        .expect("pty writer registered exactly once");
     let id = metadata.id.clone();
     let wait_runtime = Arc::clone(&runtime);
     let child_wait = std::thread::Builder::new()
@@ -1790,14 +2047,14 @@ fn reader_loop(
             Ok(0) => break,
             Ok(n) => {
                 if coalesce_tx.send(buf[..n].to_vec()).is_err() {
-                    runtime.record_output_loss(n as u64);
+                    runtime.record_output_loss();
                     eprintln!("session {id} dropped {n} terminal bytes: coalescer unavailable");
                     break;
                 }
             }
             Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => {
-                runtime.record_output_loss(0);
+                runtime.record_output_loss();
                 eprintln!("session {id} stopped reading terminal output: {error}");
                 break;
             }
@@ -2164,27 +2421,67 @@ pub fn write_test_pty_command(paths: &RuntimePaths, command: &PtyCommand) -> std
 mod tests {
     use super::*;
 
-    #[test]
-    fn push_capped_drops_oldest_bytes() {
-        let mut ring = VecDeque::new();
-        push_capped(&mut ring, b"abcd", 8);
-        push_capped(&mut ring, b"efghij", 8);
-        assert_eq!(ring.iter().copied().collect::<Vec<_>>(), b"cdefghij");
+    /// A Write sink that records everything, standing in for the PTY input
+    /// side so the DSR fast path is observable without a ConPTY.
+    struct SharedSink(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
-    #[test]
-    fn push_capped_large_chunk_keeps_only_tail() {
-        let mut ring = VecDeque::new();
-        push_capped(&mut ring, b"hello", 16);
-        push_capped(&mut ring, b"0123456789abcdefXYZ", 8);
-        assert_eq!(ring.iter().copied().collect::<Vec<_>>(), b"bcdefXYZ");
+    fn sink_runtime() -> (Arc<SessionRuntime>, Arc<Mutex<Vec<u8>>>) {
+        let runtime = Arc::new(SessionRuntime::new());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let sink: Arc<Mutex<Box<dyn Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(SharedSink(Arc::clone(&received)))));
+        runtime
+            .pty_writer
+            .set(sink)
+            .ok()
+            .expect("sink registered once");
+        (runtime, received)
     }
 
-    #[test]
-    fn push_capped_zero_cap_is_empty() {
-        let mut ring = VecDeque::new();
-        push_capped(&mut ring, b"abc", 0);
-        assert!(ring.is_empty());
+    /// Pull until the session queue is empty, recording delivery like the
+    /// connection writer does.
+    fn drain(conn: &ConnHandle) -> Vec<SessionEvent> {
+        let mut events = Vec::new();
+        loop {
+            let batch = conn.pull_events();
+            if batch.is_empty() {
+                return events;
+            }
+            for event in &batch {
+                conn.event_sent(event);
+            }
+            events.extend(batch.into_iter().map(|pending| pending.envelope.event));
+        }
+    }
+
+    /// Deterministic flood chunk with attributes, cursor motion, CJK and a
+    /// line break, so screen equality is exercised beyond plain text.
+    fn flood_chunk(index: usize) -> String {
+        let shade = 31 + (index % 7);
+        format!("\x1b[{shade}mchunk {index:06}\x1b[0m \u{754c}\r\n")
+    }
+
+    fn attach_tracked(runtime: &Arc<SessionRuntime>, conn: &Arc<ConnHandle>) -> u64 {
+        let generation = runtime.try_attach(None, conn).expect("attach");
+        let transcript = runtime.is_transcript();
+        conn.track(
+            "s.a.1",
+            Arc::clone(runtime),
+            transcript,
+            Some(0),
+            generation,
+        );
+        generation
     }
 
     #[test]
@@ -2210,174 +2507,300 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_declares_evicted_sequence_range() {
-        let mut scrollback = Scrollback::default();
-        scrollback.push_with_cap(1, b"one!", 8, true);
-        scrollback.push_with_cap(2, b"two!", 8, true);
-        let push = scrollback.push_with_cap(3, b"three", 8, true);
+    fn attach_delivers_snapshot_then_live_with_exact_boundary() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.publish_output("before");
+        let conn = ConnHandle::new(1);
+        attach_tracked(&runtime, &conn);
+        assert_eq!(runtime.last_applied_seq(), 1);
 
-        assert_eq!(push.evicted_bytes, 8);
-        assert_eq!(push.dropped_frames, 2);
-        assert_eq!(scrollback.evicted_bytes, 8);
-        assert_eq!(scrollback.dropped_frames, 2);
+        let events = drain(&conn);
+        let [SessionEvent::Snapshot {
+            as_of_seq, data, ..
+        }] = &events[..]
+        else {
+            panic!("expected a single snapshot, got {events:?}");
+        };
+        assert_eq!(*as_of_seq, 1);
+        assert!(data.contains("before"), "snapshot data: {data:?}");
+
+        runtime.publish_output("after");
+        let events = drain(&conn);
         assert_eq!(
-            scrollback.replay_after(None),
-            vec![
-                SessionEvent::OutputGap {
-                    from_seq: 1,
-                    to_seq: 2,
-                    dropped_bytes: 8,
-                    dropped_frames: 2,
-                },
-                SessionEvent::Output {
-                    seq: 3,
-                    data: "three".to_string(),
-                },
-            ]
+            events,
+            vec![SessionEvent::Output {
+                seq: 2,
+                data: "after".to_string()
+            }]
         );
     }
 
     #[test]
-    fn delivered_output_gap_advances_cursor_without_repeating() {
+    fn attach_during_flood_never_duplicates_or_skips() {
         let runtime = Arc::new(SessionRuntime::new());
-        {
-            let mut stream = runtime.stream.lock().unwrap();
-            stream.scrollback.push_with_cap(1, b"one!", 8, true);
-            stream.scrollback.push_with_cap(2, b"two!", 8, true);
-            stream.scrollback.push_with_cap(3, b"three", 8, true);
-        }
-        let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn).unwrap();
-        conn.track("s.a.1", runtime, None, generation);
-
-        let events = conn.pull_events();
-        assert!(matches!(
-            events.first().map(|event| &event.envelope.event),
-            Some(SessionEvent::OutputGap {
-                from_seq: 1,
-                to_seq: 2,
-                ..
+        let flood_runtime = Arc::clone(&runtime);
+        let flood = std::thread::Builder::new()
+            .name("flood".into())
+            .spawn(move || {
+                for index in 1..=4_000 {
+                    flood_runtime.publish_output(&flood_chunk(index));
+                    if index % 32 == 0 {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
             })
-        ));
-        for event in &events {
-            conn.event_sent(event);
+            .expect("flood thread");
+
+        let mut seen = std::collections::HashSet::new();
+        let mut covered_to = 0u64;
+        for epoch in 0u64..25 {
+            let conn = ConnHandle::new(epoch + 1);
+            attach_tracked(&runtime, &conn);
+            let events = drain(&conn);
+            assert!(
+                !events.is_empty(),
+                "epoch {epoch} saw nothing: attach must enqueue a snapshot"
+            );
+            // Spread the attach epochs across the flood's lifetime.
+            std::thread::sleep(Duration::from_millis(4));
+            let mut expected = None;
+            for event in &events {
+                match event {
+                    SessionEvent::Snapshot { as_of_seq, .. } => {
+                        assert!(
+                            *as_of_seq >= covered_to,
+                            "snapshot boundary moved backwards at epoch {epoch}"
+                        );
+                        covered_to = (*as_of_seq).max(covered_to);
+                        expected = Some(as_of_seq + 1);
+                    }
+                    SessionEvent::Output { seq, .. } => {
+                        if let Some(expected_seq) = expected {
+                            assert_eq!(
+                                *seq, expected_seq,
+                                "output skipped or duplicated at epoch {epoch}"
+                            );
+                        }
+                        expected = Some(seq + 1);
+                        assert!(seen.insert(*seq), "sequence {seq} delivered twice");
+                        covered_to = (*seq).max(covered_to);
+                    }
+                    SessionEvent::Exit { .. } => {}
+                    other => panic!("unexpected event at epoch {epoch}: {other:?}"),
+                }
+            }
+            runtime.detach_if_conn(conn.id);
         }
-        assert!(conn.pull_events().is_empty());
+        flood.join().expect("flood thread joins");
+
+        // The flood is complete: one final attach must now deliver (or
+        // subsume) everything it published.
+        let conn = ConnHandle::new(999);
+        attach_tracked(&runtime, &conn);
+        for event in drain(&conn) {
+            match event {
+                SessionEvent::Snapshot { as_of_seq, .. } => covered_to = as_of_seq.max(covered_to),
+                SessionEvent::Output { seq, .. } => {
+                    assert!(seen.insert(seq), "sequence {seq} delivered twice");
+                    covered_to = seq.max(covered_to);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            covered_to, 4_000,
+            "the flood was not fully delivered or subsumed"
+        );
     }
 
     #[test]
-    fn live_reattach_reads_evicted_prefix_from_journal_before_ring_seam() {
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-reattach-journal-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
-        journal
-            .upsert_blocking(new_session_record(
-                "s.reattach.1",
-                "S-1-5-21-1",
-                None,
-                SessionKind::Terminal,
-                "Terminal",
-            ))
-            .unwrap();
-        let runtime = Arc::new(SessionRuntime::with_journal(
-            "s.reattach.1".into(),
-            Some(Arc::clone(&journal)),
-        ));
-        let payload = "x".repeat(8192);
-        for _ in 1..=300 {
-            runtime.publish_output(&payload);
+    fn reattach_mid_flood_screen_equals_a_fresh_emulator() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let mut reference = Screen::new(INITIAL_COLS, INITIAL_ROWS);
+
+        fn apply(screen: &mut Screen, event: &SessionEvent) {
+            match event {
+                SessionEvent::Snapshot { data, .. } | SessionEvent::Output { data, .. } => {
+                    screen.process(data.as_bytes());
+                }
+                _ => {}
+            }
         }
-        journal.flush().unwrap();
-        let ring_first_seq = runtime
-            .stream
-            .lock()
-            .unwrap()
-            .scrollback
-            .chunks
-            .front()
-            .map(|chunk| chunk.seq)
-            .expect("ring retained a suffix");
-        assert!(ring_first_seq > 1, "test did not evict a ring prefix");
 
-        // This frame is intentionally not flushed to SQLite. It must come
-        // from the live ring and join the journal prefix at the seam.
-        runtime.publish_output("live-seam");
+        // Phase 1: publish while detached, then attach and synchronise.
+        for index in 1..=60 {
+            let chunk = flood_chunk(index);
+            runtime.publish_output(&chunk);
+            reference.process(chunk.as_bytes());
+        }
+        let conn = ConnHandle::new(1);
+        attach_tracked(&runtime, &conn);
+        let mut client = Screen::new(INITIAL_COLS, INITIAL_ROWS);
+        for event in drain(&conn) {
+            apply(&mut client, &event);
+        }
+        assert_eq!(
+            client.snapshot(),
+            reference.snapshot(),
+            "snapshot state must equal the emulator after phase 1"
+        );
 
+        // Phase 2: live chunks while attached, then reattach from scratch.
+        for index in 61..=120 {
+            let chunk = flood_chunk(index);
+            runtime.publish_output(&chunk);
+            reference.process(chunk.as_bytes());
+        }
+        for event in drain(&conn) {
+            apply(&mut client, &event);
+        }
+        assert_eq!(client.snapshot(), reference.snapshot());
+
+        runtime.detach_if_conn(conn.id);
+        let conn = ConnHandle::new(2);
+        attach_tracked(&runtime, &conn);
+        let mut client = Screen::new(INITIAL_COLS, INITIAL_ROWS);
+        for event in drain(&conn) {
+            apply(&mut client, &event);
+        }
+        assert_eq!(
+            client.snapshot(),
+            reference.snapshot(),
+            "snapshot + subsequent events must equal a fresh emulator fed the whole stream"
+        );
+    }
+
+    #[test]
+    fn slow_client_is_resynchronised_with_a_snapshot_not_a_gap() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        attach_tracked(&runtime, &conn);
+
+        // Stop reading: publish well past the frame budget without pulling.
+        for index in 1..=200 {
+            runtime.publish_output(&format!("slow-{index:04}\r\n"));
+        }
+
+        let events = drain(&conn);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, SessionEvent::OutputGap { .. })),
+            "a slow viewer must never be handed a gap: {events:?}"
+        );
+        let mut expected = None;
+        let mut client = Screen::new(INITIAL_COLS, INITIAL_ROWS);
+        let mut reference = Screen::new(INITIAL_COLS, INITIAL_ROWS);
+        let mut seen = std::collections::HashSet::new();
+        for event in &events {
+            match event {
+                SessionEvent::Snapshot {
+                    as_of_seq, data, ..
+                } => {
+                    expected = Some(as_of_seq + 1);
+                    client.process(data.as_bytes());
+                }
+                SessionEvent::Output { seq, data } => {
+                    assert_eq!(*seq, expected.expect("outputs follow the snapshot"));
+                    expected = Some(seq + 1);
+                    assert!(seen.insert(*seq), "sequence {seq} delivered twice");
+                    client.process(data.as_bytes());
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        for index in 1..=200 {
+            reference.process(format!("slow-{index:04}\r\n").as_bytes());
+        }
+        assert_eq!(
+            client.snapshot(),
+            reference.snapshot(),
+            "the resynchronised screen must still be the true screen"
+        );
+    }
+
+    #[test]
+    fn dsr_reply_is_written_straight_to_the_pty() {
+        let (runtime, received) = sink_runtime();
+        // No attachment, no journal, no snapshot: the query is answered on
+        // the publish path itself.
+        runtime.publish_output("\x1b[2;3H\x1b[6n");
+        assert_eq!(
+            String::from_utf8(received.lock().unwrap().clone()).expect("utf8"),
+            "\x1b[2;3R",
+            "one one-based CPR reply, routed to the PTY writer"
+        );
+        runtime.publish_output("plain");
+        assert_eq!(received.lock().unwrap().len(), 6, "no extra replies");
+    }
+
+    #[test]
+    fn control_path_stays_responsive_under_flood() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let flood_runtime = Arc::clone(&runtime);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flood_stop = Arc::clone(&stop);
+        let flood = std::thread::Builder::new()
+            .name("flood".into())
+            .spawn(move || {
+                let chunk = "x".repeat(COALESCE_MAX_BYTES);
+                while !flood_stop.load(Ordering::Acquire) {
+                    for _ in 0..16 {
+                        flood_runtime.publish_output(&chunk);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+            .expect("flood thread");
+
+        let mut worst = Duration::ZERO;
+        for epoch in 0..200u64 {
+            let started = Instant::now();
+            let conn = ConnHandle::new(epoch + 1);
+            runtime.try_attach(None, &conn).expect("attach under flood");
+            runtime.detach_if_conn(conn.id);
+            worst = worst.max(started.elapsed());
+        }
+        stop.store(true, Ordering::Release);
+        flood.join().expect("flood thread joins");
+        // Screen capture + registration is two grid copies under the lock;
+        // if the publish path ever held the mutex across slow work, this
+        // would blow far past the bound. 1 s is orders of magnitude above
+        // the observed cost and 30x below the RPC timeout this milestone
+        // exists to fix.
+        assert!(
+            worst < Duration::from_secs(1),
+            "state lock starved under flood: {worst:?}"
+        );
+    }
+
+    #[test]
+    fn transcript_cursor_replays_only_after() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.bump_generation();
         let conn = ConnHandle::new(1);
         let generation = runtime
             .try_attach(
                 Some(Cursor {
-                    generation: 1,
-                    seq: 0,
+                    generation: 2,
+                    seq: 1,
                 }),
                 &conn,
             )
             .unwrap();
-        conn.track("s.reattach.1", Arc::clone(&runtime), Some(0), generation);
-        let started = Instant::now();
-        let events = conn.pull_events();
-        let elapsed = started.elapsed();
-        let output_seqs: Vec<u64> = events
-            .iter()
-            .filter_map(|event| match event.envelope.event {
-                SessionEvent::Output { seq, .. } => Some(seq),
-                SessionEvent::OutputGap { .. }
-                | SessionEvent::Exit { .. }
-                | SessionEvent::Recovered { .. }
-                | SessionEvent::JournalDegraded => None,
-                // A snapshot is screen state, not a sequence-bearing event.
-                SessionEvent::Snapshot { .. } => None,
-            })
-            .collect();
-        assert_eq!(runtime.journal_replay_count(), 1);
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event.envelope.event, SessionEvent::OutputGap { .. })),
-            "journal-covered ring eviction was declared as a gap: {events:?}"
-        );
-        assert_eq!(output_seqs, (1..=301).collect::<Vec<_>>());
+        conn.track("s.a.1", Arc::clone(&runtime), true, Some(1), generation);
+        runtime.stream.lock().unwrap().scrollback.push(2, b"two");
+        runtime.finish(Some(0));
+        let events = drain(&conn);
         assert_eq!(
-            output_seqs
-                .windows(2)
-                .filter(|pair| pair[0] == pair[1])
-                .count(),
-            0,
-            "journal/ring seam duplicated an output sequence"
-        );
-        for event in &events {
-            conn.event_sent(event);
-        }
-        assert!(conn.pull_events().is_empty());
-        println!(
-            "JOURNAL_REATTACH persisted_frames=300 ring_first_seq={ring_first_seq} delivered_frames={} journal_replays={} wall_ms={}",
-            output_seqs.len(),
-            runtime.journal_replay_count(),
-            elapsed.as_millis(),
-        );
-        drop(conn);
-        drop(runtime);
-        drop(journal);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn ring_never_exceeds_256_kibibytes() {
-        let runtime = SessionRuntime::new();
-        runtime.publish_output(&"x".repeat(RING_CAPACITY / 2));
-        runtime.publish_output(&"y".repeat(RING_CAPACITY));
-        let (_, bytes) = runtime.snapshot();
-        assert_eq!(bytes, RING_CAPACITY);
-        assert_eq!(
-            runtime.peak_ring_bytes.load(Ordering::Relaxed),
-            RING_CAPACITY
+            events,
+            vec![
+                SessionEvent::Output {
+                    seq: 2,
+                    data: "two".to_string()
+                },
+                SessionEvent::Exit { code: Some(0) },
+            ]
         );
     }
 
@@ -2437,43 +2860,111 @@ mod tests {
     }
 
     #[test]
-    fn pull_replays_then_live_then_exit() {
+    fn live_attach_ends_with_snapshot_output_then_exit() {
         let runtime = Arc::new(SessionRuntime::new());
         runtime.publish_output("before");
         let conn = ConnHandle::new(1);
-        let generation = runtime
-            .try_attach(
-                Some(Cursor {
-                    generation: 1,
-                    seq: 0,
-                }),
-                &conn,
-            )
-            .unwrap();
-        conn.track("s.a.1", Arc::clone(&runtime), Some(0), generation);
+        attach_tracked(&runtime, &conn);
         runtime.publish_output("after");
         runtime.finish(Some(0));
-        let events = conn.pull_events();
-        let kinds: Vec<_> = events
+        let events = drain(&conn);
+        let kinds: Vec<&str> = events
             .iter()
-            .map(|envelope| match &envelope.envelope.event {
-                SessionEvent::Output { data, .. } => data.as_str(),
+            .map(|event| match event {
+                SessionEvent::Snapshot { .. } => "snapshot",
+                SessionEvent::Output { .. } => "output",
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::JournalDegraded => "journal_degraded",
                 SessionEvent::OutputGap { .. } => "output_gap",
-                SessionEvent::Snapshot { .. } => "snapshot",
             })
             .collect();
-        assert_eq!(kinds, ["before", "after", "exit"]);
-        for event in &events {
-            conn.event_sent(event);
-        }
-        assert!(conn.pull_events().is_empty());
+        assert_eq!(kinds, ["snapshot", "output", "exit"]);
+        // Exit must not overtake queued output.
+        assert!(matches!(
+            events.last(),
+            Some(SessionEvent::Exit { code: Some(0) })
+        ));
     }
 
     #[test]
-    fn ring_and_journal_keep_drain_bytes_after_reap() {
+    fn journal_keeps_every_frame_for_recovery() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        journal
+            .upsert_blocking(new_session_record(
+                "s.recover.1",
+                "S-1-5-21-1",
+                None,
+                SessionKind::Terminal,
+                "Terminal",
+            ))
+            .unwrap();
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            "s.recover.1".into(),
+            Some(Arc::clone(&journal)),
+        ));
+        let payload = "x".repeat(8192);
+        for _ in 1..=300 {
+            runtime.publish_output(&payload);
+        }
+        runtime.finish(Some(0));
+        journal.flush().unwrap();
+
+        let replay = journal.replay("s.recover.1", 0).unwrap();
+        let seqs: Vec<u64> = replay
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { seq, .. } => Some(*seq),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seqs, (1..=300).collect::<Vec<_>>());
+
+        // The recovered runtime is a transcript: no emulator, journal replay
+        // instead of a snapshot. Hydrating at 150 leaves a prefix that only
+        // a journal read can fill, so the attach below exercises the seam.
+        let replay_late = journal.replay("s.recover.1", 150).unwrap();
+        let recovered = SessionRuntime::from_replay(
+            "s.recover.1".into(),
+            Some(Arc::clone(&journal)),
+            replay_late,
+        );
+        assert!(recovered.is_transcript());
+        assert_eq!(recovered.transcript_chunks().len(), 150);
+        let conn = ConnHandle::new(1);
+        attach_tracked(&recovered, &conn);
+        let events = drain(&conn);
+        let seqs: Vec<u64> = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { seq, .. } => Some(*seq),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(seqs, (1..=300).collect::<Vec<_>>());
+        assert_eq!(
+            recovered.journal_replay_count(),
+            1,
+            "one journal read filled the prefix, not one per pull"
+        );
+        drop(recovered);
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_keeps_drain_bytes_after_reap() {
         let dir = std::env::temp_dir().join(format!(
             "devboule-drain-{}-{}",
             std::process::id(),
@@ -2507,13 +2998,12 @@ mod tests {
         runtime.close_output();
         journal.try_mark_ended("s.drain.1", 1, Some(0));
         journal.flush().unwrap();
-        let (live_chunks, live_bytes) = runtime.snapshot();
+        assert_eq!(runtime.published_frames.load(Ordering::Relaxed), 2);
+        let stats = journal.stats();
+        assert_eq!(stats.accepted_frames, 2);
+        assert_eq!(stats.committed_frames, 2);
+        assert_eq!(stats.failed_frames, 0);
         let replay = journal.replay("s.drain.1", 0).unwrap();
-        let journal_frames = replay
-            .events
-            .iter()
-            .filter(|event| matches!(event, SessionEvent::Output { .. }))
-            .count();
         let replay_bytes: usize = replay
             .events
             .iter()
@@ -2522,27 +3012,9 @@ mod tests {
                 _ => None,
             })
             .sum();
-        let stats = journal.stats();
-        println!(
-            "JOURNAL_TRACE ring_frames={} published_frames={} journal_accepted_frames={} journal_committed_frames={} journal_failed_frames={} ring_bytes={live_bytes} replay_bytes={replay_bytes}",
-            live_chunks.len(),
-            runtime.published_frames.load(Ordering::Relaxed),
-            stats.accepted_frames,
-            stats.committed_frames,
-            stats.failed_frames,
-        );
-        assert_eq!(runtime.published_frames.load(Ordering::Relaxed), 2);
-        assert_eq!(stats.accepted_frames, 2);
-        assert_eq!(stats.committed_frames, 2);
-        assert_eq!(stats.failed_frames, 0);
-        assert_eq!(journal_frames, 2);
-        assert_eq!(live_bytes, 4 + 3953, "ring must keep the drain tail");
-        assert_eq!(
-            replay_bytes,
-            live_bytes,
-            "journal silently lost {} ring bytes",
-            live_bytes - replay_bytes
-        );
+        assert_eq!(replay_bytes, 4 + 3953, "journal silently lost drain bytes");
+        drop(runtime);
+        drop(journal);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2551,7 +3023,7 @@ mod tests {
         let runtime = Arc::new(SessionRuntime::new());
         let conn = ConnHandle::new(1);
         runtime.try_attach(None, &conn).unwrap();
-        conn.track("s.a.1", Arc::clone(&runtime), None, 1);
+        conn.track("s.a.1", Arc::clone(&runtime), false, None, 1);
         assert_eq!(conn.next_exit_wake(), None);
         runtime.mark_exited(Some(0));
         let wake = conn.next_exit_wake().expect("drain timer");
@@ -2574,25 +3046,25 @@ mod tests {
     fn live_journal_degradation_reaches_attached_client_once() {
         let runtime = Arc::new(SessionRuntime::new());
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn).expect("attach");
-        conn.track("s.a.1", Arc::clone(&runtime), None, generation);
+        attach_tracked(&runtime, &conn);
 
         runtime.publish_output("still live");
         runtime.mark_journal_degraded();
         runtime.mark_journal_degraded();
 
-        let events = conn.pull_events();
+        let events = drain(&conn);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SessionEvent::JournalDegraded))
+                .count(),
+            1,
+            "degradation must be delivered exactly once: {events:?}"
+        );
         assert!(events
             .iter()
-            .any(|envelope| matches!(envelope.envelope.event, SessionEvent::JournalDegraded)));
-        assert!(events
-            .iter()
-            .all(|envelope| !matches!(envelope.envelope.event, SessionEvent::Exit { .. })));
+            .all(|event| !matches!(event, SessionEvent::Exit { .. })));
         assert!(!runtime.stream.lock().unwrap().process_exited);
-        for event in &events {
-            conn.event_sent(event);
-        }
-        assert!(conn.pull_events().is_empty());
     }
 
     #[test]
@@ -2611,13 +3083,12 @@ mod tests {
         };
         let runtime = SessionRuntime::from_replay("s.a.1".to_string(), None, replay);
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn).unwrap();
-        conn.track("s.a.1", Arc::clone(&runtime), Some(0), generation);
-        let events = conn.pull_events();
-        let kinds: Vec<_> = events
+        attach_tracked(&runtime, &conn);
+        let events = drain(&conn);
+        let kinds: Vec<&str> = events
             .iter()
-            .map(|envelope| match &envelope.envelope.event {
-                SessionEvent::Output { data, .. } => data.as_str(),
+            .map(|event| match event {
+                SessionEvent::Output { .. } => "output",
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::JournalDegraded => "journal_degraded",
@@ -2625,16 +3096,17 @@ mod tests {
                 SessionEvent::Snapshot { .. } => "snapshot",
             })
             .collect();
-        assert_eq!(kinds, ["hello", "recovered"]);
-        for event in &events {
-            conn.event_sent(event);
-        }
+        assert_eq!(kinds, ["output", "recovered"]);
     }
 
     #[test]
     fn coalesce_constants_are_small_enough_for_echo() {
-        const { assert!(COALESCE_MAX_BYTES <= 16 * 1024) };
-        const { assert!(COALESCE_MAX_BYTES >= 1024) };
+        const {
+            assert!(COALESCE_MAX_BYTES <= 16 * 1024);
+        }
+        const {
+            assert!(COALESCE_MAX_BYTES >= 1024);
+        }
         assert!(COALESCE_FLUSH <= Duration::from_millis(16));
     }
 

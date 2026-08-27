@@ -50,7 +50,8 @@ pub use screen::{
 pub use server::run;
 #[cfg(feature = "server")]
 pub use session::{
-    write_test_pty_command, PtyCommand, COALESCE_FLUSH, COALESCE_MAX_BYTES, RING_CAPACITY,
+    write_test_pty_command, PtyCommand, COALESCE_FLUSH, COALESCE_MAX_BYTES,
+    PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES,
 };
 pub use spawn::{daemon_file_name, resolve_daemon_binary, spawn_daemon};
 

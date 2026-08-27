@@ -211,9 +211,13 @@ impl ServerState {
                 clients: lifecycle.clients,
                 sessions: lifecycle.sessions,
                 capabilities: m3a_daemon_capabilities(),
-                peak_ring_bytes: output_metrics.peak_ring_bytes,
-                ring_evicted_bytes: output_metrics.ring_evicted_bytes,
-                ring_dropped_frames: output_metrics.ring_dropped_frames,
+                // Wire names predate M3.5 (they described a 256 KiB byte
+                // ring). The ring is gone: these now report the bounded
+                // per-attachment output queue and how often a slow viewer's
+                // unsent suffix was coalesced into a fresh snapshot.
+                peak_ring_bytes: output_metrics.peak_pending_bytes,
+                ring_evicted_bytes: output_metrics.coalesced_bytes,
+                ring_dropped_frames: output_metrics.coalesced_frames,
                 journal_error,
             },
         }

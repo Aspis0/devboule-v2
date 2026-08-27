@@ -82,10 +82,20 @@ pub struct Screen {
 impl Screen {
     /// Create a screen. Alacritty requires at least two columns for a
     /// full-width character and at least one visible row.
+    ///
+    /// The emulator keeps modest scrollback (1,000 lines): the daemon
+    /// never delivers history — snapshots carry the visible grid only, and
+    /// the SQLite journal is the durable transcript. Alacritty's default
+    /// 10,000 lines would cost tens of megabytes of grid per session for
+    /// state nothing can ever observe.
     pub fn new(cols: u16, rows: u16) -> Self {
         let size = ScreenSize::new(cols, rows);
         let events = EventSink::default();
-        let term = Term::new(Config::default(), &size, events.clone());
+        let config = Config {
+            scrolling_history: 1_000,
+            ..Config::default()
+        };
+        let term = Term::new(config, &size, events.clone());
         Self {
             term,
             parser: Processor::new(),
