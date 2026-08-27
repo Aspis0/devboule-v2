@@ -51,7 +51,7 @@ use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, OwnerId, Session,
-    SessionEvent, SessionEventEnvelope, SessionKind, WireError,
+    SessionEvent, SessionEventEnvelope, SessionKind, SessionState, WireError,
 };
 
 use crate::outbound::ConnOut;
@@ -550,6 +550,7 @@ impl SessionRegistry {
             workspace_id,
             kind,
             title: "Terminal".to_string(),
+            state: SessionState::Live { generation: 1 },
         };
         let command = match command {
             Some(command) => command,
@@ -1274,6 +1275,7 @@ mod tests {
             .map(|envelope| match &envelope.event {
                 SessionEvent::Output { data, .. } => data.as_str(),
                 SessionEvent::Exit { .. } => "exit",
+                SessionEvent::Recovered { .. } => "recovered",
             })
             .collect();
         assert_eq!(kinds, ["before", "after", "exit"]);

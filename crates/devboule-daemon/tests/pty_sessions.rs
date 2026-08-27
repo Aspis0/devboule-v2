@@ -280,7 +280,7 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
         .iter()
         .filter_map(|event| match event {
             SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-            SessionEvent::Exit { .. } => None,
+            SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => None,
         })
         .collect();
     client
@@ -312,7 +312,7 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
         .iter()
         .filter_map(|event| match event {
             SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-            SessionEvent::Exit { .. } => None,
+            SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => None,
         })
         .collect();
     assert!(
@@ -410,7 +410,7 @@ fn reattach_with_a_cursor_replays_only_after() {
         .iter()
         .filter_map(|event| match event {
             SessionEvent::Output { seq, .. } => Some(*seq),
-            SessionEvent::Exit { .. } => None,
+            SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => None,
         })
         .max()
         .expect("seq");
@@ -441,7 +441,7 @@ fn reattach_with_a_cursor_replays_only_after() {
     assert!(
         replayed.iter().all(|event| match event {
             SessionEvent::Output { seq, .. } => *seq > last_seq,
-            SessionEvent::Exit { .. } => true,
+            SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
         }),
         "cursor replay included seq <= last_seq"
     );

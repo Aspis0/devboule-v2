@@ -21,6 +21,10 @@ pub enum SessionKind {
 /// `workspace_id` is optional in M2 because workspace lookup is not
 /// implemented yet; the terminal starts in the app process's current
 /// directory.
+///
+/// `state` is the type-system distinction between a live process and a
+/// recovered transcript. A recovered session is not a live one with a
+/// comment: it cannot accept input, and attaching to it replays a journal.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
@@ -28,6 +32,42 @@ pub struct Session {
     pub workspace_id: Option<String>,
     pub kind: SessionKind,
     pub title: String,
+    pub state: SessionState,
+}
+
+/// How this session currently exists. Live and recovered are different
+/// kinds of thing: one has a process, the other is a transcript of a
+/// process the daemon can no longer see.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SessionState {
+    /// A process is running. Output is live.
+    Live { generation: u64 },
+    /// The process exited while this daemon was alive. `code` is the
+    /// observed exit status (`None` if the child did not report one).
+    Ended { generation: u64, code: Option<u32> },
+    /// The daemon that owned the process is gone (kill, crash, update).
+    /// Replay only. `truncated` is set when the journal dropped frames
+    /// (slow or full disk) and the transcript is a prefix, not a lie.
+    Recovered { generation: u64, truncated: bool },
+}
+
+impl SessionState {
+    pub fn generation(&self) -> u64 {
+        match *self {
+            Self::Live { generation }
+            | Self::Ended { generation, .. }
+            | Self::Recovered { generation, .. } => generation,
+        }
+    }
+
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Live { .. })
+    }
 }
 
 /// Events sent over the Tauri Channel supplied to `session_attach`.
@@ -50,7 +90,12 @@ pub struct Session {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionEvent {
     Output { seq: u64, data: String },
+    /// Process was observed to exit while the daemon was alive.
     Exit { code: Option<u32> },
+    /// Journal replay of a session whose process died with the daemon.
+    /// Distinct from [`SessionEvent::Exit`]: Exit means the process was
+    /// seen to die; Recovered means it was not, and this is a transcript.
+    Recovered { truncated: bool },
 }
 
 /// Replay position for a reconnecting client.
@@ -149,11 +194,45 @@ mod tests {
             workspace_id: Some("ws-1".to_string()),
             kind: SessionKind::Terminal,
             title: "Terminal".to_string(),
+            state: SessionState::Live { generation: 1 },
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["workspaceId"], "ws-1");
         assert_eq!(value["kind"], "terminal");
         assert!(value.get("generation").is_none());
+        assert_eq!(value["state"]["type"], "live");
+        assert_eq!(value["state"]["generation"], 1);
+    }
+
+    #[test]
+    fn recovered_is_a_different_wire_type_from_live_and_ended() {
+        let live = serde_json::to_value(SessionState::Live { generation: 1 }).expect("json");
+        let ended = serde_json::to_value(SessionState::Ended {
+            generation: 1,
+            code: Some(0),
+        })
+        .expect("json");
+        let recovered = serde_json::to_value(SessionState::Recovered {
+            generation: 1,
+            truncated: false,
+        })
+        .expect("json");
+        assert_eq!(live["type"], "live");
+        assert_eq!(ended["type"], "ended");
+        assert_eq!(recovered["type"], "recovered");
+        assert_ne!(live["type"], recovered["type"]);
+        assert_ne!(ended["type"], recovered["type"]);
+    }
+
+    #[test]
+    fn recovered_event_is_distinct_from_exit() {
+        let recovered = serde_json::to_value(SessionEvent::Recovered { truncated: true })
+            .expect("json");
+        let exit = serde_json::to_value(SessionEvent::Exit { code: None }).expect("json");
+        assert_eq!(recovered["type"], "recovered");
+        assert_eq!(recovered["truncated"], true);
+        assert_eq!(exit["type"], "exit");
+        assert_ne!(recovered["type"], exit["type"]);
     }
 
     #[test]
