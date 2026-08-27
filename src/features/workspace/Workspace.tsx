@@ -21,6 +21,8 @@ import {
   type DiffState,
 } from './sidePanels';
 import { TerminalSurface } from '../terminal/TerminalSurface';
+import { daemonStatus } from '../../lib/tauri';
+import type { DaemonStatus } from '../../types/ipc';
 import './Workspace.css';
 
 type ActiveTab = 'agent' | 'terminal';
@@ -36,6 +38,31 @@ const WORKSPACE_AGENT_TAB_ID = 'workspace-tab-agent';
 const WORKSPACE_TERMINAL_TAB_ID = 'workspace-tab-terminal';
 const WORKSPACE_AGENT_PANEL_ID = 'workspace-panel-agent';
 const WORKSPACE_TERMINAL_PANEL_ID = 'workspace-panel-terminal';
+
+const DISCONNECTED_DAEMON: DaemonStatus = {
+  state: 'disconnected',
+  pid: null,
+  instanceId: null,
+  protocolVersion: null,
+  clients: null,
+  message: 'daemon unreachable',
+};
+
+function daemonDotTone(state: DaemonStatus['state']): string {
+  if (state === 'connected') return 'green';
+  if (state === 'connecting') return 'border';
+  return 'terracotta';
+}
+
+function daemonLabel(status: DaemonStatus): string {
+  if (status.state === 'connected') {
+    const pid = status.pid !== null ? `pid ${status.pid}` : 'connected';
+    return `daemon · ${pid}`;
+  }
+  if (status.state === 'connecting') return 'daemon · connecting';
+  if (status.message) return `daemon · ${status.message}`;
+  return 'daemon · disconnected';
+}
 
 const PERMISSION_LABELS: Record<PermissionState, string> = {
   waiting: 'Waiting on you',
@@ -87,6 +114,7 @@ export function Workspace() {
   const [prLabel, setPrLabel] = useState('Open #412 on GitHub');
   const [agentProviderId, setAgentProviderId] = useState('claude');
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [daemon, setDaemon] = useState<DaemonStatus>(DISCONNECTED_DAEMON);
 
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
   const streamTimerRef = useRef<number | null>(null);
@@ -136,6 +164,25 @@ export function Workspace() {
       conversationRef.current.scrollTop = conversationRef.current.scrollHeight;
     }
   }, [messages, streaming]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      void daemonStatus()
+        .then((next) => {
+          if (!cancelled) setDaemon(next);
+        })
+        .catch(() => {
+          if (!cancelled) setDaemon(DISCONNECTED_DAEMON);
+        });
+    };
+    tick();
+    const id = window.setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
 
   const startDrag = useCallback((side: ResizeSide, event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -372,8 +419,9 @@ export function Workspace() {
               ) : null}
             </div>
 
-            <div className="workspace-daemon-status">
-              <span className="workspace-status-dot workspace-dot-green" />daemon · :6767
+            <div className="workspace-daemon-status" title={daemon.message ?? undefined}>
+              <span className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`} />
+              {daemonLabel(daemon)}
             </div>
           </div>
         )}

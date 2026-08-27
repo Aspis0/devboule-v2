@@ -1,6 +1,7 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import type {
   AnswerChunk,
+  DaemonStatus,
   FileTab,
   Id,
   IndexedFile,
@@ -16,6 +17,7 @@ import type {
 
 type CommandArgs = {
   app_identity: undefined;
+  daemon_status: undefined;
   projects_list: undefined;
   project_add: { path: string };
   workspaces_list: { project_id: Id };
@@ -42,6 +44,7 @@ type CommandArgs = {
 
 type CommandResults = {
   app_identity: string;
+  daemon_status: DaemonStatus;
   projects_list: Project[];
   project_add: Project;
   workspaces_list: Workspace[];
@@ -90,6 +93,7 @@ export function invokeTyped<K extends CommandName>(
 }
 
 export const appIdentity = () => invokeTyped('app_identity');
+export const daemonStatus = () => invokeTyped('daemon_status');
 export const projectsList = () => invokeTyped('projects_list');
 export const projectAdd = (path: string) => invokeTyped('project_add', { path });
 export const workspacesList = (projectId: Id) =>
