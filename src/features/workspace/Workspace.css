@@ -866,27 +866,12 @@
   margin-top: 7px;
 }
 
-.workspace-composer-control-row,
-.workspace-composer-mode-row,
-.workspace-composer-mode-group {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
 .workspace-composer-control-row {
-  gap: 6px;
-}
-
-.workspace-composer-mode-row {
-  width: 100%;
-  gap: 6px;
-}
-
-.workspace-composer-mode-group {
-  flex: 1;
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .workspace-composer-select-wrap {
@@ -896,7 +881,9 @@
   min-width: 0;
 }
 
-.workspace-composer-select-wrap::after {
+.workspace-composer-select-wrap::after,
+.workspace-effort-control::after,
+.workspace-modes-wrap::after {
   position: absolute;
   top: 50%;
   right: 9px;
@@ -932,7 +919,10 @@
 
 .workspace-composer-select:hover,
 .workspace-composer-select:focus-visible,
-.workspace-effort-control:focus-within {
+.workspace-effort-control:hover,
+.workspace-effort-control:focus-within,
+.workspace-modes-toggle:hover,
+.workspace-modes-toggle:focus-visible {
   color: var(--terracotta);
   border-color: var(--terracotta);
 }
@@ -943,6 +933,7 @@
 }
 
 .workspace-steer-hint {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--silence);
@@ -964,11 +955,14 @@
   opacity: 0.55;
 }
 
-.workspace-mode-toggle,
 .workspace-effort-control {
+  position: relative;
   display: flex;
+  flex: none;
   align-items: center;
   height: 25px;
+  gap: 5px;
+  padding: 0 22px 0 10px;
   color: var(--silence);
   background: var(--surface);
   border: 1px solid var(--border);
@@ -977,37 +971,10 @@
   white-space: nowrap;
 }
 
-.workspace-mode-toggle {
-  padding: 0 9px;
-  cursor: pointer;
-}
-
-.workspace-mode-toggle:hover,
-.workspace-mode-toggle:focus-visible,
-.workspace-mode-toggle-active {
-  color: var(--terracotta);
-  border-color: var(--terracotta);
-}
-
-.workspace-mode-toggle-active {
-  background: var(--selection);
-}
-
-.workspace-effort-control {
-  flex: none;
-  gap: 5px;
-  margin-left: auto;
-  padding: 0 7px 0 9px;
-}
-
-.workspace-effort-label,
-.workspace-no-modes {
+.workspace-effort-label {
   color: var(--silence);
   font-family: 'JetBrains Mono', monospace;
   font-size: 9.5px;
-}
-
-.workspace-effort-label {
   text-transform: uppercase;
 }
 
@@ -1020,6 +987,98 @@
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   outline: 0;
+}
+
+.workspace-modes-wrap {
+  position: relative;
+  display: flex;
+  flex: none;
+  min-width: 0;
+}
+
+.workspace-modes-toggle {
+  display: flex;
+  align-items: center;
+  height: 25px;
+  max-width: 200px;
+  padding: 0 22px 0 10px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  outline: 0;
+}
+
+.workspace-modes-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-modes-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  min-width: 184px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgba(var(--ink-rgb), 0.18);
+}
+
+.workspace-composer-mode-group {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+
+.workspace-mode-toggle {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 26px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 10.5px;
+  text-align: left;
+  white-space: nowrap;
+  outline: 0;
+}
+
+.workspace-mode-toggle:hover {
+  color: var(--ink);
+  background: var(--surface-muted);
+}
+
+.workspace-mode-toggle:focus-visible {
+  color: var(--ink);
+  background: var(--surface-muted);
+  box-shadow: 0 0 0 2px var(--selection);
+}
+
+.workspace-mode-toggle-active,
+.workspace-mode-toggle-active:hover {
+  color: var(--terracotta);
+  background: var(--selection);
+}
+
+.workspace-no-modes {
+  padding: 5px 10px 6px;
+  color: var(--silence);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
 }
 
 .workspace-right-panel {
