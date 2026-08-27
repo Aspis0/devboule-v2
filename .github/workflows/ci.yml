@@ -43,6 +43,9 @@ jobs:
       - name: Check dependency shrinkwrap hygiene
         run: pnpm run check:shrinkwrap
 
+      - name: Check direct dependency major versions
+        run: pnpm run check:dependency-majors
+
       - name: Audit npm dependencies (High and above are blocking)
         run: pnpm audit --audit-level high
 

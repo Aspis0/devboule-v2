@@ -105,10 +105,22 @@ Other useful commands:
 
 ```sh
 pnpm build          # type-check and build the frontend
-pnpm lint           # eslint
+pnpm lint           # oxlint
 pnpm test           # vitest
+pnpm run check:dependency-majors
 cargo test --workspace
 ```
+
+The direct dependency major-version check compares npm dependencies with the
+registry `latest` tag and Cargo dependencies with crates.io
+`max_stable_version`. It covers only direct dependencies declared by this
+repository. A crate with no stable release is reported explicitly and is not
+compared to a major version; registry failures fail the check.
+
+If a deliberate exception is ever needed, add it inline in
+`scripts/check-direct-dependency-majors.mjs` under the relevant `npm` or
+`cargo` map. Each entry must include both `reason` and `exitCondition`; the
+exception output must state why the lag exists and what will allow its removal.
 
 The Cargo workspace holds the Tauri application (`src-tauri`) plus two crates:
 `devboule-protocol` for the wire types shared with the daemon, and
