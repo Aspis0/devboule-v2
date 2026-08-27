@@ -62,7 +62,7 @@
 
 .settings-lock-button:hover,
 .settings-lock-button:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -89,7 +89,7 @@
 .settings-section-tab:hover,
 .settings-section-tab:focus-visible,
 .settings-section-tab-active {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   background: var(--surface);
 }
 
@@ -186,9 +186,9 @@
 }
 
 .provider-mark-purple { background: var(--purple); }
-.provider-mark-terracotta { background: var(--terracotta); }
+.provider-mark-terracotta { background: var(--terracotta-deep); }
 .provider-mark-green { background: var(--green); }
-.provider-mark-ochre { background: var(--ochre); }
+.provider-mark-ochre { background: var(--ochre-deep); }
 
 .provider-copy,
 .settings-card-copy,
@@ -230,9 +230,9 @@
   font-size: 10.5px;
 }
 
-.provider-status-ready { color: var(--green); }
+.provider-status-ready { color: var(--green-deep); }
 .provider-status-disabled { color: var(--silence); }
-.provider-status-missing { color: var(--ochre); }
+.provider-status-missing { color: var(--ochre-deep); }
 
 .provider-switch {
   position: relative;
@@ -367,7 +367,7 @@
 
 .settings-dashed-action:hover,
 .settings-dashed-action:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -380,8 +380,8 @@
   color: var(--ink-soft);
 }
 
-.settings-value-row .settings-value-green { color: var(--green); }
-.settings-value-row .settings-value-danger { color: var(--danger); }
+.settings-value-row .settings-value-green { color: var(--green-deep); }
+.settings-value-row .settings-value-danger { color: var(--danger-deep); }
 .settings-value-row .settings-value-muted { color: var(--silence); }
 
 .settings-device-card {

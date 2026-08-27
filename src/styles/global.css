@@ -29,8 +29,11 @@
   --terracotta-deep: #8A3A1B;
   --selection: #E8C4B4;
   --green: #3F7A56;
+  --green-deep: #315E43;    /* worst-case 4.62 */
   --purple: #6B5B95;
+  --purple-deep: #5B4D7F;   /* worst-case 4.62 */
   --ochre: #B8862E;
+  --ochre-deep: #6D4F1B;    /* worst-case 4.66 */
   --silence: #686256;
   --terminal-silence: #A9A294;
   --border: #DED6C4;
@@ -39,6 +42,7 @@
   --ink-soft: #4A463E;
   --border-strong: #C9BEA8;
   --danger: #B23B2E;
+  --danger-deep: #983227;   /* worst-case 4.60 */
   --design-canvas: #EFE8D9;
   --design-grid: #C9BEA8;
   --line-subtle: #EDE7DA;
@@ -428,14 +432,14 @@ button:focus-visible {
 
 .nav-point:hover .nav-point-circle,
 .nav-point:focus-visible .nav-point-circle {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
   transform: scale(1.16);
 }
 
 .nav-point-active .nav-point-circle {
   color: #fff;
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
