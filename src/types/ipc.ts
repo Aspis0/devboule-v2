@@ -22,16 +22,23 @@ export type SessionKind = 'terminal' | 'acp';
 export type SendIntent = 'interrupt' | 'steer' | 'queue';
 export type PermissionOutcome = 'allow_once' | 'deny';
 
+export type SessionState =
+  | { type: 'live'; generation: number }
+  | { type: 'ended'; generation: number; code: number | null }
+  | { type: 'recovered'; generation: number; truncated: boolean };
+
 export interface Session {
   id: Id;
   workspaceId: Id | null;
   kind: SessionKind;
   title: string;
+  state: SessionState;
 }
 
 export type SessionEvent =
   | { type: 'output'; seq: number; data: string }
-  | { type: 'exit'; code: number | null };
+  | { type: 'exit'; code: number | null }
+  | { type: 'recovered'; truncated: boolean };
 
 export type DaemonConnectionState = 'connected' | 'connecting' | 'disconnected' | 'error';
 

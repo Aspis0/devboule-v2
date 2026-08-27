@@ -8,6 +8,7 @@ export type TerminalChannel = Channel<TerminalEvent>;
 
 export type TerminalBanner =
   | { kind: 'exited'; code: number | null }
+  | { kind: 'recovered'; truncated: boolean }
   | { kind: 'closed' }
   | { kind: 'error'; message: string }
   | null;
@@ -87,6 +88,19 @@ export class TerminalSession {
     const existing = this.deps.registry.get(this.deps.workspaceId);
     const adopted = existing !== null;
     let sessionId = existing?.sessionId ?? null;
+
+    if (sessionId === null) {
+      try {
+        const listed = await this.deps.invoke<Session[]>('sessions_list');
+        const restorable = pickRestorable(listed, this.deps.workspaceId);
+        if (restorable !== null) {
+          sessionId = restorable.id;
+          this.deps.registry.register(this.deps.workspaceId, sessionId);
+        }
+      } catch {
+        // Listing is best-effort. Create still works if the journal is down.
+      }
+    }
 
     if (sessionId === null) {
       let session: Session;
@@ -272,18 +286,25 @@ export class TerminalSession {
   private handleEvent(event: TerminalEvent): void {
     if (this.disposed) return;
 
-    if (event.type === 'exit') {
-      this.markExited(event.code);
-      return;
+    switch (event.type) {
+      case 'exit':
+        this.markExited(event.code);
+        return;
+      case 'recovered':
+        this.markRecovered(event.truncated);
+        return;
+      case 'output':
+        if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
+        this.lastSeenSeq = event.seq;
+        if (this.sessionId !== null) {
+          this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.seq);
+        }
+        this.pendingOutput.push(event.data);
+        this.scheduleOutputFlush();
+        return;
+      default:
+        return;
     }
-
-    if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
-    this.lastSeenSeq = event.seq;
-    if (this.sessionId !== null) {
-      this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.seq);
-    }
-    this.pendingOutput.push(event.data);
-    this.scheduleOutputFlush();
   }
 
   private scheduleOutputFlush(): void {
@@ -305,6 +326,16 @@ export class TerminalSession {
     this.sessionId = null;
     this.deps.onBanner({ kind: 'exited', code });
     this.deps.onExited?.(code);
+  }
+
+  private markRecovered(truncated: boolean): void {
+    if (this.exited) return;
+    this.exited = true;
+    const sessionId = this.sessionId;
+    if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
+    this.sessionId = null;
+    this.deps.onBanner({ kind: 'recovered', truncated });
+    this.deps.onExited?.(null);
   }
 
   private disarmCtrlC(): void {
@@ -370,4 +401,15 @@ export class TerminalSession {
 
 function isMissingSessionError(error: unknown): boolean {
   return errorMessage(error).toLowerCase().includes('no session with that id');
+}
+
+function pickRestorable(sessions: Session[], workspaceId: string | null): Session | null {
+  const same = sessions.filter(
+    (session) => session.kind === 'terminal' && (session.workspaceId ?? null) === workspaceId,
+  );
+  const live = same.filter((session) => session.state.type === 'live');
+  if (live.length > 0) return live[live.length - 1] ?? null;
+  const recovered = same.filter((session) => session.state.type === 'recovered');
+  if (recovered.length > 0) return recovered[recovered.length - 1] ?? null;
+  return null;
 }
