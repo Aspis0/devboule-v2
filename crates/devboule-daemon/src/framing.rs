@@ -82,6 +82,32 @@ impl Framed {
         self.send_with_deadline(value, Some(deadline), false)
     }
 
+    /// Establish a pipe delivery barrier during connection teardown. This is
+    /// intentionally separate from event writes: on Windows the barrier waits
+    /// for the client to read all bytes buffered on the server end.
+    pub(crate) fn flush_pipe(&self) -> Result<(), DaemonError> {
+        #[cfg(windows)]
+        {
+            let _write_lock = self
+                .write_lock
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let ok = unsafe { FlushFileBuffers(self.file.as_raw_handle() as HANDLE) };
+            if ok == 0 {
+                return Err(DaemonError::Io(io::Error::last_os_error()));
+            }
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            self.file
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .flush()
+                .map_err(DaemonError::from)
+        }
+    }
+
     fn send_with_deadline<T: Serialize>(
         &self,
         value: &T,
