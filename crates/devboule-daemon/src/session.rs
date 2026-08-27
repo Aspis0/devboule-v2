@@ -1229,11 +1229,11 @@ pub fn spawn_session(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|_| WireError::new(ErrorCode::Io, "Could not open the terminal."))?;
+        .map_err(|error| pty_wire_error("Could not open the terminal.", error))?;
     let mut child = pair
         .slave
         .spawn_command(command.to_command_builder())
-        .map_err(|_| WireError::new(ErrorCode::Io, "Could not start the terminal shell."))?;
+        .map_err(|error| pty_wire_error("Could not start the terminal shell.", error))?;
 
     // portable-pty 0.9 exposes the native Windows process handle on Child,
     // but does not expose CREATE_SUSPENDED. Assign immediately after spawn so
@@ -1752,6 +1752,37 @@ fn internal(message: impl Into<String>) -> WireError {
     WireError::new(ErrorCode::Internal, message)
 }
 
+fn pty_wire_error(context: &str, error: impl std::fmt::Display) -> WireError {
+    let detail = error.to_string();
+    eprintln!("{context} {detail}");
+    let message = match extract_os_error_code(&detail) {
+        Some(code) => format!(
+            "{context} (OS error {code}: {}).",
+            os_error_description(code)
+        ),
+        None => format!("{context} (unknown OS error)."),
+    };
+    WireError::new(ErrorCode::Io, message)
+}
+
+fn extract_os_error_code(detail: &str) -> Option<u32> {
+    detail
+        .rsplit_once("(os error ")?
+        .1
+        .strip_suffix(')')?
+        .parse()
+        .ok()
+}
+
+fn os_error_description(code: u32) -> &'static str {
+    match code {
+        8 => "not enough memory",
+        232 => "no data",
+        1450 => "no system resources",
+        _ => "unknown error",
+    }
+}
+
 /// Write a spawn override the next `session_create` will consume. Honored
 /// only in debug builds of the daemon (see [`load_test_pty_command`]).
 pub fn write_test_pty_command(paths: &RuntimePaths, command: &PtyCommand) -> std::io::Result<()> {
@@ -2077,5 +2108,19 @@ mod tests {
         const { assert!(COALESCE_MAX_BYTES <= 16 * 1024) };
         const { assert!(COALESCE_MAX_BYTES >= 1024) };
         assert!(COALESCE_FLUSH <= Duration::from_millis(16));
+    }
+
+    #[test]
+    fn pty_error_exposes_only_the_os_code_to_clients() {
+        let detail = "CreateProcessW command=C:\\Users\\secret\\shell.exe (os error 1450)";
+        let code = extract_os_error_code(detail).expect("OS error code");
+        assert_eq!(code, 1450);
+        assert_eq!(os_error_description(code), "no system resources");
+        let wire = pty_wire_error("Could not start the terminal shell.", detail);
+        assert_eq!(
+            wire.message,
+            "Could not start the terminal shell. (OS error 1450: no system resources)."
+        );
+        assert!(!wire.message.contains("secret"));
     }
 }
