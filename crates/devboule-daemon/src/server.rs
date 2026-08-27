@@ -399,99 +399,131 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .spawn(move || read_client_requests(reader_framed, request_tx, reader_wake))
         .map_err(DaemonError::from)?;
     let mut pending_events = VecDeque::new();
-    loop {
-        if state.stop.load(Ordering::SeqCst) {
-            break;
-        }
-        let observed_generation = conn.outbound.wake_generation();
-        let (request, request_channel_closed) = match request_rx.try_recv() {
-            Ok(request) => (Some(request), false),
-            Err(TryRecvError::Empty) => (None, false),
-            Err(TryRecvError::Disconnected) => (None, true),
-        };
-        if request_channel_closed {
-            break;
-        }
-        if let Some(request) = request {
-            let request = match request {
-                Ok(request) => request,
-                Err(error) => {
-                    if connection_closed(&error) || state.stop.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    conn.detach_all(&state.sessions);
-                    conn.outbound.close();
-                    framed.cancel_read();
-                    bounded_join(reader, JOIN_BUDGET);
-                    return Err(error);
-                }
-            };
-            if drains_events_before_dispatch(&request) {
-                pending_events.extend(conn.pull_events());
-                while let Some(event) = pending_events.pop_front() {
-                    send_pending_event(&framed, &conn, event)?;
-                }
-            } else {
-                // Give the event stream one turn before every ordinary
-                // request. This is deliberately one frame, not a bulk drain:
-                // a continuously replenished request stream cannot starve
-                // output, while a DSR/control request waits behind at most
-                // the single event write that is already in progress.
-                if pending_events.is_empty() {
-                    pending_events.extend(conn.pull_events());
-                }
-                if let Some(event) = pending_events.pop_front() {
-                    send_pending_event(&framed, &conn, event)?;
-                }
-            }
-            if let ClientMessage::Hello(_) = request {
-                let id = request.request_id();
-                let mut error =
-                    WireError::new(ErrorCode::InvalidRequest, "hello already completed");
-                if let Some(id) = id {
-                    error = error.with_id(id);
-                }
-                framed.send(&DaemonMessage::Error(error))?;
-                continue;
-            }
-            let reply = dispatch(&state, &owner, request, &conn, sessions_ok);
-            let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
-            // Control/lifecycle replies retain the flush barrier. It makes the
-            // acknowledgement visible before teardown or a shutdown disconnect;
-            // the event stream below must never use that barrier per frame.
-            framed.send(&reply)?;
-            if shutting_down {
-                state.request_shutdown();
+    let loop_result = (|| -> Result<(), DaemonError> {
+        loop {
+            if state.stop.load(Ordering::SeqCst) {
                 break;
             }
-            continue;
-        }
-
-        if pending_events.is_empty() {
-            pending_events.extend(conn.pull_events());
-            if pending_events.is_empty() {
-                if !conn
-                    .outbound
-                    .wait_for_notify_since(observed_generation, conn.next_exit_wake())
-                {
+            let observed_generation = conn.outbound.wake_generation();
+            let (request, request_channel_closed) = match request_rx.try_recv() {
+                Ok(request) => (Some(request), false),
+                Err(TryRecvError::Empty) => (None, false),
+                Err(TryRecvError::Disconnected) => (None, true),
+            };
+            if request_channel_closed {
+                break;
+            }
+            if let Some(request) = request {
+                let request = match request {
+                    Ok(request) => request,
+                    Err(error) => {
+                        if connection_closed(&error) || state.stop.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        return Err(error);
+                    }
+                };
+                let close_request = matches!(&request, ClientMessage::SessionClose { .. });
+                if drains_events_before_dispatch(&request) {
+                    // A close must leave the pull state alive for the
+                    // post-dispatch pull: teardown_session joins the
+                    // coalescer and may publish its final output there.
+                    if !close_request {
+                        pending_events.extend(conn.pull_events());
+                    }
+                    drain_pending_events(&framed, &conn, &mut pending_events)?;
+                } else {
+                    // Give the event stream one turn before every ordinary
+                    // request. This is deliberately one frame, not a bulk
+                    // drain: a continuously replenished request stream cannot
+                    // starve output, while a DSR/control request waits behind
+                    // at most the single event write already in progress.
+                    if pending_events.is_empty() {
+                        pending_events.extend(conn.pull_events());
+                    }
+                    if let Some(event) = pending_events.pop_front() {
+                        send_pending_event(&framed, &conn, event)?;
+                    }
+                }
+                if let ClientMessage::Hello(_) = request {
+                    let id = request.request_id();
+                    let mut error =
+                        WireError::new(ErrorCode::InvalidRequest, "hello already completed");
+                    if let Some(id) = id {
+                        error = error.with_id(id);
+                    }
+                    framed.send(&DaemonMessage::Error(error))?;
+                    continue;
+                }
+                let reply = dispatch(&state, &owner, request, &conn, sessions_ok);
+                if close_request {
+                    // SessionClose joins the coalescer and calls finish(),
+                    // which can publish the teardown tail after the pre-drain.
+                    pending_events.extend(conn.pull_events());
+                    drain_pending_events(&framed, &conn, &mut pending_events)?;
+                }
+                let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
+                // Control/lifecycle replies retain the flush barrier. It makes
+                // the acknowledgement visible before teardown or a shutdown
+                // disconnect; the event stream below must never use that
+                // barrier per frame.
+                framed.send(&reply)?;
+                if shutting_down {
+                    state.request_shutdown();
                     break;
                 }
                 continue;
             }
-        }
 
-        // Send at most one event before looking for control traffic again.
-        // In particular, no bulk output batch can hold a DSR, resize, or kill
-        // request behind a sequence of flushes.
-        let event = pending_events
-            .pop_front()
-            .expect("pending event queue was checked above");
-        send_pending_event(&framed, &conn, event)?;
-    }
+            if pending_events.is_empty() {
+                pending_events.extend(conn.pull_events());
+                if pending_events.is_empty() {
+                    if !conn
+                        .outbound
+                        .wait_for_notify_since(observed_generation, conn.next_exit_wake())
+                    {
+                        break;
+                    }
+                    continue;
+                }
+            }
+
+            // Send at most one event before looking for control traffic again.
+            // In particular, no bulk output batch can hold a DSR, resize, or
+            // kill request behind a sequence of flushes.
+            let event = pending_events
+                .pop_front()
+                .expect("pending event queue was checked above");
+            send_pending_event(&framed, &conn, event)?;
+        }
+        Ok(())
+    })();
+
+    // Stop the request reader before the final pull so no new request/error
+    // can race connection cleanup. This path is shared by normal disconnects,
+    // write/read errors, daemon shutdown, and idle exit.
     framed.cancel_read();
-    conn.detach_all(&state.sessions);
     conn.outbound.close();
     bounded_join(reader, JOIN_BUDGET);
+    pending_events.extend(conn.pull_events());
+    let _ = drain_pending_events(&framed, &conn, &mut pending_events);
+    // This is the deliberate teardown-only pipe barrier: it makes every frame
+    // accepted above client-readable before the server drops this connection.
+    // FlushFileBuffers stays out of the per-frame event path because it waits
+    // for the client to consume the pipe.
+    let _ = framed.flush_pipe();
+    conn.detach_all(&state.sessions);
+    loop_result
+}
+
+fn drain_pending_events(
+    framed: &Framed,
+    conn: &ConnHandle,
+    pending_events: &mut VecDeque<PendingEvent>,
+) -> Result<(), DaemonError> {
+    while let Some(event) = pending_events.pop_front() {
+        send_pending_event(framed, conn, event)?;
+    }
     Ok(())
 }
 
