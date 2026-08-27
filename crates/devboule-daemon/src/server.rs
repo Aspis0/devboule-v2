@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use devboule_protocol::{
     caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, ClientMessage, DaemonHello,
     DaemonMessage, DaemonStatusBody, ErrorCode, OwnerId, PersistenceKind, ResumeResult,
-    SessionKind, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    SessionEvent, SessionKind, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 use crate::error::DaemonError;
@@ -188,6 +188,7 @@ impl ServerState {
 
     fn status_body(&self, request_id: u64) -> DaemonMessage {
         self.sessions.refresh_journal_degradation();
+        let output_metrics = self.sessions.output_metrics();
         let lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         let journal_error = self
             .journal_error
@@ -210,6 +211,9 @@ impl ServerState {
                 clients: lifecycle.clients,
                 sessions: lifecycle.sessions,
                 capabilities: m3a_daemon_capabilities(),
+                peak_ring_bytes: output_metrics.peak_ring_bytes,
+                ring_evicted_bytes: output_metrics.ring_evicted_bytes,
+                ring_dropped_frames: output_metrics.ring_dropped_frames,
                 journal_error,
             },
         }
@@ -504,7 +508,9 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     conn.outbound.close();
     bounded_join(reader, JOIN_BUDGET);
     refill_pending_events(&conn, &mut pending_events);
-    let _ = drain_pending_events(&framed, &conn, &mut pending_events);
+    if let Err(error) = drain_pending_events(&framed, &conn, &mut pending_events) {
+        eprintln!("daemon connection final event drain failed: {error}");
+    }
     // This is the deliberate teardown-only pipe barrier: it makes every frame
     // accepted above client-readable before the server drops this connection.
     // FlushFileBuffers stays out of the per-frame event path because it waits
@@ -540,6 +546,19 @@ fn send_pending_event(
     event: PendingEvent,
 ) -> Result<(), DaemonError> {
     if !conn.event_is_current(&event.session_id, event.attachment_generation) {
+        let sequence = match &event.envelope.event {
+            SessionEvent::Output { seq, .. } => format!(" seq={seq}"),
+            SessionEvent::OutputGap {
+                from_seq, to_seq, ..
+            } => format!(" seq={from_seq}..{to_seq}"),
+            SessionEvent::Exit { .. } => " exit".to_string(),
+            SessionEvent::Recovered { .. } => " recovered".to_string(),
+            SessionEvent::JournalDegraded => " journal_degraded".to_string(),
+        };
+        eprintln!(
+            "discarded stale pending event for session {} generation {}{}",
+            event.session_id, event.attachment_generation, sequence
+        );
         return Ok(());
     }
     framed.send_unflushed(&DaemonMessage::Event(event.envelope.clone()))?;
