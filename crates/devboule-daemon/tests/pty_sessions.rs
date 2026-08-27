@@ -23,6 +23,11 @@ use devboule_protocol::{
     SessionEvent, SessionKind, SessionState,
 };
 use portable_pty::{CommandBuilder, PtySize};
+use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Threading::{
+    GetProcessHandleCount, OpenProcess, WaitForSingleObject, PROCESS_QUERY_INFORMATION,
+    PROCESS_SYNCHRONIZE,
+};
 
 fn daemon_bin() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_daemon") {
@@ -172,6 +177,24 @@ fn cmd_keep() -> PtyCommand {
     )
 }
 
+fn cmd_spawn_long_lived_child(marker: &str) -> PtyCommand {
+    let script = format!(
+        "$p = Start-Process -FilePath ping.exe -ArgumentList '-t','127.0.0.1' -PassThru; Write-Output ('{marker}' + $p.Id); Wait-Process -Id $p.Id"
+    );
+    PtyCommand::new(
+        "powershell.exe",
+        vec![
+            "-NoLogo".to_string(),
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            script,
+        ],
+        std::env::current_dir().unwrap(),
+        Vec::new(),
+    )
+}
+
 fn answer_dsr(client: &DaemonClient, id: &str) {
     let _ = client.session_send(id, "\x1b[1;1R");
 }
@@ -207,6 +230,66 @@ fn wait_for_marker(received: &Mutex<Vec<SessionEvent>>, marker: &str, timeout: D
         std::thread::sleep(Duration::from_millis(20));
     }
     false
+}
+
+fn wait_for_pid_marker(
+    received: &Mutex<Vec<SessionEvent>>,
+    marker: &str,
+    timeout: Duration,
+) -> u32 {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(pid) = received.lock().unwrap().iter().find_map(|event| {
+            let SessionEvent::Output { data, .. } = event else {
+                return None;
+            };
+            let start = data.find(marker)? + marker.len();
+            let digits: String = data[start..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse().ok()
+        }) {
+            return pid;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let observed = received.lock().unwrap().clone();
+    panic!("did not receive process id marker {marker:?}; events={observed:?}");
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let state = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+    unsafe { CloseHandle(handle) };
+    state
+}
+
+fn wait_for_process_exit(pid: u32, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !process_is_alive(pid) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!process_is_alive(pid), "process {pid} is still alive");
+}
+
+fn daemon_handle_count(pid: u32) -> u32 {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid) };
+    assert!(
+        !handle.is_null(),
+        "could not open daemon {pid} for handle count"
+    );
+    let mut count = 0;
+    let result = unsafe { GetProcessHandleCount(handle, &mut count) };
+    unsafe { CloseHandle(handle) };
+    assert_ne!(result, 0, "GetProcessHandleCount failed for daemon {pid}");
+    count
 }
 
 #[test]
@@ -562,6 +645,162 @@ fn session_process_exit_reports_through_the_envelope() {
     }
     stop_dsr_pump(stop_dsr, dsr_thread);
     assert!(saw_exit, "process exit did not arrive as an envelope");
+    let listed = client.sessions_list().expect("list ended session");
+    assert!(listed.iter().any(|listed| {
+        listed.id == session.id && matches!(listed.state, SessionState::Ended { code: Some(0), .. })
+    }));
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY and a real child process; run locally with --ignored"]
+fn closing_session_kills_its_grandchild_at_the_os() {
+    let harness = Harness::spawn();
+    const MARKER: &str = "DEVBOULE_SESSION_TREE_PID=";
+    queue_command(&harness.paths, cmd_spawn_long_lived_child(MARKER));
+    let client = harness.client("tree-close");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create tree session");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach tree session");
+    let dsr_client = Arc::new(harness.client("tree-close-dsr"));
+    let (stop_dsr, dsr_thread) = start_dsr_pump(dsr_client, session.id.clone());
+    answer_dsr(&client, &session.id);
+    let pid = wait_for_pid_marker(&received, MARKER, Duration::from_secs(10));
+    assert!(process_is_alive(pid), "grandchild {pid} never became live");
+
+    client
+        .session_close(&session.id)
+        .expect("close tree session");
+    stop_dsr_pump(stop_dsr, dsr_thread);
+    wait_for_process_exit(pid, Duration::from_secs(5));
+    println!("JOB_TREE session_close grandchild_pid={pid} os_alive=false");
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY and a real child process; run locally with --ignored"]
+fn killing_daemon_kills_every_session_tree_at_the_os() {
+    let mut harness = Harness::spawn();
+    const MARKER: &str = "DEVBOULE_DAEMON_TREE_PID=";
+    queue_command(&harness.paths, cmd_spawn_long_lived_child(MARKER));
+    let client = harness.client("tree-daemon-kill");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create daemon tree session");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach daemon tree session");
+    let dsr_client = Arc::new(harness.client("tree-daemon-kill-dsr"));
+    let (stop_dsr, dsr_thread) = start_dsr_pump(dsr_client, session.id.clone());
+    answer_dsr(&client, &session.id);
+    let pid = wait_for_pid_marker(&received, MARKER, Duration::from_secs(10));
+    assert!(process_is_alive(pid), "grandchild {pid} never became live");
+
+    let mut daemon = harness.child.take().expect("daemon child");
+    daemon.child.kill().expect("kill daemon without cleanup");
+    daemon.child.wait().expect("reap daemon");
+    stop_dsr_pump(stop_dsr, dsr_thread);
+    wait_for_process_exit(pid, Duration::from_secs(5));
+    drop(client);
+    println!("JOB_TREE daemon_kill grandchild_pid={pid} os_alive=false");
+}
+
+#[test]
+#[ignore = "spawns two real Windows ConPTYs and child processes; run locally with --ignored"]
+fn closing_one_session_does_not_kill_the_other_session_tree() {
+    let harness = Harness::spawn();
+    const FIRST_MARKER: &str = "DEVBOULE_FIRST_TREE_PID=";
+    const SECOND_MARKER: &str = "DEVBOULE_SECOND_TREE_PID=";
+    let client = harness.client("tree-isolation");
+
+    queue_command(&harness.paths, cmd_spawn_long_lived_child(FIRST_MARKER));
+    let first = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create first tree session");
+    let first_received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(
+            &first.id,
+            None,
+            collect_handler(Arc::clone(&first_received)),
+        )
+        .expect("attach first tree session");
+    let first_dsr_client = Arc::new(harness.client("tree-first-dsr"));
+    let (stop_first_dsr, first_dsr_thread) = start_dsr_pump(first_dsr_client, first.id.clone());
+    answer_dsr(&client, &first.id);
+    let first_pid = wait_for_pid_marker(&first_received, FIRST_MARKER, Duration::from_secs(10));
+
+    queue_command(&harness.paths, cmd_spawn_long_lived_child(SECOND_MARKER));
+    let second = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create second tree session");
+    let second_received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(
+            &second.id,
+            None,
+            collect_handler(Arc::clone(&second_received)),
+        )
+        .expect("attach second tree session");
+    let second_dsr_client = Arc::new(harness.client("tree-second-dsr"));
+    let (stop_second_dsr, second_dsr_thread) = start_dsr_pump(second_dsr_client, second.id.clone());
+    answer_dsr(&client, &second.id);
+    let second_pid = wait_for_pid_marker(&second_received, SECOND_MARKER, Duration::from_secs(10));
+    assert!(process_is_alive(first_pid));
+    assert!(process_is_alive(second_pid));
+
+    client
+        .session_close(&first.id)
+        .expect("close first tree session");
+    wait_for_process_exit(first_pid, Duration::from_secs(5));
+    assert!(
+        process_is_alive(second_pid),
+        "closing first session killed second grandchild {second_pid}"
+    );
+
+    client
+        .session_close(&second.id)
+        .expect("close second tree session");
+    stop_dsr_pump(stop_first_dsr, first_dsr_thread);
+    stop_dsr_pump(stop_second_dsr, second_dsr_thread);
+    wait_for_process_exit(second_pid, Duration::from_secs(5));
+    println!(
+        "JOB_TREE isolation first_pid={first_pid} second_pid={second_pid} first_dead=true second_alive_after_first_close=true"
+    );
+}
+
+#[test]
+#[ignore = "spawns many real Windows ConPTY sessions; run locally with --ignored"]
+fn opening_and_closing_sessions_does_not_leak_daemon_handles() {
+    let harness = Harness::spawn();
+    let client = harness.client("tree-handles");
+    let daemon_pid = client.status().expect("status").pid;
+    std::thread::sleep(Duration::from_millis(100));
+    let baseline = daemon_handle_count(daemon_pid);
+    let mut peak = baseline;
+
+    for index in 0..32 {
+        queue_command(&harness.paths, cmd_keep());
+        let session = client
+            .session_create(None, SessionKind::Terminal, None)
+            .unwrap_or_else(|error| panic!("create session {index}: {error}"));
+        client
+            .session_close(&session.id)
+            .unwrap_or_else(|error| panic!("close session {index}: {error}"));
+        peak = peak.max(daemon_handle_count(daemon_pid));
+    }
+    std::thread::sleep(Duration::from_millis(250));
+    let final_count = daemon_handle_count(daemon_pid);
+    println!(
+        "JOB_TREE handles daemon_pid={daemon_pid} baseline={baseline} peak={peak} final={final_count}"
+    );
+    assert!(
+        final_count <= baseline + 8,
+        "daemon handles accumulated across session close: baseline={baseline} final={final_count} peak={peak}"
+    );
 }
 
 #[test]
