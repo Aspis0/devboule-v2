@@ -26,6 +26,9 @@ function bannerText(banner: TerminalBanner): string | null {
       ? 'The previous terminal process is gone. Some output was not saved.'
       : 'The previous terminal process is gone.';
   }
+  if (banner.kind === 'journal_degraded') {
+    return 'Scrollback history is incomplete because some output could not be saved.';
+  }
   return banner.code === null
     ? 'The terminal process exited.'
     : `The terminal process exited with code ${banner.code}.`;

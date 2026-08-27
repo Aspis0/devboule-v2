@@ -38,7 +38,8 @@ export interface Session {
 export type SessionEvent =
   | { type: 'output'; seq: number; data: string }
   | { type: 'exit'; code: number | null }
-  | { type: 'recovered'; truncated: boolean };
+  | { type: 'recovered'; truncated: boolean }
+  | { type: 'journal_degraded' };
 
 export type DaemonConnectionState = 'connected' | 'connecting' | 'disconnected' | 'error';
 

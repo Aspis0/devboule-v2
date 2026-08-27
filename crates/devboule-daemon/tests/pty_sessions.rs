@@ -486,7 +486,9 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
         .iter()
         .filter_map(|event| match event {
             SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-            SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => None,
+            SessionEvent::Exit { .. }
+            | SessionEvent::Recovered { .. }
+            | SessionEvent::JournalDegraded => None,
         })
         .collect();
     client
@@ -504,7 +506,9 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
             .iter()
             .filter_map(|event| match event {
                 SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-                SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => None,
+                SessionEvent::Exit { .. }
+                | SessionEvent::Recovered { .. }
+                | SessionEvent::JournalDegraded => None,
             })
             .collect();
         if actual == expected_replay {
@@ -518,7 +522,9 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
         .iter()
         .filter_map(|event| match event {
             SessionEvent::Output { seq, data } => Some((*seq, data.clone())),
-            SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => None,
+            SessionEvent::Exit { .. }
+            | SessionEvent::Recovered { .. }
+            | SessionEvent::JournalDegraded => None,
         })
         .collect();
     assert!(
@@ -616,7 +622,9 @@ fn reattach_with_a_cursor_replays_only_after() {
         .iter()
         .filter_map(|event| match event {
             SessionEvent::Output { seq, .. } => Some(*seq),
-            SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => None,
+            SessionEvent::Exit { .. }
+            | SessionEvent::Recovered { .. }
+            | SessionEvent::JournalDegraded => None,
         })
         .max()
         .expect("seq");
@@ -647,7 +655,9 @@ fn reattach_with_a_cursor_replays_only_after() {
     assert!(
         replayed.iter().all(|event| match event {
             SessionEvent::Output { seq, .. } => *seq > last_seq,
-            SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
+            SessionEvent::Exit { .. }
+            | SessionEvent::Recovered { .. }
+            | SessionEvent::JournalDegraded => true,
         }),
         "cursor replay included seq <= last_seq"
     );
@@ -1410,7 +1420,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         SessionEvent::Exit { code } => {
             diagnostics_for_handler.lock().unwrap().record_exit(code);
         }
-        SessionEvent::Recovered { .. } => {}
+        SessionEvent::Recovered { .. } | SessionEvent::JournalDegraded => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
         let mut diagnostics = diagnostics.lock().unwrap();
@@ -1784,7 +1794,9 @@ fn journal_outlives_the_256kib_ring() {
                 seqs.push(*seq);
                 bytes += data.len();
             }
-            SessionEvent::Recovered { .. } | SessionEvent::Exit { .. } => {}
+            SessionEvent::Recovered { .. }
+            | SessionEvent::Exit { .. }
+            | SessionEvent::JournalDegraded => {}
         }
     }
     assert!(
@@ -1929,6 +1941,7 @@ fn journal_growth_after_13mb_flood() {
             }
             SessionEvent::Recovered { .. } => replayed.2 = true,
             SessionEvent::Exit { .. } => replayed.3 = true,
+            SessionEvent::JournalDegraded => {}
         }
     });
     client
