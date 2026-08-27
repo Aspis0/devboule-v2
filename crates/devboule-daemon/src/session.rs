@@ -31,12 +31,17 @@
 //! per [`COALESCE_MAX_BYTES`] or [`COALESCE_FLUSH`], whichever comes first.
 //! Seq is assigned at flush so the stream stays contiguous.
 //!
-//! Live output is not copied into the per-connection RPC queue. The 256 KiB
-//! ring is the buffer; the connection writer pulls it. A slow client cannot
-//! OOM the daemon. Blocking the PTY reader is wrong (it stalls the watched
-//! process). Dropping bytes from the ring is wrong (the scrollback would
-//! lie). If the writer lags past the ring, the client skips the same bytes
-//! a late attach would skip.
+//! Live output is not copied into the per-connection queue until the
+//! connection writer pulls a snapshot. The refill invariant allows only one
+//! such snapshot at a time, so a blocked pipe cannot accumulate snapshots.
+//! For live sessions this bounds queued payload to one 256 KiB ring per
+//! attached session, plus envelope metadata. Recovered sessions currently
+//! hydrate the journal without that ring cap, so there is no global byte cap
+//! for a connection; a future cap must define whether overflow disconnects or
+//! reports a replay gap. Blocking the PTY reader is wrong (it stalls the
+//! watched process). Dropping bytes from the ring is wrong (the scrollback
+//! would lie). If the writer lags past the ring, the client skips the same
+//! bytes a late attach would skip.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};

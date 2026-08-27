@@ -819,6 +819,133 @@ fn detach_reattach_cursor_never_delivers_a_sequence_twice() {
 
 #[test]
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
+    const LAST_MARKER: &str = "DEVBOULE_SHUTDOWN_DUP_9999";
+
+    let harness = Harness::spawn();
+    queue_command(&harness.paths, cmd_keep());
+    let client = Arc::new(harness.client("shutdown-duplicate"));
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    answer_dsr(&client, &session.id);
+    let pump_client = Arc::new(harness.client("dsr"));
+    let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
+
+    let baseline = Arc::new(Mutex::new(Vec::<u64>::new()));
+    let baseline_for_handler = Arc::clone(&baseline);
+    client
+        .session_attach(
+            &session.id,
+            None,
+            Arc::new(move |envelope| {
+                if let SessionEvent::Output { seq, .. } = envelope.event {
+                    baseline_for_handler.lock().unwrap().push(seq);
+                }
+            }),
+        )
+        .expect("attach");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && baseline.lock().unwrap().is_empty() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let cursor_seq = baseline
+        .lock()
+        .unwrap()
+        .last()
+        .copied()
+        .expect("initial output sequence");
+    client.session_detach(&session.id).expect("initial detach");
+
+    let ready_file = harness.dir.join("shutdown-flood.ready");
+    let ready_path = ready_file.display();
+    let flood = format!(
+        "for /L %i in (0,1,9999) do @echo DEVBOULE_SHUTDOWN_DUP_%i\r\necho READY>\"{ready_path}\"\r\n"
+    );
+    client
+        .session_send(&session.id, &flood)
+        .expect("send flood");
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < ready_deadline && !ready_file.exists() {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(ready_file.exists(), "flood command did not finish");
+    // Ensure the replay is large enough that the fairness turn leaves output
+    // in pending_events when the Shutdown request reaches the writer loop.
+    std::thread::sleep(Duration::from_millis(750));
+
+    let received = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received_for_handler = Arc::clone(&received);
+    let ping_sent = Arc::new(AtomicBool::new(false));
+    let ping_sent_for_handler = Arc::clone(&ping_sent);
+    let ping_client = Arc::clone(&client);
+    client
+        .session_attach(
+            &session.id,
+            Some(Cursor {
+                generation: 1,
+                seq: cursor_seq,
+            }),
+            Arc::new(move |envelope| {
+                received_for_handler.lock().unwrap().push(envelope.event);
+                if !ping_sent_for_handler.swap(true, Ordering::AcqRel) {
+                    ping_client
+                        .write_frame(&ClientMessage::Ping { id: 20_000_000 })
+                        .expect("fairness ping");
+                    // Keep the client reader from draining the pipe while the
+                    // server reaches the already-queued Shutdown request.
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }),
+        )
+        .expect("reattach");
+
+    let first_event_deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < first_event_deadline && !ping_sent.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        ping_sent.load(Ordering::Acquire),
+        "first replay did not arrive"
+    );
+
+    // Force one ordinary request iteration to take the fairness turn. It
+    // writes one event and replies, leaving the rest of this multi-frame
+    // replay queued for Shutdown's pre-dispatch drain.
+    client.shutdown().expect("shutdown");
+    let saw_marker = wait_for_marker(&received, LAST_MARKER, Duration::from_secs(10));
+    assert!(
+        saw_marker,
+        "final marker missing after Shutdown drain; received {} events",
+        received.lock().unwrap().len()
+    );
+
+    let output_seqs: Vec<u64> = received
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::Output { seq, .. } => Some(*seq),
+            SessionEvent::Exit { .. }
+            | SessionEvent::Recovered { .. }
+            | SessionEvent::JournalDegraded => None,
+        })
+        .collect();
+    let mut unique = output_seqs.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        output_seqs.len(),
+        "Shutdown duplicated a pending sequence: {output_seqs:?}"
+    );
+    assert!(output_seqs.iter().all(|seq| *seq > cursor_seq));
+
+    stop_dsr_pump(stop_dsr, dsr_thread);
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
 fn two_clients_cannot_both_attach() {
     let harness = Harness::spawn();
     queue_command(&harness.paths, cmd_keep());
