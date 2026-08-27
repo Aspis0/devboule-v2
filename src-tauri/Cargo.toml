@@ -25,6 +25,11 @@ tauri = { version = "=2.11.5", features = ["config-json5"] }
 # version is already present transitively through Tauri; this does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }
 portable-pty = "=0.9.0"
+# Shared wire types. The daemon and this crate must not declare their own copies.
+devboule-protocol = { path = "../crates/devboule-protocol" }
+# Blocking client + spawn helper. Pulls the daemon as a library; the GUI never
+# runs the server in-process.
+devboule-daemon = { path = "../crates/devboule-daemon" }
 
 [dev-dependencies]
 # Already present transitively; used only to assert the wire-level SessionEvent tag.

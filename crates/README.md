@@ -1,4 +1,8 @@
-# Future Rust crates
+# Rust crates
 
-This directory is intentionally empty in M1a. The planned `devboule-daemon` and
-`oracle-core` crates will be added here in later milestones.
+| Crate | Role |
+| --- | --- |
+| `devboule-protocol` | Wire types shared by the app and the daemon. No I/O. |
+| `devboule-daemon` | Daemon binary plus the blocking client used by `src-tauri`. |
+
+`oracle-core` is not a member yet; it arrives in a later milestone.
