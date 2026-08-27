@@ -9,3 +9,12 @@ src-tauri/gen/
 !.env.example
 .idea/
 .vscode/
+
+# Internal working documents never belong in this repository, which is public.
+# Plans, porting notes, audits, reconnaissance and agent reports live one
+# directory up, outside the repo. Only user-facing docs ship here: README,
+# LICENSE, NOTICE, THIRD_PARTY and the per-module READMEs.
+ARCHITETTURA.md
+PORTING-*.md
+*-REPORT.md
+recon/
