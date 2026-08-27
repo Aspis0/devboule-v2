@@ -503,6 +503,9 @@ impl SessionRuntime {
                         runtime.journal_degraded.store(true, Ordering::Release);
                     }
                     SessionEvent::OutputGap { .. } => {}
+                    // Snapshots are screen state, never journal records; a
+                    // recovered session replays transcript events only.
+                    SessionEvent::Snapshot { .. } => {}
                 }
             }
         }
@@ -650,7 +653,10 @@ impl SessionRuntime {
                 SessionEvent::Exit { .. }
                 | SessionEvent::Recovered { .. }
                 | SessionEvent::JournalDegraded
-                | SessionEvent::OutputGap { .. } => None,
+                | SessionEvent::OutputGap { .. }
+                // Snapshots are not output chunks and are not sourced from
+                // the historical journal replay path.
+                | SessionEvent::Snapshot { .. } => None,
             })
             .collect()
     }
@@ -947,6 +953,9 @@ impl ConnHandle {
                 }
                 SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
                 SessionEvent::JournalDegraded => false,
+                // Snapshot delivery is not wired into this legacy cursor
+                // path yet, and a screen boundary must not advance sent_seq.
+                SessionEvent::Snapshot { .. } => false,
             }
         };
         if remove {
@@ -2323,6 +2332,8 @@ mod tests {
                 | SessionEvent::Exit { .. }
                 | SessionEvent::Recovered { .. }
                 | SessionEvent::JournalDegraded => None,
+                // A snapshot is screen state, not a sequence-bearing event.
+                SessionEvent::Snapshot { .. } => None,
             })
             .collect();
         assert_eq!(runtime.journal_replay_count(), 1);
@@ -2451,6 +2462,7 @@ mod tests {
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::JournalDegraded => "journal_degraded",
                 SessionEvent::OutputGap { .. } => "output_gap",
+                SessionEvent::Snapshot { .. } => "snapshot",
             })
             .collect();
         assert_eq!(kinds, ["before", "after", "exit"]);
@@ -2610,6 +2622,7 @@ mod tests {
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::JournalDegraded => "journal_degraded",
                 SessionEvent::OutputGap { .. } => "output_gap",
+                SessionEvent::Snapshot { .. } => "snapshot",
             })
             .collect();
         assert_eq!(kinds, ["hello", "recovered"]);

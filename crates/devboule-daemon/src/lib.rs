@@ -20,6 +20,8 @@ mod paths;
 #[cfg(feature = "server")]
 mod process_tree;
 #[cfg(feature = "server")]
+mod screen;
+#[cfg(feature = "server")]
 mod server;
 #[cfg(feature = "server")]
 mod session;
@@ -40,6 +42,10 @@ pub use journal::{
     SNAPSHOT_EVERY_BYTES,
 };
 pub use paths::RuntimePaths;
+#[cfg(feature = "server")]
+pub use screen::{
+    render_ansi, Screen, ScreenSnapshot, SnapshotCursor, SnapshotCursorShape, MAX_TITLE_CHARS,
+};
 #[cfg(feature = "server")]
 pub use server::run;
 #[cfg(feature = "server")]

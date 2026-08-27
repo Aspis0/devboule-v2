@@ -489,7 +489,8 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. } => None,
+            | SessionEvent::OutputGap { .. }
+            | SessionEvent::Snapshot { .. } => None,
         })
         .collect();
     client
@@ -510,7 +511,8 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
                 SessionEvent::Exit { .. }
                 | SessionEvent::Recovered { .. }
                 | SessionEvent::JournalDegraded
-                | SessionEvent::OutputGap { .. } => None,
+                | SessionEvent::OutputGap { .. }
+                | SessionEvent::Snapshot { .. } => None,
             })
             .collect();
         if actual == expected_replay {
@@ -527,7 +529,8 @@ fn real_pty_detach_keeps_session_buffers_output_and_close_reaps_child() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. } => None,
+            | SessionEvent::OutputGap { .. }
+            | SessionEvent::Snapshot { .. } => None,
         })
         .collect();
     assert!(
@@ -628,7 +631,8 @@ fn reattach_with_a_cursor_replays_only_after() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. } => None,
+            | SessionEvent::OutputGap { .. }
+            | SessionEvent::Snapshot { .. } => None,
         })
         .max()
         .expect("seq");
@@ -662,7 +666,8 @@ fn reattach_with_a_cursor_replays_only_after() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. } => true,
+            | SessionEvent::OutputGap { .. }
+            | SessionEvent::Snapshot { .. } => true,
         }),
         "cursor replay included seq <= last_seq"
     );
@@ -943,7 +948,8 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. } => None,
+            | SessionEvent::OutputGap { .. }
+            | SessionEvent::Snapshot { .. } => None,
         })
         .collect();
     let mut unique = output_seqs.clone();
@@ -1347,7 +1353,8 @@ fn real_pty_channel_flood_correctness() {
         }
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
-        | SessionEvent::JournalDegraded => {}
+        | SessionEvent::JournalDegraded
+        | SessionEvent::Snapshot { .. } => {}
     });
     client
         .session_attach(&session.id, None, handler)
@@ -1747,7 +1754,8 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         }
         SessionEvent::Recovered { .. }
         | SessionEvent::JournalDegraded
-        | SessionEvent::OutputGap { .. } => {}
+        | SessionEvent::OutputGap { .. }
+        | SessionEvent::Snapshot { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
         let mut diagnostics = diagnostics.lock().unwrap();
@@ -2124,7 +2132,8 @@ fn journal_outlives_the_256kib_ring() {
             SessionEvent::Recovered { .. }
             | SessionEvent::Exit { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. } => {}
+            | SessionEvent::OutputGap { .. }
+            | SessionEvent::Snapshot { .. } => {}
         }
     }
     assert!(
@@ -2288,6 +2297,7 @@ fn journal_growth_after_13mb_flood() {
             SessionEvent::Exit { .. } => replayed.2 = true,
             SessionEvent::JournalDegraded => {}
             SessionEvent::OutputGap { .. } => {}
+            SessionEvent::Snapshot { .. } => {}
         }
     });
     client
