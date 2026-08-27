@@ -1445,14 +1445,16 @@ fn journal_growth_after_13mb_flood() {
         .expect("create");
     let session_id = session.id.clone();
     let writer = Arc::new(harness.client("dsr-inline"));
-    let observed = Arc::new(Mutex::new(0usize));
+    let observed = Arc::new(Mutex::new((0usize, 0usize)));
     let observed_for_handler = Arc::clone(&observed);
     let handler: EventHandler = Arc::new(move |envelope| {
         if let SessionEvent::Output { data, .. } = envelope.event {
             if data.contains("\x1b[6n") {
                 let _ = writer.session_send(&session_id, "\x1b[1;1R");
             }
-            *observed_for_handler.lock().unwrap() += data.len();
+            let mut observed = observed_for_handler.lock().unwrap();
+            observed.0 += data.len();
+            observed.1 += 1;
         }
     });
     client
@@ -1462,12 +1464,12 @@ fn journal_growth_after_13mb_flood() {
     let (stop_dsr, dsr_thread) = start_dsr_pump(Arc::clone(&pump_client), session.id.clone());
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {
-        if *observed.lock().unwrap() >= expected_file_bytes {
+        if observed.lock().unwrap().0 >= expected_file_bytes {
             break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let live_bytes = *observed.lock().unwrap();
+    let (live_bytes, live_frames) = *observed.lock().unwrap();
     assert!(
         live_bytes >= expected_file_bytes,
         "flood truncated: {live_bytes} < {expected_file_bytes}"
@@ -1485,7 +1487,7 @@ fn journal_growth_after_13mb_flood() {
         .map(|meta| meta.len())
         .unwrap_or(0);
     println!(
-        "JOURNAL_GROWTH payload_bytes={expected_file_bytes} live_bytes={live_bytes} db_bytes={db_bytes} wal_bytes={wal_bytes} total_bytes={}",
+        "JOURNAL_GROWTH payload_bytes={expected_file_bytes} live_bytes={live_bytes} live_frames={live_frames} db_bytes={db_bytes} wal_bytes={wal_bytes} total_bytes={}",
         db_bytes + wal_bytes
     );
 
