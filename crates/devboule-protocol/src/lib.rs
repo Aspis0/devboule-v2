@@ -95,9 +95,8 @@ pub mod caps {
     pub const PING: &str = "ping";
     pub const STATUS: &str = "status";
     pub const SHUTDOWN: &str = "shutdown";
-    /// Session RPCs (create/attach/detach/close/stop/send/…). Advertised in
-    /// M3b; present in the type set now so the handshake does not change
-    /// meaning when sessions move into the daemon.
+    /// Session RPCs (create/attach/detach/close/stop/send/…). Advertised
+    /// from M3b so the app and daemon agree to speak them.
     pub const SESSIONS: &str = "sessions";
     /// Conversation journal. Advertised in M3c.
     pub const JOURNAL: &str = "journal";
@@ -111,12 +110,17 @@ pub const IDEMPOTENCY_MAX_ENTRIES: usize = 4096;
 /// Compact JSON frames larger than this are a protocol error (1 MiB).
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
-/// Capabilities the M3a daemon actually serves.
+/// Capabilities this crate's daemon and app currently serve.
+///
+/// Named `m3a_*` because the handshake helpers were introduced in M3a; M3b
+/// adds [`caps::SESSIONS`] without changing the helper names so a peer
+/// built against this crate still calls the same constructors.
 pub fn m3a_daemon_capabilities() -> Vec<Capability> {
     vec![
         Capability::new(caps::PING),
         Capability::new(caps::STATUS),
         Capability::new(caps::SHUTDOWN),
+        Capability::new(caps::SESSIONS),
     ]
 }
 
@@ -133,5 +137,14 @@ mod tests {
     fn protocol_version_is_one_and_min_matches() {
         assert_eq!(PROTOCOL_VERSION, 1);
         assert_eq!(PROTOCOL_MIN_VERSION, 1);
+    }
+
+    #[test]
+    fn daemon_and_client_advertise_sessions() {
+        let daemon = m3a_daemon_capabilities();
+        let client = m3a_client_capabilities();
+        assert!(daemon.iter().any(|cap| cap.as_str() == caps::SESSIONS));
+        assert!(client.iter().any(|cap| cap.as_str() == caps::SESSIONS));
+        assert_eq!(daemon, client);
     }
 }
