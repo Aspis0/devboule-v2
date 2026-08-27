@@ -203,6 +203,10 @@ pub struct DaemonStatusBody {
     pub clients: u32,
     pub sessions: u32,
     pub capabilities: Vec<Capability>,
+    /// Present when the conversation journal could not be opened. Live
+    /// sessions still run; recovered replay will fail with `journal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_error: Option<String>,
 }
 
 /// Live session event on the daemon pipe. `generation` is here, not inside

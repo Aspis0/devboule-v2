@@ -80,7 +80,7 @@ pub use ids::{
 pub use messages::{ClientMessage, DaemonMessage, DaemonStatusBody, SessionEventEnvelope};
 pub use session::{
     cursor_replay_ok, Cursor, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
-    Session, SessionEvent, SessionKind,
+    Session, SessionEvent, SessionKind, SessionState,
 };
 
 /// Current protocol dialect spoken by this crate.
@@ -121,6 +121,7 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
         Capability::new(caps::STATUS),
         Capability::new(caps::SHUTDOWN),
         Capability::new(caps::SESSIONS),
+        Capability::new(caps::JOURNAL),
     ]
 }
 
@@ -145,6 +146,8 @@ mod tests {
         let client = m3a_client_capabilities();
         assert!(daemon.iter().any(|cap| cap.as_str() == caps::SESSIONS));
         assert!(client.iter().any(|cap| cap.as_str() == caps::SESSIONS));
+        assert!(daemon.iter().any(|cap| cap.as_str() == caps::JOURNAL));
+        assert!(client.iter().any(|cap| cap.as_str() == caps::JOURNAL));
         assert_eq!(daemon, client);
     }
 }

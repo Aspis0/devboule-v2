@@ -184,6 +184,7 @@ impl ServerState {
                 clients: lifecycle.clients,
                 sessions: lifecycle.sessions,
                 capabilities: m3a_daemon_capabilities(),
+                journal_error: None,
             },
         }
     }

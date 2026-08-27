@@ -23,6 +23,9 @@ pub enum ErrorCode {
     IdempotencyConflict,
     /// Daemon is exiting; the client should not retry against this instance.
     ShuttingDown,
+    /// Journal is unreadable: corrupt, a future schema, or the disk refused
+    /// the write. Live sessions still run; recovered replay cannot.
+    Journal,
     Internal,
     Io,
 }
@@ -83,5 +86,7 @@ mod tests {
         assert_eq!(value, "session_generation_mismatch");
         let value = serde_json::to_value(ErrorCode::IdempotencyConflict).expect("json");
         assert_eq!(value, "idempotency_conflict");
+        let value = serde_json::to_value(ErrorCode::Journal).expect("json");
+        assert_eq!(value, "journal");
     }
 }
