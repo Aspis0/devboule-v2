@@ -177,10 +177,15 @@ fn cmd_keep() -> PtyCommand {
     )
 }
 
-fn cmd_spawn_long_lived_child(marker: &str) -> PtyCommand {
+fn cmd_spawn_long_lived_child_with_pid_file(marker: &str, pid_file: &Path) -> PtyCommand {
+    let pid_file = pid_file.display().to_string().replace('\'', "''");
     let script = format!(
-        "Start-Sleep -Milliseconds 250; $p = Start-Process -FilePath ping.exe -ArgumentList '-t','127.0.0.1' -PassThru; Write-Output ('{marker}' + $p.Id); Wait-Process -Id $p.Id"
+        "Start-Sleep -Milliseconds 250; $p = Start-Process -FilePath ping.exe -ArgumentList '-t','127.0.0.1' -PassThru; Set-Content -LiteralPath '{pid_file}' -Value $p.Id; Write-Output ('{marker}' + $p.Id); Wait-Process -Id $p.Id"
     );
+    powershell_command(script)
+}
+
+fn powershell_command(script: String) -> PtyCommand {
     PtyCommand::new(
         "powershell.exe",
         vec![
@@ -232,30 +237,17 @@ fn wait_for_marker(received: &Mutex<Vec<SessionEvent>>, marker: &str, timeout: D
     false
 }
 
-fn wait_for_pid_marker(
-    received: &Mutex<Vec<SessionEvent>>,
-    marker: &str,
-    timeout: Duration,
-) -> u32 {
+fn wait_for_pid_file(path: &Path, timeout: Duration) -> u32 {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let Some(pid) = received.lock().unwrap().iter().find_map(|event| {
-            let SessionEvent::Output { data, .. } = event else {
-                return None;
-            };
-            let start = data.find(marker)? + marker.len();
-            let digits: String = data[start..]
-                .chars()
-                .take_while(char::is_ascii_digit)
-                .collect();
-            digits.parse().ok()
-        }) {
-            return pid;
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if let Ok(pid) = contents.trim().parse() {
+                return pid;
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let observed = received.lock().unwrap().clone();
-    panic!("did not receive process id marker {marker:?}; events={observed:?}");
+    panic!("did not receive process id file {}", path.display());
 }
 
 fn process_is_alive(pid: u32) -> bool {
@@ -659,19 +651,23 @@ fn session_process_exit_reports_through_the_envelope() {
 fn closing_session_kills_its_grandchild_at_the_os() {
     let harness = Harness::spawn();
     const MARKER: &str = "DEVBOULE_SESSION_TREE_PID=";
-    queue_command(&harness.paths, cmd_spawn_long_lived_child(MARKER));
+    let pid_file = harness.dir.join("session-close.pid");
+    queue_command(
+        &harness.paths,
+        cmd_spawn_long_lived_child_with_pid_file(MARKER, &pid_file),
+    );
     let client = harness.client("tree-close");
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create tree session");
-    let received = Arc::new(Mutex::new(Vec::new()));
+    let _received = Arc::new(Mutex::new(Vec::new()));
     client
-        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&_received)))
         .expect("attach tree session");
     let dsr_client = Arc::new(harness.client("tree-close-dsr"));
     let (stop_dsr, dsr_thread) = start_dsr_pump(dsr_client, session.id.clone());
     answer_dsr(&client, &session.id);
-    let pid = wait_for_pid_marker(&received, MARKER, Duration::from_secs(10));
+    let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
     assert!(process_is_alive(pid), "grandchild {pid} never became live");
 
     client
@@ -687,19 +683,23 @@ fn closing_session_kills_its_grandchild_at_the_os() {
 fn killing_daemon_kills_every_session_tree_at_the_os() {
     let mut harness = Harness::spawn();
     const MARKER: &str = "DEVBOULE_DAEMON_TREE_PID=";
-    queue_command(&harness.paths, cmd_spawn_long_lived_child(MARKER));
+    let pid_file = harness.dir.join("daemon-kill.pid");
+    queue_command(
+        &harness.paths,
+        cmd_spawn_long_lived_child_with_pid_file(MARKER, &pid_file),
+    );
     let client = harness.client("tree-daemon-kill");
     let session = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create daemon tree session");
-    let received = Arc::new(Mutex::new(Vec::new()));
+    let _received = Arc::new(Mutex::new(Vec::new()));
     client
-        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&_received)))
         .expect("attach daemon tree session");
     let dsr_client = Arc::new(harness.client("tree-daemon-kill-dsr"));
     let (stop_dsr, dsr_thread) = start_dsr_pump(dsr_client, session.id.clone());
     answer_dsr(&client, &session.id);
-    let pid = wait_for_pid_marker(&received, MARKER, Duration::from_secs(10));
+    let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
     assert!(process_is_alive(pid), "grandchild {pid} never became live");
 
     let mut daemon = harness.child.take().expect("daemon child");
@@ -719,39 +719,47 @@ fn closing_one_session_does_not_kill_the_other_session_tree() {
     const SECOND_MARKER: &str = "DEVBOULE_SECOND_TREE_PID=";
     let client = harness.client("tree-isolation");
 
-    queue_command(&harness.paths, cmd_spawn_long_lived_child(FIRST_MARKER));
+    let first_pid_file = harness.dir.join("isolation-first.pid");
+    queue_command(
+        &harness.paths,
+        cmd_spawn_long_lived_child_with_pid_file(FIRST_MARKER, &first_pid_file),
+    );
     let first = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create first tree session");
-    let first_received = Arc::new(Mutex::new(Vec::new()));
+    let _first_received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(
             &first.id,
             None,
-            collect_handler(Arc::clone(&first_received)),
+            collect_handler(Arc::clone(&_first_received)),
         )
         .expect("attach first tree session");
     let first_dsr_client = Arc::new(harness.client("tree-first-dsr"));
     let (stop_first_dsr, first_dsr_thread) = start_dsr_pump(first_dsr_client, first.id.clone());
     answer_dsr(&client, &first.id);
-    let first_pid = wait_for_pid_marker(&first_received, FIRST_MARKER, Duration::from_secs(10));
+    let first_pid = wait_for_pid_file(&first_pid_file, Duration::from_secs(10));
 
-    queue_command(&harness.paths, cmd_spawn_long_lived_child(SECOND_MARKER));
+    let second_pid_file = harness.dir.join("isolation-second.pid");
+    queue_command(
+        &harness.paths,
+        cmd_spawn_long_lived_child_with_pid_file(SECOND_MARKER, &second_pid_file),
+    );
     let second = client
         .session_create(None, SessionKind::Terminal, None)
         .expect("create second tree session");
-    let second_received = Arc::new(Mutex::new(Vec::new()));
+    let _second_received = Arc::new(Mutex::new(Vec::new()));
     client
         .session_attach(
             &second.id,
             None,
-            collect_handler(Arc::clone(&second_received)),
+            collect_handler(Arc::clone(&_second_received)),
         )
         .expect("attach second tree session");
     let second_dsr_client = Arc::new(harness.client("tree-second-dsr"));
     let (stop_second_dsr, second_dsr_thread) = start_dsr_pump(second_dsr_client, second.id.clone());
     answer_dsr(&client, &second.id);
-    let second_pid = wait_for_pid_marker(&second_received, SECOND_MARKER, Duration::from_secs(10));
+    let second_pid = wait_for_pid_file(&second_pid_file, Duration::from_secs(10));
     assert!(process_is_alive(first_pid));
     assert!(process_is_alive(second_pid));
 
