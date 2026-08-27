@@ -1,13 +1,16 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChangeEvent, KeyboardEvent, MouseEvent } from 'react';
+import type { ChangeEvent, FormEvent, KeyboardEvent, MouseEvent } from 'react';
 import {
   MOCK_AGENT_REPLY,
   MOCK_DIFF_LINES,
   MOCK_MESSAGES,
+  MOCK_PROVIDER_MANIFESTS,
   MOCK_PROJECTS,
   MOCK_SHIP_STEPS,
   MOCK_SURFACES,
   type MockProject,
+  type MockEffortLevel,
+  type MockProviderManifest,
   type MockSurface,
   type MockWorkspace,
   type MockWorkspaceMessage,
@@ -20,6 +23,17 @@ type ActiveSidePanel = MockSurface['id'];
 type PermissionState = 'waiting' | 'allowed' | 'denied';
 type DiffState = 'unstaged' | 'staged' | 'discarded';
 type ResizeSide = 'left' | 'right';
+type ProjectCreationRoute = 'existing' | 'new' | 'clone';
+
+const PROJECT_CREATION_ROUTES: readonly {
+  id: ProjectCreationRoute;
+  label: string;
+  description: string;
+}[] = [
+  { id: 'existing', label: 'Existing folder', description: 'Open a repository or folder already on disk.' },
+  { id: 'new', label: 'New folder', description: 'Create a project folder at a path.' },
+  { id: 'clone', label: 'Clone from GitHub', description: 'Start from a GitHub repository URL.' },
+];
 
 const MIN_PANEL_WIDTH = 180;
 const MAX_PANEL_WIDTH = 460;
@@ -41,6 +55,25 @@ const DIFF_LABELS: Record<DiffState, string> = {
   staged: 'Staged',
   discarded: 'Discarded',
 };
+
+function getProviderManifest(providerId: string): MockProviderManifest {
+  return MOCK_PROVIDER_MANIFESTS.find((provider) => provider.id === providerId) ?? MOCK_PROVIDER_MANIFESTS[0];
+}
+
+function isGitHubRepositoryUrl(value: string): boolean {
+  return /^https:\/\/(?:www\.)?github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?(?:[?#].*)?$/i.test(value);
+}
+
+function projectNameFromDraft(route: ProjectCreationRoute, value: string): string {
+  if (route === 'clone') {
+    const repositoryPath = value.split(/[?#]/, 1)[0].replace(/\/+$/, '');
+    const repositoryName = repositoryPath.split('/').pop()?.replace(/\.git$/i, '');
+    return repositoryName || 'cloned-project';
+  }
+
+  const pathWithoutTrailingSeparators = value.replace(/[\\/]+$/, '');
+  return pathWithoutTrailingSeparators.split(/[\\/]/).pop() || 'new-project';
+}
 
 function cloneProjects(): MockProject[] {
   return MOCK_PROJECTS.map((project) => ({
@@ -68,17 +101,19 @@ export function Workspace() {
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>('changes');
   const [surfaceMenuOpen, setSurfaceMenuOpen] = useState(false);
   const [messages, setMessages] = useState<MockWorkspaceMessage[]>(cloneMessages);
-  const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [permission, setPermission] = useState<PermissionState>('waiting');
   const [diffState, setDiffState] = useState<DiffState>('unstaged');
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState('Open #412 on GitHub');
+  const [agentProviderId, setAgentProviderId] = useState('claude');
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
 
   const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
   const streamTimerRef = useRef<number | null>(null);
   const streamIntervalRef = useRef<number | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
+  const newProjectTriggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const handleMove = (event: globalThis.MouseEvent) => {
@@ -158,11 +193,11 @@ export function Workspace() {
     }
   }, [leftWidth, rightWidth]);
 
-  const addWorkspace = useCallback((projectName: string = 'devboule') => {
+  const addWorkspace = useCallback((projectId: string = 'devboule') => {
     const id = `mock-workspace-${Date.now()}`;
     const workspace: MockWorkspace = {
       id,
-      projectId: projectName,
+      projectId,
       title: 'new-workspace',
       meta: 'idle · 0 d',
       isolation: 'worktree',
@@ -171,7 +206,7 @@ export function Workspace() {
 
     setProjects((currentProjects) =>
       currentProjects.map((project) =>
-        project.name === projectName
+        project.id === projectId
           ? { ...project, workspaces: [...project.workspaces, workspace] }
           : project,
       ),
@@ -179,8 +214,8 @@ export function Workspace() {
     setSelectedWorkspace(id);
   }, []);
 
-  const handleSend = useCallback(() => {
-    const text = input.trim();
+  const handleSend = useCallback((messageText: string) => {
+    const text = messageText.trim();
     if (!text) return;
 
     if (streamTimerRef.current !== null) window.clearTimeout(streamTimerRef.current);
@@ -192,7 +227,6 @@ export function Workspace() {
       ...currentMessages,
       { id: Date.now(), role: 'user', text },
     ]);
-    setInput('');
     setPermission('waiting');
     setStreaming(false);
 
@@ -221,14 +255,26 @@ export function Workspace() {
         }
       }, 24);
     }, 240);
-  }, [input]);
+  }, []);
 
-  const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      handleSend();
-    }
-  }, [handleSend]);
+  const openProjectDialog = useCallback(() => setProjectDialogOpen(true), []);
+  const closeProjectDialog = useCallback(() => {
+    setProjectDialogOpen(false);
+    newProjectTriggerRef.current?.focus();
+  }, []);
+  const handleCreateProject = useCallback(({ route, value }: { route: ProjectCreationRoute; value: string }) => {
+    const trimmedValue = value.trim();
+    const project: MockProject = {
+      id: `mock-project-${Date.now()}`,
+      name: projectNameFromDraft(route, trimmedValue),
+      path: trimmedValue,
+      workspaces: [],
+    };
+
+    setProjects((currentProjects) => [...currentProjects, project]);
+    setSearch('');
+    closeProjectDialog();
+  }, [closeProjectDialog]);
 
   function handleSearchChange(event: ChangeEvent<HTMLInputElement>) {
     setSearch(event.target.value);
@@ -247,6 +293,8 @@ export function Workspace() {
     [projects, query],
   );
 
+  const agentProvider = useMemo(() => getProviderManifest(agentProviderId), [agentProviderId]);
+  const agentModelLabel = useMemo(() => agentProvider.models[0]?.label ?? 'No model', [agentProvider]);
   const selectedSurface = MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
   const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
@@ -289,9 +337,10 @@ export function Workspace() {
               <button
                 type="button"
                 className="workspace-add-button"
-                onClick={() => addWorkspace()}
-                title="New workspace"
-                aria-label="New workspace"
+                ref={newProjectTriggerRef}
+                onClick={openProjectDialog}
+                title="New project"
+                aria-label="New project"
               >
                 +
               </button>
@@ -305,7 +354,7 @@ export function Workspace() {
                     <button
                       type="button"
                       className="workspace-project-add"
-                      onClick={() => addWorkspace(project.name)}
+                      onClick={() => addWorkspace(project.id)}
                       title="New workspace in this project"
                       aria-label={`New workspace in ${project.name}`}
                     >
@@ -332,7 +381,7 @@ export function Workspace() {
                     <button
                       type="button"
                       className="workspace-new-row"
-                      onClick={() => addWorkspace(project.name)}
+                      onClick={() => addWorkspace(project.id)}
                     >
                       <span aria-hidden="true">+</span>New workspace
                     </button>
@@ -377,8 +426,8 @@ export function Workspace() {
             onClick={() => setActiveTab('agent')}
           >
             <span className="workspace-status-dot workspace-dot-agent" />
-            <span className="workspace-tab-label">claude</span>
-            <span className="workspace-tab-meta">sonnet-4.6</span>
+            <span className="workspace-tab-label">{agentProvider.name}</span>
+            <span className="workspace-tab-meta">{agentModelLabel}</span>
           </button>
           <button
             type="button"
@@ -440,7 +489,7 @@ export function Workspace() {
                     <div className="workspace-agent-message">
                       <div className="workspace-agent-heading">
                         <span className="workspace-agent-mark">c</span>
-                        <span className="workspace-agent-meta">claude · sonnet-4.6</span>
+                        <span className="workspace-agent-meta">{agentProvider.name} · {agentModelLabel}</span>
                       </div>
                       <div className="workspace-agent-copy">
                         {message.text}
@@ -480,29 +529,12 @@ export function Workspace() {
               </div>
             </div>
 
-            <div className="workspace-composer-wrap">
-              <div className="workspace-composer">
-                <textarea
-                  value={input}
-                  onChange={(event) => setInput(event.target.value)}
-                  onKeyDown={handleComposerKeyDown}
-                  placeholder="Steer the running turn, or start a new one…"
-                  rows={2}
-                  aria-label="Workspace message"
-                />
-                <div className="workspace-composer-footer">
-                  <button type="button" className="workspace-model-pill" title="Current model">
-                    claude / sonnet-4.6 ▾
-                  </button>
-                  <span className="workspace-steer-hint">
-                    {streaming ? 'goes into the running turn' : 'starts a new turn'}
-                  </span>
-                  <button type="button" className="workspace-primary-action workspace-send-action" onClick={handleSend}>
-                    Send
-                  </button>
-                </div>
-              </div>
-            </div>
+            <WorkspaceComposer
+              streaming={streaming}
+              providerId={agentProvider.id}
+              onProviderChange={setAgentProviderId}
+              onSend={handleSend}
+            />
           </>
         )}
       </main>
@@ -604,9 +636,350 @@ export function Workspace() {
           </div>
         )}
       </aside>
+
+      <NewProjectDialog
+        open={projectDialogOpen}
+        onClose={closeProjectDialog}
+        onCreate={handleCreateProject}
+      />
     </section>
   );
 }
+
+interface WorkspaceComposerProps {
+  streaming: boolean;
+  providerId: string;
+  onProviderChange: (providerId: string) => void;
+  onSend: (text: string) => void;
+}
+
+const WorkspaceComposer = memo(function WorkspaceComposer({
+  streaming,
+  providerId,
+  onProviderChange,
+  onSend,
+}: WorkspaceComposerProps) {
+  const provider = useMemo(() => getProviderManifest(providerId), [providerId]);
+  const [input, setInput] = useState('');
+  const [modelId, setModelId] = useState(provider.defaults.modelId);
+  const [modeState, setModeState] = useState<Record<string, boolean>>({});
+  const [effort, setEffort] = useState<MockEffortLevel | null>(provider.defaults.effort);
+
+  const selectedModel = useMemo(
+    () => provider.models.find((model) => model.id === modelId) ?? provider.models[0],
+    [modelId, provider],
+  );
+  const effortLevels = useMemo(
+    () => provider.effortLevels.filter((level) => selectedModel?.thinkingLevels.includes(level)),
+    [provider, selectedModel],
+  );
+  const effectiveModelId = selectedModel?.id ?? '';
+  const effectiveEffort = effort && effortLevels.includes(effort)
+    ? effort
+    : provider.defaults.effort && effortLevels.includes(provider.defaults.effort)
+      ? provider.defaults.effort
+      : effortLevels[0] ?? null;
+  const effectiveModes = useMemo(
+    () => provider.modes.reduce<Record<string, boolean>>((modes, mode) => {
+      modes[mode.id] = modeState[mode.id] ?? provider.defaults.modes[mode.id] ?? false;
+      return modes;
+    }, {}),
+    [modeState, provider],
+  );
+
+  useEffect(() => {
+    setModelId(provider.defaults.modelId);
+    setModeState(provider.defaults.modes);
+    setEffort(provider.defaults.effort);
+  }, [provider]);
+
+  const sendInput = useCallback(() => {
+    const text = input.trim();
+    if (!text) return;
+    onSend(text);
+    setInput('');
+  }, [input, onSend]);
+
+  const handleComposerKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendInput();
+    }
+  }, [sendInput]);
+
+  const handleProviderChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    onProviderChange(event.target.value);
+  }, [onProviderChange]);
+
+  const handleModelChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const nextModel = provider.models.find((model) => model.id === event.target.value);
+    if (!nextModel) return;
+
+    setModelId(nextModel.id);
+    const nextEffortLevels = provider.effortLevels.filter((level) => nextModel.thinkingLevels.includes(level));
+    setEffort((currentEffort) => currentEffort && nextEffortLevels.includes(currentEffort)
+      ? currentEffort
+      : nextEffortLevels[0] ?? null);
+  }, [provider]);
+
+  const handleEffortChange = useCallback((event: ChangeEvent<HTMLSelectElement>) => {
+    const nextEffort = event.target.value as MockEffortLevel;
+    if (effortLevels.includes(nextEffort)) setEffort(nextEffort);
+  }, [effortLevels]);
+
+  const toggleMode = useCallback((modeId: string) => {
+    setModeState((currentModes) => ({
+      ...currentModes,
+      [modeId]: !currentModes[modeId],
+    }));
+  }, []);
+
+  return (
+    <div className="workspace-composer-wrap">
+      <div className="workspace-composer">
+        <textarea
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={handleComposerKeyDown}
+          placeholder="Steer the running turn, or start a new one…"
+          rows={2}
+          aria-label="Workspace message"
+        />
+        <div className="workspace-composer-footer">
+          <div className="workspace-composer-control-row">
+            <label className="workspace-composer-select-wrap workspace-provider-select-wrap">
+              <span className="sr-only">Provider for this session</span>
+              <select
+                className="workspace-composer-select workspace-provider-select"
+                value={provider.id}
+                onChange={handleProviderChange}
+                aria-label="Provider for this session"
+              >
+                {MOCK_PROVIDER_MANIFESTS.map((manifest) => (
+                  <option value={manifest.id} key={manifest.id}>{manifest.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="workspace-composer-select-wrap workspace-model-select-wrap">
+              <span className="sr-only">Model</span>
+              <select
+                className="workspace-composer-select workspace-model-select"
+                value={effectiveModelId}
+                onChange={handleModelChange}
+                aria-label="Model"
+                disabled={provider.models.length === 0}
+              >
+                {provider.models.map((model) => (
+                  <option value={model.id} key={model.id}>{model.label}</option>
+                ))}
+              </select>
+            </label>
+            <span className="workspace-steer-hint">
+              {streaming ? 'goes into the running turn' : 'starts a new turn'}
+            </span>
+            <button
+              type="button"
+              className="workspace-primary-action workspace-send-action"
+              onClick={sendInput}
+              disabled={!input.trim()}
+            >
+              Send
+            </button>
+          </div>
+          <div className="workspace-composer-mode-row">
+            <div className="workspace-composer-mode-group" role="group" aria-label={`Modes for ${provider.name}`}>
+              {provider.modes.map((mode) => (
+                <button
+                  type="button"
+                  className={`workspace-mode-toggle${effectiveModes[mode.id] ? ' workspace-mode-toggle-active' : ''}`}
+                  key={mode.id}
+                  onClick={() => toggleMode(mode.id)}
+                  aria-pressed={effectiveModes[mode.id]}
+                  title={mode.description}
+                >
+                  {mode.label}
+                </button>
+              ))}
+              {provider.modes.length === 0 ? (
+                <span className="workspace-no-modes">No modes for this provider</span>
+              ) : null}
+            </div>
+            {effortLevels.length > 0 ? (
+              <label className="workspace-effort-control">
+                <span className="workspace-effort-label">Thinking</span>
+                <select
+                  value={effectiveEffort ?? ''}
+                  onChange={handleEffortChange}
+                  aria-label="Thinking effort"
+                >
+                  {effortLevels.map((level) => <option value={level} key={level}>{level}</option>)}
+                </select>
+              </label>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+interface NewProjectDialogProps {
+  open: boolean;
+  onClose: () => void;
+  onCreate: (draft: { route: ProjectCreationRoute; value: string }) => void;
+}
+
+function getFocusableElements(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => !element.hasAttribute('hidden') && element.getAttribute('aria-hidden') !== 'true');
+}
+
+const NewProjectDialog = memo(function NewProjectDialog({ open, onClose, onCreate }: NewProjectDialogProps) {
+  const [route, setRoute] = useState<ProjectCreationRoute>('existing');
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    setRoute('existing');
+    setValue('');
+    setError(null);
+
+    const dialog = dialogRef.current;
+    if (dialog === null) return;
+
+    const initialFocus = dialog.querySelector<HTMLElement>('[data-dialog-initial-focus]');
+    initialFocus?.focus();
+
+    const handleDialogKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const focusableElements = getFocusableElements(dialog);
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements[focusableElements.length - 1];
+      if (!dialog.contains(document.activeElement)) {
+        event.preventDefault();
+        firstElement.focus();
+      } else if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleDialogKeyDown);
+    return () => document.removeEventListener('keydown', handleDialogKeyDown);
+  }, [onClose, open]);
+
+  const handleRouteChange = useCallback((nextRoute: ProjectCreationRoute) => {
+    setRoute(nextRoute);
+    setValue('');
+    setError(null);
+  }, []);
+
+  const handleSubmit = useCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+      setError(route === 'clone' ? 'Enter a GitHub repository URL.' : 'Enter a folder path.');
+      return;
+    }
+    if (route === 'clone' && !isGitHubRepositoryUrl(trimmedValue)) {
+      setError('Use a GitHub repository URL such as https://github.com/org/repo.');
+      return;
+    }
+
+    onCreate({ route, value: trimmedValue });
+  }, [onCreate, route, value]);
+
+  if (!open) return null;
+
+  const inputLabel = route === 'clone' ? 'GitHub repository URL' : route === 'new' ? 'Folder path to create' : 'Folder path';
+  const inputPlaceholder = route === 'clone' ? 'https://github.com/org/repo' : 'C:\\Users\\you\\project';
+  const submitLabel = route === 'clone' ? 'Clone project' : route === 'new' ? 'Create project' : 'Add project';
+
+  return (
+    <div
+      className="workspace-project-dialog-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="workspace-project-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="workspace-project-dialog-title"
+        tabIndex={-1}
+      >
+        <div className="workspace-project-dialog-header">
+          <div>
+            <div className="workspace-dialog-eyebrow">Project</div>
+            <h2 id="workspace-project-dialog-title">New project</h2>
+          </div>
+          <button type="button" className="workspace-dialog-close" onClick={onClose} aria-label="Close new project dialog">×</button>
+        </div>
+        <p className="workspace-project-dialog-copy">A project is a repository or folder on disk. Workspaces and sessions are added after it exists.</p>
+        <div className="workspace-project-route-list" role="tablist" aria-label="Project creation route">
+          {PROJECT_CREATION_ROUTES.map((projectRoute) => (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={route === projectRoute.id}
+              aria-controls={`workspace-project-route-${projectRoute.id}`}
+              className={`workspace-project-route${route === projectRoute.id ? ' workspace-project-route-selected' : ''}`}
+              key={projectRoute.id}
+              onClick={() => handleRouteChange(projectRoute.id)}
+            >
+              <span className="workspace-project-route-label">{projectRoute.label}</span>
+              <span className="workspace-project-route-description">{projectRoute.description}</span>
+            </button>
+          ))}
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div id={`workspace-project-route-${route}`} role="tabpanel" aria-label={inputLabel}>
+            <label className="workspace-project-input-label" htmlFor="workspace-project-input">{inputLabel}</label>
+            <input
+              id="workspace-project-input"
+              data-dialog-initial-focus="true"
+              value={value}
+              onChange={(event) => {
+                setValue(event.target.value);
+                setError(null);
+              }}
+              placeholder={inputPlaceholder}
+              aria-invalid={error !== null}
+              aria-describedby={error !== null ? 'workspace-project-error' : undefined}
+            />
+            {error !== null ? <div id="workspace-project-error" className="workspace-project-error" role="alert">{error}</div> : null}
+          </div>
+          <div className="workspace-project-dialog-note">Mock only · no filesystem, git, or network access.</div>
+          <div className="workspace-project-dialog-actions">
+            <button type="button" className="workspace-secondary-action" onClick={onClose}>Cancel</button>
+            <button type="submit" className="workspace-primary-action">{submitLabel}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+});
 
 interface ChangesSurfaceProps {
   diffState: DiffState;

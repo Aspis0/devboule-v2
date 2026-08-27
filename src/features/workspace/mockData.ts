@@ -1,4 +1,4 @@
-import type { Project, Workspace } from '../../types/ipc';
+import type { ModelInfo, Project, ProviderInfo, Workspace } from '../../types/ipc';
 
 // MOCK DATA ONLY — this is a UI view model over the future IPC entities. The
 // shared entity fields stay aligned, while presentation fields remain local to
@@ -14,6 +14,29 @@ export interface MockWorkspace extends Workspace {
 export interface MockProject extends Project {
   workspaces: MockWorkspace[];
 }
+
+export interface MockProviderMode {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export type MockEffortLevel = 'low' | 'medium' | 'high' | 'max';
+
+// MOCK PROVIDER MANIFEST — this is the frontend snapshot that M7 will replace
+// with providers_list() plus provider_models(). ProviderInfo remains the
+// provider identity contract; this mock only adds the capabilities needed to
+// render the composer without assuming every provider has the same controls.
+export type MockProviderManifest = ProviderInfo & {
+  models: ModelInfo[];
+  modes: MockProviderMode[];
+  effortLevels: MockEffortLevel[];
+  defaults: {
+    modelId: string;
+    modes: Record<string, boolean>;
+    effort: MockEffortLevel | null;
+  };
+};
 
 export type WorkspaceMessageRole = 'user' | 'tool' | 'agent';
 
@@ -32,6 +55,86 @@ export interface MockSurface {
   meta: string;
   dotTone: 'terracotta' | 'silence' | 'green' | 'purple' | 'ochre';
 }
+
+export const MOCK_PROVIDER_MANIFESTS: readonly MockProviderManifest[] = [
+  {
+    id: 'claude',
+    name: 'Claude Code',
+    installed: true,
+    authenticated: true,
+    models: [
+      { id: 'sonnet-4.6', label: 'sonnet-4.6', thinkingLevels: ['low', 'medium', 'high', 'max'] },
+    ],
+    modes: [
+      { id: 'auto-accept', label: 'Auto accept', description: 'Accept safe edits automatically.' },
+      { id: 'plan', label: 'Plan mode', description: 'Plan the turn before making changes.' },
+      { id: 'bypass-permissions', label: 'Bypass permissions', description: 'Run without per-command permission prompts.' },
+      { id: 'automode', label: 'Automode', description: 'Let the agent choose when to continue.' },
+    ],
+    effortLevels: ['low', 'medium', 'high', 'max'],
+    defaults: {
+      modelId: 'sonnet-4.6',
+      modes: {
+        'auto-accept': false,
+        plan: false,
+        'bypass-permissions': false,
+        automode: false,
+      },
+      effort: 'high',
+    },
+  },
+  {
+    id: 'codex',
+    name: 'Codex CLI',
+    installed: true,
+    authenticated: true,
+    models: [
+      { id: 'codex-5', label: 'codex-5', thinkingLevels: ['low', 'medium', 'high'] },
+      { id: 'codex-5-mini', label: 'codex-5-mini', thinkingLevels: ['low', 'medium'] },
+    ],
+    modes: [
+      { id: 'plan', label: 'Plan mode', description: 'Plan the turn before making changes.' },
+      { id: 'automode', label: 'Automode', description: 'Let the agent choose when to continue.' },
+    ],
+    effortLevels: ['low', 'medium', 'high'],
+    defaults: {
+      modelId: 'codex-5',
+      modes: { plan: false, automode: false },
+      effort: 'medium',
+    },
+  },
+  {
+    id: 'terminal',
+    name: 'Plain terminal',
+    installed: true,
+    authenticated: true,
+    models: [{ id: 'shell', label: 'shell', thinkingLevels: [] }],
+    modes: [],
+    effortLevels: [],
+    defaults: {
+      modelId: 'shell',
+      modes: {},
+      effort: null,
+    },
+  },
+  {
+    id: 'acp',
+    name: 'ACP agent',
+    installed: true,
+    authenticated: true,
+    models: [{ id: 'acp-default', label: 'default', thinkingLevels: ['medium', 'high'] }],
+    modes: [
+      { id: 'plan', label: 'Plan mode', description: 'Plan the turn before making changes.' },
+      { id: 'bypass-permissions', label: 'Bypass permissions', description: 'Run without per-command permission prompts.' },
+    ],
+    effortLevels: ['medium', 'high'],
+    defaults: {
+      modelId: 'acp-default',
+      modes: { plan: false, 'bypass-permissions': false },
+      effort: 'medium',
+    },
+  },
+];
 
 export const MOCK_PROJECTS: MockProject[] = [
   {
