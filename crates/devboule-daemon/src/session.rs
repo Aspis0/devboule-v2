@@ -7,9 +7,11 @@
 //! reader thread. v2 deliberately has no sandbox/AppContainer broker, so
 //! Windows and Unix use the same native portable-pty path.
 //!
-//! The scrollback is memory-only. It is never persisted or logged. Terminal
-//! bytes are converted with UTF-8-lossy at the coalesced-flush boundary so a
-//! read that splits a UTF-8 codepoint cannot panic; xterm.js consumes the
+//! Live scrollback is a 256 KiB ring. Coalesced frames are also enqueued to
+//! the conversation journal off this thread (`try_send`, never a disk wait).
+//! A recovered session replays the journal, not this ring. Terminal bytes
+//! are converted with UTF-8-lossy at the coalesced-flush boundary so a read
+//! that splits a UTF-8 codepoint cannot panic; xterm.js consumes the
 //! resulting stream.
 //!
 //! LOCKING ORDER:
@@ -54,6 +56,7 @@ use devboule_protocol::{
     SessionEvent, SessionEventEnvelope, SessionKind, SessionState, WireError,
 };
 
+use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::server::ServerState;
@@ -156,15 +159,23 @@ struct Scrollback {
 
 impl Scrollback {
     fn push(&mut self, seq: u64, data: &[u8]) {
+        self.push_with_cap(seq, data, RING_CAPACITY);
+    }
+
+    fn push_uncapped(&mut self, seq: u64, data: &[u8]) {
+        self.push_with_cap(seq, data, usize::MAX);
+    }
+
+    fn push_with_cap(&mut self, seq: u64, data: &[u8], cap: usize) {
         if data.is_empty() {
             return;
         }
-        let retained = if data.len() > RING_CAPACITY {
-            data[data.len() - RING_CAPACITY..].to_vec()
+        let retained = if data.len() > cap {
+            data[data.len() - cap..].to_vec()
         } else {
             data.to_vec()
         };
-        while self.bytes + retained.len() > RING_CAPACITY {
+        while self.bytes + retained.len() > cap {
             let Some(oldest) = self.chunks.pop_front() else {
                 break;
             };
@@ -194,6 +205,13 @@ struct Attachment {
     outbound: Arc<ConnOut>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Disposition {
+    Running,
+    Exited,
+    Recovered { truncated: bool },
+}
+
 struct StreamState {
     next_seq: u64,
     generation: u64,
@@ -206,6 +224,7 @@ struct StreamState {
     exit_code: Option<u32>,
     last_publish: Option<Instant>,
     exit_at: Option<Instant>,
+    disposition: Disposition,
 }
 
 /// Stream state is one mutex on purpose. Holding it across attach
@@ -213,6 +232,8 @@ struct StreamState {
 /// and its pull cursor is set, and only then can the reader publish the
 /// next live chunk. Subscribe-before-replay.
 struct SessionRuntime {
+    session_id: String,
+    journal: Option<Arc<Journal>>,
     stream: Mutex<StreamState>,
     peak_ring_bytes: AtomicUsize,
     reader_finished: AtomicBool,
@@ -220,8 +241,15 @@ struct SessionRuntime {
 }
 
 impl SessionRuntime {
+    #[cfg(test)]
     fn new() -> Self {
+        Self::with_journal(String::new(), None)
+    }
+
+    fn with_journal(session_id: String, journal: Option<Arc<Journal>>) -> Self {
         Self {
+            session_id,
+            journal,
             stream: Mutex::new(StreamState {
                 next_seq: 1,
                 generation: 1,
@@ -232,11 +260,40 @@ impl SessionRuntime {
                 exit_code: None,
                 last_publish: None,
                 exit_at: None,
+                disposition: Disposition::Running,
             }),
             peak_ring_bytes: AtomicUsize::new(0),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
         }
+    }
+
+    fn from_replay(session_id: String, journal: Option<Arc<Journal>>, replay: Replay) -> Arc<Self> {
+        let runtime = Arc::new(Self::with_journal(session_id, journal));
+        if let Ok(mut stream) = runtime.stream.lock() {
+            stream.generation = replay.generation;
+            stream.next_seq = replay.last_seq.saturating_add(1);
+            stream.output_closed = true;
+            stream.process_exited = true;
+            stream.disposition = Disposition::Recovered {
+                truncated: replay.truncated,
+            };
+            for event in replay.events {
+                match event {
+                    SessionEvent::Output { seq, data } => {
+                        stream.scrollback.push_uncapped(seq, data.as_bytes());
+                    }
+                    SessionEvent::Exit { code } => {
+                        stream.exit_code = code;
+                        stream.disposition = Disposition::Exited;
+                    }
+                    SessionEvent::Recovered { truncated } => {
+                        stream.disposition = Disposition::Recovered { truncated };
+                    }
+                }
+            }
+        }
+        runtime
     }
 
     fn publish_output(&self, data: &str) {
@@ -250,10 +307,20 @@ impl SessionRuntime {
         stream.next_seq = stream.next_seq.saturating_add(1);
         stream.scrollback.push(seq, data.as_bytes());
         stream.last_publish = Some(Instant::now());
+        let generation = stream.generation;
         self.peak_ring_bytes
             .fetch_max(stream.scrollback.bytes, Ordering::Relaxed);
         if let Some(attached) = &stream.attached {
             attached.outbound.notify();
+        }
+        drop(stream);
+        if let Some(journal) = &self.journal {
+            journal.try_append(output_record(
+                self.session_id.clone(),
+                generation,
+                seq,
+                data.as_bytes(),
+            ));
         }
     }
 
@@ -304,8 +371,17 @@ impl SessionRuntime {
         stream.process_exited = true;
         stream.exit_code = code;
         stream.exit_at = Some(Instant::now());
+        stream.disposition = Disposition::Exited;
+        let generation = stream.generation;
         if let Some(attached) = &stream.attached {
             attached.outbound.notify();
+        }
+        drop(stream);
+        // Child::wait returns before ConPTY EOFs (ARCHITETTURA §1.7). Exit is
+        // emitted after the drain window; the journal must record ended here
+        // or a kill before EOF reopens the session as Recovered.
+        if let Some(journal) = &self.journal {
+            journal.try_mark_ended(&self.session_id, generation, code);
         }
     }
 
@@ -347,6 +423,7 @@ impl SessionRuntime {
         stream.exit_code = None;
         stream.last_publish = None;
         stream.exit_at = None;
+        stream.disposition = Disposition::Running;
         stream.generation
     }
 
@@ -452,6 +529,7 @@ impl ConnHandle {
             .unwrap_or_default();
         for id in ids {
             registry.detach_runtime(&id, self.id);
+            registry.drop_transcript_if_idle(&id);
         }
     }
 
@@ -479,12 +557,16 @@ impl ConnHandle {
                 });
             }
             if !pull.exit_sent && SessionRuntime::ready_for_exit(&stream) {
+                let event = match stream.disposition {
+                    Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
+                    Disposition::Running | Disposition::Exited => SessionEvent::Exit {
+                        code: stream.exit_code,
+                    },
+                };
                 events.push(SessionEventEnvelope {
                     session_id: session_id.clone(),
                     generation: pull.generation,
-                    event: SessionEvent::Exit {
-                        code: stream.exit_code,
-                    },
+                    event,
                 });
                 pull.exit_sent = true;
                 finished_ids.push(session_id.clone());
@@ -514,17 +596,90 @@ struct PtySession {
     preserve_on_exit: Arc<AtomicBool>,
 }
 
+struct TranscriptSession {
+    metadata: Session,
+    runtime: Arc<SessionRuntime>,
+}
+
+enum RegistryEntry {
+    Live(PtySession),
+    Transcript(TranscriptSession),
+}
+
+impl RegistryEntry {
+    fn runtime(&self) -> Arc<SessionRuntime> {
+        match self {
+            Self::Live(session) => Arc::clone(&session.runtime),
+            Self::Transcript(session) => Arc::clone(&session.runtime),
+        }
+    }
+
+    fn to_session(&self) -> Session {
+        match self {
+            Self::Live(session) => live_session_view(session),
+            Self::Transcript(session) => session.metadata.clone(),
+        }
+    }
+
+    fn as_live(&self) -> Option<&PtySession> {
+        match self {
+            Self::Live(session) => Some(session),
+            Self::Transcript(_) => None,
+        }
+    }
+
+    fn as_live_mut(&mut self) -> Option<&mut PtySession> {
+        match self {
+            Self::Live(session) => Some(session),
+            Self::Transcript(_) => None,
+        }
+    }
+}
+
+fn live_session_view(session: &PtySession) -> Session {
+    let mut metadata = session.metadata.clone();
+    if let Ok(stream) = session.runtime.stream.lock() {
+        metadata.state = match stream.disposition {
+            Disposition::Running => SessionState::Live {
+                generation: stream.generation,
+            },
+            Disposition::Exited => SessionState::Ended {
+                generation: stream.generation,
+                code: stream.exit_code,
+            },
+            Disposition::Recovered { truncated } => SessionState::Recovered {
+                generation: stream.generation,
+                truncated,
+            },
+        };
+    }
+    metadata
+}
+
+fn process_gone() -> WireError {
+    WireError::new(ErrorCode::InvalidRequest, "This terminal process is gone.")
+}
+
 #[derive(Clone)]
 pub struct SessionRegistry {
-    inner: Arc<Mutex<HashMap<String, PtySession>>>,
+    inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
     paths: RuntimePaths,
+    journal: Option<Arc<Journal>>,
 }
 
 impl SessionRegistry {
-    pub fn new(paths: RuntimePaths) -> Self {
+    pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             paths,
+            journal,
+        }
+    }
+
+    pub fn flush_journal(&self) {
+        if let Some(journal) = &self.journal {
+            let _ = journal.flush();
+            journal.shutdown();
         }
     }
 
@@ -556,6 +711,21 @@ impl SessionRegistry {
             Some(command) => command,
             None => resolve_pty_command(&self.paths)?,
         };
+        // Journal the row BEFORE spawn. A short-lived command (cmd /c echo)
+        // can EOF and enqueue MarkEnded before this function would otherwise
+        // reach try_upsert, and the journal thread would then see a missing
+        // session and leave status=live — recovered-as-killed on reopen.
+        if let Some(journal) = &self.journal {
+            let mut record = new_session_record(
+                metadata.id.clone(),
+                owner.user.clone(),
+                metadata.workspace_id.clone(),
+                metadata.kind.clone(),
+                metadata.title.clone(),
+            );
+            record.status = PersistStatus::Live;
+            journal.try_upsert(record);
+        }
         spawn_session(state, self, metadata.clone(), command)?;
         Ok(metadata)
     }
@@ -566,18 +736,107 @@ impl SessionRegistry {
         from_cursor: Option<Cursor>,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
-        let runtime = self.runtime(session_id)?;
+        if let Ok(runtime) = self.runtime(session_id) {
+            let generation = runtime.try_attach(from_cursor, conn)?;
+            let from_seq = from_cursor.map(|cursor| cursor.seq);
+            conn.track(session_id, runtime, from_seq, generation);
+            return Ok(());
+        }
+        let runtime = self.hydrate_transcript(session_id, from_cursor)?;
         let generation = runtime.try_attach(from_cursor, conn)?;
         let from_seq = from_cursor.map(|cursor| cursor.seq);
         conn.track(session_id, runtime, from_seq, generation);
         Ok(())
     }
 
+    fn hydrate_transcript(
+        &self,
+        session_id: &str,
+        from_cursor: Option<Cursor>,
+    ) -> Result<Arc<SessionRuntime>, WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let journal = self.journal.as_ref().ok_or_else(not_found)?;
+        journal.pin(session_id)?;
+        let from_seq = from_cursor.map(|cursor| cursor.seq).unwrap_or(0);
+        let replay = match journal.replay(session_id, from_seq) {
+            Ok(replay) => replay,
+            Err(error) => {
+                journal.unpin(session_id);
+                return Err(error.into());
+            }
+        };
+        if let Some(cursor) = from_cursor {
+            if let Err(error) = cursor_replay_ok(replay.generation, cursor) {
+                journal.unpin(session_id);
+                return Err(error);
+            }
+        }
+        let metadata = journal
+            .list()
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|row| row.id == session_id))
+            .map(|row| row.to_session())
+            .unwrap_or_else(|| Session {
+                id: session_id.to_string(),
+                workspace_id: None,
+                kind: SessionKind::Terminal,
+                title: "Terminal".to_string(),
+                state: SessionState::Recovered {
+                    generation: replay.generation,
+                    truncated: replay.truncated,
+                },
+            });
+        let runtime =
+            SessionRuntime::from_replay(session_id.to_string(), Some(Arc::clone(journal)), replay);
+        {
+            let Ok(mut map) = self.inner.lock() else {
+                journal.unpin(session_id);
+                return Err(internal("Session state is unavailable."));
+            };
+            if let Some(existing) = map.get(session_id) {
+                journal.unpin(session_id);
+                return Ok(existing.runtime());
+            }
+            map.insert(
+                session_id.to_string(),
+                RegistryEntry::Transcript(TranscriptSession {
+                    metadata,
+                    runtime: Arc::clone(&runtime),
+                }),
+            );
+        }
+        Ok(runtime)
+    }
+
     pub fn detach(&self, session_id: &str, conn: &ConnHandle) -> Result<(), WireError> {
         let runtime = self.runtime(session_id)?;
         runtime.detach_if_conn(conn.id);
         conn.untrack(session_id);
+        self.drop_transcript_if_idle(session_id);
         Ok(())
+    }
+
+    fn drop_transcript_if_idle(&self, session_id: &str) {
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
+        let is_idle_transcript = map.get(session_id).is_some_and(|entry| {
+            matches!(entry, RegistryEntry::Transcript(session) if {
+                session
+                    .runtime
+                    .stream
+                    .lock()
+                    .map(|stream| stream.attached.is_none())
+                    .unwrap_or(true)
+            })
+        });
+        if is_idle_transcript {
+            map.remove(session_id);
+            if let Some(journal) = &self.journal {
+                journal.unpin(session_id);
+            }
+        }
     }
 
     fn detach_runtime(&self, session_id: &str, conn_id: u64) {
@@ -595,11 +854,34 @@ impl SessionRegistry {
             .map_err(|_| internal("Session state is unavailable."))?
             .remove(session_id);
         match session {
-            Some(session) => {
+            Some(RegistryEntry::Live(session)) => {
+                if let Some(journal) = &self.journal {
+                    journal.try_mark_closed(session_id);
+                    journal.unpin(session_id);
+                }
                 teardown_session(session);
                 Ok(true)
             }
-            None => Err(not_found()),
+            Some(RegistryEntry::Transcript(_)) => {
+                if let Some(journal) = &self.journal {
+                    journal.try_mark_closed(session_id);
+                    journal.unpin(session_id);
+                }
+                Ok(false)
+            }
+            None => {
+                if let Some(journal) = &self.journal {
+                    let known = journal
+                        .list()
+                        .ok()
+                        .is_some_and(|rows| rows.iter().any(|row| row.id == session_id));
+                    if known {
+                        journal.try_mark_closed(session_id);
+                        return Ok(false);
+                    }
+                }
+                Err(not_found())
+            }
         }
     }
 
@@ -611,7 +893,11 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map.get_mut(session_id).ok_or_else(not_found)?;
+            let session = map
+                .get_mut(session_id)
+                .ok_or_else(not_found)?
+                .as_live_mut()
+                .ok_or_else(process_gone)?;
             session.preserve_on_exit.store(true, Ordering::SeqCst);
             session.killer.clone_killer()
         };
@@ -633,7 +919,11 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map.get(session_id).ok_or_else(not_found)?;
+            let session = map
+                .get(session_id)
+                .ok_or_else(not_found)?
+                .as_live()
+                .ok_or_else(process_gone)?;
             Arc::clone(&session.writer)
         };
         let mut writer = writer
@@ -655,7 +945,11 @@ impl SessionRegistry {
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map.get(session_id).ok_or_else(not_found)?;
+            let session = map
+                .get(session_id)
+                .ok_or_else(not_found)?
+                .as_live()
+                .ok_or_else(process_gone)?;
             Arc::clone(&session.master)
         };
         let master = master
@@ -676,10 +970,18 @@ impl SessionRegistry {
             .inner
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
-        let mut sessions: Vec<Session> = map
-            .values()
-            .map(|session| session.metadata.clone())
-            .collect();
+        let mut sessions: Vec<Session> = map.values().map(RegistryEntry::to_session).collect();
+        drop(map);
+        if let Some(journal) = &self.journal {
+            if let Ok(rows) = journal.list() {
+                for row in rows {
+                    if sessions.iter().any(|session| session.id == row.id) {
+                        continue;
+                    }
+                    sessions.push(row.to_session());
+                }
+            }
+        }
         sessions.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(sessions)
     }
@@ -692,7 +994,7 @@ impl SessionRegistry {
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
         let session = map.get(session_id).ok_or_else(not_found)?;
-        Ok(Arc::clone(&session.runtime))
+        Ok(session.runtime())
     }
 }
 
@@ -749,7 +1051,10 @@ pub fn spawn_session(
         }
     };
 
-    let runtime = Arc::new(SessionRuntime::new());
+    let runtime = Arc::new(SessionRuntime::with_journal(
+        metadata.id.clone(),
+        registry.journal.clone(),
+    ));
     let exited = Arc::new(AtomicBool::new(false));
     let master = Arc::new(Mutex::new(pair.master));
     let writer = Arc::new(Mutex::new(writer));
@@ -787,7 +1092,7 @@ pub fn spawn_session(
             teardown_session(session);
             return Err(internal("Session state is unavailable."));
         };
-        map.insert(id.clone(), session);
+        map.insert(id.clone(), RegistryEntry::Live(session));
     }
 
     let (coalesce_tx, coalesce_rx) = mpsc::channel::<Vec<u8>>();
@@ -838,7 +1143,7 @@ pub fn spawn_session(
     let mut orphaned_reader = Some(reader_handle);
     let mut orphaned_coalesce = coalesce_handle;
     if let Ok(mut map) = registry.inner.lock() {
-        if let Some(session) = map.get_mut(&id) {
+        if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_live_mut) {
             session.reader_handle = orphaned_reader.take();
             session.coalesce_handle = orphaned_coalesce.take();
         }
@@ -931,16 +1236,23 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     let Ok(mut map) = registry.inner.lock() else {
         return false;
     };
-    let Some(session) = map.get_mut(id) else {
+    let Some(session) = map.get_mut(id).and_then(RegistryEntry::as_live_mut) else {
         return false;
     };
     session.reader_handle = None;
-    if session.preserve_on_exit.load(Ordering::SeqCst) {
+    let preserve = session.preserve_on_exit.load(Ordering::SeqCst);
+    if preserve {
+        let coalesce = session.coalesce_handle.take();
         session.exited.store(true, Ordering::SeqCst);
+        drop(map);
+        bounded_join(coalesce);
+        journal_mark_ended(registry, runtime);
         runtime.close_output();
         return false;
     }
-    let mut session = map.remove(id).expect("get_mut saw the key");
+    let Some(RegistryEntry::Live(mut session)) = map.remove(id) else {
+        return false;
+    };
     drop(map);
     session.reader_handle = None;
     let coalesce = session.coalesce_handle.take();
@@ -960,8 +1272,22 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     bounded_join(child_wait);
     bounded_join(coalesce);
     let _ = session_runtime;
+    journal_mark_ended(registry, runtime);
     runtime.close_output();
     true
+}
+
+fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
+    let Some(journal) = &registry.journal else {
+        return;
+    };
+    let (generation, code) = match runtime.stream.lock() {
+        Ok(stream) => (stream.generation, stream.exit_code),
+        Err(_) => return,
+    };
+    journal.try_mark_ended(&runtime.session_id, generation, code);
+    // EOF path: waiting on the journal here does not stall a live PTY.
+    let _ = journal.flush();
 }
 
 fn wait_child(mut child: Box<dyn Child + Send + Sync>) -> Option<u32> {
@@ -1280,6 +1606,36 @@ mod tests {
             .collect();
         assert_eq!(kinds, ["before", "after", "exit"]);
         assert!(conn.pull_events().is_empty());
+    }
+
+    #[test]
+    fn recovered_pull_ends_with_recovered_not_exit() {
+        let replay = crate::journal::Replay {
+            generation: 1,
+            last_seq: 1,
+            truncated: false,
+            events: vec![
+                SessionEvent::Output {
+                    seq: 1,
+                    data: "hello".to_string(),
+                },
+                SessionEvent::Recovered { truncated: false },
+            ],
+        };
+        let runtime = SessionRuntime::from_replay("s.a.1".to_string(), None, replay);
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn).unwrap();
+        conn.track("s.a.1", Arc::clone(&runtime), Some(0), generation);
+        let events = conn.pull_events();
+        let kinds: Vec<_> = events
+            .iter()
+            .map(|envelope| match &envelope.event {
+                SessionEvent::Output { data, .. } => data.as_str(),
+                SessionEvent::Exit { .. } => "exit",
+                SessionEvent::Recovered { .. } => "recovered",
+            })
+            .collect();
+        assert_eq!(kinds, ["hello", "recovered"]);
     }
 
     #[test]

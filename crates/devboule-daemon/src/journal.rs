@@ -36,8 +36,9 @@ pub const SNAPSHOT_EVERY_BYTES: u64 = 64 * 1024;
 
 /// Per-session cap on snapshot + event payload. Oldest windows go first.
 /// The user loses the start of that session's scrollback, never a hole in
-/// the middle of a replay already loaded into memory.
-pub const JOURNAL_SESSION_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// the middle of a replay already loaded into memory. 16 MiB keeps a
+/// measured 13 MB ConPTY flood intact and still bounds a runaway dump.
+pub const JOURNAL_SESSION_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Drop the oldest unpinned non-live sessions when the logical payload
 /// exceeds this.
@@ -95,7 +96,10 @@ impl fmt::Display for JournalError {
             Self::Unavailable(message) => write!(formatter, "journal is unavailable: {message}"),
             Self::SessionNotFound => write!(formatter, "No session with that id."),
             Self::Checksum { session_id, seq } => {
-                write!(formatter, "journal checksum mismatch for {session_id} seq {seq}")
+                write!(
+                    formatter,
+                    "journal checksum mismatch for {session_id} seq {seq}"
+                )
             }
             Self::Stopped => write!(formatter, "journal writer has stopped"),
         }
@@ -386,11 +390,7 @@ impl Journal {
 
     pub fn shutdown(&self) {
         let _ = self.send_cmd(JournalCmd::Shutdown, Duration::from_millis(200));
-        let handle = self
-            .join
-            .lock()
-            .ok()
-            .and_then(|mut guard| guard.take());
+        let handle = self.join.lock().ok().and_then(|mut guard| guard.take());
         if let Some(handle) = handle {
             let deadline = Instant::now() + JOIN_BUDGET;
             while !handle.is_finished() && Instant::now() < deadline {
@@ -469,6 +469,8 @@ fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    // NORMAL for the 13 MB/s-class append path. Durability of process
+    // end is the checkpoint in mark_ended / Flush, not a fsync per frame.
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -615,7 +617,7 @@ fn journal_loop(
             }
             JournalCmd::Flush { reply } => {
                 let result = conn
-                    .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+                    .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
                     .map(|_| ())
                     .map_err(JournalError::from);
                 let _ = reply.send(result);
@@ -705,7 +707,12 @@ fn append_event(
             payload_bytes = payload_bytes + ?3,
             unsnapshotted_bytes = unsnapshotted_bytes + ?3
          WHERE id = ?4",
-        params![record.seq as i64, record.ts_ms as i64, add, record.session_id],
+        params![
+            record.seq as i64,
+            record.ts_ms as i64,
+            add,
+            record.session_id
+        ],
     )?;
     maybe_snapshot(&tx, &record.session_id, record.generation, limits)?;
     retain(&tx, pins, now_ms(), limits)?;
@@ -788,9 +795,8 @@ fn retain(
     limits: JournalLimits,
 ) -> Result<(), JournalError> {
     let ids: Vec<(String, String, i64, i64, i64)> = {
-        let mut stmt = conn.prepare(
-            "SELECT id, status, closed, updated_at_ms, payload_bytes FROM sessions",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, status, closed, updated_at_ms, payload_bytes FROM sessions")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -921,21 +927,25 @@ fn mark_ended(
     code: Option<u32>,
 ) -> Result<(), JournalError> {
     let ts = now_ms();
-    let last_seq: i64 = conn
+    let (last_seq, status): (i64, String) = conn
         .query_row(
-            "SELECT last_seq FROM sessions WHERE id = ?1",
+            "SELECT last_seq, status FROM sessions WHERE id = ?1",
             [session_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
         .ok_or(JournalError::SessionNotFound)?;
+    if status == "ended" {
+        return Ok(());
+    }
     let seq = (last_seq as u64).saturating_add(1);
     let payload = match code {
         Some(value) => value.to_le_bytes().to_vec(),
         None => Vec::new(),
     };
     let checksum = crc32(&payload) as i64;
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "INSERT INTO events (session_id, generation, seq, kind, ts_ms, payload, checksum)
          VALUES (?1, ?2, ?3, 'exit', ?4, ?5, ?6)",
         params![
@@ -947,10 +957,12 @@ fn mark_ended(
             checksum,
         ],
     )?;
-    conn.execute(
+    tx.execute(
         "UPDATE sessions SET status = 'ended', exit_code = ?1, last_seq = ?2, updated_at_ms = ?3 WHERE id = ?4",
         params![code.map(|value| value as i64), seq as i64, ts as i64, session_id],
     )?;
+    tx.commit()?;
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     Ok(())
 }
 
@@ -981,7 +993,8 @@ fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> 
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(JournalError::from)
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(JournalError::from)
 }
 
 fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
@@ -995,9 +1008,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         updated_at_ms: row.get::<_, i64>(6)? as u64,
         generation: row.get::<_, i64>(7)? as u64,
         status: PersistStatus::parse(&row.get::<_, String>(8)?),
-        exit_code: row
-            .get::<_, Option<i64>>(9)?
-            .map(|code| code as u32),
+        exit_code: row.get::<_, Option<i64>>(9)?.map(|code| code as u32),
         closed: row.get::<_, i64>(10)? != 0,
         last_seq: row.get::<_, i64>(11)? as u64,
         degraded: row.get::<_, i64>(12)? != 0,
@@ -1051,9 +1062,9 @@ fn replay_session(
                 seq: up_to,
             });
         }
-        let chunks = decode_chunks(&blob).ok_or_else(|| JournalError::Corrupt(format!(
-            "snapshot blob for {session_id} up_to {up_to}"
-        )))?;
+        let chunks = decode_chunks(&blob).ok_or_else(|| {
+            JournalError::Corrupt(format!("snapshot blob for {session_id} up_to {up_to}"))
+        })?;
         for (seq, data) in chunks {
             if seq > from_seq {
                 events.push(SessionEvent::Output {
@@ -1097,7 +1108,9 @@ fn replay_session(
             }),
             Some(EventKind::Exit) => {
                 let code = if payload.len() == 4 {
-                    Some(u32::from_le_bytes(payload.as_slice().try_into().unwrap_or([0; 4])))
+                    Some(u32::from_le_bytes(
+                        payload.as_slice().try_into().unwrap_or([0; 4]),
+                    ))
                 } else {
                     None
                 };
@@ -1306,7 +1319,9 @@ mod tests {
     fn append_and_replay_preserves_seq() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");
-        journal.upsert_blocking(sample_session("s.a.1")).expect("upsert");
+        journal
+            .upsert_blocking(sample_session("s.a.1"))
+            .expect("upsert");
         journal
             .append_blocking(output_record("s.a.1", 1, 1, b"one"))
             .expect("a");
@@ -1329,7 +1344,9 @@ mod tests {
     fn snapshot_compacts_and_replay_has_no_gap_or_duplicate() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open_with_limits(&path, snapshot_limits()).expect("open");
-        journal.upsert_blocking(sample_session("s.a.1")).expect("upsert");
+        journal
+            .upsert_blocking(sample_session("s.a.1"))
+            .expect("upsert");
         for seq in 1..=8 {
             journal
                 .append_blocking(output_record(
@@ -1363,7 +1380,10 @@ mod tests {
         let (dir, path) = tmp_journal();
         {
             let journal = Journal::open_with_limits(&path, tiny_limits()).expect("open");
-            for (id, body) in [("s.a.1", "alpha-payload-xxxx"), ("s.a.2", "bravo-payload-xxxx")] {
+            for (id, body) in [
+                ("s.a.1", "alpha-payload-xxxx"),
+                ("s.a.2", "bravo-payload-xxxx"),
+            ] {
                 journal.upsert_blocking(sample_session(id)).expect("upsert");
                 journal
                     .append_blocking(output_record(id, 1, 1, body.as_bytes()))
@@ -1373,7 +1393,9 @@ mod tests {
         // Reopen so leftover live rows become interrupted (the daemon-kill path).
         let journal = Journal::open_with_limits(&path, tiny_limits()).expect("reopen");
         journal.pin("s.a.2").expect("pin");
-        journal.upsert_blocking(sample_session("s.a.3")).expect("third");
+        journal
+            .upsert_blocking(sample_session("s.a.3"))
+            .expect("third");
         journal
             .append_blocking(output_record("s.a.3", 1, 1, b"charlie-payload-xxxx"))
             .expect("third body");
@@ -1407,7 +1429,8 @@ mod tests {
         let journal = Journal::open(&path).expect("open");
         drop(journal);
         let conn = Connection::open(&path).expect("bump");
-        conn.pragma_update(None, "user_version", 99).expect("version");
+        conn.pragma_update(None, "user_version", 99)
+            .expect("version");
         drop(conn);
         match Journal::open(&path) {
             Err(JournalError::FutureSchema {
@@ -1429,7 +1452,10 @@ mod tests {
             Ok(_) => panic!("corrupt journal opened"),
         };
         assert!(
-            matches!(error, JournalError::Corrupt(_) | JournalError::Unavailable(_)),
+            matches!(
+                error,
+                JournalError::Corrupt(_) | JournalError::Unavailable(_)
+            ),
             "expected corrupt/unavailable, got {error}"
         );
         let message = error.to_string();
@@ -1454,7 +1480,9 @@ mod tests {
     fn uncommitted_write_is_not_visible_after_reopen() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");
-        journal.upsert_blocking(sample_session("s.a.1")).expect("upsert");
+        journal
+            .upsert_blocking(sample_session("s.a.1"))
+            .expect("upsert");
         drop(journal);
         let conn = Connection::open(&path).expect("raw");
         conn.execute("BEGIN", []).expect("begin");
@@ -1478,7 +1506,9 @@ mod tests {
     fn ended_and_interrupted_replay_are_distinct() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");
-        journal.upsert_blocking(sample_session("s.ended")).expect("upsert");
+        journal
+            .upsert_blocking(sample_session("s.ended"))
+            .expect("upsert");
         journal
             .append_blocking(output_record("s.ended", 1, 1, b"bye"))
             .expect("out");
@@ -1493,7 +1523,9 @@ mod tests {
             )
             .expect("mark");
         journal.flush().expect("flush");
-        journal.upsert_blocking(sample_session("s.kill")).expect("kill");
+        journal
+            .upsert_blocking(sample_session("s.kill"))
+            .expect("kill");
         journal
             .append_blocking(output_record("s.kill", 1, 1, b"still"))
             .expect("out");
@@ -1579,10 +1611,7 @@ mod tests {
         let _ = child.wait();
         let journal = Journal::open(&path).expect("reopen after kill");
         let replay = journal.replay("s.hammer.1", 0);
-        assert!(
-            replay.is_ok(),
-            "journal unreadable after kill: {replay:?}"
-        );
+        assert!(replay.is_ok(), "journal unreadable after kill: {replay:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

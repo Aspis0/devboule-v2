@@ -6,13 +6,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, ClientMessage, DaemonHello,
-    DaemonMessage, DaemonStatusBody, ErrorCode, OwnerId, SessionKind, WireError,
-    PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    DaemonMessage, DaemonStatusBody, ErrorCode, OwnerId, PersistenceKind, ResumeResult,
+    SessionKind, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::idempotency::{IdempotencyOutcome, IdempotencyStore};
+use crate::journal::Journal;
 use crate::lock::SingleInstanceLock;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
@@ -41,6 +42,7 @@ pub struct ServerState {
     idempotency: Mutex<IdempotencyStore>,
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
+    journal_error: Mutex<Option<String>>,
 }
 
 impl ServerState {
@@ -55,6 +57,11 @@ impl ServerState {
     }
 
     pub fn with_paths(instance_id: String, paths: RuntimePaths) -> Arc<Self> {
+        let _ = paths.ensure_dir();
+        let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
+            Ok(journal) => (Some(Arc::new(journal)), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         Arc::new(Self {
             instance_id,
             started: Instant::now(),
@@ -63,8 +70,9 @@ impl ServerState {
             shutdown_flag: Arc::new(Mutex::new(false)),
             shutdown_cvar: Arc::new(Condvar::new()),
             idempotency: Mutex::new(IdempotencyStore::default()),
-            sessions: SessionRegistry::new(paths),
+            sessions: SessionRegistry::new(paths, journal),
             conn_ids: AtomicU64::new(1),
+            journal_error: Mutex::new(journal_error),
         })
     }
 
@@ -184,7 +192,11 @@ impl ServerState {
                 clients: lifecycle.clients,
                 sessions: lifecycle.sessions,
                 capabilities: m3a_daemon_capabilities(),
-                journal_error: None,
+                journal_error: self
+                    .journal_error
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .clone(),
             },
         }
     }
@@ -253,7 +265,9 @@ fn run_windows() -> Result<(), DaemonError> {
         .map_err(DaemonError::from)?;
 
     state.wait_until_shutdown();
-    // M3c journal flush goes here, before the listener is torn down.
+    // Flush the conversation journal before the listener is torn down so a
+    // clean shutdown does not drop the last coalesced frames.
+    state.sessions.flush_journal();
     shutdown.shutdown();
     let deadline = Instant::now() + JOIN_BUDGET;
     while !accept.is_finished() && Instant::now() < deadline {
@@ -483,7 +497,13 @@ fn dispatch(
             ts_ms: unix_millis(),
         },
         ClientMessage::Status { id } => state.status_body(id),
-        ClientMessage::Shutdown { id } => DaemonMessage::Shutdown { id, accepted: true },
+        ClientMessage::Shutdown { id } => {
+            // The reply is the app's last chance to know the journal is on
+            // disk. Flush before accepting so a follow-up kill/restart cannot
+            // race the shutdown path.
+            state.sessions.flush_journal();
+            DaemonMessage::Shutdown { id, accepted: true }
+        }
         ClientMessage::SessionCreate { .. }
         | ClientMessage::SessionAttach { .. }
         | ClientMessage::SessionDetach { .. }
@@ -583,9 +603,23 @@ fn dispatch_session(
             Ok(sessions) => DaemonMessage::Sessions { id, sessions },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
+        ClientMessage::SessionResume {
+            id, persistence, ..
+        } => match persistence.kind {
+            PersistenceKind::None => DaemonMessage::Resume {
+                id,
+                result: ResumeResult::NotSupported,
+            },
+            PersistenceKind::Acp { .. } => DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::Unimplemented,
+                    "ACP resume is not implemented yet",
+                )
+                .with_id(id),
+            ),
+        },
         ClientMessage::SessionInterrupt { id, .. }
-        | ClientMessage::SessionPermissionRespond { id, .. }
-        | ClientMessage::SessionResume { id, .. } => DaemonMessage::Error(
+        | ClientMessage::SessionPermissionRespond { id, .. } => DaemonMessage::Error(
             WireError::new(ErrorCode::Unimplemented, "not implemented in M3b").with_id(id),
         ),
         other => DaemonMessage::Error(WireError::new(
