@@ -1520,8 +1520,14 @@ fn journal_growth_after_13mb_flood() {
         (snap.0, snap.1.clone(), snap.2, snap.3)
     };
     println!(
-        "JOURNAL_GROWTH replay_bytes={replay_bytes} frames={} recovered={recovered} exited={exited}",
+        "JOURNAL_GROWTH replay_bytes={replay_bytes} frames={} recovered={recovered} exited={exited} live_bytes={live_bytes}",
         seqs.len()
+    );
+    assert_eq!(
+        replay_bytes,
+        live_bytes,
+        "journal silently lost {} live bytes (live={live_bytes} replay={replay_bytes})",
+        live_bytes.saturating_sub(replay_bytes)
     );
     assert!(
         recovered || exited,
