@@ -1,18 +1,20 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
-    caps, m3a_daemon_capabilities, negotiate, ClientMessage, DaemonHello, DaemonMessage,
-    DaemonStatusBody, ErrorCode, OwnerId, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, ClientMessage, DaemonHello,
+    DaemonMessage, DaemonStatusBody, ErrorCode, OwnerId, SessionKind, WireError,
+    PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 use crate::error::DaemonError;
 use crate::framing::Framed;
-use crate::idempotency::IdempotencyStore;
+use crate::idempotency::{IdempotencyOutcome, IdempotencyStore};
 use crate::lock::SingleInstanceLock;
 use crate::paths::RuntimePaths;
+use crate::session::{ConnHandle, SessionRegistry, WRITER_IDLE};
 use crate::transport::{self, Listener};
 use crate::IDLE_SHUTDOWN_GRACE;
 
@@ -34,15 +36,23 @@ pub struct ServerState {
     lifecycle: Mutex<Lifecycle>,
     shutdown_flag: Arc<Mutex<bool>>,
     shutdown_cvar: Arc<Condvar>,
-    /// Remembered create/send/permission-response keys. M3a does not serve
-    /// those RPCs yet; the store is here so M3b does not have to change the
-    /// daemon's memory shape.
-    #[allow(dead_code)]
     idempotency: Mutex<IdempotencyStore>,
+    pub sessions: SessionRegistry,
+    conn_ids: AtomicU64,
 }
 
 impl ServerState {
+    #[cfg(test)]
     pub fn new(instance_id: String) -> Arc<Self> {
+        Self::with_paths(
+            instance_id,
+            RuntimePaths::from_dir(
+                std::env::temp_dir().join(format!("devboule-test-{}", std::process::id())),
+            ),
+        )
+    }
+
+    pub fn with_paths(instance_id: String, paths: RuntimePaths) -> Arc<Self> {
         Arc::new(Self {
             instance_id,
             started: Instant::now(),
@@ -51,7 +61,13 @@ impl ServerState {
             shutdown_flag: Arc::new(Mutex::new(false)),
             shutdown_cvar: Arc::new(Condvar::new()),
             idempotency: Mutex::new(IdempotencyStore::default()),
+            sessions: SessionRegistry::new(paths),
+            conn_ids: AtomicU64::new(1),
         })
+    }
+
+    pub fn alloc_conn(&self) -> u64 {
+        self.conn_ids.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn request_shutdown(&self) {
@@ -121,10 +137,10 @@ impl ServerState {
         }
     }
 
-    /// Register a live daemon-owned session. M3b must call this for create and
-    /// call [`Self::session_finished`] only when close/stop actually ends the
-    /// session. Detach deliberately does neither: it only removes a view.
-    #[allow(dead_code)]
+    /// Register a live daemon-owned session. Create calls this; close and a
+    /// natural process exit call [`Self::session_finished`]. Detach
+    /// deliberately does neither: it only removes a view, so a
+    /// detached-but-alive session keeps the daemon up.
     pub fn session_started(&self) -> bool {
         let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
         if lifecycle.shutting_down {
@@ -137,7 +153,6 @@ impl ServerState {
 
     /// Mark a daemon-owned session as no longer alive. This may arm the idle
     /// shutdown timer when no client remains attached to the daemon.
-    #[allow(dead_code)]
     pub fn session_finished(self: &Arc<Self>) {
         let generation = {
             let mut lifecycle = self.lifecycle.lock().unwrap_or_else(|err| err.into_inner());
@@ -226,7 +241,7 @@ fn run_windows() -> Result<(), DaemonError> {
     );
     lock.write_identity(pid, &instance_id, &paths.pipe_name)?;
 
-    let state = ServerState::new(instance_id);
+    let state = ServerState::with_paths(instance_id, paths.clone());
     let (listener, shutdown) = transport::bind(&paths, Arc::clone(&state.stop))?;
     let accept_state = Arc::clone(&state);
     let accept = std::thread::Builder::new()
@@ -287,9 +302,9 @@ fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) 
     }
 }
 
-fn handle_client(mut framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonError> {
+fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonError> {
     if state.is_shutting_down() {
-        send_shutting_down(&mut framed, None)?;
+        send_shutting_down(&framed, None)?;
         return Ok(());
     }
     let hello: ClientMessage = framed.recv()?;
@@ -301,34 +316,48 @@ fn handle_client(mut framed: Framed, state: Arc<ServerState>) -> Result<(), Daem
         return Ok(());
     };
     if state.is_shutting_down() {
-        send_shutting_down(&mut framed, None)?;
+        send_shutting_down(&framed, None)?;
         return Ok(());
     }
     let daemon_hello = daemon_hello(&state);
-    match negotiate(&client_hello, &daemon_hello) {
-        Ok(_agreed) => {
+    let agreed = match negotiate(&client_hello, &daemon_hello) {
+        Ok(agreed) => {
             framed.send(&DaemonMessage::Hello(daemon_hello))?;
+            agreed
         }
         Err(error) => {
             framed.send(&DaemonMessage::Error(error))?;
             return Ok(());
         }
-    }
+    };
+    let sessions_ok = agreed
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == caps::SESSIONS);
     let owner = client_hello.owner;
+    let conn = ConnHandle::new(state.alloc_conn());
     loop {
         if state.stop.load(Ordering::SeqCst) {
-            return Ok(());
+            break;
         }
-        let request: ClientMessage = match framed.recv() {
+        for event in conn.pull_events() {
+            framed.send(&DaemonMessage::Event(event))?;
+        }
+        let request: ClientMessage = match framed.recv_timeout(WRITER_IDLE) {
             Ok(request) => request,
+            Err(DaemonError::TimedOut(_)) => continue,
             Err(DaemonError::Io(error))
                 if error.kind() == std::io::ErrorKind::UnexpectedEof
                     || error.kind() == std::io::ErrorKind::BrokenPipe
                     || error.kind() == std::io::ErrorKind::ConnectionReset =>
             {
-                return Ok(());
+                break;
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                conn.detach_all(&state.sessions);
+                conn.outbound.close();
+                return Err(error);
+            }
         };
         if let ClientMessage::Hello(_) = request {
             let id = request.request_id();
@@ -339,22 +368,28 @@ fn handle_client(mut framed: Framed, state: Arc<ServerState>) -> Result<(), Daem
             framed.send(&DaemonMessage::Error(error))?;
             continue;
         }
-        let reply = dispatch(&state, &owner, request);
+        let reply = dispatch(&state, &owner, request, &conn, sessions_ok);
         let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
         framed.send(&reply)?;
+        for event in conn.pull_events() {
+            framed.send(&DaemonMessage::Event(event))?;
+        }
         if shutting_down {
             state.request_shutdown();
-            return Ok(());
+            break;
         }
     }
+    conn.detach_all(&state.sessions);
+    conn.outbound.close();
+    Ok(())
 }
 
 fn reject_shutting_down(stream: std::fs::File) {
-    let mut framed = Framed::new(stream);
-    let _ = send_shutting_down(&mut framed, None);
+    let framed = Framed::new(stream);
+    let _ = send_shutting_down(&framed, None);
 }
 
-fn send_shutting_down(framed: &mut Framed, id: Option<u64>) -> Result<(), DaemonError> {
+fn send_shutting_down(framed: &Framed, id: Option<u64>) -> Result<(), DaemonError> {
     let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
     if let Some(id) = id {
         error = error.with_id(id);
@@ -373,7 +408,13 @@ fn daemon_hello(state: &ServerState) -> DaemonHello {
     }
 }
 
-fn dispatch(state: &ServerState, _owner: &OwnerId, request: ClientMessage) -> DaemonMessage {
+fn dispatch(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    request: ClientMessage,
+    conn: &ConnHandle,
+    sessions_ok: bool,
+) -> DaemonMessage {
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
         return DaemonMessage::Error({
             let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
@@ -394,23 +435,266 @@ fn dispatch(state: &ServerState, _owner: &OwnerId, request: ClientMessage) -> Da
         },
         ClientMessage::Status { id } => state.status_body(id),
         ClientMessage::Shutdown { id } => DaemonMessage::Shutdown { id, accepted: true },
-        other => session_not_in_m3a(other),
+        ClientMessage::SessionCreate { .. }
+        | ClientMessage::SessionAttach { .. }
+        | ClientMessage::SessionDetach { .. }
+        | ClientMessage::SessionClose { .. }
+        | ClientMessage::SessionStop { .. }
+        | ClientMessage::SessionSend { .. }
+        | ClientMessage::SessionResize { .. }
+        | ClientMessage::SessionInterrupt { .. }
+        | ClientMessage::SessionPermissionRespond { .. }
+        | ClientMessage::SessionsList { .. }
+        | ClientMessage::SessionResume { .. } => {
+            if !sessions_ok {
+                return capability_not_supported(request.request_id());
+            }
+            dispatch_session(state, owner, request, conn)
+        }
     }
 }
 
-fn session_not_in_m3a(request: ClientMessage) -> DaemonMessage {
-    let id = request.request_id();
+fn capability_not_supported(id: Option<u64>) -> DaemonMessage {
     let mut error = WireError::new(
         ErrorCode::CapabilityNotSupported,
-        format!(
-            "capability '{}' is not offered in M3a; sessions still run in-process in the app",
-            caps::SESSIONS
-        ),
+        format!("capability '{}' was not negotiated", caps::SESSIONS),
     );
     if let Some(id) = id {
         error = error.with_id(id);
     }
     DaemonMessage::Error(error)
+}
+
+fn dispatch_session(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    request: ClientMessage,
+    conn: &ConnHandle,
+) -> DaemonMessage {
+    match request {
+        ClientMessage::SessionCreate {
+            id,
+            workspace_id,
+            kind,
+            idempotency_key,
+        } => session_create(state, owner, id, workspace_id, kind, idempotency_key),
+        ClientMessage::SessionAttach {
+            id,
+            session_id,
+            from_cursor,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .attach(&session_id, from_cursor, conn)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
+        ClientMessage::SessionDetach { id, session_id } => reply_result(
+            id,
+            state
+                .sessions
+                .detach(&session_id, conn)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
+        ClientMessage::SessionClose { id, session_id } => match state.sessions.close(&session_id) {
+            Ok(removed) => {
+                if removed {
+                    state.session_finished();
+                }
+                DaemonMessage::Ok { id }
+            }
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::SessionStop { id, session_id } => reply_result(
+            id,
+            state
+                .sessions
+                .stop(&session_id)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
+        ClientMessage::SessionSend {
+            id,
+            session_id,
+            text,
+            idempotency_key,
+        } => session_send(state, owner, id, session_id, text, idempotency_key),
+        ClientMessage::SessionResize {
+            id,
+            session_id,
+            cols,
+            rows,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .resize(&session_id, cols, rows)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
+        ClientMessage::SessionsList { id } => match state.sessions.list() {
+            Ok(sessions) => DaemonMessage::Sessions { id, sessions },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::SessionInterrupt { id, .. }
+        | ClientMessage::SessionPermissionRespond { id, .. }
+        | ClientMessage::SessionResume { id, .. } => DaemonMessage::Error(
+            WireError::new(ErrorCode::Unimplemented, "not implemented in M3b").with_id(id),
+        ),
+        other => DaemonMessage::Error(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("unexpected session frame {other:?}"),
+        )),
+    }
+}
+
+fn session_create(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    id: u64,
+    workspace_id: Option<String>,
+    kind: SessionKind,
+    idempotency_key: Option<String>,
+) -> DaemonMessage {
+    let fingerprint = format!(
+        "create:{}:{}",
+        match kind {
+            SessionKind::Terminal => "terminal",
+            SessionKind::Acp => "acp",
+        },
+        workspace_id.as_deref().unwrap_or("")
+    );
+    if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+    {
+        return reply;
+    }
+    if !state.session_started() {
+        return DaemonMessage::Error(
+            WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down").with_id(id),
+        );
+    }
+    match state
+        .sessions
+        .create(state, owner, workspace_id, kind, None)
+    {
+        Ok(session) => {
+            let reply = DaemonMessage::Session { id, session };
+            remember(
+                state,
+                owner,
+                idempotency_key.as_deref(),
+                &fingerprint,
+                &reply,
+            );
+            reply
+        }
+        Err(error) => {
+            state.session_finished();
+            DaemonMessage::Error(error.with_id(id))
+        }
+    }
+}
+
+fn session_send(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    id: u64,
+    session_id: String,
+    text: String,
+    idempotency_key: Option<String>,
+) -> DaemonMessage {
+    let fingerprint = format!("send:{session_id}:{text}");
+    if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+    {
+        return reply;
+    }
+    match state.sessions.send(&session_id, &text) {
+        Ok(()) => {
+            let reply = DaemonMessage::Ok { id };
+            remember(
+                state,
+                owner,
+                idempotency_key.as_deref(),
+                &fingerprint,
+                &reply,
+            );
+            reply
+        }
+        Err(error) => DaemonMessage::Error(error.with_id(id)),
+    }
+}
+
+fn idempotent_hit(
+    state: &ServerState,
+    owner: &OwnerId,
+    request_id: u64,
+    key: Option<&str>,
+    fingerprint: &str,
+) -> Option<DaemonMessage> {
+    let key = key?;
+    if let Err(message) = validate_idempotency_key(key) {
+        return Some(DaemonMessage::Error(
+            WireError::new(ErrorCode::InvalidRequest, message).with_id(request_id),
+        ));
+    }
+    let owner_key = format!("{}.{}", owner.user, owner.client);
+    let mut store = state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    match store.check(&owner_key, key, fingerprint, Instant::now()) {
+        IdempotencyOutcome::Hit(message) => Some(rewrite_id(message, request_id)),
+        IdempotencyOutcome::Conflict => Some(DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::IdempotencyConflict,
+                "idempotency key reused with a different payload",
+            )
+            .with_id(request_id),
+        )),
+        IdempotencyOutcome::Miss => None,
+    }
+}
+
+fn remember(
+    state: &ServerState,
+    owner: &OwnerId,
+    key: Option<&str>,
+    fingerprint: &str,
+    reply: &DaemonMessage,
+) {
+    let Some(key) = key else {
+        return;
+    };
+    if validate_idempotency_key(key).is_err() {
+        return;
+    }
+    let owner_key = format!("{}.{}", owner.user, owner.client);
+    let mut store = state
+        .idempotency
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    store.remember(
+        owner_key,
+        key.to_string(),
+        fingerprint.to_string(),
+        reply.clone(),
+        Instant::now(),
+    );
+}
+
+fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
+    match message {
+        DaemonMessage::Session { session, .. } => DaemonMessage::Session { id, session },
+        DaemonMessage::Ok { .. } => DaemonMessage::Ok { id },
+        DaemonMessage::Sessions { sessions, .. } => DaemonMessage::Sessions { id, sessions },
+        DaemonMessage::Error(error) => DaemonMessage::Error(error.with_id(id)),
+        other => other,
+    }
+}
+
+fn reply_result(id: u64, result: Result<DaemonMessage, WireError>) -> DaemonMessage {
+    match result {
+        Ok(message) => message,
+        Err(error) => DaemonMessage::Error(error.with_id(id)),
+    }
 }
 
 fn unix_millis() -> u64 {
@@ -493,10 +777,13 @@ mod tests {
         let state = state();
         state.request_shutdown();
         assert!(!state.client_connected());
+        let conn = ConnHandle::new(1);
         let reply = dispatch(
             &state,
             &OwnerId::new("test-user", "test-client").expect("owner"),
             ClientMessage::Ping { id: 7 },
+            &conn,
+            true,
         );
         assert!(matches!(
             reply,

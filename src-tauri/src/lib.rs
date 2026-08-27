@@ -3,10 +3,7 @@ mod client;
 
 use tauri::Manager;
 
-pub use backend::session::{
-    kill_all_on_exit, push_capped, validate_session_id, PtyCommand, Session, SessionEvent,
-    SessionKind, SessionState,
-};
+pub use backend::session::{validate_session_id, Session, SessionEvent, SessionKind};
 
 #[tauri::command]
 fn app_identity(app: tauri::AppHandle) -> String {
@@ -15,7 +12,6 @@ fn app_identity(app: tauri::AppHandle) -> String {
 
 pub fn run() {
     tauri::Builder::default()
-        .manage(SessionState::new())
         .manage(client::DaemonBridge::start())
         .invoke_handler(tauri::generate_handler![
             app_identity,
@@ -34,8 +30,6 @@ pub fn run() {
             if matches!(event, tauri::RunEvent::Exit) {
                 let daemon = app_handle.state::<client::DaemonBridge>();
                 daemon.shutdown();
-                let sessions = app_handle.state::<SessionState>();
-                kill_all_on_exit(&sessions);
             }
         })
 }

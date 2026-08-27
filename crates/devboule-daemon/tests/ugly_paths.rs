@@ -178,7 +178,7 @@ fn daemon_not_running_then_spawn_connects() {
     let (paths, dir) = unique_paths();
     let mut process = ChildGuard::spawn(&paths);
     let hello = test_hello("spawn");
-    let mut client = connect_when_ready(&paths, hello, &mut process);
+    let client = connect_when_ready(&paths, hello, &mut process);
     client.ping().expect("ping");
     let status = client.status().expect("status");
     assert_eq!(status.protocol_version, PROTOCOL_VERSION);
@@ -214,7 +214,7 @@ fn daemon_already_running_does_not_start_a_second() {
         status.success(),
         "losing daemon must exit 0 (already running), got {status}"
     );
-    let mut client = harness.client("b");
+    let client = harness.client("b");
     assert_eq!(client.status().expect("still up").pid, first_pid);
 }
 
@@ -222,8 +222,8 @@ fn daemon_already_running_does_not_start_a_second() {
 #[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
 fn two_clients_connect_at_once() {
     let harness = Harness::spawn();
-    let mut a = harness.client("one");
-    let mut b = harness.client("two");
+    let a = harness.client("one");
+    let b = harness.client("two");
     a.ping().expect("a ping");
     b.ping().expect("b ping");
     let status = a.status().expect("status");
@@ -270,7 +270,7 @@ fn version_mismatch_is_a_clear_error_not_a_hang() {
 #[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
 fn daemon_killed_while_connected_reports_without_hang() {
     let mut harness = Harness::spawn();
-    let mut client = harness.client("kill");
+    let client = harness.client("kill");
     client.ping().expect("before kill");
     let mut child = harness.child.take().expect("child");
     child.child.kill().expect("kill");
@@ -297,7 +297,7 @@ fn stale_lock_file_from_a_crashed_daemon_is_recovered() {
     .expect("stale lock");
     let mut process = ChildGuard::spawn(&paths);
     let hello = test_hello("stale");
-    let mut client = connect_when_ready(&paths, hello, &mut process);
+    let client = connect_when_ready(&paths, hello, &mut process);
     client.ping().expect("ping after stale lock");
     let _ = client.shutdown();
     drop(client);
@@ -309,8 +309,8 @@ fn stale_lock_file_from_a_crashed_daemon_is_recovered() {
 #[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
 fn slow_client_does_not_stall_other_clients() {
     let harness = Harness::spawn();
-    let mut slow = harness.client("slow");
-    let mut fast = harness.client("fast");
+    let slow = harness.client("slow");
+    let fast = harness.client("fast");
     for index in 0..2_000u64 {
         slow.write_frame(&ClientMessage::Ping { id: index })
             .expect("flood");
@@ -346,7 +346,7 @@ fn pipe_dacl_is_current_user_only() {
 fn connect_or_spawn_reuses_a_live_daemon() {
     let harness = Harness::spawn();
     let first_pid = harness.client("live").status().expect("status").pid;
-    let mut reused =
+    let reused =
         connect_or_spawn(&harness.paths, test_hello("reuse"), Some(&daemon_bin())).expect("reuse");
     assert_eq!(reused.status().expect("status").pid, first_pid);
 }
@@ -367,7 +367,7 @@ fn idle_daemon_exits_after_last_client_disconnects() {
 #[ignore = "spawns a real daemon and named pipe; run locally with --ignored"]
 fn connected_client_keeps_daemon_alive_past_idle_grace() {
     let harness = Harness::spawn();
-    let mut client = harness.client("connected");
+    let client = harness.client("connected");
     std::thread::sleep(IDLE_SHUTDOWN_GRACE + Duration::from_millis(200));
     client.ping().expect("connected client keeps daemon alive");
 }
@@ -379,7 +379,7 @@ fn reconnect_inside_idle_grace_keeps_daemon_alive() {
     let client = harness.client("blink");
     drop(client);
     std::thread::sleep(IDLE_SHUTDOWN_GRACE / 2);
-    let mut reconnected = harness.client("blink-reconnect");
+    let reconnected = harness.client("blink-reconnect");
     reconnected
         .ping()
         .expect("reconnect inside grace must succeed");

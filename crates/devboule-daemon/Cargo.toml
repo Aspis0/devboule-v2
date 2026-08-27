@@ -7,8 +7,13 @@ license = "Apache-2.0"
 publish = false
 
 [features]
-default = []
-server = []
+# Default includes the server so `cargo test --workspace` actually compiles
+# and runs the daemon's session tests. The Tauri app depends on this crate
+# with `default-features = false` and never runs the server in-process.
+default = ["server"]
+# portable-pty moves here from src-tauri with M3b: the daemon owns the PTY.
+# Optional so a client-only build (the GUI process) does not link ConPTY.
+server = ["dep:portable-pty"]
 
 [lib]
 name = "devboule_daemon"
@@ -26,6 +31,8 @@ devboule-protocol = { path = "../devboule-protocol" }
 # transitive of serde). This does not add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+# Moved from src-tauri. Same pin. The daemon, not the GUI, now owns ConPTY.
+portable-pty = { version = "=0.9.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Named pipe, DACL, and LockFileEx. Already in the lockfile transitively

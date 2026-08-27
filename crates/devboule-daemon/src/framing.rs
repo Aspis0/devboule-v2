@@ -4,9 +4,16 @@
 //! can attach a pipe client and read a line. PTY payloads travel as escaped
 //! JSON strings, so a compact `serde_json` frame never contains a raw
 //! newline. A 1 MiB cap bounds a client that omits the delimiter.
+//!
+//! The pipe is shared via `Arc<Mutex<File>>` rather than `File::try_clone`.
+//! Duplicating a Windows named-pipe handle and then reading on one copy
+//! while writing on the other does not deliver duplex traffic on this
+//! stack — ping timed out in 30s. One mutex, PeekNamedPipe before Read
+//! so a sender is never stuck behind a blocking recv.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_protocol::MAX_FRAME_BYTES;
@@ -22,80 +29,99 @@ use windows_sys::Win32::Foundation::HANDLE;
 #[cfg(windows)]
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 
+#[derive(Clone)]
 pub struct Framed {
-    file: File,
-    buf: Vec<u8>,
+    file: Arc<Mutex<File>>,
+    buf: Arc<Mutex<Vec<u8>>>,
 }
 
 impl Framed {
     pub fn new(file: File) -> Self {
         Self {
-            file,
-            buf: Vec::new(),
+            file: Arc::new(Mutex::new(file)),
+            buf: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub fn send<T: Serialize>(&mut self, value: &T) -> Result<(), DaemonError> {
-        let bytes = serde_json::to_vec(value)?;
-        if bytes.len() > MAX_FRAME_BYTES {
-            return Err(DaemonError::Protocol("frame exceeds 1 MiB".to_string()));
-        }
-        if bytes.contains(&b'\n') {
-            return Err(DaemonError::Protocol(
-                "compact JSON contained a raw newline".to_string(),
-            ));
-        }
-        self.file.write_all(&bytes)?;
-        self.file.write_all(b"\n")?;
-        self.file.flush()?;
-        Ok(())
+    pub fn send<T: Serialize>(&self, value: &T) -> Result<(), DaemonError> {
+        let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
+        write_frame(&mut file, value)
     }
 
-    pub fn recv<T: DeserializeOwned>(&mut self) -> Result<T, DaemonError> {
+    pub fn recv<T: DeserializeOwned>(&self) -> Result<T, DaemonError> {
         let line = self.read_line(None)?;
         Ok(serde_json::from_slice(&line)?)
     }
 
-    pub fn recv_timeout<T: DeserializeOwned>(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<T, DaemonError> {
+    pub fn recv_timeout<T: DeserializeOwned>(&self, timeout: Duration) -> Result<T, DaemonError> {
         let line = self.read_line(Some(Instant::now() + timeout))?;
         Ok(serde_json::from_slice(&line)?)
     }
 
-    pub fn as_file(&self) -> &File {
-        &self.file
+    pub fn as_file(&self) -> std::sync::MutexGuard<'_, File> {
+        self.file.lock().unwrap_or_else(|err| err.into_inner())
     }
 
-    fn read_line(&mut self, deadline: Option<Instant>) -> Result<Vec<u8>, DaemonError> {
+    fn read_line(&self, deadline: Option<Instant>) -> Result<Vec<u8>, DaemonError> {
         loop {
-            if let Some(line) = take_line(&mut self.buf)? {
-                return Ok(line);
+            {
+                let mut buf = self.buf.lock().unwrap_or_else(|err| err.into_inner());
+                if let Some(line) = take_line(&mut buf)? {
+                    return Ok(line);
+                }
             }
             if let Some(deadline) = deadline {
                 let now = Instant::now();
                 if now >= deadline {
                     return Err(DaemonError::timed_out("reading a protocol frame"));
                 }
-                if !wait_readable(&self.file, deadline - now)? {
-                    return Err(DaemonError::timed_out("reading a protocol frame"));
+                let readable = {
+                    let file = self.file.lock().unwrap_or_else(|err| err.into_inner());
+                    peek_readable(&file)?
+                };
+                if !readable {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(DaemonError::timed_out("reading a protocol frame"));
+                    }
+                    std::thread::sleep(remaining.min(Duration::from_millis(2)));
+                    continue;
                 }
             }
             let mut chunk = [0u8; 8192];
-            let read = self.file.read(&mut chunk)?;
+            let read = {
+                let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
+                file.read(&mut chunk)?
+            };
             if read == 0 {
                 return Err(DaemonError::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "connection closed",
                 )));
             }
-            if self.buf.len() + read > MAX_FRAME_BYTES {
+            let mut buf = self.buf.lock().unwrap_or_else(|err| err.into_inner());
+            if buf.len() + read > MAX_FRAME_BYTES {
                 return Err(DaemonError::Protocol("frame exceeds 1 MiB".to_string()));
             }
-            self.buf.extend_from_slice(&chunk[..read]);
+            buf.extend_from_slice(&chunk[..read]);
         }
     }
+}
+
+fn write_frame<T: Serialize>(file: &mut File, value: &T) -> Result<(), DaemonError> {
+    let bytes = serde_json::to_vec(value)?;
+    if bytes.len() > MAX_FRAME_BYTES {
+        return Err(DaemonError::Protocol("frame exceeds 1 MiB".to_string()));
+    }
+    if bytes.contains(&b'\n') {
+        return Err(DaemonError::Protocol(
+            "compact JSON contained a raw newline".to_string(),
+        ));
+    }
+    file.write_all(&bytes)?;
+    file.write_all(b"\n")?;
+    file.flush()?;
+    Ok(())
 }
 
 fn take_line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, DaemonError> {
@@ -117,35 +143,26 @@ fn take_line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, DaemonError> {
 }
 
 #[cfg(windows)]
-fn wait_readable(file: &File, timeout: Duration) -> io::Result<bool> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        let mut available = 0u32;
-        let ok = unsafe {
-            PeekNamedPipe(
-                file.as_raw_handle() as HANDLE,
-                std::ptr::null_mut(),
-                0,
-                std::ptr::null_mut(),
-                &mut available,
-                std::ptr::null_mut(),
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if available > 0 {
-            return Ok(true);
-        }
-        if Instant::now() >= deadline {
-            return Ok(false);
-        }
-        std::thread::sleep(Duration::from_millis(10));
+fn peek_readable(file: &File) -> io::Result<bool> {
+    let mut available = 0u32;
+    let ok = unsafe {
+        PeekNamedPipe(
+            file.as_raw_handle() as HANDLE,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut available,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
     }
+    Ok(available > 0)
 }
 
 #[cfg(not(windows))]
-fn wait_readable(_file: &File, _timeout: Duration) -> io::Result<bool> {
+fn peek_readable(_file: &File) -> io::Result<bool> {
     Ok(true)
 }
 
@@ -171,9 +188,6 @@ mod tests {
 
     #[test]
     fn cursor_roundtrip_is_one_line() {
-        // Framing itself is File-based; the JSON contract is tested in the
-        // protocol crate. This only checks the line splitter against a Cursor
-        // of bytes that include an escaped newline in a string.
         let mut buf = br#"{"type":"output","data":"a\nb"}"#.to_vec();
         buf.push(b'\n');
         let line = take_line(&mut buf).expect("ok").expect("frame");
