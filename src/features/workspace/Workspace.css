@@ -841,6 +841,11 @@
   border-radius: 14px;
 }
 
+.workspace-composer:focus-within,
+.workspace-design-composer:focus-within {
+  border-color: var(--terracotta);
+}
+
 .workspace-composer textarea,
 .workspace-design-composer textarea {
   width: 100%;
