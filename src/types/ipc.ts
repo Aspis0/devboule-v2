@@ -35,6 +35,27 @@ export interface Session {
   state: SessionState;
 }
 
+export type CursorShape = "block" | "underline" | "bar";
+
+export interface ScreenCursor {
+  row: number;
+  col: number;
+  visible: boolean;
+  shape: CursorShape;
+}
+
+export interface SessionSnapshot {
+  type: "snapshot";
+  asOfSeq: number;
+  cols: number;
+  rows: number;
+  data: string;
+  cursor: ScreenCursor;
+  alternateScreen: boolean;
+  bracketedPaste: boolean;
+  title?: string;
+}
+
 export type SessionEvent =
   | { type: "output"; seq: number; data: string }
   | { type: "exit"; code: number | null }
@@ -46,7 +67,8 @@ export type SessionEvent =
       toSeq: number;
       droppedBytes: number;
       droppedFrames: number;
-    };
+    }
+  | SessionSnapshot;
 
 export type DaemonConnectionState = "connected" | "connecting" | "disconnected" | "error";
 

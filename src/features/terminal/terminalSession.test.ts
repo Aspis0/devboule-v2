@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SessionSnapshot } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
 import {
   TerminalSession,
@@ -11,6 +12,7 @@ import type { TerminalSessionRecord, TerminalSessionRegistry } from "./terminalR
 
 interface MockView extends TerminalViewHandle {
   written: string[];
+  snapshots: SessionSnapshot[];
   fitCount: number;
   disposeCount: number;
   fitOk: { value: boolean };
@@ -22,7 +24,9 @@ interface Harness {
   view: MockView;
   invoke: ReturnType<typeof vi.fn>;
   emit: (event: TerminalEvent) => void;
+  emitInput: (data: string) => void;
   flushFrame: () => void;
+  completeSnapshot: () => void;
   resolveAttach: () => void;
   banners: TerminalBanner[];
   ctrlCStates: boolean[];
@@ -31,15 +35,20 @@ interface Harness {
 
 function makeHarness(options?: {
   deferAttach?: boolean;
+  deferSnapshot?: boolean;
+  snapshotAsOfSeq?: number;
   existingSessionId?: string;
   rejectDetach?: boolean;
 }): Harness {
   const written: string[] = [];
+  const snapshots: SessionSnapshot[] = [];
   const fitOk = { value: true };
   const geometry = { cols: 80, rows: 24 };
   let fitCount = 0;
   let disposeCount = 0;
   let eventHandler: (event: TerminalEvent) => void = () => undefined;
+  let inputHandler: (data: string) => void = () => undefined;
+  let snapshotCallback: (() => void) | null = null;
   let frameCallback: (() => void) | null = null;
   let resolveAttach!: () => void;
   const attachGate = new Promise<void>((resolve) => {
@@ -66,7 +75,18 @@ function makeHarness(options?: {
   };
 
   const view: MockView = {
-    write: (data) => written.push(data),
+    write: (data, callback) => {
+      written.push(data);
+      callback?.();
+    },
+    applySnapshot: (snapshot, callback) => {
+      snapshots.push(snapshot);
+      if (options?.deferSnapshot) {
+        snapshotCallback = callback;
+      } else {
+        callback();
+      }
+    },
     fit: () => {
       fitCount += 1;
       return fitOk.value;
@@ -77,6 +97,7 @@ function makeHarness(options?: {
     cols: () => geometry.cols,
     rows: () => geometry.rows,
     written,
+    snapshots,
     get fitCount() {
       return fitCount;
     },
@@ -103,6 +124,18 @@ function makeHarness(options?: {
     if (command === "session_attach" && options?.deferAttach) {
       await attachGate;
     }
+    if (command === "session_attach") {
+      eventHandler({
+        type: "snapshot",
+        asOfSeq: options?.snapshotAsOfSeq ?? 0,
+        cols: 80,
+        rows: 24,
+        data: "",
+        cursor: { row: 0, col: 0, visible: true, shape: "block" },
+        alternateScreen: false,
+        bracketedPaste: false,
+      });
+    }
     if (command === "session_detach" && options?.rejectDetach) {
       throw new Error("No session with that id.");
     }
@@ -115,7 +148,10 @@ function makeHarness(options?: {
   const deps: TerminalSessionDeps = {
     workspaceId: "rust-core",
     host: {} as HTMLElement,
-    createView: async () => view,
+    createView: async (_viewHost, options) => {
+      inputHandler = options.onData;
+      return view;
+    },
     invoke: invoke as unknown as TerminalSessionDeps["invoke"],
     registry,
     createChannel: (handler) => {
@@ -149,9 +185,15 @@ function makeHarness(options?: {
     view,
     invoke,
     emit: (event) => eventHandler(event),
+    emitInput: (data) => inputHandler(data),
     flushFrame: () => {
       const callback = frameCallback;
       frameCallback = null;
+      callback?.();
+    },
+    completeSnapshot: () => {
+      const callback = snapshotCallback;
+      snapshotCallback = null;
       callback?.();
     },
     resolveAttach,
@@ -252,6 +294,30 @@ describe("TerminalSession startup and channel ordering", () => {
     harness.flushFrame();
 
     expect(harness.view.written).toEqual(["new"]);
+  });
+
+  it("holds input and output until the snapshot write callback, then drops covered output", async () => {
+    const harness = makeHarness({ deferSnapshot: true, snapshotAsOfSeq: 2 });
+    await harness.session.start();
+    harness.invoke.mockClear();
+
+    harness.emit(outputEvent(1, "covered-1"));
+    harness.emit(outputEvent(2, "covered-2"));
+    harness.emit(outputEvent(3, "live"));
+    harness.emitInput("typed before snapshot");
+
+    expect(harness.view.written).toEqual([]);
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_send", expect.anything());
+    expect(harness.registry.updateCursor).not.toHaveBeenCalledWith("rust-core", "session-1", 2);
+
+    harness.completeSnapshot();
+
+    expect(harness.view.written).toEqual(["live"]);
+    expect(harness.registry.updateCursor).toHaveBeenCalledWith("rust-core", "session-1", 2);
+    expect(harness.invoke).toHaveBeenCalledWith("session_send", {
+      id: "session-1",
+      text: "typed before snapshot",
+    });
   });
 });
 

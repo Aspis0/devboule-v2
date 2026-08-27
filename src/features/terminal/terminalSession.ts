@@ -1,5 +1,5 @@
 import type { Channel } from "@tauri-apps/api/core";
-import type { Session, SessionEvent } from "../../types/ipc";
+import type { Session, SessionEvent, SessionSnapshot } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
 import type { TerminalSessionRegistry } from "./terminalRegistry";
 
@@ -63,10 +63,14 @@ export class TerminalSession {
   private exited = false;
   private lastSeenSeq: number | null = null;
   private attachPending = false;
+  private applyingSnapshot = false;
+  private snapshotReceived = false;
   private backendTeardown: "detach" | "close" | null = null;
   private backendTeardownSent = false;
 
-  private readonly pendingOutput: string[] = [];
+  private readonly pendingOutput: Array<{ seq: number; data: string }> = [];
+  private readonly pendingSnapshotEvents: TerminalEvent[] = [];
+  private readonly pendingInput: string[] = [];
   private outputFrame: number | null = null;
   private ctrlCArmed = false;
   private ctrlCTimer: number | null = null;
@@ -152,6 +156,8 @@ export class TerminalSession {
       return;
     }
     this.channel = channel;
+    this.applyingSnapshot = true;
+    this.snapshotReceived = false;
 
     let attachFailed = false;
     let attachError: unknown;
@@ -173,6 +179,7 @@ export class TerminalSession {
     }
 
     if (attachFailed) {
+      this.clearSnapshotState();
       this.disposeViewAndChannel();
       if (adopted && isMissingSessionError(attachError) && !this.disposed) {
         this.deps.registry.remove(this.deps.workspaceId, sessionId);
@@ -228,6 +235,15 @@ export class TerminalSession {
    */
   async writeToPty(data: string): Promise<void> {
     if (this.disposed || this.exited || this.sessionId === null) return;
+    if (this.applyingSnapshot) {
+      this.pendingInput.push(data);
+      return;
+    }
+    await this.sendToPty(data);
+  }
+
+  private async sendToPty(data: string): Promise<void> {
+    if (this.disposed || this.exited || this.sessionId === null) return;
     const sessionId = this.sessionId;
     try {
       await this.deps.invoke<void>("session_send", { id: sessionId, text: data });
@@ -278,6 +294,7 @@ export class TerminalSession {
       this.outputFrame = null;
     }
     this.pendingOutput.length = 0;
+    this.clearSnapshotState();
     this.disposeViewAndChannel();
   }
 
@@ -287,17 +304,33 @@ export class TerminalSession {
 
   private handleEvent(event: TerminalEvent): void {
     if (this.disposed) return;
+    if (this.applyingSnapshot && event.type !== "snapshot") {
+      this.pendingSnapshotEvents.push(event);
+      return;
+    }
+    if (this.exited) return;
+
+    if (event.type === "snapshot") {
+      this.beginSnapshot(event);
+      return;
+    }
+
+    this.processEvent(event);
+  }
+
+  private processEvent(event: Exclude<TerminalEvent, SessionSnapshot>): void {
+    if (this.disposed || this.exited) return;
 
     switch (event.type) {
       case "exit":
         this.markExited(event.code);
-        return;
+        break;
       case "recovered":
         this.markRecovered(event.truncated);
-        return;
+        break;
       case "journal_degraded":
         this.markJournalDegraded();
-        return;
+        break;
       case "output_gap":
         if (this.lastSeenSeq === null || event.toSeq > this.lastSeenSeq) {
           this.lastSeenSeq = event.toSeq;
@@ -306,19 +339,80 @@ export class TerminalSession {
           }
           this.deps.onBanner({ kind: "output_gap", fromSeq: event.fromSeq, toSeq: event.toSeq });
         }
-        return;
+        break;
       case "output":
-        if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
-        this.lastSeenSeq = event.seq;
-        if (this.sessionId !== null) {
-          this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.seq);
-        }
-        this.pendingOutput.push(event.data);
-        this.scheduleOutputFlush();
-        return;
-      default:
-        return;
+        this.processOutput(event);
+        break;
     }
+  }
+
+  private processOutput(event: Extract<TerminalEvent, { type: "output" }>): void {
+    if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
+    this.lastSeenSeq = event.seq;
+    if (this.sessionId !== null) {
+      this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.seq);
+    }
+    this.pendingOutput.push(event);
+    if (!this.applyingSnapshot) this.scheduleOutputFlush();
+  }
+
+  private beginSnapshot(snapshot: SessionSnapshot): void {
+    if (this.snapshotReceived || this.view === null) return;
+    this.snapshotReceived = true;
+    const view = this.view;
+    view.applySnapshot(snapshot, () => this.finishSnapshotWrite(snapshot));
+  }
+
+  /**
+   * This callback is reached only after the view's xterm write callback has
+   * parsed the snapshot and its state restoration sequence. The sequence
+   * boundary is therefore committed here, never when the event is received.
+   */
+  private finishSnapshotWrite(snapshot: SessionSnapshot): void {
+    if (this.disposed || this.view === null) return;
+
+    this.lastSeenSeq = snapshot.asOfSeq;
+    if (this.sessionId !== null) {
+      this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, snapshot.asOfSeq);
+    }
+    this.releaseSnapshotEvents(snapshot.asOfSeq);
+  }
+
+  /** Release only post-snapshot output, waiting for each xterm write. */
+  private releaseSnapshotEvents(asOfSeq: number): void {
+    if (this.disposed || this.view === null) return;
+
+    const queuedEvents = this.pendingSnapshotEvents.splice(0);
+    for (const event of queuedEvents) {
+      if (event.type === "snapshot") continue;
+      if (event.type === "output" && event.seq <= asOfSeq) continue;
+      this.processEvent(event);
+    }
+
+    if (this.pendingOutput.length > 0) {
+      const output = this.pendingOutput
+        .splice(0)
+        .map((event) => event.data)
+        .join("");
+      this.view.write(output, () => this.releaseSnapshotEvents(asOfSeq));
+      return;
+    }
+
+    this.applyingSnapshot = false;
+    this.releasePendingInput();
+    this.requestResize();
+  }
+
+  private releasePendingInput(): void {
+    const input = this.pendingInput.splice(0);
+    for (const data of input) void this.sendToPty(data);
+  }
+
+  private clearSnapshotState(): void {
+    this.applyingSnapshot = false;
+    this.snapshotReceived = false;
+    this.pendingSnapshotEvents.length = 0;
+    this.pendingInput.length = 0;
   }
 
   private scheduleOutputFlush(): void {
@@ -327,7 +421,10 @@ export class TerminalSession {
       this.outputFrame = null;
       const view = this.view;
       if (view === null || this.pendingOutput.length === 0) return;
-      const output = this.pendingOutput.splice(0).join("");
+      const output = this.pendingOutput
+        .splice(0)
+        .map((event) => event.data)
+        .join("");
       view.write(output);
     });
   }
@@ -368,7 +465,14 @@ export class TerminalSession {
   }
 
   private doResize(): void {
-    if (this.disposed || this.exited || this.sessionId === null || this.view === null) return;
+    if (
+      this.disposed ||
+      this.exited ||
+      this.applyingSnapshot ||
+      this.sessionId === null ||
+      this.view === null
+    )
+      return;
     const view = this.view;
     const fitted = view.fit();
     const cols = view.cols();
