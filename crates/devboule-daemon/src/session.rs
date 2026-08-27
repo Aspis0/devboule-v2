@@ -59,6 +59,7 @@ use devboule_protocol::{
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
+use crate::process_tree::JobObject;
 use crate::server::ServerState;
 
 pub const RING_CAPACITY: usize = 256 * 1024;
@@ -595,6 +596,7 @@ impl ConnHandle {
 /// the endpoints/runtime they need after releasing the map lock.
 struct PtySession {
     metadata: Session,
+    process_job: JobObject,
     master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_wait: Option<JoinHandle<Option<u32>>>,
@@ -1033,6 +1035,53 @@ pub fn spawn_session(
         .slave
         .spawn_command(command.to_command_builder())
         .map_err(|_| WireError::new(ErrorCode::Io, "Could not start the terminal shell."))?;
+
+    // portable-pty 0.9 exposes the native Windows process handle on Child,
+    // but does not expose CREATE_SUSPENDED. Assign immediately after spawn so
+    // the normal race window is only the interval between CreateProcessW and
+    // these calls. Closing it completely would require adapting portable-pty's
+    // ConPTY CreateProcessW seam to create suspended and resume after both
+    // assignments; that is deliberately not part of this milestone.
+    #[cfg(windows)]
+    let process_job = {
+        let process_job = match JobObject::new() {
+            Ok(process_job) => process_job,
+            Err(error) => {
+                terminate_spawned_child(pair, child);
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not create the terminal process job: {error}"),
+                ));
+            }
+        };
+        let process_handle = match child.as_raw_handle() {
+            Some(process_handle) => process_handle,
+            None => {
+                terminate_spawned_child(pair, child);
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    "The terminal process has no native handle.",
+                ));
+            }
+        };
+        if let Err(error) = state
+            .process_job
+            .assign(process_handle)
+            .and_then(|()| process_job.assign(process_handle))
+        {
+            terminate_spawned_child(pair, child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not contain the terminal process: {error}"),
+            ));
+        }
+        process_job
+    };
+
+    #[cfg(not(windows))]
+    let process_job = JobObject::new()
+        .map_err(|_| WireError::new(ErrorCode::Io, "Could not create the terminal process job."))?;
+
     let killer = child.clone_killer();
 
     let writer = match pair.master.take_writer() {
@@ -1085,6 +1134,7 @@ pub fn spawn_session(
         .ok();
     let session = PtySession {
         metadata,
+        process_job,
         master,
         killer,
         child_wait,
@@ -1307,6 +1357,13 @@ fn wait_child(mut child: Box<dyn Child + Send + Sync>) -> Option<u32> {
     child.wait().ok().map(|status| status.exit_code())
 }
 
+fn terminate_spawned_child(pair: portable_pty::PtyPair, mut child: Box<dyn Child + Send + Sync>) {
+    let mut killer = child.clone_killer();
+    let _ = killer.kill();
+    drop(pair.master);
+    let _ = child.wait();
+}
+
 /// Kill + drop writer/master + wait + bounded reader join. ORDER IS
 /// LOAD-BEARING: on Windows, waiting while the ConPTY master is alive can
 /// deadlock the ConPTY host. Dropping the master also unblocks the
@@ -1314,6 +1371,7 @@ fn wait_child(mut child: Box<dyn Child + Send + Sync>) -> Option<u32> {
 fn teardown_session(session: PtySession) {
     session.exited.store(true, Ordering::SeqCst);
     let PtySession {
+        process_job,
         master,
         mut killer,
         child_wait,
@@ -1336,6 +1394,10 @@ fn teardown_session(session: PtySession) {
     //    command-side Arc clones remain.
     drop(writer);
     drop(master);
+    // Closing the per-session KILL_ON_JOB_CLOSE job terminates the root and
+    // every descendant before wait(). The daemon-wide job remains open for
+    // other sessions and is the crash/no-cleanup backstop.
+    drop(process_job);
     // 3) Reap after the PTY endpoints are closed; this prevents a zombie
     //    and avoids the Windows ConPTY wait deadlock. The waiter thread
     //    owns Child::wait so we join it here instead of calling wait()
