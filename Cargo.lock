@@ -581,9 +581,7 @@ version = "0.1.0"
 dependencies = [
  "devboule-daemon",
  "devboule-protocol",
- "portable-pty",
  "serde",
- "serde_json",
  "tauri",
  "tauri-build",
 ]
@@ -593,6 +591,7 @@ name = "devboule-daemon"
 version = "0.1.0"
 dependencies = [
  "devboule-protocol",
+ "portable-pty",
  "serde",
  "serde_json",
  "windows-sys 0.59.0",

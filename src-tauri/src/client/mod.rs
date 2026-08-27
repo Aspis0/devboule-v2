@@ -1,13 +1,18 @@
-//! Daemon client hosted by the Tauri process. Sessions still run in-process
-//! (M3b moves them). A failed daemon must not take the terminal down.
+//! Daemon client hosted by the Tauri process. Sessions live in the daemon;
+//! this process forwards RPCs and fans `SessionEventEnvelope` frames into
+//! Tauri Channels. A failed daemon must not hang a terminal: attached
+//! Channels receive `exit` with a null code.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use devboule_daemon::{connect_or_spawn, current_user_sid, daemon_file_name, RuntimePaths};
+use devboule_daemon::{
+    connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, RuntimePaths,
+};
 use devboule_protocol::ClientHello;
 use serde::Serialize;
 use tauri::State;
@@ -61,39 +66,77 @@ impl UiDaemonStatus {
     }
 }
 
+pub(crate) struct BridgeInner {
+    status: Mutex<UiDaemonStatus>,
+    client: Mutex<Option<Arc<DaemonClient>>>,
+    generations: Mutex<HashMap<String, u64>>,
+}
+
 pub struct DaemonBridge {
-    status: Arc<Mutex<UiDaemonStatus>>,
+    inner: Arc<BridgeInner>,
     stop: Arc<AtomicBool>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl DaemonBridge {
     pub fn start() -> Self {
-        let status = Arc::new(Mutex::new(UiDaemonStatus::connecting()));
+        let inner = Arc::new(BridgeInner {
+            status: Mutex::new(UiDaemonStatus::connecting()),
+            client: Mutex::new(None),
+            generations: Mutex::new(HashMap::new()),
+        });
         let stop = Arc::new(AtomicBool::new(false));
-        let thread_status = Arc::clone(&status);
+        let thread_inner = Arc::clone(&inner);
         let thread_stop = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("daemon-client".into())
-            .spawn(move || supervisor(thread_status, thread_stop))
+            .spawn(move || supervisor(thread_inner, thread_stop))
             .ok();
         Self {
-            status,
+            inner,
             stop,
             thread: Mutex::new(thread),
         }
     }
 
     pub fn snapshot(&self) -> UiDaemonStatus {
-        self.status
+        self.inner
+            .status
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone()
     }
 
+    pub fn client(&self) -> Result<Arc<DaemonClient>, String> {
+        self.inner.client()
+    }
+
+    pub fn generation_tracker(&self) -> Arc<BridgeInner> {
+        Arc::clone(&self.inner)
+    }
+
+    pub fn generation_for(&self, session_id: &str) -> u64 {
+        self.inner.generation_for(session_id)
+    }
+
+    pub fn forget_generation(&self, session_id: &str) {
+        self.inner.forget_generation(session_id);
+    }
+
     /// Deliberate shutdown so M3c can flush the journal on the daemon side.
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        {
+            let client = self
+                .inner
+                .client
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+            if let Some(client) = client {
+                let _ = client.shutdown();
+            }
+        }
         let handle = self
             .thread
             .lock()
@@ -111,22 +154,60 @@ impl DaemonBridge {
     }
 }
 
+impl BridgeInner {
+    fn client(&self) -> Result<Arc<DaemonClient>, String> {
+        self.client
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+            .ok_or_else(|| "The daemon connection was lost.".to_string())
+    }
+
+    pub fn note_generation(&self, session_id: &str, generation: u64) {
+        self.generations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(session_id.to_string(), generation);
+    }
+
+    pub fn forget_generation(&self, session_id: &str) {
+        self.generations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(session_id);
+    }
+
+    fn generation_for(&self, session_id: &str) -> u64 {
+        self.generations
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(session_id)
+            .copied()
+            .unwrap_or(1)
+    }
+}
+
 #[tauri::command]
 pub fn daemon_status(bridge: State<'_, DaemonBridge>) -> UiDaemonStatus {
     bridge.snapshot()
 }
 
-fn supervisor(status: Arc<Mutex<UiDaemonStatus>>, stop: Arc<AtomicBool>) {
+fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
     loop {
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        set_status(&status, UiDaemonStatus::connecting());
+        set_status(&inner.status, UiDaemonStatus::connecting());
         match connect_once() {
-            Ok(mut client) => {
+            Ok(client) => {
+                let client = Arc::new(client);
                 let hello = client.hello().clone();
+                {
+                    *inner.client.lock().unwrap_or_else(|err| err.into_inner()) =
+                        Some(Arc::clone(&client));
+                }
                 set_status(
-                    &status,
+                    &inner.status,
                     UiDaemonStatus {
                         state: "connected".to_string(),
                         pid: Some(hello.pid),
@@ -139,13 +220,17 @@ fn supervisor(status: Arc<Mutex<UiDaemonStatus>>, stop: Arc<AtomicBool>) {
                 loop {
                     if stop.load(Ordering::SeqCst) {
                         let _ = client.shutdown();
-                        set_status(&status, UiDaemonStatus::disconnected("daemon stopped"));
+                        *inner.client.lock().unwrap_or_else(|err| err.into_inner()) = None;
+                        set_status(
+                            &inner.status,
+                            UiDaemonStatus::disconnected("daemon stopped"),
+                        );
                         return;
                     }
                     match client.status() {
                         Ok(body) => {
                             set_status(
-                                &status,
+                                &inner.status,
                                 UiDaemonStatus {
                                     state: "connected".to_string(),
                                     pid: Some(body.pid),
@@ -157,19 +242,24 @@ fn supervisor(status: Arc<Mutex<UiDaemonStatus>>, stop: Arc<AtomicBool>) {
                             );
                         }
                         Err(error) => {
-                            set_status(&status, UiDaemonStatus::error(error.to_string()));
+                            *inner.client.lock().unwrap_or_else(|err| err.into_inner()) = None;
+                            set_status(&inner.status, UiDaemonStatus::error(error.to_string()));
                             break;
                         }
                     }
                     if !sleep_interruptible(&stop, PING_PERIOD) {
                         let _ = client.shutdown();
-                        set_status(&status, UiDaemonStatus::disconnected("daemon stopped"));
+                        *inner.client.lock().unwrap_or_else(|err| err.into_inner()) = None;
+                        set_status(
+                            &inner.status,
+                            UiDaemonStatus::disconnected("daemon stopped"),
+                        );
                         return;
                     }
                 }
             }
             Err(error) => {
-                set_status(&status, UiDaemonStatus::error(error.to_string()));
+                set_status(&inner.status, UiDaemonStatus::error(error.to_string()));
                 if !sleep_interruptible(&stop, PING_PERIOD) {
                     return;
                 }
@@ -178,7 +268,7 @@ fn supervisor(status: Arc<Mutex<UiDaemonStatus>>, stop: Arc<AtomicBool>) {
     }
 }
 
-fn connect_once() -> Result<devboule_daemon::DaemonClient, String> {
+fn connect_once() -> Result<DaemonClient, String> {
     let paths = RuntimePaths::from_env().map_err(|error| error.to_string())?;
     let owner = {
         let user = current_user_sid().map_err(|error| error.to_string())?;
