@@ -495,6 +495,7 @@ pub struct ConnHandle {
     pub id: u64,
     pub outbound: Arc<ConnOut>,
     attached: Mutex<HashMap<String, PullState>>,
+    next_attachment_generation: AtomicU64,
 }
 
 struct PullState {
@@ -503,6 +504,14 @@ struct PullState {
     exit_sent: bool,
     journal_degraded_sent: bool,
     generation: u64,
+    attachment_generation: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct PendingEvent {
+    pub(crate) session_id: String,
+    pub(crate) attachment_generation: u64,
+    pub(crate) envelope: SessionEventEnvelope,
 }
 
 impl ConnHandle {
@@ -511,6 +520,7 @@ impl ConnHandle {
             id,
             outbound: ConnOut::new(),
             attached: Mutex::new(HashMap::new()),
+            next_attachment_generation: AtomicU64::new(1),
         })
     }
 
@@ -521,6 +531,9 @@ impl ConnHandle {
         from_seq: Option<u64>,
         generation: u64,
     ) {
+        let attachment_generation = self
+            .next_attachment_generation
+            .fetch_add(1, Ordering::Relaxed);
         if let Ok(mut map) = self.attached.lock() {
             map.insert(
                 session_id.to_string(),
@@ -530,6 +543,7 @@ impl ConnHandle {
                     exit_sent: false,
                     journal_degraded_sent: false,
                     generation,
+                    attachment_generation,
                 },
             );
         }
@@ -583,32 +597,75 @@ impl ConnHandle {
 
     /// Pull replay + live output + exit for every session this connection
     /// is attached to. Called from the writer thread; does not send.
-    pub fn pull_events(&self) -> Vec<SessionEventEnvelope> {
+    pub(crate) fn event_is_current(
+        &self,
+        session_id: &str,
+        attachment_generation: u64,
+    ) -> bool {
+        self.attached
+            .lock()
+            .ok()
+            .and_then(|map| map.get(session_id).map(|pull| pull.attachment_generation))
+            == Some(attachment_generation)
+    }
+
+    /// Record delivery only after the corresponding envelope was written to
+    /// the connection. A queued envelope is not yet part of the cursor.
+    pub(crate) fn event_sent(&self, event: &PendingEvent) {
+        let Ok(mut map) = self.attached.lock() else {
+            return;
+        };
+        let remove = {
+            let Some(pull) = map.get_mut(&event.session_id) else {
+                return;
+            };
+            if pull.attachment_generation != event.attachment_generation {
+                return;
+            }
+            match &event.envelope.event {
+                SessionEvent::Output { seq, .. } => {
+                    pull.sent_seq = Some(*seq);
+                    false
+                }
+                SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
+                SessionEvent::JournalDegraded => false,
+            }
+        };
+        if remove {
+            map.remove(&event.session_id);
+        }
+    }
+
+    pub(crate) fn pull_events(&self) -> Vec<PendingEvent> {
         let Ok(mut map) = self.attached.lock() else {
             return Vec::new();
         };
         let mut events = Vec::new();
-        let mut finished_ids = Vec::new();
         for (session_id, pull) in map.iter_mut() {
             let Ok(stream) = pull.runtime.stream.lock() else {
                 continue;
             };
             let replay = stream.scrollback.replay_after(pull.sent_seq);
             for event in replay {
-                if let SessionEvent::Output { seq, .. } = &event {
-                    pull.sent_seq = Some(*seq);
-                }
-                events.push(SessionEventEnvelope {
+                events.push(PendingEvent {
                     session_id: session_id.clone(),
-                    generation: pull.generation,
-                    event,
+                    attachment_generation: pull.attachment_generation,
+                    envelope: SessionEventEnvelope {
+                        session_id: session_id.clone(),
+                        generation: pull.generation,
+                        event,
+                    },
                 });
             }
             if !pull.journal_degraded_sent && pull.runtime.journal_degraded() {
-                events.push(SessionEventEnvelope {
+                events.push(PendingEvent {
                     session_id: session_id.clone(),
-                    generation: pull.generation,
-                    event: SessionEvent::JournalDegraded,
+                    attachment_generation: pull.attachment_generation,
+                    envelope: SessionEventEnvelope {
+                        session_id: session_id.clone(),
+                        generation: pull.generation,
+                        event: SessionEvent::JournalDegraded,
+                    },
                 });
                 pull.journal_degraded_sent = true;
             }
@@ -619,17 +676,17 @@ impl ConnHandle {
                         code: stream.exit_code,
                     },
                 };
-                events.push(SessionEventEnvelope {
+                events.push(PendingEvent {
                     session_id: session_id.clone(),
-                    generation: pull.generation,
-                    event,
+                    attachment_generation: pull.attachment_generation,
+                    envelope: SessionEventEnvelope {
+                        session_id: session_id.clone(),
+                        generation: pull.generation,
+                        event,
+                    },
                 });
                 pull.exit_sent = true;
-                finished_ids.push(session_id.clone());
             }
-        }
-        for id in finished_ids {
-            map.remove(&id);
         }
         events
     }
@@ -1842,7 +1899,7 @@ mod tests {
         let events = conn.pull_events();
         let kinds: Vec<_> = events
             .iter()
-            .map(|envelope| match &envelope.event {
+            .map(|envelope| match &envelope.envelope.event {
                 SessionEvent::Output { data, .. } => data.as_str(),
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
@@ -1850,6 +1907,9 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["before", "after", "exit"]);
+        for event in &events {
+            conn.event_sent(event);
+        }
         assert!(conn.pull_events().is_empty());
     }
 
@@ -1943,9 +2003,12 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|envelope| matches!(envelope.event, SessionEvent::Exit { .. })),
+                .any(|envelope| matches!(envelope.envelope.event, SessionEvent::Exit { .. })),
             "zero wake must let the writer emit Exit, got {events:?}"
         );
+        for event in &events {
+            conn.event_sent(event);
+        }
     }
 
     #[test]
@@ -1962,11 +2025,14 @@ mod tests {
         let events = conn.pull_events();
         assert!(events
             .iter()
-            .any(|envelope| matches!(envelope.event, SessionEvent::JournalDegraded)));
+            .any(|envelope| matches!(envelope.envelope.event, SessionEvent::JournalDegraded)));
         assert!(events
             .iter()
-            .all(|envelope| !matches!(envelope.event, SessionEvent::Exit { .. })));
+            .all(|envelope| !matches!(envelope.envelope.event, SessionEvent::Exit { .. })));
         assert!(!runtime.stream.lock().unwrap().process_exited);
+        for event in &events {
+            conn.event_sent(event);
+        }
         assert!(conn.pull_events().is_empty());
     }
 
@@ -1991,7 +2057,7 @@ mod tests {
         let events = conn.pull_events();
         let kinds: Vec<_> = events
             .iter()
-            .map(|envelope| match &envelope.event {
+            .map(|envelope| match &envelope.envelope.event {
                 SessionEvent::Output { data, .. } => data.as_str(),
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
@@ -1999,6 +2065,9 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["hello", "recovered"]);
+        for event in &events {
+            conn.event_sent(event);
+        }
     }
 
     #[test]
