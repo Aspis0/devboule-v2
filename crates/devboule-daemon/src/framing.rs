@@ -62,13 +62,30 @@ impl Framed {
     }
 
     pub fn send<T: Serialize>(&self, value: &T) -> Result<(), DaemonError> {
+        self.send_with_deadline(value, None, true)
+    }
+
+    pub(crate) fn send_until<T: Serialize>(
+        &self,
+        value: &T,
+        deadline: Instant,
+    ) -> Result<(), DaemonError> {
+        self.send_with_deadline(value, Some(deadline), false)
+    }
+
+    fn send_with_deadline<T: Serialize>(
+        &self,
+        value: &T,
+        deadline: Option<Instant>,
+        flush: bool,
+    ) -> Result<(), DaemonError> {
         #[cfg(windows)]
         {
             let _write_lock = self
                 .write_lock
                 .lock()
                 .unwrap_or_else(|err| err.into_inner());
-            write_frame(&self.file, value)
+            write_frame(&self.file, value, deadline, flush)
         }
         #[cfg(not(windows))]
         {
@@ -178,13 +195,20 @@ fn frame_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, DaemonError> {
 }
 
 #[cfg(windows)]
-fn write_frame<T: Serialize>(file: &File, value: &T) -> Result<(), DaemonError> {
+fn write_frame<T: Serialize>(
+    file: &File,
+    value: &T,
+    deadline: Option<Instant>,
+    flush: bool,
+) -> Result<(), DaemonError> {
     let bytes = frame_bytes(value)?;
-    write_all_overlapped(file, &bytes)?;
-    write_all_overlapped(file, b"\n")?;
-    let ok = unsafe { FlushFileBuffers(file.as_raw_handle() as HANDLE) };
-    if ok == 0 {
-        return Err(DaemonError::Io(io::Error::last_os_error()));
+    write_all_overlapped(file, &bytes, deadline)?;
+    write_all_overlapped(file, b"\n", deadline)?;
+    if flush {
+        let ok = unsafe { FlushFileBuffers(file.as_raw_handle() as HANDLE) };
+        if ok == 0 {
+            return Err(DaemonError::Io(io::Error::last_os_error()));
+        }
     }
     Ok(())
 }
@@ -303,7 +327,7 @@ fn read_chunk(
 }
 
 #[cfg(windows)]
-fn write_all_overlapped(file: &File, bytes: &[u8]) -> io::Result<()> {
+fn write_all_overlapped(file: &File, bytes: &[u8], deadline: Option<Instant>) -> io::Result<()> {
     let mut written_total = 0usize;
     while written_total < bytes.len() {
         let event = OperationEvent::new()?;
@@ -324,11 +348,13 @@ fn write_all_overlapped(file: &File, bytes: &[u8]) -> io::Result<()> {
             if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
                 return Err(error);
             }
-            written =
-                wait_for_operation(file.as_raw_handle() as HANDLE, event.0, &overlapped, None)?
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::TimedOut, "pipe write timed out")
-                    })?;
+            written = wait_for_operation(
+                file.as_raw_handle() as HANDLE,
+                event.0,
+                &overlapped,
+                deadline,
+            )?
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "pipe write timed out"))?;
         }
         if written == 0 {
             return Err(io::Error::new(
