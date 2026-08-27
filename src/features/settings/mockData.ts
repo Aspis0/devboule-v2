@@ -102,9 +102,9 @@ export const MOCK_GENERAL_SETTINGS = [
   { label: 'Telemetry', value: 'none, ever', tone: 'muted' },
 ] as const;
 
+// Pigeon dispatcher and Censor were v1 subsystems. v2 dropped both and does not
+// plan to bring them back, so Labs must not advertise them.
 export const MOCK_LABS = [
-  { title: 'Pigeon dispatcher', description: 'Cross-machine task handoff.' },
-  { title: 'Censor', description: 'Blocks a secret-shaped string before it reaches a commit.' },
   { title: 'Generative design', description: 'Draw UI from a prompt inside a workspace.' },
 ] as const;
 
