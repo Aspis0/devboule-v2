@@ -1609,6 +1609,92 @@ mod tests {
     }
 
     #[test]
+    fn ring_and_journal_keep_drain_bytes_after_reap() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-drain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        journal
+            .upsert_blocking(new_session_record(
+                "s.drain.1",
+                "S-1-5-21-1",
+                None,
+                SessionKind::Terminal,
+                "Terminal",
+            ))
+            .unwrap();
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            "s.drain.1".into(),
+            Some(Arc::clone(&journal)),
+        ));
+        runtime.publish_output("HEAD");
+        journal.flush().unwrap();
+        runtime.mark_exited(Some(0));
+        journal.flush().unwrap();
+        let tail = "X".repeat(3953);
+        runtime.publish_output(&tail);
+        journal.flush().unwrap();
+        runtime.close_output();
+        journal.try_mark_ended("s.drain.1", 1, Some(0));
+        journal.flush().unwrap();
+        let (live_chunks, live_bytes) = runtime.snapshot();
+        let replay = journal.replay("s.drain.1", 0).unwrap();
+        let journal_frames = replay
+            .events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::Output { .. }))
+            .count();
+        let replay_bytes: usize = replay
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { data, .. } => Some(data.len()),
+                _ => None,
+            })
+            .sum();
+        println!(
+            "JOURNAL_TRACE ring_frames={} journal_frames={} ring_bytes={live_bytes} replay_bytes={replay_bytes}",
+            live_chunks.len(),
+            journal_frames,
+        );
+        assert_eq!(live_bytes, 4 + 3953, "ring must keep the drain tail");
+        assert_eq!(
+            replay_bytes,
+            live_bytes,
+            "journal silently lost {} ring bytes",
+            live_bytes - replay_bytes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn next_exit_wake_is_zero_once_the_drain_has_elapsed() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        runtime.try_attach(None, &conn).unwrap();
+        conn.track("s.a.1", Arc::clone(&runtime), None, 1);
+        assert_eq!(conn.next_exit_wake(), None);
+        runtime.mark_exited(Some(0));
+        let wake = conn.next_exit_wake().expect("drain timer");
+        assert!(wake <= EXIT_DRAIN);
+        std::thread::sleep(EXIT_DRAIN + Duration::from_millis(10));
+        assert_eq!(conn.next_exit_wake(), Some(Duration::ZERO));
+        let events = conn.pull_events();
+        assert!(
+            events
+                .iter()
+                .any(|envelope| matches!(envelope.event, SessionEvent::Exit { .. })),
+            "zero wake must let the writer emit Exit, got {events:?}"
+        );
+    }
+
+    #[test]
     fn recovered_pull_ends_with_recovered_not_exit() {
         let replay = crate::journal::Replay {
             generation: 1,
