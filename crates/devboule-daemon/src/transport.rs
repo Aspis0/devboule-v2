@@ -3,7 +3,9 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
+#[cfg(feature = "server")]
 use std::sync::atomic::AtomicBool;
+#[cfg(feature = "server")]
 use std::sync::Arc;
 
 use crate::paths::RuntimePaths;
@@ -11,13 +13,15 @@ use crate::paths::RuntimePaths;
 #[cfg(windows)]
 mod windows_pipe;
 #[cfg(windows)]
-pub use windows_pipe::{connect_pipe, inspect_pipe_dacl, ListenerShutdown, NamedPipeListener};
+pub use windows_pipe::{connect_pipe, inspect_pipe_dacl};
+#[cfg(all(windows, feature = "server"))]
+pub use windows_pipe::{ListenerShutdown, NamedPipeListener};
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), feature = "server"))]
 #[derive(Clone)]
 pub struct ListenerShutdown;
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), feature = "server"))]
 impl ListenerShutdown {
     pub fn shutdown(&self) {}
 }
@@ -30,12 +34,14 @@ pub trait ByteStream: Read + Write + Send {}
 impl<T> ByteStream for T where T: Read + Write + Send {}
 
 /// Accept loop. `shutdown` must unblock a thread stuck in [`Listener::accept`].
+#[cfg(feature = "server")]
 pub trait Listener {
     type Stream: Read + Write + Send + 'static;
     fn accept(&mut self) -> io::Result<Self::Stream>;
     fn shutdown(&mut self) -> io::Result<()>;
 }
 
+#[cfg(feature = "server")]
 pub fn bind(
     paths: &RuntimePaths,
     stop: Arc<AtomicBool>,
@@ -71,6 +77,7 @@ pub fn connect(paths: &RuntimePaths) -> io::Result<File> {
     }
 }
 
+#[cfg(feature = "server")]
 pub enum BoundListener {
     #[cfg(windows)]
     Windows(NamedPipeListener),
@@ -78,6 +85,7 @@ pub enum BoundListener {
     Unsupported,
 }
 
+#[cfg(feature = "server")]
 impl Listener for BoundListener {
     type Stream = File;
 
