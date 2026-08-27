@@ -5,10 +5,11 @@
 
 #![cfg(windows)]
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,7 @@ use devboule_daemon::{
     RuntimePaths, IDLE_SHUTDOWN_GRACE, RING_CAPACITY,
 };
 use devboule_protocol::{ClientHello, Cursor, ErrorCode, OwnerId, SessionEvent, SessionKind};
+use portable_pty::{CommandBuilder, PtySize};
 
 fn daemon_bin() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_daemon") {
@@ -700,6 +702,250 @@ fn summarize_chunk_sizes(chunk_sizes: &[usize]) -> (usize, f64, usize) {
     (min, median, max)
 }
 
+// Keep this benchmark human-shaped: 256 individual bytes at 8 characters per
+// second makes an interval poll visible instead of hiding it in a flood.
+const ECHO_SAMPLES: usize = 256;
+const ECHO_CADENCE: Duration = Duration::from_millis(125);
+const ECHO_KEYS: &[u8] = b"qwertyuiopasdfghjklzxcvbnm";
+
+#[derive(Clone, Copy)]
+struct EchoTiming {
+    end_to_end: Duration,
+    request_rtt: Duration,
+    event_tail: Duration,
+}
+
+fn percentile(values: &[Duration], percentile: usize) -> f64 {
+    assert!(!values.is_empty());
+    let mut values: Vec<f64> = values.iter().map(Duration::as_secs_f64).collect();
+    values.sort_by(f64::total_cmp);
+    let rank = ((values.len() * percentile).div_ceil(100)).max(1) - 1;
+    values[rank] * 1_000.0
+}
+
+fn print_distribution(label: &str, values: &[Duration]) {
+    println!(
+        "PTY_LATENCY distribution={label} samples={} cadence_ms={} min_ms={:.3} median_ms={:.3} p95_ms={:.3} max_ms={:.3}",
+        values.len(),
+        ECHO_CADENCE.as_millis(),
+        percentile(values, 0),
+        percentile(values, 50),
+        percentile(values, 95),
+        percentile(values, 100),
+    );
+}
+
+fn wait_for_pty_quiet(rx: &mpsc::Receiver<(Instant, Vec<u8>)>) {
+    let deadline = Instant::now() + Duration::from_millis(750);
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(remaining.min(Duration::from_millis(25))) {
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    while rx.try_recv().is_ok() {}
+}
+
+fn direct_conpty_echo_timings() -> Vec<Duration> {
+    println!("PTY_LATENCY phase=conpty_direct begin");
+    let pty_system = portable_pty::native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 32,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .expect("open direct ConPTY");
+    let mut child = pair
+        .slave
+        .spawn_command({
+            let mut command = CommandBuilder::new("cmd.exe");
+            command.arg("/k");
+            command
+        })
+        .expect("spawn direct ConPTY shell");
+    let mut killer = child.clone_killer();
+    let writer = Arc::new(Mutex::new(
+        pair.master.take_writer().expect("direct ConPTY writer"),
+    ));
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .expect("direct ConPTY reader");
+    let (tx, rx) = mpsc::channel::<(Instant, Vec<u8>)>();
+    let reader_writer = Arc::clone(&writer);
+    let reader_thread = std::thread::spawn(move || {
+        let mut reader = reader;
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            if buf[..n].windows(4).any(|window| window == b"\x1b[6n") {
+                if let Ok(mut writer) = reader_writer.lock() {
+                    let _ = writer.write_all(b"\x1b[1;1R");
+                    let _ = writer.flush();
+                }
+            }
+            if tx.send((Instant::now(), buf[..n].to_vec())).is_err() {
+                break;
+            }
+        }
+    });
+    wait_for_pty_quiet(&rx);
+
+    let mut timings = Vec::with_capacity(ECHO_SAMPLES);
+    let mut next_send = Instant::now();
+    for index in 0..ECHO_SAMPLES {
+        if index != 0 {
+            let wait = next_send.saturating_duration_since(Instant::now());
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+            }
+        }
+        let key = ECHO_KEYS[index % ECHO_KEYS.len()];
+        let sent = Instant::now();
+        {
+            let mut writer = writer.lock().expect("direct ConPTY writer lock");
+            writer.write_all(&[key]).expect("write direct ConPTY key");
+            writer.flush().expect("flush direct ConPTY key");
+        }
+        let deadline = sent + Duration::from_secs(2);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "direct ConPTY did not echo {key:?}"
+            );
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let (received, data) = rx
+                .recv_timeout(remaining)
+                .expect("receive direct ConPTY output");
+            if received >= sent && data.contains(&key) {
+                timings.push(received.saturating_duration_since(sent));
+                break;
+            }
+        }
+        next_send += ECHO_CADENCE;
+    }
+
+    let _ = killer.kill();
+    drop(writer);
+    drop(pair.master);
+    let _ = child.wait();
+    let join_deadline = Instant::now() + Duration::from_millis(500);
+    while !reader_thread.is_finished() && Instant::now() < join_deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if reader_thread.is_finished() {
+        let _ = reader_thread.join();
+    }
+    println!(
+        "PTY_LATENCY phase=conpty_direct end samples={}",
+        timings.len()
+    );
+    timings
+}
+
+fn daemon_echo_timings() -> Vec<EchoTiming> {
+    println!("PTY_LATENCY phase=daemon_echo begin");
+    let harness = Harness::spawn();
+    queue_command(&harness.paths, cmd_keep());
+    let client = harness.client("latency");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create latency session");
+    let writer = Arc::new(harness.client("latency-dsr"));
+    let (tx, rx) = mpsc::channel::<(Instant, String)>();
+    let session_id = session.id.clone();
+    let handler: EventHandler = Arc::new(move |envelope| {
+        if let SessionEvent::Output { data, .. } = envelope.event {
+            if data.contains("\x1b[6n") {
+                let _ = writer.session_send(&session_id, "\x1b[1;1R");
+            }
+            let _ = tx.send((Instant::now(), data));
+        }
+    });
+    client
+        .session_attach(&session.id, None, handler)
+        .expect("attach latency session");
+    answer_dsr(&client, &session.id);
+    std::thread::sleep(Duration::from_millis(750));
+    while rx.try_recv().is_ok() {}
+
+    let mut timings = Vec::with_capacity(ECHO_SAMPLES);
+    let mut next_send = Instant::now();
+    for index in 0..ECHO_SAMPLES {
+        if index != 0 {
+            let wait = next_send.saturating_duration_since(Instant::now());
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+            }
+        }
+        let key = ECHO_KEYS[index % ECHO_KEYS.len()] as char;
+        let sent = Instant::now();
+        client
+            .session_send(&session.id, &key.to_string())
+            .expect("send latency key");
+        let request_returned = Instant::now();
+        let deadline = sent + Duration::from_secs(2);
+        loop {
+            assert!(Instant::now() < deadline, "daemon did not echo {key:?}");
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let (received, data) = rx
+                .recv_timeout(remaining)
+                .expect("receive daemon PTY output");
+            if received >= sent && data.contains(key) {
+                timings.push(EchoTiming {
+                    end_to_end: received.saturating_duration_since(sent),
+                    request_rtt: request_returned.saturating_duration_since(sent),
+                    event_tail: received.saturating_duration_since(request_returned),
+                });
+                break;
+            }
+        }
+        next_send += ECHO_CADENCE;
+    }
+
+    client
+        .session_close(&session.id)
+        .expect("close latency session");
+    println!(
+        "PTY_LATENCY phase=daemon_echo end samples={}",
+        timings.len()
+    );
+    timings
+}
+
+fn daemon_ping_timings() -> Vec<Duration> {
+    println!("PTY_LATENCY phase=daemon_ping begin");
+    let harness = Harness::spawn();
+    let client = harness.client("latency-ping");
+    let mut timings = Vec::with_capacity(64);
+    let mut next_send = Instant::now();
+    for index in 0..64 {
+        if index != 0 {
+            let wait = next_send.saturating_duration_since(Instant::now());
+            if !wait.is_zero() {
+                std::thread::sleep(wait);
+            }
+        }
+        let sent = Instant::now();
+        client.ping().expect("ping latency control");
+        timings.push(sent.elapsed());
+        next_send += ECHO_CADENCE;
+    }
+    println!(
+        "PTY_LATENCY phase=daemon_ping end samples={}",
+        timings.len()
+    );
+    timings
+}
+
 fn benchmark_file_command(file_path: &Path) -> PtyCommand {
     PtyCommand::new(
         "cmd.exe",
@@ -810,4 +1056,35 @@ fn real_pty_channel_file_transport_ab_benchmark() {
     assert!(bytes >= expected_file_bytes, "daemon output was truncated");
     assert!(!seq_reordered, "daemon output was dropped or reordered");
     let _ = std::fs::remove_file(&file_path);
+}
+
+#[test]
+#[ignore = "spawns real Windows ConPTYs and measures a human-cadence run"]
+fn real_pty_echo_latency_benchmark() {
+    // The direct run is the ConPTY floor. Request RTT covers the client to
+    // daemon request/reply path; event tail covers coalescing, connection
+    // scheduling, event serialization, and the return pipe. The ping control
+    // is the same request/reply framing without PTY output.
+    let conpty = direct_conpty_echo_timings();
+    print_distribution("conpty_direct", &conpty);
+
+    let daemon = daemon_echo_timings();
+    let end_to_end: Vec<_> = daemon.iter().map(|timing| timing.end_to_end).collect();
+    let request_rtt: Vec<_> = daemon.iter().map(|timing| timing.request_rtt).collect();
+    let event_tail: Vec<_> = daemon.iter().map(|timing| timing.event_tail).collect();
+    print_distribution("daemon_end_to_end", &end_to_end);
+    print_distribution("daemon_request_rtt", &request_rtt);
+    print_distribution("daemon_event_tail", &event_tail);
+
+    let ping = daemon_ping_timings();
+    print_distribution("daemon_ping_control", &ping);
+    println!(
+        "PTY_LATENCY attribution conpty_floor_median_ms={:.3} request_path_median_ms={:.3} event_tail_median_ms={:.3} ping_control_median_ms={:.3} coalesce_flush_budget_ms=4 connection_writer_poll_budget_ms=20",
+        percentile(&conpty, 50),
+        percentile(&request_rtt, 50),
+        percentile(&event_tail, 50),
+        percentile(&ping, 50),
+    );
+    assert_eq!(conpty.len(), ECHO_SAMPLES);
+    assert_eq!(daemon.len(), ECHO_SAMPLES);
 }
