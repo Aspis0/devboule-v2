@@ -1,0 +1,38 @@
+[package]
+name = "devboule-daemon"
+version = "0.1.0"
+description = "Devboule local daemon: single-instance lock, named pipe, handshake"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "devboule_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "devboule-daemon"
+path = "src/main.rs"
+
+[dependencies]
+devboule-protocol = { path = "../devboule-protocol" }
+# Direct because this crate serializes protocol frames to JSON. The exact
+# version is already in the workspace (src-tauri dev-dependency and a
+# transitive of serde). This does not add a new package.
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+
+[target.'cfg(windows)'.dependencies]
+# Named pipe, DACL, and LockFileEx. Already in the lockfile transitively
+# (0.45 / 0.59 / 0.61 via Tauri). Pinned to the 0.59 line already present
+# so we do not introduce a fourth windows-sys. Nothing in-tree exposes a
+# named-pipe or file-lock API we could reuse.
+windows-sys = { version = "=0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
