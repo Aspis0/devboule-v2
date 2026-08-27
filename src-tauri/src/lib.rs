@@ -1,5 +1,6 @@
 mod backend;
 mod client;
+mod single_instance;
 
 use tauri::Manager;
 
@@ -11,6 +12,22 @@ fn app_identity(app: tauri::AppHandle) -> String {
 }
 
 pub fn run() {
+    // Desktop single-instance behavior: a second Devboule brings the running
+    // window to the front and exits 0. This guards one window per session;
+    // the single-daemon guarantee lives in the daemon's own lock.
+    let _app_instance = match single_instance::acquire() {
+        single_instance::StartupInstance::Acquired(guard) => guard,
+        single_instance::StartupInstance::AlreadyRunning => {
+            eprintln!(
+                "Devboule is already running; bringing the existing window to the front."
+            );
+            if !single_instance::focus_existing_window() {
+                single_instance::notify_already_running();
+            }
+            return;
+        }
+    };
+
     tauri::Builder::default()
         .manage(client::DaemonBridge::start())
         .invoke_handler(tauri::generate_handler![

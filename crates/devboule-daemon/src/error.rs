@@ -23,7 +23,7 @@ impl fmt::Display for DaemonError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AlreadyRunning => {
-                write!(formatter, "another Devboule daemon already holds the lock")
+                write!(formatter, "another Devboule daemon is already running")
             }
             Self::UnsupportedPlatform => {
                 write!(formatter, "devboule-daemon M3a targets Windows only")
