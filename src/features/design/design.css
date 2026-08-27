@@ -196,7 +196,7 @@
 .design-save-menu {
   height: 26px;
   color: var(--white);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
   font-size: 11.5px;
   font-weight: 500;
 }
@@ -220,7 +220,7 @@
 .design-save-menu:focus-visible,
 .design-generate-button:hover:not(:disabled),
 .design-generate-button:focus-visible:not(:disabled) {
-  background: var(--terracotta-pressed);
+  background: color-mix(in srgb, var(--terracotta-deep) 84%, var(--ink));
 }
 
 .design-main {
@@ -374,7 +374,7 @@
 
 .design-node-primary-action {
   color: var(--white);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
 }
 
 .design-node-secondary-action {
@@ -410,7 +410,7 @@
   height: 26px;
   padding: 0 11px;
   color: var(--white);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
   border: 0;
   border-radius: 999px;
   cursor: pointer;
@@ -421,7 +421,7 @@
 
 .design-ai-region button:hover,
 .design-ai-region button:focus-visible {
-  background: var(--terracotta-pressed);
+  background: color-mix(in srgb, var(--terracotta-deep) 84%, var(--ink));
 }
 
 .design-layers-panel,
@@ -732,7 +732,7 @@
 
 .design-hug-label {
   margin-left: auto;
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   font-size: 8.5px;
   letter-spacing: 0.08em;
 }
@@ -816,7 +816,7 @@
 .design-arrange-actions button:focus-visible,
 .design-inspector-actions button:hover,
 .design-inspector-actions button:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -828,7 +828,7 @@
 
 .design-delete-action:hover,
 .design-delete-action:focus-visible {
-  color: var(--danger) !important;
+  color: var(--danger-deep) !important;
   border-color: var(--danger) !important;
 }
 
@@ -892,7 +892,7 @@
 
 .design-visual-check:hover,
 .design-visual-check:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -941,7 +941,7 @@
   height: 20px;
   margin-bottom: 5px;
   padding: 0 9px;
-  color: var(--purple);
+  color: var(--purple-deep);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -953,7 +953,7 @@
   max-width: 84%;
   padding: 9px 12px;
   color: var(--white);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
   border-radius: 12px 12px 4px 12px;
   font-size: 12.5px;
   line-height: 1.6;
@@ -984,7 +984,7 @@
   font-size: 9px;
 }
 
-.design-message-icon-working { background: var(--ochre); }
+.design-message-icon-working { background: var(--ochre-deep); }
 .design-message-icon-error { background: var(--danger); }
 .design-message-icon-done { background: var(--green); }
 
@@ -1039,7 +1039,7 @@
 
 .design-message-actions button:hover,
 .design-message-actions button:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -1071,7 +1071,7 @@
   gap: 6px;
   height: 21px;
   padding: 0 9px;
-  color: var(--purple);
+  color: var(--purple-deep);
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -1135,7 +1135,7 @@
 .design-provider-button:focus-visible,
 .design-composer-context button:hover,
 .design-composer-context button:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
 }
 
 .design-provider-dot {
@@ -1152,7 +1152,7 @@
   padding: 0 13px;
   place-items: center;
   color: var(--white);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
   border-radius: 9px;
   cursor: pointer;
   font-size: 11.5px;

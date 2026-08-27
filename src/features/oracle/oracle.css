@@ -108,7 +108,7 @@
 }
 
 .oracle-search-mark {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   font-family: 'Fraunces', Georgia, serif;
   font-size: 15px;
 }
@@ -143,12 +143,12 @@
 .oracle-button-primary {
   height: 30px;
   color: var(--surface);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
 }
 
 .oracle-button-primary:hover,
 .oracle-button-primary:focus-visible {
-  background: color-mix(in srgb, var(--terracotta) 84%, var(--ink));
+  background: color-mix(in srgb, var(--terracotta-deep) 84%, var(--ink));
 }
 
 .oracle-button-secondary {
@@ -159,7 +159,7 @@
 
 .oracle-button-secondary:hover,
 .oracle-button-secondary:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
 }
 
 .oracle-answer-card,
@@ -233,7 +233,7 @@
 
 .oracle-citation:hover,
 .oracle-citation:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
 }
 
 .oracle-answer-by {
@@ -334,7 +334,7 @@
 }
 
 .oracle-folder-ok {
-  color: var(--green);
+  color: var(--green-deep);
   font-size: 10.5px;
 }
 
@@ -397,7 +397,7 @@
 }
 
 .oracle-stat-value-warning {
-  color: var(--ochre);
+  color: var(--ochre-deep);
 }
 
 .oracle-stat-value-ink-soft {
@@ -419,7 +419,7 @@
 
 .oracle-stop-button:hover,
 .oracle-stop-button:focus-visible {
-  color: var(--danger);
+  color: var(--danger-deep);
   border-color: var(--danger);
 }
 
@@ -543,7 +543,7 @@
 
 .oracle-secondary-card-button:hover,
 .oracle-secondary-card-button:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
 }
 
 .oracle-secondary-card > span:first-child {
@@ -578,11 +578,11 @@
 }
 
 .oracle-secondary-state-ready {
-  color: var(--green);
+  color: var(--green-deep);
 }
 
 .oracle-secondary-state-missing {
-  color: var(--ochre);
+  color: var(--ochre-deep);
 }
 
 .oracle-secondary-chevron {

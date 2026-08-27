@@ -113,7 +113,7 @@
 .workspace-icon-button:focus-visible,
 .workspace-project-add:hover,
 .workspace-project-add:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   background: var(--selection);
 }
 
@@ -154,7 +154,7 @@
   width: 27px;
   height: 27px;
   color: var(--surface);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
   border-radius: 999px;
   font-size: 15px;
   line-height: 1;
@@ -343,7 +343,7 @@
 
 .workspace-new-row:hover,
 .workspace-new-row:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -488,7 +488,7 @@
 
 .workspace-session-add:hover,
 .workspace-session-add:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   background: var(--surface-muted);
 }
 
@@ -584,7 +584,7 @@
 
 .workspace-terminal-close:hover,
 .workspace-terminal-close:focus-visible {
-  color: var(--danger);
+  color: var(--danger-deep);
   background: transparent;
 }
 
@@ -605,7 +605,7 @@
 .workspace-terminal-banner {
   flex: none;
   padding: 7px 14px;
-  color: var(--danger);
+  color: var(--danger-deep);
   background: transparent;
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
@@ -634,7 +634,7 @@
   max-width: 76%;
   padding: 9px 13px;
   color: var(--surface);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
   border-radius: 13px 13px 4px 13px;
   font-size: 12.5px;
   line-height: 1.6;
@@ -650,7 +650,7 @@
 }
 
 .workspace-tool-name {
-  color: var(--purple);
+  color: var(--purple-deep);
   font-size: 10.5px;
   font-weight: 500;
 }
@@ -661,7 +661,7 @@
 }
 
 .workspace-tool-check {
-  color: var(--green);
+  color: var(--green-deep);
   font-size: 10px;
 }
 
@@ -802,14 +802,14 @@
 
 .workspace-secondary-action:hover,
 .workspace-secondary-action:focus-visible {
-  color: var(--danger);
+  color: var(--danger-deep);
 }
 
 .workspace-primary-action {
   padding: 0 12px;
   color: var(--surface);
-  background: var(--terracotta);
-  border: 1px solid var(--terracotta);
+  background: var(--terracotta-deep);
+  border: 1px solid var(--terracotta-deep);
   font-weight: 500;
 }
 
@@ -929,7 +929,7 @@
 .workspace-effort-control:focus-within,
 .workspace-modes-toggle:hover,
 .workspace-modes-toggle:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -1080,7 +1080,7 @@
 
 .workspace-mode-toggle-active,
 .workspace-mode-toggle-active:hover {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   background: var(--selection);
 }
 
@@ -1267,7 +1267,7 @@
 }
 
 .workspace-file-change-selected > span:last-child {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
 }
 
 .workspace-file-change-muted {
@@ -1275,7 +1275,7 @@
 }
 
 .workspace-file-change-muted > span:last-child {
-  color: var(--danger);
+  color: var(--danger-deep);
 }
 
 .workspace-diff-card {
@@ -1327,11 +1327,11 @@
 }
 
 .workspace-diff-removed {
-  color: var(--danger);
+  color: var(--danger-deep);
 }
 
 .workspace-diff-added {
-  color: var(--green);
+  color: var(--green-deep);
 }
 
 .workspace-diff-actions {
@@ -1367,7 +1367,7 @@
 
 .workspace-test-result {
   margin-left: auto;
-  color: var(--green);
+  color: var(--green-deep);
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   font-weight: 400;
@@ -1467,7 +1467,7 @@
 
 .workspace-browser-reload:hover,
 .workspace-browser-reload:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   background: var(--selection);
 }
 
@@ -1549,7 +1549,7 @@
 
 .workspace-browser-primary {
   color: var(--surface);
-  background: var(--terracotta);
+  background: var(--terracotta-deep);
 }
 
 .workspace-browser-secondary {
@@ -1560,7 +1560,7 @@
 
 .workspace-browser-secondary:hover,
 .workspace-browser-secondary:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
 }
 
 .workspace-browser-status {
@@ -1605,7 +1605,7 @@
 
 .workspace-open-design:hover,
 .workspace-open-design:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -1722,7 +1722,7 @@
   height: 20px;
   padding: 0 9px;
   place-items: center;
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   background: var(--selection);
   border-radius: 999px;
   font-size: 10px;
@@ -1821,7 +1821,7 @@
 
 .workspace-open-pr:hover,
 .workspace-open-pr:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   border-color: var(--terracotta);
 }
 
@@ -1884,7 +1884,7 @@
 
 .workspace-dialog-close:hover,
 .workspace-dialog-close:focus-visible {
-  color: var(--terracotta);
+  color: var(--terracotta-deep);
   background: var(--selection);
 }
 
@@ -1976,7 +1976,7 @@
 
 .workspace-project-error {
   margin-top: 6px;
-  color: var(--danger);
+  color: var(--danger-deep);
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   line-height: 1.5;
