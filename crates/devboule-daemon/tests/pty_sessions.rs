@@ -902,7 +902,10 @@ fn daemon_echo_timings() -> Vec<EchoTiming> {
             );
             let remaining = deadline.saturating_duration_since(Instant::now());
             let (received, data) = rx.recv_timeout(remaining).unwrap_or_else(|error| {
-                panic!("receive daemon PTY output for sample {index}: {error:?}")
+                panic!(
+                    "delivery stalled receiving daemon PTY output for sample {index} {key:?} after {:.3}s: {error:?}",
+                    sent.elapsed().as_secs_f64()
+                )
             });
             if received >= sent && data.contains(key) {
                 timings.push(EchoTiming {

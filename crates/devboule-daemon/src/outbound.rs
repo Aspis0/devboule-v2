@@ -81,6 +81,17 @@ impl ConnOut {
         self.cvar.notify_all();
     }
 
+    /// Return the notification state observed by the writer before it drains
+    /// the other outbound sources. A later wait must compare against this
+    /// value, otherwise a notify racing between the drain and the wait can be
+    /// mistaken for the new baseline.
+    pub fn wake_generation(&self) -> u64 {
+        self.inner
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .wake_generation
+    }
+
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
@@ -91,15 +102,25 @@ impl ConnOut {
     /// Wait without a polling timeout. The generation check closes the race
     /// between the writer's last pull and entering the condition variable.
     pub fn wait_for_notify(&self) -> bool {
-        self.wait_for_notify_timeout(None)
+        let generation = self.wake_generation();
+        self.wait_for_notify_since(generation, None)
     }
 
     /// Wait for a notification, or for a one-shot deadline such as the PTY
     /// exit-drain deadline. Normal idle connections pass `None` and do not
     /// wake periodically.
     pub fn wait_for_notify_timeout(&self, timeout: Option<Duration>) -> bool {
+        let generation = self.wake_generation();
+        self.wait_for_notify_since(generation, timeout)
+    }
+
+    /// Wait until the outbound state changes after `generation`, or until the
+    /// optional one-shot deadline. The caller captures `generation` before it
+    /// drains session events and requests. This lock-protected re-check makes
+    /// the state authoritative: a notification that races with the drain is
+    /// observed instead of being signalled into a wait that starts afterward.
+    pub fn wait_for_notify_since(&self, generation: u64, timeout: Option<Duration>) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        let generation = inner.wake_generation;
         while inner.rpc.is_empty()
             && !self.closed.load(Ordering::SeqCst)
             && inner.wake_generation == generation
@@ -160,5 +181,19 @@ mod tests {
         let out = ConnOut::new();
         out.close();
         assert!(!out.wait(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn notification_before_wait_is_not_lost() {
+        let out = ConnOut::new();
+        let generation = out.wake_generation();
+        out.notify();
+        let started = std::time::Instant::now();
+        assert!(out.wait_for_notify_since(generation, Some(Duration::from_millis(50))));
+        assert!(
+            started.elapsed() < Duration::from_millis(25),
+            "notification was lost; wait took {:?}",
+            started.elapsed()
+        );
     }
 }

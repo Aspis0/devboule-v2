@@ -349,6 +349,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         if state.stop.load(Ordering::SeqCst) {
             break;
         }
+        let observed_generation = conn.outbound.wake_generation();
         for event in conn.pull_events() {
             framed.send(&DaemonMessage::Event(event))?;
         }
@@ -365,7 +366,10 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                 return Err(error);
             }
             Err(TryRecvError::Empty) => {
-                if !conn.outbound.wait_for_notify_timeout(conn.next_exit_wake()) {
+                if !conn
+                    .outbound
+                    .wait_for_notify_since(observed_generation, conn.next_exit_wake())
+                {
                     break;
                 }
                 continue;
