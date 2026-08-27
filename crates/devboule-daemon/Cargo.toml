@@ -43,11 +43,10 @@ portable-pty = { version = "=0.9.0", optional = true }
 rusqlite = { version = "=0.40.2", features = ["bundled"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-# Named pipe, DACL, and LockFileEx. Already in the lockfile transitively
-# (0.45 / 0.59 / 0.61 via Tauri). Pinned to the 0.59 line already present
-# so we do not introduce a fourth windows-sys. Nothing in-tree exposes a
-# named-pipe or file-lock API we could reuse.
-windows-sys = { version = "=0.59.0", features = [
+# Named pipe, DACL, and LockFileEx. Version 0.61.2 is already in the lockfile
+# transitively through Tauri and portable-pty, so this direct dependency uses
+# the same bindings without introducing another windows-sys version.
+windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
