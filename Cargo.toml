@@ -9,7 +9,7 @@ resolver = "2"
 
 [patch.crates-io]
 # Patch esaxx-rs to use dynamic CRT (/MD) on Windows, matching ort-sys
-# prebuilt binaries (rc.12). Without this, the linker fails with LNK2038:
+# prebuilt binaries (rc.13). Without this, the linker fails with LNK2038:
 # MT_StaticRelease vs MD_DynamicRelease. Must live in the workspace root —
 # patches in member Cargo.tomls are ignored.
 # Exit: drop this patch when upstream esaxx-rs builds with the dynamic CRT on
