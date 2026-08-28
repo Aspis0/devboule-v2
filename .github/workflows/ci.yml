@@ -52,6 +52,28 @@ jobs:
       - name: Show pinned Rust toolchain
         run: rustup show active-toolchain
 
+      # Since src-tauri links oracle-core, a cold build of this job compiles
+      # DataFusion, Arrow, LanceDB, ORT and candle: measured locally at 31m49s
+      # against 4m53s before (ARCHITETTURA §7.4). Without a cargo cache every
+      # push pays that. `key` is the job name so the two Rust jobs do not fight
+      # over one entry.
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-workspace
+          cache-on-failure: true
+
+      # ort-sys downloads onnxruntime.lib and DirectML.dll from parcel.pyke.io
+      # during the build and ignores cargo's offline mode (pykeio/ort#332), so
+      # this is a build-time network dependency on a third-party CDN, not just a
+      # slow step. Caching it removes the fetch and the outage.
+      - name: Cache the ort runtime download
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\ort.pyke.io
+          key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ort-dfbin-${{ runner.os }}-
+
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
@@ -129,8 +151,25 @@ jobs:
           version: "31.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Separate key from the workspace job: same crates, different target
+      # selection, so sharing one entry would make each run evict the other.
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: oracle-core
+          cache-on-failure: true
+
+      - name: Cache the ort runtime download
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\ort.pyke.io
+          key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ort-dfbin-${{ runner.os }}-
+
       # Free-disk steps are measurements: an earlier ~14 GiB estimate was wrong
       # versus the observed 33.9 GB free, so capacity claims must use these steps.
+      # They now also tell us whether the restored cargo cache is crowding the
+      # runner, which is the failure mode a cache introduces.
       - name: Report free disk before
         shell: pwsh
         run: Get-PSDrive C | Select-Object Used,Free
