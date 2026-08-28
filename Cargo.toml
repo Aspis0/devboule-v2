@@ -18,3 +18,16 @@ esaxx-rs = { path = "crates/oracle-core/vendor/esaxx-rs-0.1.10" }
 
 
 
+
+# `target/` was 32.0 GiB before oracle-core, 47.8 GiB after compiling the
+# library, and 91.8 GiB after `cargo test --workspace`. Default `debug = 2`
+# stores full DWARF for every crate, including DataFusion, Arrow, Lance, ORT,
+# and candle — code we never step through in a debugger. line-tables-only
+# keeps rustc backtraces with source locations for workspace crates; debug =
+# false on `[profile.dev.package."*"]` is the bulk of the size (dependencies
+# are ~90% of compiled code).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
