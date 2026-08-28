@@ -81,6 +81,43 @@ export interface DaemonStatus {
   message: string | null;
 }
 
+/** Machine-readable failure. Matches `ErrorCode` in the protocol crate (snake_case). */
+export type ErrorCode =
+  | "protocol_version_mismatch"
+  | "unauthorized"
+  | "unimplemented"
+  | "capability_not_supported"
+  | "invalid_request"
+  | "session_not_found"
+  | "session_generation_mismatch"
+  | "idempotency_conflict"
+  | "shutting_down"
+  | "journal"
+  | "internal"
+  | "io";
+
+/** Matches `ErrorDetails` in the protocol crate. Field names stay snake_case. */
+export type ErrorDetails =
+  | {
+      type: "version_mismatch";
+      client: number;
+      client_min: number;
+      daemon: number;
+      daemon_min: number;
+    }
+  | {
+      type: "generation_mismatch";
+      current: number;
+      requested: number;
+    };
+
+/** Payload Tauri rejects with when a command returns `Err(CommandError)`. */
+export interface CommandError {
+  code: ErrorCode;
+  message: string;
+  details?: ErrorDetails;
+}
+
 export interface ProviderInfo {
   id: string;
   name: string;

@@ -39,6 +39,7 @@ function makeHarness(options?: {
   snapshotAsOfSeq?: number;
   existingSessionId?: string;
   missingFirstAttach?: boolean;
+  missingFirstAttachError?: unknown;
   rejectDetach?: boolean;
 }): Harness {
   const written: string[] = [];
@@ -147,7 +148,7 @@ function makeHarness(options?: {
         });
         eventHandler({ type: "output", seq: 900, data: "old session" });
         flushFrameNow();
-        throw "No session with that id.";
+        throw options?.missingFirstAttachError ?? "No session with that id.";
       }
       eventHandler({
         type: "snapshot",
@@ -373,8 +374,48 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(harness.invoke).not.toHaveBeenCalledWith("session_close", expect.anything());
   });
 
+  it("keeps the attach banner text when the backend rejects with a structured error", async () => {
+    const harness = makeHarness();
+    harness.invoke.mockImplementation(async (command: string) => {
+      if (command === "sessions_list") return [];
+      if (command === "session_create") {
+        return {
+          id: "session-1",
+          workspaceId: "rust-core",
+          kind: "terminal",
+          title: "Terminal",
+          state: { type: "live", generation: 1 },
+        };
+      }
+      if (command === "session_attach") {
+        throw { code: "session_not_found", message: "No session with that id." };
+      }
+      return undefined;
+    });
+
+    await harness.session.start();
+    expect(harness.banners).toContainEqual({
+      kind: "error",
+      message: "Could not attach to the terminal: No session with that id.",
+    });
+  });
+
   it("resets the sequence watermark when replacing a missing adopted session", async () => {
     const harness = makeHarness({ existingSessionId: "missing-session", missingFirstAttach: true });
+    await harness.session.start();
+
+    harness.emit(outputEvent(1, "new session"));
+    harness.flushFrame();
+
+    expect(harness.view.written).toEqual(["old session", "new session"]);
+  });
+
+  it("replaces a missing adopted session when attach fails with a structured error", async () => {
+    const harness = makeHarness({
+      existingSessionId: "missing-session",
+      missingFirstAttach: true,
+      missingFirstAttachError: { code: "session_not_found", message: "No session with that id." },
+    });
     await harness.session.start();
 
     harness.emit(outputEvent(1, "new session"));

@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   AnswerChunk,
+  CommandError,
   DaemonStatus,
   FileTab,
   Id,
@@ -90,6 +91,17 @@ export function invokeTyped<K extends CommandName>(
 ): Promise<CommandResults[K]> {
   const payload = args[0] as CommandArgs[K] extends undefined ? undefined : CommandArgs[K];
   return invoke<CommandResults[K]>(command, payload as never);
+}
+
+/**
+ * Tauri v2 rejects `invoke` with the JSON value of a `Serialize` error type
+ * directly — not wrapped in `Error`, not a string. `CommandError` arrives as
+ * `{ code, message, details? }`.
+ */
+export function isCommandError(error: unknown): error is CommandError {
+  if (typeof error !== "object" || error === null || Array.isArray(error)) return false;
+  if (!("code" in error) || !("message" in error)) return false;
+  return typeof error.code === "string" && typeof error.message === "string";
 }
 
 export const appIdentity = () => invokeTyped("app_identity");

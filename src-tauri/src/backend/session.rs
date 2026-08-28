@@ -9,10 +9,12 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use devboule_daemon::{DaemonError, EventHandler};
+use devboule_daemon::{DaemonClient, EventHandler};
 use devboule_protocol::{Cursor, ErrorCode};
 
 use crate::client::DaemonBridge;
+
+use super::error::CommandError;
 
 const MAX_WRITE_BYTES: usize = 64 * 1024;
 
@@ -23,14 +25,9 @@ pub fn session_create(
     bridge: State<'_, DaemonBridge>,
     workspace_id: Option<String>,
     kind: SessionKind,
-) -> Result<Session, String> {
-    if kind != SessionKind::Terminal {
-        return Err("Only terminal sessions are available.".to_string());
-    }
-    let client = bridge.client()?;
-    client
-        .session_create(workspace_id, kind, None)
-        .map_err(map_error)
+) -> Result<Session, CommandError> {
+    require_terminal_kind(&kind)?;
+    Ok(require_client(&bridge)?.session_create(workspace_id, kind, None)?)
 }
 
 /// IMPORTANT STARTUP ORDER: the client registers the Channel as the
@@ -44,9 +41,9 @@ pub fn session_attach(
     id: String,
     from_cursor: Option<u64>,
     ch: Channel<SessionEvent>,
-) -> Result<(), String> {
-    validate_session_id(&id)?;
-    let client = bridge.client()?;
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    let client = require_client(&bridge)?;
     let generation = bridge.generation_for(&id);
     let from_cursor = from_cursor.map(|seq| Cursor { generation, seq });
     let tracker = bridge.generation_tracker();
@@ -55,18 +52,16 @@ pub fn session_attach(
         tracker.note_generation(&envelope.session_id, envelope.generation);
         let _ = ch.send(envelope.event);
     });
-    client
-        .session_attach(&session_id, from_cursor, handler)
-        .map_err(map_error)
+    Ok(client.session_attach(&session_id, from_cursor, handler)?)
 }
 
 /// Detach the current view without touching the process, reader, registry,
 /// or scrollback. The daemon's idle-exit condition is clients==0 &&
 /// sessions==0, so a detached-but-alive session keeps the daemon up.
 #[tauri::command]
-pub fn session_detach(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), String> {
-    validate_session_id(&id)?;
-    bridge.client()?.session_detach(&id).map_err(map_error)
+pub fn session_detach(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    Ok(require_client(&bridge)?.session_detach(&id)?)
 }
 
 #[tauri::command]
@@ -74,12 +69,10 @@ pub fn session_send(
     bridge: State<'_, DaemonBridge>,
     id: String,
     text: String,
-) -> Result<(), String> {
-    validate_session_id(&id)?;
-    if text.len() > MAX_WRITE_BYTES {
-        return Err("Session input is too large.".to_string());
-    }
-    bridge.client()?.session_send(&id, &text).map_err(map_error)
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    require_write_size(&text)?;
+    Ok(require_client(&bridge)?.session_send(&id, &text)?)
 }
 
 #[tauri::command]
@@ -88,32 +81,86 @@ pub fn session_resize(
     id: String,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
-    validate_session_id(&id)?;
-    bridge
-        .client()?
-        .session_resize(&id, cols, rows)
-        .map_err(map_error)
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    Ok(require_client(&bridge)?.session_resize(&id, cols, rows)?)
 }
 
 #[tauri::command]
-pub fn session_close(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), String> {
-    validate_session_id(&id)?;
+pub fn session_close(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
+    require_session_id(&id)?;
     bridge.forget_generation(&id);
-    bridge.client()?.session_close(&id).map_err(map_error)
+    Ok(require_client(&bridge)?.session_close(&id)?)
 }
 
 #[tauri::command]
-pub fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Session>, String> {
-    bridge.client()?.sessions_list().map_err(map_error)
+pub fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Session>, CommandError> {
+    Ok(require_client(&bridge)?.sessions_list()?)
 }
 
-fn map_error(error: DaemonError) -> String {
-    match error {
-        DaemonError::Handshake(wire) if wire.code == ErrorCode::SessionNotFound => {
-            "No session with that id.".to_string()
-        }
-        DaemonError::Handshake(wire) => wire.message,
-        other => other.to_string(),
+fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandError> {
+    bridge.client().map_err(disconnected)
+}
+
+fn disconnected(message: String) -> CommandError {
+    CommandError::new(ErrorCode::Io, message)
+}
+
+fn require_session_id(id: &str) -> Result<(), CommandError> {
+    validate_session_id(id).map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
+}
+
+fn require_write_size(text: &str) -> Result<(), CommandError> {
+    if text.len() > MAX_WRITE_BYTES {
+        return Err(CommandError::new(
+            ErrorCode::InvalidRequest,
+            "Session input is too large.",
+        ));
+    }
+    Ok(())
+}
+
+fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
+    if kind != &SessionKind::Terminal {
+        return Err(CommandError::new(
+            ErrorCode::Unimplemented,
+            "Only terminal sessions are available.",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_session_id_is_invalid_request() {
+        let error = require_session_id("../other").expect_err("rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "Invalid session id.");
+    }
+
+    #[test]
+    fn oversized_write_is_invalid_request() {
+        require_write_size(&"x".repeat(MAX_WRITE_BYTES)).expect("at cap");
+        let error = require_write_size(&"x".repeat(MAX_WRITE_BYTES + 1)).expect_err("rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "Session input is too large.");
+    }
+
+    #[test]
+    fn non_terminal_kind_is_unimplemented() {
+        require_terminal_kind(&SessionKind::Terminal).expect("terminal");
+        let error = require_terminal_kind(&SessionKind::Acp).expect_err("rejected");
+        assert_eq!(error.code, ErrorCode::Unimplemented);
+        assert_eq!(error.message, "Only terminal sessions are available.");
+    }
+
+    #[test]
+    fn lost_daemon_connection_is_io() {
+        let error = disconnected("The daemon connection was lost.".to_string());
+        assert_eq!(error.code, ErrorCode::Io);
+        assert_eq!(error.message, "The daemon connection was lost.");
     }
 }

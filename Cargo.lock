@@ -628,6 +628,7 @@ dependencies = [
  "devboule-daemon",
  "devboule-protocol",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
 ]

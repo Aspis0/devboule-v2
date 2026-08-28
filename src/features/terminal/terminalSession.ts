@@ -1,4 +1,5 @@
 import type { Channel } from "@tauri-apps/api/core";
+import { isCommandError } from "../../lib/tauri";
 import type { Session, SessionEvent, SessionSnapshot } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
 import type { TerminalSessionRegistry } from "./terminalRegistry";
@@ -45,6 +46,7 @@ const CTRL_C_ARM_MS = 3000;
 const WRITE_FAIL_THRESHOLD = 2;
 
 function errorMessage(error: unknown): string {
+  if (isCommandError(error) && error.message.trim()) return error.message;
   if (typeof error === "string" && error.trim()) return error;
   if (error instanceof Error && error.message) return error.message;
   return "Unknown terminal error.";
@@ -551,6 +553,7 @@ export class TerminalSession {
 }
 
 function isMissingSessionError(error: unknown): boolean {
+  if (isCommandError(error)) return error.code === "session_not_found";
   return errorMessage(error).toLowerCase().includes("no session with that id");
 }
 
