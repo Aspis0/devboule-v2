@@ -44,6 +44,17 @@ function errorMessage(error: unknown): string {
   return "Unknown terminal error.";
 }
 
+function eventTypeName(event: unknown): string {
+  if (typeof event !== "object" || event === null || !("type" in event)) return "unknown";
+  const type = event.type;
+  return typeof type === "string" && type.trim() ? type : "unknown";
+}
+
+/** An output with seq <= asOfSeq is already represented by the snapshot and must never be applied again. */
+function isSnapshotCoveredOutput(seq: number, asOfSeq: number): boolean {
+  return seq <= asOfSeq;
+}
+
 /**
  * Headless controller for one terminal session. It owns IPC ordering, output
  * batching, resize debounce, interrupt confirmation, and cleanup; React only
@@ -65,6 +76,7 @@ export class TerminalSession {
   private attachPending = false;
   private applyingSnapshot = false;
   private snapshotReceived = false;
+  private snapshotAsOfSeq: number | null = null;
   private backendTeardown: "detach" | "close" | null = null;
   private backendTeardownSent = false;
 
@@ -182,6 +194,7 @@ export class TerminalSession {
       this.clearSnapshotState();
       this.disposeViewAndChannel();
       if (adopted && isMissingSessionError(attachError) && !this.disposed) {
+        this.resetSessionIdentity();
         this.deps.registry.remove(this.deps.workspaceId, sessionId);
         this.sessionId = null;
         this.started = false;
@@ -343,10 +356,20 @@ export class TerminalSession {
       case "output":
         this.processOutput(event);
         break;
+      default: {
+        const unknownEvent: never = event;
+        this.showError(
+          `The daemon sent an unknown terminal event type: ${eventTypeName(unknownEvent)}.`,
+        );
+        return;
+      }
     }
   }
 
   private processOutput(event: Extract<TerminalEvent, { type: "output" }>): void {
+    if (this.snapshotAsOfSeq !== null && isSnapshotCoveredOutput(event.seq, this.snapshotAsOfSeq)) {
+      return;
+    }
     if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
     this.lastSeenSeq = event.seq;
     if (this.sessionId !== null) {
@@ -371,7 +394,8 @@ export class TerminalSession {
   private finishSnapshotWrite(snapshot: SessionSnapshot): void {
     if (this.disposed || this.view === null) return;
 
-    this.lastSeenSeq = snapshot.asOfSeq;
+    this.snapshotAsOfSeq = snapshot.asOfSeq;
+    this.lastSeenSeq = Math.max(this.lastSeenSeq ?? snapshot.asOfSeq, snapshot.asOfSeq);
     if (this.sessionId !== null) {
       this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, snapshot.asOfSeq);
     }
@@ -385,7 +409,7 @@ export class TerminalSession {
     const queuedEvents = this.pendingSnapshotEvents.splice(0);
     for (const event of queuedEvents) {
       if (event.type === "snapshot") continue;
-      if (event.type === "output" && event.seq <= asOfSeq) continue;
+      if (event.type === "output" && isSnapshotCoveredOutput(event.seq, asOfSeq)) continue;
       this.processEvent(event);
     }
 
@@ -411,8 +435,15 @@ export class TerminalSession {
   private clearSnapshotState(): void {
     this.applyingSnapshot = false;
     this.snapshotReceived = false;
+    this.snapshotAsOfSeq = null;
     this.pendingSnapshotEvents.length = 0;
     this.pendingInput.length = 0;
+  }
+
+  /** Reset sequence state before this controller adopts a different session identity. */
+  private resetSessionIdentity(): void {
+    this.lastSeenSeq = null;
+    this.clearSnapshotState();
   }
 
   private scheduleOutputFlush(): void {

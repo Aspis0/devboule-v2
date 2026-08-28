@@ -42,6 +42,7 @@ export interface ScreenCursor {
   col: number;
   visible: boolean;
   shape: CursorShape;
+  blinking: boolean;
 }
 
 export interface SessionSnapshot {
@@ -53,6 +54,7 @@ export interface SessionSnapshot {
   cursor: ScreenCursor;
   alternateScreen: boolean;
   bracketedPaste: boolean;
+  lineWrap: boolean;
   title?: string;
 }
 

@@ -10,6 +10,11 @@ import { suppressAutomaticDsrReplies } from "./terminalDsr";
 const SCROLLBACK = 5000;
 const FONT_SIZE = 12;
 
+interface PendingWriteContinuation {
+  callback: () => void;
+  completed: boolean;
+}
+
 function paletteColor(host: HTMLElement, variable: string): string {
   const hostColor = getComputedStyle(host).getPropertyValue(variable).trim();
   if (hostColor) return hostColor;
@@ -78,6 +83,7 @@ function snapshotStateSequence(snapshot: SessionSnapshot): string {
   const alternateScreen = snapshot.alternateScreen ? "h" : "l";
   const visible = cursor.visible ? "h" : "l";
   const bracketedPaste = snapshot.bracketedPaste ? "h" : "l";
+  const lineWrap = snapshot.lineWrap ? "h" : "l";
   const title = snapshot.title === undefined ? "" : `\x1b]2;${snapshot.title}\x1b\\`;
   return [
     `\x1b[?1049${alternateScreen}`,
@@ -85,6 +91,7 @@ function snapshotStateSequence(snapshot: SessionSnapshot): string {
     `\x1b[?25${visible}`,
     `\x1b[${cursorShapeCode(cursor.shape)} q`,
     `\x1b[?2004${bracketedPaste}`,
+    `\x1b[?7${lineWrap}`,
     title,
   ].join("");
 }
@@ -108,7 +115,6 @@ export function createTerminalView(
     scrollback: SCROLLBACK,
     fontSize: FONT_SIZE,
     fontFamily: 'JetBrains Mono, "Fira Code", Menlo, Consolas, monospace',
-    cursorBlink: false,
     convertEol: false,
     theme: terminalTheme(host),
   });
@@ -128,20 +134,58 @@ export function createTerminalView(
   }
 
   let disposed = false;
+  const pendingWriteContinuations = new Set<PendingWriteContinuation>();
+
+  const completeWrite = (continuation: PendingWriteContinuation): void => {
+    if (continuation.completed) return;
+    continuation.completed = true;
+    pendingWriteContinuations.delete(continuation);
+    continuation.callback();
+  };
+
+  const writeWithCallback = (data: string, callback?: () => void): void => {
+    if (callback === undefined) {
+      if (!disposed) terminal.write(data);
+      return;
+    }
+
+    const continuation: PendingWriteContinuation = { callback, completed: false };
+    pendingWriteContinuations.add(continuation);
+    if (disposed) {
+      completeWrite(continuation);
+      return;
+    }
+    terminal.write(data, () => completeWrite(continuation));
+  };
+
+  const completePendingWrites = (): void => {
+    // xterm does not invoke pending write callbacks after disposal; complete
+    // them here so session continuations cannot remain suspended forever.
+    for (const continuation of [...pendingWriteContinuations]) completeWrite(continuation);
+  };
 
   return {
     write: (data, callback) => {
-      if (!disposed) terminal.write(data, callback);
+      writeWithCallback(data, callback);
     },
     applySnapshot: (snapshot, callback) => {
-      if (disposed) return;
+      if (disposed) {
+        callback();
+        return;
+      }
       terminal.reset();
       terminal.resize(snapshot.cols, snapshot.rows);
-      terminal.write(snapshot.data, () => {
-        if (disposed) return;
+      writeWithCallback(snapshot.data, () => {
+        if (disposed) {
+          callback();
+          return;
+        }
         // The state sequence is written only after the snapshot data has been
         // parsed. The session callback therefore cannot release input early.
-        terminal.write(snapshotStateSequence(snapshot), callback);
+        writeWithCallback(snapshotStateSequence(snapshot), () => {
+          terminal.options.cursorBlink = snapshot.cursor.blinking;
+          callback();
+        });
       });
     },
     fit: () => {
@@ -156,6 +200,7 @@ export function createTerminalView(
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      completePendingWrites();
       for (const disposable of dsrDisposables) disposable.dispose();
       dataDisposable.dispose();
       terminal.dispose();

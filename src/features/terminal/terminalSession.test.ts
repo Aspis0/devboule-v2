@@ -38,6 +38,7 @@ function makeHarness(options?: {
   deferSnapshot?: boolean;
   snapshotAsOfSeq?: number;
   existingSessionId?: string;
+  missingFirstAttach?: boolean;
   rejectDetach?: boolean;
 }): Harness {
   const written: string[] = [];
@@ -50,6 +51,11 @@ function makeHarness(options?: {
   let inputHandler: (data: string) => void = () => undefined;
   let snapshotCallback: (() => void) | null = null;
   let frameCallback: (() => void) | null = null;
+  const flushFrameNow = (): void => {
+    const callback = frameCallback;
+    frameCallback = null;
+    callback?.();
+  };
   let resolveAttach!: () => void;
   const attachGate = new Promise<void>((resolve) => {
     resolveAttach = resolve;
@@ -108,6 +114,7 @@ function makeHarness(options?: {
     geometry,
   };
 
+  let attachCount = 0;
   const invoke = vi.fn(async (command: string) => {
     if (command === "sessions_list") {
       return [];
@@ -125,15 +132,33 @@ function makeHarness(options?: {
       await attachGate;
     }
     if (command === "session_attach") {
+      attachCount += 1;
+      if (options?.missingFirstAttach && attachCount === 1) {
+        eventHandler({
+          type: "snapshot",
+          asOfSeq: 0,
+          cols: 80,
+          rows: 24,
+          data: "",
+          cursor: { row: 0, col: 0, visible: true, shape: "block", blinking: false },
+          alternateScreen: false,
+          bracketedPaste: false,
+          lineWrap: true,
+        });
+        eventHandler({ type: "output", seq: 900, data: "old session" });
+        flushFrameNow();
+        throw "No session with that id.";
+      }
       eventHandler({
         type: "snapshot",
         asOfSeq: options?.snapshotAsOfSeq ?? 0,
         cols: 80,
         rows: 24,
         data: "",
-        cursor: { row: 0, col: 0, visible: true, shape: "block" },
+        cursor: { row: 0, col: 0, visible: true, shape: "block", blinking: false },
         alternateScreen: false,
         bracketedPaste: false,
+        lineWrap: true,
       });
     }
     if (command === "session_detach" && options?.rejectDetach) {
@@ -186,11 +211,7 @@ function makeHarness(options?: {
     invoke,
     emit: (event) => eventHandler(event),
     emitInput: (data) => inputHandler(data),
-    flushFrame: () => {
-      const callback = frameCallback;
-      frameCallback = null;
-      callback?.();
-    },
+    flushFrame: flushFrameNow,
     completeSnapshot: () => {
       const callback = snapshotCallback;
       snapshotCallback = null;
@@ -296,7 +317,7 @@ describe("TerminalSession startup and channel ordering", () => {
     expect(harness.view.written).toEqual(["new"]);
   });
 
-  it("holds input and output until the snapshot write callback, then drops covered output", async () => {
+  it("uses the snapshot sequence boundary for output before and after restoration", async () => {
     const harness = makeHarness({ deferSnapshot: true, snapshotAsOfSeq: 2 });
     await harness.session.start();
     harness.invoke.mockClear();
@@ -318,6 +339,10 @@ describe("TerminalSession startup and channel ordering", () => {
       id: "session-1",
       text: "typed before snapshot",
     });
+
+    harness.emit(outputEvent(2, "covered-after-snapshot"));
+    harness.flushFrame();
+    expect(harness.view.written).toEqual(["live"]);
   });
 });
 
@@ -346,6 +371,16 @@ describe("TerminalSession lifecycle and errors", () => {
     });
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.invoke).not.toHaveBeenCalledWith("session_close", expect.anything());
+  });
+
+  it("resets the sequence watermark when replacing a missing adopted session", async () => {
+    const harness = makeHarness({ existingSessionId: "missing-session", missingFirstAttach: true });
+    await harness.session.start();
+
+    harness.emit(outputEvent(1, "new session"));
+    harness.flushFrame();
+
+    expect(harness.view.written).toEqual(["old session", "new session"]);
   });
 
   it("detaches without closing when disposed during an in-flight attach", async () => {
@@ -427,12 +462,38 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(harness.view.written).toEqual(["after gap"]);
   });
 
-  it("ignores unknown event types instead of treating them as output", async () => {
+  it("surfaces unknown event types instead of treating them as output", async () => {
     const harness = makeHarness();
     await harness.session.start();
     harness.emit({ type: "permission" } as unknown as TerminalEvent);
     harness.flushFrame();
     expect(harness.view.written).toEqual([]);
+    expect(harness.banners).toContainEqual({
+      kind: "error",
+      message: "The daemon sent an unknown terminal event type: permission.",
+    });
+  });
+
+  it("does not replace already-applied output when a stale snapshot arrives", async () => {
+    const harness = makeHarness({ snapshotAsOfSeq: 1 });
+    await harness.session.start();
+
+    harness.emit(outputEvent(2, "already applied"));
+    harness.flushFrame();
+    harness.emit({
+      type: "snapshot",
+      asOfSeq: 1,
+      cols: 80,
+      rows: 24,
+      data: "stale snapshot",
+      cursor: { row: 0, col: 0, visible: true, shape: "block", blinking: false },
+      alternateScreen: false,
+      bracketedPaste: false,
+      lineWrap: true,
+    });
+
+    expect(harness.view.snapshots).toHaveLength(1);
+    expect(harness.view.written).toEqual(["already applied"]);
   });
 
   it("makes dispose idempotent and suppresses late output", async () => {
