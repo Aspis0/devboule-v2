@@ -125,10 +125,10 @@ pub enum SessionEvent {
     /// past frames (M3.5). The daemon holds a headless terminal emulator,
     /// applies every output chunk to it in sequence order, and renders the
     /// visible grid to a canonical ANSI string; the client writes `data`
-    /// into its terminal emulator, restores the cursor and the mode flags
-    /// below, and only then releases input. Output chunks that arrive after
-    /// the snapshot are ordinary live events with sequences strictly
-    /// greater than `as_of_seq`.
+    /// into its terminal emulator, then restores the cursor and all state from
+    /// the explicit metadata below, and only then releases input. Output chunks
+    /// that arrive after the snapshot are ordinary live events with sequences
+    /// strictly greater than `as_of_seq`.
     Snapshot {
         /// Sequence boundary of this snapshot.
         ///
@@ -172,6 +172,9 @@ pub enum SessionEvent {
         /// client must restore this mode before releasing input.
         #[serde(rename = "bracketedPaste")]
         bracketed_paste: bool,
+        /// Whether line wrapping was enabled at capture.
+        #[serde(rename = "lineWrap")]
+        line_wrap: bool,
         /// Window title at capture, when the daemon saw one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
@@ -202,6 +205,7 @@ pub struct ScreenCursor {
     pub col: u16,
     pub visible: bool,
     pub shape: CursorShape,
+    pub blinking: bool,
 }
 
 /// Replay position for a reconnecting client.
@@ -382,9 +386,11 @@ mod tests {
                 col: 34,
                 visible: true,
                 shape: CursorShape::Block,
+                blinking: true,
             },
             alternate_screen: false,
             bracketed_paste: true,
+            line_wrap: true,
             title: Some("devboule - pwsh".to_string()),
         };
         let encoded = serde_json::to_value(&event).expect("json");
@@ -396,8 +402,10 @@ mod tests {
         assert_eq!(encoded["cursor"]["col"], 34);
         assert_eq!(encoded["cursor"]["visible"], true);
         assert_eq!(encoded["cursor"]["shape"], "block");
+        assert_eq!(encoded["cursor"]["blinking"], true);
         assert_eq!(encoded["alternateScreen"], false);
         assert_eq!(encoded["bracketedPaste"], true);
+        assert_eq!(encoded["lineWrap"], true);
         assert_eq!(encoded["title"], "devboule - pwsh");
         // A rename here silently breaks the client, so pin the exact key
         // set, not just the individual names.
@@ -417,6 +425,7 @@ mod tests {
                 "cols",
                 "cursor",
                 "data",
+                "lineWrap",
                 "rows",
                 "title",
                 "type"
@@ -438,9 +447,11 @@ mod tests {
                 col: 5,
                 visible: true,
                 shape: CursorShape::Underline,
+                blinking: false,
             },
             alternate_screen: false,
             bracketed_paste: false,
+            line_wrap: false,
             title: None,
         };
         let encoded = serde_json::to_value(&event).expect("json");
@@ -479,9 +490,11 @@ mod tests {
                 col: 0,
                 visible: true,
                 shape: CursorShape::Block,
+                blinking: true,
             },
             alternate_screen: false,
             bracketed_paste: false,
+            line_wrap: true,
             title: None,
         };
         let encoded = serde_json::to_string(&event).expect("json");
@@ -521,9 +534,11 @@ mod tests {
                 col: 199,
                 visible: true,
                 shape: CursorShape::Bar,
+                blinking: false,
             },
             alternate_screen: true,
             bracketed_paste: true,
+            line_wrap: true,
             title: None,
         };
         let encoded = serde_json::to_vec(&event).expect("json");

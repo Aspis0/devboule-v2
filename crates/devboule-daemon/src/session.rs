@@ -66,12 +66,13 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::{Read, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 #[cfg(windows)]
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -167,27 +168,6 @@ impl PtyCommand {
         }
         command
     }
-}
-
-/// Append bytes to a bounded byte ring, dropping the oldest bytes first.
-/// This pure helper is kept separate from the sequenced scrollback so its cap
-/// policy remains directly unit-testable.
-#[allow(dead_code)]
-pub fn push_capped(ring: &mut VecDeque<u8>, data: &[u8], cap: usize) {
-    if cap == 0 {
-        ring.clear();
-        return;
-    }
-    if data.len() >= cap {
-        ring.clear();
-        ring.extend(&data[data.len() - cap..]);
-        return;
-    }
-    let overflow = (ring.len() + data.len()).saturating_sub(cap);
-    if overflow > 0 {
-        ring.drain(..overflow);
-    }
-    ring.extend(data);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -350,6 +330,16 @@ struct SessionRuntime {
     /// A failed journal write is a fact about this session, not about the
     /// daemon or a later session. It remains true for the session lifetime.
     journal_degraded: AtomicBool,
+    /// A poisoned stream lock or terminal parser panic means the screen can
+    /// no longer be trusted. Such a session is dead, not a session to recover
+    /// by continuing with possibly corrupted state.
+    terminal_dead: AtomicBool,
+    /// Kept outside `stream` so a poisoned stream can still wake its viewer
+    /// and deliver the degraded + exit terminal markers.
+    attachment_notify: Mutex<Option<Arc<ConnOut>>>,
+    /// The last generation is also needed if the stream lock is poisoned
+    /// before the EOF path can read its generation.
+    generation: AtomicU64,
     peak_pending_bytes: AtomicUsize,
     coalesced_bytes: AtomicU64,
     coalesced_frames: AtomicU64,
@@ -389,6 +379,9 @@ impl SessionRuntime {
             }),
             pty_writer: OnceLock::new(),
             journal_degraded: AtomicBool::new(false),
+            terminal_dead: AtomicBool::new(false),
+            attachment_notify: Mutex::new(None),
+            generation: AtomicU64::new(1),
             peak_pending_bytes: AtomicUsize::new(0),
             coalesced_bytes: AtomicU64::new(0),
             coalesced_frames: AtomicU64::new(0),
@@ -402,41 +395,47 @@ impl SessionRuntime {
 
     fn from_replay(session_id: String, journal: Option<Arc<Journal>>, replay: Replay) -> Arc<Self> {
         let runtime = Arc::new(Self::with_journal(session_id, journal));
-        if let Ok(mut stream) = runtime.stream.lock() {
-            stream.generation = replay.generation;
-            stream.next_seq = replay.last_seq.saturating_add(1);
-            stream.last_applied_seq = replay.last_seq;
-            stream.output_closed = true;
-            stream.process_exited = true;
-            stream.disposition = Disposition::Recovered {
-                truncated: replay.truncated,
-            };
-            // A recovered session is a transcript, not a live process: no
-            // emulator, no snapshot, no live queue. Cursor-based journal
-            // replay below serves its attaches.
-            stream.screen = None;
-            for event in replay.events {
-                match event {
-                    SessionEvent::Output { seq, data } => {
-                        stream.scrollback.push(seq, data.as_bytes());
-                    }
-                    SessionEvent::Exit { code } => {
-                        stream.exit_code = code;
-                        stream.disposition = Disposition::Exited;
-                    }
-                    SessionEvent::Recovered { truncated } => {
-                        stream.disposition = Disposition::Recovered { truncated };
-                    }
-                    SessionEvent::JournalDegraded => {
-                        runtime.journal_degraded.store(true, Ordering::Release);
-                    }
-                    SessionEvent::OutputGap { .. } => {}
-                    // Snapshots are screen state, never journal records; a
-                    // recovered session replays transcript events only.
-                    SessionEvent::Snapshot { .. } => {}
+        let mut stream = runtime
+            .stream
+            .lock()
+            .expect("new transcript runtime stream lock");
+        runtime
+            .generation
+            .store(replay.generation, Ordering::Release);
+        stream.generation = replay.generation;
+        stream.next_seq = replay.last_seq.saturating_add(1);
+        stream.last_applied_seq = replay.last_seq;
+        stream.output_closed = true;
+        stream.process_exited = true;
+        stream.disposition = Disposition::Recovered {
+            truncated: replay.truncated,
+        };
+        // A recovered session is a transcript, not a live process: no
+        // emulator, no snapshot, no live queue. Cursor-based journal
+        // replay below serves its attaches.
+        stream.screen = None;
+        for event in replay.events {
+            match event {
+                SessionEvent::Output { seq, data } => {
+                    stream.scrollback.push(seq, data.as_bytes());
                 }
+                SessionEvent::Exit { code } => {
+                    stream.exit_code = code;
+                    stream.disposition = Disposition::Exited;
+                }
+                SessionEvent::Recovered { truncated } => {
+                    stream.disposition = Disposition::Recovered { truncated };
+                }
+                SessionEvent::JournalDegraded => {
+                    runtime.journal_degraded.store(true, Ordering::Release);
+                }
+                SessionEvent::OutputGap { .. } => {}
+                // Snapshots are screen state, never journal records; a
+                // recovered session replays transcript events only.
+                SessionEvent::Snapshot { .. } => {}
             }
         }
+        drop(stream);
         runtime
     }
 
@@ -444,10 +443,55 @@ impl SessionRuntime {
     /// live process). Attaches to it replay the journal instead of
     /// synchronising a screen.
     fn is_transcript(&self) -> bool {
-        self.stream
-            .lock()
+        self.lock_stream()
             .map(|stream| stream.screen.is_none())
-            .unwrap_or(true)
+            .unwrap_or(false)
+    }
+
+    fn lock_stream(&self) -> Result<MutexGuard<'_, StreamState>, ()> {
+        match self.stream.lock() {
+            Ok(stream) => Ok(stream),
+            Err(_) => {
+                self.mark_terminal_dead("session stream lock poisoned");
+                Err(())
+            }
+        }
+    }
+
+    fn mark_terminal_dead(&self, reason: &str) {
+        if !self.terminal_dead.swap(true, Ordering::AcqRel) {
+            eprintln!("session {} marked dead: {reason}", self.session_id);
+        }
+        self.mark_journal_degraded();
+        self.notify_attachment();
+    }
+
+    fn set_attachment_notify(&self, outbound: Option<Arc<ConnOut>>) {
+        match self.attachment_notify.lock() {
+            Ok(mut current) => *current = outbound,
+            Err(_) => eprintln!(
+                "session {} could not update attachment notification: lock poisoned",
+                self.session_id
+            ),
+        }
+    }
+
+    fn notify_attachment(&self) {
+        match self.attachment_notify.lock() {
+            Ok(current) => {
+                if let Some(outbound) = &*current {
+                    outbound.notify();
+                }
+            }
+            Err(_) => eprintln!(
+                "session {} could not notify its attachment: lock poisoned",
+                self.session_id
+            ),
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     fn publish_output(&self, data: &str) {
@@ -455,11 +499,7 @@ impl SessionRuntime {
         let seq;
         let generation;
         {
-            let Ok(mut stream) = self.stream.lock() else {
-                eprintln!(
-                    "session {} dropped terminal output: stream lock unavailable",
-                    self.session_id
-                );
+            let Ok(mut stream) = self.lock_stream() else {
                 return;
             };
             if stream.output_closed {
@@ -483,7 +523,16 @@ impl SessionRuntime {
             seq = stream.next_seq;
             stream.next_seq = stream.next_seq.saturating_add(1);
             pty_replies = match stream.screen.as_mut() {
-                Some(screen) => screen.feed(data.as_bytes()),
+                Some(screen) => {
+                    match catch_unwind(AssertUnwindSafe(|| screen.feed(data.as_bytes()))) {
+                        Ok(replies) => replies,
+                        Err(_) => {
+                            drop(stream);
+                            self.mark_terminal_dead("terminal parser panicked");
+                            return;
+                        }
+                    }
+                }
                 // Transcript runtimes have no reader thread; unreachable, but
                 // the boundary must still stay honest if it ever happened.
                 None => Vec::new(),
@@ -539,10 +588,7 @@ impl SessionRuntime {
             return;
         };
         let Ok(mut writer) = writer.lock() else {
-            eprintln!(
-                "session {} dropped terminal query replies: PTY writer lock unavailable",
-                self.session_id
-            );
+            self.mark_terminal_dead("PTY writer lock poisoned");
             return;
         };
         for reply in replies {
@@ -563,11 +609,7 @@ impl SessionRuntime {
     }
 
     fn record_output_loss(&self) {
-        let Ok(stream) = self.stream.lock() else {
-            eprintln!(
-                "session {} dropped terminal output: stream lock unavailable",
-                self.session_id
-            );
+        let Ok(stream) = self.lock_stream() else {
             return;
         };
         // Bytes lost between the reader and the emulator were never applied
@@ -593,12 +635,8 @@ impl SessionRuntime {
             if let Some(journal) = &self.journal {
                 journal.note_session_degraded(&self.session_id);
             }
-            if let Ok(stream) = self.stream.lock() {
-                if let Some(attached) = &stream.attached {
-                    attached.outbound.notify();
-                }
-            }
         }
+        self.notify_attachment();
     }
 
     fn refresh_journal_degradation(&self) {
@@ -677,7 +715,10 @@ impl SessionRuntime {
     /// item is `Snapshot(as_of_seq)` and every subsequent publish enqueues an
     /// Output with a strictly greater sequence.
     fn try_attach(&self, from_cursor: Option<Cursor>, conn: &ConnHandle) -> Result<u64, WireError> {
-        let Ok(mut stream) = self.stream.lock() else {
+        if self.terminal_dead.load(Ordering::Acquire) {
+            return Err(process_gone());
+        }
+        let Ok(mut stream) = self.lock_stream() else {
             return Err(internal("Session state is unavailable."));
         };
         if let Some(current) = &stream.attached {
@@ -701,6 +742,7 @@ impl SessionRuntime {
             conn_id: conn.id,
             outbound: Arc::clone(&conn.outbound),
         });
+        self.set_attachment_notify(Some(Arc::clone(&conn.outbound)));
         stream.pending.clear();
         stream.pending_bytes = 0;
         stream.pending_frames = 0;
@@ -713,25 +755,27 @@ impl SessionRuntime {
     }
 
     fn detach_if_conn(&self, conn_id: u64) {
-        if let Ok(mut stream) = self.stream.lock() {
-            if stream
-                .attached
-                .as_ref()
-                .is_some_and(|attached| attached.conn_id == conn_id)
-            {
-                stream.attached = None;
-                // The unsent queue belonged to the departing viewer. A new
-                // attach must start from a fresh snapshot, not from a stale
-                // stream assembled for a client that is gone.
-                stream.pending.clear();
-                stream.pending_bytes = 0;
-                stream.pending_frames = 0;
-            }
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        if stream
+            .attached
+            .as_ref()
+            .is_some_and(|attached| attached.conn_id == conn_id)
+        {
+            stream.attached = None;
+            self.set_attachment_notify(None);
+            // The unsent queue belonged to the departing viewer. A new
+            // attach must start from a fresh snapshot, not from a stale
+            // stream assembled for a client that is gone.
+            stream.pending.clear();
+            stream.pending_bytes = 0;
+            stream.pending_frames = 0;
         }
     }
 
     fn mark_exited(&self, code: Option<u32>) {
-        let Ok(mut stream) = self.stream.lock() else {
+        let Ok(mut stream) = self.lock_stream() else {
             return;
         };
         if stream.process_exited {
@@ -760,7 +804,7 @@ impl SessionRuntime {
     }
 
     fn close_output(&self) {
-        let Ok(mut stream) = self.stream.lock() else {
+        let Ok(mut stream) = self.lock_stream() else {
             return;
         };
         stream.output_closed = true;
@@ -787,10 +831,11 @@ impl SessionRuntime {
 
     #[cfg(test)]
     fn bump_generation(&self) -> u64 {
-        let Ok(mut stream) = self.stream.lock() else {
+        let Ok(mut stream) = self.lock_stream() else {
             return 1;
         };
         stream.generation = stream.generation.saturating_add(1);
+        self.generation.store(stream.generation, Ordering::Release);
         stream.next_seq = 1;
         stream.last_applied_seq = 0;
         // A new generation is a new process: a fresh emulator, not the old
@@ -887,6 +932,7 @@ fn snapshot_event(as_of_seq: u64, screen: ScreenSnapshot) -> SessionEvent {
             row: screen.cursor.row,
             col: screen.cursor.col,
             visible: screen.cursor.visible,
+            blinking: screen.cursor.blinking,
             shape: match screen.cursor.shape {
                 SnapshotCursorShape::Block => CursorShape::Block,
                 SnapshotCursorShape::Underline => CursorShape::Underline,
@@ -895,6 +941,7 @@ fn snapshot_event(as_of_seq: u64, screen: ScreenSnapshot) -> SessionEvent {
         },
         alternate_screen: screen.alternate_screen,
         bracketed_paste: screen.bracketed_paste,
+        line_wrap: screen.line_wrap,
         title: screen.title,
     }
 }
@@ -989,11 +1036,12 @@ impl ConnHandle {
                 if pull.exit_sent {
                     return None;
                 }
-                let stream = pull
-                    .runtime
-                    .stream
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
+                if pull.runtime.terminal_dead.load(Ordering::Acquire) {
+                    return Some(Duration::ZERO);
+                }
+                let Ok(stream) = pull.runtime.lock_stream() else {
+                    return Some(Duration::ZERO);
+                };
                 if SessionRuntime::ready_for_exit(&stream) {
                     // Drain elapsed (or EOF) since the last pull. There is no
                     // notify at that instant; a zero timeout makes the writer
@@ -1099,11 +1147,16 @@ impl ConnHandle {
 /// may JournalDegraded or the exit event be appended, so neither can
 /// overtake output that is still queued.
 fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
+    if pull.runtime.terminal_dead.load(Ordering::Acquire) {
+        push_dead_events(session_id, pull, events);
+        return;
+    }
     let mut drained = Vec::with_capacity(PULL_BATCH);
     let degraded;
     let mut exit_event = None;
     {
-        let Ok(mut stream) = pull.runtime.stream.lock() else {
+        let Ok(mut stream) = pull.runtime.lock_stream() else {
+            push_dead_events(session_id, pull, events);
             return;
         };
         while drained.len() < PULL_BATCH {
@@ -1172,16 +1225,46 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
     }
 }
 
+fn push_dead_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
+    if !pull.journal_degraded_sent {
+        events.push(PendingEvent {
+            session_id: session_id.to_string(),
+            attachment_generation: pull.attachment_generation,
+            envelope: SessionEventEnvelope {
+                session_id: session_id.to_string(),
+                generation: pull.generation,
+                event: SessionEvent::JournalDegraded,
+            },
+        });
+        pull.journal_degraded_sent = true;
+    }
+    if !pull.exit_sent {
+        events.push(PendingEvent {
+            session_id: session_id.to_string(),
+            attachment_generation: pull.attachment_generation,
+            envelope: SessionEventEnvelope {
+                session_id: session_id.to_string(),
+                generation: pull.generation,
+                event: SessionEvent::Exit { code: None },
+            },
+        });
+        pull.exit_sent = true;
+    }
+}
+
 /// Transcript pull: cursor-based journal/scrollback replay for a recovered
 /// session. This is the M2/M3 replay contract, kept for transcripts only.
 fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
+    if pull.runtime.terminal_dead.load(Ordering::Acquire) {
+        push_dead_events(session_id, pull, events);
+        return;
+    }
     let cursor = pull.transcript_cursor;
     let needs_journal = {
-        let stream = pull
-            .runtime
-            .stream
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let Ok(stream) = pull.runtime.lock_stream() else {
+            push_dead_events(session_id, pull, events);
+            return;
+        };
         stream
             .scrollback
             .needs_journal_replay(cursor, stream.next_seq)
@@ -1193,11 +1276,10 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
         Vec::new()
     };
     let replay = {
-        let stream = pull
-            .runtime
-            .stream
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let Ok(stream) = pull.runtime.lock_stream() else {
+            push_dead_events(session_id, pull, events);
+            return;
+        };
         stream
             .scrollback
             .replay_after_with_journal(cursor, &journal_outputs)
@@ -1226,11 +1308,10 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
         pull.journal_degraded_sent = true;
     }
     if !pull.exit_sent {
-        let stream = pull
-            .runtime
-            .stream
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let Ok(stream) = pull.runtime.lock_stream() else {
+            push_dead_events(session_id, pull, events);
+            return;
+        };
         if SessionRuntime::ready_for_exit(&stream) {
             let event = match stream.disposition {
                 Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
@@ -1321,21 +1402,33 @@ impl RegistryEntry {
 
 fn live_session_view(session: &PtySession) -> Session {
     let mut metadata = session.metadata.clone();
-    if let Ok(stream) = session.runtime.stream.lock() {
-        metadata.state = match stream.disposition {
-            Disposition::Running => SessionState::Live {
-                generation: stream.generation,
-            },
-            Disposition::Exited => SessionState::Ended {
-                generation: stream.generation,
-                code: stream.exit_code,
-            },
-            Disposition::Recovered { truncated } => SessionState::Recovered {
-                generation: stream.generation,
-                truncated,
-            },
+    if session.runtime.terminal_dead.load(Ordering::Acquire) {
+        metadata.state = SessionState::Ended {
+            generation: session.runtime.generation(),
+            code: None,
         };
+        return metadata;
     }
+    let Ok(stream) = session.runtime.lock_stream() else {
+        metadata.state = SessionState::Ended {
+            generation: session.runtime.generation(),
+            code: None,
+        };
+        return metadata;
+    };
+    metadata.state = match stream.disposition {
+        Disposition::Running => SessionState::Live {
+            generation: stream.generation,
+        },
+        Disposition::Exited => SessionState::Ended {
+            generation: stream.generation,
+            code: stream.exit_code,
+        },
+        Disposition::Recovered { truncated } => SessionState::Recovered {
+            generation: stream.generation,
+            truncated,
+        },
+    };
     metadata
 }
 
@@ -1683,12 +1776,18 @@ impl SessionRegistry {
         let mut writer = writer
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
-        writer
-            .write_all(text.as_bytes())
-            .map_err(|_| WireError::new(ErrorCode::Io, "Could not send input to the terminal."))?;
-        writer
-            .flush()
-            .map_err(|_| WireError::new(ErrorCode::Io, "Could not flush input to the terminal."))
+        writer.write_all(text.as_bytes()).map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not send input to the terminal: {error}"),
+            )
+        })?;
+        writer.flush().map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not flush input to the terminal: {error}"),
+            )
+        })
     }
 
     pub fn resize(
@@ -1885,8 +1984,12 @@ pub fn spawn_session(
     };
 
     #[cfg(not(windows))]
-    let process_job = JobObject::new()
-        .map_err(|_| WireError::new(ErrorCode::Io, "Could not create the terminal process job."))?;
+    let process_job = JobObject::new().map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not create the terminal process job: {error}"),
+        )
+    })?;
 
     let killer = child.clone_killer();
 
@@ -2166,9 +2269,9 @@ fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
         return;
     };
     let (generation, code) = {
-        let stream = match runtime.stream.lock() {
+        let stream = match runtime.lock_stream() {
             Ok(stream) => stream,
-            Err(_) => return,
+            Err(_) => return journal_mark_ended_with_fallback(journal, runtime),
         };
         (stream.generation, stream.exit_code)
     };
@@ -2176,6 +2279,17 @@ fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
     // terminal marker is critical and must not be dropped behind a full
     // output queue.
     if let Err(error) = journal.mark_ended_blocking(&runtime.session_id, generation, code) {
+        runtime.mark_journal_degraded();
+        eprintln!(
+            "journal could not record terminal exit for {}: {error}",
+            runtime.session_id
+        );
+    }
+}
+
+fn journal_mark_ended_with_fallback(journal: &Journal, runtime: &SessionRuntime) {
+    if let Err(error) = journal.mark_ended_blocking(&runtime.session_id, runtime.generation(), None)
+    {
         runtime.mark_journal_degraded();
         eprintln!(
             "journal could not record terminal exit for {}: {error}",
@@ -2313,8 +2427,12 @@ fn load_test_pty_command(paths: &RuntimePaths) -> Option<PtyCommand> {
 }
 
 fn shell_command() -> Result<PtyCommand, WireError> {
-    let cwd = std::env::current_dir()
-        .map_err(|_| WireError::new(ErrorCode::Io, "Could not determine terminal directory."))?;
+    let cwd = std::env::current_dir().map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not determine terminal directory: {error}"),
+        )
+    })?;
     let (program, args) = configured_shell();
     Ok(PtyCommand::new(program, args, cwd, Vec::new()))
 }
@@ -2464,6 +2582,39 @@ mod tests {
         }
     }
 
+    fn apply_snapshot_state(screen: &mut Screen, event: &SessionEvent) {
+        let SessionEvent::Snapshot {
+            data,
+            cursor,
+            bracketed_paste,
+            line_wrap,
+            title,
+            ..
+        } = event
+        else {
+            return;
+        };
+        screen.process(data.as_bytes());
+        let shape = match cursor.shape {
+            CursorShape::Block => 1,
+            CursorShape::Underline => 3,
+            CursorShape::Bar => 5,
+        } + u16::from(!cursor.blinking);
+        let state = format!(
+            "\x1b[{};{}H\x1b[?25{}\x1b[{shape} q\x1b[?2004{}\x1b[?7{}{}",
+            cursor.row + 1,
+            cursor.col + 1,
+            if cursor.visible { 'h' } else { 'l' },
+            if *bracketed_paste { 'h' } else { 'l' },
+            if *line_wrap { 'h' } else { 'l' },
+            title
+                .as_deref()
+                .map(|title| format!("\x1b]2;{}\x1b\\", title))
+                .unwrap_or_default(),
+        );
+        screen.process(state.as_bytes());
+    }
+
     /// Deterministic flood chunk with attributes, cursor motion, CJK and a
     /// line break, so screen equality is exercised beyond plain text.
     fn flood_chunk(index: usize) -> String {
@@ -2482,6 +2633,31 @@ mod tests {
             generation,
         );
         generation
+    }
+
+    #[test]
+    fn poisoned_stream_is_dead_and_not_reused() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        attach_tracked(&runtime, &conn);
+        let poisoned = Arc::clone(&runtime);
+        let panic = std::thread::spawn(move || {
+            let _stream = poisoned.stream.lock().expect("stream lock");
+            panic!("simulate a terminal-state panic");
+        });
+        assert!(panic.join().is_err());
+
+        runtime.publish_output("must not be applied");
+        let events = drain(&conn);
+        assert!(runtime.terminal_dead.load(Ordering::Acquire));
+        assert!(matches!(
+            events.as_slice(),
+            [
+                SessionEvent::JournalDegraded,
+                SessionEvent::Exit { code: None }
+            ]
+        ));
+        assert_eq!(runtime.try_attach(None, &conn), Err(process_gone()));
     }
 
     #[test]
@@ -2620,9 +2796,8 @@ mod tests {
 
         fn apply(screen: &mut Screen, event: &SessionEvent) {
             match event {
-                SessionEvent::Snapshot { data, .. } | SessionEvent::Output { data, .. } => {
-                    screen.process(data.as_bytes());
-                }
+                SessionEvent::Snapshot { .. } => apply_snapshot_state(screen, event),
+                SessionEvent::Output { data, .. } => screen.process(data.as_bytes()),
                 _ => {}
             }
         }
@@ -2694,11 +2869,9 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for event in &events {
             match event {
-                SessionEvent::Snapshot {
-                    as_of_seq, data, ..
-                } => {
+                SessionEvent::Snapshot { as_of_seq, .. } => {
                     expected = Some(as_of_seq + 1);
-                    client.process(data.as_bytes());
+                    apply_snapshot_state(&mut client, event);
                 }
                 SessionEvent::Output { seq, data } => {
                     assert_eq!(*seq, expected.expect("outputs follow the snapshot"));

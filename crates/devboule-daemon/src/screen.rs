@@ -279,7 +279,8 @@ pub fn render_ansi(snapshot: &ScreenSnapshot) -> String {
 
     // Painting uses wrapping even when the captured terminal had it off, so
     // WRAPLINE and the special leading spacer for a final-column wide glyph
-    // can be recreated. The original mode is restored at the end.
+    // can be recreated. The captured mode is restored by the wire metadata
+    // after this paint payload has been parsed.
     output.push_str("\x1b[?7h");
     let mut style = CellStyle::default();
     let mut continuation = None;
@@ -341,40 +342,11 @@ pub fn render_ansi(snapshot: &ScreenSnapshot) -> String {
         }
     }
 
-    // Leave the target terminal in the exact captured mode and cursor state.
+    // The wire snapshot carries cursor, mode, and title metadata separately.
+    // Reset only the painting style here so the next live output starts from
+    // a known SGR state; the frontend restores the captured state after this
+    // payload has been parsed.
     output.push_str("\x1b[0m");
-    if rows > 0 && cols > 0 {
-        cup(
-            &mut output,
-            usize::from(snapshot.cursor.row),
-            usize::from(snapshot.cursor.col),
-        );
-    }
-    output.push_str(if snapshot.cursor.visible {
-        "\x1b[?25h"
-    } else {
-        "\x1b[?25l"
-    });
-    output.push_str("\x1b[");
-    output.push_str(&cursor_style_code(snapshot.cursor));
-    output.push_str(" q");
-    output.push_str(if snapshot.bracketed_paste {
-        "\x1b[?2004h"
-    } else {
-        "\x1b[?2004l"
-    });
-    output.push_str(if snapshot.line_wrap {
-        "\x1b[?7h"
-    } else {
-        "\x1b[?7l"
-    });
-
-    if let Some(title) = snapshot.title.as_deref() {
-        output.push_str("\x1b]2;");
-        output.push_str(&sanitize_title(title));
-        output.push_str("\x1b\\");
-    }
-
     output
 }
 
@@ -391,15 +363,6 @@ fn snapshot_cursor_shape(shape: CursorShape) -> SnapshotCursorShape {
             SnapshotCursorShape::Block
         }
     }
-}
-
-fn cursor_style_code(cursor: SnapshotCursor) -> String {
-    let base = match cursor.shape {
-        SnapshotCursorShape::Block => 1,
-        SnapshotCursorShape::Underline => 3,
-        SnapshotCursorShape::Bar => 5,
-    };
-    (base + u16::from(!cursor.blinking)).to_string()
 }
 
 fn snapshot_cell(snapshot: &ScreenSnapshot, row: usize, col: usize) -> Cell {
@@ -509,6 +472,10 @@ fn set_style(output: &mut String, current: &mut CellStyle, cell: &Cell) {
 fn append_color_params(params: &mut Vec<String>, color: Color, foreground: bool) {
     let prefix = if foreground { 38 } else { 48 };
     match color {
+        Color::Named(named) if is_dim_color(named) => {
+            let index = named_color_index(named).expect("all dim colors have palette indices");
+            append_color_params_with_prefix(params, Color::Indexed(index), prefix);
+        }
         Color::Named(named) => params.push(named_color_code(named, foreground).to_string()),
         Color::Indexed(index) => {
             append_color_params_with_prefix(params, Color::Indexed(index), prefix)
@@ -563,14 +530,14 @@ fn append_underline_color_params(params: &mut Vec<String>, color: Color) {
 
 fn named_color_code(color: NamedColor, foreground: bool) -> u16 {
     let code = match color {
-        NamedColor::Black | NamedColor::DimBlack => 30,
-        NamedColor::Red | NamedColor::DimRed => 31,
-        NamedColor::Green | NamedColor::DimGreen => 32,
-        NamedColor::Yellow | NamedColor::DimYellow => 33,
-        NamedColor::Blue | NamedColor::DimBlue => 34,
-        NamedColor::Magenta | NamedColor::DimMagenta => 35,
-        NamedColor::Cyan | NamedColor::DimCyan => 36,
-        NamedColor::White | NamedColor::DimWhite => 37,
+        NamedColor::Black => 30,
+        NamedColor::Red => 31,
+        NamedColor::Green => 32,
+        NamedColor::Yellow => 33,
+        NamedColor::Blue => 34,
+        NamedColor::Magenta => 35,
+        NamedColor::Cyan => 36,
+        NamedColor::White => 37,
         NamedColor::BrightBlack => 90,
         NamedColor::BrightRed => 91,
         NamedColor::BrightGreen => 92,
@@ -579,6 +546,14 @@ fn named_color_code(color: NamedColor, foreground: bool) -> u16 {
         NamedColor::BrightMagenta => 95,
         NamedColor::BrightCyan => 96,
         NamedColor::BrightWhite => 97,
+        NamedColor::DimBlack => 90,
+        NamedColor::DimRed => 91,
+        NamedColor::DimGreen => 92,
+        NamedColor::DimYellow => 93,
+        NamedColor::DimBlue => 94,
+        NamedColor::DimMagenta => 95,
+        NamedColor::DimCyan => 96,
+        NamedColor::DimWhite => 97,
         NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::DimForeground => 39,
         NamedColor::Background | NamedColor::Cursor => 39,
     };
@@ -610,20 +585,34 @@ fn named_color_index(color: NamedColor) -> Option<u8> {
         NamedColor::BrightMagenta => Some(13),
         NamedColor::BrightCyan => Some(14),
         NamedColor::BrightWhite => Some(15),
+        NamedColor::DimBlack => Some(8),
+        NamedColor::DimRed => Some(9),
+        NamedColor::DimGreen => Some(10),
+        NamedColor::DimYellow => Some(11),
+        NamedColor::DimBlue => Some(12),
+        NamedColor::DimMagenta => Some(13),
+        NamedColor::DimCyan => Some(14),
+        NamedColor::DimWhite => Some(15),
         NamedColor::Foreground
         | NamedColor::Background
         | NamedColor::Cursor
-        | NamedColor::DimBlack
-        | NamedColor::DimRed
-        | NamedColor::DimGreen
-        | NamedColor::DimYellow
-        | NamedColor::DimBlue
-        | NamedColor::DimMagenta
-        | NamedColor::DimCyan
-        | NamedColor::DimWhite
         | NamedColor::BrightForeground
         | NamedColor::DimForeground => None,
     }
+}
+
+fn is_dim_color(color: NamedColor) -> bool {
+    matches!(
+        color,
+        NamedColor::DimBlack
+            | NamedColor::DimRed
+            | NamedColor::DimGreen
+            | NamedColor::DimYellow
+            | NamedColor::DimBlue
+            | NamedColor::DimMagenta
+            | NamedColor::DimCyan
+            | NamedColor::DimWhite
+    )
 }
 
 fn write_cell_text(output: &mut String, cell: &Cell) {
@@ -665,6 +654,27 @@ mod tests {
         let before = source.snapshot();
         let mut target = Screen::new(before.cols, before.rows);
         target.process(before.render_ansi().as_bytes());
+        let cursor = before.cursor;
+        let shape = match cursor.shape {
+            SnapshotCursorShape::Block => 1,
+            SnapshotCursorShape::Underline => 3,
+            SnapshotCursorShape::Bar => 5,
+        } + u16::from(!cursor.blinking);
+        let state = format!(
+            "\x1b[?1049{}\x1b[{};{}H\x1b[?25{}\x1b[{shape} q\x1b[?2004{}\x1b[?7{}{}",
+            if before.alternate_screen { 'h' } else { 'l' },
+            cursor.row + 1,
+            cursor.col + 1,
+            if cursor.visible { 'h' } else { 'l' },
+            if before.bracketed_paste { 'h' } else { 'l' },
+            if before.line_wrap { 'h' } else { 'l' },
+            before
+                .title
+                .as_deref()
+                .map(|title| format!("\x1b]2;{}\x1b\\", sanitize_title(title)))
+                .unwrap_or_default(),
+        );
+        target.process(state.as_bytes());
         assert_same_screen(&before, &target.snapshot());
     }
 
@@ -808,6 +818,31 @@ mod tests {
             screen.snapshot().title.expect("long title").chars().count(),
             MAX_TITLE_CHARS
         );
+    }
+
+    #[test]
+    fn dim_palette_colors_use_their_distinct_palette_indices() {
+        let colors = [
+            (NamedColor::DimBlack, 8),
+            (NamedColor::DimRed, 9),
+            (NamedColor::DimGreen, 10),
+            (NamedColor::DimYellow, 11),
+            (NamedColor::DimBlue, 12),
+            (NamedColor::DimMagenta, 13),
+            (NamedColor::DimCyan, 14),
+            (NamedColor::DimWhite, 15),
+        ];
+        for (color, index) in colors {
+            let mut params = Vec::new();
+            append_color_params(&mut params, Color::Named(color), true);
+            assert_eq!(
+                params,
+                vec!["38".to_string(), "5".to_string(), index.to_string()]
+            );
+        }
+        let mut normal = Vec::new();
+        append_color_params(&mut normal, Color::Named(NamedColor::Black), true);
+        assert_eq!(normal, vec!["30".to_string()]);
     }
 
     #[test]
