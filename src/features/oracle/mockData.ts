@@ -1,106 +1,156 @@
-import type { IndexedFile } from "../../types/ipc";
+import type {
+  FileTab,
+  IndexedFile,
+  OracleHealth,
+  OracleHealthCheck,
+  OracleIndexProgress,
+  OracleIndexStats,
+  OracleIndexStatus,
+  OracleSearchResponse,
+} from "../../types/ipc";
 
 /**
  * M1b mock boundary.
  *
  * Replace this module with typed IPC adapters when the Oracle daemon is wired.
+ * The values below intentionally describe pointers and index state, never a
+ * generated answer.
  */
 
-export type OracleFileTab = "indexed" | "pending" | "stale";
+export type OracleFileTab = FileTab;
 
 export interface OracleFile extends Pick<IndexedFile, "path" | "chunks"> {
-  when: string;
+  updated_at: string;
 }
 
-export interface OracleCheck {
-  id: string;
-  ok: boolean;
-  title: string;
-}
-
-export const ORACLE_ANSWER =
-  "The workspace root is resolved once, in the index preferences: indexRoot wins, and the dense-index status root is the fallback. Everything downstream — the watcher, the chunk store and every citation path — is relative to that one value, which is why a folder change kicks a full index job and restarts the watcher.";
-
-export const ORACLE_FILE_COUNT = "1 314";
-export const ORACLE_CHUNK_COUNT = "4 177";
-export const ORACLE_BACKEND = "lancedb";
 export const ORACLE_INDEXED_FOLDER = "~/dev/devboule";
 export const ORACLE_DATA_DIR = "oracle-data/";
-export const ORACLE_INDEXING_PROGRESS = {
-  indexed: "412",
-  expected: "1 314",
-  percentage: "31%",
-  eta: "about 4 min left",
-};
-export const ORACLE_LLM = {
-  readyLine: "openrouter · qwen3-8b · answers written remotely",
-  readyAnswerBy: "openrouter · qwen3-8b · dense+rerank · 3 sources",
-  missingLine: "no provider — retrieval only",
-  missingAnswerBy: "retrieval only · 3 sources",
-} as const;
 
-export const ORACLE_CITATIONS = [
-  {
-    label: "src-tauri/src/oracle/prefs.rs:1841-2360",
-    title: "src-tauri/src/oracle/prefs.rs#chunk-12",
+export const ORACLE_INDEX_STATUS: OracleIndexStatus = {
+  state: "indexing",
+  indexed_files: 412,
+  total_files: 1314,
+  indexed_chunks: 4177,
+  pending_files: 902,
+  stale_files: 37,
+  resource_budget: {
+    max_cpu_percent: 20,
+    max_memory_mb: 768,
+    max_parallelism: 2,
   },
-  {
-    label: "oracle/server/index_status.py:604-1180",
-    title: "oracle/server/index_status.py#chunk-3",
-  },
-  {
-    label: "src/components/oracle/OracleAdminPanel.tsx:9042-9610",
-    title: "src/components/oracle/OracleAdminPanel.tsx#chunk-27",
-  },
-] as const;
+};
+
+export const ORACLE_INDEX_PROGRESS: OracleIndexProgress = {
+  state: "running",
+  completed_files: 412,
+  total_files: 1314,
+  completed_chunks: 4177,
+  total_chunks: 13000,
+  percentage: 31,
+  eta_seconds: 240,
+  current_path: "src/features/workspace/Workspace.tsx",
+};
+
+export const ORACLE_STATS: OracleIndexStats = {
+  indexed_files: ORACLE_INDEX_STATUS.indexed_files,
+  indexed_chunks: ORACLE_INDEX_STATUS.indexed_chunks,
+  pending_files: ORACLE_INDEX_STATUS.pending_files,
+  stale_files: ORACLE_INDEX_STATUS.stale_files,
+  backend: "sqlite + lance",
+};
+
+export const ORACLE_SEARCH_RESPONSE: OracleSearchResponse = {
+  query: "where the workspace root is resolved",
+  results: [
+    {
+      path: "crates/oracle-core/src/config.rs",
+      line_start: 176,
+      line_end: 196,
+      snippet:
+        "pub fn resolve_data_dir(root: &Path) -> PathBuf {\n    root.join(DEFAULT_ORACLE_DIR)\n}",
+      score: 0.94,
+      symbol_name: "resolve_data_dir",
+      match_type: "dense+lexical",
+    },
+    {
+      path: "crates/oracle-core/src/doctor.rs",
+      line_start: 168,
+      line_end: 188,
+      snippet:
+        'fn check_workspace(root: Option<&Path>, manifest_path: &Path) -> DoctorCheck {\n    let Some(root) = root else {\n        return check("workspace", false, "No indexed workspace");\n    };',
+      score: 0.82,
+      symbol_name: "check_workspace",
+      match_type: "lexical",
+    },
+    {
+      path: "crates/oracle-core/src/ingest/collect.rs",
+      line_start: 610,
+      line_end: 628,
+      snippet:
+        "pub fn collect_workspace(root: &Path) -> CollectedFiles {\n    let ignore_policy = load_workspace_ignore_policy(root);\n    collect_files(root, &ignore_policy)\n}",
+      score: 0.76,
+      symbol_name: "collect_workspace",
+      match_type: "dense",
+    },
+    {
+      path: "crates/oracle-core/src/query/redact.rs",
+      line_start: 10,
+      line_end: 22,
+      snippet:
+        'const SECRET_REDACTION: &str = "[redacted-secret]";\n\n/// Redact secret-looking tokens in chunk text.\npub fn redact_secret_tokens(text: &str) -> String {',
+      score: 0.63,
+      match_type: "lexical",
+    },
+  ],
+};
+
+export const ORACLE_HEALTH: OracleHealth = {
+  state: "degraded",
+  checks: getOracleChecks(false),
+  message: "Run doctor to verify the embedder before starting a full index.",
+};
 
 export const ORACLE_FILES: Record<OracleFileTab, readonly OracleFile[]> = {
   indexed: [
-    { path: "src/components/views/WorkspaceView.tsx", chunks: 31, when: "2m ago" },
-    { path: "src-tauri/src/oracle/prefs.rs", chunks: 12, when: "2m ago" },
-    { path: "oracle/server/index_status.py", chunks: 8, when: "14m ago" },
-    { path: "devboule-mcp/src/tools.rs", chunks: 19, when: "1h ago" },
+    { path: "src/features/workspace/Workspace.tsx", chunks: 31, updated_at: "2m ago" },
+    { path: "src/lib/tauri.ts", chunks: 12, updated_at: "2m ago" },
+    { path: "crates/oracle-core/src/ingest/indexer.rs", chunks: 28, updated_at: "14m ago" },
+    { path: "crates/oracle-core/src/query/engine.rs", chunks: 19, updated_at: "1h ago" },
   ],
-  pending: [],
+  pending: [
+    { path: "crates/oracle-core/src/store/lance.rs", chunks: 0, updated_at: "now" },
+    { path: "crates/oracle-core/src/query/lexical.rs", chunks: 0, updated_at: "now" },
+  ],
   stale: [
-    { path: "src-tauri/src/oracle/mod.rs", chunks: 14, when: "6d ago" },
-    { path: "oracle-core/src/lib.rs", chunks: 9, when: "8d ago" },
-    { path: "rig/world.py", chunks: 6, when: "12d ago" },
+    { path: "crates/oracle-core/src/config.rs", chunks: 9, updated_at: "6d ago" },
+    { path: "crates/oracle-core/src/ingest/collect.rs", chunks: 23, updated_at: "8d ago" },
+    { path: "crates/oracle-core/src/doctor.rs", chunks: 6, updated_at: "12d ago" },
   ],
 };
 
 export const ORACLE_FILE_TABS: readonly {
   id: OracleFileTab;
   label: string;
-  count: string;
+  count: number;
 }[] = [
-  { id: "indexed", label: "Indexed", count: "1 314" },
-  { id: "pending", label: "Pending", count: "0" },
-  { id: "stale", label: "Stale", count: "37" },
+  { id: "indexed", label: "Indexed", count: 412 },
+  { id: "pending", label: "Pending", count: 902 },
+  { id: "stale", label: "Stale", count: 37 },
 ];
 
-export const ORACLE_STATS = [
-  { label: "Files", value: "1 314", kind: "normal" },
-  { label: "Vectors", value: "4 177", kind: "normal" },
-  { label: "Pending", value: "0", kind: "normal" },
-  { label: "Chunks", value: "4 177", kind: "normal" },
-  { label: "Stale", value: "37", kind: "warning" },
-  { label: "Backend", value: "lancedb", kind: "ink-soft" },
-] as const;
-
-export function getOracleChecks(doctorRun: boolean, providerKeyPresent: boolean): OracleCheck[] {
+export function getOracleChecks(doctorRun: boolean): OracleHealthCheck[] {
   const checks = [
-    ["runtime", true],
-    ["embedder", doctorRun],
-    ["workspace", true],
-    ["index", true],
-    ["live_server", true],
-    ["provider", providerKeyPresent],
+    ["runtime", "ok"],
+    ["embedder", doctorRun ? "ok" : "unknown"],
+    ["workspace", "ok"],
+    ["index", "ok"],
+    ["watcher", "ok"],
   ] as const;
 
-  return checks.map(([id, ok]) => ({
+  return checks.map(([id, state]) => ({
     id,
-    ok,
-    title: `${id} · ${ok ? "ok" : doctorRun ? "failed" : "run doctor for the full check"}`,
+    state,
+    message:
+      state === "ok" ? `${id} is available` : "Run doctor to verify the embedder before indexing",
   }));
 }

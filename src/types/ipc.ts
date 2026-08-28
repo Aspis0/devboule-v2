@@ -135,15 +135,92 @@ export interface ModelInfo {
   thinkingLevels: string[];
 }
 
-export type FileTab = "all" | "recent" | "stale";
+export type FileTab = "indexed" | "pending" | "stale";
 
 export interface IndexedFile {
   path: string;
   chunks: number;
-  updatedAt: string;
+  updated_at: string;
 }
 
-export interface AnswerChunk {
-  text: string;
-  done: boolean;
+/** A ranked pointer returned by Oracle. It is evidence to read, not prose to consume. */
+export type OracleMatchType = "lexical" | "dense" | "dense+lexical";
+
+export interface OracleResult {
+  path: string;
+  line_start: number;
+  line_end: number;
+  /** Redacted by Oracle before IPC; the frontend must never render unredacted source text. */
+  snippet: string;
+  score: number;
+  symbol_name?: string | null;
+  match_type?: OracleMatchType | null;
+}
+
+export interface OracleSearchResponse {
+  query: string;
+  results: OracleResult[];
+}
+
+export type OracleIndexState = "idle" | "indexing" | "ready" | "stale" | "error";
+
+export interface OracleResourceBudget {
+  max_cpu_percent: number;
+  max_memory_mb: number;
+  max_parallelism: number;
+}
+
+export interface OracleIndexStatus {
+  state: OracleIndexState;
+  indexed_files: number;
+  total_files: number;
+  indexed_chunks: number;
+  pending_files: number;
+  stale_files: number;
+  resource_budget: OracleResourceBudget;
+}
+
+export type OracleProgressState =
+  | "idle"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "paused_low_memory"
+  | "paused_gpu_temperature"
+  | "paused_batch_limit";
+
+export interface OracleIndexProgress {
+  state: OracleProgressState;
+  completed_files: number;
+  total_files: number;
+  completed_chunks: number;
+  total_chunks: number;
+  percentage: number;
+  eta_seconds: number | null;
+  current_path: string | null;
+}
+
+export type OracleHealthCheckState = "ok" | "failed" | "unknown";
+
+export interface OracleHealthCheck {
+  id: string;
+  state: OracleHealthCheckState;
+  message?: string | null;
+}
+
+export type OracleHealthState = "healthy" | "degraded" | "unavailable";
+
+export interface OracleHealth {
+  state: OracleHealthState;
+  checks: OracleHealthCheck[];
+  message?: string | null;
+}
+
+export interface OracleIndexStats {
+  indexed_files: number;
+  indexed_chunks: number;
+  pending_files: number;
+  stale_files: number;
+  backend: string;
 }

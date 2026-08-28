@@ -1,12 +1,15 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
-  AnswerChunk,
   CommandError,
   DaemonStatus,
   FileTab,
   Id,
   IndexedFile,
   ModelInfo,
+  OracleHealth,
+  OracleIndexStatus,
+  OracleIndexStats,
+  OracleSearchResponse,
   PermissionOutcome,
   Project,
   ProviderInfo,
@@ -40,7 +43,7 @@ type CommandArgs = {
   oracle_watch_start: undefined;
   oracle_watch_stop: undefined;
   oracle_files: { tab: FileTab; page: number };
-  oracle_ask: { query: string; ch: AnswerChannel };
+  oracle_ask: { query: string };
 };
 
 type CommandResults = {
@@ -60,29 +63,22 @@ type CommandResults = {
   session_close: void;
   providers_list: ProviderInfo[];
   provider_models: ModelInfo[];
-  oracle_status: unknown;
-  oracle_doctor: unknown;
-  oracle_stats: unknown;
+  oracle_status: OracleIndexStatus;
+  oracle_doctor: OracleHealth;
+  oracle_stats: OracleIndexStats;
   oracle_index_start: void;
   oracle_watch_start: void;
   oracle_watch_stop: void;
   oracle_files: IndexedFile[];
-  oracle_ask: void;
+  oracle_ask: OracleSearchResponse;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
 
 export type SessionChannel = Channel<SessionEvent>;
-export type AnswerChannel = Channel<AnswerChunk>;
 
 export function createSessionChannel(onEvent?: (event: SessionEvent) => void): SessionChannel {
   return new Channel<SessionEvent>(onEvent ?? (() => undefined));
-}
-
-export function createAnswerChannel(onChunk?: (chunk: AnswerChunk) => void): AnswerChannel {
-  const channel = new Channel<AnswerChunk>();
-  channel.onmessage = onChunk ?? (() => undefined);
-  return channel;
 }
 
 export function invokeTyped<K extends CommandName>(
@@ -131,5 +127,4 @@ export const providersList = () => invokeTyped("providers_list");
 export const providerModels = (provider: string) => invokeTyped("provider_models", { provider });
 export const oracleFiles = (tab: FileTab, page: number) =>
   invokeTyped("oracle_files", { tab, page });
-export const oracleAsk = (query: string, ch: AnswerChannel) =>
-  invokeTyped("oracle_ask", { query, ch });
+export const oracleAsk = (query: string) => invokeTyped("oracle_ask", { query });
