@@ -553,9 +553,6 @@ fn send_pending_event(
     if !conn.event_is_current(&event.session_id, event.attachment_generation) {
         let sequence = match &event.envelope.event {
             SessionEvent::Output { seq, .. } => format!(" seq={seq}"),
-            SessionEvent::OutputGap {
-                from_seq, to_seq, ..
-            } => format!(" seq={from_seq}..{to_seq}"),
             SessionEvent::Exit { .. } => " exit".to_string(),
             SessionEvent::Recovered { .. } => " recovered".to_string(),
             SessionEvent::JournalDegraded => " journal_degraded".to_string(),

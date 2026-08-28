@@ -29,8 +29,7 @@
 //! state lock, so output can never fall into neither the snapshot nor the
 //! attachment's unsent queue. When an attachment's unsent queue exceeds
 //! [`PENDING_OUTPUT_BUDGET_BYTES`], the unsent suffix is discarded and
-//! replaced by a fresh snapshot at the current boundary: a state
-//! resynchronisation, never an `OutputGap`.
+//! replaced by a fresh snapshot at the current boundary.
 //!
 //! DEVICE STATUS REPLIES:
 //! The emulator answers terminal queries (ConPTY's startup `ESC[6n` among
@@ -280,7 +279,7 @@ struct StreamState {
     attached: Option<Attachment>,
     /// Unsent items for the attachment, in wire order. Bounded: when the
     /// Output extent exceeds the budget, the whole queue is replaced by one
-    /// fresh snapshot (state resynchronisation, never an `OutputGap`).
+    /// fresh snapshot.
     pending: VecDeque<PendingItem>,
     /// Byte extent of `pending`'s Output items (snapshots are not counted;
     /// a replacement resets this to zero).
@@ -429,7 +428,6 @@ impl SessionRuntime {
                 SessionEvent::JournalDegraded => {
                     runtime.journal_degraded.store(true, Ordering::Release);
                 }
-                SessionEvent::OutputGap { .. } => {}
                 // Snapshots are screen state, never journal records; a
                 // recovered session replays transcript events only.
                 SessionEvent::Snapshot { .. } => {}
@@ -688,7 +686,6 @@ impl SessionRuntime {
                 SessionEvent::Exit { .. }
                 | SessionEvent::Recovered { .. }
                 | SessionEvent::JournalDegraded
-                | SessionEvent::OutputGap { .. }
                 // Snapshots are not output chunks and are not sourced from
                 // the historical journal replay path.
                 | SessionEvent::Snapshot { .. } => None,
@@ -886,8 +883,7 @@ impl SessionRuntime {
 ///
 /// When the unsent Output extent exceeds the budget, the WHOLE unsent queue
 /// is discarded and replaced by a fresh snapshot at the current boundary.
-/// That is a state resynchronisation, not an [`SessionEvent::OutputGap`]:
-/// pipe order still delivers the newer snapshot after anything older that
+/// Pipe order still delivers the newer snapshot after anything older that
 /// already reached the wire, and the snapshot subsumes everything before it.
 fn enqueue_output(stream: &mut StreamState, seq: u64, data: &str) -> (u64, u64) {
     if stream.attached.is_none() {
@@ -1103,15 +1099,6 @@ impl ConnHandle {
                 SessionEvent::Output { seq, .. } => {
                     if let Some(cursor) = pull.transcript_cursor.as_mut() {
                         *cursor = *seq;
-                    }
-                    false
-                }
-                SessionEvent::OutputGap { to_seq, .. } => {
-                    // A gap declaration accounts for the unavailable range;
-                    // it is safe to advance only after that declaration was
-                    // itself written to the wire.
-                    if let Some(cursor) = pull.transcript_cursor.as_mut() {
-                        *cursor = *to_seq;
                     }
                     false
                 }
@@ -2849,7 +2836,7 @@ mod tests {
     }
 
     #[test]
-    fn slow_client_is_resynchronised_with_a_snapshot_not_a_gap() {
+    fn slow_client_is_resynchronised_with_a_snapshot() {
         let runtime = Arc::new(SessionRuntime::new());
         let conn = ConnHandle::new(1);
         attach_tracked(&runtime, &conn);
@@ -2860,12 +2847,6 @@ mod tests {
         }
 
         let events = drain(&conn);
-        assert!(
-            events
-                .iter()
-                .all(|event| !matches!(event, SessionEvent::OutputGap { .. })),
-            "a slow viewer must never be handed a gap: {events:?}"
-        );
         let mut expected = None;
         let mut client = Screen::new(INITIAL_COLS, INITIAL_ROWS);
         let mut reference = Screen::new(INITIAL_COLS, INITIAL_ROWS);
@@ -3067,7 +3048,6 @@ mod tests {
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::JournalDegraded => "journal_degraded",
-                SessionEvent::OutputGap { .. } => "output_gap",
             })
             .collect();
         assert_eq!(kinds, ["snapshot", "output", "exit"]);
@@ -3283,7 +3263,6 @@ mod tests {
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::JournalDegraded => "journal_degraded",
-                SessionEvent::OutputGap { .. } => "output_gap",
                 SessionEvent::Snapshot { .. } => "snapshot",
             })
             .collect();

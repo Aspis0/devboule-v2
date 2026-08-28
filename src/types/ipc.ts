@@ -68,13 +68,6 @@ export type SessionEvent =
    */
   | { type: "recovered"; truncated: boolean }
   | { type: "journal_degraded" }
-  | {
-      type: "output_gap";
-      fromSeq: number;
-      toSeq: number;
-      droppedBytes: number;
-      droppedFrames: number;
-    }
   | SessionSnapshot;
 
 export type DaemonConnectionState = "connected" | "connecting" | "disconnected" | "error";

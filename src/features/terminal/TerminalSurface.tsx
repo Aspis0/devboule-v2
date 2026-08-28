@@ -34,9 +34,6 @@ function bannerText(banner: TerminalBanner): string | null {
   if (banner.kind === "journal_degraded") {
     return "Scrollback history is incomplete because some output could not be saved.";
   }
-  if (banner.kind === "output_gap") {
-    return `Terminal output is incomplete: sequences ${banner.fromSeq}-${banner.toSeq} were unavailable.`;
-  }
   return banner.code === null
     ? "The terminal process exited."
     : `The terminal process exited with code ${banner.code}.`;

@@ -244,8 +244,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         }
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
-        | SessionEvent::JournalDegraded
-        | SessionEvent::OutputGap { .. } => false,
+        | SessionEvent::JournalDegraded => false,
     }
 }
 
@@ -512,14 +511,8 @@ fn real_pty_detach_keeps_screen_state_and_close_reaps_child() {
         other => panic!("first event must be a snapshot, got {other:?}"),
     };
     for event in &events {
-        match event {
-            SessionEvent::Output { seq, .. } => {
-                assert!(*seq > as_of_seq, "live output before the snapshot boundary");
-            }
-            SessionEvent::OutputGap { .. } => {
-                panic!("live attach must never declare a gap: {events:?}")
-            }
-            _ => {}
+        if let SessionEvent::Output { seq, .. } = event {
+            assert!(*seq > as_of_seq, "live output before the snapshot boundary");
         }
     }
 
@@ -599,7 +592,6 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. }
             | SessionEvent::Snapshot { .. } => None,
         })
         .max()
@@ -641,10 +633,9 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
     assert!(
         replayed.iter().all(|event| match event {
             SessionEvent::Output { seq, .. } => *seq > as_of_seq,
-            SessionEvent::OutputGap { .. } => false,
             _ => true,
         }),
-        "live output after the snapshot must be strictly newer and gap-free: {replayed:?}"
+        "live output after the snapshot must be strictly newer: {replayed:?}"
     );
     // Cursor or no cursor, the client's view must show the output produced
     // while it was away: either inside the snapshot's screen state, or as a
@@ -927,7 +918,6 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. }
             | SessionEvent::Snapshot { .. } => None,
         })
         .collect();
@@ -1279,8 +1269,6 @@ fn real_pty_channel_flood_correctness() {
         0u64,
     )));
     let observed_for_handler = Arc::clone(&observed);
-    let output_gap = Arc::new(Mutex::new(None::<(u64, u64, u64, u64)>));
-    let output_gap_for_handler = Arc::clone(&output_gap);
     let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
         SessionEvent::Output { seq, data } => {
             let mut observed = observed_for_handler.lock().unwrap();
@@ -1294,15 +1282,6 @@ fn real_pty_channel_flood_correctness() {
             observed.2 = Some(seq);
             observed.0 += data.len();
             observed.1 += 1;
-        }
-        SessionEvent::OutputGap {
-            from_seq,
-            to_seq,
-            dropped_bytes,
-            dropped_frames,
-        } => {
-            *output_gap_for_handler.lock().unwrap() =
-                Some((from_seq, to_seq, dropped_bytes, dropped_frames));
         }
         // A snapshot at N means the unsent suffix up to N was legitimately
         // coalesced for this viewer; the flood reached the client's view.
@@ -1345,14 +1324,13 @@ fn real_pty_channel_flood_correctness() {
     } else {
         true
     };
-    let output_gap = *output_gap.lock().unwrap();
     let status = client.status().expect("status");
     let frames_per_s = chunks as f64 / wall.as_secs_f64();
     let close_start = Instant::now();
     client.session_close(&session.id).expect("close");
     let teardown = close_start.elapsed();
     println!(
-        "PTY_CORRECTNESS lines={LINES} expected_min_bytes={expected_bytes} bytes={bytes} chunks={chunks} frames_per_s={frames_per_s:.2} wall_ms={} peak_ring_bytes={} ring_evicted_bytes={} ring_dropped_frames={} output_gap={output_gap:?} output_complete={output_complete} seq_reordered={reordered} child_reaped=n/a teardown_ms={} clean={}",
+        "PTY_CORRECTNESS lines={LINES} expected_min_bytes={expected_bytes} bytes={bytes} chunks={chunks} frames_per_s={frames_per_s:.2} wall_ms={} peak_ring_bytes={} ring_evicted_bytes={} ring_dropped_frames={} output_complete={output_complete} seq_reordered={reordered} child_reaped=n/a teardown_ms={} clean={}",
         wall.as_millis(),
         status.peak_ring_bytes,
         status.ring_evicted_bytes,
@@ -1365,10 +1343,6 @@ fn real_pty_channel_flood_correctness() {
         "the generator did not deliver its expected flood"
     );
     assert!(!reordered, "output sequence was dropped or reordered");
-    assert!(
-        output_gap.is_none(),
-        "output loss was declared: {output_gap:?}"
-    );
 }
 
 fn summarize_chunk_sizes(chunk_sizes: &[usize]) -> (usize, f64, usize) {
@@ -1707,7 +1681,6 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         }
         SessionEvent::Recovered { .. }
         | SessionEvent::JournalDegraded
-        | SessionEvent::OutputGap { .. }
         | SessionEvent::Snapshot { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
@@ -2067,7 +2040,6 @@ fn journal_outlives_the_256kib_ring() {
             SessionEvent::Recovered { .. }
             | SessionEvent::Exit { .. }
             | SessionEvent::JournalDegraded
-            | SessionEvent::OutputGap { .. }
             | SessionEvent::Snapshot { .. } => {}
         }
     }
@@ -2326,7 +2298,6 @@ fn journal_growth_after_13mb_flood() {
             }
             SessionEvent::Exit { .. } => replayed.exited = true,
             SessionEvent::JournalDegraded => {}
-            SessionEvent::OutputGap { .. } => {}
             SessionEvent::Snapshot { .. } => {}
         }
     });
@@ -2579,11 +2550,6 @@ fn attach_during_flood_delivers_every_sequence_once() {
                     .get_or_insert_with(|| Screen::new(120, 32))
                     .process(data.as_bytes());
             }
-            SessionEvent::OutputGap {
-                from_seq, to_seq, ..
-            } => panic!(
-                "a slow-viewer replacement must be a snapshot, not a gap {from_seq}..{to_seq}"
-            ),
             SessionEvent::Exit { .. } => {}
             SessionEvent::Recovered { .. } | SessionEvent::JournalDegraded => {}
         }
@@ -2682,19 +2648,13 @@ fn control_traffic_is_answered_within_bound_during_flood() {
         .expect("create");
 
     let done = Arc::new(AtomicBool::new(false));
-    let gaps = Arc::new(AtomicU64::new(0));
     let done_for_handler = Arc::clone(&done);
-    let gaps_for_handler = Arc::clone(&gaps);
-    let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
-        SessionEvent::Output { data, .. } => {
+    let handler: EventHandler = Arc::new(move |envelope| {
+        if let SessionEvent::Output { data, .. } = envelope.event {
             if data.contains(DONE) {
                 done_for_handler.store(true, Ordering::Release);
             }
         }
-        SessionEvent::OutputGap { .. } => {
-            gaps_for_handler.fetch_add(1, Ordering::Release);
-        }
-        _ => {}
     });
     client
         .session_attach(&session.id, None, handler)
@@ -2732,11 +2692,6 @@ fn control_traffic_is_answered_within_bound_during_flood() {
     let flood_done = done.load(Ordering::Acquire);
     client.session_close(&session.id).expect("close");
     assert!(flood_done, "flood did not finish within 120 s");
-    assert_eq!(
-        gaps.load(Ordering::Acquire),
-        0,
-        "live delivery must not declare gaps"
-    );
     assert!(
         rtts.len() >= 40,
         "expected a sustained control stream during the flood, got {} requests",
