@@ -2156,6 +2156,8 @@ fn journal_growth_after_13mb_flood() {
     let observed_for_handler = Arc::clone(&observed);
     let snapshot_count = Arc::new(AtomicU64::new(0));
     let snapshot_count_for_handler = Arc::clone(&snapshot_count);
+    let exit_seen = Arc::new(AtomicBool::new(false));
+    let exit_seen_for_handler = Arc::clone(&exit_seen);
     let handler: EventHandler = Arc::new(move |envelope| match envelope.event {
         SessionEvent::Output { seq, data } => {
             observed_for_handler.lock().unwrap().push((seq, data));
@@ -2164,6 +2166,9 @@ fn journal_growth_after_13mb_flood() {
         // Output frames from the live view; the journal stays complete.
         SessionEvent::Snapshot { .. } => {
             snapshot_count_for_handler.fetch_add(1, Ordering::Release);
+        }
+        SessionEvent::Exit { .. } => {
+            exit_seen_for_handler.store(true, Ordering::Release);
         }
         _ => {}
     });
@@ -2193,7 +2198,81 @@ fn journal_growth_after_13mb_flood() {
         live_bytes >= expected_file_bytes,
         "flood truncated: {live_bytes} < {expected_file_bytes}"
     );
-    std::thread::sleep(Duration::from_millis(800));
+    // WHAT THIS TEST VERIFIES, stated plainly: durability of the COMMITTED
+    // journal stream against an abrupt daemon kill, plus the honesty of the
+    // flags a reopened transcript carries (assertions below). It is NOT a
+    // graceful-shutdown test; the kill stays.
+    //
+    // The blind 800 ms sleep this replaces was the measured hole behind the
+    // adversarial finding: the live view bypasses the journal, so "the client
+    // saw everything" says nothing about the writer; on a 4-vCPU runner the
+    // writer was still 1.9 MiB behind when TerminateProcess took the bounded
+    // queue with it, and the old test then asserted a completeness nobody
+    // had checked. The deterministic sync below makes the completeness claim
+    // checkable instead of lucky.
+    //
+    // Three gates, in order:
+    // 1. Exit delivered to the client (process end observed);
+    // 2. a quiescence window with no new live bytes. Exit can be emitted
+    //    from the process-exited path while ConPTY is still draining
+    //    (EXIT_DRAIN = 200 ms), and drain frames are ordinary journal
+    //    appends, so the window must outlive the drain;
+    // 3. committed == accepted, read from the Status journal stats: after
+    //    EOF nothing new is accepted, so equality means the queue is empty
+    //    and the kill cannot lose an accepted frame.
+    let exit_deadline = Instant::now() + Duration::from_secs(120);
+    while Instant::now() < exit_deadline && !exit_seen.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        exit_seen.load(Ordering::Acquire),
+        "flood child never EOFed; the pre-kill durability claim cannot be made"
+    );
+    const QUIESCE: Duration = Duration::from_millis(600);
+    let live_byte_count = || {
+        observed
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, data)| data.len())
+            .sum::<usize>()
+    };
+    let mut last_bytes = live_byte_count();
+    let mut last_activity = Instant::now();
+    let stats_before_kill = loop {
+        assert!(
+            last_activity.elapsed() < Duration::from_secs(60),
+            "live output never went quiet; cannot distinguish drain from a stuck stream"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        let bytes = live_byte_count();
+        if bytes != last_bytes {
+            last_bytes = bytes;
+            last_activity = Instant::now();
+            continue;
+        }
+        if last_activity.elapsed() < QUIESCE {
+            continue;
+        }
+        if let Ok(body) = client.status() {
+            if let Some(stats) = body.journal_stats {
+                if stats.committed_frames == stats.accepted_frames {
+                    // Re-check quiescence: a frame accepted between the
+                    // stats read and now means the drain was still live.
+                    if live_byte_count() == last_bytes {
+                        break stats;
+                    }
+                    last_bytes = live_byte_count();
+                    last_activity = Instant::now();
+                }
+            }
+        }
+    };
+    assert!(
+        stats_before_kill.accepted_frames > 0,
+        "no output frame was ever accepted; the stats are not measuring this session"
+    );
+    let failed_before_kill = stats_before_kill.failed_frames;
     let live_events = observed.lock().unwrap().clone();
     let live_bytes: usize = live_events.iter().map(|(_, data)| data.len()).sum();
     let live_frames = live_events.len();
@@ -2219,16 +2298,33 @@ fn journal_growth_after_13mb_flood() {
     );
 
     let client = harness.client("growth-replay");
-    let replayed = Arc::new(Mutex::new((Vec::<(u64, String)>::new(), false, false)));
+    struct ReplayCapture {
+        events: Vec<(u64, String)>,
+        recovered: bool,
+        exited: bool,
+        truncated: bool,
+    }
+    let replayed = Arc::new(Mutex::new(ReplayCapture {
+        events: Vec::new(),
+        recovered: false,
+        exited: false,
+        truncated: false,
+    }));
     let replayed_for_handler = Arc::clone(&replayed);
     let handler: EventHandler = Arc::new(move |envelope| {
         let mut replayed = replayed_for_handler.lock().unwrap();
         match envelope.event {
             SessionEvent::Output { seq, data } => {
-                replayed.0.push((seq, data));
+                replayed.events.push((seq, data));
             }
-            SessionEvent::Recovered { .. } => replayed.1 = true,
-            SessionEvent::Exit { .. } => replayed.2 = true,
+            // The truncation flag IS part of the recovered contract: it is
+            // the only declared-loss signal the transcript carries, so the
+            // handler must capture it, not just the fact of recovery.
+            SessionEvent::Recovered { truncated } => {
+                replayed.recovered = true;
+                replayed.truncated = truncated;
+            }
+            SessionEvent::Exit { .. } => replayed.exited = true,
             SessionEvent::JournalDegraded => {}
             SessionEvent::OutputGap { .. } => {}
             SessionEvent::Snapshot { .. } => {}
@@ -2242,7 +2338,7 @@ fn journal_growth_after_13mb_flood() {
     let mut replay_complete = false;
     while Instant::now() < deadline {
         let snap = replayed.lock().unwrap();
-        if snap.1 || snap.2 {
+        if snap.recovered || snap.exited {
             replay_complete = true;
             break;
         }
@@ -2253,9 +2349,14 @@ fn journal_growth_after_13mb_flood() {
         replay_complete,
         "replay did not complete within {REPLAY_TIMEOUT_SECONDS}s"
     );
-    let (replay_events, recovered, exited) = {
+    let (replay_events, recovered, exited, replay_truncated) = {
         let snap = replayed.lock().unwrap();
-        (snap.0.clone(), snap.1, snap.2)
+        (
+            snap.events.clone(),
+            snap.recovered,
+            snap.exited,
+            snap.truncated,
+        )
     };
     let replay_bytes: usize = replay_events.iter().map(|(_, data)| data.len()).sum();
     let replay_seqs: Vec<u64> = replay_events.iter().map(|(seq, _)| *seq).collect();
@@ -2265,49 +2366,99 @@ fn journal_growth_after_13mb_flood() {
         .collect();
     let replay_payload = normalize_journal_growth_output(&replay_raw);
     println!(
-        "JOURNAL_GROWTH replay_bytes={replay_bytes} frames={} recovered={recovered} exited={exited} live_bytes={live_bytes}",
+        "JOURNAL_GROWTH replay_bytes={replay_bytes} frames={} recovered={recovered} exited={exited} truncated={replay_truncated} failed_before_kill={failed_before_kill} live_bytes={live_bytes}",
         replay_events.len()
     );
-    assert!(
-        replay_bytes >= expected_file_bytes,
-        "journal replay lost payload bytes: replay={replay_bytes} expected={expected_file_bytes} missing={}",
-        expected_file_bytes.saturating_sub(replay_bytes)
-    );
-    if snapshot_count.load(Ordering::Acquire) == 0 {
-        assert_eq!(
-            live_payload,
-            replay_payload,
-            "normalized journal replay differs: live_bytes={} replay_bytes={} first_difference={:?}",
-            live_payload.len(),
-            replay_payload.len(),
-            live_payload
-                .as_bytes()
-                .iter()
-                .zip(replay_payload.as_bytes())
-                .position(|(live, replay)| live != replay)
-                .or_else(|| {
-                    (live_payload.len() != replay_payload.len())
-                        .then_some(live_payload.len().min(replay_payload.len()))
-                })
+    // THE CROSS nothing verified before: measured missing bytes against the
+    // honest flags. The pre-kill sync makes both branches decidable.
+    //
+    // failed_frames == 0 at kill time: the journal never dropped a frame
+    // knowingly, and the sync proved everything accepted was committed, so
+    // the replay must cover the whole flood and match the live capture
+    // sequence for sequence — and truncated must stay DOWN, because
+    // claiming a loss nobody observed is the wolf that teaches people to
+    // ignore the flag.
+    //
+    // failed_frames > 0: the journal dropped frames knowing it, so the
+    // reopened transcript MUST declare truncation. Short coverage is then
+    // a declared loss, which is the honest product, not a test failure.
+    if failed_before_kill == 0 {
+        assert!(
+            replay_bytes >= expected_file_bytes,
+            "journal replay lost payload bytes with no observed failure: replay={replay_bytes} expected={expected_file_bytes} missing={}",
+            expected_file_bytes.saturating_sub(replay_bytes)
         );
-    } else {
-        // The live view was resynchronised with snapshots: every frame the
-        // view DID receive must match the journal record for that sequence;
-        // journal completeness is asserted above.
-        let journal_by_seq: std::collections::HashMap<u64, String> =
-            replay_events.iter().cloned().collect();
-        for (seq, data) in &live_events {
+        assert!(
+            !replay_truncated,
+            "no loss was observed before the kill but the reopened transcript claims truncation"
+        );
+        if snapshot_count.load(Ordering::Acquire) == 0 {
             assert_eq!(
-                journal_by_seq.get(seq).map(String::as_str),
-                Some(data.as_str()),
-                "live frame {seq} differs from the journal record"
+                live_payload,
+                replay_payload,
+                "normalized journal replay differs: live_bytes={} replay_bytes={} first_difference={:?}",
+                live_payload.len(),
+                replay_payload.len(),
+                live_payload
+                    .as_bytes()
+                    .iter()
+                    .zip(replay_payload.as_bytes())
+                    .position(|(live, replay)| live != replay)
+                    .or_else(|| {
+                        (live_payload.len() != replay_payload.len())
+                            .then_some(live_payload.len().min(replay_payload.len()))
+                    })
+            );
+        } else {
+            // The live view was resynchronised with snapshots: every frame the
+            // view DID receive must match the journal record for that sequence;
+            // journal completeness is asserted above.
+            let journal_by_seq: std::collections::HashMap<u64, String> =
+                replay_events.iter().cloned().collect();
+            for (seq, data) in &live_events {
+                assert_eq!(
+                    journal_by_seq.get(seq).map(String::as_str),
+                    Some(data.as_str()),
+                    "live frame {seq} differs from the journal record"
+                );
+            }
+            println!(
+                "JOURNAL_GROWTH snapshot_coalescing={} live_frames={} of journal_frames={}",
+                snapshot_count.load(Ordering::Acquire),
+                live_events.len(),
+                replay_events.len()
             );
         }
+        assert_eq!(
+            replay_seqs.first(),
+            Some(&expected_first_seq),
+            "journal replay start sequence changed"
+        );
+        assert_eq!(
+            replay_seqs.last(),
+            Some(&expected_last_seq),
+            "journal replay end sequence changed"
+        );
+        assert_eq!(
+            replay_seqs, live_seqs,
+            "journal replay sequence coverage differs from the live capture"
+        );
+        for pair in live_seqs.windows(2) {
+            assert_eq!(
+                pair[1],
+                pair[0] + 1,
+                "journal replay seq gap or duplicate around {} -> {}",
+                pair[0],
+                pair[1]
+            );
+        }
+    } else {
         println!(
-            "JOURNAL_GROWTH snapshot_coalescing={} live_frames={} of journal_frames={}",
-            snapshot_count.load(Ordering::Acquire),
-            live_events.len(),
-            replay_events.len()
+            "JOURNAL_GROWTH declared_loss observed_failures={failed_before_kill} replay_bytes={replay_bytes} expected={expected_file_bytes}"
+        );
+        assert!(
+            replay_truncated,
+            "{failed_before_kill} journal frames were dropped knowing it but the reopened transcript does not declare truncation"
         );
     }
     assert!(
@@ -2322,29 +2473,6 @@ fn journal_growth_after_13mb_flood() {
         replay_bytes > LEGACY_RING_CAPACITY,
         "journal replay {replay_bytes} did not outlive the live capture window"
     );
-    assert_eq!(
-        replay_seqs.first(),
-        Some(&expected_first_seq),
-        "journal replay start sequence changed"
-    );
-    assert_eq!(
-        replay_seqs.last(),
-        Some(&expected_last_seq),
-        "journal replay end sequence changed"
-    );
-    assert_eq!(
-        replay_seqs, live_seqs,
-        "journal replay sequence coverage differs from the live capture"
-    );
-    for pair in live_seqs.windows(2) {
-        assert_eq!(
-            pair[1],
-            pair[0] + 1,
-            "journal replay seq gap or duplicate around {} -> {}",
-            pair[0],
-            pair[1]
-        );
-    }
     let _ = std::fs::remove_file(&file_path);
 }
 
