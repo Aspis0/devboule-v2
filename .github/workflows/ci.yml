@@ -58,25 +58,17 @@ jobs:
       - name: Check frontend formatting
         run: pnpm run format:check
 
-      # oracle-core is a workspace member but is excluded from the three heavy
-      # Rust steps below. Measured on the dev machine (22 logical cores) on
-      # 2026-08-28, not assumed:
-      #   * cold `cargo build -p oracle-core --lib` takes ~8-10 min; its
-      #     dependency graph is DataFusion + LanceDB + Arrow + ORT + candle.
-      #   * target/ grew from 32.0 GiB to 47.8 GiB after that library build
-      #     alone, and to 91.8 GiB after `cargo test --workspace`.
-      #     windows-latest ships with roughly 14 GiB free: the build cannot fit.
-      #   * `cargo test --workspace` at default parallelism crashed rustc with
-      #     STATUS_STACK_BUFFER_OVERRUN (0xc0000409) while linking the nine
-      #     integration-test binaries, each of which statically links that whole
-      #     graph. `-j 1` completes in ~15 min.
-      # `cargo fmt --all` below still covers it, because formatting needs no build.
-      # Verified locally instead, and this is the command that does it:
-      #   cargo clippy --workspace --all-targets --locked -- -D warnings
-      #   cargo test --workspace --locked -j 1
-      # Exit: drop the --exclude when oracle-core runs on a runner with the disk
-      # for it, or when the embedding path moves behind a feature flag that CI
-      # can leave off.
+      # oracle-core is excluded from the three steps below and covered by its own
+      # job instead, because its dependency graph (DataFusion + LanceDB + Arrow +
+      # ORT + candle) takes ~10 min cold and would dominate a job whose other
+      # crates build in seconds. It is a latency split, not a capacity one:
+      # the runner reports 33.9 GB free and the whole workspace target/ is
+      # 12.6 GB under the debug profile in Cargo.toml, so it does fit.
+      # An earlier version of this comment claimed ~14 GiB free and used that to
+      # justify the split. That number was wrong, and the CI step that prints
+      # free disk in the oracle-core job exists so the next such claim is
+      # measured rather than assumed.
+      # `cargo fmt --all` below still covers oracle-core: formatting needs no build.
       - name: Build Rust workspace
         run: cargo build --workspace --exclude oracle-core --locked
 
@@ -139,8 +131,16 @@ jobs:
         shell: pwsh
         run: Get-PSDrive C | Select-Object Used,Free
 
-      - name: Type-check oracle-core
-        run: cargo check -p oracle-core --locked --all-targets
+      # -j 1 is deliberate. At default parallelism `cargo test` crashed rustc
+      # locally with STATUS_STACK_BUFFER_OVERRUN (0xc0000409) while linking the
+      # integration-test binaries, each of which statically links Lance,
+      # DataFusion and ORT. Whether a 4-vCPU runner reproduces that is unknown;
+      # serialising costs minutes and removes the question.
+      - name: Clippy oracle-core
+        run: cargo clippy -p oracle-core --locked --all-targets -- -D warnings
+
+      - name: Test oracle-core
+        run: cargo test -p oracle-core --locked -j 1
 
       - name: Report free disk after
         shell: pwsh
