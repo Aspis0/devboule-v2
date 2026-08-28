@@ -2268,28 +2268,14 @@ fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
     let Some(journal) = &registry.journal else {
         return;
     };
-    let (generation, code) = {
-        let stream = match runtime.lock_stream() {
-            Ok(stream) => stream,
-            Err(_) => return journal_mark_ended_with_fallback(journal, runtime),
-        };
-        (stream.generation, stream.exit_code)
+    let (generation, code) = match runtime.lock_stream() {
+        Ok(stream) => (stream.generation, stream.exit_code),
+        Err(_) => (runtime.generation(), None),
     };
     // EOF path: waiting on the journal here does not stall a live PTY. The
     // terminal marker is critical and must not be dropped behind a full
     // output queue.
     if let Err(error) = journal.mark_ended_blocking(&runtime.session_id, generation, code) {
-        runtime.mark_journal_degraded();
-        eprintln!(
-            "journal could not record terminal exit for {}: {error}",
-            runtime.session_id
-        );
-    }
-}
-
-fn journal_mark_ended_with_fallback(journal: &Journal, runtime: &SessionRuntime) {
-    if let Err(error) = journal.mark_ended_blocking(&runtime.session_id, runtime.generation(), None)
-    {
         runtime.mark_journal_degraded();
         eprintln!(
             "journal could not record terminal exit for {}: {error}",
