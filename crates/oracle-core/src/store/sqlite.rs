@@ -191,18 +191,10 @@ impl SqliteStore {
 
     // ── node_cards ────────────────────────────────────────────────────────
 
-    /// Insert or update many node cards (UPSERT on `id`).
-    ///
-    /// Mirrors `sqlite_store.py::upsert_many` (`INSERT … ON CONFLICT(id) DO
-    /// UPDATE`, every column set to `excluded.*`). The four array fields are
-    /// JSON-encoded before write.
-    pub fn upsert_many(&self, cards: &[NodeCard]) -> Result<()> {
-        let conn = self.connect()?;
-        // One explicit transaction for the whole batch — the per-row loop
-        // otherwise pays an implicit-commit fsync per card, where Python's
-        // single executemany runs inside one commit.
-        conn.execute_batch("BEGIN")
-            .context("beginning upsert_many transaction")?;
+    fn upsert_cards(conn: &Connection, cards: &[NodeCard]) -> Result<()> {
+        if cards.is_empty() {
+            return Ok(());
+        }
         let sql = "
             INSERT INTO node_cards (
               id, label, area, cluster_semantic, funzione_primaria, espone_api,
@@ -249,23 +241,37 @@ impl SqliteStore {
             stmt.execute(params_from_iter(params))
                 .with_context(|| format!("upserting node card {}", card.id))?;
         }
-        drop(stmt);
-        conn.execute_batch("COMMIT")
-            .context("committing upsert_many transaction")?;
         Ok(())
     }
 
-    /// Delete all node cards, then upsert the given cards (two transactions).
+    /// Insert or update many node cards (UPSERT on `id`).
     ///
-    /// Mirrors `sqlite_store.py::replace_all` (separate `DELETE` commit, then
-    /// `upsert_many` commit).
+    /// Mirrors `sqlite_store.py::upsert_many` (`INSERT … ON CONFLICT(id) DO
+    /// UPDATE`, every column set to `excluded.*`). The four array fields are
+    /// JSON-encoded before write.
+    pub fn upsert_many(&self, cards: &[NodeCard]) -> Result<()> {
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction()
+            .context("beginning upsert_many transaction")?;
+        Self::upsert_cards(&tx, cards)?;
+        tx.commit().context("committing upsert_many transaction")?;
+        Ok(())
+    }
+
+    /// Delete all node cards, then upsert the given cards, in one transaction.
+    ///
+    /// A crash between DELETE and INSERT used to leave `node_cards` empty.
     pub fn replace_all(&self, cards: &[NodeCard]) -> Result<()> {
-        {
-            let conn = self.connect()?;
-            conn.execute("DELETE FROM node_cards", params![])
-                .context("deleting all node cards")?;
-        }
-        self.upsert_many(cards)
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction()
+            .context("beginning replace_all transaction")?;
+        tx.execute("DELETE FROM node_cards", params![])
+            .context("deleting all node cards")?;
+        Self::upsert_cards(&tx, cards)?;
+        tx.commit().context("committing replace_all transaction")?;
+        Ok(())
     }
 
     /// Delete the given node ids. No-op (early return) when the list is empty.
@@ -352,33 +358,8 @@ impl SqliteStore {
 
     // ── file_chunks ───────────────────────────────────────────────────────
 
-    /// Replace all chunks for the given file ids (single transaction):
-    /// delete the old chunks, then insert/upsert the new ones.
-    ///
-    /// Mirrors `sqlite_store.py::replace_chunks_for_files`.
-    pub fn replace_chunks_for_files(
-        &self,
-        file_ids: &[String],
-        chunks: &[FileChunk],
-    ) -> Result<()> {
-        let conn = self.connect()?;
-        // Python runs delete + insert inside ONE commit (`with self._connect()`);
-        // an explicit transaction keeps the same crash-atomicity (a failure can
-        // never leave chunks deleted but not re-inserted).
-        conn.execute_batch("BEGIN")
-            .context("beginning replace_chunks_for_files transaction")?;
-        {
-            let mut del = conn
-                .prepare("DELETE FROM file_chunks WHERE file_id = ?")
-                .context("preparing chunk delete")?;
-            for fid in file_ids {
-                del.execute([fid])
-                    .with_context(|| format!("deleting chunks for {fid}"))?;
-            }
-        }
+    fn insert_chunks(conn: &Connection, chunks: &[FileChunk]) -> Result<()> {
         if chunks.is_empty() {
-            conn.execute_batch("COMMIT")
-                .context("committing replace_chunks_for_files transaction")?;
             return Ok(());
         }
         let mut stmt = conn
@@ -433,27 +414,51 @@ impl SqliteStore {
             stmt.execute(params_from_iter(params))
                 .with_context(|| format!("upserting chunk {}", c.id))?;
         }
-        drop(stmt);
-        conn.execute_batch("COMMIT")
+        Ok(())
+    }
+
+    /// Replace all chunks for the given file ids (single transaction):
+    /// delete the old chunks, then insert/upsert the new ones.
+    ///
+    /// Mirrors `sqlite_store.py::replace_chunks_for_files`.
+    pub fn replace_chunks_for_files(
+        &self,
+        file_ids: &[String],
+        chunks: &[FileChunk],
+    ) -> Result<()> {
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction()
+            .context("beginning replace_chunks_for_files transaction")?;
+        {
+            let mut del = tx
+                .prepare("DELETE FROM file_chunks WHERE file_id = ?")
+                .context("preparing chunk delete")?;
+            for fid in file_ids {
+                del.execute([fid])
+                    .with_context(|| format!("deleting chunks for {fid}"))?;
+            }
+        }
+        Self::insert_chunks(&tx, chunks)?;
+        tx.commit()
             .context("committing replace_chunks_for_files transaction")?;
         Ok(())
     }
 
-    /// Delete all chunks, then (if any) replace them (two transactions when
-    /// non-empty). Mirrors `sqlite_store.py::replace_all_chunks`.
+    /// Delete all chunks, then insert the given ones, in one transaction.
+    ///
+    /// A crash between DELETE and INSERT used to leave `file_chunks` empty.
     pub fn replace_all_chunks(&self, chunks: &[FileChunk]) -> Result<()> {
-        {
-            let conn = self.connect()?;
-            conn.execute("DELETE FROM file_chunks", params![])
-                .context("deleting all chunks")?;
-        }
-        if chunks.is_empty() {
-            return Ok(());
-        }
-        let mut file_ids: Vec<String> = chunks.iter().map(|c| c.file_id.clone()).collect();
-        file_ids.sort();
-        file_ids.dedup();
-        self.replace_chunks_for_files(&file_ids, chunks)
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction()
+            .context("beginning replace_all_chunks transaction")?;
+        tx.execute("DELETE FROM file_chunks", params![])
+            .context("deleting all chunks")?;
+        Self::insert_chunks(&tx, chunks)?;
+        tx.commit()
+            .context("committing replace_all_chunks transaction")?;
+        Ok(())
     }
 
     /// Chunk ids for the given file ids (empty input → empty result).
@@ -562,14 +567,17 @@ impl SqliteStore {
 
     // ── file_clusters / clusters_meta ─────────────────────────────────────
 
-    /// Replace all file-cluster rows (and optionally the `epoch` meta) in a
-    /// SINGLE transaction. Mirrors `sqlite_store.py::replace_file_clusters`.
+    /// Replace all file-cluster rows (and optionally the `epoch` meta) in one
+    /// transaction. Mirrors `sqlite_store.py::replace_file_clusters`.
     pub fn replace_file_clusters(&self, rows: &[FileCluster], epoch: Option<&str>) -> Result<()> {
-        let conn = self.connect()?;
-        conn.execute("DELETE FROM file_clusters", params![])
+        let mut conn = self.connect()?;
+        let tx = conn
+            .transaction()
+            .context("beginning replace_file_clusters transaction")?;
+        tx.execute("DELETE FROM file_clusters", params![])
             .context("deleting file_clusters")?;
         if !rows.is_empty() {
-            let mut stmt = conn
+            let mut stmt = tx
                 .prepare(
                     "INSERT INTO file_clusters (file_id, cluster_id, score) \
                      VALUES (?1, ?2, ?3)",
@@ -582,12 +590,14 @@ impl SqliteStore {
             }
         }
         if let Some(epoch) = epoch {
-            conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO clusters_meta (key, value) VALUES ('epoch', ?1)",
                 [epoch],
             )
             .context("writing clusters epoch")?;
         }
+        tx.commit()
+            .context("committing replace_file_clusters transaction")?;
         Ok(())
     }
 

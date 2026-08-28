@@ -104,7 +104,6 @@ fn sqlite_chunk_replace_and_malformed_symbols() {
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].symbols_used, vec!["Vec".to_string()]);
 
-    // replace_all_chunks (two transactions).
     store
         .replace_all_chunks(&[chunk("g.rs#chunk-0000", "g.rs")])
         .unwrap();
@@ -179,6 +178,140 @@ fn sqlite_file_clusters() {
 
     let all = store.get_file_clusters().unwrap();
     assert_eq!(all.len(), 2);
+}
+
+/// A crash between DELETE and INSERT used to leave the table empty.
+/// Force the insert to fail mid-batch and check the previous rows survive.
+#[test]
+fn sqlite_replace_all_is_atomic_on_insert_failure() {
+    let dir = tempdir().unwrap();
+    let store = SqliteStore::new(&dir.path().join("metadata.sqlite")).unwrap();
+    store.upsert_many(&[node("n1"), node("n2")]).unwrap();
+
+    let conn = rusqlite::Connection::open(store.path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER poison_node_insert
+         BEFORE INSERT ON node_cards
+         WHEN NEW.id = 'poison'
+         BEGIN
+           SELECT RAISE(ABORT, 'poisoned insert');
+         END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let err = store
+        .replace_all(&[node("n3"), node("poison")])
+        .expect_err("poisoned insert must fail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("poisoned insert"),
+        "expected trigger abort, got: {msg}"
+    );
+
+    let ids: Vec<String> = store
+        .all_nodes()
+        .unwrap()
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["n1".to_string(), "n2".to_string()],
+        "failed replace_all must leave the previous rows, not an empty table"
+    );
+}
+
+#[test]
+fn sqlite_replace_all_chunks_is_atomic_on_insert_failure() {
+    let dir = tempdir().unwrap();
+    let store = SqliteStore::new(&dir.path().join("metadata.sqlite")).unwrap();
+    store
+        .replace_all_chunks(&[chunk("old.rs#chunk-0000", "old.rs")])
+        .unwrap();
+
+    let conn = rusqlite::Connection::open(store.path()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER poison_chunk_insert
+         BEFORE INSERT ON file_chunks
+         WHEN NEW.id = 'poison#chunk-0000'
+         BEGIN
+           SELECT RAISE(ABORT, 'poisoned insert');
+         END;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let err = store
+        .replace_all_chunks(&[
+            chunk("new.rs#chunk-0000", "new.rs"),
+            chunk("poison#chunk-0000", "poison.rs"),
+        ])
+        .expect_err("poisoned insert must fail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("poisoned insert"),
+        "expected trigger abort, got: {msg}"
+    );
+
+    let left = store.chunks_for_file("old.rs").unwrap();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].id, "old.rs#chunk-0000");
+    assert!(
+        store.chunks_for_file("new.rs").unwrap().is_empty(),
+        "partial insert must not be visible"
+    );
+}
+
+#[test]
+fn sqlite_replace_file_clusters_is_atomic_on_insert_failure() {
+    let dir = tempdir().unwrap();
+    let store = SqliteStore::new(&dir.path().join("metadata.sqlite")).unwrap();
+    store
+        .replace_file_clusters(
+            &[
+                oracle_core::store::sqlite::FileCluster {
+                    file_id: "a.rs".to_string(),
+                    cluster_id: 1,
+                    score: 0.9,
+                },
+                oracle_core::store::sqlite::FileCluster {
+                    file_id: "b.rs".to_string(),
+                    cluster_id: 1,
+                    score: 0.5,
+                },
+            ],
+            Some("epoch-old"),
+        )
+        .unwrap();
+
+    let dup = oracle_core::store::sqlite::FileCluster {
+        file_id: "dup.rs".to_string(),
+        cluster_id: 2,
+        score: 0.1,
+    };
+    let err = store
+        .replace_file_clusters(&[dup.clone(), dup], Some("epoch-new"))
+        .expect_err("duplicate file_id must violate PRIMARY KEY");
+
+    let msg = format!("{err:#}");
+    assert!(
+        msg.to_lowercase().contains("unique") || msg.to_lowercase().contains("constraint"),
+        "expected a uniqueness failure, got: {msg}"
+    );
+
+    let all = store.get_file_clusters().unwrap();
+    let ids: Vec<&str> = all.iter().map(|r| r.file_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["a.rs", "b.rs"],
+        "failed replace_file_clusters must leave the previous rows, not an empty table"
+    );
+    assert_eq!(
+        store.get_clusters_epoch().unwrap().as_deref(),
+        Some("epoch-old"),
+        "epoch must roll back with the rows"
+    );
 }
 
 // ── 2. DDL assertion ─────────────────────────────────────────────────────
