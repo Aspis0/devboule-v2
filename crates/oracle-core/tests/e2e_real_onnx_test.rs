@@ -15,29 +15,19 @@
 
 use oracle_core::embed::{BackendChoice, CancelFlag, EmbedderPool};
 use oracle_core::ingest::indexer::{self, IndexerConfig};
-use oracle_core::query::engine::{ContextChunk, QueryEmbedder, QueryEngine};
+use oracle_core::query::engine::{ContextChunk, QueryEngine};
+use oracle_core::query::pool_embedder::PoolQueryEmbedder;
 use oracle_core::store::lance::LanceStore;
 use oracle_core::store::sqlite::SqliteStore;
 use std::path::PathBuf;
 
+/// Model bundle location. Override with `ORACLE_E2E_MODEL_DIR`; the models are
+/// gigabytes and live outside the repo, so there is no committed default that
+/// is right on every machine.
 fn model_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/qwen3-onnx")
-}
-
-/// Adapter from the real pool to the query-side trait (the crate's own
-/// `PoolQueryEmbedder` lives private in `server.rs`, so the test wraps its own).
-struct PoolQuery<'a> {
-    pool: &'a EmbedderPool,
-    cancel: &'a CancelFlag,
-}
-
-impl QueryEmbedder for PoolQuery<'_> {
-    fn embed_query(&self, text: &str, _dims: usize) -> anyhow::Result<Vec<f32>> {
-        let vecs = self.pool.embed(&[text.to_string()], 8, self.cancel)?;
-        vecs.into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("embedder returned no vector"))
-    }
+    std::env::var_os("ORACLE_E2E_MODEL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("models/qwen3-onnx"))
 }
 
 /// Three files in three clearly-distinct semantic domains. The queries below
@@ -96,9 +86,11 @@ async fn real_onnx_dense_retrieval_discriminates() {
     let chunk_vectors = LanceStore::new(&chunk_vec_path);
 
     // ── Index the corpus through the REAL ONNX pool ──────────────────────
+    // int8 is the graph `model_config.json` declares as primary and the one the
+    // app loads; proving the fp32 path would prove something we do not ship.
     let pool = EmbedderPool::new(BackendChoice::Ort {
         model_dir: model,
-        int8: false,
+        int8: true,
     });
     let cancel = CancelFlag::new();
     let cfg = IndexerConfig {
@@ -135,10 +127,10 @@ async fn real_onnx_dense_retrieval_discriminates() {
         Some(chunk_vectors),
         Some(LanceStore::new(&file_vec_path)),
     );
-    let embedder = PoolQuery {
-        pool: &pool,
-        cancel: &cancel,
-    };
+    // The shipping query path: same pool, and the same semantic-prefix decision
+    // the indexer made on the chunks. Embedding the raw query here instead would
+    // prove a path nothing runs.
+    let embedder = PoolQueryEmbedder::new(&pool, &cancel).unwrap();
 
     // Query A — worded with NO token from billing.md; must still pick it.
     let a = engine
