@@ -4,4 +4,5 @@
 
 pub mod engine;
 pub mod lexical;
+pub mod pool_embedder;
 pub mod redact;

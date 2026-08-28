@@ -1,5 +1,6 @@
 mod backend;
 mod client;
+mod oracle;
 
 use tauri::Manager;
 
@@ -13,6 +14,7 @@ fn app_identity(app: tauri::AppHandle) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(client::DaemonBridge::start())
+        .manage(oracle::OracleRuntime::from_environment())
         .invoke_handler(tauri::generate_handler![
             app_identity,
             client::daemon_status,
@@ -23,6 +25,14 @@ pub fn run() {
             backend::session::session_resize,
             backend::session::session_close,
             backend::session::sessions_list,
+            oracle::oracle_status,
+            oracle::oracle_doctor,
+            oracle::oracle_stats,
+            oracle::oracle_index_start,
+            oracle::oracle_watch_start,
+            oracle::oracle_watch_stop,
+            oracle::oracle_files,
+            oracle::oracle_ask,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Devboule")

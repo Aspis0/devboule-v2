@@ -125,6 +125,12 @@ export const sessionDetach = (id: Id) => invokeTyped("session_detach", { id });
 export const sessionClose = (id: Id) => invokeTyped("session_close", { id });
 export const providersList = () => invokeTyped("providers_list");
 export const providerModels = (provider: string) => invokeTyped("provider_models", { provider });
+export const oracleStatus = () => invokeTyped("oracle_status");
+export const oracleDoctor = () => invokeTyped("oracle_doctor");
+export const oracleStats = () => invokeTyped("oracle_stats");
+export const oracleIndexStart = () => invokeTyped("oracle_index_start");
+export const oracleWatchStart = () => invokeTyped("oracle_watch_start");
+export const oracleWatchStop = () => invokeTyped("oracle_watch_stop");
 export const oracleFiles = (tab: FileTab, page: number) =>
   invokeTyped("oracle_files", { tab, page });
 export const oracleAsk = (query: string) => invokeTyped("oracle_ask", { query });

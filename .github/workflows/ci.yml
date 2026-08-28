@@ -58,20 +58,24 @@ jobs:
       - name: Check frontend formatting
         run: pnpm run format:check
 
-      # oracle-core is excluded from the three steps below and covered by its own
-      # job instead, because its dependency graph (DataFusion + LanceDB + Arrow +
-      # ORT + candle) takes ~10 min cold and would dominate a job whose other
-      # crates build in seconds. It is a latency split, not a capacity one:
-      # the runner reports 33.9 GB free and the whole workspace target/ is
-      # 12.6 GB under the debug profile in Cargo.toml, so it does fit.
-      # An earlier version of this comment claimed ~14 GiB free and used that to
-      # justify the split. That number was wrong, and the CI step that prints
-      # free disk in the oracle-core job exists so the next such claim is
-      # measured rather than assumed.
-      # `cargo fmt --all` below still covers oracle-core: formatting needs no build.
-      - name: Build Rust workspace
-        run: cargo build --workspace --exclude oracle-core --locked
+      # devboule links oracle-core, so this workspace job must provide protoc
+      # and compile the Oracle graph transitively.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "31.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build Rust workspace
+        run: cargo build --workspace --locked
+
+      # oracle-core is excluded from the lint set, not from the build: src-tauri
+      # depends on it, so it still compiles here with its default features, and
+      # the oracle-core-check job below is what lints it.
+      # `--all-features` must not reach it. Turning on every oracle-core feature
+      # enables candle's Metal/CoreML path, which pulls objc2, which refuses to
+      # compile off Apple: "only works on Apple platforms". Measured on this
+      # machine — `--workspace --all-features` exits 101 on Windows.
       - name: Clippy
         run: cargo clippy --workspace --exclude oracle-core --all-targets --all-features --locked -- -D warnings
 
@@ -100,12 +104,10 @@ jobs:
         # notices into a false-green workaround.
         run: cargo audit
 
-  # oracle-core cannot be built on this runner (see the note in the windows job:
-  # ~16 GiB of artifacts against ~14 GiB free). `cargo check` produces metadata
-  # and rlibs but no codegen for the final crate, so it fits where a full build
-  # does not, and it still catches the failure that actually happens when a
-  # crate is edited: type errors. It is a smaller net than the local
-  # clippy + test run, and it is honest about being one.
+  # oracle-core is linted and tested here, not in the workspace job. src-tauri
+  # depends on it, so the workspace job compiles it either way; what this job
+  # owns is the -D warnings pass over oracle-core's own targets and the
+  # serialised test run.
   oracle-core-check:
     runs-on: windows-latest
 
@@ -127,6 +129,8 @@ jobs:
           version: "31.1"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Free-disk steps are measurements: an earlier ~14 GiB estimate was wrong
+      # versus the observed 33.9 GB free, so capacity claims must use these steps.
       - name: Report free disk before
         shell: pwsh
         run: Get-PSDrive C | Select-Object Used,Free
@@ -136,6 +140,9 @@ jobs:
       # integration-test binaries, each of which statically links Lance,
       # DataFusion and ORT. Whether a 4-vCPU runner reproduces that is unknown;
       # serialising costs minutes and removes the question.
+      # --all-targets keeps examples/recon_bench.rs compiling. It is the
+      # measurement harness the chunk-size and model decisions came from, so
+      # letting it rot would cost the next measurement, not just a build.
       - name: Clippy oracle-core
         run: cargo clippy -p oracle-core --locked --all-targets -- -D warnings
 

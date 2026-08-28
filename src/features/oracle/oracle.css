@@ -207,6 +207,38 @@
   background: var(--surface-muted);
 }
 
+.oracle-state-message,
+.oracle-empty-state,
+.oracle-error-message,
+.oracle-watch-notice {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.oracle-state-message {
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+}
+
+.oracle-empty-state {
+  color: var(--ochre-deep);
+  background: color-mix(in srgb, var(--ochre) 10%, var(--surface));
+}
+
+.oracle-error-message {
+  color: var(--danger-deep);
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface));
+}
+
+.oracle-watch-notice {
+  color: var(--ochre-deep);
+  background: color-mix(in srgb, var(--ochre) 10%, var(--surface));
+}
+
 .oracle-file-list {
   border: 0;
   border-radius: 0;
