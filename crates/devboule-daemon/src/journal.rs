@@ -288,13 +288,11 @@ enum JournalCmd {
     MarkReaped {
         session_id: String,
         code: Option<u32>,
-        degraded: bool,
     },
     MarkEnded {
         session_id: String,
         generation: u64,
         code: Option<u32>,
-        degraded: bool,
     },
     MarkClosed {
         session_id: String,
@@ -434,7 +432,6 @@ impl Journal {
         self.try_send(JournalCmd::MarkReaped {
             session_id: session_id.to_string(),
             code,
-            degraded: self.is_session_degraded(session_id),
         });
     }
 
@@ -443,7 +440,6 @@ impl Journal {
             JournalCmd::MarkReaped {
                 session_id: session_id.to_string(),
                 code,
-                degraded: self.is_session_degraded(session_id),
             },
             RPC_WAIT,
         )?;
@@ -456,16 +452,15 @@ impl Journal {
         generation: u64,
         code: Option<u32>,
     ) -> Result<(), JournalError> {
-        self.send_cmd(
-            JournalCmd::MarkEnded {
-                session_id: session_id.to_string(),
-                generation,
-                code,
-                degraded: self.is_session_degraded(session_id),
-            },
-            RPC_WAIT,
-        )?;
-        self.flush()
+        // End markers are the durable product boundary. Unlike output, they
+        // must wait for a full queue instead of timing out and making History
+        // report a truncated transcript as complete.
+        self.send_cmd_until_stopped(JournalCmd::MarkEnded {
+            session_id: session_id.to_string(),
+            generation,
+            code,
+        })?;
+        self.rpc_until_stopped(|reply| JournalCmd::Flush { reply })
     }
 
     pub fn try_mark_ended(&self, session_id: &str, generation: u64, code: Option<u32>) {
@@ -473,7 +468,6 @@ impl Journal {
             session_id: session_id.to_string(),
             generation,
             code,
-            degraded: self.is_session_degraded(session_id),
         });
     }
 
@@ -567,6 +561,30 @@ impl Journal {
         Err(JournalError::Stopped)
     }
 
+    fn send_cmd_until_stopped(&self, cmd: JournalCmd) -> Result<(), JournalError> {
+        let mut pending = Some(cmd);
+        loop {
+            let command = pending.take().expect("pending command");
+            if !self.reserve_slot() {
+                pending = Some(command);
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            match self.tx.try_send(command) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Full(cmd)) => {
+                    self.release_slot();
+                    pending = Some(cmd);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.release_slot();
+                    return Err(JournalError::Stopped);
+                }
+            }
+        }
+    }
+
     fn try_send(&self, cmd: JournalCmd) {
         if !self.reserve_slot() {
             return;
@@ -618,15 +636,19 @@ impl Journal {
     }
 
     pub(crate) fn note_session_degraded(&self, session_id: &str) -> bool {
-        if let Ok(mut sessions) = self.degraded_sessions.lock() {
-            let first = sessions.insert(session_id.to_string());
-            drop(sessions);
-            if first {
-                self.queue_degraded_marker(session_id);
+        let first = match self.degraded_sessions.lock() {
+            Ok(mut sessions) => sessions.insert(session_id.to_string()),
+            Err(_) => {
+                eprintln!(
+                    "journal degradation set is poisoned; treating session {session_id} as degraded"
+                );
+                true
             }
-            return first;
+        };
+        if first {
+            self.queue_degraded_marker(session_id);
         }
-        false
+        first
     }
 
     fn queue_degraded_marker(&self, session_id: &str) {
@@ -647,6 +669,15 @@ impl Journal {
                 Err(JournalError::Stopped)
             }
         }
+    }
+
+    fn rpc_until_stopped<T>(
+        &self,
+        make: impl FnOnce(mpsc::Sender<Result<T, JournalError>>) -> JournalCmd,
+    ) -> Result<T, JournalError> {
+        let (tx, rx) = mpsc::channel();
+        self.send_cmd_until_stopped(make(tx))?;
+        rx.recv().map_err(|_| JournalError::Stopped)?
     }
 }
 
@@ -803,11 +834,8 @@ fn journal_loop(
                         .fetch_add(payload_len, Ordering::Relaxed);
                 }
             }
-            JournalCmd::MarkReaped {
-                session_id,
-                code,
-                degraded,
-            } => {
+            JournalCmd::MarkReaped { session_id, code } => {
+                let degraded = is_degraded(&degraded_sessions, &session_id);
                 if let Err(error) = mark_reaped(&conn, &session_id, code, degraded) {
                     note_degraded(&degraded_sessions, &session_id);
                     on_write_error(&error);
@@ -817,8 +845,8 @@ fn journal_loop(
                 session_id,
                 generation,
                 code,
-                degraded,
             } => {
+                let degraded = is_degraded(&degraded_sessions, &session_id);
                 if let Err(error) = mark_ended(&conn, &session_id, generation, code, degraded) {
                     note_degraded(&degraded_sessions, &session_id);
                     on_write_error(&error);
@@ -871,8 +899,22 @@ fn journal_loop(
 }
 
 fn note_degraded(degraded_sessions: &Mutex<HashSet<String>>, session_id: &str) {
-    if let Ok(mut sessions) = degraded_sessions.lock() {
+    if let Err(_) = degraded_sessions.lock().map(|mut sessions| {
         sessions.insert(session_id.to_string());
+    }) {
+        eprintln!("journal degradation set is poisoned; treating session {session_id} as degraded");
+    }
+}
+
+fn is_degraded(degraded_sessions: &Mutex<HashSet<String>>, session_id: &str) -> bool {
+    match degraded_sessions.lock() {
+        Ok(sessions) => sessions.contains(session_id),
+        Err(_) => {
+            eprintln!(
+                "journal degradation set is poisoned; treating session {session_id} as degraded"
+            );
+            true
+        }
     }
 }
 
@@ -1790,6 +1832,33 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_degradation_set_is_fail_closed() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.poisoned"))
+            .expect("upsert");
+        let poisoned = Arc::clone(&journal.degraded_sessions);
+        let panic = std::thread::spawn(move || {
+            let _sessions = poisoned.lock().expect("degradation lock");
+            panic!("simulate a journal-state panic");
+        });
+        assert!(panic.join().is_err());
+
+        assert!(journal.note_session_degraded("s.poisoned"));
+        assert!(journal.is_session_degraded("s.poisoned"));
+        journal.flush().expect("degradation marker");
+        assert!(journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.poisoned")
+            .is_some_and(|row| row.degraded));
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn uncommitted_write_is_not_visible_after_reopen() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");
@@ -1874,7 +1943,6 @@ mod tests {
                     session_id: "s.ended".to_string(),
                     generation: 1,
                     code: Some(0),
-                    degraded: false,
                 },
                 RPC_WAIT,
             )
