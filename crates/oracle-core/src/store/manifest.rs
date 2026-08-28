@@ -49,6 +49,13 @@ pub struct RootEntry {
 pub struct Manifest {
     #[serde(default)]
     pub version: u64,
+    /// Identity of the model that produced the chunk vectors. Missing on
+    /// manifests written before model metadata was introduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    /// Width of the vectors produced by `model_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dims: Option<usize>,
     #[serde(default)]
     pub root: Option<String>,
     #[serde(default)]

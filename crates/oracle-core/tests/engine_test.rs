@@ -4,6 +4,8 @@ use oracle_core::query::engine::{ContextChunk, HashQueryEmbedder, QueryEmbedder,
 use oracle_core::query::lexical::{lexical_chunk_context, ScoredChunk};
 use oracle_core::store::lance::{hash_embed, LanceRow, LanceStore};
 use oracle_core::store::sqlite::{FileChunk, NodeCard, SqliteStore};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 // ── Test fixtures ──────────────────────────────────────────────────────────
 
@@ -368,6 +370,49 @@ impl QueryEmbedder for FixedQueryEmbedder {
         vector[0] = 1.0;
         Ok(vector)
     }
+}
+
+struct DeclaredDimsQueryEmbedder {
+    dims: usize,
+    requested_dims: Arc<AtomicUsize>,
+}
+
+impl QueryEmbedder for DeclaredDimsQueryEmbedder {
+    fn dims(&self) -> anyhow::Result<Option<usize>> {
+        Ok(Some(self.dims))
+    }
+
+    fn embed_query(&self, _text: &str, dims: usize) -> anyhow::Result<Vec<f32>> {
+        self.requested_dims.store(dims, Ordering::SeqCst);
+        Ok(vec![0.0; dims])
+    }
+}
+
+#[tokio::test]
+async fn test_empty_chunk_store_uses_query_model_dimensions() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sqlite = SqliteStore::new(&tmp.path().join("metadata.sqlite")).unwrap();
+    let chunk_vectors = LanceStore::new(&tmp.path().join("chunk_vectors.json"));
+    let requested_dims = Arc::new(AtomicUsize::new(0));
+    let embedder = DeclaredDimsQueryEmbedder {
+        dims: 384,
+        requested_dims: Arc::clone(&requested_dims),
+    };
+    let engine = QueryEngine::new(
+        sqlite,
+        LanceStore::new(&tmp.path().join("node_vectors.json")),
+        Some(chunk_vectors),
+        None,
+    );
+
+    engine
+        .context(
+            "query", 5, &embedder, None, false, None, None, None, None, None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(requested_dims.load(Ordering::SeqCst), 384);
 }
 
 #[tokio::test]

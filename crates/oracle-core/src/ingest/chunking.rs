@@ -17,7 +17,6 @@ pub const CHUNK_STRUCTURED_OVERLAP_CHARS: usize = 900;
 pub const CHUNK_CODE_MAX_CHARS: usize = 2500;
 pub const CHUNK_CODE_OVERLAP_CHARS: usize = 400;
 pub const CHUNK_MAX_FILE_BYTES: u64 = 1_200_000;
-pub const EMBED_DIMS: usize = 1024;
 
 // ── Extension sets ───────────────────────────────────────────────────────────
 
@@ -271,7 +270,25 @@ fn path_resolves_under_root(path: &Path, root: &Path) -> bool {
 // ── Build chunks for file (the main entry point) ────────────────────────────
 
 pub fn build_chunks_for_file(path: &Path, root: &Path) -> Vec<serde_json::Value> {
-    // Fail-closed: never index content whose resolved target escapes the workspace.
+    let (max_chars, _overlap) = chunk_limits_for_file(path);
+    // The declared overlap is discarded and recomputed here, so code runs at 312
+    // instead of the 400 the constant states. Preserved verbatim on purpose: it
+    // changes chunk boundaries, so it is closed together with the geometry
+    // change from the bench, in one pass that regenerates the goldens.
+    // ARCHITETTURA §6.5.
+    let overlap = (max_chars / 8).max(200);
+    build_chunks_for_file_with_limits(path, root, max_chars, overlap)
+}
+
+/// Like [`build_chunks_for_file`], but `max_chars` and `overlap` come from the
+/// caller and apply to every file. AST semantic chunking still runs first
+/// (same as production); `max_chars` also bounds those structural chunks.
+pub fn build_chunks_for_file_with_limits(
+    path: &Path,
+    root: &Path,
+    max_chars: usize,
+    overlap: usize,
+) -> Vec<serde_json::Value> {
     if !path_resolves_under_root(path, root) {
         return vec![];
     }
@@ -286,16 +303,12 @@ pub fn build_chunks_for_file(path: &Path, root: &Path) -> Vec<serde_json::Value>
         .to_string_lossy()
         .replace('\\', "/");
 
-    let (max_chars, _overlap) = chunk_limits_for_file(path);
-
-    // Try semantic chunking first
     if let Some(semantic_chunks) =
         ast_chunker::chunk_file_semantically(path, root, Some(&text), max_chars)
     {
         return semantic_chunks;
     }
 
-    // Sliding-window fallback
     let suffix = path
         .extension()
         .and_then(|e| e.to_str())
@@ -315,7 +328,6 @@ pub fn build_chunks_for_file(path: &Path, root: &Path) -> Vec<serde_json::Value>
         .to_string_lossy()
         .to_string();
 
-    let overlap = (max_chars / 8).max(200);
     let pieces = split_text(&text, max_chars, overlap);
 
     let mut chunks = Vec::new();
@@ -342,6 +354,91 @@ pub fn build_chunks_for_file(path: &Path, root: &Path) -> Vec<serde_json::Value>
     }
 
     chunks
+}
+
+#[cfg(test)]
+mod with_limits_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn with_limits_honors_max_chars_and_overlap_on_sliding_window() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        // `.txt` skips AST, so the sliding-window path sees the overlap we pass.
+        let path = root.join("note.txt");
+        let text: String = (0..3000)
+            .map(|i| char::from(b'A' + (i % 26) as u8))
+            .collect();
+        fs::write(&path, &text).unwrap();
+
+        let max_chars = 1024;
+        let overlap = 164;
+        let chunks = build_chunks_for_file_with_limits(&path, root, max_chars, overlap);
+        assert!(chunks.len() > 1, "3000 chars must split at 1024");
+        for c in &chunks {
+            let n = c["text"].as_str().unwrap().chars().count();
+            assert!(n <= max_chars, "chunk has {n} chars > {max_chars}");
+        }
+        let a = chunks[0]["text"].as_str().unwrap();
+        let b = chunks[1]["text"].as_str().unwrap();
+        let tail: String = a
+            .chars()
+            .rev()
+            .take(overlap)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let head: String = b.chars().take(overlap).collect();
+        assert_eq!(
+            tail, head,
+            "consecutive sliding-window chunks must overlap by {overlap} chars"
+        );
+    }
+
+    #[test]
+    fn with_limits_keeps_ast_path_and_bounds_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join("two.rs");
+        // Two functions far apart so AST can emit two structural chunks.
+        let mut src = String::from("pub fn alpha() {\n    let x = 1;\n}\n");
+        src.push_str(&"// pad\n".repeat(80));
+        src.push_str("pub fn beta() {\n    let y = 2;\n}\n");
+        fs::write(&path, &src).unwrap();
+
+        let chunks = build_chunks_for_file_with_limits(&path, root, 1024, 164);
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c["kind"].as_str() == Some("function")),
+            "AST path must stay on; got {:?}",
+            chunks.iter().map(|c| c["kind"].clone()).collect::<Vec<_>>()
+        );
+        for c in &chunks {
+            let n = c["text"].as_str().unwrap_or("").chars().count();
+            assert!(n <= 1024, "AST chunk has {n} chars > 1024");
+        }
+    }
+
+    #[test]
+    fn old_path_matches_with_limits_when_overlap_is_the_recomputed_formula() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let path = root.join("note.txt");
+        let text: String = (0..4000)
+            .map(|i| char::from(b'0' + (i % 10) as u8))
+            .collect();
+        fs::write(&path, &text).unwrap();
+
+        let old = build_chunks_for_file(&path, root);
+        let (max_chars, _declared) = chunk_limits_for_file(&path);
+        let recomputed = (max_chars / 8).max(200);
+        let new = build_chunks_for_file_with_limits(&path, root, max_chars, recomputed);
+        assert_eq!(old, new);
+    }
 }
 
 #[cfg(test)]

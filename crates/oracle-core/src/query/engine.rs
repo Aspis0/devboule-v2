@@ -42,6 +42,11 @@ pub trait ContextAnswerer: Send + Sync {
 /// Query embedding trait — decouples the engine from any specific embedder.
 pub trait QueryEmbedder: Send + Sync {
     fn embed_query(&self, text: &str, dims: usize) -> Result<Vec<f32>>;
+    /// Return the loaded model's width when the embedder knows it. `None` is
+    /// reserved for dimensionless fallbacks such as the hash embedder.
+    fn dims(&self) -> Result<Option<usize>> {
+        Ok(None)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -374,27 +379,43 @@ impl QueryEngine {
     // ── helpers ──────────────────────────────────────────────────────────
 
     /// Embed the query text through the provided embedder, using the store's
-    /// canonical dimension.
+    /// canonical dimension or the loaded model when the store is empty.
     async fn embed_query(&self, embedder: &dyn QueryEmbedder, query: &str) -> Result<Vec<f32>> {
-        let dims = self.dims().await;
-        embedder.embed_query(query, dims)
+        let dims = self.dims(embedder).await?;
+        let vector = embedder.embed_query(query, dims)?;
+        if vector.len() != dims {
+            anyhow::bail!(
+                "query embedder returned {} dimensions, expected {dims}",
+                vector.len()
+            );
+        }
+        Ok(vector)
     }
 
     /// Canonical embedding dimensionality, read from the chunk-vector store
-    /// when available, otherwise from `config::EMBED_DIMS`.
-    async fn dims(&self) -> usize {
+    /// when available, otherwise from the loaded query model. The constant is
+    /// only the last fallback for a dimensionless debug embedder and empty store.
+    async fn dims(&self, embedder: &dyn QueryEmbedder) -> Result<usize> {
         if let Some(ref cv) = self.chunk_vectors {
             if let Ok(count) = cv.count().await {
                 if count > 0 {
                     if let Ok(rows) = cv.read_all().await {
                         if let Some(first) = rows.first() {
-                            return first.vector.len();
+                            return Ok(first.vector.len());
                         }
                     }
                 }
             }
         }
-        config::EMBED_DIMS
+        if let Some(dims) = embedder.dims()? {
+            if dims == 0 {
+                anyhow::bail!("query embedder declares zero dimensions");
+            }
+            return Ok(dims);
+        }
+        // No model or stored vector exists here: HashQueryEmbedder is the
+        // dimensionless debug fallback, so there is no better source.
+        Ok(config::EMBED_DIMS)
     }
 
     /// Best per-file chunk scores and previews from the chunk-vector store.

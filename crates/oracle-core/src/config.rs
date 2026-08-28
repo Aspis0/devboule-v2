@@ -7,8 +7,9 @@
 use std::env;
 use std::path::{Component, Path, PathBuf};
 
-/// Embedding dimensionality shared by the vector stores and the hash fallback.
-/// Mirrors `oracle/config.py::EMBED_DIMS`.
+/// Last-resort embedding width for paths that have neither a loaded model nor
+/// stored vectors (for example the dimensionless hash fallback or a legacy
+/// empty-schema test). Model-backed indexing/querying must use model metadata.
 pub const EMBED_DIMS: usize = 1024;
 
 /// Store directory / file names (relative to the Oracle data dir).

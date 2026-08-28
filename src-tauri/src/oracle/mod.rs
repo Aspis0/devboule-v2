@@ -10,7 +10,9 @@ use tauri::State;
 
 use devboule_protocol::ErrorCode;
 use oracle_core::config::{OracleDataPaths, MAX_BOUNDED_LIMIT};
-use oracle_core::embed::{default_backend, BackendChoice, CancelFlag, EmbedderPool};
+use oracle_core::embed::{
+    default_backend, BackendChoice, CancelFlag, DeclaredModelConfig, EmbedderPool,
+};
 use oracle_core::ingest::indexer::{self, IndexStatusSnapshot};
 use oracle_core::query::engine::{ContextChunk, QueryEngine};
 use oracle_core::query::pool_embedder::PoolQueryEmbedder;
@@ -22,6 +24,10 @@ use oracle_core::store::sqlite::SqliteStore;
 use crate::backend::error::CommandError;
 
 const ORACLE_ROOT_ENV: &str = "DEVBOULE_ORACLE_ROOT";
+// Developer-only bundle selector; the project-selected model setting will
+// replace this environment variable when model configuration is introduced.
+const ORACLE_MODEL_ENV: &str = "DEVBOULE_ORACLE_MODEL";
+const DEFAULT_ORACLE_MODEL: &str = "qwen3-onnx";
 const PAGE_SIZE: usize = 50;
 const QUERY_LIMIT: usize = 10;
 
@@ -55,8 +61,14 @@ impl OracleRuntime {
             }
         });
         let pool = paths.as_ref().map(|paths| {
-            let model_dir =
-                oracle_core::embed::ort_backend::OrtEmbedder::default_model_dir(&paths.data.root);
+            let model_id = std::env::var(ORACLE_MODEL_ENV)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_ORACLE_MODEL.to_string());
+            let model_dir = oracle_core::embed::ort_backend::OrtEmbedder::model_dir(
+                &paths.data.root,
+                model_id.trim(),
+            );
             Arc::new(EmbedderPool::new(default_backend(model_dir)))
         });
 
@@ -646,7 +658,7 @@ fn floor_char_boundary(value: &str, index: usize) -> usize {
 fn model_health_check(backend: &BackendChoice) -> OracleHealthCheck {
     match backend {
         BackendChoice::Ort { model_dir, int8 } => {
-            if oracle_core::model_download::model_present_at(model_dir, *int8) {
+            if configured_model_present(model_dir, *int8) {
                 health_check(
                     "embedder",
                     "ok",
@@ -670,13 +682,40 @@ fn model_health_check(backend: &BackendChoice) -> OracleHealthCheck {
 
 fn ensure_model_is_available(backend: &BackendChoice) -> Result<(), CommandError> {
     if let BackendChoice::Ort { model_dir, int8 } = backend {
-        if !oracle_core::model_download::model_present_at(model_dir, *int8) {
+        let config_path = model_dir.join("model_config.json");
+        if !config_path.is_file() {
             return Err(invalid_configuration(
-                "Oracle embedding model is not installed. Install the Qwen3 ONNX runtime before indexing.",
+                format!(
+                    "Oracle model directory {} (selected by {ORACLE_MODEL_ENV}) is missing model_config.json.",
+                    model_dir.display()
+                ),
             ));
+        }
+        if !configured_model_present(model_dir, *int8) {
+            return Err(invalid_configuration(format!(
+                "Oracle embedding model bundle at {} is incomplete: the declared ONNX graph or tokenizer is missing.",
+                model_dir.display()
+            )));
         }
     }
     Ok(())
+}
+
+fn configured_model_present(model_dir: &Path, int8: bool) -> bool {
+    let Ok(declared) = DeclaredModelConfig::load(model_dir) else {
+        return false;
+    };
+    let Ok(graph) = declared.graph_path(model_dir, int8) else {
+        return false;
+    };
+    let Ok(tokenizer) = declared.tokenizer_path(model_dir) else {
+        return false;
+    };
+    [graph, tokenizer].iter().all(|path| {
+        std::fs::metadata(path)
+            .map(|m| m.len() > 1024)
+            .unwrap_or(false)
+    })
 }
 
 fn backend_label(backend: &BackendChoice) -> String {

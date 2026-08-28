@@ -12,6 +12,7 @@ use oracle_core::store::manifest::{load_manifest, manifest_files_for_root};
 use oracle_core::store::sqlite::SqliteStore;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Fake embedder
@@ -20,14 +21,22 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Deterministic fake embedder for hermetic tests.
 struct FakeEmbedder {
     call_count: AtomicUsize,
+    model_id: String,
+    dims: usize,
     /// When `Some(n)`, cancel after the n-th embed call.
     cancel_after: Option<usize>,
 }
 
 impl FakeEmbedder {
     fn new() -> Self {
+        Self::with_model("Qwen3-test", EMBED_DIMS)
+    }
+
+    fn with_model(model_id: &str, dims: usize) -> Self {
         Self {
             call_count: AtomicUsize::new(0),
+            model_id: model_id.to_string(),
+            dims,
             cancel_after: None,
         }
     }
@@ -35,6 +44,8 @@ impl FakeEmbedder {
     fn with_cancel_after(n: usize) -> Self {
         Self {
             call_count: AtomicUsize::new(0),
+            model_id: "Qwen3-test".to_string(),
+            dims: EMBED_DIMS,
             cancel_after: Some(n),
         }
     }
@@ -45,6 +56,14 @@ impl FakeEmbedder {
 }
 
 impl TextEmbedder for FakeEmbedder {
+    fn model_id(&self) -> anyhow::Result<String> {
+        Ok(self.model_id.clone())
+    }
+
+    fn dims(&self) -> anyhow::Result<usize> {
+        Ok(self.dims)
+    }
+
     fn embed(
         &self,
         texts: &[String],
@@ -63,10 +82,10 @@ impl TextEmbedder for FakeEmbedder {
             .iter()
             .enumerate()
             .map(|(i, text)| {
-                let mut vec = vec![0.0f32; EMBED_DIMS];
+                let mut vec = vec![0.0f32; self.dims];
                 // Seed from text bytes + call count + index for uniqueness
                 for (j, byte) in text.bytes().enumerate() {
-                    let idx = (j + count * 7 + i * 13) % EMBED_DIMS;
+                    let idx = (j + count * 7 + i * 13) % self.dims;
                     vec[idx] += byte as f32;
                 }
                 // Normalize
@@ -241,6 +260,111 @@ async fn test_fresh_index_complete() {
 
     // Embedder should have been called at least once
     assert!(embedder.calls() > 0, "embedder should have been called");
+}
+
+#[tokio::test]
+async fn test_manifest_records_loaded_model_dimensions() {
+    let world = TestWorld::new();
+    let sqlite = world.sqlite();
+    let vectors = world.vectors();
+    let embedder = FakeEmbedder::with_model("bge-small-test", 384);
+    let cancel = CancelFlag::new();
+
+    indexer::index_file_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        &embedder,
+        &cancel,
+        &world.config(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let manifest = load_manifest(&world.manifest_path);
+    assert_eq!(manifest.model_id.as_deref(), Some("bge-small-test"));
+    assert_eq!(manifest.dims, Some(384));
+    assert!(sqlite
+        .all_chunks()
+        .unwrap()
+        .iter()
+        .all(|chunk| chunk.embedding_dims == 384));
+    assert!(vectors
+        .read_all()
+        .await
+        .unwrap()
+        .iter()
+        .all(|row| row.vector.len() == 384));
+}
+
+#[tokio::test]
+async fn test_model_change_reembeds_with_new_dimensions() {
+    let world = TestWorld::new();
+    let sqlite = world.sqlite();
+    let vectors = world.vectors();
+    let cancel = CancelFlag::new();
+    let first = FakeEmbedder::with_model("model-a", 1024);
+
+    indexer::index_file_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        &first,
+        &cancel,
+        &world.config(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let second = FakeEmbedder::with_model("model-b", 384);
+    let messages = Arc::new(Mutex::new(Vec::<String>::new()));
+    let messages_for_progress = Arc::clone(&messages);
+    let progress = move |message: &str| {
+        messages_for_progress
+            .lock()
+            .unwrap()
+            .push(message.to_string());
+    };
+    let result = indexer::index_file_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        &second,
+        &cancel,
+        &world.config(),
+        Some(&progress),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.status, IndexStatus::Complete);
+    assert_eq!(result.processed, 4);
+    assert!(sqlite
+        .all_chunks()
+        .unwrap()
+        .iter()
+        .all(|chunk| chunk.embedding_dims == 384));
+    assert!(vectors
+        .read_all()
+        .await
+        .unwrap()
+        .iter()
+        .all(|row| row.vector.len() == 384));
+    let manifest = load_manifest(&world.manifest_path);
+    assert_eq!(manifest.model_id.as_deref(), Some("model-b"));
+    assert_eq!(manifest.dims, Some(384));
+    assert!(messages
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|message| message.contains("reason=model_changed")
+            && message.contains("old_model=model-a")
+            && message.contains("new_model=model-b")));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

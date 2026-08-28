@@ -40,6 +40,10 @@ impl Embedder for CandleEmbedder {
         MODEL_ID
     }
 
+    fn dims(&self) -> usize {
+        self.model.config().hidden_size
+    }
+
     fn embed(
         &mut self,
         texts: &[String],

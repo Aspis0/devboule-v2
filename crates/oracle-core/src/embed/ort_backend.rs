@@ -88,6 +88,10 @@ impl Embedder for OrtEmbedder {
         &self.model_id
     }
 
+    fn dims(&self) -> usize {
+        self.inner.descriptor().dims
+    }
+
     fn uses_semantic_prefix(&self) -> bool {
         self.inner.descriptor().uses_semantic_prefix
     }

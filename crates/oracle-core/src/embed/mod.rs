@@ -924,6 +924,8 @@ pub enum BackendChoice {
 /// error containing "cancelled" when it fires.
 pub trait Embedder: Send {
     fn model_id(&self) -> &str;
+    /// Hidden width read from the loaded model, not from a global default.
+    fn dims(&self) -> usize;
     /// Whether chunk/query text should take the semantic-prefix-v2 header.
     /// Default true preserves the Qwen3 path for backends that don't override.
     fn uses_semantic_prefix(&self) -> bool {
@@ -1008,6 +1010,16 @@ impl EmbedderPool {
 
     pub fn backend(&self) -> &BackendChoice {
         &self.choice
+    }
+
+    /// Load the selected backend if needed and return the facts owned by it.
+    pub fn model_metadata(&self) -> Result<(String, usize)> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.embedder.is_none() {
+            state.embedder = Some(load_backend(&self.choice)?);
+        }
+        let embedder = state.embedder.as_ref().expect("just loaded");
+        Ok((embedder.model_id().to_string(), embedder.dims()))
     }
 
     /// Whether the model is currently resident in memory.

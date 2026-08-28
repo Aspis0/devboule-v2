@@ -145,7 +145,8 @@ impl LanceStore {
         &self.path
     }
 
-    /// Default Arrow schema for the `"nodes"` table (1024-dim vector column).
+    /// Legacy schema helper used by store tests; production creates schemas
+    /// from the first vector batch.
     pub fn default_schema() -> SchemaRef {
         lance_schema(crate::config::EMBED_DIMS)
     }
@@ -206,6 +207,31 @@ impl LanceStore {
         Ok(())
     }
 
+    /// Replace the vector table with an empty table of the selected model's
+    /// width before a full re-embed.
+    pub async fn reset_for_dims(&self, dims: usize) -> Result<()> {
+        if dims == 0 {
+            anyhow::bail!("cannot reset vector store with zero dimensions");
+        }
+        match self.backend {
+            Backend::Json => self.write_json(&[]),
+            Backend::Lance => {
+                let conn = self.connection().await?;
+                conn.create_empty_table("nodes", lance_schema(dims))
+                    .mode(lancedb::database::CreateTableMode::Overwrite)
+                    .execute()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "resetting vector table to {dims} dimensions in {}",
+                            self.path.display()
+                        )
+                    })?;
+                Ok(())
+            }
+        }
+    }
+
     /// Build a `RecordBatch` from rows, with `vector` as `FixedSizeList<f32, dims>`.
     fn to_batch(&self, records: &[LanceRow]) -> Result<RecordBatch> {
         // Dimension comes FROM THE DATA, mirroring Python's
@@ -214,6 +240,8 @@ impl LanceStore {
         let dims = records
             .first()
             .map(|r| r.vector.len())
+            // An empty fallback batch has no vector from which to infer a
+            // schema; it is unreachable for normal model writes.
             .unwrap_or(crate::config::EMBED_DIMS);
         if let Some(bad) = records.iter().find(|r| r.vector.len() != dims) {
             anyhow::bail!(

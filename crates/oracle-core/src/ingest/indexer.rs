@@ -95,6 +95,11 @@ const LOW_MEMORY_RETRY_CYCLES: usize = 6;
 /// `FakeEmbedder` in tests.  `embed` must return one L2-normalized vector per
 /// input text, in order.
 pub trait TextEmbedder: Send + Sync {
+    /// Identity of the loaded model, including backend/precision when those
+    /// affect index compatibility.
+    fn model_id(&self) -> Result<String>;
+    /// Width of vectors produced by the loaded model.
+    fn dims(&self) -> Result<usize>;
     fn embed(
         &self,
         texts: &[String],
@@ -109,6 +114,14 @@ pub trait TextEmbedder: Send + Sync {
 
 /// Thin adapter: delegate to `EmbedderPool::embed`.
 impl TextEmbedder for crate::embed::EmbedderPool {
+    fn model_id(&self) -> Result<String> {
+        self.model_metadata().map(|(model_id, _)| model_id)
+    }
+
+    fn dims(&self) -> Result<usize> {
+        self.model_metadata().map(|(_, dims)| dims)
+    }
+
     fn embed(
         &self,
         texts: &[String],
@@ -320,7 +333,7 @@ fn chunk_value_to_meta(chunk: &serde_json::Value) -> ChunkMeta {
 }
 
 /// Convert a chunk dict to a `FileChunk` for SQLite.
-fn chunk_value_to_file_chunk(chunk: &serde_json::Value) -> FileChunk {
+fn chunk_value_to_file_chunk(chunk: &serde_json::Value, embedding_dims: usize) -> FileChunk {
     let gs = |key: &str| -> String {
         chunk
             .get(key)
@@ -340,7 +353,7 @@ fn chunk_value_to_file_chunk(chunk: &serde_json::Value) -> FileChunk {
         text: gs("text"),
         file_sorgente: gs("file_sorgente"),
         ultima_modifica: gs("ultima_modifica"),
-        embedding_dims: gi("embedding_dims").max(EMBED_DIMS as i64),
+        embedding_dims: embedding_dims as i64,
         kind: gs("kind"),
         symbol_name: gs("symbol_name"),
         signature: gs("signature"),
@@ -371,13 +384,18 @@ fn chunk_value_to_lance_row(chunk: &serde_json::Value, vector: Vec<f32>) -> Lanc
 
 /// Enrich chunk dicts with fields the Rust `build_chunks_for_file` omits
 /// but the Python version sets (ultima_modifica, embedding_dims, file_sorgente).
-fn enrich_chunks(chunks: &mut [serde_json::Value], mtime: &str, file_id: &str) {
+fn enrich_chunks(
+    chunks: &mut [serde_json::Value],
+    mtime: &str,
+    file_id: &str,
+    embedding_dims: usize,
+) {
     for chunk in chunks {
         if let Some(obj) = chunk.as_object_mut() {
             obj.entry("ultima_modifica".to_string())
                 .or_insert_with(|| serde_json::Value::String(mtime.to_string()));
             obj.entry("embedding_dims".to_string())
-                .or_insert_with(|| serde_json::Value::Number(EMBED_DIMS.into()));
+                .or_insert_with(|| serde_json::Value::Number(embedding_dims.into()));
             obj.entry("file_sorgente".to_string())
                 .or_insert_with(|| serde_json::Value::String(file_id.to_string()));
         }
@@ -873,6 +891,10 @@ pub fn sync_text_chunks(
     let manifest_files_owned = manifest_files_for_root(&mut manifest, &root, false)
         .cloned()
         .unwrap_or_default();
+    // This text-only path has no loaded model. Reuse the last indexed model's
+    // width when present; the constant is only legal for a brand-new metadata
+    // store with no model information to consult.
+    let embedding_dims = manifest.dims.unwrap_or(EMBED_DIMS);
 
     let total_files = files.len();
     let pending: Vec<PathBuf> = if force {
@@ -903,13 +925,15 @@ pub fn sync_text_chunks(
             let file_id = relative_posix(path, &root)?;
             let mtime = utc_mtime_str(path);
             let mut file_chunks = chunking::build_chunks_for_file(path, &root);
-            enrich_chunks(&mut file_chunks, &mtime, &file_id);
+            enrich_chunks(&mut file_chunks, &mtime, &file_id, embedding_dims);
             file_ids.push(file_id);
             all_chunks.extend(file_chunks);
         }
 
-        let file_chunks_refs: Vec<FileChunk> =
-            all_chunks.iter().map(chunk_value_to_file_chunk).collect();
+        let file_chunks_refs: Vec<FileChunk> = all_chunks
+            .iter()
+            .map(|chunk| chunk_value_to_file_chunk(chunk, embedding_dims))
+            .collect();
         sqlite.replace_chunks_for_files(&file_ids, &file_chunks_refs)?;
 
         processed_files += batch.len();
@@ -1186,18 +1210,55 @@ pub async fn index_file_chunks(
         .filter(|p| !is_output_path(p, &out_paths))
         .collect();
 
+    let model_id = embedder.model_id()?;
+    let embedding_dims = embedder.dims()?;
+    if embedding_dims == 0 {
+        anyhow::bail!("embedding model `{model_id}` declares zero dimensions");
+    }
+
     // file_needs_index is vector-unaware (manifest+sqlite text only). When Lance
     // is empty (failed/paused dense run, wiped chunks.lancedb) every file would
     // otherwise be skipped forever without Force. Re-embed the whole collect set.
     let vector_count = chunk_vectors.count().await.unwrap_or(0);
+    let manifest_files = manifest_files_for_root(&mut manifest, &root, true)
+        .unwrap()
+        .clone();
+    let has_existing_index = vector_count > 0 || !manifest_files.is_empty();
+    let stored_dims = if vector_count > 0 {
+        chunk_vectors
+            .read_all()
+            .await
+            .ok()
+            .and_then(|rows| rows.first().map(|row| row.vector.len()))
+    } else {
+        None
+    };
+    let model_changed = has_existing_index
+        && (manifest.model_id.as_deref() != Some(model_id.as_str())
+            || manifest.dims != Some(embedding_dims)
+            || stored_dims.is_some_and(|dims| dims != embedding_dims));
+
+    if model_changed {
+        log_progress(
+            progress,
+            &format!(
+                "chunk-index re-embed-all reason=model_changed old_model={} old_dims={:?} new_model={} new_dims={embedding_dims}",
+                manifest.model_id.as_deref().unwrap_or("<missing>"),
+                manifest.dims.or(stored_dims),
+                model_id,
+            ),
+        );
+        chunk_vectors.reset_for_dims(embedding_dims).await?;
+    }
+
     let pending: Vec<PathBuf> = {
-        let manifest_files = manifest_files_for_root(&mut manifest, &root, true).unwrap();
         files
             .iter()
             .filter(|path| {
                 config.force
                     || vector_count == 0
-                    || manifest::file_needs_index(path, &root, manifest_files, sqlite)
+                    || model_changed
+                    || manifest::file_needs_index(path, &root, &manifest_files, sqlite)
                         .unwrap_or(true)
             })
             .cloned()
@@ -1320,7 +1381,7 @@ pub async fn index_file_chunks(
             let file_id = relative_posix(path, &root)?;
             let mtime = utc_mtime_str(path);
             let mut file_chunks = chunking::build_chunks_for_file(path, &root);
-            enrich_chunks(&mut file_chunks, &mtime, &file_id);
+            enrich_chunks(&mut file_chunks, &mtime, &file_id, embedding_dims);
             batch_chunks_all.extend(file_chunks.iter().cloned());
             file_chunks_map.insert(file_id, file_chunks);
         }
@@ -1497,8 +1558,23 @@ pub async fn index_file_chunks(
                 break;
             }
 
-            // Build vector records
+            if vectors.len() != sub_batch.len() {
+                anyhow::bail!(
+                    "embedding model `{model_id}` returned {} vectors for {} chunks",
+                    vectors.len(),
+                    sub_batch.len()
+                );
+            }
+
+            // Build vector records only after validating the model's declared
+            // width, so a schema mismatch cannot surface inside table.add().
             for (chunk, vector) in sub_batch.iter().zip(vectors) {
+                if vector.len() != embedding_dims {
+                    anyhow::bail!(
+                        "embedding model `{model_id}` returned {} dimensions, expected {embedding_dims}",
+                        vector.len()
+                    );
+                }
                 vector_records.push(chunk_value_to_lance_row(chunk, vector));
             }
 
@@ -1524,7 +1600,7 @@ pub async fn index_file_chunks(
 
         let file_chunks_for_sqlite: Vec<FileChunk> = batch_chunks_all
             .iter()
-            .map(chunk_value_to_file_chunk)
+            .map(|chunk| chunk_value_to_file_chunk(chunk, embedding_dims))
             .collect();
         sqlite.replace_chunks_for_files(&batch_file_ids, &file_chunks_for_sqlite)?;
 
@@ -1568,6 +1644,10 @@ pub async fn index_file_chunks(
         IndexStatus::PausedBatchLimit
     };
 
+    if status == IndexStatus::Complete {
+        manifest.model_id = Some(model_id);
+        manifest.dims = Some(embedding_dims);
+    }
     sync_legacy_manifest_root(&mut manifest, &root);
     save_manifest(&manifest_path, &manifest)?;
 
@@ -1781,7 +1861,7 @@ mod tests {
             "start_char": 0,
             "end_char": text.len(),
             "ultima_modifica": "",
-            "embedding_dims": 1024,
+            "embedding_dims": EMBED_DIMS,
         })
     }
 
