@@ -899,9 +899,13 @@ fn journal_loop(
 }
 
 fn note_degraded(degraded_sessions: &Mutex<HashSet<String>>, session_id: &str) {
-    if let Err(_) = degraded_sessions.lock().map(|mut sessions| {
-        sessions.insert(session_id.to_string());
-    }) {
+    if degraded_sessions
+        .lock()
+        .map(|mut sessions| {
+            sessions.insert(session_id.to_string());
+        })
+        .is_err()
+    {
         eprintln!("journal degradation set is poisoned; treating session {session_id} as degraded");
     }
 }
