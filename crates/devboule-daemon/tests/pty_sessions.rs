@@ -24,8 +24,8 @@ use devboule_daemon::{
     RuntimePaths, IDLE_SHUTDOWN_GRACE, PENDING_OUTPUT_BUDGET_BYTES,
 };
 use devboule_protocol::{
-    ClientHello, ClientMessage, Cursor, ErrorCode, OwnerId, Persistence, PersistenceKind,
-    ResumeResult, SessionEvent, SessionKind, SessionState,
+    ClientHello, ClientMessage, Cursor, CursorShape, ErrorCode, OwnerId, Persistence,
+    PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionState,
 };
 use portable_pty::{CommandBuilder, PtySize};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
@@ -247,6 +247,39 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::JournalDegraded
         | SessionEvent::OutputGap { .. } => false,
     }
+}
+
+fn apply_snapshot_state(screen: &mut Screen, event: &SessionEvent) {
+    let SessionEvent::Snapshot {
+        data,
+        cursor,
+        bracketed_paste,
+        line_wrap,
+        title,
+        ..
+    } = event
+    else {
+        return;
+    };
+    screen.process(data.as_bytes());
+    let shape = match cursor.shape {
+        CursorShape::Block => 1,
+        CursorShape::Underline => 3,
+        CursorShape::Bar => 5,
+    } + u16::from(!cursor.blinking);
+    let state = format!(
+        "\x1b[{};{}H\x1b[?25{}\x1b[{shape} q\x1b[?2004{}\x1b[?7{}{}",
+        cursor.row + 1,
+        cursor.col + 1,
+        if cursor.visible { 'h' } else { 'l' },
+        if *bracketed_paste { 'h' } else { 'l' },
+        if *line_wrap { 'h' } else { 'l' },
+        title
+            .as_deref()
+            .map(|title| format!("\x1b]2;{}\x1b\\", title))
+            .unwrap_or_default(),
+    );
+    screen.process(state.as_bytes());
 }
 
 fn wait_for_marker(received: &Mutex<Vec<SessionEvent>>, marker: &str, timeout: Duration) -> bool {
@@ -2397,16 +2430,14 @@ fn attach_during_flood_delivers_every_sequence_once() {
     let mut screen: Option<Screen> = None;
     for event in &received {
         match event {
-            SessionEvent::Snapshot {
-                as_of_seq, data, ..
-            } => {
+            SessionEvent::Snapshot { as_of_seq, .. } => {
                 assert!(
                     *as_of_seq >= covered_to,
                     "snapshot boundary {as_of_seq} behind covered {covered_to}"
                 );
                 covered_to = *as_of_seq;
                 let term = screen.get_or_insert_with(|| Screen::new(120, 32));
-                term.process(data.as_bytes());
+                apply_snapshot_state(term, event);
             }
             SessionEvent::Output { seq, data } => {
                 assert!(seen.insert(*seq), "sequence {seq} was delivered twice");
