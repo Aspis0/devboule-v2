@@ -80,8 +80,8 @@ use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, CursorShape, ErrorCode,
-    OwnerId, ScreenCursor, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionState,
-    WireError,
+    JournalStats, OwnerId, ScreenCursor, Session, SessionEvent, SessionEventEnvelope, SessionKind,
+    SessionState, WireError,
 };
 
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
@@ -1496,6 +1496,23 @@ impl SessionRegistry {
                     .saturating_add(metrics.coalesced_frames);
                 total
             })
+    }
+
+    /// Wire view of the journal writer's counters for the Status reply.
+    /// `None` when the journal could not be opened: there is no writer
+    /// whose behaviour could be counted, and inventing zeros would claim
+    /// an integrity nobody observed.
+    pub fn journal_stats(&self) -> Option<JournalStats> {
+        self.journal.as_ref().map(|journal| {
+            let snapshot = journal.stats();
+            JournalStats {
+                accepted_frames: snapshot.accepted_frames,
+                accepted_bytes: snapshot.accepted_bytes,
+                committed_frames: snapshot.committed_frames,
+                committed_bytes: snapshot.committed_bytes,
+                failed_frames: snapshot.failed_frames,
+            }
+        })
     }
 
     pub fn flush_journal(&self) {

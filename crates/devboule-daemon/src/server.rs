@@ -219,6 +219,7 @@ impl ServerState {
                 ring_evicted_bytes: output_metrics.coalesced_bytes,
                 ring_dropped_frames: output_metrics.coalesced_frames,
                 journal_error,
+                journal_stats: self.sessions.journal_stats(),
             },
         }
     }

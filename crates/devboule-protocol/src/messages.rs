@@ -190,6 +190,51 @@ pub enum DaemonMessage {
     Event(SessionEventEnvelope),
 }
 
+/// Live counters of the conversation journal writer, from the `status`
+/// frame.
+///
+/// They exist to separate two failure modes that a per-session degraded
+/// flag alone conflates:
+///
+/// - `failedFrames > 0`: the daemon REJECTED output while it was alive
+///   (journal queue full or a write error). It dropped those frames
+///   knowing it, recorded the per-session degradation, and a recovered
+///   transcript reports that loss as `truncated`.
+/// - `committedFrames < acceptedFrames` with `failedFrames == 0`: frames
+///   were accepted into the bounded queue but not committed yet. If the
+///   process dies in this state the queue dies with it and no record of
+///   those frames ever reaches the database — the loss is real but
+///   nothing after the fact can observe that it happened.
+///
+/// Even both conditions clean do not certify a complete transcript:
+/// output the daemon produced but never accepted is invisible here by
+/// construction. Completeness is only ever claimed by an orderly close
+/// (`Exit`), never by these counters.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalStats {
+    /// Output frames the journal queue accepted. A frame is counted here
+    /// when it enters the queue, not when it is on disk.
+    #[serde(default)]
+    pub accepted_frames: u64,
+    /// Payload bytes of the accepted frames.
+    #[serde(default)]
+    pub accepted_bytes: u64,
+    /// Accepted frames whose SQLite transaction has committed. At most
+    /// `acceptedFrames`; the difference is the queue that dies with the
+    /// process.
+    #[serde(default)]
+    pub committed_frames: u64,
+    /// Payload bytes of the committed frames.
+    #[serde(default)]
+    pub committed_bytes: u64,
+    /// Output frames the journal rejected while the daemon was alive:
+    /// queue full or a write error. Every one of these is output the
+    /// daemon dropped knowing it.
+    #[serde(default)]
+    pub failed_frames: u64,
+}
+
 /// Status fields flattened into the `status` frame so a pipe client sees
 /// them next to `type`.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -214,9 +259,17 @@ pub struct DaemonStatusBody {
     pub ring_dropped_frames: u64,
     /// Present when the conversation journal could not be opened or a live
     /// session has lost journal writes. Live sessions continue; recovery
-    /// reports the per-session `truncated` state.
+    /// reports observed losses through the per-session `truncated` state.
+    /// Losses that were never observed (the uncommitted writer queue dying
+    /// with the process) leave no flag anywhere — the recovered state
+    /// itself is what carries that doubt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_error: Option<String>,
+    /// Live counters of the journal writer, present when the journal was
+    /// opened. `None` means the journal is unavailable (see `journalError`):
+    /// there is no writer whose behaviour could be counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_stats: Option<JournalStats>,
 }
 
 /// Live session event on the daemon pipe. `generation` is here, not inside
@@ -311,6 +364,49 @@ mod tests {
         assert!(!encoded.contains('\n'));
         let decoded: ClientMessage = serde_json::from_str(&encoded).expect("parse");
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn journal_stats_round_trips_with_camel_case_wire_names() {
+        let stats = JournalStats {
+            accepted_frames: 12,
+            accepted_bytes: 4096,
+            committed_frames: 10,
+            committed_bytes: 3840,
+            failed_frames: 2,
+        };
+        let encoded = serde_json::to_value(stats).expect("json");
+        assert_eq!(encoded["acceptedFrames"], 12);
+        assert_eq!(encoded["acceptedBytes"], 4096);
+        assert_eq!(encoded["committedFrames"], 10);
+        assert_eq!(encoded["committedBytes"], 3840);
+        assert_eq!(encoded["failedFrames"], 2);
+        let decoded: JournalStats = serde_json::from_value(encoded).expect("parse");
+        assert_eq!(decoded, stats);
+    }
+
+    #[test]
+    fn status_body_treats_journal_stats_as_optional_for_older_daemons() {
+        // A daemon predating the field must still parse; the client must
+        // read its absence as "no journal writer", not as a wire error.
+        let older_daemon_frame = serde_json::json!({
+            "type": "status",
+            "id": 5,
+            "instanceId": "i",
+            "protocolVersion": 1,
+            "daemonVersion": "0.0.0",
+            "pid": 42,
+            "uptimeMs": 7,
+            "clients": 1,
+            "sessions": 2,
+            "capabilities": [],
+            "peakRingBytes": 0,
+            "ringEvictedBytes": 0,
+            "ringDroppedFrames": 0
+        });
+        let decoded = serde_json::from_value::<DaemonStatusBody>(older_daemon_frame)
+            .expect("a status frame without journalStats");
+        assert!(decoded.journal_stats.is_none());
     }
 
     #[test]

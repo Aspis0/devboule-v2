@@ -85,7 +85,9 @@ pub use ids::{
     compose_session_id, validate_idempotency_key, validate_owner_token, validate_session_id,
     OwnerId,
 };
-pub use messages::{ClientMessage, DaemonMessage, DaemonStatusBody, SessionEventEnvelope};
+pub use messages::{
+    ClientMessage, DaemonMessage, DaemonStatusBody, JournalStats, SessionEventEnvelope,
+};
 pub use session::{
     cursor_replay_ok, Cursor, CursorShape, PermissionOutcome, Persistence, PersistenceKind,
     ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionState,
