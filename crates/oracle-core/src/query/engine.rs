@@ -1210,11 +1210,7 @@ fn group_by_file_fn(context_chunks: &[ContextChunk], results: &[ResultEntry]) ->
             line_end: 0,
         });
         entry.total_score += chunk.score;
-        let text_truncated = if chunk.text.len() > 500 {
-            chunk.text[..500].to_string()
-        } else {
-            chunk.text.clone()
-        };
+        let text_truncated = truncate_chars(&chunk.text, 500);
         entry.chunks.push(GroupChunk {
             chunk_id: chunk.chunk_id.clone(),
             score: chunk.score,
@@ -1300,17 +1296,22 @@ fn file_chunk_to_scored(c: &FileChunk) -> ScoredChunk {
     }
 }
 
+/// Truncate to at most `max_chars` Unicode scalar values.
+/// Byte-offset slices (`s[..n]`) panic when `n` lands inside a multi-byte char.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        None => s.to_string(),
+        Some((idx, _)) => s[..idx].to_string(),
+    }
+}
+
 fn summarize_chunk(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return "Chunk-level match from the full-file Oracle index.".to_string();
     }
     let cleaned: String = trimmed.split_whitespace().collect::<Vec<&str>>().join(" ");
-    if cleaned.len() <= 420 {
-        cleaned
-    } else {
-        cleaned[..420].to_string()
-    }
+    truncate_chars(&cleaned, 420)
 }
 
 fn parse_cluster(value: &str) -> i64 {
@@ -1365,6 +1366,71 @@ mod tests {
         assert_eq!(summarize_chunk("  hello  "), "hello");
         let long = "x".repeat(500);
         assert_eq!(summarize_chunk(&long).len(), 420);
+    }
+
+    /// 419 ASCII bytes then `è` (U+00E8, two UTF-8 bytes) so byte 420 sits
+    /// inside the accented character. `cleaned[..420]` panics on this input;
+    /// the cut is an ordinary French comment, not a synthetic emoji pad.
+    #[test]
+    fn summarize_chunk_does_not_split_a_multibyte_char() {
+        let text = format!(
+            "{}è une fonction qui gère les requêtes d'authentification.",
+            "x".repeat(419)
+        );
+        assert!(
+            text.len() > 420 && !text.is_char_boundary(420),
+            "fixture must straddle a char at byte 420 (len={}, boundary={})",
+            text.len(),
+            text.is_char_boundary(420)
+        );
+        let out = summarize_chunk(&text);
+        assert!(
+            out.ends_with('è'),
+            "cut must keep the whole character: {out:?}"
+        );
+        assert_eq!(out.chars().count(), 420);
+    }
+
+    /// 499 ASCII bytes then `è` so byte 500 is mid-character. Hits the
+    /// `chunk.text[..500]` path in `group_by_file_fn` on a normal query.
+    #[test]
+    fn group_by_file_does_not_split_a_multibyte_char() {
+        let text = format!(
+            "{}è il punto di ingresso: valida il token e apre la sessione.",
+            "x".repeat(499)
+        );
+        assert!(
+            text.len() > 500 && !text.is_char_boundary(500),
+            "fixture must straddle a char at byte 500 (len={}, boundary={})",
+            text.len(),
+            text.is_char_boundary(500)
+        );
+        let chunk = ContextChunk {
+            chunk_id: "src/auth.rs#chunk-0000".into(),
+            file_source: "src/auth.rs".into(),
+            chunk_index: 0,
+            start_char: 0,
+            end_char: text.len(),
+            score: 1.0,
+            retrieval: "lexical".into(),
+            text,
+            last_modified: String::new(),
+            kind: "function".into(),
+            symbol_name: "login".into(),
+            signature: String::new(),
+            language: "rust".into(),
+            line_start: 1,
+            line_end: 20,
+            symbols_used: vec![],
+        };
+        let groups = group_by_file_fn(&[chunk], &[]);
+        assert_eq!(groups.len(), 1);
+        let preview = &groups[0].chunks[0].text;
+        assert!(
+            preview.ends_with('è'),
+            "cut must keep the whole character: {preview:?}"
+        );
+        assert_eq!(preview.chars().count(), 500);
     }
 
     #[test]
