@@ -22,9 +22,14 @@ function bannerText(banner: TerminalBanner): string | null {
   if (banner.kind === "error") return banner.message;
   if (banner.kind === "closed") return "The terminal session was closed.";
   if (banner.kind === "recovered") {
+    // Two different statements, never merged. `truncated` is an OBSERVED
+    // loss the previous daemon recorded. Without it the transcript is not
+    // certified complete either: the dying process's uncommitted output
+    // left no trace, so the end of the transcript simply cannot be
+    // verified — say that instead of implying nothing is missing.
     return banner.truncated
       ? "The previous terminal process is gone. Some output was not saved."
-      : "The previous terminal process is gone.";
+      : "The previous terminal process is gone. The end of the saved transcript could not be verified.";
   }
   if (banner.kind === "journal_degraded") {
     return "Scrollback history is incomplete because some output could not be saved.";

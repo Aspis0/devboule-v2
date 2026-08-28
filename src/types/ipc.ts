@@ -61,6 +61,11 @@ export interface SessionSnapshot {
 export type SessionEvent =
   | { type: "output"; seq: number; data: string }
   | { type: "exit"; code: number | null }
+  /**
+   * Reopened from a journal nobody closed orderly: the transcript tail is
+   * unverifiable. `truncated` marks only losses the previous daemon
+   * observed and recorded; it is never a completeness certificate.
+   */
   | { type: "recovered"; truncated: boolean }
   | { type: "journal_degraded" }
   | {

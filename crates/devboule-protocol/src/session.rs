@@ -51,8 +51,20 @@ pub enum SessionState {
     /// observed exit status (`None` if the child did not report one).
     Ended { generation: u64, code: Option<u32> },
     /// The daemon that owned the process is gone (kill, crash, update).
-    /// Replay only. `truncated` is set when the journal dropped frames
-    /// (slow or full disk) and the transcript is a prefix, not a lie.
+    /// Replay only.
+    ///
+    /// The variant itself is the doubt statement: the journal was not
+    /// closed orderly, so whatever was still uncommitted in the dying
+    /// process's writer queue left no record anywhere. The transcript tail
+    /// is UNVERIFIABLE — absence of `truncated` never certifies that
+    /// nothing is missing. Only an orderly close (`Ended`) certifies
+    /// completeness.
+    ///
+    /// `truncated` is a different, narrower fact: the previous daemon
+    /// observed and recorded a loss while it was alive (journal queue
+    /// pressure or a write error). Recovered with `truncated == false`
+    /// means "no loss was observed, and the tail cannot be checked" —
+    /// not "nothing is missing".
     Recovered { generation: u64, truncated: bool },
 }
 
@@ -102,6 +114,16 @@ pub enum SessionEvent {
     /// Journal replay of a session whose process died with the daemon.
     /// Distinct from [`SessionEvent::Exit`]: Exit means the process was
     /// seen to die; Recovered means it was not, and this is a transcript.
+    ///
+    /// A `Recovered` marker never certifies a complete transcript. The
+    /// journal of a process that died was not closed orderly, so whatever
+    /// was still uncommitted in its writer queue is gone without a trace:
+    /// the tail is unverifiable. `truncated` records the narrower fact
+    /// that the previous daemon observed and noted a loss while it was
+    /// alive (journal queue pressure or a write error). Recovered with
+    /// `truncated == false` says "nothing was observed missing and the
+    /// tail cannot be checked" — not "nothing is missing". Clients must
+    /// surface that doubt, not silently present the transcript as whole.
     Recovered {
         truncated: bool,
     },

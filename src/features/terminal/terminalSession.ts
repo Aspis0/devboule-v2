@@ -8,6 +8,13 @@ export type TerminalChannel = Channel<TerminalEvent>;
 
 export type TerminalBanner =
   | { kind: "exited"; code: number | null }
+  /**
+   * The session was reopened from a journal nobody closed orderly.
+   * The banner kind itself means the transcript tail is unverifiable;
+   * `truncated` adds the narrower fact that an output loss was observed
+   * and recorded while the previous daemon was alive. `truncated: false`
+   * never means "the transcript is complete".
+   */
   | { kind: "recovered"; truncated: boolean }
   | { kind: "journal_degraded" }
   | { kind: "output_gap"; fromSeq: number; toSeq: number }

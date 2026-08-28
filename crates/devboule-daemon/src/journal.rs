@@ -3,7 +3,14 @@
 //! The PTY reader and coalesce threads never wait here. They `try_send` a
 //! record into a bounded channel. If the channel is full or the disk is
 //! full, the session is marked degraded and the live terminal continues.
-//! A recovered session then replays a prefix — not a hang, and not a lie.
+//! A recovered session then replays everything that had COMMITTED before
+//! the previous process died. That is a prefix of what the process
+//! produced, and the replay cannot tell how long the prefix is: whatever
+//! was still uncommitted in the queue died with the process and left no
+//! record. The degraded flag covers only losses that were observed while
+//! the daemon was alive; the Recovered marker itself is what says the
+//! tail is unverifiable. Nothing here claims completeness except an
+//! orderly close.
 //!
 //! Schema notes for M6: `events.kind` is an open string (`output`, `exit`,
 //! later `turn` / `permission`). Additive columns on `sessions` and the
@@ -252,6 +259,15 @@ pub struct Replay {
     pub truncated: bool,
 }
 
+/// Live counters of the journal writer, process-wide.
+///
+/// The pair `(failed_frames, committed_frames < accepted_frames)` is what
+/// makes two otherwise-identical-looking losses distinguishable while the
+/// daemon is alive: output dropped knowing it (counted in `failed_frames`,
+/// also recorded as per-session degradation) versus output sitting in the
+/// bounded queue uncommitted, which dies with the process without any
+/// record. After a death only the second kind is invisible to the
+/// database — that is why a recovered transcript's tail is unverifiable.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct JournalStatsSnapshot {
     pub accepted_frames: u64,
@@ -389,6 +405,11 @@ impl Journal {
             .unwrap_or(true)
     }
 
+    /// Point-in-time read of the writer's counters. Cheap: atomic loads,
+    /// no queue lock, safe from any thread. This is the only honesty
+    /// instrument that outlives neither the process nor the queue — read
+    /// it while the writer is alive, because after a kill there is
+    /// nothing left to consult.
     pub fn stats(&self) -> JournalStatsSnapshot {
         self.stats.snapshot()
     }
@@ -1978,6 +1999,119 @@ mod tests {
         assert!(listed.iter().any(|row| {
             row.id == "s.kill" && matches!(row.to_session().state, SessionState::Recovered { .. })
         }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unclean_reopen_reports_doubt_not_completeness() {
+        // The cross the protocol contract requires: measured missing bytes
+        // and the honest flags must agree. After a process death the
+        // database is the only witness, and it cannot know what was still
+        // uncommitted in the dying writer queue, so:
+        //
+        // - a session whose journal was not closed orderly is ALWAYS
+        //   Recovered, whatever the degraded column says: Recovered means
+        //   "tail unverifiable";
+        // - `truncated` equals the recorded degradation exactly: observed
+        //   losses are declared, and with no observed loss the flag stays
+        //   down (no wolf). Bytes that died uncommitted in the queue are
+        //   then missing WITHOUT a truncation flag — the "we do not know"
+        //   case, honest only because Recovered itself carries the doubt.
+        let (dir, path) = tmp_journal();
+
+        // Silent queue death: five frames committed, five more produced
+        // into the queue and lost with the process. No failure was ever
+        // observed, so no truncation may be claimed — but the session
+        // must be Recovered, never presented as complete.
+        {
+            let journal = Journal::open(&path).expect("open");
+            journal
+                .upsert_blocking(sample_session("s.cross.silent"))
+                .expect("upsert");
+            for seq in 1..=5 {
+                journal
+                    .append_blocking(output_record("s.cross.silent", 1, seq, b"data"))
+                    .expect("append");
+            }
+            // The drop simulates the kill: the row stays status=live, so
+            // the reopen sees a journal nobody closed orderly.
+            drop(journal);
+        }
+        {
+            let journal = Journal::open(&path).expect("reopen");
+            let listed = journal.list().expect("list");
+            let row = listed
+                .iter()
+                .find(|row| row.id == "s.cross.silent")
+                .expect("session row");
+            assert!(matches!(
+                row.to_session().state,
+                SessionState::Recovered {
+                    truncated: false,
+                    ..
+                }
+            ));
+            let replay = journal.replay("s.cross.silent", 0).expect("replay");
+            let replay_bytes: usize = replay
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    SessionEvent::Output { data, .. } => Some(data.len()),
+                    _ => None,
+                })
+                .sum();
+            assert_eq!(replay_bytes, 20, "committed frames must replay intact");
+            assert!(matches!(
+                replay.events.last(),
+                Some(SessionEvent::Recovered { truncated: false })
+            ));
+            assert!(
+                !replay.truncated,
+                "no loss was observed but truncation was claimed: crying wolf"
+            );
+        }
+
+        // Observed loss: the same five committed frames, but the previous
+        // daemon recorded degradation (queue pressure). The missing bytes
+        // MUST now be declared.
+        {
+            let journal = Journal::open(&path).expect("open");
+            journal
+                .upsert_blocking(sample_session("s.cross.declared"))
+                .expect("upsert");
+            for seq in 1..=5 {
+                journal
+                    .append_blocking(output_record("s.cross.declared", 1, seq, b"data"))
+                    .expect("append");
+            }
+            journal.note_session_degraded("s.cross.declared");
+            journal.flush().expect("degradation marker");
+            drop(journal);
+        }
+        {
+            let journal = Journal::open(&path).expect("reopen");
+            let listed = journal.list().expect("list");
+            let row = listed
+                .iter()
+                .find(|row| row.id == "s.cross.declared")
+                .expect("session row");
+            assert!(matches!(
+                row.to_session().state,
+                SessionState::Recovered {
+                    truncated: true,
+                    ..
+                }
+            ));
+            let replay = journal.replay("s.cross.declared", 0).expect("replay");
+            assert!(
+                replay.truncated,
+                "an observed loss must be declared as truncation"
+            );
+            assert!(matches!(
+                replay.events.last(),
+                Some(SessionEvent::Recovered { truncated: true })
+            ));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
