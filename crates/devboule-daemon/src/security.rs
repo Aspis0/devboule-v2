@@ -13,12 +13,12 @@ use windows_sys::Win32::Foundation::{GetLastError, LocalFree, HANDLE, INVALID_HA
 #[cfg(feature = "server")]
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows_sys::Win32::Security::Authorization::{
-    ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW, GetSecurityInfo,
-    SDDL_REVISION_1, SE_KERNEL_OBJECT,
+    ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+    ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY,
-    TOKEN_USER,
+    EqualSid, GetTokenInformation, TokenUser, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    PSID, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -176,19 +176,101 @@ pub fn dacl_sddl(handle: HANDLE) -> io::Result<String> {
     }
 }
 
+/// Test-only oracle; production code never calls this function. The daemon
+/// applies [`user_only_sddl`] when creating the pipe and does not re-check its
+/// DACL at runtime. This verifies that the supplied SDDL has at least one ACE
+/// and that every ACE trustee resolves to `sid`; it does not inspect a live
+/// object or prove any other property of Windows access evaluation.
 pub fn dacl_is_current_user_only(sddl: &str, sid: &str) -> bool {
-    let has_user = sddl.contains(sid);
-    let open_trustees = [
-        ";;;WD)",
-        ";;;BU)",
-        ";;;AU)",
-        ";;;AN)",
-        ";;;BA)",
-        ";;;S-1-1-0)",
-        ";;;NU)",
-        ";;;SY)",
-    ];
-    has_user && open_trustees.iter().all(|trustee| !sddl.contains(trustee))
+    let Some(trustees) = dacl_trustees(sddl) else {
+        return false;
+    };
+    let Some(current_sid) = sid_from_string(sid) else {
+        return false;
+    };
+
+    trustees.iter().all(|trustee| {
+        let Some(trustee_sid) = sid_from_string(trustee) else {
+            return false;
+        };
+        unsafe { EqualSid(current_sid.as_ptr(), trustee_sid.as_ptr()) != 0 }
+    })
+}
+
+fn dacl_trustees(sddl: &str) -> Option<Vec<&str>> {
+    let dacl_start = sddl.find("D:")? + 2;
+    let dacl_tail = &sddl[dacl_start..];
+    let dacl_end = next_sddl_section(dacl_tail);
+    let dacl = &dacl_tail[..dacl_end];
+
+    let mut trustees = Vec::new();
+    let mut depth = 0usize;
+    let mut ace_start = None;
+
+    for (offset, character) in dacl.char_indices() {
+        match character {
+            '(' => {
+                if depth == 0 {
+                    ace_start = Some(offset);
+                }
+                depth += 1;
+            }
+            ')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let start = ace_start.take()?;
+                    let fields: Vec<_> = dacl[start + 1..offset].split(';').collect();
+                    trustees.push(fields.get(5)?.trim());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (depth == 0 && ace_start.is_none() && !trustees.is_empty()).then_some(trustees)
+}
+
+fn next_sddl_section(sddl: &str) -> usize {
+    let mut depth = 0usize;
+    for (offset, character) in sddl.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            'O' | 'G' | 'D' | 'S'
+                if depth == 0 && offset > 0 && sddl.as_bytes().get(offset + 1) == Some(&b':') =>
+            {
+                return offset;
+            }
+            _ => {}
+        }
+    }
+    sddl.len()
+}
+
+struct LocalSid(PSID);
+
+impl LocalSid {
+    fn as_ptr(&self) -> PSID {
+        self.0
+    }
+}
+
+impl Drop for LocalSid {
+    fn drop(&mut self) {
+        unsafe {
+            LocalFree(self.0 as _);
+        }
+    }
+}
+
+fn sid_from_string(sid: &str) -> Option<LocalSid> {
+    let sid_wide = wide(sid);
+    let mut sid_ptr: PSID = ptr::null_mut();
+    let ok = unsafe { ConvertStringSidToSidW(sid_wide.as_ptr(), &mut sid_ptr) };
+    (ok != 0 && !sid_ptr.is_null()).then_some(LocalSid(sid_ptr))
 }
 
 pub fn last_os_error() -> io::Error {
@@ -247,6 +329,50 @@ mod tests {
             &format!("D:(A;;GA;;;{sid})(A;;GA;;;SY)"),
             sid
         ));
+    }
+
+    #[test]
+    fn alias_trustee_is_the_current_user() {
+        let sid = sid_for_alias("LA");
+        assert!(
+            dacl_is_current_user_only("D:(A;;GA;;;LA)", &sid),
+            "an SDDL alias for the trustee must identify the same user: SID={sid}"
+        );
+    }
+
+    #[test]
+    fn unrelated_user_trustee_is_not_current_user_only() {
+        let sid = "S-1-5-21-1-2-3-1001";
+        let other_sid = "S-1-5-21-1-2-3-1002";
+        assert!(!dacl_is_current_user_only(
+            &format!("D:(A;;GA;;;{sid})(A;;GA;;;{other_sid})"),
+            sid
+        ));
+    }
+
+    fn sid_for_alias(alias: &str) -> String {
+        unsafe {
+            let alias_wide = wide(alias);
+            let mut sid = ptr::null_mut();
+            assert_ne!(
+                ConvertStringSidToSidW(alias_wide.as_ptr(), &mut sid),
+                0,
+                "ConvertStringSidToSidW({alias}) failed: {}",
+                last_os_error()
+            );
+
+            let mut sid_text = ptr::null_mut();
+            assert_ne!(
+                ConvertSidToStringSidW(sid, &mut sid_text),
+                0,
+                "ConvertSidToStringSidW failed: {}",
+                last_os_error()
+            );
+            let result = pwstr_to_string(sid_text).expect("alias SID is valid UTF-16");
+            LocalFree(sid_text as _);
+            LocalFree(sid as _);
+            result
+        }
     }
 
     #[test]
