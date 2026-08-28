@@ -1,6 +1,7 @@
 //! Integration tests for the query engine orchestration layer.
 
-use oracle_core::query::engine::{ContextChunk, HashQueryEmbedder, QueryEngine};
+use oracle_core::query::engine::{ContextChunk, HashQueryEmbedder, QueryEmbedder, QueryEngine};
+use oracle_core::query::lexical::{lexical_chunk_context, ScoredChunk};
 use oracle_core::store::lance::{hash_embed, LanceRow, LanceStore};
 use oracle_core::store::sqlite::{FileChunk, NodeCard, SqliteStore};
 
@@ -357,6 +358,217 @@ async fn test_context_dense_and_lexical_merge() {
             r.retrieval
         );
     }
+}
+
+struct FixedQueryEmbedder;
+
+impl QueryEmbedder for FixedQueryEmbedder {
+    fn embed_query(&self, _text: &str, dims: usize) -> anyhow::Result<Vec<f32>> {
+        let mut vector = vec![0.0; dims];
+        vector[0] = 1.0;
+        Ok(vector)
+    }
+}
+
+#[tokio::test]
+async fn test_context_rrf_ignores_huge_lexical_score_when_dense_rank_is_better() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sqlite = SqliteStore::new(&tmp.path().join("metadata.sqlite")).unwrap();
+    let chunk_vectors = LanceStore::new(&tmp.path().join("chunk_vectors.json"));
+    let query = "how alpha beta gamma delta epsilon zeta eta theta iota";
+    let dense_id = "src/dense_only.rs#chunk-0000";
+    let lexical_file = "src/alpha_beta_gamma_delta_epsilon_zeta_eta_theta.rs";
+    let lexical_rank_one_id = format!("{lexical_file}#chunk-0000");
+    let lexical_id = format!("{lexical_file}#chunk-0001");
+
+    let make_chunk = |id: &str, file: &str, chunk_index: i64, text: &str| FileChunk {
+        id: id.into(),
+        file_id: file.into(),
+        chunk_index,
+        start_char: 0,
+        end_char: text.len() as i64,
+        text: text.into(),
+        file_sorgente: file.into(),
+        ultima_modifica: String::new(),
+        embedding_dims: 2,
+        kind: "text_slice".into(),
+        symbol_name: String::new(),
+        signature: String::new(),
+        line_start: 1,
+        line_end: 1,
+        language: "text".into(),
+        symbols_used: vec![],
+    };
+
+    let chunks = vec![
+        make_chunk(dense_id, "src/dense_only.rs", 0, "semantic-only evidence"),
+        make_chunk(
+            "src/dense_decoy_1.rs#chunk-0000",
+            "src/dense_decoy_1.rs",
+            0,
+            "unrelated dense decoy one",
+        ),
+        make_chunk(
+            "src/dense_decoy_2.rs#chunk-0000",
+            "src/dense_decoy_2.rs",
+            0,
+            "unrelated dense decoy two",
+        ),
+        make_chunk(
+            "src/dense_decoy_3.rs#chunk-0000",
+            "src/dense_decoy_3.rs",
+            0,
+            "unrelated dense decoy three",
+        ),
+        make_chunk(
+            "src/dense_decoy_4.rs#chunk-0000",
+            "src/dense_decoy_4.rs",
+            0,
+            "unrelated dense decoy four",
+        ),
+        make_chunk(
+            &lexical_rank_one_id,
+            lexical_file,
+            0,
+            "alpha beta gamma delta epsilon zeta eta theta iota",
+        ),
+        make_chunk(
+            &lexical_id,
+            lexical_file,
+            1,
+            "alpha beta gamma delta epsilon zeta eta theta",
+        ),
+    ];
+    sqlite.replace_all_chunks(&chunks).unwrap();
+
+    let vector = |x: f32, y: f32| vec![x, y];
+    let rows = vec![
+        LanceRow {
+            id: dense_id.into(),
+            label: dense_id.into(),
+            area: "chunk".into(),
+            cluster_semantic: "0".into(),
+            vector: vector(1.0, 0.0),
+        },
+        LanceRow {
+            id: "src/dense_decoy_1.rs#chunk-0000".into(),
+            label: "dense decoy one".into(),
+            area: "chunk".into(),
+            cluster_semantic: "0".into(),
+            vector: vector(0.9, (1.0_f32 - 0.9_f32.powi(2)).sqrt()),
+        },
+        LanceRow {
+            id: "src/dense_decoy_2.rs#chunk-0000".into(),
+            label: "dense decoy two".into(),
+            area: "chunk".into(),
+            cluster_semantic: "0".into(),
+            vector: vector(0.8, 0.6),
+        },
+        LanceRow {
+            id: "src/dense_decoy_3.rs#chunk-0000".into(),
+            label: "dense decoy three".into(),
+            area: "chunk".into(),
+            cluster_semantic: "0".into(),
+            vector: vector(0.7, (1.0_f32 - 0.7_f32.powi(2)).sqrt()),
+        },
+        LanceRow {
+            id: "src/dense_decoy_4.rs#chunk-0000".into(),
+            label: "dense decoy four".into(),
+            area: "chunk".into(),
+            cluster_semantic: "0".into(),
+            vector: vector(0.6, 0.8),
+        },
+        LanceRow {
+            id: lexical_rank_one_id.clone(),
+            label: "lexical rank one".into(),
+            area: "chunk".into(),
+            cluster_semantic: "0".into(),
+            vector: vector(0.0, 1.0),
+        },
+        LanceRow {
+            id: lexical_id.clone(),
+            label: "lexical candidate".into(),
+            area: "chunk".into(),
+            cluster_semantic: "0".into(),
+            vector: vector(0.0, 1.0),
+        },
+    ];
+    chunk_vectors.upsert(&rows).await.unwrap();
+
+    let lexical_probe = ScoredChunk {
+        id: lexical_id.clone(),
+        file_id: lexical_file.into(),
+        file_sorgente: lexical_file.into(),
+        text: "alpha beta gamma delta epsilon zeta eta theta".into(),
+        chunk_index: 1,
+        start_char: 0,
+        end_char: 48,
+        kind: "text_slice".into(),
+        symbol_name: String::new(),
+        signature: String::new(),
+        language: "text".into(),
+        line_start: 1,
+        line_end: 1,
+        symbols_used: String::new(),
+        area: String::new(),
+        cluster_semantic: String::new(),
+        label: String::new(),
+    };
+    let lexical_probe_results = lexical_chunk_context(query, &[lexical_probe], 1);
+    assert_eq!(lexical_probe_results.len(), 1);
+    assert!(
+        (lexical_probe_results[0].score - 17.8).abs() < 1e-10,
+        "the regression fixture must keep its deliberately huge additive lexical score: {}",
+        lexical_probe_results[0].score
+    );
+
+    let engine = QueryEngine::new(
+        sqlite,
+        LanceStore::new(&tmp.path().join("node_vectors.json")),
+        Some(chunk_vectors),
+        None,
+    );
+    let results = engine
+        .context(
+            query,
+            5,
+            &FixedQueryEmbedder,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let dense = results
+        .iter()
+        .find(|chunk| chunk.chunk_id == dense_id)
+        .expect("dense-only chunk should survive the final limit");
+    let lexical = results
+        .iter()
+        .find(|chunk| chunk.chunk_id == lexical_id)
+        .expect("lexical-only chunk should survive the final limit");
+    let dense_position = results
+        .iter()
+        .position(|chunk| chunk.chunk_id == dense_id)
+        .unwrap();
+    let lexical_position = results
+        .iter()
+        .position(|chunk| chunk.chunk_id == lexical_id)
+        .unwrap();
+
+    assert_eq!(dense.retrieval, "dense");
+    assert_eq!(lexical.retrieval, "lexical");
+    assert!((dense.score - (1.0 / 61.0)).abs() < 1e-12);
+    assert!((lexical.score - (1.0 / 62.0)).abs() < 1e-12);
+    assert!(
+        dense.score > lexical.score && dense_position < lexical_position,
+        "RRF must keep dense rank 1 above lexical rank 2 despite lexical raw score 17.8: dense={dense:?}, lexical={lexical:?}"
+    );
 }
 
 #[tokio::test]

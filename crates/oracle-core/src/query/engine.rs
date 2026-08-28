@@ -23,6 +23,13 @@ use crate::store::sqlite::{FileChunk, NodeCard, SqliteStore};
 /// Prevents O(corpus) RAM spikes under concurrent agent retrieval.
 const MAX_LEXICAL_SCAN: usize = 10_000;
 
+/// Standard reciprocal-rank-fusion damping constant.
+const RRF_K: f64 = 60.0;
+
+fn rrf_contribution(rank: usize) -> f64 {
+    1.0 / (RRF_K + rank as f64)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Traits
 // ═══════════════════════════════════════════════════════════════════════════
@@ -73,6 +80,7 @@ pub struct ContextChunk {
     pub chunk_index: usize,
     pub start_char: usize,
     pub end_char: usize,
+    /// Reciprocal-rank-fusion score; it is not a cosine similarity.
     pub score: f64,
     pub retrieval: String,
     pub text: String,
@@ -526,6 +534,11 @@ impl QueryEngine {
             if let Some(ref chunk_vectors) = self.chunk_vectors {
                 let query_vec = self.embed_query(embedder, query).await?;
                 let hits = chunk_vectors.search(&query_vec, limit).await?;
+                // Rank counts kept hits only. A filtered-out hit must not burn a
+                // rank, or dense contributions shrink whenever filters are active
+                // while the lexical side — already filtered before scoring — keeps
+                // its ranks dense. Both sides rank the list they actually return.
+                let mut rank = 0usize;
                 for hit in hits {
                     if let Some(chunk) = self.sqlite.get_chunk(&hit.id)? {
                         if allowed_file_ids.is_none_or(|ids| ids.contains(&chunk.file_id))
@@ -533,8 +546,12 @@ impl QueryEngine {
                                 &chunk, kind, language, symbols, imports, module,
                             )
                         {
-                            let ctx =
-                                ContextChunk::from_file_chunk(&chunk, hit.score as f64, "dense");
+                            rank += 1;
+                            let ctx = ContextChunk::from_file_chunk(
+                                &chunk,
+                                rrf_contribution(rank),
+                                "dense",
+                            );
                             combined.insert(chunk.id.clone(), ctx);
                         }
                     }
@@ -567,12 +584,13 @@ impl QueryEngine {
         let chunk_by_id: HashMap<String, &FileChunk> =
             filtered.iter().map(|c| (c.id.clone(), c)).collect();
 
-        for lr in &lexical_results {
+        for (rank, lr) in lexical_results.iter().enumerate() {
+            let lexical_score = rrf_contribution(rank + 1);
             if let Some(existing) = combined.get_mut(&lr.chunk_id) {
-                existing.score = existing.score.max(lr.score);
+                existing.score += lexical_score;
                 existing.retrieval = "dense+lexical".to_string();
             } else if let Some(fc) = chunk_by_id.get(&lr.chunk_id) {
-                let ctx = ContextChunk::from_file_chunk(fc, lr.score, "lexical");
+                let ctx = ContextChunk::from_file_chunk(fc, lexical_score, "lexical");
                 combined.insert(lr.chunk_id.clone(), ctx);
             }
         }
