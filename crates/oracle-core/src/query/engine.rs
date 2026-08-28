@@ -396,14 +396,15 @@ impl QueryEngine {
     /// when available, otherwise from the loaded query model. The constant is
     /// only the last fallback for a dimensionless debug embedder and empty store.
     async fn dims(&self, embedder: &dyn QueryEmbedder) -> Result<usize> {
+        // Only when rows exist: an empty table still declares the width it was
+        // created with, and the loaded model is the better answer then. The
+        // width comes from the schema rather than from a row because this runs
+        // on every query, and reading a row meant loading the whole index to
+        // look at one number.
         if let Some(ref cv) = self.chunk_vectors {
-            if let Ok(count) = cv.count().await {
-                if count > 0 {
-                    if let Ok(rows) = cv.read_all().await {
-                        if let Some(first) = rows.first() {
-                            return Ok(first.vector.len());
-                        }
-                    }
+            if cv.count().await.unwrap_or(0) > 0 {
+                if let Ok(Some(dims)) = cv.vector_dims().await {
+                    return Ok(dims);
                 }
             }
         }

@@ -664,3 +664,33 @@ async fn lance_non_default_dims_roundtrip() {
     ];
     assert!(store.upsert(&bad).await.is_err());
 }
+
+#[tokio::test]
+async fn lance_vector_dims_reads_the_schema_not_the_rows() {
+    // `dims()` runs on every query. Reading a row to learn the width meant
+    // pulling the whole index into memory for one number.
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("chunks.lancedb");
+    let store = LanceStore::new(&path);
+
+    // No table yet: nothing to declare.
+    assert_eq!(store.vector_dims().await.unwrap(), None);
+
+    let rows: Vec<LanceRow> = (0..3)
+        .map(|i| LanceRow {
+            id: format!("c-{i}"),
+            label: format!("C {i}"),
+            area: "chunk".into(),
+            cluster_semantic: "0".into(),
+            vector: hash_embed(&format!("chunk {i}"), 384),
+        })
+        .collect();
+    store.upsert(&rows).await.unwrap();
+    assert_eq!(store.vector_dims().await.unwrap(), Some(384));
+
+    // After a model change the table is recreated, and the declared width has
+    // to follow — otherwise the next query asks for the old model's size.
+    store.reset_for_dims(1024).await.unwrap();
+    assert_eq!(store.vector_dims().await.unwrap(), Some(1024));
+    assert_eq!(store.count().await.unwrap(), 0);
+}

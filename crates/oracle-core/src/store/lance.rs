@@ -339,6 +339,39 @@ impl LanceStore {
         }
     }
 
+    /// Width of the stored vectors, or `None` when the table does not exist.
+    ///
+    /// Reads it from the table's declared `FixedSizeList<f32, N>` rather than
+    /// from a row: callers only ever want the number, and `read_all` pulls the
+    /// entire index into memory to reach the first element — about 95 MB on a
+    /// 23k-chunk store, per call.
+    pub async fn vector_dims(&self) -> Result<Option<usize>> {
+        match self.backend {
+            Backend::Json => Ok(self
+                .read_all()
+                .await?
+                .first()
+                .map(|row| row.vector.len())
+                .filter(|&dims| dims > 0)),
+            Backend::Lance => {
+                let Some(table) = self.open_table().await else {
+                    return Ok(None);
+                };
+                let schema = table
+                    .schema()
+                    .await
+                    .with_context(|| format!("reading schema of {}", self.path.display()))?;
+                let Ok(field) = schema.field_with_name("vector") else {
+                    return Ok(None);
+                };
+                match field.data_type() {
+                    DataType::FixedSizeList(_, dims) if *dims > 0 => Ok(Some(*dims as usize)),
+                    _ => Ok(None),
+                }
+            }
+        }
+    }
+
     /// Cosine-similarity search by query vector. Mirrors `lance_store.py::search`
     /// with LanceDB's native `DistanceType::Cosine` (`score = 1.0 - _distance`).
     pub async fn search(&self, query_vec: &[f32], limit: usize) -> Result<Vec<LanceHit>> {

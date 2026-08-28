@@ -1225,11 +1225,7 @@ pub async fn index_file_chunks(
         .clone();
     let has_existing_index = vector_count > 0 || !manifest_files.is_empty();
     let stored_dims = if vector_count > 0 {
-        chunk_vectors
-            .read_all()
-            .await
-            .ok()
-            .and_then(|rows| rows.first().map(|row| row.vector.len()))
+        chunk_vectors.vector_dims().await.ok().flatten()
     } else {
         None
     };
