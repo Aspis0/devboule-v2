@@ -81,7 +81,11 @@ export interface DaemonStatus {
   message: string | null;
 }
 
-/** Machine-readable failure. Matches `ErrorCode` in the protocol crate (snake_case). */
+/**
+ * Machine-readable failure. Matches `ErrorCode` in the protocol crate (snake_case).
+ * Alignment is enforced by `error_code_matches_frontend_union` in
+ * `crates/devboule-protocol/src/error.rs`.
+ */
 export type ErrorCode =
   | "protocol_version_mismatch"
   | "unauthorized"

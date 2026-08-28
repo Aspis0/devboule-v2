@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Machine-readable failure. Serialized as a snake_case string.
+///
+/// Mirrored by the `ErrorCode` union in `src/types/ipc.ts`. Alignment is
+/// enforced by `error_code_matches_frontend_union`.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -76,6 +79,9 @@ impl WireError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -88,5 +94,108 @@ mod tests {
         assert_eq!(value, "idempotency_conflict");
         let value = serde_json::to_value(ErrorCode::Journal).expect("json");
         assert_eq!(value, "journal");
+    }
+
+    #[test]
+    fn error_code_matches_frontend_union() {
+        let path = frontend_ipc_ts_path();
+        if !path.is_file() {
+            panic!(
+                "TypeScript ErrorCode union not found at {}. \
+                 Refusing to skip: this test is the guard that keeps ErrorCode aligned with src/types/ipc.ts.",
+                path.display()
+            );
+        }
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!("failed to read {}: {err}", path.display());
+        });
+        let ts_names = error_codes_in_typescript_union(&source);
+
+        let mut rust_names = BTreeSet::new();
+        for code in every_error_code() {
+            let value = serde_json::to_value(code).expect("json");
+            let Some(name) = value.as_str() else {
+                panic!("{code:?} serialized to {value}, expected a string");
+            };
+            rust_names.insert(name.to_owned());
+        }
+
+        assert_eq!(
+            rust_names, ts_names,
+            "ErrorCode serde names and the TypeScript ErrorCode union in src/types/ipc.ts drifted"
+        );
+    }
+
+    fn frontend_ipc_ts_path() -> PathBuf {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.pop();
+        path.push("src");
+        path.push("types");
+        path.push("ipc.ts");
+        path
+    }
+
+    fn error_codes_in_typescript_union(source: &str) -> BTreeSet<String> {
+        const MARKER: &str = "export type ErrorCode";
+        let Some(marker_at) = source.find(MARKER) else {
+            panic!(
+                "src/types/ipc.ts has no `{MARKER}` alias; cannot check alignment with ErrorCode"
+            );
+        };
+        let after_marker = &source[marker_at + MARKER.len()..];
+        let Some(eq_at) = after_marker.find('=') else {
+            panic!("`{MARKER}` has no `=`");
+        };
+        let after_eq = &after_marker[eq_at + 1..];
+        let Some(semi_at) = after_eq.find(';') else {
+            panic!("`{MARKER}` has no terminating `;`");
+        };
+        let body = &after_eq[..semi_at];
+
+        let mut names = BTreeSet::new();
+        let mut rest = body;
+        while let Some(start) = rest.find('"') {
+            rest = &rest[start + 1..];
+            let Some(end) = rest.find('"') else {
+                panic!("unterminated string in `{MARKER}` union");
+            };
+            names.insert(rest[..end].to_owned());
+            rest = &rest[end + 1..];
+        }
+        if names.is_empty() {
+            panic!("`{MARKER}` union contains no string literals");
+        }
+        names
+    }
+
+    /// One list feeds both the exhaustive `match` and the values we serialize.
+    /// Adding a variant without updating this list is a compile error.
+    fn every_error_code() -> Vec<ErrorCode> {
+        macro_rules! variants {
+            ($($variant:ident),+ $(,)?) => {{
+                let codes = vec![$(ErrorCode::$variant),+];
+                for code in &codes {
+                    match code {
+                        $(ErrorCode::$variant => {})+
+                    }
+                }
+                codes
+            }};
+        }
+        variants!(
+            ProtocolVersionMismatch,
+            Unauthorized,
+            Unimplemented,
+            CapabilityNotSupported,
+            InvalidRequest,
+            SessionNotFound,
+            SessionGenerationMismatch,
+            IdempotencyConflict,
+            ShuttingDown,
+            Journal,
+            Internal,
+            Io,
+        )
     }
 }
