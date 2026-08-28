@@ -448,7 +448,20 @@ pub fn question_templates(domains: &[String], source: &str, symbols: &[String]) 
 const EMBED_TASK: &str = "TASK: retrieve code and docs chunks that answer architecture, implementation, and project-management questions.";
 
 pub fn chunk_embedding_text(chunk: &ChunkMeta, profile: Option<&str>) -> String {
-    if !semantic_prefix_enabled(profile) {
+    chunk_embedding_text_for_model(chunk, profile, true)
+}
+
+/// Like [`chunk_embedding_text`], but `uses_semantic_prefix == false` takes the
+/// existing raw branch even when the semantic-prefix-v2 profile is active.
+///
+/// Qwen3 passes `true` and stays identical. Uninstructed models (bge, jina)
+/// pass `false` so they never see the structured header.
+pub fn chunk_embedding_text_for_model(
+    chunk: &ChunkMeta,
+    profile: Option<&str>,
+    uses_semantic_prefix: bool,
+) -> String {
+    if !uses_semantic_prefix || !semantic_prefix_enabled(profile) {
         return format!("{}\n{}", chunk.file_id, chunk.text);
     }
 
@@ -554,7 +567,16 @@ pub fn chunk_embedding_text(chunk: &ChunkMeta, profile: Option<&str>) -> String 
 // ═══════════════════════════════════════════════════════════════════════════
 
 pub fn query_embedding_text(query: &str, profile: Option<&str>) -> String {
-    if !semantic_prefix_enabled(profile) {
+    query_embedding_text_for_model(query, profile, true)
+}
+
+/// See [`chunk_embedding_text_for_model`].
+pub fn query_embedding_text_for_model(
+    query: &str,
+    profile: Option<&str>,
+    uses_semantic_prefix: bool,
+) -> String {
+    if !uses_semantic_prefix || !semantic_prefix_enabled(profile) {
         return query.to_string();
     }
     let domains = classify_domains("", query);
@@ -599,5 +621,37 @@ mod tests {
         assert_eq!(path_stem("data/config.json"), "config");
         assert_eq!(path_stem(".env"), ".env");
         assert_eq!(path_stem("archive.tar.gz"), "archive.tar");
+    }
+
+    fn sample_chunk() -> ChunkMeta {
+        ChunkMeta {
+            file_id: "src/auth.rs".into(),
+            file_sorgente: "src/auth.rs".into(),
+            text: "fn login() {}".into(),
+            kind: "function".into(),
+            symbol_name: "login".into(),
+            language: "rs".into(),
+            line_start: 1,
+            line_end: 3,
+            symbols_used: "[]".into(),
+            chunk_index: 0,
+            id: "src/auth.rs#chunk-0000".into(),
+        }
+    }
+
+    #[test]
+    fn uninstructed_model_takes_the_raw_branch_even_on_semantic_profile() {
+        let chunk = sample_chunk();
+        let raw = chunk_embedding_text_for_model(&chunk, Some("semantic-prefix-v2"), false);
+        assert_eq!(raw, "src/auth.rs\nfn login() {}");
+        assert!(!raw.contains("TASK:"));
+        assert!(!raw.contains("SOURCE_PATH:"));
+        let qwen = chunk_embedding_text_for_model(&chunk, Some("semantic-prefix-v2"), true);
+        assert!(qwen.starts_with("TASK:"));
+        assert_eq!(
+            qwen,
+            chunk_embedding_text(&chunk, Some("semantic-prefix-v2")),
+            "Qwen3 path must stay identical to the ungated function"
+        );
     }
 }

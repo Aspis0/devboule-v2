@@ -1,16 +1,18 @@
 use std::path::Path;
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::ValueEnum;
 use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::value::Tensor;
 use tokenizers::{
     PaddingDirection, PaddingParams, PaddingStrategy, Tokenizer, TruncationParams,
     TruncationStrategy,
 };
 
-/// Public model identifier used in JSON output for the ONNX backend.
-pub const ONNX_MODEL_ID: &str = "Qwen3-Embedding-0.6B-ONNX-int8";
+use crate::embed::model_descriptor::{
+    DeclaredModelConfig, KvGeometry, ModelDescriptor, PoolingStrategy,
+};
 
 /// CLI-facing execution-provider selector for the ONNX backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -23,32 +25,33 @@ pub enum EpArg {
 /// ONNX (`ort`) embedding backend: a compiled session plus a tokenizer.
 ///
 /// The session is built once per run and reused across batches.
-/// Geometry of Qwen3-Embedding-0.6B (config.json: num_hidden_layers=28,
-/// num_key_value_heads=8, head_dim=128) — used to feed empty KV caches.
-const KV_LAYERS: usize = 28;
-const KV_HEADS: usize = 8;
-const KV_HEAD_DIM: usize = 128;
-
+/// Graph-specific facts (inputs, KV geometry, pooling) come from
+/// [`ModelDescriptor`] — deduced from the session, declared in
+/// `model_config.json`.
 pub struct OnnxEmbedder {
     session: Session,
     tokenizer: Tokenizer,
+    descriptor: ModelDescriptor,
 }
 
 impl OnnxEmbedder {
-    /// Load the graph + tokenizer from `model_dir` and optionally select an EP.
+    /// Load the graph + tokenizer from `model_dir` (int8 graph by default).
     ///
     /// Returns the embedder plus the wall-clock load time in milliseconds.
     pub fn load(model_dir: &Path, ep: EpArg) -> Result<(Self, u128)> {
-        let start = Instant::now();
+        let int8 = std::env::var("ORACLE_RS_ONNX_VARIANT")
+            .map(|v| !v.eq_ignore_ascii_case("fp32"))
+            .unwrap_or(true);
+        Self::load_with_precision(model_dir, ep, int8)
+    }
 
-        let variant = std::env::var("ORACLE_RS_ONNX_VARIANT").unwrap_or_else(|_| "int8".into());
-        let model_file = if variant == "fp32" {
-            "model.onnx".to_string()
-        } else {
-            format!("model_{variant}.onnx")
-        };
-        let model_path = model_dir.join("onnx").join(model_file);
-        let tokenizer_path = model_dir.join("tokenizer.json");
+    /// Load using the declared int8 or fp32 graph from `model_config.json`.
+    pub fn load_with_precision(model_dir: &Path, ep: EpArg, int8: bool) -> Result<(Self, u128)> {
+        let start = Instant::now();
+        let declared = DeclaredModelConfig::load(model_dir)?;
+        let model_path = declared.graph_path(model_dir, int8)?;
+        let tokenizer_path = declared.tokenizer_path(model_dir)?;
+        let graph_rel = declared.graph_rel(int8)?.to_string();
 
         let session_builder =
             Session::builder().context("failed to create ONNX session builder")?;
@@ -112,8 +115,31 @@ impl OnnxEmbedder {
             )
         })?;
 
-        let embedder = OnnxEmbedder { session, tokenizer };
+        let dims = dims_from_session(&session).with_context(|| {
+            format!(
+                "reading last_hidden_state width from {}",
+                model_path.display()
+            )
+        })?;
+        let kv_geometry = kv_geometry_from_session(&session)?;
+        let descriptor = ModelDescriptor::from_declared(
+            declared,
+            model_dir.to_path_buf(),
+            graph_rel,
+            dims,
+            kv_geometry,
+        )?;
+
+        let embedder = OnnxEmbedder {
+            session,
+            tokenizer,
+            descriptor,
+        };
         Ok((embedder, start.elapsed().as_millis()))
+    }
+
+    pub fn descriptor(&self) -> &ModelDescriptor {
+        &self.descriptor
     }
 
     /// Embed `texts` in chunks of `batch_size`.
@@ -141,10 +167,19 @@ impl OnnxEmbedder {
             return Ok(Vec::new());
         }
         let batch_size = batch_size.max(1);
-        let max_seq = crate::embed::resolve_embed_max_seq_tokens();
+        let max_seq = max_seq_tokens_for(&self.descriptor);
         let budget = crate::embed::resolve_attention_budget();
-        let window_bytes = crate::embed::resolve_embed_window_bytes();
-        let overlap = crate::embed::resolve_embed_window_overlap_bytes();
+        let window_bytes = {
+            let requested = std::env::var("ORACLE_EMBED_WINDOW_BYTES")
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok());
+            crate::embed::effective_embed_window_bytes(requested, max_seq).0
+        };
+        let overlap = std::env::var("ORACLE_EMBED_WINDOW_OVERLAP_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(self.descriptor.window_overlap_bytes);
 
         let (windows, counts) = crate::embed::expand_texts_to_windows(texts, window_bytes, overlap);
         let window_lens: Vec<usize> = windows.iter().map(|w| w.len()).collect();
@@ -274,27 +309,24 @@ impl OnnxEmbedder {
             }
         }
 
-        let mut run_inputs = ort::inputs![
-            "input_ids" => ort::value::Tensor::from_array(([batch, seq_len], ids_vec.into_boxed_slice()))?,
-            "attention_mask" => ort::value::Tensor::from_array(([batch, seq_len], mask_vec.into_boxed_slice()))?,
-            "position_ids" => ort::value::Tensor::from_array(([batch, seq_len], pos_vec.into_boxed_slice()))?,
-        ];
-        // This export was traced with a KV cache: the graph declares
-        // past_key_values.<layer>.{key,value} as REQUIRED inputs. Feed
-        // zero-length caches ([batch, kv_heads, 0, head_dim]) so the
-        // model runs as a plain encoder.
-        for layer in 0..KV_LAYERS {
-            for kind in ["key", "value"] {
-                let empty_kv = ort::value::Tensor::<f32>::new(
-                    self.session.allocator(),
-                    [batch as i64, KV_HEADS as i64, 0, KV_HEAD_DIM as i64],
-                )
-                .context("failed to allocate empty KV-cache tensor")?;
-                run_inputs.push((
-                    format!("past_key_values.{layer}.{kind}").into(),
-                    empty_kv.into(),
-                ));
-            }
+        let mut ids_vec = Some(ids_vec);
+        let mut mask_vec = Some(mask_vec);
+        let mut pos_vec = Some(pos_vec);
+        let mut run_inputs: Vec<(
+            std::borrow::Cow<'static, str>,
+            ort::session::SessionInputValue<'static>,
+        )> = Vec::with_capacity(self.session.inputs().len());
+        for outlet in self.session.inputs() {
+            let name = outlet.name();
+            let value = if name == "input_ids" {
+                let ids = ids_vec
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("ONNX graph has duplicate input_ids inputs"))?;
+                Tensor::from_array(([batch, seq_len], ids.into_boxed_slice()))?.into()
+            } else {
+                self.named_input(name, batch, seq_len, &mut mask_vec, &mut pos_vec)?
+            };
+            run_inputs.push((name.to_string().into(), value));
         }
         let outputs = self
             .session
@@ -308,21 +340,189 @@ impl OnnxEmbedder {
         let hidden = shape[2] as usize;
 
         for (row, encoding) in encodings.iter().enumerate().take(batch) {
-            let mask_sum: i64 = encoding
-                .get_attention_mask()
-                .iter()
-                .map(|&x| x as i64)
-                .sum();
-            // With right padding the last real token is just before the pad run.
-            let real_last = (mask_sum - 1) as usize;
-            let base = (row * seq + real_last) * hidden;
-            let mut vec: Vec<f32> = data[base..base + hidden].to_vec();
-            let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt() + 1e-12;
-            for x in vec.iter_mut() {
-                *x /= norm;
-            }
+            let mask = encoding.get_attention_mask();
+            let vec = pool_hidden(
+                self.descriptor.pooling,
+                data,
+                row,
+                seq,
+                hidden,
+                mask,
+                self.descriptor.normalize,
+            )?;
             out.push(vec);
         }
         Ok(())
     }
+
+    fn named_input(
+        &self,
+        name: &str,
+        batch: usize,
+        seq_len: usize,
+        mask_vec: &mut Option<Vec<i64>>,
+        pos_vec: &mut Option<Vec<i64>>,
+    ) -> Result<ort::session::SessionInputValue<'static>> {
+        if name == "attention_mask" {
+            let mask = mask_vec
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("ONNX graph has duplicate attention_mask inputs"))?;
+            let t = Tensor::from_array(([batch, seq_len], mask.into_boxed_slice()))?;
+            return Ok(t.into());
+        }
+        if name == "token_type_ids" {
+            let zeros = vec![0i64; batch * seq_len];
+            let t = Tensor::from_array(([batch, seq_len], zeros.into_boxed_slice()))?;
+            return Ok(t.into());
+        }
+        if name == "position_ids" {
+            let pos = pos_vec
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("ONNX graph has duplicate position_ids inputs"))?;
+            let t = Tensor::from_array(([batch, seq_len], pos.into_boxed_slice()))?;
+            return Ok(t.into());
+        }
+        if name.contains("past_key_values") {
+            let geo = self.descriptor.kv_geometry.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "graph asks for `{name}` but KV geometry was not deduced from the session"
+                )
+            })?;
+            let empty_kv = Tensor::<f32>::new(
+                self.session.allocator(),
+                [
+                    batch as i64,
+                    geo.num_kv_heads as i64,
+                    0,
+                    geo.head_dim as i64,
+                ],
+            )
+            .context("failed to allocate empty KV-cache tensor")?;
+            return Ok(empty_kv.into());
+        }
+        bail!(
+            "unhandled ONNX input `{name}` on model {} (feed-by-name: no rule for this tensor)",
+            self.descriptor.id
+        )
+    }
+}
+
+fn max_seq_tokens_for(desc: &ModelDescriptor) -> usize {
+    std::env::var("ORACLE_EMBED_MAX_SEQ_TOKENS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(desc.max_seq_tokens)
+}
+
+fn dims_from_session(session: &Session) -> Result<usize> {
+    let outlet = session
+        .outputs()
+        .iter()
+        .find(|o| o.name() == "last_hidden_state")
+        .ok_or_else(|| anyhow::anyhow!("ONNX graph has no output named last_hidden_state"))?;
+    let shape = outlet
+        .dtype()
+        .tensor_shape()
+        .ok_or_else(|| anyhow::anyhow!("last_hidden_state is not a tensor"))?;
+    shape
+        .iter()
+        .copied()
+        .rev()
+        .find(|&d| d > 0)
+        .map(|d| d as usize)
+        .ok_or_else(|| {
+            anyhow::anyhow!("last_hidden_state has no static hidden dim (shape {shape:?})")
+        })
+}
+
+fn kv_geometry_from_session(session: &Session) -> Result<Option<KvGeometry>> {
+    let keys: Vec<_> = session
+        .inputs()
+        .iter()
+        .filter(|o| o.name().starts_with("past_key_values.") && o.name().ends_with(".key"))
+        .collect();
+    if keys.is_empty() {
+        return Ok(None);
+    }
+    let shape = keys[0]
+        .dtype()
+        .tensor_shape()
+        .ok_or_else(|| anyhow::anyhow!("past_key_values.*.key is not a tensor"))?;
+    let static_dims: Vec<i64> = shape.iter().copied().filter(|&d| d > 0).collect();
+    if static_dims.len() < 2 {
+        bail!(
+            "cannot deduce KV geometry from {}: need two static dims (heads, head_dim), got {shape:?}",
+            keys[0].name()
+        );
+    }
+    // The KV shape is [batch, heads, past_len, head_dim]. The first static
+    // dimensions can include a fixed batch from a traced export; the last two
+    // always identify the cache geometry we need.
+    let (num_kv_heads, head_dim) = (
+        static_dims[static_dims.len() - 2],
+        static_dims[static_dims.len() - 1],
+    );
+    Ok(Some(KvGeometry {
+        num_layers: keys.len(),
+        num_kv_heads: num_kv_heads as usize,
+        head_dim: head_dim as usize,
+    }))
+}
+
+fn pool_hidden(
+    strategy: PoolingStrategy,
+    data: &[f32],
+    row: usize,
+    seq: usize,
+    hidden: usize,
+    mask: &[u32],
+    normalize: bool,
+) -> Result<Vec<f32>> {
+    let mask_sum: i64 = mask.iter().map(|&x| x as i64).sum();
+    let mut vec = match strategy {
+        PoolingStrategy::LastToken => {
+            // With right padding the last real token is just before the pad run.
+            let real_last = (mask_sum - 1) as usize;
+            let base = (row * seq + real_last) * hidden;
+            data.get(base..base + hidden)
+                .ok_or_else(|| anyhow::anyhow!("last-token pool out of range"))?
+                .to_vec()
+        }
+        PoolingStrategy::Cls => {
+            let base = row * seq * hidden;
+            data.get(base..base + hidden)
+                .ok_or_else(|| anyhow::anyhow!("cls pool out of range"))?
+                .to_vec()
+        }
+        PoolingStrategy::Mean => {
+            let mut acc = vec![0.0f32; hidden];
+            let mut n = 0.0f32;
+            for (t, &m) in mask.iter().enumerate() {
+                if m == 0 {
+                    continue;
+                }
+                let base = (row * seq + t) * hidden;
+                let token = data
+                    .get(base..base + hidden)
+                    .ok_or_else(|| anyhow::anyhow!("mean pool out of range at token {t}"))?;
+                for (a, &x) in acc.iter_mut().zip(token) {
+                    *a += x;
+                }
+                n += 1.0;
+            }
+            let denom = n.max(1.0);
+            for x in acc.iter_mut() {
+                *x /= denom;
+            }
+            acc
+        }
+    };
+    if normalize {
+        let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt() + 1e-12;
+        for x in vec.iter_mut() {
+            *x /= norm;
+        }
+    }
+    Ok(vec)
 }

@@ -7,9 +7,11 @@
 //! reloads on demand (PLAN.md P3).
 
 mod candle_backend;
+pub mod model_descriptor;
 pub mod ort_backend;
 
 pub use candle_backend::CandleEmbedder;
+pub use model_descriptor::{DeclaredModelConfig, KvGeometry, ModelDescriptor, PoolingStrategy};
 pub use ort_backend::OrtEmbedder;
 
 use anyhow::{Context, Result};
@@ -922,6 +924,11 @@ pub enum BackendChoice {
 /// error containing "cancelled" when it fires.
 pub trait Embedder: Send {
     fn model_id(&self) -> &str;
+    /// Whether chunk/query text should take the semantic-prefix-v2 header.
+    /// Default true preserves the Qwen3 path for backends that don't override.
+    fn uses_semantic_prefix(&self) -> bool {
+        true
+    }
     fn embed(
         &mut self,
         texts: &[String],

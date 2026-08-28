@@ -101,6 +101,10 @@ pub trait TextEmbedder: Send + Sync {
         batch_size: usize,
         cancel: &CancelFlag,
     ) -> Result<Vec<Vec<f32>>>;
+    /// Default true: Qwen3 / FakeEmbedder keep the semantic-prefix header.
+    fn uses_semantic_prefix(&self) -> Result<bool> {
+        Ok(true)
+    }
 }
 
 /// Thin adapter: delegate to `EmbedderPool::embed`.
@@ -112,6 +116,15 @@ impl TextEmbedder for crate::embed::EmbedderPool {
         cancel: &CancelFlag,
     ) -> Result<Vec<Vec<f32>>> {
         crate::embed::EmbedderPool::embed(self, texts, batch_size, cancel)
+    }
+
+    fn uses_semantic_prefix(&self) -> Result<bool> {
+        match self.backend() {
+            crate::embed::BackendChoice::Candle { .. } => Ok(true),
+            crate::embed::BackendChoice::Ort { model_dir, .. } => {
+                crate::embed::DeclaredModelConfig::load(model_dir).map(|d| d.uses_semantic_prefix)
+            }
+        }
     }
 }
 
@@ -394,6 +407,7 @@ fn chunk_batches(
     max_chunks: usize,
     max_chars: usize,
     attention_budget: usize,
+    uses_semantic_prefix: bool,
 ) -> Vec<Vec<&serde_json::Value>> {
     let max_chunks = max_chunks.max(1);
     let max_chars = max_chars.max(1);
@@ -405,7 +419,8 @@ fn chunk_batches(
 
     for chunk in chunks {
         let meta = chunk_value_to_meta(chunk);
-        let text_chars = retrieval_text::chunk_embedding_text(&meta, None).len();
+        let text_chars =
+            retrieval_text::chunk_embedding_text_for_model(&meta, None, uses_semantic_prefix).len();
         let cand_tokens = est_tokens_from_chars(text_chars);
 
         if !batch.is_empty() {
@@ -1327,11 +1342,13 @@ pub async fn index_file_chunks(
 
         // ── Embed + build vector records ────────────────────────────────
         let mut vector_records: Vec<LanceRow> = Vec::new();
+        let uses_semantic_prefix = embedder.uses_semantic_prefix()?;
         let sub_batches = chunk_batches(
             &batch_chunks_all,
             chunk_batch_size,
             chunk_char_budget,
             config.attention_budget.max(1),
+            uses_semantic_prefix,
         );
         let mut batch_embedded = 0usize;
 
@@ -1425,7 +1442,11 @@ pub async fn index_file_chunks(
                 .iter()
                 .map(|c| {
                     let meta = chunk_value_to_meta(c);
-                    retrieval_text::chunk_embedding_text(&meta, None)
+                    retrieval_text::chunk_embedding_text_for_model(
+                        &meta,
+                        None,
+                        uses_semantic_prefix,
+                    )
                 })
                 .collect();
             let total_chars: usize = texts.iter().map(|t| t.len()).sum();
@@ -1793,7 +1814,7 @@ mod tests {
             owned.push(make_chunk(&format!("s{i}"), &short));
         }
 
-        let batches = chunk_batches(&owned, 32, 50_000, budget);
+        let batches = chunk_batches(&owned, 32, 50_000, budget, true);
 
         for b in &batches {
             let cost = batch_cost(b);
@@ -1833,7 +1854,7 @@ mod tests {
             .map(|i| make_chunk(&format!("c{i}"), "hello"))
             .collect();
         // Huge char + attention budgets so only max_chunks binds.
-        let batches = chunk_batches(&owned, 3, usize::MAX / 4, usize::MAX / 4);
+        let batches = chunk_batches(&owned, 3, usize::MAX / 4, usize::MAX / 4, true);
         assert!(batches.iter().all(|b| b.len() <= 3));
         assert_eq!(batches.iter().map(|b| b.len()).sum::<usize>(), 10);
         assert_eq!(batches.len(), 4); // 3+3+3+1
@@ -1851,7 +1872,7 @@ mod tests {
         let max_chars = chars_a.max(chars_b) + 10;
         assert!(chars_a + chars_b > max_chars);
 
-        let batches = chunk_batches(&owned, 32, max_chars, usize::MAX / 4);
+        let batches = chunk_batches(&owned, 32, max_chars, usize::MAX / 4, true);
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].len(), 1);
         assert_eq!(batches[1].len(), 1);

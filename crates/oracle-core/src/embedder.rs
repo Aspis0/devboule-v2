@@ -8,7 +8,7 @@ use fastembed::Qwen3TextEmbedding;
 use serde::Serialize;
 
 use crate::embed::{CancelFlag, CandleEmbedder, Embedder};
-use crate::onnx_embedder::{EpArg, OnnxEmbedder, ONNX_MODEL_ID};
+use crate::onnx_embedder::{EpArg, OnnxEmbedder};
 use crate::BackendArg;
 use std::time::Instant;
 
@@ -169,7 +169,7 @@ pub async fn cmd_embed(
 
         let dims = vectors.first().map(|v| v.len()).unwrap_or(0);
         let out_obj = EmbedOut {
-            model: ONNX_MODEL_ID.to_string(),
+            model: embedder.descriptor().id.clone(),
             dims,
             vectors,
         };
@@ -278,7 +278,7 @@ pub async fn cmd_bench(
             per_iter_ms.push(start.elapsed().as_millis());
         }
         bench_summary(
-            ONNX_MODEL_ID.to_string(),
+            embedder.descriptor().id.clone(),
             device_label,
             dtype_label,
             n,

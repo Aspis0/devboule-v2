@@ -21,6 +21,9 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
+use crate::embed::model_descriptor::{
+    write_model_config_if_missing, BGE_SMALL_MODEL_CONFIG_JSON, QWEN3_MODEL_CONFIG_JSON,
+};
 use crate::embed::ort_backend::OrtEmbedder;
 
 /// HuggingFace resolve base for the onnx-community Qwen3 export.
@@ -266,31 +269,26 @@ pub fn copy_int8_bundle(src_model_dir: &Path, dest_model_dir: &Path) -> Result<(
 /// A file already at its full remote size is skipped, so re-running after a
 /// completed install is a cheap set of HEAD requests. `progress` is invoked per
 /// received chunk; pass a no-op closure to ignore it.
-pub fn ensure_qwen3_onnx(
+/// Download the declared files of any ONNX bundle under
+/// `<oracle_data_root>/models/<model_id>/`. `hf_resolve_base` is the HuggingFace
+/// resolve URL *without* a trailing slash (e.g. `https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main`).
+pub fn ensure_model_onnx(
     oracle_data_root: &Path,
-    int8: bool,
+    model_id: &str,
+    hf_resolve_base: &str,
+    files: &[&str],
     mut progress: impl FnMut(FileProgress),
 ) -> Result<PathBuf> {
-    let dir = model_dir(oracle_data_root);
-    // A broken symlink at the model dir (left behind by a rename of the data
-    // root) makes create_dir_all fail with "File exists" and the install never
-    // downloads. Clear it.
+    let dir = OrtEmbedder::model_dir(oracle_data_root, model_id);
     clear_broken_model_dir_symlink(&dir)?;
-    let files = bundle_files(int8);
     let client = http_client()?;
+    let base = hf_resolve_base.trim_end_matches('/');
 
     for (i, rel) in files.iter().enumerate() {
-        let url = format!("{HF_BASE}/{rel}");
+        let url = format!("{base}/{rel}");
         let dest = dir.join(rel);
         let bytes_total = remote_len(&client, &url);
 
-        // Content-Length may be None when the CDN reports 0 on HEAD requests
-        // (HuggingFace quirk). Proceed without the exact-size guard in that
-        // case — the download reads to EOF and writes to a .part file, so an
-        // unknown length is safe; we just can't verify the post-download size.
-
-        // Skip if the local file already matches the remote size exactly.
-        // (Only when we have a real, non-zero remote length.)
         if let Some(expected) = bytes_total {
             if std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0) == expected && expected > 0 {
                 progress(FileProgress {
@@ -318,6 +316,43 @@ pub fn ensure_qwen3_onnx(
         .with_context(|| format!("downloading {rel}"))?;
     }
 
+    Ok(dir)
+}
+
+/// Ensure the Qwen3 ONNX bundle is present under `oracle_data_root`.
+pub fn ensure_qwen3_onnx(
+    oracle_data_root: &Path,
+    int8: bool,
+    progress: impl FnMut(FileProgress),
+) -> Result<PathBuf> {
+    let dir = ensure_model_onnx(
+        oracle_data_root,
+        "qwen3-onnx",
+        HF_BASE,
+        bundle_files(int8),
+        progress,
+    )?;
+    write_model_config_if_missing(&dir, QWEN3_MODEL_CONFIG_JSON)?;
+    Ok(dir)
+}
+
+/// HuggingFace resolve base for the Xenova bge-small quantized export.
+pub const BGE_SMALL_HF_BASE: &str = "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main";
+
+pub const BGE_SMALL_FILES: &[&str] = &["onnx/model_quantized.onnx", "tokenizer.json"];
+
+pub fn ensure_bge_small_onnx(
+    oracle_data_root: &Path,
+    progress: impl FnMut(FileProgress),
+) -> Result<PathBuf> {
+    let dir = ensure_model_onnx(
+        oracle_data_root,
+        "bge-small-en-v1.5",
+        BGE_SMALL_HF_BASE,
+        BGE_SMALL_FILES,
+        progress,
+    )?;
+    write_model_config_if_missing(&dir, BGE_SMALL_MODEL_CONFIG_JSON)?;
     Ok(dir)
 }
 

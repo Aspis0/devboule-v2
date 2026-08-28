@@ -19,25 +19,26 @@ pub struct OrtEmbedder {
 impl OrtEmbedder {
     /// Load `model_dir/onnx/model.onnx` (fp32) or `model_int8.onnx`.
     pub fn load(model_dir: &Path, int8: bool) -> Result<Self> {
-        // The spike selects the graph via ORACLE_RS_ONNX_VARIANT; drive it
-        // explicitly here so callers don't depend on ambient env state.
         let variant = if int8 { "int8" } else { "fp32" };
-        std::env::set_var("ORACLE_RS_ONNX_VARIANT", variant);
-        let (inner, _load_ms) = OnnxEmbedder::load(model_dir, default_ep()).with_context(|| {
-            format!(
-                "loading ONNX embedder ({variant}) from {}",
-                model_dir.display()
-            )
-        })?;
-        Ok(OrtEmbedder {
-            inner,
-            model_id: format!("Qwen3-Embedding-0.6B-ONNX-{variant}"),
-        })
+        let (inner, _load_ms) = OnnxEmbedder::load_with_precision(model_dir, default_ep(), int8)
+            .with_context(|| {
+                format!(
+                    "loading ONNX embedder ({variant}) from {}",
+                    model_dir.display()
+                )
+            })?;
+        let model_id = format!("{}-ONNX-{variant}", inner.descriptor().id);
+        Ok(OrtEmbedder { inner, model_id })
     }
 
-    /// Default on-disk location for the ONNX model bundle.
+    /// Default on-disk location for the Qwen3 ONNX bundle (unchanged path).
     pub fn default_model_dir(oracle_data_root: &Path) -> PathBuf {
-        oracle_data_root.join("models").join("qwen3-onnx")
+        Self::model_dir(oracle_data_root, "qwen3-onnx")
+    }
+
+    /// `<root>/models/<id>`.
+    pub fn model_dir(oracle_data_root: &Path, model_id: &str) -> PathBuf {
+        oracle_data_root.join("models").join(model_id)
     }
 }
 
@@ -85,6 +86,10 @@ fn default_ep() -> EpArg {
 impl Embedder for OrtEmbedder {
     fn model_id(&self) -> &str {
         &self.model_id
+    }
+
+    fn uses_semantic_prefix(&self) -> bool {
+        self.inner.descriptor().uses_semantic_prefix
     }
 
     fn embed(
