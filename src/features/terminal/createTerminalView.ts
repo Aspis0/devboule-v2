@@ -67,14 +67,20 @@ export interface TerminalViewHandle {
   rows: () => number;
 }
 
-function cursorShapeCode(shape: SessionSnapshot["cursor"]["shape"]): number {
-  switch (shape) {
+/**
+ * DECSCUSR: 1, 3 and 5 are the blinking block, underline and bar; the even code
+ * above each one is its steady twin. The snapshot carries `blinking`, so the
+ * sequence must select the right half of the pair rather than always blink.
+ */
+function cursorShapeCode(cursor: SessionSnapshot["cursor"]): number {
+  const steady = cursor.blinking ? 0 : 1;
+  switch (cursor.shape) {
     case "block":
-      return 1;
+      return 1 + steady;
     case "underline":
-      return 3;
+      return 3 + steady;
     case "bar":
-      return 5;
+      return 5 + steady;
   }
 }
 
@@ -89,7 +95,7 @@ function snapshotStateSequence(snapshot: SessionSnapshot): string {
     `\x1b[?1049${alternateScreen}`,
     `\x1b[${cursor.row + 1};${cursor.col + 1}H`,
     `\x1b[?25${visible}`,
-    `\x1b[${cursorShapeCode(cursor.shape)} q`,
+    `\x1b[${cursorShapeCode(cursor)} q`,
     `\x1b[?2004${bracketedPaste}`,
     `\x1b[?7${lineWrap}`,
     title,
