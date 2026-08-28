@@ -3,5 +3,18 @@ members = [
     "src-tauri",
     "crates/devboule-protocol",
     "crates/devboule-daemon",
+    "crates/oracle-core",
 ]
 resolver = "2"
+
+[patch.crates-io]
+# Patch esaxx-rs to use dynamic CRT (/MD) on Windows, matching ort-sys
+# prebuilt binaries (rc.12). Without this, the linker fails with LNK2038:
+# MT_StaticRelease vs MD_DynamicRelease. Must live in the workspace root —
+# patches in member Cargo.tomls are ignored.
+# Exit: drop this patch when upstream esaxx-rs builds with the dynamic CRT on
+# Windows, or when `tokenizers` stops depending on esaxx-rs.
+esaxx-rs = { path = "crates/oracle-core/vendor/esaxx-rs-0.1.10" }
+
+
+

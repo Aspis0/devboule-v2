@@ -58,11 +58,30 @@ jobs:
       - name: Check frontend formatting
         run: pnpm run format:check
 
+      # oracle-core is a workspace member but is excluded from the three heavy
+      # Rust steps below. Measured on the dev machine (22 logical cores) on
+      # 2026-08-28, not assumed:
+      #   * cold `cargo build -p oracle-core --lib` takes ~8-10 min; its
+      #     dependency graph is DataFusion + LanceDB + Arrow + ORT + candle.
+      #   * target/ grew from 32.0 GiB to 47.8 GiB after that library build
+      #     alone, and to 91.8 GiB after `cargo test --workspace`.
+      #     windows-latest ships with roughly 14 GiB free: the build cannot fit.
+      #   * `cargo test --workspace` at default parallelism crashed rustc with
+      #     STATUS_STACK_BUFFER_OVERRUN (0xc0000409) while linking the nine
+      #     integration-test binaries, each of which statically links that whole
+      #     graph. `-j 1` completes in ~15 min.
+      # `cargo fmt --all` below still covers it, because formatting needs no build.
+      # Verified locally instead, and this is the command that does it:
+      #   cargo clippy --workspace --all-targets --locked -- -D warnings
+      #   cargo test --workspace --locked -j 1
+      # Exit: drop the --exclude when oracle-core runs on a runner with the disk
+      # for it, or when the embedding path moves behind a feature flag that CI
+      # can leave off.
       - name: Build Rust workspace
-        run: cargo build --workspace --locked
+        run: cargo build --workspace --exclude oracle-core --locked
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --exclude oracle-core --all-targets --all-features --locked -- -D warnings
 
       - name: Test Rust workspace
         # Default suite only. The #[ignore]d ConPTY / named-pipe tests are
@@ -73,7 +92,7 @@ jobs:
         # between tests. A CI that goes red at random is worse than a
         # recorded gap. Local command:
         # cargo test --workspace --locked -- --ignored --test-threads=4
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --exclude oracle-core --locked
 
       - name: Install pinned cargo-audit
         shell: pwsh
@@ -88,3 +107,41 @@ jobs:
         # advisory notices remain visible without turning Tauri's transitive GTK
         # notices into a false-green workaround.
         run: cargo audit
+
+  # oracle-core cannot be built on this runner (see the note in the windows job:
+  # ~16 GiB of artifacts against ~14 GiB free). `cargo check` produces metadata
+  # and rlibs but no codegen for the final crate, so it fits where a full build
+  # does not, and it still catches the failure that actually happens when a
+  # crate is edited: type errors. It is a smaller net than the local
+  # clippy + test run, and it is honest about being one.
+  oracle-core-check:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Show pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      # oracle-core pulls Lance, whose build scripts compile .proto files with
+      # prost-build. Without protoc on PATH the build fails in lance-encoding
+      # before a single line of our code is looked at — a missing tool reported
+      # as a code failure. It is installed here rather than assumed because the
+      # dev machine has it from winget, which says nothing about the runner.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "31.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Report free disk before
+        shell: pwsh
+        run: Get-PSDrive C | Select-Object Used,Free
+
+      - name: Type-check oracle-core
+        run: cargo check -p oracle-core --locked --all-targets
+
+      - name: Report free disk after
+        shell: pwsh
+        run: Get-PSDrive C | Select-Object Used,Free

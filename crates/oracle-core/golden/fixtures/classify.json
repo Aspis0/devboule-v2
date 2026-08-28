@@ -1,0 +1,131 @@
+{
+  "data/schema.yaml": {
+    "domains": [
+      "oracle_answering",
+      "oracle_indexing"
+    ],
+    "source_kind": "structured_config"
+  },
+  "src/server.js": {
+    "domains": [],
+    "source_kind": "implementation_primary"
+  },
+  "src/components/utils.ts": {
+    "domains": [
+      "oracle_indexing",
+      "provider_privacy"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "src/sliding_window_code.py": {
+    "domains": [],
+    "source_kind": "implementation_primary"
+  },
+  "src/huge_function.py": {
+    "domains": [
+      "windows_hello_auth"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "src/worker_secrets.py": {
+    "domains": [],
+    "source_kind": "implementation_primary"
+  },
+  "src/Main.java": {
+    "domains": [],
+    "source_kind": "implementation_primary"
+  },
+  "src/components/App.tsx": {
+    "domains": [],
+    "source_kind": "implementation_primary"
+  },
+  "src/crlf_twin_lf.py": {
+    "domains": [
+      "windows_hello_auth"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "src/instance_lifecycle.py": {
+    "domains": [
+      "gpu_cpu_lifecycle"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "src/unicode_test.py": {
+    "domains": [],
+    "source_kind": "test_regression_secondary"
+  },
+  "src/job_outputs.py": {
+    "domains": [],
+    "source_kind": "implementation_primary"
+  },
+  "src/lib.rs": {
+    "domains": [
+      "windows_hello_auth"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "src/agent_workflow.py": {
+    "domains": [
+      "oracle_answering",
+      "oracle_mcp_agents",
+      "projects_mini_notion"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "src/plain_code.py": {
+    "domains": [
+      "gpu_cpu_lifecycle",
+      "oracle_indexing"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "src/oracle_privacy.py": {
+    "domains": [
+      "provider_privacy"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "docs/architecture.md": {
+    "domains": [
+      "gpu_cpu_lifecycle",
+      "oracle_indexing",
+      "windows_hello_auth"
+    ],
+    "source_kind": "documentation_or_plan_secondary"
+  },
+  "excluded/reincluded/kept.md": {
+    "domains": [],
+    "source_kind": "documentation_or_plan_secondary"
+  },
+  "src/crlf_test.py": {
+    "domains": [
+      "windows_hello_auth"
+    ],
+    "source_kind": "test_regression_secondary"
+  },
+  "data/config.json": {
+    "domains": [
+      "gpu_cpu_lifecycle",
+      "oracle_answering",
+      "oracle_indexing",
+      "oracle_mcp_agents",
+      "projects_mini_notion",
+      "provider_privacy",
+      "windows_hello_auth"
+    ],
+    "source_kind": "structured_config"
+  },
+  "src/app.py": {
+    "domains": [
+      "oracle_indexing",
+      "provider_privacy",
+      "windows_hello_auth"
+    ],
+    "source_kind": "implementation_primary"
+  },
+  "build/keep.md": {
+    "domains": [],
+    "source_kind": "documentation_or_plan_secondary"
+  }
+}

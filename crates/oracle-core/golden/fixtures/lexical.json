@@ -1,0 +1,662 @@
+{
+ "How do I configure the oracle LLM provider settings?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 3.0,
+   "data/schema.yaml#chunk-0000": 1.0,
+   "src/Main.java#chunk-0000": 8.0,
+   "src/agent_workflow.py#chunk-0002": 8.0,
+   "src/agent_workflow.py#chunk-0005": 8.0,
+   "src/agent_workflow.py#chunk-0006": 8.0,
+   "src/agent_workflow.py#chunk-0007": 8.0,
+   "src/app.py#chunk-0000": 8.0,
+   "src/app.py#chunk-0004": 9.0,
+   "src/components/App.tsx#chunk-0003": 8.0,
+   "src/components/App.tsx#chunk-0004": 8.0,
+   "src/components/utils.ts#chunk-0000": 8.0,
+   "src/components/utils.ts#chunk-0005": 9.0,
+   "src/huge_function.py#chunk-0002": 8.0,
+   "src/lib.rs#chunk-0000": 8.0,
+   "src/oracle_privacy.py#chunk-0000": 10.35,
+   "src/oracle_privacy.py#chunk-0001": 10.35,
+   "src/plain_code.py#chunk-0001": 8.0,
+   "src/plain_code.py#chunk-0002": 9.0,
+   "src/server.js#chunk-0000": 8.0,
+   "src/server.js#chunk-0001": 8.0,
+   "src/server.js#chunk-0002": 8.0,
+   "src/unicode_test.py#chunk-0000": 8.0
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "configure",
+   "llm",
+   "oracle",
+   "provider",
+   "settings"
+  ],
+  "top10_chunk_ids": [
+   "src/oracle_privacy.py#chunk-0000",
+   "src/oracle_privacy.py#chunk-0001",
+   "src/app.py#chunk-0004",
+   "src/components/utils.ts#chunk-0005",
+   "src/plain_code.py#chunk-0002",
+   "src/Main.java#chunk-0000",
+   "src/agent_workflow.py#chunk-0002",
+   "src/agent_workflow.py#chunk-0005",
+   "src/agent_workflow.py#chunk-0006",
+   "src/agent_workflow.py#chunk-0007"
+  ]
+ },
+ "How do agents claim tasks and update project status?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 7.2,
+   "data/schema.yaml#chunk-0000": 0.55,
+   "src/agent_workflow.py#chunk-0000": 8.0,
+   "src/agent_workflow.py#chunk-0001": 10.55,
+   "src/agent_workflow.py#chunk-0002": 9.0,
+   "src/agent_workflow.py#chunk-0003": 10.55,
+   "src/agent_workflow.py#chunk-0004": 11.55,
+   "src/agent_workflow.py#chunk-0005": 7.55,
+   "src/agent_workflow.py#chunk-0006": 7.55,
+   "src/agent_workflow.py#chunk-0007": 14.2,
+   "src/components/App.tsx#chunk-0003": 8.0,
+   "src/instance_lifecycle.py#chunk-0001": 8.0,
+   "src/job_outputs.py#chunk-0001": 8.0,
+   "src/server.js#chunk-0001": 8.0,
+   "src/unicode_test.py#chunk-0000": 9.0
+  },
+  "semantic_expansions": [
+   "oracle_ask",
+   "oracle_context",
+   "project_claim_task",
+   "project_update_status",
+   "read_project"
+  ],
+  "terms": [
+   "agents",
+   "claim",
+   "project",
+   "status",
+   "tasks",
+   "update"
+  ],
+  "top10_chunk_ids": [
+   "src/agent_workflow.py#chunk-0007",
+   "src/agent_workflow.py#chunk-0004",
+   "src/agent_workflow.py#chunk-0001",
+   "src/agent_workflow.py#chunk-0003",
+   "src/agent_workflow.py#chunk-0002",
+   "src/unicode_test.py#chunk-0000",
+   "src/agent_workflow.py#chunk-0000",
+   "src/components/App.tsx#chunk-0003",
+   "src/instance_lifecycle.py#chunk-0001",
+   "src/job_outputs.py#chunk-0001"
+  ]
+ },
+ "How does GPU spawning work with limits?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 3.1,
+   "src/agent_workflow.py#chunk-0000": 8.35,
+   "src/agent_workflow.py#chunk-0001": 7.35,
+   "src/agent_workflow.py#chunk-0002": 7.35,
+   "src/agent_workflow.py#chunk-0003": 7.35,
+   "src/agent_workflow.py#chunk-0004": 7.35,
+   "src/agent_workflow.py#chunk-0005": 7.35,
+   "src/agent_workflow.py#chunk-0006": 7.35,
+   "src/agent_workflow.py#chunk-0007": 7.35,
+   "src/huge_function.py#chunk-0001": 8.1,
+   "src/job_outputs.py#chunk-0001": 7.55,
+   "src/lib.rs#chunk-0002": 7.55,
+   "src/lib.rs#chunk-0007": 7.55,
+   "src/plain_code.py#chunk-0001": 8.0,
+   "src/plain_code.py#chunk-0002": 8.0,
+   "src/server.js#chunk-0001": 7.55,
+   "src/worker_secrets.py#chunk-0000": 8.35,
+   "src/worker_secrets.py#chunk-0001": 8.35
+  },
+  "semantic_expansions": [
+   "cap",
+   "caps",
+   "cold start",
+   "control",
+   "controls",
+   "create",
+   "creation",
+   "cuda",
+   "max_scale",
+   "min_scale",
+   "provision",
+   "provisioning",
+   "scale-to-zero",
+   "vram"
+  ],
+  "terms": [
+   "gpu",
+   "limits",
+   "spawning",
+   "work"
+  ],
+  "top10_chunk_ids": [
+   "src/agent_workflow.py#chunk-0000",
+   "src/worker_secrets.py#chunk-0000",
+   "src/worker_secrets.py#chunk-0001",
+   "src/huge_function.py#chunk-0001",
+   "src/plain_code.py#chunk-0001",
+   "src/plain_code.py#chunk-0002",
+   "src/job_outputs.py#chunk-0001",
+   "src/lib.rs#chunk-0002",
+   "src/lib.rs#chunk-0007",
+   "src/server.js#chunk-0001"
+  ]
+ },
+ "How does Windows Hello unlock work with webcam and PIN?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 6.0,
+   "src/Main.java#chunk-0001": 8.0,
+   "src/agent_workflow.py#chunk-0000": 8.35,
+   "src/agent_workflow.py#chunk-0001": 7.35,
+   "src/agent_workflow.py#chunk-0002": 7.35,
+   "src/agent_workflow.py#chunk-0003": 7.35,
+   "src/agent_workflow.py#chunk-0004": 7.35,
+   "src/agent_workflow.py#chunk-0005": 7.35,
+   "src/agent_workflow.py#chunk-0006": 7.35,
+   "src/agent_workflow.py#chunk-0007": 7.35,
+   "src/app.py#chunk-0000": 8.0,
+   "src/app.py#chunk-0003": 9.0,
+   "src/crlf_test.py#chunk-0000": 8.0,
+   "src/crlf_test.py#chunk-0001": 9.0,
+   "src/crlf_twin_lf.py#chunk-0000": 8.0,
+   "src/crlf_twin_lf.py#chunk-0001": 9.0,
+   "src/huge_function.py#chunk-0002": 9.0,
+   "src/lib.rs#chunk-0006": 9.0,
+   "src/lib.rs#chunk-0009": 8.0,
+   "src/worker_secrets.py#chunk-0000": 8.35,
+   "src/worker_secrets.py#chunk-0001": 8.35
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "hello",
+   "pin",
+   "unlock",
+   "webcam",
+   "windows",
+   "work"
+  ],
+  "top10_chunk_ids": [
+   "src/app.py#chunk-0003",
+   "src/crlf_test.py#chunk-0001",
+   "src/crlf_twin_lf.py#chunk-0001",
+   "src/huge_function.py#chunk-0002",
+   "src/lib.rs#chunk-0006",
+   "src/agent_workflow.py#chunk-0000",
+   "src/worker_secrets.py#chunk-0000",
+   "src/worker_secrets.py#chunk-0001",
+   "src/Main.java#chunk-0001",
+   "src/app.py#chunk-0000"
+  ]
+ },
+ "How does a job release outputs after a successful run?": {
+  "chunk_scores": {
+   "src/agent_workflow.py#chunk-0004": 7.55,
+   "src/agent_workflow.py#chunk-0007": 7.55,
+   "src/instance_lifecycle.py#chunk-0000": 8.0,
+   "src/instance_lifecycle.py#chunk-0001": 9.55,
+   "src/job_outputs.py#chunk-0000": 12.25,
+   "src/job_outputs.py#chunk-0001": 11.9,
+   "src/plain_code.py#chunk-0001": 7.55,
+   "src/server.js#chunk-0001": 7.55,
+   "src/server.js#chunk-0002": 8.0,
+   "src/unicode_test.py#chunk-0000": 7.55
+  },
+  "semantic_expansions": [
+   "artifact",
+   "done",
+   "download",
+   "ready",
+   "terminal"
+  ],
+  "terms": [
+   "job",
+   "outputs",
+   "release",
+   "run",
+   "successful"
+  ],
+  "top10_chunk_ids": [
+   "src/job_outputs.py#chunk-0000",
+   "src/job_outputs.py#chunk-0001",
+   "src/instance_lifecycle.py#chunk-0001",
+   "src/instance_lifecycle.py#chunk-0000",
+   "src/server.js#chunk-0002",
+   "src/agent_workflow.py#chunk-0004",
+   "src/agent_workflow.py#chunk-0007",
+   "src/plain_code.py#chunk-0001",
+   "src/server.js#chunk-0001",
+   "src/unicode_test.py#chunk-0000"
+  ]
+ },
+ "How does browser upload session completion work?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 1.0,
+   "src/agent_workflow.py#chunk-0000": 8.35,
+   "src/agent_workflow.py#chunk-0001": 7.35,
+   "src/agent_workflow.py#chunk-0002": 7.35,
+   "src/agent_workflow.py#chunk-0003": 7.35,
+   "src/agent_workflow.py#chunk-0004": 7.35,
+   "src/agent_workflow.py#chunk-0005": 7.35,
+   "src/agent_workflow.py#chunk-0006": 7.35,
+   "src/agent_workflow.py#chunk-0007": 7.35,
+   "src/worker_secrets.py#chunk-0000": 8.35,
+   "src/worker_secrets.py#chunk-0001": 8.35
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "browser",
+   "completion",
+   "session",
+   "upload",
+   "work"
+  ],
+  "top10_chunk_ids": [
+   "src/agent_workflow.py#chunk-0000",
+   "src/worker_secrets.py#chunk-0000",
+   "src/worker_secrets.py#chunk-0001",
+   "src/agent_workflow.py#chunk-0001",
+   "src/agent_workflow.py#chunk-0002",
+   "src/agent_workflow.py#chunk-0003",
+   "src/agent_workflow.py#chunk-0004",
+   "src/agent_workflow.py#chunk-0005",
+   "src/agent_workflow.py#chunk-0006",
+   "src/agent_workflow.py#chunk-0007"
+  ]
+ },
+ "How does the chunk embedding text work?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 4.0,
+   "data/schema.yaml#chunk-0000": 3.0,
+   "src/Main.java#chunk-0000": 9.0,
+   "src/Main.java#chunk-0001": 9.0,
+   "src/agent_workflow.py#chunk-0000": 8.35,
+   "src/agent_workflow.py#chunk-0001": 7.35,
+   "src/agent_workflow.py#chunk-0002": 7.35,
+   "src/agent_workflow.py#chunk-0003": 7.35,
+   "src/agent_workflow.py#chunk-0004": 7.35,
+   "src/agent_workflow.py#chunk-0005": 8.35,
+   "src/agent_workflow.py#chunk-0006": 9.35,
+   "src/agent_workflow.py#chunk-0007": 8.35,
+   "src/app.py#chunk-0000": 10.0,
+   "src/app.py#chunk-0001": 9.0,
+   "src/app.py#chunk-0002": 8.0,
+   "src/app.py#chunk-0003": 9.0,
+   "src/app.py#chunk-0004": 9.0,
+   "src/app.py#chunk-0005": 8.0,
+   "src/app.py#chunk-0006": 10.0,
+   "src/app.py#chunk-0007": 8.0,
+   "src/components/App.tsx#chunk-0001": 9.0,
+   "src/components/App.tsx#chunk-0002": 8.0,
+   "src/components/App.tsx#chunk-0003": 9.0,
+   "src/components/App.tsx#chunk-0004": 9.0,
+   "src/components/utils.ts#chunk-0001": 9.0,
+   "src/components/utils.ts#chunk-0002": 8.0,
+   "src/components/utils.ts#chunk-0003": 8.0,
+   "src/components/utils.ts#chunk-0005": 9.0,
+   "src/components/utils.ts#chunk-0006": 10.0,
+   "src/components/utils.ts#chunk-0007": 10.0,
+   "src/crlf_test.py#chunk-0000": 8.0,
+   "src/crlf_test.py#chunk-0001": 9.0,
+   "src/crlf_test.py#chunk-0002": 8.0,
+   "src/crlf_twin_lf.py#chunk-0000": 8.0,
+   "src/crlf_twin_lf.py#chunk-0001": 9.0,
+   "src/crlf_twin_lf.py#chunk-0002": 8.0,
+   "src/huge_function.py#chunk-0000": 10.0,
+   "src/huge_function.py#chunk-0001": 9.0,
+   "src/huge_function.py#chunk-0002": 9.0,
+   "src/huge_function.py#chunk-0003": 9.0,
+   "src/huge_function.py#chunk-0004": 8.0,
+   "src/lib.rs#chunk-0000": 10.0,
+   "src/lib.rs#chunk-0001": 8.0,
+   "src/lib.rs#chunk-0002": 8.0,
+   "src/lib.rs#chunk-0003": 9.0,
+   "src/lib.rs#chunk-0004": 9.0,
+   "src/lib.rs#chunk-0005": 10.0,
+   "src/lib.rs#chunk-0006": 10.0,
+   "src/lib.rs#chunk-0007": 9.0,
+   "src/lib.rs#chunk-0008": 8.0,
+   "src/lib.rs#chunk-0009": 9.0,
+   "src/plain_code.py#chunk-0001": 10.0,
+   "src/plain_code.py#chunk-0002": 8.0,
+   "src/server.js#chunk-0001": 8.0,
+   "src/unicode_test.py#chunk-0000": 10.0,
+   "src/unicode_test.py#chunk-0001": 8.0,
+   "src/worker_secrets.py#chunk-0000": 8.35,
+   "src/worker_secrets.py#chunk-0001": 8.35
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "chunk",
+   "embedding",
+   "text",
+   "work"
+  ],
+  "top10_chunk_ids": [
+   "src/app.py#chunk-0000",
+   "src/app.py#chunk-0006",
+   "src/components/utils.ts#chunk-0006",
+   "src/components/utils.ts#chunk-0007",
+   "src/huge_function.py#chunk-0000",
+   "src/lib.rs#chunk-0000",
+   "src/lib.rs#chunk-0005",
+   "src/lib.rs#chunk-0006",
+   "src/plain_code.py#chunk-0001",
+   "src/unicode_test.py#chunk-0000"
+  ]
+ },
+ "What does the split_text function do?": {
+  "chunk_scores": {
+   "src/app.py#chunk-0000": 4.0,
+   "src/app.py#chunk-0001": 4.0,
+   "src/app.py#chunk-0003": 4.0,
+   "src/components/App.tsx#chunk-0003": 4.0,
+   "src/components/App.tsx#chunk-0004": 4.0,
+   "src/components/utils.ts#chunk-0000": 4.0,
+   "src/components/utils.ts#chunk-0003": 4.0,
+   "src/components/utils.ts#chunk-0004": 4.0,
+   "src/components/utils.ts#chunk-0005": 4.0,
+   "src/components/utils.ts#chunk-0006": 4.0,
+   "src/components/utils.ts#chunk-0007": 4.0,
+   "src/crlf_test.py#chunk-0001": 4.0,
+   "src/crlf_twin_lf.py#chunk-0001": 4.0,
+   "src/huge_function.py#chunk-0000": 4.35,
+   "src/huge_function.py#chunk-0001": 3.35,
+   "src/huge_function.py#chunk-0002": 3.35,
+   "src/huge_function.py#chunk-0003": 3.35,
+   "src/huge_function.py#chunk-0004": 3.35,
+   "src/lib.rs#chunk-0003": 4.0,
+   "src/lib.rs#chunk-0004": 4.0,
+   "src/lib.rs#chunk-0007": 4.0,
+   "src/lib.rs#chunk-0009": 5.0,
+   "src/plain_code.py#chunk-0000": 4.0,
+   "src/unicode_test.py#chunk-0000": 4.0
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "function",
+   "split_text"
+  ],
+  "top10_chunk_ids": [
+   "src/lib.rs#chunk-0009",
+   "src/huge_function.py#chunk-0000",
+   "src/app.py#chunk-0000",
+   "src/app.py#chunk-0001",
+   "src/app.py#chunk-0003",
+   "src/components/App.tsx#chunk-0003",
+   "src/components/App.tsx#chunk-0004",
+   "src/components/utils.ts#chunk-0000",
+   "src/components/utils.ts#chunk-0003",
+   "src/components/utils.ts#chunk-0004"
+  ]
+ },
+ "What is the architecture of this project?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 1.0,
+   "src/agent_workflow.py#chunk-0000": 4.0,
+   "src/agent_workflow.py#chunk-0001": 4.0,
+   "src/agent_workflow.py#chunk-0002": 4.0,
+   "src/agent_workflow.py#chunk-0003": 4.0,
+   "src/agent_workflow.py#chunk-0004": 4.0,
+   "src/agent_workflow.py#chunk-0005": 4.0,
+   "src/agent_workflow.py#chunk-0007": 4.0
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "architecture",
+   "project"
+  ],
+  "top10_chunk_ids": [
+   "src/agent_workflow.py#chunk-0000",
+   "src/agent_workflow.py#chunk-0001",
+   "src/agent_workflow.py#chunk-0002",
+   "src/agent_workflow.py#chunk-0003",
+   "src/agent_workflow.py#chunk-0004",
+   "src/agent_workflow.py#chunk-0005",
+   "src/agent_workflow.py#chunk-0007",
+   "data/config.json#chunk-0000"
+  ]
+ },
+ "What is the current project status and roadmap?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 2.0,
+   "docs/architecture.md#chunk-0000": 2.0,
+   "src/agent_workflow.py#chunk-0000": 4.0,
+   "src/agent_workflow.py#chunk-0001": 6.0,
+   "src/agent_workflow.py#chunk-0002": 5.0,
+   "src/agent_workflow.py#chunk-0003": 5.0,
+   "src/agent_workflow.py#chunk-0004": 5.0,
+   "src/agent_workflow.py#chunk-0007": 5.0,
+   "src/components/App.tsx#chunk-0003": 4.0,
+   "src/instance_lifecycle.py#chunk-0001": 4.0,
+   "src/job_outputs.py#chunk-0001": 4.0,
+   "src/server.js#chunk-0001": 4.0,
+   "src/unicode_test.py#chunk-0000": 4.0
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "current",
+   "project",
+   "roadmap",
+   "status"
+  ],
+  "top10_chunk_ids": [
+   "src/agent_workflow.py#chunk-0001",
+   "src/agent_workflow.py#chunk-0002",
+   "src/agent_workflow.py#chunk-0003",
+   "src/agent_workflow.py#chunk-0004",
+   "src/agent_workflow.py#chunk-0007",
+   "src/agent_workflow.py#chunk-0000",
+   "src/components/App.tsx#chunk-0003",
+   "src/instance_lifecycle.py#chunk-0001",
+   "src/job_outputs.py#chunk-0001",
+   "src/server.js#chunk-0001"
+  ]
+ },
+ "Where are compute instances terminated after jobs finish?": {
+  "chunk_scores": {
+   "src/app.py#chunk-0007": 4.0,
+   "src/huge_function.py#chunk-0000": 4.0,
+   "src/huge_function.py#chunk-0001": 4.0,
+   "src/huge_function.py#chunk-0003": 4.0,
+   "src/instance_lifecycle.py#chunk-0000": 4.0,
+   "src/instance_lifecycle.py#chunk-0001": 5.0,
+   "src/job_outputs.py#chunk-0001": 4.0,
+   "src/plain_code.py#chunk-0001": 4.0
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "compute",
+   "finish",
+   "instances",
+   "jobs",
+   "terminated"
+  ],
+  "top10_chunk_ids": [
+   "src/instance_lifecycle.py#chunk-0001",
+   "src/app.py#chunk-0007",
+   "src/huge_function.py#chunk-0000",
+   "src/huge_function.py#chunk-0001",
+   "src/huge_function.py#chunk-0003",
+   "src/instance_lifecycle.py#chunk-0000",
+   "src/job_outputs.py#chunk-0001",
+   "src/plain_code.py#chunk-0001"
+  ]
+ },
+ "Where is worker secret rotation implemented?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 2.0,
+   "src/plain_code.py#chunk-0001": 4.0,
+   "src/server.js#chunk-0001": 4.0,
+   "src/worker_secrets.py#chunk-0000": 6.7,
+   "src/worker_secrets.py#chunk-0001": 6.7
+  },
+  "semantic_expansions": [],
+  "terms": [
+   "implemented",
+   "rotation",
+   "secret",
+   "worker"
+  ],
+  "top10_chunk_ids": [
+   "src/worker_secrets.py#chunk-0000",
+   "src/worker_secrets.py#chunk-0001",
+   "src/plain_code.py#chunk-0001",
+   "src/server.js#chunk-0001",
+   "data/config.json#chunk-0000"
+  ]
+ },
+ "Which Oracle providers are privacy-safe for ZDR GDPR?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 5.65,
+   "data/schema.yaml#chunk-0000": 1.0,
+   "src/Main.java#chunk-0000": 4.0,
+   "src/agent_workflow.py#chunk-0002": 4.0,
+   "src/agent_workflow.py#chunk-0005": 4.0,
+   "src/agent_workflow.py#chunk-0006": 4.0,
+   "src/agent_workflow.py#chunk-0007": 4.0,
+   "src/app.py#chunk-0000": 4.0,
+   "src/app.py#chunk-0004": 7.1,
+   "src/components/App.tsx#chunk-0003": 4.0,
+   "src/components/App.tsx#chunk-0004": 4.0,
+   "src/components/utils.ts#chunk-0000": 4.0,
+   "src/components/utils.ts#chunk-0005": 7.1,
+   "src/huge_function.py#chunk-0002": 4.0,
+   "src/lib.rs#chunk-0000": 4.0,
+   "src/oracle_privacy.py#chunk-0000": 8.45,
+   "src/oracle_privacy.py#chunk-0001": 9.0,
+   "src/plain_code.py#chunk-0001": 4.0,
+   "src/plain_code.py#chunk-0002": 4.0,
+   "src/server.js#chunk-0000": 4.0,
+   "src/server.js#chunk-0001": 4.0,
+   "src/server.js#chunk-0002": 4.0,
+   "src/unicode_test.py#chunk-0000": 4.0
+  },
+  "semantic_expansions": [
+   "allowed provider",
+   "gdpr",
+   "zdr",
+   "zero data retention"
+  ],
+  "terms": [
+   "gdpr",
+   "oracle",
+   "privacy-safe",
+   "providers",
+   "zdr"
+  ],
+  "top10_chunk_ids": [
+   "src/oracle_privacy.py#chunk-0001",
+   "src/oracle_privacy.py#chunk-0000",
+   "src/app.py#chunk-0004",
+   "src/components/utils.ts#chunk-0005",
+   "data/config.json#chunk-0000",
+   "src/Main.java#chunk-0000",
+   "src/agent_workflow.py#chunk-0002",
+   "src/agent_workflow.py#chunk-0005",
+   "src/agent_workflow.py#chunk-0006",
+   "src/agent_workflow.py#chunk-0007"
+  ]
+ },
+ "Which files control GPU VM lifecycle and instances?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 3.0,
+   "data/schema.yaml#chunk-0000": 1.0,
+   "src/Main.java#chunk-0001": 8.0,
+   "src/crlf_test.py#chunk-0001": 8.0,
+   "src/crlf_test.py#chunk-0002": 8.0,
+   "src/crlf_twin_lf.py#chunk-0001": 8.0,
+   "src/crlf_twin_lf.py#chunk-0002": 8.0,
+   "src/huge_function.py#chunk-0000": 9.0,
+   "src/huge_function.py#chunk-0001": 8.0,
+   "src/huge_function.py#chunk-0002": 8.0,
+   "src/instance_lifecycle.py#chunk-0000": 8.35,
+   "src/instance_lifecycle.py#chunk-0001": 8.35,
+   "src/lib.rs#chunk-0000": 8.0,
+   "src/lib.rs#chunk-0002": 8.0,
+   "src/plain_code.py#chunk-0001": 10.0,
+   "src/plain_code.py#chunk-0002": 9.0,
+   "src/unicode_test.py#chunk-0000": 8.0,
+   "src/worker_secrets.py#chunk-0001": 8.0
+  },
+  "semantic_expansions": [
+   "cuda",
+   "vram"
+  ],
+  "terms": [
+   "control",
+   "files",
+   "gpu",
+   "instances",
+   "lifecycle"
+  ],
+  "top10_chunk_ids": [
+   "src/plain_code.py#chunk-0001",
+   "src/huge_function.py#chunk-0000",
+   "src/plain_code.py#chunk-0002",
+   "src/instance_lifecycle.py#chunk-0000",
+   "src/instance_lifecycle.py#chunk-0001",
+   "src/Main.java#chunk-0001",
+   "src/crlf_test.py#chunk-0001",
+   "src/crlf_test.py#chunk-0002",
+   "src/crlf_twin_lf.py#chunk-0001",
+   "src/crlf_twin_lf.py#chunk-0002"
+  ]
+ },
+ "Which files handle paid compute cleanup after jobs?": {
+  "chunk_scores": {
+   "data/config.json#chunk-0000": 1.55,
+   "data/schema.yaml#chunk-0000": 1.0,
+   "src/Main.java#chunk-0001": 4.0,
+   "src/app.py#chunk-0007": 4.0,
+   "src/components/App.tsx#chunk-0003": 4.0,
+   "src/crlf_test.py#chunk-0001": 4.0,
+   "src/crlf_test.py#chunk-0002": 4.0,
+   "src/crlf_twin_lf.py#chunk-0001": 4.0,
+   "src/crlf_twin_lf.py#chunk-0002": 4.0,
+   "src/huge_function.py#chunk-0000": 6.0,
+   "src/huge_function.py#chunk-0001": 4.0,
+   "src/huge_function.py#chunk-0002": 4.0,
+   "src/huge_function.py#chunk-0003": 4.0,
+   "src/instance_lifecycle.py#chunk-0000": 4.55,
+   "src/instance_lifecycle.py#chunk-0001": 6.55,
+   "src/job_outputs.py#chunk-0000": 3.55,
+   "src/lib.rs#chunk-0000": 5.0,
+   "src/lib.rs#chunk-0002": 4.0,
+   "src/plain_code.py#chunk-0001": 6.0,
+   "src/plain_code.py#chunk-0002": 4.0,
+   "src/server.js#chunk-0000": 4.0,
+   "src/server.js#chunk-0001": 4.0,
+   "src/unicode_test.py#chunk-0000": 5.0
+  },
+  "semantic_expansions": [
+   "delete",
+   "release"
+  ],
+  "terms": [
+   "cleanup",
+   "compute",
+   "files",
+   "handle",
+   "jobs",
+   "paid"
+  ],
+  "top10_chunk_ids": [
+   "src/instance_lifecycle.py#chunk-0001",
+   "src/huge_function.py#chunk-0000",
+   "src/plain_code.py#chunk-0001",
+   "src/lib.rs#chunk-0000",
+   "src/unicode_test.py#chunk-0000",
+   "src/instance_lifecycle.py#chunk-0000",
+   "src/Main.java#chunk-0001",
+   "src/app.py#chunk-0007",
+   "src/components/App.tsx#chunk-0003",
+   "src/crlf_test.py#chunk-0001"
+  ]
+ }
+}

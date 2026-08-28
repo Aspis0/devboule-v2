@@ -12,3 +12,11 @@
 *.png    binary
 *.jpg    binary
 *.pdf    binary
+
+# The golden corpus contains two files whose *bytes* are the fixture: a CRLF
+# file and its LF twin, which must chunk identically to prove the pipeline
+# normalises line endings. `* text=auto eol=lf` above would rewrite both to LF
+# on checkout, leaving two identical files and a test that compares CRLF
+# handling against nothing. Keep git away from them.
+crates/oracle-core/golden/corpus/src/crlf_test.py     -text
+crates/oracle-core/golden/corpus/src/crlf_twin_lf.py  -text

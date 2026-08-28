@@ -1,0 +1,62 @@
+[package]
+name = "oracle-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "oracle_core"
+
+[[bin]]
+name = "oracle-cli"
+path = "src/bin/oracle-cli.rs"
+
+[dependencies]
+fastembed = { version = "5", features = ["qwen3"] }
+candle-core = "0.10.2"
+lancedb = "0.37"
+arrow-array = "58.3"
+arrow-schema = "58.3"
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Was 0.32 in the source crate. Bumped to the workspace pin so libsqlite3-sys
+# unifies with devboule-daemon: Cargo allows only one `links = "sqlite3"` in
+# the lockfile. See workspace Cargo.lock rusqlite 0.40.2 / libsqlite3-sys 0.38.2.
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+blake2 = "0.10"
+regex = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+tokenizers = "0.21"
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+sysinfo = "0.33"
+sha2 = "0.10"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Metal/CoreML are macOS-only — other targets must never see them.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "api-24", "coreml"] }
+# sysctlbyname for kern.memorystatus_* pressure probes (no root required).
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# DirectML runs on any DX12 GPU (AMD/Intel/NVIDIA) with no CUDA toolkit, so it is
+# the portable Windows GPU EP; it is Windows-only and must not leak to other targets.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "api-24", "directml"] }
+
+[target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
+# Linux/other: CPU EP only (no GPU EP feature enabled).
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+metal = ["candle-core/metal", "fastembed/metal"]
+
+# [patch.crates-io] for esaxx-rs lives in the workspace root Cargo.toml.
+# Cargo ignores [patch] tables in workspace members. The vendored crate
+# (Windows dynamic CRT /MD) is at vendor/esaxx-rs-0.1.10.

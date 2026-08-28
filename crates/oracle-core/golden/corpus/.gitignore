@@ -1,0 +1,7 @@
+# Fixture, not repo hygiene. `build/` and `excluded/` exist so the collector
+# is tested against a real .gitignore; `.oracleignore` then rescues
+# `!build/keep.md` and `!excluded/reincluded/kept.md`. Those two files are
+# force-tracked (`git add -f`). Do not "fix" this list — without it the
+# ignore-semantics golden tests are testing nothing.
+build/
+excluded/
