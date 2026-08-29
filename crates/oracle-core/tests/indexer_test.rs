@@ -6,7 +6,9 @@
 
 use oracle_core::config::EMBED_DIMS;
 use oracle_core::embed::CancelFlag;
-use oracle_core::ingest::indexer::{self, IndexStatus, IndexerConfig, TextEmbedder};
+use oracle_core::ingest::indexer::{
+    self, EmbeddingRecipe, IndexStatus, IndexerConfig, TextEmbedder,
+};
 use oracle_core::store::lance::LanceStore;
 use oracle_core::store::manifest::{load_manifest, manifest_files_for_root};
 use oracle_core::store::sqlite::SqliteStore;
@@ -23,6 +25,7 @@ struct FakeEmbedder {
     call_count: AtomicUsize,
     model_id: String,
     dims: usize,
+    recipe_variant: String,
     /// When `Some(n)`, cancel after the n-th embed call.
     cancel_after: Option<usize>,
 }
@@ -33,10 +36,15 @@ impl FakeEmbedder {
     }
 
     fn with_model(model_id: &str, dims: usize) -> Self {
+        Self::with_recipe_variant(model_id, dims, "default")
+    }
+
+    fn with_recipe_variant(model_id: &str, dims: usize, recipe_variant: &str) -> Self {
         Self {
             call_count: AtomicUsize::new(0),
             model_id: model_id.to_string(),
             dims,
+            recipe_variant: recipe_variant.to_string(),
             cancel_after: None,
         }
     }
@@ -46,6 +54,7 @@ impl FakeEmbedder {
             call_count: AtomicUsize::new(0),
             model_id: "Qwen3-test".to_string(),
             dims: EMBED_DIMS,
+            recipe_variant: "default".to_string(),
             cancel_after: Some(n),
         }
     }
@@ -62,6 +71,26 @@ impl TextEmbedder for FakeEmbedder {
 
     fn dims(&self) -> anyhow::Result<usize> {
         Ok(self.dims)
+    }
+
+    fn embedding_recipe(&self) -> anyhow::Result<String> {
+        Ok(EmbeddingRecipe {
+            model_id: self.model_id.clone(),
+            dims: self.dims,
+            pooling: "last_token".to_string(),
+            normalize: true,
+            uses_semantic_prefix: true,
+            query_instruction: None,
+            windowing: format!("fake-{}", self.recipe_variant),
+            window_overlap: 256,
+            window_overlap_unit: "tokens".to_string(),
+            max_seq_tokens: 2560,
+            window_safety_reserve: 8,
+            window_safety_reserve_unit: "tokens".to_string(),
+            chunk_profile: oracle_core::config::active_chunk_profile_version(None),
+            chunk_geometry: oracle_core::ingest::chunking::chunk_geometry_fingerprint(),
+        }
+        .fingerprint())
     }
 
     fn embed(
@@ -362,9 +391,105 @@ async fn test_model_change_reembeds_with_new_dimensions() {
         .lock()
         .unwrap()
         .iter()
-        .any(|message| message.contains("reason=model_changed")
-            && message.contains("old_model=model-a")
-            && message.contains("new_model=model-b")));
+        .any(|message| message.contains("reason=recipe_changed")
+            && message.contains("old_recipe=")
+            && message.contains("new_recipe=")));
+}
+
+#[tokio::test]
+async fn test_recipe_change_reembeds_even_when_model_and_dims_match() {
+    let world = TestWorld::new();
+    let sqlite = world.sqlite();
+    let vectors = world.vectors();
+    let cancel = CancelFlag::new();
+    let first = FakeEmbedder::with_recipe_variant("same-model", 384, "byte-window");
+
+    indexer::index_file_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        &first,
+        &cancel,
+        &world.config(),
+        None,
+    )
+    .await
+    .unwrap();
+    let first_run_calls = first.calls();
+    let first_manifest = load_manifest(&world.manifest_path);
+    let first_recipe = first_manifest.embedding_recipe.clone().unwrap();
+    let orphan_id = "recipe-change-orphan".to_string();
+    vectors
+        .replace_ids(
+            &[],
+            &[oracle_core::store::lance::LanceRow {
+                id: orphan_id.clone(),
+                label: "orphan".to_string(),
+                area: "FileChunk".to_string(),
+                cluster_semantic: "text".to_string(),
+                vector: vec![0.1; 384],
+            }],
+        )
+        .await
+        .unwrap();
+    assert!(vectors
+        .read_all()
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.id == orphan_id));
+
+    let second = FakeEmbedder::with_recipe_variant("same-model", 384, "token-window");
+    let messages = Arc::new(Mutex::new(Vec::<String>::new()));
+    let messages_for_progress = Arc::clone(&messages);
+    let progress = move |message: &str| {
+        messages_for_progress
+            .lock()
+            .unwrap()
+            .push(message.to_string());
+    };
+    let result = indexer::index_file_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        &second,
+        &cancel,
+        &world.config(),
+        Some(&progress),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        result.processed, 4,
+        "recipe change must re-index every file"
+    );
+    assert!(second.calls() > 0);
+    assert!(messages
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|message| message.contains("reason=recipe_changed")));
+    let second_manifest = load_manifest(&world.manifest_path);
+    assert_ne!(
+        second_manifest.embedding_recipe.as_deref(),
+        Some(first_recipe.as_str())
+    );
+    assert_eq!(second_manifest.model_id.as_deref(), Some("same-model"));
+    assert_eq!(second_manifest.dims, Some(384));
+    assert_eq!(
+        vectors.count().await.unwrap(),
+        sqlite.chunk_count().unwrap()
+    );
+    assert!(!vectors
+        .read_all()
+        .await
+        .unwrap()
+        .iter()
+        .any(|row| row.id == orphan_id));
+    assert!(first_run_calls > 0);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

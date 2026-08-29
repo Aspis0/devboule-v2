@@ -56,6 +56,11 @@ pub struct Manifest {
     /// Width of the vectors produced by `model_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dims: Option<usize>,
+    /// Full embedding/chunking recipe identity for the vectors in this index.
+    /// Missing on manifests written before recipe tracking was introduced and
+    /// therefore treated as incompatible by the indexer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_recipe: Option<String>,
     #[serde(default)]
     pub root: Option<String>,
     #[serde(default)]

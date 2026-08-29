@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use serde::Serialize;
+
 use super::ast_chunker;
 
 // ── Configuration constants (defaults, mirroring oracle/config.py) ───────────
@@ -17,6 +19,42 @@ pub const CHUNK_STRUCTURED_OVERLAP_CHARS: usize = 900;
 pub const CHUNK_CODE_MAX_CHARS: usize = 2500;
 pub const CHUNK_CODE_OVERLAP_CHARS: usize = 400;
 pub const CHUNK_MAX_FILE_BYTES: u64 = 1_200_000;
+
+/// Stable description of the production chunk geometry.
+///
+/// `build_chunks_for_file` deliberately recomputes the overlap with the
+/// hard-split rule below, so record the effective overlaps rather than the
+/// legacy constants that the function ignores. Keeping every file-class
+/// geometry here makes a future global geometry change invalidate the whole
+/// embedding index instead of mixing chunk generations.
+pub fn chunk_geometry_fingerprint() -> String {
+    #[derive(Serialize)]
+    struct Geometry {
+        default_max_chars: usize,
+        default_overlap_chars: usize,
+        docs_max_chars: usize,
+        docs_overlap_chars: usize,
+        structured_max_chars: usize,
+        structured_overlap_chars: usize,
+        code_max_chars: usize,
+        code_overlap_chars: usize,
+        hard_split_overlap_rule: &'static str,
+    }
+
+    let effective_overlap = |max_chars: usize| (max_chars / 8).max(200);
+    serde_json::to_string(&Geometry {
+        default_max_chars: CHUNK_MAX_CHARS,
+        default_overlap_chars: effective_overlap(CHUNK_MAX_CHARS),
+        docs_max_chars: CHUNK_DOC_MAX_CHARS,
+        docs_overlap_chars: effective_overlap(CHUNK_DOC_MAX_CHARS),
+        structured_max_chars: CHUNK_STRUCTURED_MAX_CHARS,
+        structured_overlap_chars: effective_overlap(CHUNK_STRUCTURED_MAX_CHARS),
+        code_max_chars: CHUNK_CODE_MAX_CHARS,
+        code_overlap_chars: effective_overlap(CHUNK_CODE_MAX_CHARS),
+        hard_split_overlap_rule: "max(max_chars/8,200)",
+    })
+    .expect("chunk geometry is always serializable")
+}
 
 // ── Extension sets ───────────────────────────────────────────────────────────
 

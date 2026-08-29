@@ -89,6 +89,35 @@ const LOW_MEMORY_RETRY_CYCLES: usize = 6;
 // TextEmbedder trait — decoupled from the concrete backend
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// All configuration that can change the vectors stored by the chunk index.
+///
+/// The serialized form is stored in the manifest as the recipe fingerprint.
+/// Keep this a plain, deterministically ordered struct: a readable recipe is
+/// more useful during an invalidation audit than an opaque digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EmbeddingRecipe {
+    pub model_id: String,
+    pub dims: usize,
+    pub pooling: String,
+    pub normalize: bool,
+    pub uses_semantic_prefix: bool,
+    pub query_instruction: Option<String>,
+    pub windowing: String,
+    pub window_overlap: usize,
+    pub window_overlap_unit: String,
+    pub max_seq_tokens: usize,
+    pub window_safety_reserve: usize,
+    pub window_safety_reserve_unit: String,
+    pub chunk_profile: String,
+    pub chunk_geometry: String,
+}
+
+impl EmbeddingRecipe {
+    pub fn fingerprint(&self) -> String {
+        serde_json::to_string(self).expect("embedding recipe is always serializable")
+    }
+}
+
 /// Minimal trait for text embedding, decoupled from the concrete backend.
 ///
 /// Implemented by [`crate::embed::EmbedderPool`] for production and by a
@@ -110,6 +139,13 @@ pub trait TextEmbedder: Send + Sync {
     fn uses_semantic_prefix(&self) -> Result<bool> {
         Ok(true)
     }
+    /// Optional publisher-declared instruction, applied only to query text.
+    fn query_instruction(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
+    /// Stable identity of every embedding and chunking choice that affects
+    /// the vectors in the index.
+    fn embedding_recipe(&self) -> Result<String>;
 }
 
 /// Thin adapter: delegate to `EmbedderPool::embed`.
@@ -138,6 +174,64 @@ impl TextEmbedder for crate::embed::EmbedderPool {
                 crate::embed::DeclaredModelConfig::load(model_dir).map(|d| d.uses_semantic_prefix)
             }
         }
+    }
+
+    fn query_instruction(&self) -> Result<Option<String>> {
+        match self.backend() {
+            crate::embed::BackendChoice::Candle { .. } => Ok(None),
+            crate::embed::BackendChoice::Ort { model_dir, .. } => {
+                crate::embed::DeclaredModelConfig::load(model_dir).map(|d| d.query_instruction)
+            }
+        }
+    }
+
+    fn embedding_recipe(&self) -> Result<String> {
+        let (model_id, dims) = self.model_metadata()?;
+        let (pooling, normalize, windowing, overlap, overlap_unit, max_seq, reserve, reserve_unit) =
+            match self.backend() {
+                crate::embed::BackendChoice::Candle { .. } => (
+                    "last_token".to_string(),
+                    true,
+                    "byte".to_string(),
+                    crate::embed::resolve_embed_window_overlap_bytes(),
+                    "bytes".to_string(),
+                    crate::embed::resolve_embed_max_seq_tokens(),
+                    crate::embed::BYTE_FALLBACK_SPECIAL_TOKEN_RESERVE,
+                    "bytes".to_string(),
+                ),
+                crate::embed::BackendChoice::Ort { model_dir, .. } => {
+                    let descriptor = crate::embed::DeclaredModelConfig::load(model_dir)?;
+                    (
+                        descriptor.pooling.as_str().to_string(),
+                        descriptor.normalize,
+                        "token".to_string(),
+                        crate::embed::resolve_embed_window_overlap_tokens(
+                            descriptor.window_overlap_tokens,
+                        ),
+                        "tokens".to_string(),
+                        crate::embed::resolve_embed_max_seq_tokens_for(descriptor.max_seq_tokens),
+                        8,
+                        "tokens".to_string(),
+                    )
+                }
+            };
+        let recipe = EmbeddingRecipe {
+            model_id,
+            dims,
+            pooling,
+            normalize,
+            uses_semantic_prefix: self.uses_semantic_prefix()?,
+            query_instruction: self.query_instruction()?,
+            windowing,
+            window_overlap: overlap,
+            window_overlap_unit: overlap_unit,
+            max_seq_tokens: max_seq,
+            window_safety_reserve: reserve,
+            window_safety_reserve_unit: reserve_unit,
+            chunk_profile: active_chunk_profile_version(None),
+            chunk_geometry: chunking::chunk_geometry_fingerprint(),
+        };
+        Ok(recipe.fingerprint())
     }
 }
 
@@ -1215,6 +1309,7 @@ pub async fn index_file_chunks(
     if embedding_dims == 0 {
         anyhow::bail!("embedding model `{model_id}` declares zero dimensions");
     }
+    let embedding_recipe = embedder.embedding_recipe()?;
 
     // file_needs_index is vector-unaware (manifest+sqlite text only). When Lance
     // is empty (failed/paused dense run, wiped chunks.lancedb) every file would
@@ -1229,19 +1324,16 @@ pub async fn index_file_chunks(
     } else {
         None
     };
-    let model_changed = has_existing_index
-        && (manifest.model_id.as_deref() != Some(model_id.as_str())
-            || manifest.dims != Some(embedding_dims)
+    let recipe_changed = has_existing_index
+        && (manifest.embedding_recipe.as_deref() != Some(embedding_recipe.as_str())
             || stored_dims.is_some_and(|dims| dims != embedding_dims));
 
-    if model_changed {
+    if recipe_changed {
         log_progress(
             progress,
             &format!(
-                "chunk-index re-embed-all reason=model_changed old_model={} old_dims={:?} new_model={} new_dims={embedding_dims}",
-                manifest.model_id.as_deref().unwrap_or("<missing>"),
-                manifest.dims.or(stored_dims),
-                model_id,
+                "chunk-index re-embed-all reason=recipe_changed old_recipe={} new_recipe={embedding_recipe}",
+                manifest.embedding_recipe.as_deref().unwrap_or("<missing>"),
             ),
         );
         chunk_vectors.reset_for_dims(embedding_dims).await?;
@@ -1253,7 +1345,7 @@ pub async fn index_file_chunks(
             .filter(|path| {
                 config.force
                     || vector_count == 0
-                    || model_changed
+                    || recipe_changed
                     || manifest::file_needs_index(path, &root, &manifest_files, sqlite)
                         .unwrap_or(true)
             })
@@ -1643,6 +1735,7 @@ pub async fn index_file_chunks(
     if status == IndexStatus::Complete {
         manifest.model_id = Some(model_id);
         manifest.dims = Some(embedding_dims);
+        manifest.embedding_recipe = Some(embedding_recipe);
     }
     sync_legacy_manifest_root(&mut manifest, &root);
     save_manifest(&manifest_path, &manifest)?;

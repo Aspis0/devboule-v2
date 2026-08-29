@@ -42,31 +42,28 @@ impl CancelFlag {
 
 /// Hard cap on tokens per forward-pass sequence.
 ///
-/// Long texts are **not** truncated: they are split into overlapping byte
-/// windows of at most [`EMBED_WINDOW_BYTES`], embedded, then mean-pooled.
+/// Long texts are **not** truncated: token-aware backends split them into
+/// overlapping token windows and byte-only backends use the documented fallback
+/// below, then embed and mean-pool the windows.
 /// This cap only bounds a single window's forward pass. Override via
 /// `ORACLE_EMBED_MAX_SEQ_TOKENS`.
 pub const EMBED_MAX_SEQ_TOKENS: usize = 2560;
 
-/// Headroom reserved for tokenizer special tokens (EOS from the post-processor
-/// plus a small margin for any future post-processor additions).
-///
-/// Byte-level BPE guarantees `n_content_tokens ≤ n_bytes`, but the tokenizer
-/// appends EOS (and possibly more) **after** that bound. Without this reserve,
-/// a pathological window of `EMBED_MAX_SEQ_TOKENS` one-byte tokens becomes
-/// `EMBED_MAX_SEQ_TOKENS + 1` after EOS and the safety-net truncation drops a
-/// real token.
-pub const EMBED_SPECIAL_TOKEN_RESERVE: usize = 4;
+/// Headroom reserved by the byte-only fallback. This is deliberately not used
+/// by the ONNX path: ONNX has the real tokenizer and measures its actual special
+/// tokens at load time. The fallback has no tokenizer object available at this
+/// layer, so it keeps a conservative reserve and may over-split; a tokenizer
+/// aware backend should use token-space windowing instead.
+pub const BYTE_FALLBACK_SPECIAL_TOKEN_RESERVE: usize = 4;
 
-/// Max window size in **bytes** (not chars).
+/// Default max window size in **bytes** (not chars) for the byte-only fallback.
 ///
-/// Qwen3's tokenizer is byte-level BPE, so every content token consumes ≥1 byte
-/// and `n_content_tokens ≤ n_bytes`. Keeping the window at most
-/// `EMBED_MAX_SEQ_TOKENS - EMBED_SPECIAL_TOKEN_RESERVE` bytes leaves room for
-/// EOS/specials so the model never truncates. Override via
+/// This is retained for Candle/fastembed, whose tokenizer is encapsulated inside
+/// the model object and is not available to this window planner. It is an
+/// approximation, not a model-wide tokenizer guarantee. Override via
 /// `ORACLE_EMBED_WINDOW_BYTES` (clamped at runtime — see
 /// [`resolve_embed_window_bytes`]).
-pub const EMBED_WINDOW_BYTES: usize = EMBED_MAX_SEQ_TOKENS - EMBED_SPECIAL_TOKEN_RESERVE;
+pub const EMBED_WINDOW_BYTES: usize = EMBED_MAX_SEQ_TOKENS - BYTE_FALLBACK_SPECIAL_TOKEN_RESERVE;
 
 /// Overlap between consecutive embed windows, in bytes (snapped to a UTF-8
 /// char boundary). Override via `ORACLE_EMBED_WINDOW_OVERLAP_BYTES`.
@@ -81,27 +78,31 @@ pub const DEFAULT_ATTENTION_BUDGET: usize = 7_000_000;
 
 /// Resolve max tokens per forward sequence (env override or [`EMBED_MAX_SEQ_TOKENS`]).
 pub fn resolve_embed_max_seq_tokens() -> usize {
+    resolve_embed_max_seq_tokens_for(EMBED_MAX_SEQ_TOKENS)
+}
+
+/// Resolve a model-specific maximum sequence length from the shared override.
+pub fn resolve_embed_max_seq_tokens_for(default: usize) -> usize {
     std::env::var("ORACLE_EMBED_MAX_SEQ_TOKENS")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(EMBED_MAX_SEQ_TOKENS)
+        .unwrap_or(default)
 }
 
-/// Pure resolve of the embed window size: honour a positive override, fall back
-/// to [`EMBED_WINDOW_BYTES`] on missing/zero/garbage, then **clamp** to
-/// `max_seq_tokens - EMBED_SPECIAL_TOKEN_RESERVE` so env overrides cannot
-/// reintroduce tokenizer truncation.
+/// Resolve the embed window size for a byte-only caller without a tokenizer.
+/// The result is **clamped** to the conservative fallback budget, so an
+/// override cannot make this approximation less safe.
 ///
 /// Returns `(effective_bytes, was_clamped)`.
 pub fn effective_embed_window_bytes(
     requested: Option<usize>,
     max_seq_tokens: usize,
 ) -> (usize, bool) {
-    let req = requested.filter(|&n| n > 0).unwrap_or(EMBED_WINDOW_BYTES);
     let cap = max_seq_tokens
-        .saturating_sub(EMBED_SPECIAL_TOKEN_RESERVE)
+        .saturating_sub(BYTE_FALLBACK_SPECIAL_TOKEN_RESERVE)
         .max(1);
+    let req = requested.filter(|&n| n > 0).unwrap_or(cap);
     if req > cap {
         (cap, true)
     } else {
@@ -109,11 +110,11 @@ pub fn effective_embed_window_bytes(
     }
 }
 
-/// Resolve window size in bytes (env override or [`EMBED_WINDOW_BYTES`]).
+/// Resolve the default/legacy window size in bytes.
 ///
-/// Always clamped to `resolve_embed_max_seq_tokens() - EMBED_SPECIAL_TOKEN_RESERVE`
-/// so an oversized `ORACLE_EMBED_WINDOW_BYTES` cannot reintroduce silent
-/// truncation. Logs once at WARN when a requested override is clamped.
+/// It is always clamped to the byte-only fallback budget, so an oversized
+/// `ORACLE_EMBED_WINDOW_BYTES` cannot reintroduce silent truncation in that
+/// approximation. Logs once at WARN when a requested override is clamped.
 pub fn resolve_embed_window_bytes() -> usize {
     let max_seq = resolve_embed_max_seq_tokens();
     let requested = std::env::var("ORACLE_EMBED_WINDOW_BYTES")
@@ -128,7 +129,7 @@ pub fn resolve_embed_window_bytes() -> usize {
             eprintln!(
                 "[oracle-embed] WARN ORACLE_EMBED_WINDOW_BYTES clamped \
                  requested={req} effective={effective} max_seq_tokens={max_seq} \
-                 special_token_reserve={EMBED_SPECIAL_TOKEN_RESERVE}"
+                 byte_fallback_special_token_reserve={BYTE_FALLBACK_SPECIAL_TOKEN_RESERVE}"
             );
         });
     }
@@ -142,6 +143,17 @@ pub fn resolve_embed_window_overlap_bytes() -> usize {
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)
         .unwrap_or(EMBED_WINDOW_OVERLAP_BYTES)
+}
+
+/// Resolve overlap for token-aware ONNX windowing. Only the token-specific
+/// environment variable is accepted here; the byte variable belongs solely to
+/// byte-window fallbacks and must never silently change units.
+pub fn resolve_embed_window_overlap_tokens(default: usize) -> usize {
+    std::env::var("ORACLE_EMBED_WINDOW_OVERLAP_TOKENS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(default)
 }
 
 /// Resolve attention budget (env override or [`DEFAULT_ATTENTION_BUDGET`]).
@@ -252,8 +264,10 @@ fn prefer_soft_cut(s: &str, prefer_from: usize, end: usize) -> Option<usize> {
 /// cut on UTF-8 char boundaries. Prefer newline/space boundaries in the last
 /// ~15% of the window. Never emits an empty window; always advances ≥1 byte.
 ///
-/// Windows are measured in bytes (not chars) so that with a byte-level BPE
-/// tokenizer, `n_tokens ≤ window_bytes` structurally — the model cannot truncate.
+/// This helper is for byte-only fallbacks. It must not be used by a backend
+/// that has a tokenizer: byte length is only an approximation of token count
+/// for WordPiece/BPE tokenizers, even though it is safe for some byte-level
+/// tokenizers.
 pub fn window_text<'a>(
     text: &'a str,
     window_bytes: usize,
@@ -438,23 +452,24 @@ pub fn pool_window_vectors(window_vectors: &[Vec<f32>], counts: &[usize]) -> Vec
 
 /// Greedy pack of windows into forward-pass groups under an attention budget.
 ///
-/// Token estimate for each window is its **byte length** (proven upper bound
-/// for byte-level BPE). A full-size window under the default budget travels
-/// alone; short windows still batch together.
+/// The caller supplies the sequence-token count for each window. Token-aware
+/// backends pass exact tokenizer counts; byte-only fallbacks may pass their
+/// conservative byte-length estimate. A full-size window under the default
+/// budget travels alone; short windows still batch together.
 ///
 /// Returns half-open `[start, end)` index ranges into the window list.
 pub fn pack_windows_for_attention(
-    window_byte_lens: &[usize],
+    window_token_lens: &[usize],
     budget: usize,
 ) -> Vec<std::ops::Range<usize>> {
     let budget = budget.max(1);
     let mut groups = Vec::new();
     let mut i = 0;
-    while i < window_byte_lens.len() {
+    while i < window_token_lens.len() {
         let mut j = i;
         let mut max_seq = 0usize;
-        while j < window_byte_lens.len() {
-            let seq = window_byte_lens[j].max(1);
+        while j < window_token_lens.len() {
+            let seq = window_token_lens[j].max(1);
             let new_max = max_seq.max(seq);
             let n = j - i + 1;
             let cost = attention_cost(n, new_max);
@@ -525,20 +540,18 @@ mod attention_tests {
 
     #[test]
     fn window_bytes_tied_to_max_seq_tokens() {
-        // EOS (tokenizer post-processor) is appended on top of content tokens.
-        // Byte-level BPE gives n_content ≤ n_bytes; without the special-token
-        // reserve a full window would become max_seq+1 and truncation would
-        // silently drop the last real token. Do NOT "simplify" this back to
-        // EMBED_WINDOW_BYTES == EMBED_MAX_SEQ_TOKENS.
+        // The byte-only fallback keeps a conservative reserve because it does
+        // not have access to the model tokenizer. Token-aware ONNX windowing
+        // measures the actual special-token count instead.
         const {
             assert!(
-                EMBED_WINDOW_BYTES + EMBED_SPECIAL_TOKEN_RESERVE <= EMBED_MAX_SEQ_TOKENS,
-                "window + special-token reserve must be ≤ max seq tokens"
+                EMBED_WINDOW_BYTES + BYTE_FALLBACK_SPECIAL_TOKEN_RESERVE <= EMBED_MAX_SEQ_TOKENS,
+                "fallback window + reserve must be ≤ max seq tokens"
             );
         }
         assert_eq!(
             EMBED_WINDOW_BYTES,
-            EMBED_MAX_SEQ_TOKENS - EMBED_SPECIAL_TOKEN_RESERVE
+            EMBED_MAX_SEQ_TOKENS - BYTE_FALLBACK_SPECIAL_TOKEN_RESERVE
         );
     }
 
@@ -548,7 +561,7 @@ mod attention_tests {
         let max_seq = 2560;
         let (eff, clamped) = effective_embed_window_bytes(Some(8000), max_seq);
         assert!(clamped);
-        assert_eq!(eff, max_seq - EMBED_SPECIAL_TOKEN_RESERVE);
+        assert_eq!(eff, max_seq - BYTE_FALLBACK_SPECIAL_TOKEN_RESERVE);
     }
 
     #[test]

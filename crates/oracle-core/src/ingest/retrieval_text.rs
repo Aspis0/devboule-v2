@@ -576,17 +576,35 @@ pub fn query_embedding_text_for_model(
     profile: Option<&str>,
     uses_semantic_prefix: bool,
 ) -> String {
-    if !uses_semantic_prefix || !semantic_prefix_enabled(profile) {
-        return query.to_string();
+    query_embedding_text_for_model_with_instruction(query, profile, uses_semantic_prefix, None)
+}
+
+/// Build model-side query text, optionally prepending a publisher-declared
+/// query instruction. The instruction is deliberately accepted only here;
+/// chunk text has no corresponding instruction path.
+pub fn query_embedding_text_for_model_with_instruction(
+    query: &str,
+    profile: Option<&str>,
+    uses_semantic_prefix: bool,
+    query_instruction: Option<&str>,
+) -> String {
+    let model_query = if !uses_semantic_prefix || !semantic_prefix_enabled(profile) {
+        query.to_string()
+    } else {
+        let domains = classify_domains("", query);
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(EMBED_TASK.to_string());
+        lines.push(format!("QUERY: {}", query));
+        if !domains.is_empty() {
+            lines.push(format!("QUERY_DOMAIN_TAGS: {}", domains.join(", ")));
+        }
+        lines.join("\n")
+    };
+
+    match query_instruction {
+        Some(instruction) => format!("{instruction}{model_query}"),
+        None => model_query,
     }
-    let domains = classify_domains("", query);
-    let mut lines: Vec<String> = Vec::new();
-    lines.push(EMBED_TASK.to_string());
-    lines.push(format!("QUERY: {}", query));
-    if !domains.is_empty() {
-        lines.push(format!("QUERY_DOMAIN_TAGS: {}", domains.join(", ")));
-    }
-    lines.join("\n")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -653,5 +671,30 @@ mod tests {
             chunk_embedding_text(&chunk, Some("semantic-prefix-v2")),
             "Qwen3 path must stay identical to the ungated function"
         );
+    }
+
+    #[test]
+    fn query_instruction_is_applied_to_query_but_never_to_chunk() {
+        let instruction = "Represent this sentence for searching relevant passages: ";
+        let query = "where is retrieval configured?";
+        assert_eq!(
+            query_embedding_text_for_model_with_instruction(query, None, false, Some(instruction),),
+            format!("{instruction}{query}")
+        );
+
+        let chunk = sample_chunk();
+        let chunk_text = chunk_embedding_text_for_model(&chunk, None, false);
+        assert_eq!(chunk_text, "src/auth.rs\nfn login() {}");
+        assert!(!chunk_text.contains(instruction));
+    }
+
+    #[test]
+    fn query_without_instruction_is_the_legacy_text() {
+        let query = "where is retrieval configured?";
+        assert_eq!(
+            query_embedding_text_for_model_with_instruction(query, None, false, None),
+            query
+        );
+        assert_eq!(query_embedding_text_for_model(query, None, false), query);
     }
 }

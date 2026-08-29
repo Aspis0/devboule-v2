@@ -32,7 +32,13 @@ pub struct OnnxEmbedder {
     session: Session,
     tokenizer: Tokenizer,
     descriptor: ModelDescriptor,
+    special_token_count: usize,
 }
+
+/// Extra headroom used when a token window is cut from a larger encoding.
+/// Re-encoding a slice can produce a few boundary tokens that were merged in
+/// the full encoding, so leave room for those tokens before the model limit.
+const TOKEN_WINDOW_MARGIN: usize = 8;
 
 impl OnnxEmbedder {
     /// Load the graph + tokenizer from `model_dir` (int8 graph by default).
@@ -129,11 +135,26 @@ impl OnnxEmbedder {
             dims,
             kv_geometry,
         )?;
+        let special_token_count = tokenizer
+            .encode("", true)
+            .map_err(|e| anyhow::anyhow!("failed to measure tokenizer special tokens: {e}"))?
+            .get_ids()
+            .len();
+        let max_seq = max_seq_tokens_for(&descriptor);
+        if special_token_count >= max_seq {
+            bail!(
+                "model {} has {} special tokens but max_seq_tokens is {}",
+                descriptor.id,
+                special_token_count,
+                max_seq
+            );
+        }
 
         let embedder = OnnxEmbedder {
             session,
             tokenizer,
             descriptor,
+            special_token_count,
         };
         Ok((embedder, start.elapsed().as_millis()))
     }
@@ -142,18 +163,29 @@ impl OnnxEmbedder {
         &self.descriptor
     }
 
+    /// Exact number of special tokens added by this model tokenizer when
+    /// `add_special_tokens` is enabled.
+    pub fn special_token_count(&self) -> usize {
+        self.special_token_count
+    }
+
+    /// Effective sequence cap, including the process-wide override.
+    pub fn max_seq_tokens(&self) -> usize {
+        max_seq_tokens_for(&self.descriptor)
+    }
+
     /// Embed `texts` in chunks of `batch_size`.
     ///
     /// Pooling is last-real-token (right padding), matching the candle path,
     /// and each vector is L2-normalized.
     ///
-    /// Long texts are split into overlapping byte windows (see
-    /// [`crate::embed::window_text`]), each embedded, then mean-pooled so the
-    /// public API stays 1:1 with no text dropped. Tokenizer truncation is kept
-    /// as a safety net at [`crate::embed::resolve_embed_max_seq_tokens`] but
-    /// must never fire for well-formed windows (`n_tokens ≤ n_bytes` + specials).
-    /// Forward passes are split so `sub_batch.len() × seq_len²` never exceeds
-    /// the attention budget (token estimate for packing = window byte length).
+    /// Long texts are split into overlapping token windows using the loaded
+    /// tokenizer's offsets, each embedded, then mean-pooled so the public API
+    /// stays 1:1 with no text dropped. Tokenizer truncation remains a safety
+    /// net, but the token planner leaves an eight-token margin so it should
+    /// never fire for a well-formed window. Forward passes are split so
+    /// `sub_batch.len() × seq_len²` never exceeds the attention budget; packing
+    /// uses the real token counts, not byte lengths.
     ///
     /// `cancel` is checked between groups and sub-batches (same granularity as
     /// the candle path).
@@ -169,21 +201,15 @@ impl OnnxEmbedder {
         let batch_size = batch_size.max(1);
         let max_seq = max_seq_tokens_for(&self.descriptor);
         let budget = crate::embed::resolve_attention_budget();
-        let window_bytes = {
-            let requested = std::env::var("ORACLE_EMBED_WINDOW_BYTES")
-                .ok()
-                .and_then(|v| v.trim().parse::<usize>().ok());
-            crate::embed::effective_embed_window_bytes(requested, max_seq).0
-        };
-        let overlap = std::env::var("ORACLE_EMBED_WINDOW_OVERLAP_BYTES")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|&n| n > 0)
-            .unwrap_or(self.descriptor.window_overlap_bytes);
-
-        let (windows, counts) = crate::embed::expand_texts_to_windows(texts, window_bytes, overlap);
-        let window_lens: Vec<usize> = windows.iter().map(|w| w.len()).collect();
-        let groups = crate::embed::pack_windows_for_attention(&window_lens, budget);
+        // `Tokenizer` keeps truncation configuration between calls. Clear the
+        // forward-pass safety cap before planning, otherwise the second and
+        // later embed_batched calls could hide long texts from this planner.
+        self.tokenizer
+            .with_truncation(None)
+            .map_err(|e| anyhow::anyhow!("failed to clear tokenizer truncation: {e}"))?;
+        let (windows, counts, window_token_lens) =
+            self.expand_texts_to_token_windows(texts, max_seq)?;
+        let groups = crate::embed::pack_windows_for_attention(&window_token_lens, budget);
 
         // Right-pad to the longest sequence in each batch; hard-cap sequence length
         // as a safety net (windows should already be ≤ max_seq tokens).
@@ -216,6 +242,121 @@ impl OnnxEmbedder {
         }
 
         Ok(crate::embed::pool_window_vectors(&window_out, &counts))
+    }
+
+    /// Return the planned window count and the number whose re-encoded form
+    /// would still exceed `max_seq`. This is intentionally public for the
+    /// benchmark/reporting path; production embedding uses the same planner.
+    pub fn token_window_stats(&mut self, texts: &[String]) -> Result<(usize, usize)> {
+        self.tokenizer
+            .with_truncation(None)
+            .map_err(|e| anyhow::anyhow!("failed to clear tokenizer truncation: {e}"))?;
+        let max_seq = max_seq_tokens_for(&self.descriptor);
+        let (windows, _counts, token_lens) = self.expand_texts_to_token_windows(texts, max_seq)?;
+        Ok((
+            windows.len(),
+            token_lens.iter().filter(|&&n| n >= max_seq).count(),
+        ))
+    }
+
+    /// Tokenize once without special tokens, then derive UTF-8-safe text
+    /// slices from the tokenizer offsets. Short texts are kept byte-for-byte
+    /// intact so the common one-window path is unchanged.
+    fn expand_texts_to_token_windows(
+        &self,
+        texts: &[String],
+        max_seq: usize,
+    ) -> Result<(Vec<String>, Vec<usize>, Vec<usize>)> {
+        let mut windows = Vec::new();
+        let mut counts = Vec::with_capacity(texts.len());
+        let mut token_lens = Vec::new();
+        let overlap = crate::embed::resolve_embed_window_overlap_tokens(
+            self.descriptor.window_overlap_tokens,
+        );
+
+        for text in texts {
+            let encoding = self
+                .tokenizer
+                .encode(text.as_str(), false)
+                .map_err(|e| anyhow::anyhow!("failed to tokenize text for windowing: {e}"))?;
+            let n_tokens = encoding.get_ids().len();
+            // Leave equality to the split path: a sequence that exactly
+            // touches max_seq is treated as truncation-risk by the benchmark
+            // contract, even though the tokenizer's hard cap would retain it.
+            if n_tokens + self.special_token_count < max_seq {
+                windows.push(text.clone());
+                counts.push(1);
+                token_lens.push((n_tokens + self.special_token_count).max(1));
+                continue;
+            }
+
+            let capacity = max_seq
+                .saturating_sub(self.special_token_count)
+                .saturating_sub(TOKEN_WINDOW_MARGIN)
+                .max(1);
+            let overlap = overlap.min(capacity.saturating_sub(1));
+            let offsets = encoding.get_offsets();
+            if offsets.len() != n_tokens {
+                bail!(
+                    "tokenizer returned {} offsets for {} tokens while windowing model {}",
+                    offsets.len(),
+                    n_tokens,
+                    self.descriptor.id
+                );
+            }
+            let mut start = 0usize;
+            let mut per_text = 0usize;
+            while start < n_tokens {
+                let mut end = (start + capacity).min(n_tokens);
+                let (window_text, actual_tokens) = loop {
+                    let start_byte = offsets[start].0;
+                    let end_byte = offsets[end - 1].1;
+                    if start_byte >= end_byte
+                        || end_byte > text.len()
+                        || !text.is_char_boundary(start_byte)
+                        || !text.is_char_boundary(end_byte)
+                    {
+                        bail!(
+                            "tokenizer returned invalid UTF-8 offsets [{start_byte}, {end_byte}) for model {}",
+                            self.descriptor.id
+                        );
+                    }
+                    let window_text = text[start_byte..end_byte].to_string();
+                    let actual_tokens = self
+                        .tokenizer
+                        .encode(window_text.as_str(), true)
+                        .map_err(|e| anyhow::anyhow!("failed to validate token window: {e}"))?
+                        .get_ids()
+                        .len();
+                    if actual_tokens < max_seq || end == start + 1 {
+                        break (window_text, actual_tokens);
+                    }
+                    // BPE/WordPiece can expose a few extra boundary tokens
+                    // after slicing. Skip the number of token positions that
+                    // are known to be over the limit; the normal path still
+                    // uses the nominal eight-token margin.
+                    let excess = actual_tokens.saturating_sub(max_seq).saturating_add(1);
+                    end = end.saturating_sub(excess).max(start + 1);
+                };
+                if actual_tokens >= max_seq {
+                    bail!(
+                        "cannot fit a token window below max_seq_tokens={} for model {}",
+                        max_seq,
+                        self.descriptor.id
+                    );
+                }
+                windows.push(window_text);
+                token_lens.push(actual_tokens.max(1));
+                per_text += 1;
+                if end == n_tokens {
+                    break;
+                }
+                start = end.saturating_sub(overlap).max(start + 1);
+            }
+            counts.push(per_text.max(1));
+        }
+
+        Ok((windows, counts, token_lens))
     }
 
     /// Tokenize `texts`, then forward in sub-batches that satisfy the attention budget.

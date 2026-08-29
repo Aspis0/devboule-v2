@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 
 use crate::embed::{CancelFlag, EmbedderPool};
 use crate::ingest::indexer::TextEmbedder;
-use crate::ingest::retrieval_text::query_embedding_text_for_model;
+use crate::ingest::retrieval_text::query_embedding_text_for_model_with_instruction;
 use crate::query::engine::QueryEmbedder;
 
 /// Embeds queries with the same model and semantic-prefix mode used by the
@@ -13,6 +13,7 @@ pub struct PoolQueryEmbedder<'a> {
     pool: &'a EmbedderPool,
     cancel: &'a CancelFlag,
     uses_semantic_prefix: bool,
+    query_instruction: Option<String>,
     dims: usize,
 }
 
@@ -25,6 +26,8 @@ impl<'a> PoolQueryEmbedder<'a> {
     pub fn new(pool: &'a EmbedderPool, cancel: &'a CancelFlag) -> Result<Self> {
         let uses_semantic_prefix = <EmbedderPool as TextEmbedder>::uses_semantic_prefix(pool)
             .context("reading embedding model prefix configuration")?;
+        let query_instruction = <EmbedderPool as TextEmbedder>::query_instruction(pool)
+            .context("reading embedding model query instruction")?;
         let (_, dims) = pool
             .model_metadata()
             .context("reading embedding model metadata")?;
@@ -32,6 +35,7 @@ impl<'a> PoolQueryEmbedder<'a> {
             pool,
             cancel,
             uses_semantic_prefix,
+            query_instruction,
             dims,
         })
     }
@@ -43,7 +47,12 @@ impl QueryEmbedder for PoolQueryEmbedder<'_> {
     }
 
     fn embed_query(&self, text: &str, _dims: usize) -> Result<Vec<f32>> {
-        let model_text = query_embedding_text_for_model(text, None, self.uses_semantic_prefix);
+        let model_text = query_embedding_text_for_model_with_instruction(
+            text,
+            None,
+            self.uses_semantic_prefix,
+            self.query_instruction.as_deref(),
+        );
         let vectors = self
             .pool
             .embed(&[model_text], 8, self.cancel)

@@ -4,8 +4,9 @@
 //!
 //! - Graph facts (ONNX input names, KV geometry, `last_hidden_state` width) are
 //!   read from the session at load. No descriptor fields for them.
-//! - Silent facts (`pooling`, `uses_semantic_prefix`, ONNX filename) come from
-//!   `model_config.json` and are **required**. Missing pooling is a hard error.
+//! - Silent facts (`pooling`, `uses_semantic_prefix`, query instruction, ONNX filename) come from
+//!   `model_config.json`. Pooling and semantic-prefix mode are required;
+//!   `query_instruction` is optional. Missing pooling is a hard error.
 //!   A declared graph file that is not on disk is a hard error naming the path;
 //!   never pick another file from the folder.
 
@@ -25,6 +26,14 @@ pub enum PoolingStrategy {
 }
 
 impl PoolingStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LastToken => "last_token",
+            Self::Cls => "cls",
+            Self::Mean => "mean",
+        }
+    }
+
     fn parse(raw: &str, model_dir: &Path) -> Result<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "last_token" | "last-token" => Ok(Self::LastToken),
@@ -48,14 +57,21 @@ pub struct KvGeometry {
 }
 
 /// Fields declared in `model_config.json` (what the artifact is silent about).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeclaredModelConfig {
     pub id: String,
     pub pooling: PoolingStrategy,
     pub normalize: bool,
     pub uses_semantic_prefix: bool,
+    /// Optional publisher-declared instruction for query-only embedding.
+    pub query_instruction: Option<String>,
     pub max_seq_tokens: usize,
+    /// Legacy byte-window overlap retained for the non-tokenized fallback and
+    /// older benchmark metadata. ONNX windowing uses `window_overlap_tokens`.
     pub window_overlap_bytes: usize,
+    /// Overlap between tokenized ONNX windows. When absent, the legacy
+    /// `window_overlap_bytes` value is used as a migration fallback.
+    pub window_overlap_tokens: usize,
     pub onnx_graph: String,
     pub onnx_graph_fp32: Option<String>,
     pub tokenizer_file: String,
@@ -69,8 +85,10 @@ struct ModelConfigFile {
     pooling: Option<String>,
     normalize: Option<bool>,
     uses_semantic_prefix: Option<bool>,
+    query_instruction: Option<String>,
     max_seq_tokens: Option<usize>,
     window_overlap_bytes: Option<usize>,
+    window_overlap_tokens: Option<usize>,
     onnx_graph: Option<String>,
     onnx_graph_fp32: Option<String>,
     tokenizer_file: Option<String>,
@@ -86,11 +104,13 @@ pub struct ModelDescriptor {
     pub pooling: PoolingStrategy,
     pub normalize: bool,
     pub uses_semantic_prefix: bool,
+    pub query_instruction: Option<String>,
     pub has_kv_cache: bool,
     pub kv_geometry: Option<KvGeometry>,
     pub onnx_graph: String,
     pub tokenizer_file: String,
     pub window_overlap_bytes: usize,
+    pub window_overlap_tokens: usize,
     pub model_dir: PathBuf,
 }
 
@@ -101,6 +121,7 @@ pub const QWEN3_MODEL_CONFIG_JSON: &str = r#"{
   "uses_semantic_prefix": true,
   "max_seq_tokens": 2560,
   "window_overlap_bytes": 256,
+  "window_overlap_tokens": 256,
   "onnx_graph": "onnx/model_int8.onnx",
   "onnx_graph_fp32": "onnx/model.onnx",
   "tokenizer_file": "tokenizer.json",
@@ -113,8 +134,10 @@ pub const BGE_SMALL_MODEL_CONFIG_JSON: &str = r#"{
   "pooling": "cls",
   "normalize": true,
   "uses_semantic_prefix": false,
+  "query_instruction": "Represent this sentence for searching relevant passages: ",
   "max_seq_tokens": 512,
   "window_overlap_bytes": 82,
+  "window_overlap_tokens": 82,
   "onnx_graph": "onnx/model_quantized.onnx",
   "tokenizer_file": "tokenizer.json",
   "dims": 384
@@ -150,6 +173,12 @@ impl DeclaredModelConfig {
                 model_dir.display()
             )
         })?;
+        if uses_semantic_prefix && parsed.query_instruction.is_some() {
+            bail!(
+                "model_config.json at {} cannot combine `uses_semantic_prefix` with `query_instruction`",
+                model_dir.display()
+            );
+        }
         let onnx_graph = parsed
             .onnx_graph
             .filter(|s| !s.trim().is_empty())
@@ -182,16 +211,24 @@ impl DeclaredModelConfig {
             })?,
         };
 
+        let window_overlap_bytes = parsed
+            .window_overlap_bytes
+            .filter(|&n| n > 0)
+            .unwrap_or(super::EMBED_WINDOW_OVERLAP_BYTES);
+        let window_overlap_tokens = parsed
+            .window_overlap_tokens
+            .filter(|&n| n > 0)
+            .unwrap_or(window_overlap_bytes);
+
         Ok(Self {
             id,
             pooling,
             normalize: parsed.normalize.unwrap_or(true),
             uses_semantic_prefix,
+            query_instruction: parsed.query_instruction,
             max_seq_tokens,
-            window_overlap_bytes: parsed
-                .window_overlap_bytes
-                .filter(|&n| n > 0)
-                .unwrap_or(super::EMBED_WINDOW_OVERLAP_BYTES),
+            window_overlap_bytes,
+            window_overlap_tokens,
             onnx_graph,
             onnx_graph_fp32: parsed.onnx_graph_fp32.filter(|s| !s.trim().is_empty()),
             tokenizer_file: parsed
@@ -274,11 +311,13 @@ impl ModelDescriptor {
             pooling: declared.pooling,
             normalize: declared.normalize,
             uses_semantic_prefix: declared.uses_semantic_prefix,
+            query_instruction: declared.query_instruction,
             has_kv_cache,
             kv_geometry,
             onnx_graph: graph_rel,
             tokenizer_file: declared.tokenizer_file,
             window_overlap_bytes: declared.window_overlap_bytes,
+            window_overlap_tokens: declared.window_overlap_tokens,
             model_dir,
         })
     }
@@ -384,8 +423,10 @@ mod tests {
         assert_eq!(d.pooling, PoolingStrategy::LastToken);
         assert!(d.normalize);
         assert!(d.uses_semantic_prefix);
+        assert!(d.query_instruction.is_none());
         assert_eq!(d.max_seq_tokens, 2560);
         assert_eq!(d.window_overlap_bytes, 256);
+        assert_eq!(d.window_overlap_tokens, 256);
         assert_eq!(d.onnx_graph, "onnx/model_int8.onnx");
         assert_eq!(d.onnx_graph_fp32.as_deref(), Some("onnx/model.onnx"));
         assert_eq!(d.dims, Some(1024));
@@ -398,7 +439,12 @@ mod tests {
         let d = DeclaredModelConfig::load(tmp.path()).unwrap();
         assert_eq!(d.pooling, PoolingStrategy::Cls);
         assert!(!d.uses_semantic_prefix);
+        assert_eq!(
+            d.query_instruction.as_deref(),
+            Some("Represent this sentence for searching relevant passages: ")
+        );
         assert_eq!(d.max_seq_tokens, 512);
+        assert_eq!(d.window_overlap_tokens, 82);
         assert_eq!(d.onnx_graph, "onnx/model_quantized.onnx");
         assert_eq!(d.dims, Some(384));
         assert!(d.onnx_graph_fp32.is_none());
@@ -413,5 +459,24 @@ mod tests {
             msg.contains("model_config.json") && msg.contains(&tmp.path().display().to_string()),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn semantic_prefix_and_query_instruction_are_mutually_exclusive() {
+        let tmp = tempdir().unwrap();
+        write_cfg(
+            tmp.path(),
+            r#"{
+              "id": "x",
+              "pooling": "last_token",
+              "uses_semantic_prefix": true,
+              "query_instruction": "search: ",
+              "onnx_graph": "onnx/model.onnx",
+              "max_seq_tokens": 512
+            }"#,
+        );
+        let err = DeclaredModelConfig::load(tmp.path()).expect_err("configuration is forbidden");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("query_instruction"), "got: {msg}");
     }
 }

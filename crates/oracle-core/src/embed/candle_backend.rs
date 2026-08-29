@@ -54,14 +54,18 @@ impl Embedder for CandleEmbedder {
             return Ok(Vec::new());
         }
 
+        // fastembed owns Qwen3's tokenizer inside `Qwen3TextEmbedding` and
+        // does not expose it here. Keep the byte fallback for this backend;
+        // the ONNX backend, which has a loaded tokenizer, performs exact
+        // token-space windowing instead.
         let window_bytes = resolve_embed_window_bytes();
         let overlap = resolve_embed_window_overlap_bytes();
         let budget = resolve_attention_budget();
 
         // Window every text (no truncation). Public API stays 1:1 via pooling.
         let (windows, counts) = expand_texts_to_windows(texts, window_bytes, overlap);
-        let window_lens: Vec<usize> = windows.iter().map(|w| w.len()).collect();
-        let groups = pack_windows_for_attention(&window_lens, budget);
+        let window_byte_lens: Vec<usize> = windows.iter().map(|w| w.len()).collect();
+        let groups = pack_windows_for_attention(&window_byte_lens, budget);
 
         let mut window_vectors: Vec<Vec<f32>> = Vec::with_capacity(windows.len());
         let outer = batch_size.max(1);

@@ -6,10 +6,11 @@
 //!   embed  --model-dir DIR --variant V --ep cpu|directml --chunks F.jsonl
 //!          [--n K] [--queries F.json] --out F.json   timed embedding via OnnxEmbedder
 //!   eval   --chunks F.jsonl --queries F.json --dense F.json [--ref F.json] [--k 5]
-//!                                                    lexical vs dense vs hybrid + fidelity
+//!                                                    lexical vs dense vs hybrid_max vs hybrid_rrf + fidelity
 //!   store  --chunks F.jsonl --out DIR               sqlite+lance commit-cadence timing
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,9 +20,11 @@ use std::time::Instant;
 use oracle_core::embed::{
     resolve_embed_window_bytes, resolve_embed_window_overlap_bytes, window_text, CancelFlag,
 };
-use oracle_core::ingest::chunking::build_chunks_for_file;
+use oracle_core::ingest::chunking::{build_chunks_for_file, build_chunks_for_file_with_limits};
 use oracle_core::ingest::collect::collect_text_files;
-use oracle_core::ingest::retrieval_text::{chunk_embedding_text, query_embedding_text, ChunkMeta};
+use oracle_core::ingest::retrieval_text::{
+    chunk_embedding_text_for_model, query_embedding_text_for_model, ChunkMeta,
+};
 use oracle_core::onnx_embedder::{EpArg, OnnxEmbedder};
 
 const CODE_EXTS: &[&str] = &[
@@ -133,16 +136,72 @@ fn top_level_stats(root: &Path) -> Vec<(String, u64, u64)> {
     out
 }
 
+fn frozen_repo_roots(queries_path: &Path) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(queries_path)?)?;
+    let mut out = Vec::new();
+    let Some(repos) = raw.get("repos").and_then(|v| v.as_array()) else {
+        anyhow::bail!("{} has no repos[]", queries_path.display());
+    };
+    for repo in repos {
+        let id = repo
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let path = PathBuf::from(repo.get("path").and_then(|v| v.as_str()).unwrap_or(""));
+        if id.is_empty() || !path.is_dir() {
+            eprintln!(
+                "skipping repo id={id} path={} (missing frozen tree)",
+                path.display()
+            );
+            continue;
+        }
+        out.push((id, path));
+    }
+    Ok(out)
+}
+
+fn chunk_one_file(
+    path: &Path,
+    root: &Path,
+    limits: Option<(usize, usize)>,
+) -> Vec<serde_json::Value> {
+    match limits {
+        Some((max_chars, overlap)) => {
+            build_chunks_for_file_with_limits(path, root, max_chars, overlap)
+        }
+        None => build_chunks_for_file(path, root),
+    }
+}
+
 fn run_corpus() -> anyhow::Result<()> {
-    let root = PathBuf::from(arg_of("--root").expect("--root DIR"));
     let limit: usize = arg_of("--limit").and_then(|v| v.parse().ok()).unwrap_or(0);
     let out_dir = PathBuf::from(arg_of("--out").expect("--out DIR"));
+    let max_chars = arg_of("--max-chars").and_then(|v| v.parse().ok());
+    let overlap = arg_of("--overlap").and_then(|v| v.parse().ok());
+    let limits = match (max_chars, overlap) {
+        (Some(m), Some(o)) => Some((m, o)),
+        (None, None) => None,
+        _ => anyhow::bail!("--max-chars and --overlap must be passed together"),
+    };
     std::fs::create_dir_all(&out_dir)?;
 
+    let jobs: Vec<(String, PathBuf)> = if let Some(qp) = arg_of("--queries") {
+        frozen_repo_roots(&PathBuf::from(qp))?
+    } else {
+        let root = PathBuf::from(arg_of("--root").expect("--root DIR or --queries"));
+        vec![("root".into(), root)]
+    };
+
     let t0 = Instant::now();
-    let mut files = collect_text_files(&root);
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::new(); // (path, root)
+    for (_id, root) in &jobs {
+        for p in collect_text_files(root) {
+            files.push((p, root.clone()));
+        }
+    }
     let collect_ms = t0.elapsed().as_millis();
-    files.sort(); // deterministic subset independent of priority order
+    files.sort_by(|a, b| a.0.cmp(&b.0));
     if limit > 0 && files.len() > limit {
         files.truncate(limit);
     }
@@ -171,9 +230,9 @@ fn run_corpus() -> anyhow::Result<()> {
     let win_bytes = resolve_embed_window_bytes();
     let overlap = resolve_embed_window_overlap_bytes();
 
-    for path in &files {
+    for (path, root) in &files {
         let rel = path
-            .strip_prefix(&root)
+            .strip_prefix(root)
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
@@ -186,7 +245,7 @@ fn run_corpus() -> anyhow::Result<()> {
         let fbytes = path.metadata().map(|m| m.len()).unwrap_or(0);
         total_bytes_selected += fbytes;
 
-        let chunks = build_chunks_for_file(path, &root);
+        let chunks = chunk_one_file(path, root, limits);
         per_file_chunks.push((rel.clone(), chunks.len()));
         let e = per_ext.entry(ext.clone()).or_default();
         e.0 += 1;
@@ -199,7 +258,7 @@ fn run_corpus() -> anyhow::Result<()> {
         let is_code = CODE_EXTS.contains(&ext.as_str());
         for (ci, chunk) in chunks.iter().enumerate() {
             let meta = meta_of(chunk);
-            let emb = chunk_embedding_text(&meta, None);
+            let emb = chunk_embedding_text_for_model(&meta, None, true);
             let wc = window_text(&emb, win_bytes, overlap).len();
             windows_total += wc;
             window_counts.push(wc);
@@ -279,7 +338,7 @@ fn run_corpus() -> anyhow::Result<()> {
             let mut rec = chunk.clone();
             let obj = rec.as_object_mut().unwrap();
             obj.insert("emb_text".into(), serde_json::Value::String(emb));
-            obj.insert("windows".into(), serde_json::Value::from(wc));
+            obj.insert("windows_byte_estimate".into(), serde_json::Value::from(wc));
             serde_json::to_writer(&mut w, &rec)?;
             w.write_all(b"\n")?;
         }
@@ -305,22 +364,24 @@ fn run_corpus() -> anyhow::Result<()> {
     per_file_chunks.sort_by_key(|a| std::cmp::Reverse(a.1));
 
     let report = serde_json::json!({
-        "root": root,
+        "roots": jobs.iter().map(|(id, p)| serde_json::json!({"id": id, "path": p})).collect::<Vec<_>>(),
+        "max_chars": limits.map(|l| l.0),
+        "overlap": limits.map(|l| l.1),
         "limit": limit,
         "files_selected": files.len(),
         "bytes_selected": total_bytes_selected,
         "chunks_total": chunks_total,
-        "windows_total": windows_total,
+        "windows_total_byte_estimate": windows_total,
         "window_bytes_cfg": win_bytes,
         "overlap_bytes_cfg": overlap,
         "emb_chars_total": emb_chars_total,
         "raw_chars_total": raw_chars_total,
         "prefix_overhead_chars": emb_chars_total.saturating_sub(raw_chars_total),
-        "chunks_multi_window": multi,
-        "chunks_multi_window_pct": if chunks_total>0 {(multi as f64 *100.0/chunks_total as f64*10.0).round()/10.0} else {0.0},
+        "chunks_multi_window_byte_estimate": multi,
+        "chunks_multi_window_byte_estimate_pct": if chunks_total>0 {(multi as f64 *100.0/chunks_total as f64*10.0).round()/10.0} else {0.0},
         "chunk_raw_chars": {"p50": pct(&raw_lens,0.5),"p90": pct(&raw_lens,0.9),"p99": pct(&raw_lens,0.99),"max": raw_lens.last().copied().unwrap_or(0)},
         "chunk_emb_chars": {"p50": pct(&emb_lens,0.5),"p90": pct(&emb_lens,0.9),"p99": pct(&emb_lens,0.99),"max": emb_lens.last().copied().unwrap_or(0)},
-        "windows_hist": {"1": window_counts.iter().filter(|&&w| w==1).count(),
+        "windows_hist_byte_estimate": {"1": window_counts.iter().filter(|&&w| w==1).count(),
                          "2": window_counts.iter().filter(|&&w| w==2).count(),
                          "3+": window_counts.iter().filter(|&&w| w>=3).count()},
         "by_ext": ext_rows.into_iter().take(15).collect::<Vec<_>>(),
@@ -329,7 +390,9 @@ fn run_corpus() -> anyhow::Result<()> {
         "bad_boundary": {"mid_body_start": mid_body, "odd_end": odd_end,
                          "examples_mid": examples_mid, "examples_end": examples_end},
         "timings_ms": {"collect": collect_ms, "chunk_plus_prefix_plus_window": chunk_ms},
-        "top_level_tree": top_level_stats(&root).into_iter().take(25).map(|(n,f,b)| serde_json::json!({"name": n, "files": f, "bytes": b})).collect::<Vec<_>>(),
+        "top_level_tree": jobs.iter().flat_map(|(_id, root)| {
+            top_level_stats(root).into_iter().take(25).map(|(n,f,b)| serde_json::json!({"name": n, "files": f, "bytes": b}))
+        }).collect::<Vec<_>>(),
     });
     std::fs::write(
         out_dir.join("corpus.json"),
@@ -412,6 +475,62 @@ fn read_jsonl(path: &Path) -> anyhow::Result<Vec<serde_json::Value>> {
         .collect::<Result<Vec<_>, _>>()?)
 }
 
+/// Copied from `oracle_core::query::engine` (private as of commit 42059c8).
+/// Production formula: `1 / (60 + rank)`, 1-based rank counted only on kept
+/// results after filters; contributions **sum** when a chunk is in both lists.
+/// This bench copy can silently diverge if engine.rs changes.
+const RRF_K: f64 = 60.0;
+
+fn rrf_contribution(rank: usize) -> f64 {
+    1.0 / (RRF_K + rank as f64)
+}
+
+fn sanitize_f32_vectors(vecs: &mut [Vec<f32>]) -> usize {
+    let mut n = 0usize;
+    for v in vecs.iter_mut() {
+        for x in v.iter_mut() {
+            if !x.is_finite() {
+                n += 1;
+                *x = 0.0;
+            }
+        }
+    }
+    n
+}
+
+/// Stream `vectors` / `query_vectors` with `to_writer` so we never materialize a
+/// 10M-node `serde_json::Value` tree (that path OOMs Qwen3's 1024-d dump).
+fn write_dense_json(
+    path: &Path,
+    mut meta: serde_json::Value,
+    vectors: &[Vec<f32>],
+    query_vectors: &Option<Vec<Vec<f32>>>,
+) -> anyhow::Result<()> {
+    let obj = meta
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("embed meta must be an object"))?;
+    obj.remove("vectors");
+    obj.remove("query_vectors");
+    let mut f = BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
+    let s = serde_json::to_string(&meta)?;
+    let inner = s.trim();
+    let inner = inner
+        .strip_prefix('{')
+        .and_then(|t| t.strip_suffix('}'))
+        .unwrap_or(inner);
+    write!(f, "{{")?;
+    if !inner.is_empty() {
+        write!(f, "{inner},")?;
+    }
+    write!(f, "\"vectors\":")?;
+    serde_json::to_writer(&mut f, vectors)?;
+    write!(f, ",\"query_vectors\":")?;
+    serde_json::to_writer(&mut f, query_vectors)?;
+    write!(f, "}}")?;
+    f.flush()?;
+    Ok(())
+}
+
 fn run_embed() -> anyhow::Result<()> {
     let model_dir = PathBuf::from(arg_of("--model-dir").expect("--model-dir"));
     let variant = arg_of("--variant").expect("--variant");
@@ -452,50 +571,138 @@ fn run_embed() -> anyhow::Result<()> {
 
     let records = read_jsonl(&chunks_file)?;
     let records = &records[..records.len().min(n)];
-    let texts: Vec<String> = records
-        .iter()
-        .map(|r| {
-            let m = meta_of(r);
-            chunk_embedding_text(&m, None)
-        })
-        .collect();
-    let win_bytes = resolve_embed_window_bytes();
-    let overlap = resolve_embed_window_overlap_bytes();
-    let mut windows_total = 0usize;
-    let mut emb_chars = 0usize;
-    for t in &texts {
-        windows_total += window_text(t, win_bytes, overlap).len();
-        emb_chars += t.len();
-    }
 
     std::env::set_var("ORACLE_RS_ONNX_VARIANT", &variant);
     let t0 = Instant::now();
     let (mut emb, load_ms) = OnnxEmbedder::load(&model_dir, ep)
         .map_err(|e| anyhow::anyhow!("LOAD FAILED variant={variant} ep={ep_s}: {e:#}"))?;
     let load_total_ms = t0.elapsed().as_millis();
+    let uses_semantic_prefix = emb.descriptor().uses_semantic_prefix;
+    let max_seq = emb.max_seq_tokens();
+
+    let texts: Vec<String> = records
+        .iter()
+        .map(|r| {
+            let m = meta_of(r);
+            chunk_embedding_text_for_model(&m, None, uses_semantic_prefix)
+        })
+        .collect();
+    let mut emb_chars = 0usize;
+    for t in &texts {
+        emb_chars += t.len();
+    }
+    let (windows_total, windows_truncated) = emb.token_window_stats(&texts)?;
+
+    println!(
+        "embed start n_chunks={} windows_token_aware={windows_total} dim_hint={} variant={variant} ep={ep_s}",
+        texts.len(),
+        emb.descriptor().dims
+    );
+    let _ = std::io::stdout().flush();
 
     // warmup (excluded from timing): one short text
     let warm = Instant::now();
     let _ = emb.embed_batched(&["fn warmup() {}\n".to_string()], 1, &CancelFlag::new())?;
     let warmup_ms = warm.elapsed().as_millis();
+    eprintln!("embed warmup_ms={warmup_ms}");
+    let _ = std::io::stderr().flush();
 
+    let partial_path = {
+        let mut p = out.clone();
+        p.set_extension("partial.jsonl");
+        p
+    };
+    let mut vectors: Vec<Vec<f32>> = vec![Vec::new(); texts.len()];
+    if partial_path.exists() {
+        let ptxt = std::fs::read_to_string(&partial_path)?;
+        let mut loaded = 0usize;
+        for line in ptxt.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let i = row["i"].as_u64().unwrap_or(u64::MAX) as usize;
+            let Some(arr) = row["v"].as_array() else {
+                continue;
+            };
+            if i >= vectors.len() {
+                continue;
+            }
+            vectors[i] = arr
+                .iter()
+                .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+                .collect();
+            loaded += 1;
+        }
+        eprintln!(
+            "embed resume: loaded {loaded} vectors from {}",
+            partial_path.display()
+        );
+        let _ = std::io::stderr().flush();
+    }
+    let mut next = 0usize;
+    while next < vectors.len() && !vectors[next].is_empty() {
+        next += 1;
+    }
+
+    let mut partial = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&partial_path)?;
     let sampler = CpuSampler::start();
     let t1 = Instant::now();
     let mut per_group: Vec<u128> = Vec::new();
-    let mut vectors: Vec<Vec<f32>> = Vec::new();
-    for group in texts.chunks(32) {
-        let g0 = Instant::now();
-        let v = emb.embed_batched(group, group.len(), &CancelFlag::new())?;
-        per_group.push(g0.elapsed().as_millis());
-        vectors.extend(v);
+    let n_groups = texts.len().div_ceil(32);
+    if next < texts.len() {
+        let resume_group = next / 32;
+        for (gi, group) in texts.chunks(32).enumerate() {
+            if gi < resume_group {
+                continue;
+            }
+            let lo = gi * 32;
+            let hi = (lo + group.len()).min(texts.len());
+            let g0 = Instant::now();
+            let v = emb.embed_batched(group, group.len(), &CancelFlag::new())?;
+            if v.len() != group.len() {
+                anyhow::bail!(
+                    "embed_batched returned {} vectors for group {gi} (expected {})",
+                    v.len(),
+                    group.len()
+                );
+            }
+            let gms = g0.elapsed().as_millis();
+            per_group.push(gms);
+            for (off, mut vec) in v.into_iter().enumerate() {
+                let i = lo + off;
+                let _ = sanitize_f32_vectors(std::slice::from_mut(&mut vec));
+                vectors[i] = vec;
+                write!(partial, "{{\"i\":{i},\"v\":")?;
+                serde_json::to_writer(&mut partial, &vectors[i])?;
+                writeln!(partial, "}}")?;
+            }
+            partial.flush()?;
+            eprintln!(
+                "embed group {}/{n_groups} idx {lo}..{hi} group_ms={gms}",
+                gi + 1
+            );
+            let _ = std::io::stderr().flush();
+        }
     }
     let embed_ms = t1.elapsed().as_millis();
     let samples_chunk = sampler.stop();
 
-    let (query_vectors, query_ms) = if !queries.is_empty() {
+    if vectors.iter().any(|v| v.is_empty()) {
+        let missing = vectors.iter().filter(|v| v.is_empty()).count();
+        anyhow::bail!("embed incomplete: {missing} empty vectors (partial at {next})");
+    }
+    let nan_chunk = sanitize_f32_vectors(&mut vectors);
+
+    let (mut query_vectors, query_ms) = if !queries.is_empty() {
         let qtexts: Vec<String> = queries
             .iter()
-            .map(|q| query_embedding_text(q, None))
+            .map(|q| query_embedding_text_for_model(q, None, uses_semantic_prefix))
             .collect();
         let sampler = CpuSampler::start();
         let t = Instant::now();
@@ -506,24 +713,35 @@ fn run_embed() -> anyhow::Result<()> {
     } else {
         (None, None)
     };
+    let nan_query = query_vectors
+        .as_mut()
+        .map(|v| sanitize_f32_vectors(v))
+        .unwrap_or(0);
+    if nan_chunk + nan_query > 0 {
+        eprintln!("embed non-finite components zeroed: chunk={nan_chunk} query={nan_query}");
+    }
 
     let out_json = serde_json::json!({
-        "variant": variant, "ep": ep_s, "model_id": emb_model_id(&emb),
+        "variant": variant, "ep": ep_s, "model_id": emb.descriptor().id,
+        "uses_semantic_prefix": uses_semantic_prefix,
+        "max_seq_tokens": max_seq,
+        "windows_truncated": windows_truncated,
+        "non_finite_components_zeroed": {"chunk": nan_chunk, "query": nan_query},
         "load_ms": load_ms, "load_total_ms": load_total_ms, "warmup_ms": warmup_ms,
         "n_chunks": texts.len(), "emb_chars_total": emb_chars,
         "windows_total": windows_total,
         "attention_budget_env": std::env::var("ORACLE_CHUNK_ATTENTION_BUDGET").unwrap_or_else(|_| "default".into()),
         "embed_ms_total": embed_ms, "per_group_ms": per_group,
-        "chunks_per_sec": if embed_ms>0 {(texts.len() as f64)*1000.0/embed_ms as f64} else {0.0},
+        "chunks_per_sec": if embed_ms>0 {(texts.len().saturating_sub(next) as f64)*1000.0/embed_ms as f64} else {0.0},
         "windows_per_sec": if embed_ms>0 {(windows_total as f64)*1000.0/embed_ms as f64} else {0.0},
         "query_ms": query_ms, "n_queries": queries.len(),
         "dim": vectors.first().map(|v| v.len()).unwrap_or(0),
         "chunk_ids": records.iter().map(|r| r["id"].as_str().unwrap_or("")).collect::<Vec<_>>(),
-        "vectors": vectors,
-        "query_vectors": query_vectors,
+        "resumed_from": next,
         "cpu_during_embed": summarize(&samples_chunk),
     });
-    std::fs::write(&out, serde_json::to_string(&out_json)?)?;
+    write_dense_json(&out, out_json.clone(), &vectors, &query_vectors)?;
+    let _ = std::fs::remove_file(&partial_path);
     println!(
         "variant={variant} ep={ep_s} load_ms={load_ms} warmup_ms={warmup_ms} chunks={} windows={windows_total} embed_ms={embed_ms} cps={:.2} wps={:.2} cpu={}",
         texts.len(),
@@ -534,12 +752,34 @@ fn run_embed() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn emb_model_id(_e: &OnnxEmbedder) -> String {
-    // model id is derived from variant; reconstruct for the record
-    format!(
-        "Qwen3-Embedding-0.6B-ONNX-{}",
-        std::env::var("ORACLE_RS_ONNX_VARIANT").unwrap_or_default()
-    )
+fn load_eval_queries(path: &Path) -> anyhow::Result<Vec<serde_json::Value>> {
+    let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
+    if let Some(repos) = raw.get("repos").and_then(|v| v.as_array()) {
+        let mut out = Vec::new();
+        for repo in repos {
+            let id = repo.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let root = PathBuf::from(repo.get("path").and_then(|v| v.as_str()).unwrap_or(""));
+            if !root.is_dir() {
+                eprintln!("eval: skip queries for {id} (frozen path missing)");
+                continue;
+            }
+            let Some(qs) = repo.get("queries").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for q in qs {
+                let mut rec = q.clone();
+                if let Some(obj) = rec.as_object_mut() {
+                    obj.insert("repo".into(), serde_json::Value::String(id.to_string()));
+                }
+                out.push(rec);
+            }
+        }
+        return Ok(out);
+    }
+    match raw {
+        serde_json::Value::Array(items) => Ok(items),
+        other => anyhow::bail!("queries file must be an array or {{repos: [...]}}, got {other}"),
+    }
 }
 
 // ───────────────────────────── eval mode ─────────────────────────────
@@ -568,10 +808,7 @@ fn run_eval() -> anyhow::Result<()> {
     let k: usize = arg_of("--k").and_then(|v| v.parse().ok()).unwrap_or(5);
 
     let records = read_jsonl(&chunks_file)?;
-    let queries: Vec<serde_json::Value> =
-        serde_json::from_value(serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&queries_file)?,
-        )?)?;
+    let queries = load_eval_queries(&queries_file)?;
     let dense: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&dense_file)?)?;
 
     // lexical scoring input
@@ -647,7 +884,8 @@ fn run_eval() -> anyhow::Result<()> {
             denser.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             denser.truncate(limit);
         }
-        // hybrid: max(dense, lexical) over the union (engine.context semantics)
+        // hybrid_max: historical max(dense, lexical) over the union.
+        // Not production — engine.context switched to RRF at 42059c8. Kept as baseline.
         let mut score_by_id: HashMap<String, f64> = HashMap::new();
         for (id, s) in &denser {
             *score_by_id.entry(id.clone()).or_insert(0.0) = s.max(0.0);
@@ -656,9 +894,25 @@ fn run_eval() -> anyhow::Result<()> {
             let e = score_by_id.entry(l.chunk_id.clone()).or_insert(0.0);
             *e = e.max(l.score);
         }
-        let mut hybrid: Vec<(String, f64)> = score_by_id.into_iter().collect();
-        hybrid.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        hybrid.truncate(limit);
+        let mut hybrid_max: Vec<(String, f64)> = score_by_id.into_iter().collect();
+        hybrid_max.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        hybrid_max.truncate(limit);
+
+        // hybrid_rrf: copy of engine.rs (see rrf_contribution). Rank is 1-based on
+        // the kept lists above (eval has no file/kind filters, so every hit is kept).
+        // Dense and lexical lists are both top `limit` (= k*3); production dense
+        // search uses the final `limit` while lexical uses limit*3. Same candidate
+        // set as hybrid_max so the fusion rule is the only difference.
+        let mut rrf_by_id: HashMap<String, f64> = HashMap::new();
+        for (i, (id, _)) in denser.iter().enumerate() {
+            *rrf_by_id.entry(id.clone()).or_insert(0.0) += rrf_contribution(i + 1);
+        }
+        for (rank, l) in lex.iter().enumerate() {
+            *rrf_by_id.entry(l.chunk_id.clone()).or_insert(0.0) += rrf_contribution(rank + 1);
+        }
+        let mut hybrid_rrf: Vec<(String, f64)> = rrf_by_id.into_iter().collect();
+        hybrid_rrf.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        hybrid_rrf.truncate(limit);
 
         // file-level metrics helpers
         let file_of = |id: &str| -> String {
@@ -705,10 +959,14 @@ fn run_eval() -> anyhow::Result<()> {
         let lex_ranked: Vec<(String, f64)> =
             lex.iter().map(|l| (l.chunk_id.clone(), l.score)).collect();
         rows.push(serde_json::json!({
-            "q": query, "targets": targets,
+            "q": query,
+            "kind": q["kind"].as_str().unwrap_or(""),
+            "repo": q["repo"].as_str().unwrap_or(""),
+            "targets": targets,
             "lexical": metrics(&lex_ranked),
             "dense": metrics(&denser),
-            "hybrid": metrics(&hybrid),
+            "hybrid_max": metrics(&hybrid_max),
+            "hybrid_rrf": metrics(&hybrid_rrf),
         }));
     }
 
@@ -720,11 +978,55 @@ fn run_eval() -> anyhow::Result<()> {
             vals.iter().sum::<f64>() / vals.len() as f64
         }
     };
+    let pack = |mode: &str| {
+        serde_json::json!({
+            "recall@5": mean("recall@5", mode),
+            "hit@5": mean("hit@5", mode),
+            "mrr@10": mean("mrr@10", mode),
+        })
+    };
+    let mean_kind = |key: &str, mode: &str, kind: &str| -> f64 {
+        let vals: Vec<f64> = rows
+            .iter()
+            .filter(|r| r["kind"].as_str() == Some(kind))
+            .filter_map(|r| r[mode][key].as_f64())
+            .collect();
+        if vals.is_empty() {
+            0.0
+        } else {
+            vals.iter().sum::<f64>() / vals.len() as f64
+        }
+    };
+    let pack_kind = |mode: &str, kind: &str| {
+        serde_json::json!({
+            "n": rows.iter().filter(|r| r["kind"].as_str() == Some(kind)).count(),
+            "recall@5": mean_kind("recall@5", mode, kind),
+            "hit@5": mean_kind("hit@5", mode, kind),
+            "mrr@10": mean_kind("mrr@10", mode, kind),
+        })
+    };
     let mut summary = serde_json::json!({
         "n_queries": rows.len(),
-        "lexical": {"recall@5": mean("recall@5","lexical"), "hit@5": mean("hit@5","lexical"), "mrr@10": mean("mrr@10","lexical")},
-        "dense": {"recall@5": mean("recall@5","dense"), "hit@5": mean("hit@5","dense"), "mrr@10": mean("mrr@10","dense")},
-        "hybrid": {"recall@5": mean("recall@5","hybrid"), "hit@5": mean("hit@5","hybrid"), "mrr@10": mean("mrr@10","hybrid")},
+        "uses_semantic_prefix": dense.get("uses_semantic_prefix"),
+        "lexical": pack("lexical"),
+        "dense": pack("dense"),
+        "hybrid_max": pack("hybrid_max"),
+        "hybrid_rrf": pack("hybrid_rrf"),
+        "rrf_note": "hybrid_rrf copies oracle_core::query::engine::{RRF_K, rrf_contribution} (private). k=60, 1/(k+rank), ranks 1-based on kept lists, scores sum on overlap.",
+        "by_kind": {
+            "literal": {
+                "lexical": pack_kind("lexical", "literal"),
+                "dense": pack_kind("dense", "literal"),
+                "hybrid_max": pack_kind("hybrid_max", "literal"),
+                "hybrid_rrf": pack_kind("hybrid_rrf", "literal"),
+            },
+            "conceptual": {
+                "lexical": pack_kind("lexical", "conceptual"),
+                "dense": pack_kind("dense", "conceptual"),
+                "hybrid_max": pack_kind("hybrid_max", "conceptual"),
+                "hybrid_rrf": pack_kind("hybrid_rrf", "conceptual"),
+            },
+        },
     });
 
     // fidelity vs fp32 reference on the same chunk set
