@@ -3,7 +3,7 @@
 //! Covers the SQLite metadata store, the LanceDB vector store and the
 //! chunk-index manifest. Mirrors the behavioral spec in `p1-recon-spec.md`.
 
-use oracle_core::config::active_chunk_profile_version;
+use oracle_core::config::{active_chunk_profile_version, EMBED_DIMS};
 use oracle_core::store::lance::{hash_embed, LanceRow, LanceStore};
 use oracle_core::store::manifest::{
     file_needs_index, load_manifest, manifest_files_for_root, strip_verbatim_prefix,
@@ -553,7 +553,7 @@ async fn lance_roundtrip() {
             label: format!("Doc {i}"),
             area: "text".to_string(),
             cluster_semantic: "docs".to_string(),
-            vector: hash_embed(t, 1024),
+            vector: hash_embed(t, EMBED_DIMS),
         })
         .collect();
 

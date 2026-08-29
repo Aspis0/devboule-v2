@@ -322,7 +322,27 @@ pub struct SemanticChunk {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SplitLimits {
+    max_chars: usize,
+    overlap: usize,
+}
+
 pub fn split_semantic(text: &str, language: &str, max_chars: usize) -> Vec<SemanticChunk> {
+    split_semantic_with_overlap(
+        text,
+        language,
+        max_chars,
+        super::chunking::CHUNK_CODE_OVERLAP_CHARS,
+    )
+}
+
+fn split_semantic_with_overlap(
+    text: &str,
+    language: &str,
+    max_chars: usize,
+    overlap: usize,
+) -> Vec<SemanticChunk> {
     if text.trim().is_empty() {
         return vec![];
     }
@@ -332,7 +352,7 @@ pub fn split_semantic(text: &str, language: &str, max_chars: usize) -> Vec<Seman
 
     let patterns = definition_patterns_for(language);
     if patterns.is_empty() {
-        return fallback_chunks(&normalized, language, max_chars);
+        return fallback_chunks(&normalized, language, max_chars, overlap);
     }
 
     let lines: Vec<String> = normalized.split('\n').map(|s| s.to_string()).collect();
@@ -367,7 +387,7 @@ pub fn split_semantic(text: &str, language: &str, max_chars: usize) -> Vec<Seman
     }
 
     if boundaries.is_empty() {
-        return fallback_chunks(&normalized, language, max_chars);
+        return fallback_chunks(&normalized, language, max_chars, overlap);
     }
 
     // Filter to top-level boundaries using indent stack
@@ -399,7 +419,7 @@ pub fn split_semantic(text: &str, language: &str, max_chars: usize) -> Vec<Seman
     }
 
     if top_level.is_empty() {
-        return fallback_chunks(&normalized, language, max_chars);
+        return fallback_chunks(&normalized, language, max_chars, overlap);
     }
 
     // Build chunks from top-level boundaries
@@ -437,7 +457,7 @@ pub fn split_semantic(text: &str, language: &str, max_chars: usize) -> Vec<Seman
                 &tl.kind,
                 &tl.name,
                 language,
-                max_chars,
+                SplitLimits { max_chars, overlap },
             );
             chunks.extend(sub_chunks);
             continue;
@@ -465,21 +485,21 @@ pub fn split_semantic(text: &str, language: &str, max_chars: usize) -> Vec<Seman
             if !trimmed.is_empty() && trimmed.chars().count() > 40 {
                 let preamble_end = char_positions[first.line_idx];
                 let pre_symbols = extract_symbols_used(trimmed, language);
-                chunks.insert(
-                    0,
-                    SemanticChunk {
-                        start_char: 0,
-                        end_char: preamble_end,
-                        kind: "module_header".to_string(),
-                        symbol_name: String::new(),
-                        signature: String::new(),
-                        line_start: 1,
-                        line_end: boundaries[0].line_idx,
-                        language: language.to_string(),
-                        symbols_used: pre_symbols,
-                        text: trimmed.to_string(),
-                    },
-                );
+                let preamble = SemanticChunk {
+                    start_char: 0,
+                    end_char: preamble_end,
+                    kind: "module_header".to_string(),
+                    symbol_name: String::new(),
+                    signature: String::new(),
+                    line_start: 1,
+                    line_end: boundaries[0].line_idx,
+                    language: language.to_string(),
+                    symbols_used: pre_symbols,
+                    text: trimmed.to_string(),
+                };
+                let preamble_chunks =
+                    hard_split_oversize_chunks(vec![preamble], max_chars, overlap, language);
+                chunks.splice(0..0, preamble_chunks);
             }
         }
     }
@@ -527,14 +547,14 @@ fn subsplit_large(
     kind: &str,
     name: &str,
     language: &str,
-    max_chars: usize,
+    limits: SplitLimits,
 ) -> Vec<SemanticChunk> {
     if chunk_lines.is_empty() {
         return vec![];
     }
 
-    let max_chars = max_chars.max(1);
-    let overlap = super::chunking::hard_split_overlap(max_chars);
+    let max_chars = limits.max_chars.max(1);
+    let overlap = super::chunking::hard_split_overlap(max_chars, limits.overlap);
     let char_offsets = compute_line_char_positions(chunk_lines);
     let mut sub_chunks: Vec<SemanticChunk> = Vec::new();
     let mut current_start: usize = 0;
@@ -644,7 +664,12 @@ fn subsplit_large(
     sub_chunks
 }
 
-fn fallback_chunks(text: &str, language: &str, max_chars: usize) -> Vec<SemanticChunk> {
+fn fallback_chunks(
+    text: &str,
+    language: &str,
+    max_chars: usize,
+    declared_overlap: usize,
+) -> Vec<SemanticChunk> {
     let max_chars = max_chars.max(1);
     let lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
     let mut chunks: Vec<SemanticChunk> = Vec::new();
@@ -722,7 +747,7 @@ fn fallback_chunks(text: &str, language: &str, max_chars: usize) -> Vec<Semantic
     if chunks.len() == 1 && chunks[0].text.chars().count() > max_chars {
         return chunks;
     }
-    hard_split_oversize_chunks(chunks, max_chars, language)
+    hard_split_oversize_chunks(chunks, max_chars, declared_overlap, language)
 }
 
 /// Expand any chunk whose text exceeds `max_chars` into char-boundary pieces
@@ -730,10 +755,11 @@ fn fallback_chunks(text: &str, language: &str, max_chars: usize) -> Vec<Semantic
 fn hard_split_oversize_chunks(
     chunks: Vec<SemanticChunk>,
     max_chars: usize,
+    declared_overlap: usize,
     language: &str,
 ) -> Vec<SemanticChunk> {
     let max_chars = max_chars.max(1);
-    let overlap = super::chunking::hard_split_overlap(max_chars);
+    let overlap = super::chunking::hard_split_overlap(max_chars, declared_overlap);
     let mut out = Vec::with_capacity(chunks.len());
     for c in chunks {
         if c.text.chars().count() <= max_chars {
@@ -775,6 +801,22 @@ pub fn chunk_file_semantically(
     text: Option<&str>,
     max_chars: usize,
 ) -> Option<Vec<serde_json::Value>> {
+    chunk_file_semantically_with_overlap(
+        path,
+        root,
+        text,
+        max_chars,
+        super::chunking::CHUNK_CODE_OVERLAP_CHARS,
+    )
+}
+
+pub fn chunk_file_semantically_with_overlap(
+    path: &Path,
+    root: &Path,
+    text: Option<&str>,
+    max_chars: usize,
+    overlap: usize,
+) -> Option<Vec<serde_json::Value>> {
     let language = detect_language(path);
 
     if SEMANTIC_SKIP_LANGUAGES.contains(&language) {
@@ -793,7 +835,7 @@ pub fn chunk_file_semantically(
         }
     };
 
-    let chunks = split_semantic(text, language, max_chars);
+    let chunks = split_semantic_with_overlap(text, language, max_chars, overlap);
 
     if chunks.is_empty() || chunks.len() < 2 {
         return None;
@@ -873,7 +915,12 @@ mod chunk_limit_tests {
         let original: String = (0..40_000)
             .map(|i| char::from(b'A' + (i % 26) as u8))
             .collect();
-        let chunks = fallback_chunks(&original, "text", max_chars);
+        let chunks = fallback_chunks(
+            &original,
+            "text",
+            max_chars,
+            crate::ingest::chunking::CHUNK_CODE_OVERLAP_CHARS,
+        );
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].text.chars().count() > max_chars);
     }
@@ -892,7 +939,12 @@ mod chunk_limit_tests {
             .collect();
 
         // Half 1: fallback returns exactly one oversize chunk.
-        let fb = fallback_chunks(&original, "python", max_chars);
+        let fb = fallback_chunks(
+            &original,
+            "python",
+            max_chars,
+            crate::ingest::chunking::CHUNK_CODE_OVERLAP_CHARS,
+        );
         assert_eq!(fb.len(), 1, "fallback_chunks must defer lone oversize");
         assert!(fb[0].text.chars().count() > max_chars);
 
@@ -924,7 +976,12 @@ mod chunk_limit_tests {
         let max_chars = CHUNK_CODE_MAX_CHARS;
         let long = "x".repeat(40_000);
         let text = format!("short preamble line\n{long}\ntrailer");
-        let chunks = fallback_chunks(&text, "text", max_chars);
+        let chunks = fallback_chunks(
+            &text,
+            "text",
+            max_chars,
+            crate::ingest::chunking::CHUNK_CODE_OVERLAP_CHARS,
+        );
         assert!(chunks.len() > 1);
         for c in &chunks {
             assert!(
@@ -947,11 +1004,53 @@ mod chunk_limit_tests {
         let max_chars = CHUNK_CODE_MAX_CHARS;
         let long = "x".repeat(40_000);
         let lines = vec![long.clone()];
-        let chunks = subsplit_large(&long, &lines, 0, "function", "big", "rust", max_chars);
+        let chunks = subsplit_large(
+            &long,
+            &lines,
+            0,
+            "function",
+            "big",
+            "rust",
+            SplitLimits {
+                max_chars,
+                overlap: crate::ingest::chunking::CHUNK_CODE_OVERLAP_CHARS,
+            },
+        );
         assert!(chunks.len() > 1);
         for c in &chunks {
             assert!(c.text.chars().count() <= max_chars);
         }
         assert_eq!(reconstruct_chunks(&long, &chunks), long);
+    }
+
+    #[test]
+    fn oversized_module_header_is_split_at_the_profile_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("header.py");
+        let mut source = "# module documentation\n".repeat(100);
+        source.push_str("\ndef first():\n    return 1\n\ndef second():\n    return 2\n");
+        std::fs::write(&path, &source).unwrap();
+
+        let chunks = chunk_file_semantically_with_overlap(
+            &path,
+            dir.path(),
+            Some(&source),
+            crate::ingest::chunking::CHUNK_CODE_MAX_CHARS,
+            crate::ingest::chunking::CHUNK_CODE_OVERLAP_CHARS,
+        )
+        .expect("two definitions should keep the semantic path active");
+
+        assert!(chunks.len() > 2, "the module header should be split");
+        let header_chunks: Vec<_> = chunks
+            .iter()
+            .take_while(|chunk| chunk["kind"] == "module_header")
+            .collect();
+        assert!(header_chunks.len() > 1);
+        for chunk in &header_chunks {
+            assert!(
+                chunk["text"].as_str().unwrap().chars().count()
+                    <= crate::ingest::chunking::CHUNK_CODE_MAX_CHARS
+            );
+        }
     }
 }

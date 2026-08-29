@@ -16,44 +16,43 @@ pub const CHUNK_DOC_MAX_CHARS: usize = 12000;
 pub const CHUNK_DOC_OVERLAP_CHARS: usize = 1200;
 pub const CHUNK_STRUCTURED_MAX_CHARS: usize = 8000;
 pub const CHUNK_STRUCTURED_OVERLAP_CHARS: usize = 900;
-pub const CHUNK_CODE_MAX_CHARS: usize = 2500;
-pub const CHUNK_CODE_OVERLAP_CHARS: usize = 400;
+pub const CHUNK_CODE_MAX_CHARS: usize = 1024;
+pub const CHUNK_CODE_OVERLAP_CHARS: usize = 164;
 pub const CHUNK_MAX_FILE_BYTES: u64 = 1_200_000;
 
-/// Stable description of the production chunk geometry.
-///
-/// `build_chunks_for_file` deliberately recomputes the overlap with the
-/// hard-split rule below, so record the effective overlaps rather than the
-/// legacy constants that the function ignores. Keeping every file-class
-/// geometry here makes a future global geometry change invalidate the whole
-/// embedding index instead of mixing chunk generations.
-pub fn chunk_geometry_fingerprint() -> String {
-    #[derive(Serialize)]
-    struct Geometry {
-        default_max_chars: usize,
-        default_overlap_chars: usize,
-        docs_max_chars: usize,
-        docs_overlap_chars: usize,
-        structured_max_chars: usize,
-        structured_overlap_chars: usize,
-        code_max_chars: usize,
-        code_overlap_chars: usize,
-        hard_split_overlap_rule: &'static str,
-    }
+#[derive(Debug, Clone, Copy, Serialize)]
+struct ChunkGeometry {
+    default_max_chars: usize,
+    default_overlap_chars: usize,
+    docs_max_chars: usize,
+    docs_overlap_chars: usize,
+    structured_max_chars: usize,
+    structured_overlap_chars: usize,
+    code_max_chars: usize,
+    code_overlap_chars: usize,
+}
 
-    let effective_overlap = |max_chars: usize| (max_chars / 8).max(200);
-    serde_json::to_string(&Geometry {
+/// Single source of truth for the production chunk geometry.
+///
+/// Both file-limit selection and the recipe fingerprint use this function, so
+/// the overlap that actually runs cannot drift away from the overlap recorded
+/// for invalidation.
+fn chunk_geometry() -> ChunkGeometry {
+    ChunkGeometry {
         default_max_chars: CHUNK_MAX_CHARS,
-        default_overlap_chars: effective_overlap(CHUNK_MAX_CHARS),
+        default_overlap_chars: CHUNK_OVERLAP_CHARS,
         docs_max_chars: CHUNK_DOC_MAX_CHARS,
-        docs_overlap_chars: effective_overlap(CHUNK_DOC_MAX_CHARS),
+        docs_overlap_chars: CHUNK_DOC_OVERLAP_CHARS,
         structured_max_chars: CHUNK_STRUCTURED_MAX_CHARS,
-        structured_overlap_chars: effective_overlap(CHUNK_STRUCTURED_MAX_CHARS),
+        structured_overlap_chars: CHUNK_STRUCTURED_OVERLAP_CHARS,
         code_max_chars: CHUNK_CODE_MAX_CHARS,
-        code_overlap_chars: effective_overlap(CHUNK_CODE_MAX_CHARS),
-        hard_split_overlap_rule: "max(max_chars/8,200)",
-    })
-    .expect("chunk geometry is always serializable")
+        code_overlap_chars: CHUNK_CODE_OVERLAP_CHARS,
+    }
+}
+
+/// Stable description of the production chunk geometry.
+pub fn chunk_geometry_fingerprint() -> String {
+    serde_json::to_string(&chunk_geometry()).expect("chunk geometry is always serializable")
 }
 
 // ── Extension sets ───────────────────────────────────────────────────────────
@@ -141,6 +140,7 @@ fn is_code_extension(ext: &str) -> bool {
 // ── Chunk limits ─────────────────────────────────────────────────────────────
 
 pub fn chunk_limits_for_file(path: &Path) -> (usize, usize) {
+    let geometry = chunk_geometry();
     let suffix = path
         .extension()
         .and_then(|e| e.to_str())
@@ -153,24 +153,29 @@ pub fn chunk_limits_for_file(path: &Path) -> (usize, usize) {
         .collect();
 
     if is_doc_extension(&suffix) || lower_parts.iter().any(|p| p == "docs") {
-        return (CHUNK_DOC_MAX_CHARS, CHUNK_DOC_OVERLAP_CHARS);
+        return (geometry.docs_max_chars, geometry.docs_overlap_chars);
     }
     if is_structured_extension(&suffix) {
-        return (CHUNK_STRUCTURED_MAX_CHARS, CHUNK_STRUCTURED_OVERLAP_CHARS);
+        return (
+            geometry.structured_max_chars,
+            geometry.structured_overlap_chars,
+        );
     }
     if is_code_extension(&suffix) {
-        return (CHUNK_CODE_MAX_CHARS, CHUNK_CODE_OVERLAP_CHARS);
+        return (geometry.code_max_chars, geometry.code_overlap_chars);
     }
-    (CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS)
+    (geometry.default_max_chars, geometry.default_overlap_chars)
 }
 
 // ── Split text (sliding window) ──────────────────────────────────────────────
 
-/// Overlap used when hard-splitting a single oversize line/run, matching the
-/// non-semantic path in [`build_chunks_for_file`].
-pub fn hard_split_overlap(max_chars: usize) -> usize {
+/// Clamp a declared profile overlap to a legal hard-split overlap.
+///
+/// The caller supplies the profile value; there is no second overlap formula
+/// for hard-split chunks.
+pub fn hard_split_overlap(max_chars: usize, overlap: usize) -> usize {
     let max_chars = max_chars.max(1);
-    (max_chars / 8).max(200).min(max_chars.saturating_sub(1))
+    overlap.min(max_chars.saturating_sub(1))
 }
 
 /// Hard-split `text` on char boundaries into pieces of at most `max_chars`
@@ -308,13 +313,7 @@ fn path_resolves_under_root(path: &Path, root: &Path) -> bool {
 // ── Build chunks for file (the main entry point) ────────────────────────────
 
 pub fn build_chunks_for_file(path: &Path, root: &Path) -> Vec<serde_json::Value> {
-    let (max_chars, _overlap) = chunk_limits_for_file(path);
-    // The declared overlap is discarded and recomputed here, so code runs at 312
-    // instead of the 400 the constant states. Preserved verbatim on purpose: it
-    // changes chunk boundaries, so it is closed together with the geometry
-    // change from the bench, in one pass that regenerates the goldens.
-    // ARCHITETTURA §6.5.
-    let overlap = (max_chars / 8).max(200);
+    let (max_chars, overlap) = chunk_limits_for_file(path);
     build_chunks_for_file_with_limits(path, root, max_chars, overlap)
 }
 
@@ -341,9 +340,13 @@ pub fn build_chunks_for_file_with_limits(
         .to_string_lossy()
         .replace('\\', "/");
 
-    if let Some(semantic_chunks) =
-        ast_chunker::chunk_file_semantically(path, root, Some(&text), max_chars)
-    {
+    if let Some(semantic_chunks) = ast_chunker::chunk_file_semantically_with_overlap(
+        path,
+        root,
+        Some(&text),
+        max_chars,
+        overlap,
+    ) {
         return semantic_chunks;
     }
 
@@ -462,7 +465,7 @@ mod with_limits_tests {
     }
 
     #[test]
-    fn old_path_matches_with_limits_when_overlap_is_the_recomputed_formula() {
+    fn default_path_matches_with_limits_when_overlap_is_declared() {
         let dir = tempdir().unwrap();
         let root = dir.path();
         let path = root.join("note.txt");
@@ -472,9 +475,8 @@ mod with_limits_tests {
         fs::write(&path, &text).unwrap();
 
         let old = build_chunks_for_file(&path, root);
-        let (max_chars, _declared) = chunk_limits_for_file(&path);
-        let recomputed = (max_chars / 8).max(200);
-        let new = build_chunks_for_file_with_limits(&path, root, max_chars, recomputed);
+        let (max_chars, declared) = chunk_limits_for_file(&path);
+        let new = build_chunks_for_file_with_limits(&path, root, max_chars, declared);
         assert_eq!(old, new);
     }
 }
@@ -486,7 +488,7 @@ mod split_text_tests {
     #[test]
     fn hard_split_single_line_40k_respects_max_chars() {
         let max_chars = CHUNK_CODE_MAX_CHARS;
-        let overlap = hard_split_overlap(max_chars);
+        let overlap = hard_split_overlap(max_chars, CHUNK_CODE_OVERLAP_CHARS);
         let original: String = (0..40_000)
             .map(|i| char::from(b'A' + (i % 26) as u8))
             .collect();
@@ -534,5 +536,17 @@ mod split_text_tests {
         // Offsets must cover the full range with only overlap gaps.
         assert_eq!(pieces[0].0, 0);
         assert_eq!(pieces.last().unwrap().1, original.chars().count());
+    }
+
+    #[test]
+    fn production_geometry_uses_declared_code_overlap() {
+        assert_eq!(
+            chunk_limits_for_file(Path::new("src/example.py")),
+            (CHUNK_CODE_MAX_CHARS, CHUNK_CODE_OVERLAP_CHARS)
+        );
+        let fingerprint = chunk_geometry_fingerprint();
+        assert!(fingerprint.contains("\"code_max_chars\":1024"));
+        assert!(fingerprint.contains("\"code_overlap_chars\":164"));
+        assert!(!fingerprint.contains("max_chars/8"));
     }
 }

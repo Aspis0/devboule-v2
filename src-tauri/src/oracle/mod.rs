@@ -27,7 +27,7 @@ const ORACLE_ROOT_ENV: &str = "DEVBOULE_ORACLE_ROOT";
 // Developer-only bundle selector; the project-selected model setting will
 // replace this environment variable when model configuration is introduced.
 const ORACLE_MODEL_ENV: &str = "DEVBOULE_ORACLE_MODEL";
-const DEFAULT_ORACLE_MODEL: &str = "qwen3-onnx";
+const DEFAULT_ORACLE_MODEL: &str = "bge-small-en-v1.5";
 const PAGE_SIZE: usize = 50;
 const QUERY_LIMIT: usize = 10;
 

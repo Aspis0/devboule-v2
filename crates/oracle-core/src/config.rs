@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 /// Last-resort embedding width for paths that have neither a loaded model nor
 /// stored vectors (for example the dimensionless hash fallback or a legacy
 /// empty-schema test). Model-backed indexing/querying must use model metadata.
-pub const EMBED_DIMS: usize = 1024;
+pub const EMBED_DIMS: usize = 384;
 
 /// Store directory / file names (relative to the Oracle data dir).
 /// Mirrors the `*_PATH` constants in `oracle/config.py`.
@@ -42,17 +42,17 @@ pub const MAX_BOUNDED_LIMIT: usize = 100;
 
 /// Raw (non-semantic-prefix) chunk-profile version string.
 ///
-/// Bumped 2026-07-25 (`w2556`) to invalidate indexes built with the
-/// pre-windowing (truncating) embedder and the pre-hard-split chunker.
-/// `w2556` encodes [`crate::embed::EMBED_WINDOW_BYTES`].
-pub const RAW_CHUNK_PROFILE_VERSION: &str = "adaptive-qwen3-2026-07-25-w2556";
+/// Bumped 2026-08-29 to invalidate indexes built with the previous model and
+/// token-window recipe. `t512` records bge-small-en-v1.5's token limit.
+pub const RAW_CHUNK_PROFILE_VERSION: &str = "adaptive-bge-small-en-v1.5-2026-08-29-t512";
 
 /// Semantic-prefix chunk-profile version string (the default).
 ///
-/// Bumped 2026-07-25 (`w2556`) to invalidate indexes built with the
-/// pre-windowing (truncating) embedder and the pre-hard-split chunker.
-/// `w2556` encodes [`crate::embed::EMBED_WINDOW_BYTES`].
-pub const SEMANTIC_PREFIX_PROFILE_VERSION: &str = "semantic-prefix-qwen3-2026-07-25-c2500-w2556";
+/// Bumped 2026-08-29 to invalidate indexes built with the previous model and
+/// chunk geometry. `c1024-o164` records the active code-chunk geometry and
+/// `t512` records bge-small-en-v1.5's token limit.
+pub const SEMANTIC_PREFIX_PROFILE_VERSION: &str =
+    "semantic-prefix-bge-small-en-v1.5-2026-08-29-c1024-o164-t512";
 
 /// Profile names that normalize to the semantic-prefix profile.
 /// Mirrors `SEMANTIC_PROFILE_NAMES` in `oracle/ingestion/retrieval_text.py`.
@@ -80,8 +80,7 @@ fn active_embed_profile() -> String {
 ///
 /// Mirrors `oracle/ingestion/retrieval_text.py::active_chunk_profile_version`.
 /// With no `profile` override and the default `ORACLE_EMBED_PROFILE`
-/// (`"semantic-prefix-v2"`) this returns exactly
-/// `"semantic-prefix-qwen3-2026-07-25-c2500-w2556"`.
+/// (`"semantic-prefix-v2"`) this returns the active semantic-prefix version.
 pub fn active_chunk_profile_version(profile: Option<&str>) -> String {
     let effective = match profile {
         Some(p) => normalize_profile(p),
