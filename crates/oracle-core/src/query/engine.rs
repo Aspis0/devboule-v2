@@ -16,6 +16,7 @@ use crate::config;
 use crate::ingest::retrieval_text;
 use crate::query::lexical::{self, ScoredChunk};
 use crate::query::redact::redact_secret_tokens;
+use crate::query::reranker::{self, SharedReranker};
 use crate::store::lance::{hash_embed, LanceHit, LanceStore};
 use crate::store::sqlite::{FileChunk, NodeCard, SqliteStore};
 
@@ -34,8 +35,9 @@ fn rrf_contribution(rank: usize) -> f64 {
 /// RRF makes ties common: its scores come from a small discrete set of ranks.
 fn sort_context_rows(rows: &mut [ContextChunk]) {
     rows.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
+        b.rerank_score
+            .unwrap_or(b.score)
+            .partial_cmp(&a.rerank_score.unwrap_or(a.score))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.file_source.cmp(&b.file_source))
             .then_with(|| a.chunk_index.cmp(&b.chunk_index))
@@ -99,6 +101,10 @@ pub struct ContextChunk {
     pub end_char: usize,
     /// Reciprocal-rank-fusion score; it is not a cosine similarity.
     pub score: f64,
+    /// Raw query/document score when an optional cross-encoder reordered this
+    /// candidate. It is query-time metadata and never enters the index recipe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_score: Option<f64>,
     pub retrieval: String,
     pub text: String,
     pub last_modified: String,
@@ -370,6 +376,7 @@ pub struct QueryEngine {
     pub vectors: LanceStore,
     pub chunk_vectors: Option<LanceStore>,
     pub file_vectors: Option<LanceStore>,
+    pub reranker: Option<SharedReranker>,
 }
 
 impl QueryEngine {
@@ -385,7 +392,16 @@ impl QueryEngine {
             vectors,
             chunk_vectors,
             file_vectors,
+            reranker: None,
         }
+    }
+
+    /// Attach an optional lazy reranker. The handle is shareable so a Tauri
+    /// runtime can keep one loaded ONNX session across independently opened
+    /// query engines.
+    pub fn with_reranker(mut self, reranker: Option<SharedReranker>) -> Self {
+        self.reranker = reranker;
+        self
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
@@ -567,7 +583,12 @@ impl QueryEngine {
         if !prefer_lexical {
             if let Some(ref chunk_vectors) = self.chunk_vectors {
                 let query_vec = self.embed_query(embedder, query).await?;
-                let hits = chunk_vectors.search(&query_vec, limit).await?;
+                let search_limit = if self.reranker.is_some() {
+                    limit.max(reranker::resolve_candidate_limit())
+                } else {
+                    limit
+                };
+                let hits = chunk_vectors.search(&query_vec, search_limit).await?;
                 // Rank counts kept hits only. A filtered-out hit must not burn a
                 // rank, or dense contributions shrink whenever filters are active
                 // while the lexical side — already filtered before scoring — keeps
@@ -609,6 +630,25 @@ impl QueryEngine {
         if !combined.is_empty() {
             let mut rows: Vec<ContextChunk> = combined.into_values().collect();
             sort_context_rows(&mut rows);
+            if let Some(ref reranker) = self.reranker {
+                let candidate_count = reranker::resolve_candidate_limit().min(rows.len());
+                let mut tail = rows.split_off(candidate_count);
+                let documents: Vec<String> = rows.iter().map(|row| row.text.clone()).collect();
+                let scores = reranker.score_pairs(query, &documents)?;
+                if scores.len() != rows.len() {
+                    anyhow::bail!(
+                        "reranker returned {} scores for {} candidates",
+                        scores.len(),
+                        rows.len()
+                    );
+                }
+                for (row, score) in rows.iter_mut().zip(scores) {
+                    row.rerank_score = Some(score);
+                    row.retrieval = "dense+reranked".to_string();
+                }
+                sort_context_rows(&mut rows);
+                rows.append(&mut tail);
+            }
             rows.truncate(limit.max(1));
             return Ok(rows);
         }
@@ -1321,6 +1361,7 @@ impl ContextChunk {
             start_char: chunk.start_char as usize,
             end_char: chunk.end_char as usize,
             score,
+            rerank_score: None,
             retrieval: retrieval.to_string(),
             // Redact at the retrieval serialization boundary so citations
             // (file + line, previews) never carry secret-looking tokens.
@@ -1475,6 +1516,7 @@ mod tests {
             start_char: 0,
             end_char: text.len(),
             score: 1.0,
+            rerank_score: None,
             retrieval: "lexical".into(),
             text,
             last_modified: String::new(),

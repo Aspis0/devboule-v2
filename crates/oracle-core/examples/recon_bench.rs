@@ -7,6 +7,8 @@
 //!          [--n K] [--queries F.json] --out F.json   timed embedding via OnnxEmbedder
 //!   eval   --chunks F.jsonl --queries F.json --dense F.json [--ref F.json] [--k 5]
 //!                                                    lexical vs dense vs hybrid_max vs hybrid_rrf + fidelity
+//!   rerank --chunks F.jsonl --queries F.json --dense F.json --reranker DIR
+//!                                                    dense reranking at candidates=20 and 50
 //!          --k controls the requested chunk candidate depth (3*k); it is not a
 //!          file-level recall cutoff. Eval metrics keep enough candidates to
 //!          measure recall through 50 distinct files and MRR through 10 files.
@@ -1196,6 +1198,306 @@ fn run_eval() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn percentile_ms(values: &[u128], p: f64) -> u128 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let index = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted[index.min(sorted.len() - 1)]
+}
+
+fn metric_for_ranked(
+    ranked: &[(String, f64)],
+    file_of: &HashMap<&str, &str>,
+    targets: &[String],
+) -> serde_json::Value {
+    let files: Vec<String> = ranked
+        .iter()
+        .map(|(id, _)| file_of.get(id.as_str()).copied().unwrap_or(""))
+        .map(String::from)
+        .filter(|f| !f.is_empty())
+        .collect();
+    let mut seen = HashSet::new();
+    let distinct: Vec<String> = files
+        .into_iter()
+        .filter(|f| seen.insert(f.clone()))
+        .collect();
+    let hits_at = |cutoff: usize| {
+        targets
+            .iter()
+            .filter(|target| distinct.iter().take(cutoff).any(|file| file == *target))
+            .count()
+    };
+    let recall_at = |cutoff: usize| {
+        if targets.is_empty() {
+            0.0
+        } else {
+            hits_at(cutoff) as f64 / targets.len() as f64
+        }
+    };
+    let hits5 = hits_at(5);
+    let mut mrr = 0.0;
+    for (index, file) in distinct.iter().take(10).enumerate() {
+        if targets.contains(file) {
+            mrr = 1.0 / (index as f64 + 1.0);
+            break;
+        }
+    }
+    serde_json::json!({
+        "recall@5": recall_at(5),
+        "recall@10": recall_at(10),
+        "recall@20": recall_at(20),
+        "recall@50": recall_at(50),
+        "hit@5": if hits5 > 0 { 1.0 } else { 0.0 },
+        "mrr@10": mrr,
+    })
+}
+
+fn mean_metric(rows: &[serde_json::Value], mode: &str, key: &str) -> f64 {
+    let values: Vec<f64> = rows
+        .iter()
+        .filter_map(|row| row[mode][key].as_f64())
+        .collect();
+    if values.is_empty() {
+        0.0
+    } else {
+        values.iter().sum::<f64>() / values.len() as f64
+    }
+}
+
+fn metric_pack(rows: &[serde_json::Value], mode: &str) -> serde_json::Value {
+    serde_json::json!({
+        "recall@5": mean_metric(rows, mode, "recall@5"),
+        "mrr@10": mean_metric(rows, mode, "mrr@10"),
+    })
+}
+
+/// Evaluate the actual query-time ONNX reranker over the frozen dense ranking.
+/// The 20/50 depths are separate passes over the same dense candidates so the
+/// latency and quality trade-off is visible instead of being hidden in one
+/// chosen cutoff.
+fn run_rerank_eval() -> anyhow::Result<()> {
+    let chunks_file = PathBuf::from(arg_of("--chunks").expect("--chunks"));
+    let queries_file = PathBuf::from(arg_of("--queries").expect("--queries"));
+    let dense_file = PathBuf::from(arg_of("--dense").expect("--dense"));
+    let reranker_dir = PathBuf::from(arg_of("--reranker").expect("--reranker"));
+    let out = arg_of("--out").map(PathBuf::from);
+
+    let records = read_jsonl(&chunks_file)?;
+    let queries = load_eval_queries(&queries_file)?;
+    let dense: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&dense_file)?)?;
+    let dvecs: Vec<Vec<f32>> = dense["vectors"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("dense file has no vectors[]"))?
+        .iter()
+        .map(|v| {
+            v.as_array()
+                .ok_or_else(|| anyhow::anyhow!("dense vector is not an array"))
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+                        .collect()
+                })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let query_vectors: Vec<Vec<f32>> = dense["query_vectors"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("dense file has no query_vectors[]"))?
+        .iter()
+        .map(|v| {
+            v.as_array()
+                .ok_or_else(|| anyhow::anyhow!("dense query vector is not an array"))
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+                        .collect()
+                })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let ids: Vec<String> = dense["chunk_ids"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("dense file has no chunk_ids[]"))?
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect();
+    if query_vectors.len() != queries.len() {
+        anyhow::bail!(
+            "dense query_vectors has {} rows but queries has {}",
+            query_vectors.len(),
+            queries.len()
+        );
+    }
+    if dvecs.len() != ids.len() {
+        anyhow::bail!("dense vectors and chunk_ids have different lengths");
+    }
+    let vec_of: HashMap<&str, &[f32]> = ids
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| dvecs.get(i).map(|v| (id.as_str(), v.as_slice())))
+        .collect();
+    let file_of: HashMap<&str, &str> = records
+        .iter()
+        .filter_map(|r| {
+            r["id"]
+                .as_str()
+                .map(|id| (id, r["file_sorgente"].as_str().unwrap_or("")))
+        })
+        .collect();
+    let text_of: HashMap<&str, &str> = records
+        .iter()
+        .filter_map(|r| {
+            r["id"]
+                .as_str()
+                .map(|id| (id, r["text"].as_str().unwrap_or("")))
+        })
+        .collect();
+
+    let mut dense_rankings: Vec<Vec<(String, f64)>> = Vec::with_capacity(queries.len());
+    for query_vector in &query_vectors {
+        let mut ranking: Vec<(String, f64)> = ids
+            .iter()
+            .filter_map(|id| {
+                vec_of
+                    .get(id.as_str())
+                    .map(|vector| (id.clone(), cosine(query_vector, vector)))
+            })
+            .collect();
+        ranking.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        dense_rankings.push(ranking);
+    }
+
+    let load_start = Instant::now();
+    let mut reranker = oracle_core::query::reranker::OnnxReranker::load(&reranker_dir, EpArg::Cpu)?;
+    let load_total_ms = load_start.elapsed().as_millis();
+    let warmup_start = Instant::now();
+    reranker.score_pairs("reranker warmup", &["fn warmup() {}".to_string()])?;
+    let warmup_ms = warmup_start.elapsed().as_millis();
+
+    let baseline_rows: Vec<serde_json::Value> = queries
+        .iter()
+        .zip(&dense_rankings)
+        .map(|(query, ranking)| {
+            let targets: Vec<String> = query["targets"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            serde_json::json!({
+                "q": query["q"].as_str().unwrap_or(""),
+                "kind": query["kind"].as_str().unwrap_or(""),
+                "targets": targets,
+                "dense": metric_for_ranked(ranking, &file_of, &targets),
+            })
+        })
+        .collect();
+
+    let sampler = CpuSampler::start();
+    let mut latency_by_depth: HashMap<String, Vec<u128>> = HashMap::new();
+    let mut reranked_rows: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    for depth in [20usize, 50usize] {
+        let key = depth.to_string();
+        let mut latencies = Vec::with_capacity(queries.len());
+        let mut rows = Vec::with_capacity(queries.len());
+        for (query, dense_ranking) in queries.iter().zip(&dense_rankings) {
+            let query_text = query["q"].as_str().unwrap_or("");
+            let targets: Vec<String> = query["targets"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let candidate_count = depth.min(dense_ranking.len());
+            let documents: Vec<String> = dense_ranking
+                .iter()
+                .take(candidate_count)
+                .map(|(id, _)| text_of.get(id.as_str()).copied().unwrap_or("").to_string())
+                .collect();
+            let t0 = Instant::now();
+            let scores = reranker.score_pairs(query_text, &documents)?;
+            latencies.push(t0.elapsed().as_millis());
+            if scores.len() != candidate_count {
+                anyhow::bail!(
+                    "reranker returned {} scores for {} candidates at depth {depth}",
+                    scores.len(),
+                    candidate_count
+                );
+            }
+            let mut prefix: Vec<(String, f64)> = dense_ranking
+                .iter()
+                .take(candidate_count)
+                .zip(scores)
+                .map(|((id, _), score)| (id.clone(), score))
+                .collect();
+            prefix.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut final_ranking = prefix;
+            final_ranking.extend(dense_ranking.iter().skip(candidate_count).cloned());
+            rows.push(serde_json::json!({
+                "q": query_text,
+                "kind": query["kind"].as_str().unwrap_or(""),
+                "targets": targets,
+                "reranked": metric_for_ranked(&final_ranking, &file_of, &targets),
+            }));
+        }
+        latency_by_depth.insert(key.clone(), latencies);
+        reranked_rows.insert(key, rows);
+    }
+    let samples = sampler.stop();
+
+    let latency_json = |depth: usize| {
+        let values = latency_by_depth
+            .get(&depth.to_string())
+            .cloned()
+            .unwrap_or_default();
+        let total: u128 = values.iter().sum();
+        serde_json::json!({
+            "n_queries": values.len(),
+            "total_ms": total,
+            "avg_ms": if values.is_empty() { 0.0 } else { total as f64 / values.len() as f64 },
+            "p50_ms": percentile_ms(&values, 0.50),
+            "p95_ms": percentile_ms(&values, 0.95),
+            "p99_ms": percentile_ms(&values, 0.99),
+            "pairs": values.len() * depth,
+            "pairs_per_sec": if total > 0 { (values.len() * depth) as f64 * 1000.0 / total as f64 } else { 0.0 },
+        })
+    };
+    let empty_rows: Vec<serde_json::Value> = Vec::new();
+    let result = serde_json::json!({
+        "model_id": reranker.config().id,
+        "model_dir": reranker_dir,
+        "onnx_graph": reranker.config().onnx_graph,
+        "max_seq_tokens": reranker.config().max_seq_tokens,
+        "load_ms": load_total_ms,
+        "warmup_ms": warmup_ms,
+        "n_queries": queries.len(),
+        "baseline": {
+            "recall@5": mean_metric(&baseline_rows, "dense", "recall@5"),
+            "mrr@10": mean_metric(&baseline_rows, "dense", "mrr@10"),
+        },
+        "reranked": {
+            "20": metric_pack(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked"),
+            "50": metric_pack(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked"),
+        },
+        "latency_added_ms": {"20": latency_json(20), "50": latency_json(50)},
+        "cpu_during_rerank": summarize(&samples),
+    });
+    if let Some(path) = out {
+        std::fs::write(&path, serde_json::to_string_pretty(&result)?)?;
+    }
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 // ───────────────────────────── store mode ─────────────────────────────
 
 fn run_store() -> anyhow::Result<()> {
@@ -1287,6 +1589,8 @@ fn print_usage() {
   eval --chunks F.jsonl --queries F.json --dense F.json [--ref F.json] [--k K]\n\
        --k controls requested chunk candidate depth (3*K); it is not the file-level recall cutoff.\n\
        Eval reports recall@5/@10/@20/@50 on distinct files and mrr@10 on distinct files.\n\
+  rerank --chunks F.jsonl --queries F.json --dense F.json --reranker DIR [--out F.json]\n\
+       Scores the dense top-20 and top-50 with the declared ONNX cross-encoder.\n\
   store --chunks F.jsonl --out DIR"
     );
 }
@@ -1304,6 +1608,7 @@ fn main() -> anyhow::Result<()> {
         "corpus" => run_corpus(),
         "embed" => run_embed(),
         "eval" => run_eval(),
+        "rerank" => run_rerank_eval(),
         "store" => run_store(),
         _ => {
             print_usage();

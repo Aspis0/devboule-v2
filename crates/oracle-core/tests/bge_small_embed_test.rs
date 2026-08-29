@@ -1,6 +1,6 @@
-//! bge-small-en-v1.5 ONNX path (phase 3). Skips when the local recon bundle
-//! is not on disk — CI without models still passes; a machine with
-//! `recon/models/bge-small-en-v1.5` exercises the real graph.
+//! bge-small-en-v1.5 ONNX path (phase 3). The tests that open a real graph are
+//! operator-run and ignored in CI. Run them with:
+//!   cargo test -p oracle-core --test bge_small_embed_test -- --ignored --nocapture
 
 use oracle_core::embed::{DeclaredModelConfig, PoolingStrategy};
 use oracle_core::onnx_embedder::{EpArg, OnnxEmbedder};
@@ -41,6 +41,7 @@ fn bge_declared_config_is_cls_without_semantic_prefix() {
 }
 
 #[test]
+#[ignore]
 fn bge_small_embeds_384_unit_vectors() {
     let Some(dir) = recon_model("bge-small-en-v1.5") else {
         eprintln!("skipping: recon/models/bge-small-en-v1.5 not present");
@@ -76,6 +77,7 @@ fn bge_small_embeds_384_unit_vectors() {
 }
 
 #[test]
+#[ignore]
 fn qwen3_descriptor_matches_hardcoded_identity_when_present() {
     let Some(dir) = recon_model("qwen3-onnx") else {
         eprintln!("skipping: recon/models/qwen3-onnx not present");

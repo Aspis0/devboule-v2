@@ -62,6 +62,36 @@ index belonging to the project it describes.
 The administration panel is in place; the engine behind it is being written,
 and is the next substantial piece of work.
 
+### Optional query-time reranking
+
+Oracle can optionally reorder the dense candidate set with a local ONNX
+cross-encoder. The bundle is lazy-loaded from
+`<oracle-data-root>/models/ms-marco-TinyBERT-L-2-v2`, or from
+`ORACLE_RERANKER_MODEL_DIR`. If that directory is absent, retrieval is exactly
+the dense path and the stored index is unchanged. `ORACLE_RERANK_CANDIDATES`
+controls the query-time depth (default 50).
+
+The model bundle must describe its own non-inferable facts in
+`model_config.json`, for example:
+
+```json
+{
+  "id": "ms-marco-TinyBERT-L-2-v2",
+  "onnx_graph": "onnx/model_int8.onnx",
+  "tokenizer_file": "tokenizer.json",
+  "max_seq_tokens": 512,
+  "pair": {
+    "mode": "tokenizer_pair",
+    "first": "query",
+    "second": "document"
+  }
+}
+```
+
+The reranker is query-time metadata and is intentionally not part of the
+embedding recipe: it does not change vectors, ANN contents, or index
+compatibility.
+
 ## Polis
 
 Polis draws a repository as an isometric city. Directories become districts,

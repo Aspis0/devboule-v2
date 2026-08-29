@@ -16,9 +16,11 @@ use oracle_core::embed::{
     configured_model_present, default_backend, BackendChoice, CancelFlag, EmbedderPool,
 };
 use oracle_core::ingest::indexer::{self, IndexStatusSnapshot};
+use oracle_core::onnx_embedder::EpArg;
 use oracle_core::query::engine::{ContextChunk, QueryEngine};
 use oracle_core::query::pool_embedder::PoolQueryEmbedder;
 use oracle_core::query::redact::redact_secret_tokens;
+use oracle_core::query::reranker::{self, RerankerHandle, SharedReranker};
 use oracle_core::store::lance::LanceStore;
 use oracle_core::store::manifest::{self, load_manifest, manifest_files_for_root};
 use oracle_core::store::sqlite::SqliteStore;
@@ -45,6 +47,7 @@ pub struct OracleRuntime {
     root_source: Mutex<String>,
     paths: Mutex<Option<ResolvedOraclePaths>>,
     pool: Mutex<Option<Arc<EmbedderPool>>>,
+    reranker: Mutex<Option<SharedReranker>>,
     model_id: String,
     settings_path: Mutex<Option<PathBuf>>,
     model_download: Arc<Mutex<ModelDownloadState>>,
@@ -173,6 +176,7 @@ impl OracleRuntime {
             root_source: Mutex::new("unset".to_string()),
             paths: Mutex::new(None),
             pool: Mutex::new(None),
+            reranker: Mutex::new(None),
             model_download: Arc::new(Mutex::new(ModelDownloadState::new(
                 model_id.clone(),
                 PathBuf::new(),
@@ -281,6 +285,9 @@ impl OracleRuntime {
         let data = OracleDataPaths::from_root(&root);
         let model_dir = oracle_core::model_download::model_dir_for(&data.root, &self.model_id);
         let pool = Arc::new(EmbedderPool::new(default_backend(model_dir.clone())));
+        let reranker =
+            RerankerHandle::if_present(reranker::default_model_dir(&data.root), EpArg::Cpu)
+                .map(Arc::new);
         let paths = ResolvedOraclePaths {
             workspace: root.clone(),
             data,
@@ -288,6 +295,10 @@ impl OracleRuntime {
         *self.root.lock().unwrap_or_else(|error| error.into_inner()) = Some(root);
         *self.paths.lock().unwrap_or_else(|error| error.into_inner()) = Some(paths);
         *self.pool.lock().unwrap_or_else(|error| error.into_inner()) = Some(pool.clone());
+        *self
+            .reranker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = reranker;
         let mut model_download = ModelDownloadState::new(self.model_id.clone(), model_dir);
         if matches!(pool.backend(), BackendChoice::Candle { .. }) {
             model_download.status.state = OracleModelState::NotApplicable;
@@ -450,6 +461,13 @@ impl OracleRuntime {
                 "Oracle embedding is unavailable until you choose an existing workspace folder in the Oracle panel.",
             )
         })
+    }
+
+    fn reranker(&self) -> Option<SharedReranker> {
+        self.reranker
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     fn model_status(&self) -> OracleModelStatus {
@@ -887,7 +905,7 @@ async fn oracle_doctor_inner(runtime: &OracleRuntime) -> Result<OracleHealth, Co
     let model_status = runtime.model_status();
     checks.push(model_health_check(pool.backend(), &model_status));
 
-    let query_check = match open_engine(&paths) {
+    let query_check = match open_engine(&paths, None) {
         Ok(engine) => match engine.health().await {
             Ok(_) => health_check("query", "ok", Some("Oracle query stores are readable.")),
             Err(_) => health_check(
@@ -1008,7 +1026,7 @@ async fn oracle_ask_inner(
     }
 
     let paths = runtime.paths()?;
-    let engine = open_engine(&paths)?;
+    let engine = open_engine(&paths, runtime.reranker())?;
     let pool = runtime.pool()?;
     runtime.start_model_download(false)?;
     ensure_model_is_available(pool.backend(), &runtime.model_status())?;
@@ -1273,7 +1291,10 @@ async fn read_index_snapshot(
     .map_err(|error| core_error("reading Oracle index status failed", error))
 }
 
-fn open_engine(paths: &ResolvedOraclePaths) -> Result<QueryEngine, CommandError> {
+fn open_engine(
+    paths: &ResolvedOraclePaths,
+    reranker: Option<SharedReranker>,
+) -> Result<QueryEngine, CommandError> {
     let sqlite = SqliteStore::new(&paths.data.metadata)
         .map_err(|error| core_error("opening Oracle metadata store failed", error))?;
     Ok(QueryEngine::new(
@@ -1281,7 +1302,8 @@ fn open_engine(paths: &ResolvedOraclePaths) -> Result<QueryEngine, CommandError>
         LanceStore::new(&paths.data.vectors),
         Some(LanceStore::new(&paths.data.chunks)),
         Some(LanceStore::new(&paths.data.file_vectors)),
-    ))
+    )
+    .with_reranker(reranker))
 }
 
 fn status_from_snapshot(
