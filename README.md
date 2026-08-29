@@ -36,9 +36,9 @@ What works today:
   what the daemon and the journal were built for.
 - **Settings** — providers, projects, devices and Oracle administration.
 
-What is drawn but not wired: the agent conversation, the provider inventory,
-and the Oracle panel all still read from fixed sample data. The boundary
-between those and real IPC is deliberate and marked in the source.
+What is drawn but not wired: the agent conversation and the provider inventory
+still read from fixed sample data. The boundary between those and real IPC is
+deliberate and marked in the source.
 
 Developed and tested on Windows. Tauri itself is cross-platform, but no other
 platform has been verified, so treat them as unsupported for now.
@@ -59,17 +59,44 @@ stale index should cost a wasted lookup, never a confident wrong answer.
 It is meant to run locally: indexing and retrieval on your machine, with the
 index belonging to the project it describes.
 
-The administration panel is in place; the engine behind it is being written,
-and is the next substantial piece of work.
+The Oracle panel is wired to the local engine. It downloads the models it needs,
+indexes the selected folder, and returns ranked source pointers through typed
+Oracle IPC.
+
+### Using Oracle
+
+Oracle is for the person reading a codebase, not just for configuring the app:
+
+1. Choose the folder you want Oracle to understand.
+2. Oracle automatically downloads its two local models — about **34 MB** for
+   embeddings and **5 MB** for reranking.
+3. Start the first index pass. Reading and chunking a large folder can take
+   several minutes.
+4. When indexing finishes, ask a question in natural language. Oracle returns
+   file paths, line ranges, and source spans to open; it does not generate an
+   answer in place of the source.
+
+If setup fails:
+
+- **No network:** reconnect, then retry the model download.
+- **Folder unreadable:** choose a directory you can open and read.
+- **Disk full:** free at least 40 MB, then retry.
+
+The panel keeps these failures visible and distinguishes an empty index from a
+query with no matching source spans. If the optional reranker is unavailable,
+Oracle still searches densely and says so explicitly; retry it when the model
+download can complete.
 
 ### Optional query-time reranking
 
-Oracle can optionally reorder the dense candidate set with a local ONNX
-cross-encoder. The bundle is lazy-loaded from
+Oracle automatically downloads the reranker alongside the embedding model on
+first setup. It reorders the dense candidate set with a local ONNX
+cross-encoder. The bundle is loaded from
 `<oracle-data-root>/models/ms-marco-TinyBERT-L-2-v2`, or from
 `ORACLE_RERANKER_MODEL_DIR`. If that directory is absent, retrieval is exactly
-the dense path and the stored index is unchanged. `ORACLE_RERANK_CANDIDATES`
-controls the query-time depth (default 50).
+the dense path and the stored index is unchanged; the panel reports this
+degraded mode rather than hiding it. `ORACLE_RERANK_CANDIDATES` controls the
+query-time depth (default 50).
 
 The model bundle must describe its own non-inferable facts in
 `model_config.json`, for example:

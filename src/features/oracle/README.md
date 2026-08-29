@@ -9,8 +9,10 @@ unredacted source text.
 It does not generate or stream an answer: the person or agent reads the cited
 spans directly.
 
-The panel also keeps the typed index status, health checks, file tabs, and
-declared resource cap visible. All values and actions come through the typed
-Oracle IPC wrappers. Progress is derived from the indexed and total file
-counts because the current contract does not expose a separate progress
-command.
+The panel stages setup so one action is dominant at a time: choose a folder,
+download the local models, index, then ask. Once Oracle is ready, the question
+and results lead; typed index status, health checks, model state, file tabs,
+and the declared resource cap remain available in the secondary administration
+section. All values and actions come through the typed Oracle IPC wrappers.
+Progress is derived from the indexed and total file counts because the current
+contract does not expose a separate progress command.

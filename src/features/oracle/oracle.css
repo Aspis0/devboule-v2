@@ -1,176 +1,203 @@
 .oracle-panel {
   min-width: 0;
+  padding-bottom: 18px;
+}
+
+.oracle-page-heading {
+  margin-bottom: 18px;
 }
 
 .oracle-page-heading h2 {
-  margin: 0;
+  margin: 3px 0 0;
   font-family: "Fraunces", Georgia, serif;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 600;
 }
 
-.oracle-page-heading p {
-  max-width: 560px;
-  margin: 5px 0 0;
+.oracle-page-heading p,
+.oracle-stage-description,
+.oracle-ready-intro p,
+.oracle-index-progress p {
   color: var(--ink-soft);
   font-size: 12.5px;
   line-height: 1.6;
 }
 
-.oracle-health {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 16px;
-  padding: 8px 0 0;
+.oracle-page-heading p {
+  max-width: 560px;
+  margin: 5px 0 0;
 }
 
-.oracle-server-state,
-.oracle-checks,
-.oracle-check,
-.oracle-folder-row,
-.oracle-job-heading,
-.oracle-actions,
-.oracle-file-heading,
-.oracle-file-tabs {
-  display: flex;
-  align-items: center;
+.oracle-eyebrow {
+  color: var(--silence);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
-.oracle-server-state {
+.oracle-stage-card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 14px 30px rgba(var(--ink-rgb), 0.06);
+}
+
+.oracle-stage-rail,
+.oracle-setup-rail {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  padding: 14px 18px;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.oracle-setup-step {
+  display: flex;
+  align-items: center;
   gap: 7px;
-  font-size: 12px;
+  min-width: 0;
+  color: var(--silence);
+  font-size: 10px;
   font-weight: 600;
+  text-transform: uppercase;
 }
 
-.oracle-server-dot,
-.oracle-check-dot {
-  flex: none;
-  border-radius: 999px;
-}
-
-.oracle-server-dot {
-  width: 8px;
-  height: 8px;
-}
-
-.oracle-server-dot-indexing {
-  background: var(--ochre);
-}
-
-.oracle-server-dot-running,
-.oracle-check-dot-ok {
-  background: var(--green);
-}
-
-.oracle-server-dot-starting {
+.oracle-setup-step:not(:last-child)::after {
+  height: 1px;
+  margin: 0 12px 0 auto;
+  content: "";
   background: var(--border-strong);
 }
 
-.oracle-server-dot-stopped {
-  background: var(--danger);
-}
-
-.oracle-checks {
-  gap: 9px;
-}
-
-.oracle-check {
-  gap: 5px;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
-}
-
-.oracle-check-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.oracle-check-dot-failed {
-  background: var(--danger);
-}
-
-.oracle-check-dot-unknown {
-  background: var(--ochre);
-}
-
-.oracle-health-divider {
-  width: 1px;
-  height: 16px;
-  background: var(--border);
-}
-
-.oracle-health-summary {
+.oracle-setup-step-number {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  place-items: center;
   color: var(--ink-soft);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-}
-
-.oracle-health-state {
-  color: var(--ink-soft);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
-}
-
-.oracle-health-state-healthy {
-  color: var(--green-deep);
-}
-
-.oracle-health-state-degraded {
-  color: var(--ochre-deep);
-}
-
-.oracle-health-state-unavailable {
-  color: var(--danger-deep);
-}
-
-.oracle-doctor-button {
-  margin-left: auto;
-}
-
-.oracle-search {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  margin-top: 20px;
-  padding: 11px 15px;
+  background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 14px;
-  background: var(--surface-muted);
+  border-radius: 999px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
 }
 
-.oracle-search:focus-within {
-  border-color: var(--terracotta);
-}
-
-.oracle-search-mark {
+.oracle-setup-step-current {
   color: var(--terracotta-deep);
-  font-family: "Fraunces", Georgia, serif;
-  font-size: 15px;
 }
 
-.oracle-search input {
-  flex: 1;
+.oracle-setup-step-current .oracle-setup-step-number {
+  color: var(--surface);
+  background: var(--terracotta-deep);
+  border-color: var(--terracotta-deep);
+}
+
+.oracle-setup-step-done .oracle-setup-step-number {
+  color: var(--green-deep);
+  background: color-mix(in srgb, var(--green) 12%, var(--surface));
+  border-color: var(--green);
+}
+
+.oracle-stage-content {
+  max-width: 680px;
+  padding: 30px 32px 32px;
+}
+
+.oracle-stage-content h3,
+.oracle-ready-intro h3,
+.oracle-admin-block h4,
+.oracle-files-heading h4 {
+  margin: 5px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.oracle-stage-description {
+  max-width: 600px;
+  margin: 8px 0 0;
+}
+
+.oracle-stage-body {
+  margin-top: 22px;
+}
+
+.oracle-stage-action {
+  min-width: 130px;
+  height: 34px;
+  margin-top: 16px;
+}
+
+.oracle-path-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 13px;
+  overflow: hidden;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.oracle-path-card code,
+.oracle-ready-context code {
   min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  font-size: 13px;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
 }
 
-.oracle-search input::placeholder {
-  color: var(--silence);
-  opacity: 1;
+.oracle-help-note {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 20px;
+  padding: 11px 13px;
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--selection) 24%, var(--surface));
+  border-left: 3px solid var(--terracotta);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.oracle-help-note strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.oracle-failure-guide {
+  margin-top: 22px;
+  padding-top: 16px;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.oracle-failure-guide strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.oracle-failure-guide ul {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding-left: 17px;
 }
 
 .oracle-button {
-  display: grid;
+  display: inline-grid;
   flex: none;
   place-items: center;
   height: 30px;
   padding: 0 13px;
+  border: 0;
   border-radius: 9px;
   cursor: pointer;
   font-size: 11.5px;
@@ -178,55 +205,67 @@
   white-space: nowrap;
 }
 
+.oracle-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 .oracle-button-primary {
-  height: 30px;
   color: var(--surface);
   background: var(--terracotta-deep);
 }
 
-.oracle-button-primary:hover,
-.oracle-button-primary:focus-visible {
+.oracle-button-primary:hover:not(:disabled),
+.oracle-button-primary:focus-visible:not(:disabled) {
   background: color-mix(in srgb, var(--terracotta-deep) 84%, var(--ink));
 }
 
 .oracle-button-secondary {
   color: var(--ink-soft);
   background: transparent;
-  border: 0;
 }
 
-.oracle-button-secondary:hover,
-.oracle-button-secondary:focus-visible {
+.oracle-button-secondary:hover:not(:disabled),
+.oracle-button-secondary:focus-visible:not(:disabled) {
   color: var(--terracotta-deep);
 }
 
-.oracle-results-card,
-.oracle-workspace-card {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface-muted);
+.oracle-cancel-action {
+  margin-top: 13px;
+  padding: 0;
+}
+
+.oracle-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 16px;
 }
 
 .oracle-state-message,
 .oracle-empty-state,
 .oracle-error-message,
 .oracle-watch-notice {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 7px;
+  padding: 10px 12px;
+  border-radius: 8px;
   font-size: 10.5px;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .oracle-state-message {
   color: var(--ink-soft);
-  background: var(--surface);
+  background: var(--surface-muted);
   border: 1px dashed var(--border-strong);
 }
 
 .oracle-empty-state {
   color: var(--ochre-deep);
   background: color-mix(in srgb, var(--ochre) 10%, var(--surface));
+}
+
+.oracle-empty-state strong {
+  color: var(--ochre-deep);
+  font-weight: 700;
 }
 
 .oracle-error-message {
@@ -239,19 +278,376 @@
   background: color-mix(in srgb, var(--ochre) 10%, var(--surface));
 }
 
-.oracle-file-list {
-  border: 0;
-  border-radius: 0;
+.oracle-model-list {
+  display: grid;
+  gap: 8px;
+}
+
+.oracle-model-card {
+  padding: 13px 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+
+.oracle-model-card-failed {
+  border-color: var(--danger);
+}
+
+.oracle-model-card-heading,
+.oracle-model-progress-copy,
+.oracle-index-progress-heading,
+.oracle-admin-block-heading,
+.oracle-files-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.oracle-model-card-heading > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.oracle-model-card-heading strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.oracle-model-card-heading span,
+.oracle-model-card p,
+.oracle-model-card small,
+.oracle-index-progress p {
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.oracle-model-state {
+  margin-left: auto;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  text-transform: uppercase;
+}
+
+.oracle-model-state-ready,
+.oracle-model-ready {
+  color: var(--green-deep) !important;
+}
+
+.oracle-model-state-failed {
+  color: var(--danger-deep);
+}
+
+.oracle-model-card p {
+  margin: 5px 0 0;
+  line-height: 1.45;
+}
+
+.oracle-model-progress-copy {
+  margin-top: 10px;
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.oracle-model-progress-copy span:last-child {
+  margin-left: auto;
+}
+
+.oracle-model-card .oracle-progress-track {
+  margin-top: 6px;
+}
+
+.oracle-model-card > small {
+  display: block;
+  margin-top: 7px;
+  line-height: 1.45;
+}
+
+.oracle-model-failure {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+  color: var(--danger-deep);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.oracle-model-failure > span {
+  min-width: 0;
+}
+
+.oracle-model-retry-button {
+  height: 24px;
+  margin-left: auto;
+  padding: 0 9px;
+  border: 1px solid var(--danger);
+  font-size: 10px;
+}
+
+.oracle-model-degradation {
+  color: var(--ochre-deep) !important;
+}
+
+.oracle-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--sand);
+}
+
+.oracle-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--terracotta);
+}
+
+.oracle-ready-models {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--green-deep);
+  font-size: 10.5px;
+}
+
+.oracle-index-progress {
+  padding: 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+}
+
+.oracle-index-progress-heading {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.oracle-index-progress-heading span:last-child {
+  margin-left: auto;
+  color: var(--terracotta-deep);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.oracle-index-progress .oracle-progress-track {
+  margin-top: 10px;
+}
+
+.oracle-index-progress p {
+  margin: 8px 0 0;
+}
+
+.oracle-ready-context {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 0 2px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.oracle-ready-context > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.oracle-ready-context strong {
+  color: var(--green-deep);
+  white-space: nowrap;
+}
+
+.oracle-ready-context code {
+  max-width: 340px;
+  color: var(--silence);
+}
+
+.oracle-ready-dot,
+.oracle-status-dot,
+.oracle-check-dot {
+  display: inline-block;
+  flex: none;
+  border-radius: 999px;
+}
+
+.oracle-ready-dot {
+  width: 7px;
+  height: 7px;
+  background: var(--green);
+}
+
+.oracle-index-state {
+  margin-left: auto;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.oracle-index-state-stale {
+  color: var(--ochre-deep);
+}
+
+.oracle-query-surface {
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 10px 24px rgba(var(--ink-rgb), 0.05);
+}
+
+.oracle-ready-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.oracle-ready-intro h3 {
+  margin-top: 4px;
+  font-size: 20px;
+}
+
+.oracle-ready-intro p {
+  max-width: 510px;
+  margin: 5px 0 0;
+}
+
+.oracle-reranker-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-left: auto;
+  padding: 7px 9px;
+  color: var(--silence);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 9.5px;
+  line-height: 1.4;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.oracle-reranker-status-ready {
+  color: var(--green-deep);
+}
+
+.oracle-reranker-status-progress {
+  color: var(--ochre-deep);
+}
+
+.oracle-reranker-status-warning {
+  color: var(--danger-deep);
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+  border-color: var(--danger);
+  text-align: left;
+  white-space: normal;
+}
+
+.oracle-reranker-status-warning > span {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 6px;
+}
+
+.oracle-reranker-status-warning small {
+  grid-column: 2;
+  margin-top: 3px;
+  color: var(--danger-deep);
+  font-size: 9px;
+}
+
+.oracle-reranker-status-warning .oracle-inline-action {
+  margin-left: 3px;
+}
+
+.oracle-reranker-status-muted {
+  color: var(--silence);
+}
+
+.oracle-status-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 3px;
+  background: var(--silence);
+}
+
+.oracle-reranker-status-ready .oracle-status-dot {
+  background: var(--green);
+}
+
+.oracle-reranker-status-progress .oracle-status-dot {
+  background: var(--ochre);
+}
+
+.oracle-reranker-status-warning .oracle-status-dot {
+  background: var(--danger);
+}
+
+.oracle-inline-action {
+  padding: 0;
+  color: inherit;
   background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.oracle-inline-action:hover,
+.oracle-inline-action:focus-visible {
+  color: var(--terracotta-deep);
+}
+
+.oracle-search {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+}
+
+.oracle-search:focus-within {
+  border-color: var(--terracotta);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--terracotta) 14%, transparent);
+}
+
+.oracle-search-mark {
+  color: var(--terracotta-deep);
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 17px;
+}
+
+.oracle-search input {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+.oracle-search input::placeholder {
+  color: var(--silence);
+  opacity: 1;
 }
 
 .oracle-results-card {
-  margin-top: 12px;
-  padding: 14px 15px;
-}
-
-.oracle-job-note {
-  color: color-mix(in srgb, var(--ochre) 70%, var(--ink));
+  margin-top: 16px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
 }
 
 .oracle-results-heading {
@@ -293,26 +689,30 @@
 
 .oracle-results-note {
   max-width: 620px;
-  margin: 10px 0 0;
+  margin: 9px 0 0;
   line-height: 1.5;
+}
+
+.oracle-results-card > .oracle-state-message,
+.oracle-results-card > .oracle-empty-state,
+.oracle-results-card > .oracle-error-message {
+  margin-top: 12px;
 }
 
 .oracle-result-list {
   display: grid;
-  gap: 9px;
+  gap: 8px;
   margin: 14px 0 0;
   padding: 0;
   list-style: none;
-  counter-reset: oracle-result;
 }
 
 .oracle-result {
   min-width: 0;
   padding: 11px 12px;
+  background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: var(--surface);
-  counter-increment: oracle-result;
 }
 
 .oracle-result:focus-visible {
@@ -359,7 +759,7 @@
   margin: 9px 0 0;
   padding: 9px 10px;
   color: var(--ink-soft);
-  background: var(--surface-muted);
+  background: var(--surface);
   border-radius: 6px;
   font-family: "JetBrains Mono", monospace;
   font-size: 10px;
@@ -382,248 +782,242 @@
   font-weight: 600;
 }
 
-.oracle-section-heading {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin: 26px 0 10px;
-}
-
-.oracle-section-heading > span:first-child {
-  color: var(--silence);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.oracle-section-heading > span:nth-child(2) {
-  color: var(--silence);
-  font-size: 11px;
-}
-
-.oracle-watch-badge {
-  display: grid;
-  height: 20px;
-  place-items: center;
-  margin-left: auto;
-  padding: 0;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.oracle-watch-badge-running {
-  color: color-mix(in srgb, var(--ochre) 70%, var(--ink));
-}
-
-.oracle-watch-badge-watching {
-  color: color-mix(in srgb, var(--green) 72%, var(--ink));
-}
-
-.oracle-watch-badge-idle {
-  color: var(--silence);
-}
-
-.oracle-workspace-card {
-  padding: 12px 14px;
-}
-
-.oracle-eyebrow {
-  color: var(--silence);
-  font-size: 9.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.oracle-folder-row {
-  gap: 10px;
-  margin-top: 5px;
-}
-
-.oracle-path {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 12px;
-}
-
-.oracle-change-button {
-  height: 24px;
-  margin-left: auto;
-  padding: 0 10px;
-  font-size: 10.5px;
-  font-weight: 600;
-}
-
-.oracle-folder-meta,
-.oracle-folder-ok {
-  margin-top: 7px;
-  font-size: 10px;
-}
-
-.oracle-folder-meta {
-  color: var(--silence);
-}
-
-.oracle-folder-meta span {
-  font-family: "JetBrains Mono", monospace;
-}
-
-.oracle-folder-ok {
-  color: var(--green-deep);
-  font-size: 10.5px;
-}
-
-.oracle-model-download {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.oracle-model-retry-button {
-  height: 22px;
-  margin-left: 8px;
-  padding: 0 8px;
-  border: 1px solid var(--danger);
-  font-size: 10px;
-}
-
-.oracle-job {
-  margin-top: 12px;
-}
-
-.oracle-job-heading {
-  gap: 8px;
-  color: var(--ink-soft);
-  font-size: 11px;
-}
-
-.oracle-job-heading > span:last-child {
-  margin-left: auto;
-  font-family: "JetBrains Mono", monospace;
-}
-
-.oracle-muted {
-  color: var(--silence);
-}
-
-.oracle-progress-track {
-  height: 6px;
-  margin-top: 5px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--sand);
-}
-
-.oracle-progress-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--terracotta);
-}
-
-.oracle-job-note {
-  margin-top: 8px;
-  padding: 6px 0 0;
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.oracle-resource-cap {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+.oracle-admin {
   margin-top: 14px;
-  padding-top: 12px;
   border-top: 1px solid var(--border);
 }
 
-.oracle-resource-copy {
-  margin-top: 4px;
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.oracle-resource-values {
+.oracle-admin summary {
   display: flex;
-  flex: none;
-  gap: 12px;
-  margin-left: auto;
-}
-
-.oracle-resource-values span {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-}
-
-.oracle-resource-values strong {
+  align-items: center;
+  gap: 13px;
+  padding: 13px 2px 5px;
   color: var(--ink-soft);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
 }
 
-.oracle-resource-values small {
-  margin-top: 2px;
-  color: var(--silence);
-  font-size: 9px;
-  text-transform: uppercase;
+.oracle-admin summary::-webkit-details-marker {
+  display: none;
 }
 
-.oracle-stats {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 7px;
-  margin-top: 12px;
-}
-
-.oracle-stat {
-  padding: 9px 0;
-}
-
-.oracle-stat-value {
-  color: var(--ink);
+.oracle-admin summary::before {
+  flex: none;
+  color: var(--terracotta-deep);
+  content: "+";
   font-family: "JetBrains Mono", monospace;
   font-size: 14px;
 }
 
-.oracle-stat-value-warning {
-  color: var(--ochre-deep);
+.oracle-admin[open] summary::before {
+  content: "−";
 }
 
-.oracle-stat-value-ink-soft {
-  color: var(--ink-soft);
+.oracle-admin-summary-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
-.oracle-stat-label {
-  margin-top: 2px;
+.oracle-admin-summary-copy strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.oracle-admin-summary-meta,
+.oracle-admin-summary-action {
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.oracle-admin-summary-action {
+  margin-left: auto;
+  color: var(--terracotta-deep);
+}
+
+.oracle-admin summary:hover .oracle-admin-summary-action,
+.oracle-admin summary:focus-visible .oracle-admin-summary-action {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.oracle-admin-body {
+  padding: 10px 0 2px;
+}
+
+.oracle-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.oracle-admin-block {
+  min-width: 0;
+  padding: 13px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.oracle-admin-block h4 {
+  font-size: 13px;
+}
+
+.oracle-admin-block-heading {
+  align-items: flex-start;
+}
+
+.oracle-admin-block-heading .oracle-button {
+  height: 22px;
+  margin-left: auto;
+  padding: 0 7px;
+  font-size: 9.5px;
+}
+
+.oracle-admin-facts {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0 0;
+}
+
+.oracle-admin-facts div {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.oracle-admin-facts dt {
   color: var(--silence);
   font-size: 9.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
 }
 
-.oracle-actions {
+.oracle-admin-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.oracle-health-check-list {
+  display: flex;
+  flex-wrap: wrap;
   gap: 7px;
-  margin-top: 11px;
+  margin-top: 12px;
 }
 
-.oracle-stop-button:hover,
-.oracle-stop-button:focus-visible {
-  color: var(--danger-deep);
-  border-color: var(--danger);
+.oracle-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
 }
 
-.oracle-file-heading {
-  gap: 4px;
-  margin: 26px 0 10px;
+.oracle-check-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.oracle-check-dot-ok {
+  background: var(--green);
+}
+
+.oracle-check-dot-failed {
+  background: var(--danger);
+}
+
+.oracle-check-dot-unknown {
+  background: var(--ochre);
+}
+
+.oracle-admin-block > p {
+  margin: 11px 0 0;
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.oracle-model-facts {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.oracle-model-facts span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+}
+
+.oracle-model-facts strong {
+  color: var(--ink-soft);
+  font-family: "Inter", sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.oracle-admin-block .oracle-reranker-status {
+  margin: 12px 0 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font-size: 9px;
+}
+
+.oracle-admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.oracle-action-spacer {
+  flex: 1;
+}
+
+.oracle-admin-actions > .oracle-watch-notice,
+.oracle-admin-actions > .oracle-error-message {
+  flex-basis: 100%;
+}
+
+.oracle-files {
+  margin-top: 18px;
+  padding-top: 15px;
+  border-top: 1px solid var(--border);
+}
+
+.oracle-files-heading {
+  align-items: flex-start;
+}
+
+.oracle-files-heading h4 {
+  font-size: 13px;
+}
+
+.oracle-files-note {
+  margin-left: auto;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
 }
 
 .oracle-file-tabs {
-  gap: 4px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 11px;
 }
 
 .oracle-file-tab {
@@ -631,18 +1025,19 @@
   align-items: center;
   gap: 7px;
   height: 26px;
-  padding: 0 11px;
+  padding: 0 10px;
   color: var(--ink-soft);
   background: transparent;
+  border: 0;
   border-radius: 8px 8px 0 0;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10.5px;
 }
 
 .oracle-file-tab > span:last-child {
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .oracle-file-tab-active,
@@ -659,21 +1054,14 @@
   color: var(--ink-soft);
 }
 
-.oracle-filter-pill {
-  display: flex;
-  align-items: center;
-  height: 26px;
-  margin-left: auto;
-  padding: 0 11px;
-  color: var(--silence);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 10.5px;
-}
-
 .oracle-file-list {
   overflow: hidden;
+}
+
+.oracle-file-list > .oracle-state-message,
+.oracle-file-list > .oracle-empty-state,
+.oracle-file-list > .oracle-error-message {
+  margin-top: 8px;
 }
 
 .oracle-file-row {
@@ -681,6 +1069,7 @@
   align-items: center;
   gap: 10px;
   padding: 9px 0;
+  border-top: 1px solid var(--border);
 }
 
 .oracle-file-path {
@@ -689,7 +1078,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
+  font-size: 10.5px;
 }
 
 .oracle-file-detail,
@@ -697,7 +1086,7 @@
   flex: none;
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .oracle-file-detail {
@@ -709,30 +1098,123 @@
   text-align: right;
 }
 
-.oracle-page-label {
-  padding: 8px 0;
-  color: var(--silence);
-  font-size: 10px;
+@media (max-width: 700px) {
+  .oracle-stage-content {
+    padding: 24px 20px 25px;
+  }
+
+  .oracle-ready-intro,
+  .oracle-ready-context {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .oracle-ready-context {
+    gap: 5px;
+  }
+
+  .oracle-ready-context > div {
+    width: 100%;
+  }
+
+  .oracle-ready-context code {
+    max-width: none;
+  }
+
+  .oracle-index-state {
+    margin-left: 0;
+  }
+
+  .oracle-reranker-status {
+    margin: 12px 0 0;
+    white-space: normal;
+  }
+
+  .oracle-admin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .oracle-action-spacer {
+    display: none;
+  }
 }
 
-@media (max-width: 620px) {
-  .oracle-result-heading,
-  .oracle-resource-cap {
+@media (max-width: 520px) {
+  .oracle-setup-rail {
+    padding: 11px 12px;
+  }
+
+  .oracle-setup-step {
+    gap: 4px;
+    font-size: 8.5px;
+  }
+
+  .oracle-setup-step:not(:last-child)::after {
+    margin-right: 5px;
+    margin-left: 5px;
+  }
+
+  .oracle-setup-step-number {
+    width: 18px;
+    height: 18px;
+  }
+
+  .oracle-query-surface {
+    padding: 14px;
+  }
+
+  .oracle-search {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .oracle-search input {
+    width: calc(100% - 30px);
+  }
+
+  .oracle-search .oracle-button {
+    width: 100%;
+  }
+
+  .oracle-result-heading {
     align-items: flex-start;
     flex-wrap: wrap;
   }
 
-  .oracle-result-range,
-  .oracle-resource-values {
+  .oracle-result-range {
+    width: 100%;
+    margin-left: 18px;
+  }
+
+  .oracle-model-card-heading > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .oracle-model-failure {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .oracle-model-retry-button {
     margin-left: 0;
   }
 
-  .oracle-resource-values {
-    width: 100%;
-    justify-content: space-between;
+  .oracle-files-note {
+    display: none;
   }
 
-  .oracle-stats {
-    grid-template-columns: repeat(3, 1fr);
+  .oracle-file-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .oracle-file-detail {
+    margin-left: 0;
+  }
+
+  .oracle-file-when {
+    width: auto;
   }
 }
