@@ -16,7 +16,7 @@ use tokenizers::{
     TruncationStrategy,
 };
 
-use crate::onnx_embedder::EpArg;
+use crate::embed::EpArg;
 
 /// Default on-disk location for the optional reranker.
 pub const DEFAULT_RERANKER_MODEL_ID: &str = "ms-marco-TinyBERT-L-2-v2";

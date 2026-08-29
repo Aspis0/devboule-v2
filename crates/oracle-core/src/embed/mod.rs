@@ -7,13 +7,18 @@
 //! reloads on demand (PLAN.md P3).
 
 mod candle_backend;
-pub mod model_descriptor;
-pub mod ort_backend;
+pub(crate) mod embedder;
+pub(crate) mod model_descriptor;
+mod onnx_embedder;
+mod ort_backend;
 
 pub use candle_backend::CandleEmbedder;
+pub use embedder::{cmd_bench, cmd_embed, load_model, resolve_device, DeviceArg, DtypeArg};
 pub use model_descriptor::{
-    configured_model_present, DeclaredModelConfig, KvGeometry, ModelDescriptor, PoolingStrategy,
+    configured_model_present, write_model_config_if_missing, DeclaredModelConfig, PoolingStrategy,
+    BGE_SMALL_MODEL_CONFIG_JSON,
 };
+pub use onnx_embedder::{EpArg, OnnxEmbedder};
 pub use ort_backend::OrtEmbedder;
 
 use anyhow::{Context, Result};

@@ -11,19 +11,14 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use devboule_protocol::ErrorCode;
-use oracle_core::config::{OracleDataPaths, MAX_BOUNDED_LIMIT};
-use oracle_core::embed::{
-    configured_model_present, default_backend, BackendChoice, CancelFlag, EmbedderPool,
+use oracle_core::redact_secret_tokens;
+use oracle_core::{
+    chunk_index_status, collect_text_files, configured_model_present, default_backend,
+    default_model_dir, file_needs_index, index_file_chunks, load_manifest, manifest_files_for_root,
+    BackendChoice, CancelFlag, ContextChunk, EmbedderPool, EpArg, IndexStatusSnapshot,
+    IndexerConfig, LanceStore, OracleDataPaths, PoolQueryEmbedder, QueryEngine, RerankerHandle,
+    SharedReranker, SqliteStore, TextEmbedder, MAX_BOUNDED_LIMIT,
 };
-use oracle_core::ingest::indexer::{self, IndexStatusSnapshot};
-use oracle_core::onnx_embedder::EpArg;
-use oracle_core::query::engine::{ContextChunk, QueryEngine};
-use oracle_core::query::pool_embedder::PoolQueryEmbedder;
-use oracle_core::query::redact::redact_secret_tokens;
-use oracle_core::query::reranker::{self, RerankerHandle, SharedReranker};
-use oracle_core::store::lance::LanceStore;
-use oracle_core::store::manifest::{self, load_manifest, manifest_files_for_root};
-use oracle_core::store::sqlite::SqliteStore;
 
 use crate::backend::error::CommandError;
 
@@ -118,7 +113,7 @@ impl ModelDownloadState {
                 directory: directory.display().to_string(),
                 file: None,
                 file_index: 0,
-                total_files: oracle_core::model_download::BGE_SMALL_FILES.len(),
+                total_files: oracle_core::BGE_SMALL_FILES.len(),
                 bytes_done: 0,
                 bytes_total: None,
                 approximate_bytes,
@@ -155,8 +150,8 @@ fn configured_model_id() -> String {
 }
 
 fn approximate_model_size(model_id: &str) -> u64 {
-    if model_id == oracle_core::model_download::BGE_SMALL_MODEL_ID {
-        oracle_core::model_download::BGE_SMALL_APPROX_BYTES
+    if model_id == oracle_core::BGE_SMALL_MODEL_ID {
+        oracle_core::BGE_SMALL_APPROX_BYTES
     } else {
         0
     }
@@ -283,11 +278,10 @@ impl OracleRuntime {
 
     fn configure_root(&self, root: PathBuf) {
         let data = OracleDataPaths::from_root(&root);
-        let model_dir = oracle_core::model_download::model_dir_for(&data.root, &self.model_id);
+        let model_dir = oracle_core::model_dir_for(&data.root, &self.model_id);
         let pool = Arc::new(EmbedderPool::new(default_backend(model_dir.clone())));
         let reranker =
-            RerankerHandle::if_present(reranker::default_model_dir(&data.root), EpArg::Cpu)
-                .map(Arc::new);
+            RerankerHandle::if_present(default_model_dir(&data.root), EpArg::Cpu).map(Arc::new);
         let paths = ResolvedOraclePaths {
             workspace: root.clone(),
             data,
@@ -510,7 +504,7 @@ impl OracleRuntime {
             if state.attempted && !force {
                 return Ok(());
             }
-            if self.model_id != oracle_core::model_download::BGE_SMALL_MODEL_ID {
+            if self.model_id != oracle_core::BGE_SMALL_MODEL_ID {
                 state.attempted = true;
                 state.status = OracleModelStatus {
                     state: OracleModelState::Failed,
@@ -539,13 +533,13 @@ impl OracleRuntime {
                 directory: model_dir.display().to_string(),
                 file: None,
                 file_index: 0,
-                total_files: oracle_core::model_download::BGE_SMALL_FILES.len(),
+                total_files: oracle_core::BGE_SMALL_FILES.len(),
                 bytes_done: 0,
                 bytes_total: None,
-                approximate_bytes: oracle_core::model_download::BGE_SMALL_APPROX_BYTES,
+                approximate_bytes: oracle_core::BGE_SMALL_APPROX_BYTES,
                 message: Some(format!(
                     "Downloading about {} MB from Hugging Face.",
-                    oracle_core::model_download::BGE_SMALL_APPROX_BYTES / 1_000_000
+                    oracle_core::BGE_SMALL_APPROX_BYTES / 1_000_000
                 )),
             };
             cancel
@@ -557,7 +551,7 @@ impl OracleRuntime {
         std::thread::Builder::new()
             .name("oracle-model-download".to_string())
             .spawn(move || {
-                let result = oracle_core::model_download::ensure_bge_small_onnx_with_cancel(
+                let result = oracle_core::ensure_bge_small_onnx_with_cancel(
                     &data_root,
                     &cancel,
                     |file_progress| {
@@ -582,11 +576,11 @@ impl OracleRuntime {
                         model_id,
                         directory: model_dir.display().to_string(),
                         file: None,
-                        file_index: oracle_core::model_download::BGE_SMALL_FILES.len(),
-                        total_files: oracle_core::model_download::BGE_SMALL_FILES.len(),
+                        file_index: oracle_core::BGE_SMALL_FILES.len(),
+                        total_files: oracle_core::BGE_SMALL_FILES.len(),
                         bytes_done: 0,
                         bytes_total: None,
-                        approximate_bytes: oracle_core::model_download::BGE_SMALL_APPROX_BYTES,
+                        approximate_bytes: oracle_core::BGE_SMALL_APPROX_BYTES,
                         message: Some("Oracle's embedding model is ready.".to_string()),
                     },
                     Err(error) if cancelled => OracleModelStatus {
@@ -595,10 +589,10 @@ impl OracleRuntime {
                         directory: model_dir.display().to_string(),
                         file: None,
                         file_index: 0,
-                        total_files: oracle_core::model_download::BGE_SMALL_FILES.len(),
+                        total_files: oracle_core::BGE_SMALL_FILES.len(),
                         bytes_done: 0,
                         bytes_total: None,
-                        approximate_bytes: oracle_core::model_download::BGE_SMALL_APPROX_BYTES,
+                        approximate_bytes: oracle_core::BGE_SMALL_APPROX_BYTES,
                         message: Some(format!(
                             "Model download cancelled ({error}). Start it again from the Oracle panel."
                         )),
@@ -609,10 +603,10 @@ impl OracleRuntime {
                         directory: model_dir.display().to_string(),
                         file: None,
                         file_index: 0,
-                        total_files: oracle_core::model_download::BGE_SMALL_FILES.len(),
+                        total_files: oracle_core::BGE_SMALL_FILES.len(),
                         bytes_done: 0,
                         bytes_total: None,
-                        approximate_bytes: oracle_core::model_download::BGE_SMALL_APPROX_BYTES,
+                        approximate_bytes: oracle_core::BGE_SMALL_APPROX_BYTES,
                         message: Some(format!(
                             "Model download failed: {error:#}. Retry from the Oracle panel; the model is expected at {}.",
                             model_dir.display()
@@ -967,7 +961,7 @@ async fn oracle_files_inner(
         .unwrap_or_default();
 
     let mut files = Vec::new();
-    for path in oracle_core::ingest::collect::collect_text_files(&paths.workspace) {
+    for path in collect_text_files(&paths.workspace) {
         let file_id = match path.strip_prefix(&paths.workspace) {
             Ok(relative) => relative.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
@@ -975,7 +969,7 @@ async fn oracle_files_inner(
         let entry = entries.get(&file_id);
         let is_pending = entry.is_none();
         let is_stale = match entry {
-            Some(_) => manifest::file_needs_index(&path, &paths.workspace, &entries, &sqlite)
+            Some(_) => file_needs_index(&path, &paths.workspace, &entries, &sqlite)
                 .map_err(|error| core_error("checking Oracle file freshness failed", error))?,
             None => false,
         };
@@ -1112,7 +1106,7 @@ fn oracle_index_start_inner(runtime: &OracleRuntime) -> Result<(), CommandError>
     let pool = runtime.pool()?;
     runtime.start_model_download(false)?;
     ensure_model_is_available(pool.backend(), &runtime.model_status())?;
-    let embedder: Arc<dyn indexer::TextEmbedder> = pool;
+    let embedder: Arc<dyn TextEmbedder> = pool;
 
     if runtime.indexing.swap(true, Ordering::AcqRel) {
         return Err(CommandError::new(
@@ -1174,7 +1168,7 @@ pub fn oracle_index_start(runtime: State<'_, OracleRuntime>) -> Result<(), Comma
 
 fn run_index_job(
     paths: ResolvedOraclePaths,
-    embedder: Arc<dyn indexer::TextEmbedder>,
+    embedder: Arc<dyn TextEmbedder>,
     indexing: Arc<AtomicBool>,
     index_cancel: Arc<Mutex<Option<CancelFlag>>>,
     last_index_error: Arc<Mutex<Option<String>>>,
@@ -1194,9 +1188,9 @@ fn run_index_job(
         }
     };
     let chunk_vectors = LanceStore::new(&paths.data.chunks);
-    let config = indexer::IndexerConfig::default();
+    let config = IndexerConfig::default();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        tauri::async_runtime::block_on(indexer::index_file_chunks(
+        tauri::async_runtime::block_on(index_file_chunks(
             &paths.workspace,
             &sqlite,
             &chunk_vectors,
@@ -1281,7 +1275,7 @@ async fn read_index_snapshot(
     let sqlite = SqliteStore::new(&paths.data.metadata)
         .map_err(|error| core_error("opening Oracle metadata store failed", error))?;
     let chunk_vectors = LanceStore::new(&paths.data.chunks);
-    indexer::chunk_index_status(
+    chunk_index_status(
         &paths.workspace,
         &sqlite,
         &chunk_vectors,
@@ -1830,7 +1824,7 @@ mod tests {
         started: Arc<AtomicBool>,
     }
 
-    impl indexer::TextEmbedder for SlowTestEmbedder {
+    impl TextEmbedder for SlowTestEmbedder {
         fn model_id(&self) -> anyhow::Result<String> {
             Ok("oracle-command-test-model".to_string())
         }
@@ -1878,7 +1872,7 @@ mod tests {
         let paths = resolved_paths(&root);
         let cancel = CancelFlag::new();
         let started = Arc::new(AtomicBool::new(false));
-        let embedder: Arc<dyn indexer::TextEmbedder> = Arc::new(SlowTestEmbedder {
+        let embedder: Arc<dyn TextEmbedder> = Arc::new(SlowTestEmbedder {
             started: Arc::clone(&started),
         });
         let indexing = Arc::clone(&runtime.indexing);

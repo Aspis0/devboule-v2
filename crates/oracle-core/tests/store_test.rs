@@ -3,13 +3,12 @@
 //! Covers the SQLite metadata store, the LanceDB vector store and the
 //! chunk-index manifest. Mirrors the behavioral spec in `p1-recon-spec.md`.
 
-use oracle_core::config::{active_chunk_profile_version, EMBED_DIMS};
-use oracle_core::store::lance::{hash_embed, LanceRow, LanceStore};
-use oracle_core::store::manifest::{
-    file_needs_index, load_manifest, manifest_files_for_root, strip_verbatim_prefix,
-    text_chunks_up_to_date, ManifestFileEntry,
+use oracle_core::{
+    active_chunk_profile_version, file_needs_index, file_signature, hash_embed, load_manifest,
+    manifest_files_for_root, save_manifest, strip_verbatim_prefix, text_chunks_up_to_date,
+    FileChunk, FileCluster, LanceRow, LanceStore, ManifestFileEntry, NodeCard, SqliteStore,
+    EMBED_DIMS,
 };
-use oracle_core::store::sqlite::{FileChunk, NodeCard, SqliteStore};
 use std::collections::HashMap;
 use tempfile::tempdir;
 
@@ -155,12 +154,12 @@ fn sqlite_file_clusters() {
     store
         .replace_file_clusters(
             &[
-                oracle_core::store::sqlite::FileCluster {
+                FileCluster {
                     file_id: "a".to_string(),
                     cluster_id: 1,
                     score: 0.9,
                 },
-                oracle_core::store::sqlite::FileCluster {
+                FileCluster {
                     file_id: "b".to_string(),
                     cluster_id: 1,
                     score: 0.5,
@@ -270,12 +269,12 @@ fn sqlite_replace_file_clusters_is_atomic_on_insert_failure() {
     store
         .replace_file_clusters(
             &[
-                oracle_core::store::sqlite::FileCluster {
+                FileCluster {
                     file_id: "a.rs".to_string(),
                     cluster_id: 1,
                     score: 0.9,
                 },
-                oracle_core::store::sqlite::FileCluster {
+                FileCluster {
                     file_id: "b.rs".to_string(),
                     cluster_id: 1,
                     score: 0.5,
@@ -285,7 +284,7 @@ fn sqlite_replace_file_clusters_is_atomic_on_insert_failure() {
         )
         .unwrap();
 
-    let dup = oracle_core::store::sqlite::FileCluster {
+    let dup = FileCluster {
         file_id: "dup.rs".to_string(),
         cluster_id: 2,
         score: 0.1,
@@ -400,7 +399,7 @@ fn manifest_needs_index_decisions() {
     assert!(file_needs_index(&file, root, &files, &store).unwrap());
 
     // Build a "matching" entry from the current signature.
-    let current = oracle_core::store::manifest::file_signature(&file, None).unwrap();
+    let current = file_signature(&file, None).unwrap();
     let matching = ManifestFileEntry {
         size: current.size,
         mtime_ns: current.mtime_ns,
@@ -513,7 +512,7 @@ fn manifest_legacy_and_load() {
             },
         );
     }
-    oracle_core::store::manifest::save_manifest(&path, &manifest).unwrap();
+    save_manifest(&path, &manifest).unwrap();
     let reloaded = load_manifest(&path);
     assert!(reloaded
         .roots

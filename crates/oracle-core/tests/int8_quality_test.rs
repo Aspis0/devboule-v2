@@ -20,11 +20,10 @@
 //! its margins collapse toward zero, quality degraded and fp32 is the better call
 //! (reverting is a 6-flag flip + re-index).
 
-use oracle_core::embed::{BackendChoice, CancelFlag, EmbedderPool};
-use oracle_core::ingest::indexer::{self, IndexerConfig};
-use oracle_core::query::engine::{QueryEmbedder, QueryEngine};
-use oracle_core::store::lance::LanceStore;
-use oracle_core::store::sqlite::SqliteStore;
+use oracle_core::{
+    index_file_chunks, BackendChoice, CancelFlag, EmbedderPool, IndexerConfig, LanceStore,
+    QueryEmbedder, QueryEngine, SqliteStore,
+};
 use std::path::{Path, PathBuf};
 
 fn model_dir() -> PathBuf {
@@ -123,7 +122,7 @@ async fn run_variant(corpus_root: &Path, data: &Path, model: PathBuf, int8: bool
         max_gpu_temp_c: None,
         ..Default::default()
     };
-    indexer::index_file_chunks(
+    index_file_chunks(
         corpus_root,
         &sqlite,
         &chunk_vectors,

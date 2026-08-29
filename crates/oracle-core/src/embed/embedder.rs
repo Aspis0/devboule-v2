@@ -7,8 +7,8 @@ use clap::ValueEnum;
 use fastembed::Qwen3TextEmbedding;
 use serde::Serialize;
 
+use super::onnx_embedder::{EpArg, OnnxEmbedder};
 use crate::embed::{CancelFlag, CandleEmbedder, Embedder};
-use crate::onnx_embedder::{EpArg, OnnxEmbedder};
 use crate::BackendArg;
 use std::time::Instant;
 

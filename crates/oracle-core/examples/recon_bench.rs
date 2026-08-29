@@ -22,15 +22,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use oracle_core::embed::{
-    resolve_embed_window_bytes, resolve_embed_window_overlap_bytes, window_text, CancelFlag,
+use oracle_core::{
+    build_chunks_for_file, build_chunks_for_file_with_limits, chunk_embedding_text_for_model,
+    collect_text_files, query_embedding_text_for_model, resolve_embed_window_bytes,
+    resolve_embed_window_overlap_bytes, window_text, CancelFlag, ChunkMeta, EpArg, FileChunk,
+    LanceRow, LanceStore, OnnxEmbedder, SqliteStore,
 };
-use oracle_core::ingest::chunking::{build_chunks_for_file, build_chunks_for_file_with_limits};
-use oracle_core::ingest::collect::collect_text_files;
-use oracle_core::ingest::retrieval_text::{
-    chunk_embedding_text_for_model, query_embedding_text_for_model, ChunkMeta,
-};
-use oracle_core::onnx_embedder::{EpArg, OnnxEmbedder};
 
 const CODE_EXTS: &[&str] = &[
     ".css", ".java", ".js", ".jsx", ".kt", ".kts", ".mjs", ".cjs", ".mts", ".cts", ".ps1", ".py",
@@ -817,7 +814,7 @@ fn run_eval() -> anyhow::Result<()> {
     let dense: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&dense_file)?)?;
 
     // lexical scoring input
-    let scored: Vec<oracle_core::query::lexical::ScoredChunk> = records
+    let scored: Vec<oracle_core::ScoredChunk> = records
         .iter()
         .map(|r| serde_json::from_value(r.clone()))
         .collect::<Result<Vec<_>, _>>()?;
@@ -888,7 +885,7 @@ fn run_eval() -> anyhow::Result<()> {
             .unwrap_or_default();
 
         // lexical
-        let lex = oracle_core::query::lexical::lexical_chunk_context(query, &scored, limit);
+        let lex = oracle_core::lexical_chunk_context(query, &scored, limit);
         // dense
         let mut denser: Vec<(String, f64)> = Vec::new();
         if let Some(qv) = dq.get(qi) {
@@ -1371,7 +1368,7 @@ fn run_rerank_eval() -> anyhow::Result<()> {
     }
 
     let load_start = Instant::now();
-    let mut reranker = oracle_core::query::reranker::OnnxReranker::load(&reranker_dir, EpArg::Cpu)?;
+    let mut reranker = oracle_core::OnnxReranker::load(&reranker_dir, EpArg::Cpu)?;
     let load_total_ms = load_start.elapsed().as_millis();
     let warmup_start = Instant::now();
     reranker.score_pairs("reranker warmup", &["fn warmup() {}".to_string()])?;
@@ -1515,8 +1512,8 @@ fn run_store() -> anyhow::Result<()> {
     let mut file_ids: Vec<String> = by_file.keys().cloned().collect();
     file_ids.sort();
 
-    let sqlite = oracle_core::store::sqlite::SqliteStore::new(&out_dir.join("metadata.sqlite"))?;
-    let lance = oracle_core::store::lance::LanceStore::new(&out_dir.join("chunks.lancedb"));
+    let sqlite = SqliteStore::new(&out_dir.join("metadata.sqlite"))?;
+    let lance = LanceStore::new(&out_dir.join("chunks.lancedb"));
     let rt = tokio::runtime::Runtime::new()?;
 
     let mut sqlite_ms = 0u128;
@@ -1532,7 +1529,7 @@ fn run_store() -> anyhow::Result<()> {
                 let gi = |k: &str| r[k].as_i64().unwrap_or(0);
                 let symbols_used: Vec<String> =
                     serde_json::from_str(&gs("symbols_used")).unwrap_or_default();
-                fc_rows.push(oracle_core::store::sqlite::FileChunk {
+                fc_rows.push(FileChunk {
                     id: gs("id"),
                     file_id: gs("file_id"),
                     chunk_index: gi("chunk_index"),
@@ -1550,7 +1547,7 @@ fn run_store() -> anyhow::Result<()> {
                     language: gs("language"),
                     symbols_used,
                 });
-                lance_rows.push(oracle_core::store::lance::LanceRow {
+                lance_rows.push(LanceRow {
                     id: gs("id"),
                     label: gs("label"),
                     area: String::new(),

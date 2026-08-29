@@ -4,14 +4,12 @@
 //! `golden/corpus/` and a `FakeEmbedder` that produces deterministic vectors
 //! without loading any model.
 
-use oracle_core::config::EMBED_DIMS;
-use oracle_core::embed::CancelFlag;
-use oracle_core::ingest::indexer::{
-    self, EmbeddingRecipe, IndexStatus, IndexerConfig, TextEmbedder,
+use oracle_core::{
+    active_chunk_profile_version, chunk_geometry_fingerprint, chunk_index_status,
+    index_file_chunks, load_manifest, manifest_files_for_root, prune_excluded_chunks,
+    sync_text_chunks, CancelFlag, EmbeddingRecipe, IndexStatus, IndexerConfig, LanceRow,
+    LanceStore, SqliteStore, TextEmbedder, EMBED_DIMS,
 };
-use oracle_core::store::lance::LanceStore;
-use oracle_core::store::manifest::{load_manifest, manifest_files_for_root};
-use oracle_core::store::sqlite::SqliteStore;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -87,8 +85,8 @@ impl TextEmbedder for FakeEmbedder {
             max_seq_tokens: 2560,
             window_safety_reserve: 8,
             window_safety_reserve_unit: "tokens".to_string(),
-            chunk_profile: oracle_core::config::active_chunk_profile_version(None),
-            chunk_geometry: oracle_core::ingest::chunking::chunk_geometry_fingerprint(),
+            chunk_profile: active_chunk_profile_version(None),
+            chunk_geometry: chunk_geometry_fingerprint(),
         }
         .fingerprint())
     }
@@ -219,7 +217,7 @@ async fn test_fresh_index_complete() {
     let embedder = FakeEmbedder::new();
     let cancel = CancelFlag::new();
 
-    let result = indexer::index_file_chunks(
+    let result = index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -299,7 +297,7 @@ async fn test_manifest_records_loaded_model_dimensions() {
     let embedder = FakeEmbedder::with_model("bge-small-test", 384);
     let cancel = CancelFlag::new();
 
-    indexer::index_file_chunks(
+    index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -336,7 +334,7 @@ async fn test_model_change_reembeds_with_new_dimensions() {
     let cancel = CancelFlag::new();
     let first = FakeEmbedder::with_model("model-a", 1024);
 
-    indexer::index_file_chunks(
+    index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -358,7 +356,7 @@ async fn test_model_change_reembeds_with_new_dimensions() {
             .unwrap()
             .push(message.to_string());
     };
-    let result = indexer::index_file_chunks(
+    let result = index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -404,7 +402,7 @@ async fn test_recipe_change_reembeds_even_when_model_and_dims_match() {
     let cancel = CancelFlag::new();
     let first = FakeEmbedder::with_recipe_variant("same-model", 384, "byte-window");
 
-    indexer::index_file_chunks(
+    index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -423,7 +421,7 @@ async fn test_recipe_change_reembeds_even_when_model_and_dims_match() {
     vectors
         .replace_ids(
             &[],
-            &[oracle_core::store::lance::LanceRow {
+            &[LanceRow {
                 id: orphan_id.clone(),
                 label: "orphan".to_string(),
                 area: "FileChunk".to_string(),
@@ -449,7 +447,7 @@ async fn test_recipe_change_reembeds_even_when_model_and_dims_match() {
             .unwrap()
             .push(message.to_string());
     };
-    let result = indexer::index_file_chunks(
+    let result = index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -505,7 +503,7 @@ async fn test_incremental_reindex() {
     let cancel = CancelFlag::new();
 
     // First run: full index
-    let r1 = indexer::index_file_chunks(
+    let r1 = index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -525,7 +523,7 @@ async fn test_incremental_reindex() {
     std::fs::write(&app_py, "fn main():\n    print('modified content')\n").unwrap();
 
     // Second run: incremental
-    let r2 = indexer::index_file_chunks(
+    let r2 = index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -575,7 +573,7 @@ async fn test_prune_removes_stale() {
     let cancel = CancelFlag::new();
 
     // Full index
-    indexer::index_file_chunks(
+    index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -597,7 +595,7 @@ async fn test_prune_removes_stale() {
     std::fs::remove_file(world.root.join("data/config.json")).unwrap();
 
     // Run prune
-    let pr = indexer::prune_excluded_chunks(
+    let pr = prune_excluded_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -624,7 +622,7 @@ async fn test_prune_removes_stale() {
 
     // Now inject an orphan vector (id not in sqlite)
     let orphan_id = "orphan-fake-vector-id".to_string();
-    let orphan_row = oracle_core::store::lance::LanceRow {
+    let orphan_row = LanceRow {
         id: orphan_id.clone(),
         label: "orphan".to_string(),
         area: "FileChunk".to_string(),
@@ -639,7 +637,7 @@ async fn test_prune_removes_stale() {
     );
 
     // Second prune should remove the orphan
-    let pr2 = indexer::prune_excluded_chunks(
+    let pr2 = prune_excluded_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -678,7 +676,7 @@ async fn test_max_batches_pause() {
     config.max_batches = Some(1);
     config.batch_files = 1; // process 1 file per batch → 1 total with max_batches=1
 
-    let result = indexer::index_file_chunks(
+    let result = index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -739,7 +737,7 @@ async fn test_cancel_mid_run() {
     let mut config = world.config();
     config.batch_files = 2; // 2 files per batch
 
-    let result = indexer::index_file_chunks(
+    let result = index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -798,8 +796,7 @@ fn test_sync_text_chunks_no_vectors() {
     // We'll check after sync that vectors are still 0.
 
     let result =
-        indexer::sync_text_chunks(&world.root, &sqlite, &world.manifest_path, 100, false, None)
-            .unwrap();
+        sync_text_chunks(&world.root, &sqlite, &world.manifest_path, 100, false, None).unwrap();
 
     assert_eq!(result.status, "complete");
     assert_eq!(result.files, 4, "should sync all 4 files");
@@ -845,10 +842,9 @@ async fn test_chunk_index_status_before_after() {
     let vectors = world.vectors();
 
     // Status before any indexing
-    let status_before =
-        indexer::chunk_index_status(&world.root, &sqlite, &vectors, &world.manifest_path)
-            .await
-            .unwrap();
+    let status_before = chunk_index_status(&world.root, &sqlite, &vectors, &world.manifest_path)
+        .await
+        .unwrap();
 
     assert_eq!(status_before.expected_files, 4);
     assert_eq!(status_before.indexed_files, 0);
@@ -861,7 +857,7 @@ async fn test_chunk_index_status_before_after() {
     // Full index
     let embedder = FakeEmbedder::new();
     let cancel = CancelFlag::new();
-    indexer::index_file_chunks(
+    index_file_chunks(
         &world.root,
         &sqlite,
         &vectors,
@@ -875,10 +871,9 @@ async fn test_chunk_index_status_before_after() {
     .unwrap();
 
     // Status after indexing
-    let status_after =
-        indexer::chunk_index_status(&world.root, &sqlite, &vectors, &world.manifest_path)
-            .await
-            .unwrap();
+    let status_after = chunk_index_status(&world.root, &sqlite, &vectors, &world.manifest_path)
+        .await
+        .unwrap();
 
     assert_eq!(status_after.expected_files, 4);
     assert_eq!(status_after.indexed_files, 4);
@@ -897,10 +892,9 @@ async fn test_chunk_index_status_before_after() {
     )
     .unwrap();
 
-    let status_stale =
-        indexer::chunk_index_status(&world.root, &sqlite, &vectors, &world.manifest_path)
-            .await
-            .unwrap();
+    let status_stale = chunk_index_status(&world.root, &sqlite, &vectors, &world.manifest_path)
+        .await
+        .unwrap();
 
     assert_eq!(status_stale.stale_files, 1, "1 file should be stale");
     assert_eq!(

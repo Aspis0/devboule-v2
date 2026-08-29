@@ -2,8 +2,7 @@
 //! operator-run and ignored in CI. Run them with:
 //!   cargo test -p oracle-core --test bge_small_embed_test -- --ignored --nocapture
 
-use oracle_core::embed::{DeclaredModelConfig, PoolingStrategy};
-use oracle_core::onnx_embedder::{EpArg, OnnxEmbedder};
+use oracle_core::{CancelFlag, DeclaredModelConfig, EpArg, OnnxEmbedder, PoolingStrategy};
 use std::path::{Path, PathBuf};
 
 fn recon_model(name: &str) -> Option<PathBuf> {
@@ -64,7 +63,7 @@ fn bge_small_embeds_384_unit_vectors() {
 
     let texts = vec!["A short test sentence.".to_string()];
     let vecs = embedder
-        .embed_batched(&texts, 1, &oracle_core::embed::CancelFlag::new())
+        .embed_batched(&texts, 1, &CancelFlag::new())
         .expect("bge-small embed");
     assert_eq!(vecs.len(), 1);
     assert_eq!(vecs[0].len(), 384);

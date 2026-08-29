@@ -5,8 +5,7 @@
 //! Run it with:
 //!   cargo test -p oracle-core --test reranker_real_onnx_test -- --ignored --nocapture
 
-use oracle_core::onnx_embedder::EpArg;
-use oracle_core::query::reranker::OnnxReranker;
+use oracle_core::{EpArg, OnnxReranker};
 use std::path::PathBuf;
 
 fn model_dir() -> PathBuf {

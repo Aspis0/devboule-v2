@@ -1,5 +1,4 @@
-use crate::embedder::{load_model, resolve_device, DeviceArg, DtypeArg};
-use crate::onnx_embedder::{EpArg, OnnxEmbedder};
+use crate::embed::{load_model, resolve_device, DeviceArg, DtypeArg, EpArg, OnnxEmbedder};
 use crate::BackendArg;
 use anyhow::{Context, Result};
 use arrow_array::{Array, Float32Array, RecordBatch, StringArray};

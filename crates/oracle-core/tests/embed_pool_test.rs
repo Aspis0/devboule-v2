@@ -1,6 +1,6 @@
 //! EmbedderPool lifecycle smoke (operator-run: needs the local ONNX model).
 
-use oracle_core::embed::{BackendChoice, CancelFlag, EmbedderPool};
+use oracle_core::{BackendChoice, CancelFlag, EmbedderPool};
 use std::path::PathBuf;
 use std::time::Duration;
 

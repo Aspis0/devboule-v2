@@ -13,12 +13,10 @@
 //! Requires the local model at `models/qwen3-onnx/`. Run with:
 //!   cargo test --test e2e_real_onnx_test -- --ignored --nocapture
 
-use oracle_core::embed::{BackendChoice, CancelFlag, EmbedderPool};
-use oracle_core::ingest::indexer::{self, IndexerConfig};
-use oracle_core::query::engine::{ContextChunk, QueryEngine};
-use oracle_core::query::pool_embedder::PoolQueryEmbedder;
-use oracle_core::store::lance::LanceStore;
-use oracle_core::store::sqlite::SqliteStore;
+use oracle_core::{
+    index_file_chunks, BackendChoice, CancelFlag, ContextChunk, EmbedderPool, IndexerConfig,
+    LanceStore, PoolQueryEmbedder, QueryEngine, SqliteStore,
+};
 use std::path::PathBuf;
 
 /// Model bundle location. Override with `ORACLE_E2E_MODEL_DIR`; the models are
@@ -98,7 +96,7 @@ async fn real_onnx_dense_retrieval_discriminates() {
         max_gpu_temp_c: None,
         ..Default::default()
     };
-    indexer::index_file_chunks(
+    index_file_chunks(
         &root,
         &sqlite,
         &chunk_vectors,

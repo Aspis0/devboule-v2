@@ -3,7 +3,7 @@ use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use oracle_core::ingest::retrieval_text::{chunk_embedding_text_for_model, ChunkMeta};
+use oracle_core::{chunk_embedding_text_for_model, ChunkMeta};
 use tokenizers::Tokenizer;
 
 fn meta_of(chunk: &serde_json::Value) -> ChunkMeta {

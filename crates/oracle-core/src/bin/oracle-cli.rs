@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
-use oracle_core::embedder::{self, DeviceArg, DtypeArg};
-use oracle_core::{lance, onnx_embedder, BackendArg};
+use oracle_core::{cmd_bench, cmd_embed, cmd_query, BackendArg, DeviceArg, DtypeArg, EpArg};
 
 #[derive(Parser)]
 #[command(
@@ -29,7 +28,7 @@ enum Command {
         #[arg(long, default_value = "models/qwen3-onnx")]
         model_dir: std::path::PathBuf,
         #[arg(long, value_enum, default_value = "cpu")]
-        ep: onnx_embedder::EpArg,
+        ep: EpArg,
         #[arg(long, default_value_t = 8)]
         batch_size: usize,
     },
@@ -50,7 +49,7 @@ enum Command {
         #[arg(long, default_value = "models/qwen3-onnx")]
         model_dir: std::path::PathBuf,
         #[arg(long, value_enum, default_value = "cpu")]
-        ep: onnx_embedder::EpArg,
+        ep: EpArg,
         #[arg(long, default_value_t = 8)]
         batch_size: usize,
     },
@@ -69,7 +68,7 @@ enum Command {
         #[arg(long, default_value = "models/qwen3-onnx")]
         model_dir: std::path::PathBuf,
         #[arg(long, value_enum, default_value = "cpu")]
-        ep: onnx_embedder::EpArg,
+        ep: EpArg,
         #[arg(long, default_value_t = 8)]
         batch_size: usize,
     },
@@ -89,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             ep,
             batch_size,
         } => {
-            embedder::cmd_embed(
+            cmd_embed(
                 texts_file, out, backend, device, dtype, model_dir, ep, batch_size,
             )
             .await
@@ -105,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
             ep,
             batch_size,
         } => {
-            lance::cmd_query(
+            cmd_query(
                 db, query, limit, backend, device, dtype, model_dir, ep, batch_size,
             )
             .await
@@ -120,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
             ep,
             batch_size,
         } => {
-            embedder::cmd_bench(
+            cmd_bench(
                 texts_file, iters, backend, device, dtype, model_dir, ep, batch_size,
             )
             .await

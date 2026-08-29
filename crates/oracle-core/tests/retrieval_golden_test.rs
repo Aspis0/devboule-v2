@@ -8,7 +8,7 @@ use std::fs;
 
 use serde::Deserialize;
 
-use oracle_core::ingest::retrieval_text::{
+use oracle_core::{
     chunk_embedding_text, classify_domains, classify_source_kind, query_embedding_text, ChunkMeta,
 };
 

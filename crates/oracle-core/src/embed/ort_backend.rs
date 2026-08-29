@@ -1,6 +1,6 @@
 //! ONNX Runtime backend for the [`Embedder`](super::Embedder) trait.
 //!
-//! Wraps the proven spike code in `crate::onnx_embedder` (manual last-token
+//! Wraps the proven spike code in `crate::embed::onnx_embedder` (manual last-token
 //! pooling + empty-KV feeding). fp32 is index-parity-proven (0.9998); int8 is
 //! ~2× faster on CPU but parity-INCOMPATIBLE (0.70-0.91) — only for corpora
 //! embedded entirely with int8.
@@ -8,8 +8,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use super::onnx_embedder::{EpArg, OnnxEmbedder};
 use super::{CancelFlag, Embedder};
-use crate::onnx_embedder::{EpArg, OnnxEmbedder};
 
 pub struct OrtEmbedder {
     inner: OnnxEmbedder,

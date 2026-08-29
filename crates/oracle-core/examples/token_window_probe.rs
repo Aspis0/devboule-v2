@@ -2,8 +2,7 @@
 
 use std::path::PathBuf;
 
-use oracle_core::ingest::retrieval_text::{chunk_embedding_text_for_model, ChunkMeta};
-use oracle_core::onnx_embedder::{EpArg, OnnxEmbedder};
+use oracle_core::{chunk_embedding_text_for_model, ChunkMeta, EpArg, OnnxEmbedder};
 
 fn arg(name: &str) -> String {
     let args: Vec<String> = std::env::args().collect();

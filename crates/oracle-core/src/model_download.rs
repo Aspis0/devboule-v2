@@ -17,9 +17,8 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use crate::embed::model_descriptor::{write_model_config_if_missing, BGE_SMALL_MODEL_CONFIG_JSON};
-use crate::embed::ort_backend::OrtEmbedder;
 use crate::embed::CancelFlag;
+use crate::embed::{write_model_config_if_missing, OrtEmbedder, BGE_SMALL_MODEL_CONFIG_JSON};
 
 /// The model shipped as Oracle's portable default.
 pub const BGE_SMALL_MODEL_ID: &str = "bge-small-en-v1.5";

@@ -1,8 +1,7 @@
 //! Golden test — byte-parity verification of ingest::collect + ingest::chunking
 //! against the fixtures in `golden/fixtures/` (see `golden/README.md`).
 
-use oracle_core::ingest::chunking;
-use oracle_core::ingest::collect;
+use oracle_core::{build_chunks_for_file, collect_text_files, priority_rank};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -60,7 +59,7 @@ fn golden_collect_matches_fixture() {
         .map(|v| v.as_str().unwrap().to_string())
         .collect();
 
-    let collected = collect::collect_text_files(&root);
+    let collected = collect_text_files(&root);
     let got: Vec<String> = collected
         .iter()
         .map(|p| {
@@ -101,14 +100,14 @@ fn golden_collect_priority_matches_fixture() {
         .map(|(k, v)| (k.clone(), v.as_u64().unwrap() as usize))
         .collect();
 
-    let collected = collect::collect_text_files(&root);
+    let collected = collect_text_files(&root);
     for path in &collected {
         let rel = path
             .strip_prefix(&root)
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
-        let rank = collect::priority_rank(&rel);
+        let rank = priority_rank(&rel);
         assert_eq!(
             rank,
             *expected
@@ -128,7 +127,7 @@ fn golden_chunks_match_fixture() {
     let fixture = load_json(&fixtures_dir().join("chunks.json"));
     let fixture_obj = fixture.as_object().expect("chunks.json must be an object");
 
-    let collected = collect::collect_text_files(&root);
+    let collected = collect_text_files(&root);
 
     // Build chunks for every collected file
     let mut all_chunks: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
@@ -138,7 +137,7 @@ fn golden_chunks_match_fixture() {
             .unwrap()
             .to_string_lossy()
             .replace('\\', "/");
-        let chunks = chunking::build_chunks_for_file(path, &root);
+        let chunks = build_chunks_for_file(path, &root);
         // Strip volatile fields for comparison
         let clean: Vec<serde_json::Value> = chunks
             .into_iter()
@@ -216,7 +215,7 @@ fn golden_chunks_match_fixture() {
 #[cfg(unix)]
 #[test]
 fn collect_symlink_walk_parity() {
-    use oracle_core::ingest::collect::collect_text_files;
+    use oracle_core::collect_text_files;
     use std::os::unix::fs::symlink;
 
     let dir = tempfile::tempdir().unwrap();

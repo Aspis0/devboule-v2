@@ -1,8 +1,7 @@
 //! Query engine orchestration — Rust port of `oracle/server/query_engine.py`.
 //!
-//! Ports the QUERY ORCHESTRATION layer (context merge, ask ranking, similar
-//! node lookup, cluster reads, health/snapshot).  The LLM answer path is
-//! delegated to the injected [`ContextAnswerer`] trait (P5 scope).
+//! Ports the QUERY ORCHESTRATION layer (context merge, similar node lookup,
+//! cluster reads, health/snapshot).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
@@ -47,11 +46,6 @@ fn sort_context_rows(rows: &mut [ContextChunk]) {
 // ═══════════════════════════════════════════════════════════════════════════
 // Traits
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// LLM answer synthesis trait (P5 scope).
-pub trait ContextAnswerer: Send + Sync {
-    fn answer(&self, query: &str, context_chunks: &[ContextChunk]) -> Result<AnswerPayload>;
-}
 
 /// Query embedding trait — decouples the engine from any specific embedder.
 pub trait QueryEmbedder: Send + Sync {
@@ -115,63 +109,6 @@ pub struct ContextChunk {
     pub line_start: usize,
     pub line_end: usize,
     pub symbols_used: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct Citation {
-    #[serde(rename = "ref")]
-    pub ref_id: String,
-    pub file_source: String,
-    pub chunk_id: String,
-    pub chunk_index: Option<i64>,
-    pub start_char: Option<i64>,
-    pub end_char: Option<i64>,
-    pub retrieval: String,
-    pub score: f64,
-}
-
-/// Payload returned by a [`ContextAnswerer`].
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct AnswerPayload {
-    pub answer: String,
-    pub citations: Vec<Citation>,
-    pub not_found: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggested_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub answer_source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fallback_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_model: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub struct AskResponse {
-    pub mode: String,
-    pub query: String,
-    pub summary: String,
-    pub answer: String,
-    pub citations: Vec<Citation>,
-    pub not_found: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub suggested_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub answer_source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fallback_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub llm_model: Option<String>,
-    pub results: Vec<ResultEntry>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub grouped: Option<Vec<GroupEntry>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -293,81 +230,6 @@ pub struct ClusterMember {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Internal types
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Unified chunk preview used inside `_result` logic — mirrors the dict that
-/// Python builds from both FileChunk and `chunk_payload_to_store_shape`.
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-struct ChunkPreview {
-    id: String,
-    file_id: String,
-    file_sorgente: String,
-    chunk_index: i64,
-    start_char: i64,
-    end_char: i64,
-    text: String,
-    kind: String,
-    symbol_name: String,
-    signature: String,
-    language: String,
-    line_start: i64,
-    line_end: i64,
-    symbols_used: Vec<String>,
-}
-
-impl From<&FileChunk> for ChunkPreview {
-    fn from(c: &FileChunk) -> Self {
-        Self {
-            id: c.id.clone(),
-            file_id: c.file_id.clone(),
-            file_sorgente: c.file_sorgente.clone(),
-            chunk_index: c.chunk_index,
-            start_char: c.start_char,
-            end_char: c.end_char,
-            // Redact at the preview/serialization boundary (same as ContextChunk).
-            text: redact_secret_tokens(&c.text),
-            kind: c.kind.clone(),
-            symbol_name: c.symbol_name.clone(),
-            signature: c.signature.clone(),
-            language: c.language.clone(),
-            line_start: c.line_start,
-            line_end: c.line_end,
-            symbols_used: c.symbols_used.clone(),
-        }
-    }
-}
-
-impl From<&ContextChunk> for ChunkPreview {
-    fn from(c: &ContextChunk) -> Self {
-        Self {
-            id: c.chunk_id.clone(),
-            file_id: c.file_source.clone(),
-            file_sorgente: c.file_source.clone(),
-            chunk_index: c.chunk_index as i64,
-            start_char: c.start_char as i64,
-            end_char: c.end_char as i64,
-            text: c.text.clone(),
-            kind: c.kind.clone(),
-            symbol_name: c.symbol_name.clone(),
-            signature: c.signature.clone(),
-            language: c.language.clone(),
-            line_start: c.line_start as i64,
-            line_end: c.line_end as i64,
-            symbols_used: c.symbols_used.clone(),
-        }
-    }
-}
-
-/// Intermediate row entry during ask() ranking.
-struct RowEntry {
-    id: String,
-    score: f64,
-    chunk: Option<ChunkPreview>,
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
 // QueryEngine
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -445,111 +307,6 @@ impl QueryEngine {
         // No model or stored vector exists here: HashQueryEmbedder is the
         // dimensionless debug fallback, so there is no better source.
         Ok(config::EMBED_DIMS)
-    }
-
-    /// Best per-file chunk scores and previews from the chunk-vector store.
-    async fn chunk_scores(
-        &self,
-        query_vec: &[f32],
-        limit: usize,
-        allowed_file_ids: Option<&HashSet<String>>,
-    ) -> Result<(HashMap<String, f64>, HashMap<String, ChunkPreview>)> {
-        let Some(ref cv) = self.chunk_vectors else {
-            return Ok((HashMap::new(), HashMap::new()));
-        };
-        let hits = cv.search(query_vec, limit).await?;
-        let mut scores: HashMap<String, f64> = HashMap::new();
-        let mut previews: HashMap<String, ChunkPreview> = HashMap::new();
-        for hit in hits {
-            if let Some(chunk) = self.sqlite.get_chunk(&hit.id)? {
-                if allowed_file_ids.is_none_or(|ids| ids.contains(&chunk.file_id)) {
-                    let score = hit.score as f64;
-                    if score > scores.get(&chunk.file_id).copied().unwrap_or(-1.0) {
-                        scores.insert(chunk.file_id.clone(), score);
-                        previews.insert(chunk.file_id.clone(), ChunkPreview::from(&chunk));
-                    }
-                }
-            }
-        }
-        Ok((scores, previews))
-    }
-
-    /// `self._result(row)` from Python — build a [`ResultEntry`] from a row
-    /// with an optional chunk preview.
-    fn build_result(&self, row: &RowEntry) -> ResultEntry {
-        let card = self.sqlite.get_node(&row.id).ok().flatten();
-        match card {
-            Some(card) => self.result_from_card(&card, row),
-            None => self.result_from_chunk_only(row),
-        }
-    }
-
-    fn result_from_card(&self, card: &NodeCard, row: &RowEntry) -> ResultEntry {
-        let cp = row.chunk.as_ref();
-        ResultEntry {
-            id: card.id.clone(),
-            label: card.label.clone(),
-            node_type: "file".to_string(),
-            cluster: parse_cluster(&card.cluster_semantic),
-            score: row.score,
-            file_source: card.file_sorgente.clone(),
-            function_primary: card.funzione_primaria.clone(),
-            dependencies: card.dipende_da.clone(),
-            chunk_id: cp.map(|c| c.id.clone()),
-            chunk_index: cp.map(|c| c.chunk_index),
-            start_char: cp.map(|c| c.start_char),
-            end_char: cp.map(|c| c.end_char),
-            chunk_preview: cp.map(|c| summarize_chunk(&c.text)).unwrap_or_default(),
-            kind: "file".to_string(),
-            symbol_name: card.label.clone(),
-            signature: String::new(),
-            language: String::new(),
-            line_start: 0,
-            line_end: 0,
-            symbols_used: card.dipende_da.clone(),
-        }
-    }
-
-    fn result_from_chunk_only(&self, row: &RowEntry) -> ResultEntry {
-        let cp = row.chunk.as_ref();
-        let empty_cp = ChunkPreview::default();
-        let c = cp.unwrap_or(&empty_cp);
-        let chunk_kind = if c.kind.is_empty() {
-            "text_slice".to_string()
-        } else {
-            c.kind.clone()
-        };
-        let label = if !c.symbol_name.is_empty() {
-            c.symbol_name.clone()
-        } else {
-            row.id.rsplit('/').next().unwrap_or(&row.id).to_string()
-        };
-        ResultEntry {
-            id: row.id.clone(),
-            label,
-            node_type: "chunk".to_string(),
-            cluster: 0,
-            score: row.score,
-            file_source: if !c.file_sorgente.is_empty() {
-                c.file_sorgente.clone()
-            } else {
-                row.id.clone()
-            },
-            function_primary: summarize_chunk(&c.text),
-            dependencies: vec![],
-            chunk_id: Some(c.id.clone()),
-            chunk_index: Some(c.chunk_index),
-            start_char: Some(c.start_char),
-            end_char: Some(c.end_char),
-            chunk_preview: summarize_chunk(&c.text),
-            kind: chunk_kind,
-            symbol_name: c.symbol_name.clone(),
-            signature: c.signature.clone(),
-            language: c.language.clone(),
-            line_start: c.line_start,
-            line_end: c.line_end,
-            symbols_used: c.symbols_used.clone(),
-        }
     }
 
     // ── public API ───────────────────────────────────────────────────────
@@ -690,182 +447,6 @@ impl QueryEngine {
         sort_context_rows(&mut rows);
         rows.truncate(limit.max(1));
         Ok(rows)
-    }
-
-    /// Full ask pipeline: context + file-level ranking + answer synthesis.
-    // Same filter surface as `context`, plus answerer and group_by_file.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn ask(
-        &self,
-        query: &str,
-        limit: usize,
-        embedder: &dyn QueryEmbedder,
-        answerer: Option<&dyn ContextAnswerer>,
-        allowed_file_ids: Option<&HashSet<String>>,
-        prefer_lexical: bool,
-        kind: Option<&str>,
-        language: Option<&str>,
-        symbols: Option<&[String]>,
-        imports: Option<&[String]>,
-        module: Option<&str>,
-        group_by_file: bool,
-    ) -> Result<AskResponse> {
-        // Bound every public limit before fan-out (MCP/HTTP should already
-        // clamp; this is defense-in-depth for library callers).
-        let bounded_limit = limit.clamp(1, config::MAX_BOUNDED_LIMIT);
-
-        let context_chunks = self
-            .context(
-                query,
-                bounded_limit,
-                embedder,
-                allowed_file_ids,
-                prefer_lexical,
-                kind,
-                language,
-                symbols,
-                imports,
-                module,
-            )
-            .await?;
-
-        // ── Answer synthesis ─────────────────────────────────────────
-        let generated = if let Some(answerer) = answerer {
-            answerer.answer(query, &context_chunks)?
-        } else {
-            degraded_answer(query, &context_chunks)
-        };
-
-        // ── Node-card vector scores ──────────────────────────────────
-        let vector_scores: HashMap<String, f64> = if prefer_lexical {
-            HashMap::new()
-        } else {
-            // Was `count.max(limit)` — that scanned the entire node store.
-            let search_limit =
-                (bounded_limit.saturating_mul(4)).clamp(1, config::MAX_BOUNDED_LIMIT);
-            let qv = self.embed_query(embedder, query).await?;
-            let hits = self.vectors.search(&qv, search_limit).await?;
-            hits.into_iter().map(|h| (h.id, h.score as f64)).collect()
-        };
-
-        // ── Chunk scores (best per file) ────────────────────────────
-        let (chunk_scores_map, chunk_preview_map) = if prefer_lexical {
-            (HashMap::new(), HashMap::new())
-        } else {
-            let qv = self.embed_query(embedder, query).await?;
-            let chunk_limit = (30usize)
-                .max(bounded_limit.saturating_mul(8))
-                .min(config::MAX_BOUNDED_LIMIT.saturating_mul(8));
-            self.chunk_scores(&qv, chunk_limit, allowed_file_ids)
-                .await?
-        };
-
-        // ── Build row entries ────────────────────────────────────────
-        let mut rows: Vec<RowEntry> = Vec::new();
-        let all_nodes = self.sqlite.all_nodes()?;
-        for card in &all_nodes {
-            if allowed_file_ids.is_some()
-                && !allowed_file_ids.unwrap().contains(&card.id)
-                && !allowed_file_ids.unwrap().contains(&card.file_sorgente)
-            {
-                continue;
-            }
-            let lexical = lexical_score_node(query, card);
-            let vector = vector_scores.get(&card.id).copied().unwrap_or(0.0);
-            let chunk = chunk_scores_map.get(&card.id).copied().unwrap_or(0.0);
-            let score = lexical + (vector * 0.25) + (chunk * 2.5);
-            if score > 0.0 {
-                rows.push(RowEntry {
-                    id: card.id.clone(),
-                    score,
-                    chunk: chunk_preview_map.get(&card.id).cloned(),
-                });
-            }
-        }
-
-        let mut known: HashSet<String> = rows.iter().map(|r| r.id.clone()).collect();
-
-        // Synthetic rows for chunk-only files (no matching node card)
-        for (file_id, score) in &chunk_scores_map {
-            if !known.contains(file_id) {
-                rows.push(RowEntry {
-                    id: file_id.clone(),
-                    score: score * 2.5,
-                    chunk: chunk_preview_map.get(file_id).cloned(),
-                });
-                known.insert(file_id.clone());
-            }
-        }
-
-        // Synthetic rows for context-only files
-        for cc in &context_chunks {
-            if !known.contains(&cc.file_source) {
-                let cp = ChunkPreview::from(cc);
-                rows.push(RowEntry {
-                    id: cc.file_source.clone(),
-                    score: cc.score * 2.5,
-                    chunk: Some(cp),
-                });
-                known.insert(cc.file_source.clone());
-            }
-        }
-
-        rows.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-
-        let effective_limit = bounded_limit;
-        let results: Vec<ResultEntry> = rows
-            .iter()
-            .take(effective_limit)
-            .map(|r| self.build_result(r))
-            .collect();
-
-        let grouped = if group_by_file {
-            Some(group_by_file_fn(&context_chunks, &results))
-        } else {
-            None
-        };
-
-        // ── Summary logic ───────────────────────────────────────────
-        // When no answerer is available, always build the labels-based
-        // summary (the 'else' branch from Python).  When an answerer IS
-        // provided, mirror the Python logic: use the answer text when
-        // not_found or citations exist, otherwise labels-based.
-        let labels: String = results
-            .iter()
-            .take(3)
-            .map(|r| r.label.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let summary =
-            if answerer.is_some() && (generated.not_found || !generated.citations.is_empty()) {
-                generated.answer.clone()
-            } else if !labels.is_empty() {
-                format!("Grounded Oracle matches: {}.", labels)
-            } else {
-                "No Oracle matches found.".to_string()
-            };
-
-        Ok(AskResponse {
-            mode: "oracle-qwen-local".to_string(),
-            query: query.to_string(),
-            summary,
-            answer: generated.answer,
-            citations: generated.citations,
-            not_found: generated.not_found,
-            suggested_path: generated.suggested_path,
-            answer_source: generated.answer_source,
-            fallback_reason: generated.fallback_reason,
-            llm_provider: generated.llm_provider,
-            llm_model: generated.llm_model,
-            results,
-            grouped,
-        })
     }
 
     /// Similar nodes: node-card store first, file_vectors fallback.
@@ -1089,14 +670,14 @@ impl QueryEngine {
 // Node-card lexical scoring (NOT chunk scoring — different algorithm)
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn node_card_token_re() -> &'static Regex {
+pub fn node_card_token_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"[a-z0-9_/-]+").unwrap())
 }
 
 /// Extract terms for node-card scoring.  Unlike [`lexical::query_terms`],
 /// this does NOT filter stopwords — matching the Python original exactly.
-fn node_card_terms(query: &str) -> HashSet<String> {
+pub fn node_card_terms(query: &str) -> HashSet<String> {
     let lower = query.to_lowercase();
     node_card_token_re()
         .find_iter(&lower)
@@ -1105,75 +686,7 @@ fn node_card_terms(query: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Node-card lexical score — mirrors `query_engine.py::lexical_score` exactly.
-fn lexical_score_node(query: &str, card: &NodeCard) -> f64 {
-    let terms = node_card_terms(query);
-    if terms.is_empty() {
-        return 0.0;
-    }
-    let searchable = [
-        card.id.as_str(),
-        card.label.as_str(),
-        card.area.as_str(),
-        card.cluster_semantic.as_str(),
-        card.funzione_primaria.as_str(),
-        &card.dipende_da.join(" "),
-        &card.tecnologie.join(" "),
-    ]
-    .join(" ")
-    .to_lowercase();
-    let card_id_lower = card.id.to_lowercase();
-    let card_label_lower = card.label.to_lowercase();
-    let card_area_lower = card.area.to_lowercase();
-
-    let mut score = 0.0_f64;
-    for term in &terms {
-        if searchable.contains(term.as_str()) {
-            score += 1.0;
-        }
-        if card_id_lower.contains(term.as_str()) || card_label_lower.contains(term.as_str()) {
-            score += 1.5;
-        }
-        if card_area_lower.contains(term.as_str()) {
-            score += 0.75;
-        }
-    }
-
-    // Provider backend query boost
-    if is_provider_backend_query(&terms) && card.id.starts_with("src-tauri/src/backend/") {
-        score += 6.0;
-        if card.id.ends_with("providers.rs") || card.id.ends_with("commands.rs") {
-            score += 3.0;
-        }
-        if card.id.ends_with("providers.rs")
-            && terms.iter().any(|t| {
-                matches!(
-                    t.as_str(),
-                    "container" | "containers" | "cpu" | "serverless"
-                )
-            })
-        {
-            score += 2.0;
-        }
-    }
-
-    // Frontend view query boost
-    if is_frontend_view_query(&terms) && card.id.starts_with("src/components/views/") {
-        score += 5.0;
-        if terms.iter().any(|t| {
-            matches!(
-                t.as_str(),
-                "oracle" | "graph" | "budget" | "compute" | "secrets" | "providers"
-            )
-        }) {
-            score += 2.0;
-        }
-    }
-
-    score
-}
-
-fn is_provider_backend_query(terms: &HashSet<String>) -> bool {
+pub fn is_provider_backend_query(terms: &HashSet<String>) -> bool {
     let provider_terms: &[&str] = &["worker", "workers", "serverless", "gpu", "provider"];
     let operation_terms: &[&str] = &[
         "secret",
@@ -1202,7 +715,7 @@ fn is_provider_backend_query(terms: &HashSet<String>) -> bool {
     has_provider && has_op_or_resource
 }
 
-fn is_frontend_view_query(terms: &HashSet<String>) -> bool {
+pub fn is_frontend_view_query(terms: &HashSet<String>) -> bool {
     [
         "page",
         "view",
@@ -1293,7 +806,10 @@ fn chunk_matches_filters(
 
 /// Group context chunks and results by file.
 /// Mirrors `QueryEngine._group_by_file`.
-fn group_by_file_fn(context_chunks: &[ContextChunk], results: &[ResultEntry]) -> Vec<GroupEntry> {
+pub fn group_by_file_fn(
+    context_chunks: &[ContextChunk],
+    results: &[ResultEntry],
+) -> Vec<GroupEntry> {
     let mut by_file: HashMap<String, GroupEntry> = HashMap::new();
 
     for chunk in context_chunks {
@@ -1402,14 +918,14 @@ fn file_chunk_to_scored(c: &FileChunk) -> ScoredChunk {
 
 /// Truncate to at most `max_chars` Unicode scalar values.
 /// Byte-offset slices (`s[..n]`) panic when `n` lands inside a multi-byte char.
-fn truncate_chars(s: &str, max_chars: usize) -> String {
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
     match s.char_indices().nth(max_chars) {
         None => s.to_string(),
         Some((idx, _)) => s[..idx].to_string(),
     }
 }
 
-fn summarize_chunk(text: &str) -> String {
+pub fn summarize_chunk(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return "Chunk-level match from the full-file Oracle index.".to_string();
@@ -1420,20 +936,6 @@ fn summarize_chunk(text: &str) -> String {
 
 fn parse_cluster(value: &str) -> i64 {
     value.parse::<i64>().unwrap_or(0)
-}
-
-/// Degraded answer when no ContextAnswerer is available.
-fn degraded_answer(_query: &str, _context: &[ContextChunk]) -> AnswerPayload {
-    AnswerPayload {
-        answer: "not found in corpus.".to_string(),
-        citations: Vec::new(),
-        not_found: true,
-        suggested_path: None,
-        answer_source: Some("not_found".to_string()),
-        fallback_reason: Some("LLM answerer not available at this layer.".to_string()),
-        llm_provider: None,
-        llm_model: None,
-    }
 }
 
 /// `active_query_profile()` — mirrors

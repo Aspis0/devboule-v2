@@ -1,18 +1,18 @@
 //! candle (fastembed qwen3) backend for the [`Embedder`](super::Embedder) trait.
 //!
-//! Wraps the proven spike code in `crate::embedder` (Qwen3TextEmbedding via
+//! Wraps the proven spike code in `crate::embed::embedder` (Qwen3TextEmbedding via
 //! the shared HF cache, last-token pooling + L2 norm — index-parity 0.9998
 //! against the Python sentence-transformers stack).
 
 use anyhow::{Context, Result};
 use candle_core::DType;
 
+use super::embedder::{load_model, resolve_device, DeviceArg, MODEL_ID};
 use super::{
     attention_cost, attention_sub_batch_sizes, expand_texts_to_windows, pack_windows_for_attention,
     pool_window_vectors, resolve_attention_budget, resolve_embed_window_bytes,
     resolve_embed_window_overlap_bytes, CancelFlag, Embedder,
 };
-use crate::embedder::{load_model, resolve_device, DeviceArg, MODEL_ID};
 
 pub struct CandleEmbedder {
     model: fastembed::Qwen3TextEmbedding,

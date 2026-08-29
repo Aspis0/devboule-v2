@@ -11,9 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
-use oracle_core::query::lexical::{
-    lexical_chunk_score, query_terms, semantic_expansions, ScoredChunk,
-};
+use oracle_core::{lexical_chunk_score, query_terms, semantic_expansions, ScoredChunk};
 
 // ---------------------------------------------------------------------------
 // Fixture types
