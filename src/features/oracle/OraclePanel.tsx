@@ -457,20 +457,32 @@ const ReadyOracle = memo(function ReadyOracle({
       {incomplete && status && (
         <div className="oracle-incomplete-notice" role="status">
           <div>
-            <strong>Indexing is incomplete.</strong>
+            <strong>{status.pause_reason ? "Indexing is paused for memory." : "Indexing is incomplete."}</strong>
             <span>
-              Search is available across {formatCount(status.indexed_files)} indexed files, but{" "}
-              {formatCount(status.pending_files)} files still need to be indexed.
+              {status.pause_reason ?? (
+                <>
+                  Search is available across {formatCount(status.indexed_files)} indexed files, but{" "}
+                  {formatCount(status.pending_files)} files still need to be indexed.
+                </>
+              )}
             </span>
-            <small>Resume continues from the existing index; it does not start over.</small>
+            <small>
+              {status.pause_reason && status.state === "indexing"
+                ? "Close memory-heavy apps; Oracle will resume automatically when memory recovers."
+                : "Resume continues from the existing index; it does not start over."}
+            </small>
           </div>
           <button
             className="oracle-button oracle-button-primary"
             type="button"
             onClick={onStartIndex}
-            disabled={indexStarting}
+            disabled={indexStarting || status.state === "indexing"}
           >
-            {indexStarting ? "Resuming index…" : "Resume indexing"}
+            {status.pause_reason && status.state === "indexing"
+              ? "Waiting for memory…"
+              : indexStarting
+                ? "Resuming index…"
+                : "Resume indexing"}
           </button>
         </div>
       )}

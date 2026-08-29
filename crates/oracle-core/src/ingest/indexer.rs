@@ -16,18 +16,14 @@
 //!
 //! ## RAM / GPU guards
 //!
-//! - **Low-RAM guard** (binding constraint on Apple Silicon): reads free system
-//!   RAM two ways. On macOS the kernel's own `kern.memorystatus_*` sysctls are
-//!   authoritative when readable — the same signals jetsam acts on, which
-//!   `sysinfo` cannot match (it both over-reported ~8 GB free during the
-//!   2026-07-25 freeze and under-reported 0.3 GB on a healthy machine on
-//!   2026-08-02). When the probe is unreadable (or on other OSes) the
-//!   `sysinfo` floor below `min_free_gb` is the fail-closed fallback:
-//!   unusable/near-zero readings pause indexing rather than silently
-//!   proceeding (Metal buffers are wired and not swappable — low free RAM
-//!   freezes the machine). Either signal pausing → the pipeline
-//!   sleeps-and-retries for a bounded number of cycles, then returns
-//!   `paused_low_memory` if it does not recover.
+//! - **Low-RAM guard**: reads available system RAM. On macOS the kernel's own
+//!   `kern.memorystatus_*` sysctls are authoritative when readable; on other
+//!   hosts (or when that probe is unavailable) the `sysinfo` floor is the
+//!   fail-closed fallback. The default floor is derived from physical RAM and
+//!   the measured BGE pass high-water below, while `adaptive_batch_files`
+//!   shrinks work before the floor is reached. A pause is persisted for the UI,
+//!   then the cancellable worker waits and resumes automatically when memory
+//!   recovers.
 //! - **GPU thermal guard**: polls `nvidia-smi` only. On macOS / Apple Silicon
 //!   there is **no thermal guard** (`nvidia-smi` is absent; we do not probe
 //!   powermetrics). Memory, not temperature, is the binding constraint there.
@@ -73,9 +69,21 @@ pub const DEFAULT_BATCH_CHARS: usize = 50_000;
 /// Max attention cost per embed batch: `batch_len × (max_est_tokens)²`.
 /// See [`embed::DEFAULT_ATTENTION_BUDGET`]. Override: `ORACLE_CHUNK_ATTENTION_BUDGET`.
 pub const DEFAULT_ATTENTION_BUDGET: usize = embed::DEFAULT_ATTENTION_BUDGET;
-/// Minimum free RAM (GB) before the indexer hard-pauses. Raised from 5.0 because
-/// Metal F16 buffers are wired — 5 GB is not real headroom on a 64 GB host.
-pub const DEFAULT_MIN_FREE_GB: f64 = 10.0;
+/// Measured high-water RSS for a complete pass over the product repository on
+/// 2026-08-29: BGE-small ONNX int8 + a warmed TinyBERT reranker, 187 files /
+/// 3,266 chunks, default chunk and attention batches. The clean pass reached
+/// 1.81 GiB RSS; a conservative repeat with the temporary profiler file
+/// present reached 2.14 GiB under different Windows working-set/cache
+/// conditions, so keep the larger observed value as the safety reference. The
+/// reranker is query-time only, but it is resident in the product process.
+pub const MEASURED_BGE_INDEX_PEAK_GB: f64 = 2.14;
+/// Fallback floor when the physical-memory probe is unavailable. Normal
+/// defaults are scaled by [`default_min_free_gb`] below, not this number.
+pub const DEFAULT_MIN_FREE_GB: f64 = MEASURED_BGE_INDEX_PEAK_GB * 1.17;
+const DEFAULT_MIN_FREE_GB_FRACTION: f64 = 0.15;
+// The clean pass used 1.81 GiB RSS; keep roughly 10% beyond that even when
+// the host is too small for the percentage rule to provide enough headroom.
+const DEFAULT_MIN_FREE_GB_FLOOR: f64 = 2.0;
 /// Default GPU temp ceiling (°C). Only enforced when `nvidia-smi` is available;
 /// on macOS / Apple Silicon this never applies (no thermal probe).
 pub const DEFAULT_MAX_GPU_TEMP_C: i32 = 85;
@@ -83,7 +91,6 @@ const GPU_COOLDOWN_SECONDS: u64 = 45;
 const GPU_COOLDOWN_MAX_CYCLES: usize = 20;
 const GPU_RESUME_TEMP_C: i32 = 74;
 const LOW_MEMORY_RETRY_SECONDS: u64 = 5;
-const LOW_MEMORY_RETRY_CYCLES: usize = 6;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TextEmbedder trait — decoupled from the concrete backend
@@ -249,7 +256,8 @@ pub struct IndexerConfig {
     pub batch_chars: usize,
     /// Max attention cost per embed batch (`batch_len × max_est_tokens²`).
     pub attention_budget: usize,
-    /// Minimum free RAM in GB before pausing (0 = disabled).
+    /// Minimum available RAM in GB before waiting (0 = disabled). The default
+    /// is scaled from physical RAM; an environment override remains absolute.
     pub min_free_gb: f64,
     /// GPU temperature ceiling in °C (None = disabled). On macOS this is
     /// effectively unused — there is no thermal probe (see module docs).
@@ -272,7 +280,7 @@ impl Default for IndexerConfig {
             ),
             min_free_gb: env_or_f64(
                 &["ORACLE_CHUNK_MIN_FREE_RAM_GB", "ORACLE_CHUNK_MIN_FREE_GB"],
-                DEFAULT_MIN_FREE_GB,
+                default_min_free_gb(),
             ),
             max_gpu_temp_c: env_opt_i32("ORACLE_CHUNK_MAX_GPU_TEMP_C")
                 .or(Some(DEFAULT_MAX_GPU_TEMP_C)),
@@ -371,6 +379,8 @@ pub struct IndexStatusSnapshot {
     pub first_pending: Vec<String>,
     pub first_stale: Vec<String>,
     pub free_gb: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -561,20 +571,19 @@ fn chunk_batches(
 }
 
 /// Adaptive file-batch sizing based on free RAM.
-/// Mirrors Python's `adaptive_batch_files`.
+///
+/// The configured base is the upper bound. Under pressure, shrink the outer
+/// file batch so chunk construction and vector rows do not compete with the
+/// embedding call; when pressure clears, return to the configured base. The
+/// attention budget remains the authoritative bound for each embed call.
 fn adaptive_batch_files(base: usize, current: usize, free_gb: f64, min_free_gb: f64) -> usize {
-    if min_free_gb <= 0.0 {
-        return current.max(1);
+    let base = base.max(1);
+    let current = current.max(1);
+    let lo = (base / 4).max(1);
+    if min_free_gb > 0.0 && free_gb.is_finite() && free_gb < 2.0 * min_free_gb {
+        return (current / 2).max(lo);
     }
-    let lo = (base / 4).max(2);
-    let hi = (base * 4).max(base);
-    if free_gb >= 4.0 * min_free_gb {
-        return ((current.max(1) * 2).min(hi)).max(1);
-    }
-    if free_gb < 2.0 * min_free_gb {
-        return ((current.max(1) / 2).max(lo)).max(1);
-    }
-    current.max(1)
+    base
 }
 
 /// Effective chunk batch size (chunks per single `embed` call).
@@ -622,6 +631,32 @@ fn output_paths_set(
 // ═══════════════════════════════════════════════════════════════════════════
 // System probes — RAM and GPU
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Physical RAM in GB. This is used only to scale the default safety floor;
+/// available RAM remains the live signal used by the guard itself.
+fn total_memory_gb() -> f64 {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    (sys.total_memory() as f64) / (1024.0_f64.powi(3))
+}
+
+/// Scale the measured BGE pass headroom to the host instead of carrying a
+/// machine-specific absolute number. The 15% rate is the measured 2.14 GiB
+/// high-water divided by a 16 GiB laptop, rounded up; the 2.5 GiB cap is the
+/// measured peak plus a small allocation/cache margin. Thus a 16 GiB host uses
+/// about 2.4 GiB, while a 32/64 GiB host does not inherit the old 10 GiB floor.
+/// The 2.0 GiB lower bound keeps a small host above the clean pass footprint.
+fn scaled_min_free_gb(total_gb: f64) -> f64 {
+    if !total_gb.is_finite() || total_gb <= 0.0 {
+        return DEFAULT_MIN_FREE_GB;
+    }
+    (total_gb * DEFAULT_MIN_FREE_GB_FRACTION).clamp(DEFAULT_MIN_FREE_GB_FLOOR, DEFAULT_MIN_FREE_GB)
+}
+
+fn default_min_free_gb() -> f64 {
+    scaled_min_free_gb(total_memory_gb())
+}
 
 /// Free system RAM in GB (mirrors Python's `free_memory_gb`).
 ///
@@ -722,6 +757,34 @@ impl MemoryPauseReason {
             }
         }
     }
+
+    fn user_message(&self) -> String {
+        match self {
+            Self::FreeGbFloor {
+                free_gb,
+                min_free_gb,
+            } => format!(
+                "Oracle paused indexing because available memory is {free_gb:.2} GB, below its adaptive safety floor of {min_free_gb:.2} GB. Close memory-heavy apps; indexing will resume automatically when memory recovers."
+            ),
+            Self::MacosVmPressure { pressure } => format!(
+                "Oracle paused indexing because macOS reports elevated memory pressure (level {pressure}). Close memory-heavy apps; indexing will resume automatically when memory recovers."
+            ),
+            Self::MacosMemorystatusLevel { level, min_level } => format!(
+                "Oracle paused indexing because macOS reports only {level}% available memory, below its {min_level}% safety level. Close memory-heavy apps; indexing will resume automatically when memory recovers."
+            ),
+        }
+    }
+}
+
+fn save_memory_pause(
+    manifest: &mut manifest::Manifest,
+    root: &Path,
+    manifest_path: &Path,
+    reason: &MemoryPauseReason,
+) -> Result<()> {
+    manifest.index_pause_reason = Some(reason.user_message());
+    sync_legacy_manifest_root(manifest, root);
+    save_manifest(manifest_path, manifest)
 }
 
 /// Resolve `ORACLE_MACOS_MIN_MEMORYSTATUS_LEVEL` (default 25).
@@ -874,7 +937,6 @@ fn wait_for_memory_recovery_with_cancel(
     free_reader: impl FnMut() -> f64,
     still_blocked: impl FnMut(f64) -> bool,
     retry_seconds: u64,
-    retry_cycles: usize,
     cancel: Option<&CancelFlag>,
 ) -> f64 {
     wait_for_memory_recovery_with_cancel_inner(
@@ -883,7 +945,7 @@ fn wait_for_memory_recovery_with_cancel(
         free_reader,
         still_blocked,
         retry_seconds,
-        retry_cycles,
+        None,
         cancel,
     )
 }
@@ -910,7 +972,7 @@ where
         free_reader,
         still_blocked,
         retry_seconds,
-        retry_cycles,
+        Some(retry_cycles),
         None,
     )
 }
@@ -921,7 +983,7 @@ fn wait_for_memory_recovery_with_cancel_inner<F, G>(
     mut free_reader: F,
     mut still_blocked: G,
     retry_seconds: u64,
-    retry_cycles: usize,
+    retry_cycles: Option<usize>,
     cancel: Option<&CancelFlag>,
 ) -> f64
 where
@@ -932,17 +994,22 @@ where
     if !still_blocked(free_gb) {
         return free_gb;
     }
-    for cycle in 0..retry_cycles {
+    let mut cycle = 0usize;
+    loop {
         if cancel.is_some_and(CancelFlag::is_cancelled) {
             return free_gb;
         }
+        if retry_cycles.is_some_and(|max| cycle >= max) {
+            // Tests can inject a finite retry budget. Production passes None:
+            // low memory is a wait state, not a 30-second indexing failure.
+            return free_gb;
+        }
+        cycle = cycle.saturating_add(1);
         log_progress(
             progress,
             &format!(
                 "chunk-index low-memory retry free_gb={free_gb} min_free_gb={min_free_gb} \
-                 sleep_seconds={retry_seconds} cycle={}/{}",
-                cycle + 1,
-                retry_cycles,
+                 sleep_seconds={retry_seconds} cycle={cycle}",
             ),
         );
         if retry_seconds > 0 {
@@ -953,8 +1020,6 @@ where
             return free_gb;
         }
     }
-    // Exhausted: return the last real reading. Caller pauses with PausedLowMemory.
-    free_gb
 }
 
 fn wait_for_gpu_cooldown_with_cancel(
@@ -1308,23 +1373,29 @@ pub async fn index_file_chunks(
 
     let vector_path = chunk_vectors.path().to_path_buf();
     let sqlite_path = sqlite.path().to_path_buf();
+    // A new run owns the pause state. Clear a previous explanation before the
+    // next status poll; a fresh low-memory guard below will write a new one.
+    manifest.index_pause_reason = None;
+    sync_legacy_manifest_root(&mut manifest, &root);
+    save_manifest(&manifest_path, &manifest)?;
 
     // ── Pre-scan RAM guard (fail-closed) ────────────────────────────────
-    // Wait once for recovery; if still blocked (GB floor or macOS pressure),
-    // hard-pause. Starting under jetsam pressure is what froze the host.
+    // Wait for recovery before doing work. The production wait has no fixed
+    // retry limit: a transiently busy laptop should resume by itself.
     if config.min_free_gb > 0.0 {
         let free_gb = free_memory_gb();
-        if memory_pause_reason(free_gb, config.min_free_gb).is_some() {
+        if let Some(reason) = memory_pause_reason(free_gb, config.min_free_gb) {
+            save_memory_pause(&mut manifest, &root, &manifest_path, &reason)?;
             let recovered = wait_for_memory_recovery_with_cancel(
                 config.min_free_gb,
                 progress,
                 free_memory_gb,
                 |free_gb| memory_pause_reason(free_gb, config.min_free_gb).is_some(),
                 LOW_MEMORY_RETRY_SECONDS,
-                LOW_MEMORY_RETRY_CYCLES,
                 Some(cancel),
             );
             if let Some(reason) = memory_pause_reason(recovered, config.min_free_gb) {
+                save_memory_pause(&mut manifest, &root, &manifest_path, &reason)?;
                 log_progress(
                     progress,
                     &format!(
@@ -1350,6 +1421,13 @@ pub async fn index_file_chunks(
                     None,
                 ));
             }
+            manifest.index_pause_reason = None;
+            sync_legacy_manifest_root(&mut manifest, &root);
+            save_manifest(&manifest_path, &manifest)?;
+            log_progress(
+                progress,
+                &format!("chunk-index memory recovered free_gb={recovered}"),
+            );
         }
     }
 
@@ -1496,25 +1574,19 @@ pub async fn index_file_chunks(
         }
 
         // ── Pre-batch RAM guard (wait-and-resume) ───────────────────────
-        // Fail-closed: low free-RAM or elevated macOS kernel pressure → pause.
-        if memory_pause_reason(free_gb, config.min_free_gb).is_some() {
-            {
-                let mf = manifest_files_for_root(&mut manifest, &root, true).unwrap();
-                // Touch to ensure legacy mirror is up to date before save
-                let _ = mf;
-            }
-            sync_legacy_manifest_root(&mut manifest, &root);
-            save_manifest(&manifest_path, &manifest)?;
+        // Fail-closed: low free-RAM or elevated macOS kernel pressure → wait.
+        if let Some(reason) = memory_pause_reason(free_gb, config.min_free_gb) {
+            save_memory_pause(&mut manifest, &root, &manifest_path, &reason)?;
             let recovered = wait_for_memory_recovery_with_cancel(
                 config.min_free_gb,
                 progress,
                 free_memory_gb,
                 |free_gb| memory_pause_reason(free_gb, config.min_free_gb).is_some(),
                 LOW_MEMORY_RETRY_SECONDS,
-                LOW_MEMORY_RETRY_CYCLES,
                 Some(cancel),
             );
             if let Some(reason) = memory_pause_reason(recovered, config.min_free_gb) {
+                save_memory_pause(&mut manifest, &root, &manifest_path, &reason)?;
                 log_progress(
                     progress,
                     &format!(
@@ -1540,6 +1612,13 @@ pub async fn index_file_chunks(
                     None,
                 ));
             }
+            manifest.index_pause_reason = None;
+            sync_legacy_manifest_root(&mut manifest, &root);
+            save_manifest(&manifest_path, &manifest)?;
+            log_progress(
+                progress,
+                &format!("chunk-index memory recovered free_gb={recovered}"),
+            );
         }
 
         // ── Build chunks for batch ──────────────────────────────────────
@@ -1637,21 +1716,20 @@ pub async fn index_file_chunks(
                 }
             }
 
-            // In-sub-batch RAM guard (fail-closed hard pause)
+            // In-sub-batch RAM guard (wait-and-resume)
             let free_gb = free_memory_gb();
-            if memory_pause_reason(free_gb, config.min_free_gb).is_some() {
-                sync_legacy_manifest_root(&mut manifest, &root);
-                save_manifest(&manifest_path, &manifest)?;
+            if let Some(reason) = memory_pause_reason(free_gb, config.min_free_gb) {
+                save_memory_pause(&mut manifest, &root, &manifest_path, &reason)?;
                 let recovered = wait_for_memory_recovery_with_cancel(
                     config.min_free_gb,
                     progress,
                     free_memory_gb,
                     |free_gb| memory_pause_reason(free_gb, config.min_free_gb).is_some(),
                     LOW_MEMORY_RETRY_SECONDS,
-                    LOW_MEMORY_RETRY_CYCLES,
                     Some(cancel),
                 );
                 if let Some(reason) = memory_pause_reason(recovered, config.min_free_gb) {
+                    save_memory_pause(&mut manifest, &root, &manifest_path, &reason)?;
                     log_progress(
                         progress,
                         &format!(
@@ -1678,6 +1756,13 @@ pub async fn index_file_chunks(
                         None,
                     ));
                 }
+                manifest.index_pause_reason = None;
+                sync_legacy_manifest_root(&mut manifest, &root);
+                save_manifest(&manifest_path, &manifest)?;
+                log_progress(
+                    progress,
+                    &format!("chunk-index memory recovered free_gb={recovered}"),
+                );
             }
 
             // Compute embedding texts
@@ -1830,6 +1915,7 @@ pub async fn index_file_chunks(
         manifest.model_id = Some(model_id);
         manifest.dims = Some(embedding_dims);
         manifest.embedding_recipe = Some(embedding_recipe);
+        manifest.index_pause_reason = None;
     }
     sync_legacy_manifest_root(&mut manifest, &root);
     save_manifest(&manifest_path, &manifest)?;
@@ -1934,6 +2020,11 @@ pub async fn chunk_index_status(
         first_pending,
         first_stale,
         free_gb: free_memory_gb(),
+        pause_reason: if pending.is_empty() {
+            None
+        } else {
+            manifest.index_pause_reason.clone()
+        },
     })
 }
 
@@ -2142,6 +2233,25 @@ mod tests {
     }
 
     #[test]
+    fn default_memory_floor_scales_from_physical_ram_and_stays_near_measurement() {
+        assert!((scaled_min_free_gb(16.0) - 2.4).abs() < 0.001);
+        assert_eq!(scaled_min_free_gb(8.0), DEFAULT_MIN_FREE_GB_FLOOR);
+        assert!((scaled_min_free_gb(32.0) - DEFAULT_MIN_FREE_GB).abs() < 0.1);
+        assert_eq!(scaled_min_free_gb(64.0), DEFAULT_MIN_FREE_GB);
+        assert_eq!(scaled_min_free_gb(0.0), DEFAULT_MIN_FREE_GB);
+    }
+
+    #[test]
+    fn adaptive_file_batches_only_shrink_under_pressure() {
+        assert_eq!(adaptive_batch_files(4, 4, 9.0, 2.5), 4);
+        assert_eq!(adaptive_batch_files(4, 4, 5.1, 2.5), 4);
+        assert_eq!(adaptive_batch_files(4, 4, 4.0, 2.5), 2);
+        assert_eq!(adaptive_batch_files(4, 2, 3.0, 2.5), 1);
+        assert_eq!(adaptive_batch_files(4, 1, 2.0, 2.5), 1);
+        assert_eq!(adaptive_batch_files(4, 4, 9.0, 0.0), 4);
+    }
+
+    #[test]
     fn should_enforce_memory_floor_fail_closed_on_jetsam_levels() {
         // Regression: incident 2026-07-25. JetsamEvent reported ~0.08 GB free on a
         // 64 GB Mac. The old free_memory_reading_is_plausible hatch treated that as
@@ -2208,6 +2318,26 @@ mod tests {
             5,
         );
         assert!(last >= 10.0, "expected recovery above floor, got {last}");
+    }
+
+    #[test]
+    fn production_memory_wait_keeps_waiting_until_recovery() {
+        let readings = std::cell::RefCell::new(vec![1.0, 2.0, 12.0]);
+        let last = wait_for_memory_recovery_with_cancel(
+            10.0,
+            None,
+            || {
+                let mut v = readings.borrow_mut();
+                v.remove(0)
+            },
+            |free| should_enforce_memory_floor(free, 10.0),
+            0,
+            None,
+        );
+        assert!(
+            last >= 10.0,
+            "expected production wait to resume, got {last}"
+        );
     }
 
     #[test]

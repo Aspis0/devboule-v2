@@ -850,6 +850,10 @@ pub struct OracleIndexStatus {
     pub resource_budget: OracleResourceBudget,
     pub model: OracleModelStatus,
     pub reranker: Option<OracleModelStatus>,
+    /// Explanation for an index that is incomplete or currently waiting on a
+    /// resource, such as available memory.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1457,6 +1461,7 @@ fn status_from_snapshot(
         },
         model: runtime.model_status(),
         reranker: Some(runtime.reranker_status()),
+        pause_reason: snapshot.pause_reason.clone(),
     }
 }
 
@@ -1697,12 +1702,19 @@ mod tests {
             first_pending: Vec::new(),
             first_stale: Vec::new(),
             free_gb: 10.0,
+            pause_reason: Some(
+                "Oracle paused indexing because available memory is low.".to_string(),
+            ),
         };
 
         let status = status_from_snapshot(&runtime, &snapshot);
         assert_eq!(status.state, "incomplete");
         assert_eq!(status.indexed_files, 80);
         assert_eq!(status.pending_files, 120);
+        assert_eq!(
+            status.pause_reason.as_deref(),
+            Some("Oracle paused indexing because available memory is low.")
+        );
     }
 
     struct TestEnvironment {
@@ -2247,6 +2259,239 @@ mod tests {
             .results
             .iter()
             .any(|result| result.path == "src/zephyr_release.rs"));
+    }
+
+    /// Real-repository proof through the product runtime and command paths.
+    /// Run from PowerShell with:
+    ///
+    ///     $env:ORACLE_REAL_REPO_ROOT='C:\\path\\to\\repo'; $env:ORACLE_REAL_REPO_QUERIES='C:\\path\\to\\queries.json'; cargo test -p devboule --lib oracle::tests::real_repo_index_and_query -- --ignored --nocapture
+    ///
+    /// The workspace is supplied by `ORACLE_REAL_REPO_ROOT`; only Oracle's
+    /// data/config directories are temporary. The test is ignored because the
+    /// sandbox cannot link or execute the local ONNX Runtime reliably.
+    #[test]
+    #[ignore]
+    fn real_repo_index_and_query() {
+        let Some(workspace) = std::env::var_os("ORACLE_REAL_REPO_ROOT")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        else {
+            println!("skipping real_repo_index_and_query: ORACLE_REAL_REPO_ROOT is not set");
+            return;
+        };
+        let Some(queries_path) = std::env::var_os("ORACLE_REAL_REPO_QUERIES")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        else {
+            println!("skipping real_repo_index_and_query: ORACLE_REAL_REPO_QUERIES is not set");
+            return;
+        };
+
+        let env = TestEnvironment::new("onnx");
+        env.set("ORACLE_RS_EP", "cpu");
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("real repository {}: {error}", workspace.display()));
+        let queries_path = queries_path.canonicalize().unwrap_or_else(|error| {
+            panic!(
+                "real repository query file {}: {error}",
+                queries_path.display()
+            )
+        });
+        assert!(
+            workspace.is_dir(),
+            "real repository root is not a directory: {}",
+            workspace.display()
+        );
+        assert!(
+            queries_path.is_file(),
+            "real repository query file is not a file: {}",
+            queries_path.display()
+        );
+
+        let queries: Vec<RealRepoQuery> =
+            serde_json::from_str(&fs::read_to_string(&queries_path).unwrap_or_else(|error| {
+                panic!(
+                    "reading real repository query file {} failed: {error}",
+                    queries_path.display()
+                )
+            }))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "parsing real repository query file {} failed: {error}",
+                    queries_path.display()
+                )
+            });
+
+        let data_home = tempfile::tempdir().expect("Oracle data tempdir");
+        env.set("ORACLE_DIR", data_home.path());
+        let model_sources = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("recon")
+            .join("models");
+        let reranker_model_id = "ms-marco-TinyBERT-L-2-v2";
+        copy_model_bundle(
+            &model_sources.join(DEFAULT_ORACLE_MODEL),
+            &data_home.path().join("models").join(DEFAULT_ORACLE_MODEL),
+            &[
+                "model_config.json",
+                "tokenizer.json",
+                "onnx/model_quantized.onnx",
+            ],
+        );
+        copy_model_bundle(
+            &model_sources.join(reranker_model_id),
+            &data_home.path().join("models").join(reranker_model_id),
+            &[
+                "model_config.json",
+                "tokenizer.json",
+                "onnx/model_int8.onnx",
+            ],
+        );
+
+        let config_home = tempfile::tempdir().expect("Oracle config tempdir");
+        let runtime = runtime_with_config(&config_home.path().join("config"));
+        let chosen = oracle_workspace_set_inner(&runtime, workspace.to_str().unwrap())
+            .expect("choose real repository workspace");
+        assert_eq!(
+            chosen.path.as_deref(),
+            Some(workspace.to_str().expect("workspace path is UTF-8"))
+        );
+        wait_for_model_ready(&runtime);
+        assert_eq!(
+            runtime.model_status().state,
+            OracleModelState::Ready,
+            "real embedder model did not become ready: {:?}",
+            runtime.model_status()
+        );
+
+        let indexing_started = Instant::now();
+        oracle_index_start_inner(&runtime).expect("start real repository index");
+        wait_for_index(&runtime);
+        let indexing_elapsed = indexing_started.elapsed();
+        let status = tauri::async_runtime::block_on(oracle_status_inner(&runtime))
+            .expect("status after real repository index");
+        let stats = tauri::async_runtime::block_on(oracle_stats_inner(&runtime))
+            .expect("stats after real repository index");
+        println!(
+            "real repository indexed in {:?}: {} files, {} chunks",
+            indexing_elapsed, stats.indexed_files, stats.indexed_chunks
+        );
+        assert_eq!(status.state, "ready", "real repository index is not ready");
+        assert_eq!(
+            stats.pending_files, 0,
+            "real repository index has pending files"
+        );
+        assert_eq!(
+            stats.stale_files, 0,
+            "real repository index has stale files"
+        );
+        assert!(
+            stats.indexed_chunks > 0,
+            "real repository index produced no chunks"
+        );
+
+        let mut top1 = 0;
+        let mut top5 = 0;
+        let mut missing = 0;
+        for (index, query) in queries.iter().enumerate() {
+            let expected = normalize_expected_path(&workspace, &query.expect);
+            let response =
+                tauri::async_runtime::block_on(oracle_ask_inner(&runtime, query.q.clone()))
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "real repository query {} failed: {}",
+                            index + 1,
+                            error.message
+                        )
+                    });
+            let rank = response
+                .results
+                .iter()
+                .position(|result| result.path == expected)
+                .map(|position| position + 1);
+
+            println!("\nquery {}: {}", index + 1, query.q);
+            for (position, result) in response.results.iter().take(5).enumerate() {
+                println!(
+                    "  {}. {} (lines {}-{})",
+                    position + 1,
+                    result.path,
+                    result.line_start,
+                    result.line_end
+                );
+            }
+            match rank {
+                Some(position) => println!("  expected: {} (position {})", expected, position),
+                None => {
+                    println!("  expected: {} (missing)", expected);
+                    missing += 1;
+                }
+            }
+            if rank == Some(1) {
+                top1 += 1;
+            }
+            if matches!(rank, Some(position) if position <= 5) {
+                top5 += 1;
+            }
+        }
+
+        let outside_top5 = queries.len().saturating_sub(top5 + missing);
+        println!(
+            "\nsummary: first={}/{}, top5={}/{}, missing={}/{}, outside_top5={}/{}",
+            top1,
+            queries.len(),
+            top5,
+            queries.len(),
+            missing,
+            queries.len(),
+            outside_top5,
+            queries.len()
+        );
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RealRepoQuery {
+        q: String,
+        expect: String,
+    }
+
+    fn copy_model_bundle(source: &Path, target: &Path, files: &[&str]) {
+        let source = source
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("real model directory {}: {error}", source.display()));
+        for relative in files {
+            let source_file = source.join(relative);
+            let target_file = target.join(relative);
+            assert!(
+                source_file.is_file(),
+                "real model is missing {} under {}",
+                relative,
+                source.display()
+            );
+            fs::create_dir_all(target_file.parent().expect("model parent")).expect("model parent");
+            fs::copy(&source_file, &target_file).unwrap_or_else(|error| {
+                panic!(
+                    "copying real model asset {} to {} failed: {error}",
+                    source_file.display(),
+                    target_file.display()
+                )
+            });
+        }
+    }
+
+    fn normalize_expected_path(workspace: &Path, expected: &str) -> String {
+        let expected = PathBuf::from(expected);
+        let expected = if expected.is_absolute() {
+            expected
+                .strip_prefix(workspace)
+                .unwrap_or(expected.as_path())
+                .to_path_buf()
+        } else {
+            expected
+        };
+        expected.to_string_lossy().replace('\\', "/")
     }
 
     fn wait_for_model_ready(runtime: &OracleRuntime) {

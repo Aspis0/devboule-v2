@@ -181,6 +181,8 @@ export interface OracleIndexStatus {
   model: OracleModelStatus;
   /** Optional query-time cross-encoder; dense retrieval works without it. */
   reranker: OracleModelStatus | null;
+  /** Why the current index is incomplete or waiting on a resource. */
+  pause_reason?: string | null;
 }
 
 export type OracleModelState =

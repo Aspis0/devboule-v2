@@ -109,6 +109,25 @@ describe("Oracle stage routing", () => {
     ).toBe("incomplete");
   });
 
+  it("shows a memory-paused worker on the partial-index surface", () => {
+    expect(
+      getOracleStage({
+        workspaceRequest: { status: "ready", value: workspace },
+        statusRequest: {
+          status: "ready",
+          value: makeStatus({
+            state: "indexing",
+            indexed_files: 4,
+            total_files: 12,
+            indexed_chunks: 9,
+            pending_files: 8,
+            pause_reason: "available memory is low",
+          }),
+        },
+      }),
+    ).toBe("incomplete");
+  });
+
   it("sends a failed status request to folder recovery first", () => {
     expect(
       getOracleErrorAction({

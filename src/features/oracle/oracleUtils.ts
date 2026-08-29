@@ -146,6 +146,9 @@ export function getOracleStage({
   if (status.reranker?.state === "downloading" || status.reranker?.state === "missing") {
     return "models";
   }
+  // The worker keeps running while it waits for available memory. Keep the
+  // partial-index surface visible so the user sees why progress has stopped.
+  if (status.pause_reason) return "incomplete";
   if (status.state === "indexing") return "indexing";
   if (status.state === "incomplete" || status.pending_files > 0) return "incomplete";
   if (status.indexed_files === 0) return "index";

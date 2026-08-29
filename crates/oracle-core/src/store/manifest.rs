@@ -67,6 +67,11 @@ pub struct Manifest {
     pub roots: HashMap<String, RootEntry>,
     #[serde(default)]
     pub files: HashMap<String, ManifestFileEntry>,
+    /// User-facing explanation for an indexer pause. Kept in the manifest so
+    /// the panel can explain a low-memory stop after the worker returns or the
+    /// application is restarted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_pause_reason: Option<String>,
 }
 
 /// Strip the Windows extended-length / verbatim prefix (`\\?\` and `\\?\UNC\`)

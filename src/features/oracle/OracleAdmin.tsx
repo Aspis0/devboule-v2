@@ -268,6 +268,7 @@ function OracleAdminActions({
   onWatch: (action: "start" | "stop") => void;
 }) {
   const canResume = status?.state === "incomplete" || (status?.pending_files ?? 0) > 0;
+  const waitingForMemory = Boolean(status?.pause_reason && status.state === "indexing");
   const canCancel =
     status?.state === "indexing" ||
     status?.model.state === "downloading" ||
@@ -280,7 +281,9 @@ function OracleAdminActions({
         onClick={onStartIndex}
         disabled={indexStarting || status?.state === "indexing"}
       >
-        {indexStarting
+        {waitingForMemory
+          ? "Waiting for memory…"
+          : indexStarting
           ? canResume
             ? "Resuming index…"
             : "Starting index…"
