@@ -1,17 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, MouseEvent } from "react";
-import {
-  MOCK_AGENT_REPLY,
-  MOCK_MESSAGES,
-  MOCK_PROJECTS,
-  MOCK_SURFACES,
-  type MockProject,
-  type MockSurface,
-  type MockWorkspace,
-  type MockWorkspaceMessage,
-} from "./mockData";
+import { MOCK_SURFACES, type MockSurface } from "./mockData";
 import { getProviderManifest, WorkspaceComposer } from "./WorkspaceComposer";
-import { NewProjectDialog, type ProjectCreationRoute } from "./NewProjectDialog";
+import { NewProjectDialog } from "./NewProjectDialog";
 import {
   AppSurface,
   ChangesSurface,
@@ -21,32 +11,20 @@ import {
   type DiffState,
 } from "./sidePanels";
 import { TerminalSurface } from "../terminal/TerminalSurface";
-import { daemonStatus } from "../../lib/tauri";
+import { useWorkspaceConversation } from "./workspaceConversation";
+import { useWorkspaceDaemon } from "./workspaceDaemon";
+import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
+import { useWorkspaceProjects } from "./workspaceProjects";
 import type { DaemonStatus } from "../../types/ipc";
 import "./Workspace.css";
 
 type ActiveTab = "agent" | "terminal";
 type ActiveSidePanel = MockSurface["id"];
 type PermissionState = "waiting" | "allowed" | "denied";
-type ResizeSide = "left" | "right";
-
-const MIN_PANEL_WIDTH = 180;
-const MAX_PANEL_WIDTH = 460;
-const INITIAL_LEFT_WIDTH = 252;
-const INITIAL_RIGHT_WIDTH = 366;
 const WORKSPACE_AGENT_TAB_ID = "workspace-tab-agent";
 const WORKSPACE_TERMINAL_TAB_ID = "workspace-tab-terminal";
 const WORKSPACE_AGENT_PANEL_ID = "workspace-panel-agent";
 const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
-
-const DISCONNECTED_DAEMON: DaemonStatus = {
-  state: "disconnected",
-  pid: null,
-  instanceId: null,
-  protocolVersion: null,
-  clients: null,
-  message: "daemon unreachable",
-};
 
 function daemonDotTone(state: DaemonStatus["state"]): string {
   if (state === "connected") return "green";
@@ -70,269 +48,48 @@ const PERMISSION_LABELS: Record<PermissionState, string> = {
   denied: "Denied — the turn continues without it",
 };
 
-function projectNameFromDraft(route: ProjectCreationRoute, value: string): string {
-  if (route === "clone") {
-    const repositoryPath = value.split(/[?#]/, 1)[0].replace(/\/+$/, "");
-    const repositoryName = repositoryPath
-      .split("/")
-      .pop()
-      ?.replace(/\.git$/i, "");
-    return repositoryName || "cloned-project";
-  }
-
-  const pathWithoutTrailingSeparators = value.replace(/[\\/]+$/, "");
-  return pathWithoutTrailingSeparators.split(/[\\/]/).pop() || "new-project";
-}
-
-function cloneProjects(): MockProject[] {
-  return MOCK_PROJECTS.map((project) => ({
-    ...project,
-    workspaces: project.workspaces.map((workspace) => ({ ...workspace })),
-  }));
-}
-function cloneMessages(): MockWorkspaceMessage[] {
-  return MOCK_MESSAGES.map((message) => ({ ...message }));
-}
-
-function clampPanelWidth(width: number): number {
-  return Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, width));
-}
-
 export function Workspace() {
-  const [projects, setProjects] = useState<MockProject[]>(cloneProjects);
-  const [selectedWorkspace, setSelectedWorkspace] = useState("rust-core");
-  const [search, setSearch] = useState("");
-  const [leftWidth, setLeftWidth] = useState(INITIAL_LEFT_WIDTH);
-  const [rightWidth, setRightWidth] = useState(INITIAL_RIGHT_WIDTH);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const {
+    visibleProjects,
+    selectedWorkspace,
+    setSelectedWorkspace,
+    search,
+    handleSearchChange,
+    addWorkspace,
+    projectDialogOpen,
+    openProjectDialog,
+    closeProjectDialog,
+    handleCreateProject,
+    newProjectTriggerRef,
+  } = useWorkspaceProjects();
+  const {
+    leftWidth,
+    rightWidth,
+    leftCollapsed,
+    rightCollapsed,
+    setLeftCollapsed,
+    setRightCollapsed,
+    startDrag,
+    handleResizeKey,
+  } = useWorkspacePanelResize();
   const [activeTab, setActiveTab] = useState<ActiveTab>("agent");
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
   const [surfaceMenuOpen, setSurfaceMenuOpen] = useState(false);
-  const [messages, setMessages] = useState<MockWorkspaceMessage[]>(cloneMessages);
-  const [streaming, setStreaming] = useState(false);
   const [permission, setPermission] = useState<PermissionState>("waiting");
   const [diffState, setDiffState] = useState<DiffState>("unstaged");
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
   const [agentProviderId, setAgentProviderId] = useState("claude");
-  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
-  const [daemon, setDaemon] = useState<DaemonStatus>(DISCONNECTED_DAEMON);
-
-  const resizeRef = useRef<{ side: ResizeSide; startX: number; startWidth: number } | null>(null);
-  const streamTimerRef = useRef<number | null>(null);
-  const streamIntervalRef = useRef<number | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
-  const newProjectTriggerRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    const handleMove = (event: globalThis.MouseEvent) => {
-      const resize = resizeRef.current;
-      if (!resize) return;
-
-      const distance = event.clientX - resize.startX;
-      const signedDistance = resize.side === "left" ? distance : -distance;
-      const width = clampPanelWidth(resize.startWidth + signedDistance);
-
-      if (resize.side === "left") {
-        setLeftWidth(width);
-      } else {
-        setRightWidth(width);
-      }
-    };
-
-    const handleUp = () => {
-      resizeRef.current = null;
-      document.body.classList.remove("workspace-is-resizing");
-    };
-
-    document.addEventListener("mousemove", handleMove);
-    document.addEventListener("mouseup", handleUp);
-    return () => {
-      document.removeEventListener("mousemove", handleMove);
-      document.removeEventListener("mouseup", handleUp);
-      document.body.classList.remove("workspace-is-resizing");
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (streamTimerRef.current !== null) window.clearTimeout(streamTimerRef.current);
-      if (streamIntervalRef.current !== null) window.clearInterval(streamIntervalRef.current);
-    };
-  }, []);
+  const resetPermission = useCallback(() => setPermission("waiting"), []);
+  const { messages, streaming, handleSend } = useWorkspaceConversation(resetPermission);
+  const daemon = useWorkspaceDaemon();
 
   useEffect(() => {
     if (conversationRef.current) {
       conversationRef.current.scrollTop = conversationRef.current.scrollHeight;
     }
   }, [messages, streaming]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const tick = () => {
-      void daemonStatus()
-        .then((next) => {
-          if (!cancelled) setDaemon(next);
-        })
-        .catch(() => {
-          if (!cancelled) setDaemon(DISCONNECTED_DAEMON);
-        });
-    };
-    tick();
-    const id = window.setInterval(tick, 2000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
-
-  const startDrag = useCallback(
-    (side: ResizeSide, event: MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      resizeRef.current = {
-        side,
-        startX: event.clientX,
-        startWidth: side === "left" ? leftWidth : rightWidth,
-      };
-      document.body.classList.add("workspace-is-resizing");
-    },
-    [leftWidth, rightWidth],
-  );
-
-  const handleResizeKey = useCallback(
-    (side: ResizeSide, event: KeyboardEvent<HTMLButtonElement>) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        if (side === "left") setLeftCollapsed((collapsed) => !collapsed);
-        else setRightCollapsed((collapsed) => !collapsed);
-        return;
-      }
-
-      const currentWidth = side === "left" ? leftWidth : rightWidth;
-      let nextWidth: number | null = null;
-      if (event.key === "Home") nextWidth = MIN_PANEL_WIDTH;
-      if (event.key === "End") nextWidth = MAX_PANEL_WIDTH;
-      if (side === "left" && event.key === "ArrowLeft") nextWidth = currentWidth - 16;
-      if (side === "left" && event.key === "ArrowRight") nextWidth = currentWidth + 16;
-      if (side === "right" && event.key === "ArrowLeft") nextWidth = currentWidth + 16;
-      if (side === "right" && event.key === "ArrowRight") nextWidth = currentWidth - 16;
-
-      if (nextWidth !== null) {
-        event.preventDefault();
-        const width = clampPanelWidth(nextWidth);
-        if (side === "left") setLeftWidth(width);
-        else setRightWidth(width);
-      }
-    },
-    [leftWidth, rightWidth],
-  );
-
-  const addWorkspace = useCallback((projectId: string = "devboule") => {
-    const id = `mock-workspace-${Date.now()}`;
-    const workspace: MockWorkspace = {
-      id,
-      projectId,
-      title: "new-workspace",
-      meta: "idle · 0 d",
-      isolation: "worktree",
-      dotTone: "border",
-    };
-
-    setProjects((currentProjects) =>
-      currentProjects.map((project) =>
-        project.id === projectId
-          ? { ...project, workspaces: [...project.workspaces, workspace] }
-          : project,
-      ),
-    );
-    setSelectedWorkspace(id);
-  }, []);
-
-  const handleSend = useCallback((messageText: string) => {
-    const text = messageText.trim();
-    if (!text) return;
-
-    if (streamTimerRef.current !== null) window.clearTimeout(streamTimerRef.current);
-    if (streamIntervalRef.current !== null) window.clearInterval(streamIntervalRef.current);
-    streamTimerRef.current = null;
-    streamIntervalRef.current = null;
-
-    setMessages((currentMessages) => [...currentMessages, { id: Date.now(), role: "user", text }]);
-    setPermission("waiting");
-    setStreaming(false);
-
-    streamTimerRef.current = window.setTimeout(() => {
-      const agentId = Date.now();
-      let index = 0;
-      setStreaming(true);
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        { id: agentId, role: "agent", text: "" },
-      ]);
-
-      streamIntervalRef.current = window.setInterval(() => {
-        index += 3;
-        const nextText = MOCK_AGENT_REPLY.slice(0, index);
-        setMessages((currentMessages) =>
-          currentMessages.map((message) =>
-            message.id === agentId ? { ...message, text: nextText } : message,
-          ),
-        );
-
-        if (index >= MOCK_AGENT_REPLY.length) {
-          if (streamIntervalRef.current !== null) window.clearInterval(streamIntervalRef.current);
-          streamIntervalRef.current = null;
-          setStreaming(false);
-        }
-      }, 24);
-    }, 240);
-  }, []);
-
-  const openProjectDialog = useCallback(() => setProjectDialogOpen(true), []);
-  const closeProjectDialog = useCallback(() => {
-    setProjectDialogOpen(false);
-    newProjectTriggerRef.current?.focus();
-  }, []);
-  const handleCreateProject = useCallback(
-    ({ route, value }: { route: ProjectCreationRoute; value: string }) => {
-      const trimmedValue = value.trim();
-      const project: MockProject = {
-        id: `mock-project-${Date.now()}`,
-        name: projectNameFromDraft(route, trimmedValue),
-        path: trimmedValue,
-        workspaces: [],
-      };
-
-      setProjects((currentProjects) => [...currentProjects, project]);
-      setSearch("");
-      closeProjectDialog();
-    },
-    [closeProjectDialog],
-  );
-
-  function handleSearchChange(event: ChangeEvent<HTMLInputElement>) {
-    setSearch(event.target.value);
-  }
-
-  const query = useMemo(() => search.trim().toLowerCase(), [search]);
-  const visibleProjects = useMemo(
-    () =>
-      projects
-        .map((project) => ({
-          ...project,
-          workspaces: project.workspaces.filter(
-            (workspace) =>
-              !query ||
-              `${project.name} ${workspace.title} ${workspace.meta}`.toLowerCase().includes(query),
-          ),
-        }))
-        .filter(
-          (project) =>
-            !query || project.workspaces.length > 0 || project.name.toLowerCase().includes(query),
-        ),
-    [projects, query],
-  );
 
   const agentProvider = useMemo(() => getProviderManifest(agentProviderId), [agentProviderId]);
   const agentModelLabel = useMemo(
