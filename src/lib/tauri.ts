@@ -9,6 +9,7 @@ import type {
   OracleHealth,
   OracleIndexStatus,
   OracleIndexStats,
+  OracleWorkspace,
   OracleSearchResponse,
   PermissionOutcome,
   Project,
@@ -37,6 +38,11 @@ type CommandArgs = {
   providers_list: undefined;
   provider_models: { provider: string };
   oracle_status: undefined;
+  oracle_workspace_get: undefined;
+  oracle_workspace_set: { path: string };
+  oracle_model_download_start: undefined;
+  oracle_model_download_cancel: undefined;
+  oracle_index_cancel: undefined;
   oracle_doctor: undefined;
   oracle_stats: undefined;
   oracle_index_start: undefined;
@@ -64,6 +70,11 @@ type CommandResults = {
   providers_list: ProviderInfo[];
   provider_models: ModelInfo[];
   oracle_status: OracleIndexStatus;
+  oracle_workspace_get: OracleWorkspace;
+  oracle_workspace_set: OracleWorkspace;
+  oracle_model_download_start: void;
+  oracle_model_download_cancel: void;
+  oracle_index_cancel: void;
   oracle_doctor: OracleHealth;
   oracle_stats: OracleIndexStats;
   oracle_index_start: void;
@@ -126,6 +137,11 @@ export const sessionClose = (id: Id) => invokeTyped("session_close", { id });
 export const providersList = () => invokeTyped("providers_list");
 export const providerModels = (provider: string) => invokeTyped("provider_models", { provider });
 export const oracleStatus = () => invokeTyped("oracle_status");
+export const oracleWorkspaceGet = () => invokeTyped("oracle_workspace_get");
+export const oracleWorkspaceSet = (path: string) => invokeTyped("oracle_workspace_set", { path });
+export const oracleModelDownloadStart = () => invokeTyped("oracle_model_download_start");
+export const oracleModelDownloadCancel = () => invokeTyped("oracle_model_download_cancel");
+export const oracleIndexCancel = () => invokeTyped("oracle_index_cancel");
 export const oracleDoctor = () => invokeTyped("oracle_doctor");
 export const oracleStats = () => invokeTyped("oracle_stats");
 export const oracleIndexStart = () => invokeTyped("oracle_index_start");

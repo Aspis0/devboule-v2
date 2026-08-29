@@ -1,17 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   isCommandError,
   oracleAsk,
   oracleDoctor,
   oracleFiles,
+  oracleIndexCancel,
   oracleIndexStart,
+  oracleModelDownloadCancel,
+  oracleModelDownloadStart,
   oracleStats,
   oracleStatus,
+  oracleWorkspaceGet,
+  oracleWorkspaceSet,
   oracleWatchStart,
   oracleWatchStop,
 } from "../../lib/tauri";
-import type { FileTab, OracleIndexStats, OracleIndexStatus, OracleResult } from "../../types/ipc";
+import type {
+  FileTab,
+  OracleIndexStats,
+  OracleIndexStatus,
+  OracleResult,
+  OracleWorkspace,
+} from "../../types/ipc";
 import "./oracle.css";
 
 const ORACLE_FILE_PANEL_ID = "oracle-file-panel";
@@ -54,6 +66,10 @@ function resultLineCount(result: OracleResult): number {
 
 function formatCount(value: number): string {
   return value.toLocaleString("en-US").replaceAll(",", " ");
+}
+
+function formatMegabytes(bytes: number): string {
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
 function totalReadLines(results: OracleResult[]): number {
@@ -177,6 +193,12 @@ function progressPercentage(status: OracleIndexStatus | null): number | null {
   return Math.min(100, Math.max(0, Math.round((status.indexed_files / status.total_files) * 100)));
 }
 
+function modelProgressPercentage(status: OracleIndexStatus | null): number | null {
+  const model = status?.model;
+  if (!model?.bytes_total || model.bytes_total <= 0) return null;
+  return Math.min(100, Math.max(0, Math.round((model.bytes_done / model.bytes_total) * 100)));
+}
+
 export function OraclePanel() {
   const [oracleQuery, setOracleQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState<string | null>(null);
@@ -186,6 +208,9 @@ export function OraclePanel() {
   const [watchBusy, setWatchBusy] = useState(false);
   const [watchNotice, setWatchNotice] = useState<WatchNotice | null>(null);
   const [fileTab, setFileTab] = useState<FileTab>("indexed");
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceActionError, setWorkspaceActionError] = useState<string | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   const mountedRef = useRef(false);
   const searchQueryRef = useRef("");
@@ -194,6 +219,15 @@ export function OraclePanel() {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      // React StrictMode performs a development-only mount/cleanup/remount.
+      // Defer the signal one tick so that simulated cleanup does not cancel a
+      // real download; a genuine unmount still cancels both long operations.
+      window.setTimeout(() => {
+        if (!mountedRef.current) {
+          void oracleIndexCancel();
+          void oracleModelDownloadCancel();
+        }
+      }, 0);
     };
   }, []);
 
@@ -234,6 +268,11 @@ export function OraclePanel() {
     { status: "loading" },
     true,
   );
+  const { state: workspaceRequest, run: refreshWorkspace } = useTrackedRequest<OracleWorkspace>(
+    oracleWorkspaceGet,
+    { status: "loading" },
+    true,
+  );
   const filesByTab = {
     indexed: indexedFilesRequest,
     pending: pendingFilesRequest,
@@ -244,6 +283,15 @@ export function OraclePanel() {
     refreshPendingFiles();
     refreshStaleFiles();
   }, [refreshIndexedFiles, refreshPendingFiles, refreshStaleFiles]);
+
+  useEffect(() => {
+    if (workspaceRequest.status !== "ready" || !workspaceRequest.value.exists) return;
+    void oracleModelDownloadStart()
+      .then(() => refreshStatus(false))
+      .catch((error: unknown) => {
+        if (mountedRef.current) setWorkspaceActionError(commandErrorMessage(error));
+      });
+  }, [refreshStatus, workspaceRequest]);
 
   function submitOracleQuery() {
     const query = oracleQuery.trim();
@@ -265,6 +313,48 @@ export function OraclePanel() {
       submitOracleQuery();
     }
   }
+
+  const handleChooseWorkspace = useCallback(async () => {
+    if (workspaceBusy) return;
+    setWorkspaceBusy(true);
+    setWorkspaceActionError(null);
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Choose the folder Oracle should index",
+      });
+      if (typeof selected !== "string") return;
+      await oracleWorkspaceSet(selected);
+      refreshWorkspace();
+      refreshStatus();
+      refreshDoctor();
+      refreshStats();
+      refreshFiles();
+    } catch (error: unknown) {
+      if (mountedRef.current) setWorkspaceActionError(commandErrorMessage(error));
+    } finally {
+      if (mountedRef.current) setWorkspaceBusy(false);
+    }
+  }, [refreshDoctor, refreshFiles, refreshStats, refreshStatus, refreshWorkspace, workspaceBusy]);
+
+  const handleCancelOperations = useCallback(() => {
+    if (cancelBusy) return;
+    setCancelBusy(true);
+    void Promise.all([oracleIndexCancel(), oracleModelDownloadCancel()])
+      .then(() => {
+        if (!mountedRef.current) return;
+        refreshStatus();
+        refreshStats();
+        refreshFiles();
+      })
+      .catch((error: unknown) => {
+        if (mountedRef.current) setWorkspaceActionError(commandErrorMessage(error));
+      })
+      .finally(() => {
+        if (mountedRef.current) setCancelBusy(false);
+      });
+  }, [cancelBusy, refreshFiles, refreshStats, refreshStatus]);
 
   const handleIndexStart = useCallback(() => {
     if (indexStarting) return;
@@ -322,11 +412,25 @@ export function OraclePanel() {
 
   const status = statusRequest.status === "ready" ? statusRequest.value : null;
   const stats = statsRequest.status === "ready" ? statsRequest.value : null;
+  const workspace = workspaceRequest.status === "ready" ? workspaceRequest.value : null;
   const selectedFiles = filesByTab[fileTab];
   const searchResults =
     searchState.status === "ready" ? searchState.value.results : EMPTY_ORACLE_RESULTS;
   const totalResultLines = useMemo(() => totalReadLines(searchResults), [searchResults]);
   const percentage = progressPercentage(status);
+  useEffect(() => {
+    const poll = window.setInterval(() => {
+      if (!mountedRef.current) return;
+      refreshStatus(false);
+      if (status?.state === "indexing") {
+        refreshStats(false);
+        refreshFiles();
+      }
+    }, 1500);
+    return () => window.clearInterval(poll);
+  }, [refreshFiles, refreshStats, refreshStatus, status?.state]);
+
+  const modelPercentage = modelProgressPercentage(status);
   const allFilesReady = ORACLE_FILE_TABS.every((tab) => filesByTab[tab.id].status === "ready");
   const noFiles =
     allFilesReady &&
@@ -526,14 +630,92 @@ export function OraclePanel() {
       </div>
 
       <div className="oracle-workspace-card">
-        <div className="oracle-eyebrow">Indexed workspace</div>
+        <div className="oracle-eyebrow">Oracle workspace</div>
         <div className="oracle-folder-row">
-          <span className="oracle-path">Workspace path managed by the host</span>
+          <span className="oracle-path">
+            {workspace?.path ?? "Choose an existing folder to start Oracle"}
+          </span>
+          <button
+            className="oracle-button oracle-button-secondary oracle-change-button"
+            type="button"
+            onClick={() => void handleChooseWorkspace()}
+            disabled={workspaceBusy || workspace?.editable === false}
+          >
+            {workspaceBusy ? "Choosing…" : workspace?.path ? "Change" : "Choose folder"}
+          </button>
         </div>
         <div className="oracle-folder-meta">
-          Oracle reports coverage and index state below; the current IPC contract does not expose
-          the filesystem path.
+          {workspace?.source === "environment"
+            ? "Developer override: DEVBOULE_ORACLE_ROOT is active and takes precedence over the saved choice."
+            : workspace?.exists
+              ? "This folder is saved on this machine and is the source Oracle indexes."
+              : "Choose a folder on this machine; Oracle saves the choice for the next launch."}
         </div>
+        {workspaceRequest.status === "loading" && (
+          <div className="oracle-state-message" role="status">
+            Loading the saved Oracle folder…
+          </div>
+        )}
+        {workspaceRequest.status === "error" && (
+          <div className="oracle-error-message" role="alert">
+            {workspaceRequest.message}
+          </div>
+        )}
+        {workspaceActionError && (
+          <div className="oracle-error-message" role="alert">
+            {workspaceActionError}
+          </div>
+        )}
+        {status?.model && status.model.state === "downloading" && (
+          <div className="oracle-model-download" aria-live="polite">
+            <div className="oracle-job-heading">
+              <span>
+                Downloading {status.model.model_id} · file {status.model.file_index || 1} /{" "}
+                {status.model.total_files}
+              </span>
+              <span>{modelPercentage === null ? "—" : `${modelPercentage}%`}</span>
+            </div>
+            <div className="oracle-folder-meta">
+              {status.model.file ?? "Preparing download…"} · expected at {status.model.directory}
+            </div>
+            {modelPercentage !== null && (
+              <div
+                className="oracle-progress-track"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={modelPercentage}
+                aria-label="Oracle model download progress"
+              >
+                <div className="oracle-progress-fill" style={{ width: `${modelPercentage}%` }} />
+              </div>
+            )}
+            <div className="oracle-job-note">
+              {status.model.message ?? `About ${formatMegabytes(status.model.approximate_bytes)}.`}
+            </div>
+          </div>
+        )}
+        {status?.model && ["missing", "failed", "cancelled"].includes(status.model.state) && (
+          <div className="oracle-error-message" role="alert">
+            {status.model.message ?? `Oracle needs ${status.model.model_id} before it can run.`}
+            <button
+              className="oracle-button oracle-button-secondary oracle-model-retry-button"
+              type="button"
+              onClick={() => {
+                void oracleModelDownloadStart()
+                  .then(() => refreshStatus())
+                  .catch((error: unknown) => setWorkspaceActionError(commandErrorMessage(error)));
+              }}
+            >
+              Retry download
+            </button>
+          </div>
+        )}
+        {status?.model?.state === "ready" && (
+          <div className="oracle-folder-ok" role="status">
+            {status.model.model_id} is ready ({formatMegabytes(status.model.approximate_bytes)}).
+          </div>
+        )}
         {indexIsEmpty && (
           <div className="oracle-empty-state" role="status" aria-live="polite">
             The Oracle index is empty. No files are indexed yet.
@@ -673,10 +855,20 @@ export function OraclePanel() {
             className="oracle-button oracle-button-primary"
             type="button"
             onClick={handleIndexStart}
-            disabled={indexStarting}
+            disabled={indexStarting || status?.state === "indexing" || !workspace?.exists}
           >
             {indexStarting ? "Starting index…" : "Index now"}
           </button>
+          {(status?.state === "indexing" || status?.model.state === "downloading") && (
+            <button
+              className="oracle-button oracle-button-secondary oracle-stop-button"
+              type="button"
+              onClick={handleCancelOperations}
+              disabled={cancelBusy}
+            >
+              {cancelBusy ? "Cancelling…" : "Cancel"}
+            </button>
+          )}
           <button
             className="oracle-button oracle-button-secondary"
             type="button"

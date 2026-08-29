@@ -82,6 +82,7 @@ pub fn current_user_sid() -> io::Result<String> {
 
 /// Resolve the user SID from a peer process rather than from a value supplied
 /// by that process in a protocol frame.
+#[allow(dead_code)]
 pub fn process_user_sid(pid: u32) -> io::Result<String> {
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);

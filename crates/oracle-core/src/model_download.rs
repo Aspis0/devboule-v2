@@ -1,46 +1,43 @@
-//! Downloads the Qwen3-Embedding-0.6B ONNX bundle for the `ort` backend.
+//! Downloads ONNX embedding bundles for the `ort` backend. Oracle's portable
+//! default is the BGE-small bundle (about 34 MB).
 //!
 //! This is the Rust engine's replacement for the Python venv + pip + warmup
 //! flow: instead of installing a Python runtime that pulls the model into the
 //! HF cache, we fetch the ONNX export directly into the oracle-data tree at the
 //! layout `OrtEmbedder::load` expects:
-//!   <oracle_data_root>/models/qwen3-onnx/onnx/model.onnx        (fp32 graph)
-//!   <oracle_data_root>/models/qwen3-onnx/onnx/model.onnx_data   (fp32 weights)
-//!   <oracle_data_root>/models/qwen3-onnx/tokenizer.json
-//!
-//! fp32 is the parity-proven bundle (cosine 0.9998 vs the Python stack, index
-//! reusable). int8 is a smaller, single-file graph but parity-INCOMPATIBLE, so
-//! it is a separate opt-in bundle that must own its own index.
+//!   <oracle_data_root>/models/bge-small-en-v1.5/onnx/model_quantized.onnx
+//!   <oracle_data_root>/models/bge-small-en-v1.5/tokenizer.json
 //!
 //! Downloads stream to a `.part` file and are atomically renamed on success, so
 //! an interrupted download never leaves a truncated file that looks complete.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use crate::embed::model_descriptor::{
-    write_model_config_if_missing, BGE_SMALL_MODEL_CONFIG_JSON, QWEN3_MODEL_CONFIG_JSON,
-};
+use crate::embed::model_descriptor::{write_model_config_if_missing, BGE_SMALL_MODEL_CONFIG_JSON};
 use crate::embed::ort_backend::OrtEmbedder;
+use crate::embed::CancelFlag;
 
-/// HuggingFace resolve base for the onnx-community Qwen3 export.
-const HF_BASE: &str =
-    "https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main";
+/// The model shipped as Oracle's portable default.
+pub const BGE_SMALL_MODEL_ID: &str = "bge-small-en-v1.5";
 
-/// Repo-relative files for the parity-proven fp32 bundle.
-const FP32_FILES: &[&str] = &["onnx/model.onnx", "onnx/model.onnx_data", "tokenizer.json"];
+/// Approximate complete package size used in UI/doctor messages. The actual
+/// progress uses the server-reported Content-Length for each file.
+pub const BGE_SMALL_APPROX_BYTES: u64 = 34_000_000;
 
-/// Repo-relative files for the int8 bundle (single graph, no external data).
-const INT8_FILES: &[&str] = &["onnx/model_int8.onnx", "tokenizer.json"];
-
-/// Hard ceiling on a single downloaded file. The largest legitimate artifact
-/// (the Qwen3 ONNX model) is well under this; anything bigger means a wrong
-/// or hostile server, and we must not fill the disk. Restores the bound lost
-/// when the Content-Length requirement was relaxed for HF's HEAD quirk.
+/// Hard ceiling on a single downloaded file. The BGE bundle is much smaller;
+/// anything unexpectedly larger means a wrong or hostile server, and we must
+/// not fill the disk. This also covers servers that omit Content-Length.
 const MAX_DOWNLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024; // 8 GiB
+
+/// A single HEAD/GET may transfer a large model, but it must never be able to
+/// keep startup blocked forever. `read_timeout` is an idle timeout between
+/// body chunks; `timeout` is the cap for the whole request.
+const MODEL_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const MODEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Progress for a single file within the bundle.
 #[derive(Debug, Clone)]
@@ -57,43 +54,14 @@ pub struct FileProgress {
     pub bytes_total: Option<u64>,
 }
 
-fn bundle_files(int8: bool) -> &'static [&'static str] {
-    if int8 {
-        INT8_FILES
-    } else {
-        FP32_FILES
-    }
-}
-
 /// The on-disk model directory for the given oracle-data root.
 pub fn model_dir(oracle_data_root: &Path) -> PathBuf {
-    OrtEmbedder::default_model_dir(oracle_data_root)
+    OrtEmbedder::default_model_dir(oracle_data_root, BGE_SMALL_MODEL_ID)
 }
 
-/// True when every required bundle file exists (and is non-trivially sized)
-/// directly under `model_dir` (the resolved qwen3-onnx dir, NOT the data root).
-///
-/// This is the building block behind [`model_present`]; callers that have
-/// already resolved an explicit model directory (e.g. `ORACLE_MODEL_DIR`)
-/// should check *that* path rather than recomputing the default layout from a
-/// data root, which would inspect the wrong location.
-pub fn model_present_at(model_dir: &Path, int8: bool) -> bool {
-    bundle_files(int8).iter().all(|rel| {
-        let p = model_dir.join(rel);
-        std::fs::metadata(&p)
-            .map(|m| m.len() > 1024)
-            .unwrap_or(false)
-    })
-}
-
-/// True when every file of the requested bundle is present AND above a minimal
-/// plausible size. UI-status only — never use this to SKIP `ensure_qwen3_onnx`
-/// (that path does its own Content-Length verification); a planted 1-byte file
-/// must not read as "installed" enough to bypass the download.
-///
-/// Equivalent to `model_present_at(&model_dir(root), int8)`.
-pub fn model_present(oracle_data_root: &Path, int8: bool) -> bool {
-    model_present_at(&model_dir(oracle_data_root), int8)
+/// The on-disk directory for an explicitly configured model id.
+pub fn model_dir_for(oracle_data_root: &Path, model_id: &str) -> PathBuf {
+    OrtEmbedder::default_model_dir(oracle_data_root, model_id)
 }
 
 /// Effective per-file byte cap for a download. When the remote length IS
@@ -109,10 +77,12 @@ fn effective_download_cap(bytes_total: Option<u64>) -> u64 {
         .unwrap_or(MAX_DOWNLOAD_BYTES)
 }
 
-fn http_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        // Large weights on a slow link: no overall timeout, but a generous
-        // connect timeout so a dead host fails fast instead of hanging forever.
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        // Large weights on a slow link: allow a generous but finite request
+        // window, while the shorter read timeout catches a stalled server.
+        .timeout(MODEL_REQUEST_TIMEOUT)
+        .read_timeout(MODEL_READ_TIMEOUT)
         .connect_timeout(Duration::from_secs(30))
         // Allow cross-host redirects (HF resolve URLs legitimately redirect to
         // a CDN) but refuse any non-HTTPS hop — HTTPS→HTTP downgrade would
@@ -131,27 +101,40 @@ fn http_client() -> Result<reqwest::blocking::Client> {
 }
 
 /// Remote size via a HEAD request, or `None` when the server omits it.
-fn remote_len(client: &reqwest::blocking::Client, url: &str) -> Option<u64> {
-    let resp = client.head(url).send().ok()?;
+async fn remote_len(client: &reqwest::Client, url: &str) -> Result<Option<u64>> {
+    let resp = match client.head(url).send().await {
+        Ok(resp) => resp,
+        Err(error) if error.is_timeout() => {
+            bail!(
+                "checking the remote size for model file {url} timed out after {} seconds",
+                MODEL_REQUEST_TIMEOUT.as_secs()
+            );
+        }
+        Err(_) => return Ok(None),
+    };
     if !resp.status().is_success() {
-        return None;
+        return Ok(None);
     }
     // Some CDNs (HuggingFace) report Content-Length: 0 on HEAD requests for
     // redirect-to-CDN URLs. A 0 length is not a real model size — treat it as
     // "unknown" so the caller skips the exact-size guard instead of rejecting
     // a fully-downloaded file.
-    resp.content_length().filter(|&len| len > 0)
+    Ok(resp.content_length().filter(|&len| len > 0))
 }
 
 /// Stream one file to `dest`, calling `progress` as bytes arrive. Writes to a
 /// sibling `.part` file and renames on success (atomic within the same dir).
-fn download_file(
-    client: &reqwest::blocking::Client,
+async fn download_file(
+    client: &reqwest::Client,
     url: &str,
     dest: &Path,
     bytes_total: Option<u64>,
+    cancel: &CancelFlag,
     mut progress: impl FnMut(u64),
 ) -> Result<()> {
+    if cancel.is_cancelled() {
+        bail!("model download cancelled");
+    }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
@@ -161,26 +144,49 @@ fn download_file(
         None => "part".to_string(),
     });
 
-    let mut resp = client
-        .get(url)
-        .send()
-        .with_context(|| format!("GET {url}"))?;
+    let mut resp = match client.get(url).send().await {
+        Ok(resp) => resp,
+        Err(error) if error.is_timeout() => {
+            bail!(
+                "request for model file {} timed out after {} seconds: {error}",
+                dest.display(),
+                MODEL_REQUEST_TIMEOUT.as_secs()
+            );
+        }
+        Err(error) => return Err(error).with_context(|| format!("GET {url}")),
+    };
     if !resp.status().is_success() {
         bail!("GET {url} -> HTTP {}", resp.status());
     }
 
     let mut file =
         std::fs::File::create(&part).with_context(|| format!("creating {}", part.display()))?;
-    let mut buf = vec![0u8; 1 << 20]; // 1 MiB
     let mut done: u64 = 0;
     let cap = effective_download_cap(bytes_total);
     loop {
-        let n = resp.read(&mut buf).context("reading download stream")?;
-        if n == 0 {
-            break;
+        if cancel.is_cancelled() {
+            let _ = std::fs::remove_file(&part);
+            bail!("model download cancelled");
         }
-        file.write_all(&buf[..n]).context("writing model file")?;
-        done += n as u64;
+        let chunk = match resp.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = std::fs::remove_file(&part);
+                if error.is_timeout() {
+                    bail!(
+                        "reading model download for {} timed out ({} seconds idle or {} seconds total): {error}",
+                        dest.display(),
+                        MODEL_READ_TIMEOUT.as_secs(),
+                        MODEL_REQUEST_TIMEOUT.as_secs()
+                    );
+                }
+                return Err(error)
+                    .with_context(|| format!("reading download stream for {}", dest.display()));
+            }
+        };
+        file.write_all(&chunk).context("writing model file")?;
+        done += chunk.len() as u64;
         if done > cap {
             let _ = std::fs::remove_file(&part);
             bail!(
@@ -190,6 +196,10 @@ fn download_file(
             );
         }
         progress(done);
+    }
+    if cancel.is_cancelled() {
+        let _ = std::fs::remove_file(&part);
+        bail!("model download cancelled");
     }
     file.flush().ok();
     drop(file);
@@ -228,55 +238,37 @@ pub fn clear_broken_model_dir_symlink(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Copy the int8 ONNX bundle files from `src_model_dir` into `dest_model_dir`.
-///
-/// Used by the full package installer to seed app-data from the read-only
-/// bundle without re-downloading. Destination parents are created; a broken
-/// dest-dir symlink is cleared first. Only the int8 file set is copied
-/// (`onnx/model_int8.onnx` + `tokenizer.json`).
-pub fn copy_int8_bundle(src_model_dir: &Path, dest_model_dir: &Path) -> Result<()> {
-    if !model_present_at(src_model_dir, true) {
-        bail!(
-            "source int8 bundle incomplete at {}",
-            src_model_dir.display()
-        );
-    }
-    clear_broken_model_dir_symlink(dest_model_dir)?;
-    for rel in INT8_FILES {
-        let src = src_model_dir.join(rel);
-        let dest = dest_model_dir.join(rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        // Copy via a sibling `.part` then rename so a crash never leaves a
-        // truncated file that `model_present` would treat as complete.
-        let part = dest.with_extension(match dest.extension().and_then(|e| e.to_str()) {
-            Some(ext) => format!("{ext}.part"),
-            None => "part".to_string(),
-        });
-        std::fs::copy(&src, &part)
-            .with_context(|| format!("copying {} → {}", src.display(), part.display()))?;
-        std::fs::rename(&part, &dest).with_context(|| format!("finalizing {}", dest.display()))?;
-    }
-    Ok(())
-}
-
-/// Ensure the requested ONNX bundle is present under `oracle_data_root`,
-/// downloading any missing/mismatched file. Returns the model directory to hand
-/// to `BackendChoice::Ort { model_dir, .. }`.
-///
-/// A file already at its full remote size is skipped, so re-running after a
-/// completed install is a cheap set of HEAD requests. `progress` is invoked per
-/// received chunk; pass a no-op closure to ignore it.
 /// Download the declared files of any ONNX bundle under
 /// `<oracle_data_root>/models/<model_id>/`. `hf_resolve_base` is the HuggingFace
 /// resolve URL *without* a trailing slash (e.g. `https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main`).
-pub fn ensure_model_onnx(
+fn ensure_bundle_onnx_with_cancel(
     oracle_data_root: &Path,
     model_id: &str,
     hf_resolve_base: &str,
     files: &[&str],
+    cancel: &CancelFlag,
+    progress: impl FnMut(FileProgress),
+) -> Result<PathBuf> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("creating the model download runtime")?;
+    runtime.block_on(ensure_bundle_onnx_async(
+        oracle_data_root,
+        model_id,
+        hf_resolve_base,
+        files,
+        cancel,
+        progress,
+    ))
+}
+
+async fn ensure_bundle_onnx_async(
+    oracle_data_root: &Path,
+    model_id: &str,
+    hf_resolve_base: &str,
+    files: &[&str],
+    cancel: &CancelFlag,
     mut progress: impl FnMut(FileProgress),
 ) -> Result<PathBuf> {
     let dir = OrtEmbedder::model_dir(oracle_data_root, model_id);
@@ -285,9 +277,12 @@ pub fn ensure_model_onnx(
     let base = hf_resolve_base.trim_end_matches('/');
 
     for (i, rel) in files.iter().enumerate() {
+        if cancel.is_cancelled() {
+            bail!("model download cancelled");
+        }
         let url = format!("{base}/{rel}");
         let dest = dir.join(rel);
-        let bytes_total = remote_len(&client, &url);
+        let bytes_total = remote_len(&client, &url).await?;
 
         if let Some(expected) = bytes_total {
             if std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0) == expected && expected > 0 {
@@ -304,7 +299,7 @@ pub fn ensure_model_onnx(
 
         let rel_owned = (*rel).to_string();
         let files_len = files.len();
-        download_file(&client, &url, &dest, bytes_total, |done| {
+        download_file(&client, &url, &dest, bytes_total, cancel, |done| {
             progress(FileProgress {
                 file: rel_owned.clone(),
                 index: i + 1,
@@ -313,26 +308,13 @@ pub fn ensure_model_onnx(
                 bytes_total,
             });
         })
+        .await
         .with_context(|| format!("downloading {rel}"))?;
     }
 
-    Ok(dir)
-}
-
-/// Ensure the Qwen3 ONNX bundle is present under `oracle_data_root`.
-pub fn ensure_qwen3_onnx(
-    oracle_data_root: &Path,
-    int8: bool,
-    progress: impl FnMut(FileProgress),
-) -> Result<PathBuf> {
-    let dir = ensure_model_onnx(
-        oracle_data_root,
-        "qwen3-onnx",
-        HF_BASE,
-        bundle_files(int8),
-        progress,
-    )?;
-    write_model_config_if_missing(&dir, QWEN3_MODEL_CONFIG_JSON)?;
+    if cancel.is_cancelled() {
+        bail!("model download cancelled");
+    }
     Ok(dir)
 }
 
@@ -345,13 +327,26 @@ pub fn ensure_bge_small_onnx(
     oracle_data_root: &Path,
     progress: impl FnMut(FileProgress),
 ) -> Result<PathBuf> {
-    let dir = ensure_model_onnx(
+    ensure_bge_small_onnx_with_cancel(oracle_data_root, &CancelFlag::new(), progress)
+}
+
+/// Cancellable installer for Oracle's default BGE bundle.
+pub fn ensure_bge_small_onnx_with_cancel(
+    oracle_data_root: &Path,
+    cancel: &CancelFlag,
+    progress: impl FnMut(FileProgress),
+) -> Result<PathBuf> {
+    let dir = ensure_bundle_onnx_with_cancel(
         oracle_data_root,
-        "bge-small-en-v1.5",
+        BGE_SMALL_MODEL_ID,
         BGE_SMALL_HF_BASE,
         BGE_SMALL_FILES,
+        cancel,
         progress,
     )?;
+    if cancel.is_cancelled() {
+        bail!("model download cancelled");
+    }
     write_model_config_if_missing(&dir, BGE_SMALL_MODEL_CONFIG_JSON)?;
     Ok(dir)
 }
@@ -365,28 +360,19 @@ mod tests {
         let root = Path::new("/tmp/oracle-data");
         assert_eq!(
             model_dir(root),
-            root.join("models").join("qwen3-onnx"),
+            root.join("models").join("bge-small-en-v1.5"),
             "must match OrtEmbedder::default_model_dir so the backend finds it"
         );
     }
 
     #[test]
-    fn fp32_bundle_lists_graph_weights_and_tokenizer() {
-        assert_eq!(
-            bundle_files(false),
-            &["onnx/model.onnx", "onnx/model.onnx_data", "tokenizer.json"]
-        );
-        // int8 is a single graph file (no external _data) + tokenizer.
-        assert_eq!(
-            bundle_files(true),
-            &["onnx/model_int8.onnx", "tokenizer.json"]
-        );
-    }
-
-    #[test]
-    fn model_present_false_on_empty_dir() {
+    fn cancellable_ensure_stops_before_network_when_cancelled() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(!model_present(tmp.path(), false));
+        let cancel = CancelFlag::new();
+        cancel.cancel();
+        let error = ensure_bge_small_onnx_with_cancel(tmp.path(), &cancel, |_| {})
+            .expect_err("cancelled ensure must not start a download");
+        assert!(error.to_string().contains("cancelled"));
     }
 
     #[test]
@@ -396,7 +382,7 @@ mod tests {
         std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink("/nonexistent/oracle-qwen3-target", &dir).unwrap();
+            std::os::unix::fs::symlink("/nonexistent/oracle-bge-target", &dir).unwrap();
             assert!(dir.symlink_metadata().unwrap().file_type().is_symlink());
             assert!(!dir.exists());
             clear_broken_model_dir_symlink(&dir).unwrap();
@@ -411,66 +397,11 @@ mod tests {
     }
 
     #[test]
-    fn model_present_true_when_all_files_large_enough() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = model_dir(tmp.path());
-        // Files must exceed 1024 bytes to count as present (UI-status guard
-        // against planted tiny files; see model_present doc).
-        let payload = vec![0xABu8; 2048];
-        for rel in FP32_FILES {
-            let p = dir.join(rel);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(&p, &payload).unwrap();
-        }
-        assert!(model_present(tmp.path(), false));
-        // A zero-byte file must NOT count as present.
-        std::fs::write(dir.join("tokenizer.json"), b"").unwrap();
-        assert!(!model_present(tmp.path(), false));
-    }
-
-    #[test]
-    fn copy_int8_bundle_seeds_dest_from_complete_source() {
-        let src_root = tempfile::tempdir().unwrap();
-        let dest_root = tempfile::tempdir().unwrap();
-        let src = model_dir(src_root.path());
-        let dest = model_dir(dest_root.path());
-        let payload = vec![0xCDu8; 2048];
-        for rel in INT8_FILES {
-            let p = src.join(rel);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(&p, &payload).unwrap();
-        }
-        assert!(!model_present_at(&dest, true));
-        copy_int8_bundle(&src, &dest).unwrap();
-        assert!(model_present_at(&dest, true));
-        for rel in INT8_FILES {
-            assert_eq!(
-                std::fs::read(dest.join(rel)).unwrap(),
-                payload,
-                "copied {rel} must match source bytes"
-            );
-        }
-    }
-
-    #[test]
     fn effective_download_cap_uses_remote_len_or_hard_ceiling() {
         assert_eq!(effective_download_cap(None), MAX_DOWNLOAD_BYTES);
         assert_eq!(effective_download_cap(Some(0)), MAX_DOWNLOAD_BYTES);
         assert_eq!(effective_download_cap(Some(1234)), 1234);
         assert_eq!(effective_download_cap(Some(u64::MAX)), MAX_DOWNLOAD_BYTES);
         assert!(effective_download_cap(Some(MAX_DOWNLOAD_BYTES + 1)) <= MAX_DOWNLOAD_BYTES);
-    }
-
-    #[test]
-    fn copy_int8_bundle_rejects_incomplete_source() {
-        let src = tempfile::tempdir().unwrap();
-        let dest = tempfile::tempdir().unwrap();
-        // Only tokenizer — missing model_int8.onnx.
-        std::fs::write(src.path().join("tokenizer.json"), vec![0u8; 2048]).unwrap();
-        let err = copy_int8_bundle(src.path(), dest.path()).unwrap_err();
-        assert!(
-            err.to_string().contains("incomplete"),
-            "expected incomplete-source error, got: {err:#}"
-        );
     }
 }

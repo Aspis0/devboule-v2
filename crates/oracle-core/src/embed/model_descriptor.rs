@@ -286,6 +286,28 @@ impl DeclaredModelConfig {
     }
 }
 
+/// UI/doctor-only check for a complete configured model bundle.
+///
+/// Download/ensure code must still perform its own remote verification; this
+/// helper only answers whether the declared graph and tokenizer are present
+/// and large enough to be useful.
+pub fn configured_model_present(model_dir: &Path, int8: bool) -> bool {
+    let Ok(declared) = DeclaredModelConfig::load(model_dir) else {
+        return false;
+    };
+    let Ok(graph) = declared.graph_path(model_dir, int8) else {
+        return false;
+    };
+    let Ok(tokenizer) = declared.tokenizer_path(model_dir) else {
+        return false;
+    };
+    [graph, tokenizer].iter().all(|path| {
+        std::fs::metadata(path)
+            .map(|metadata| metadata.len() > 1024)
+            .unwrap_or(false)
+    })
+}
+
 impl ModelDescriptor {
     pub fn from_declared(
         declared: DeclaredModelConfig,
@@ -448,6 +470,22 @@ mod tests {
         assert_eq!(d.onnx_graph, "onnx/model_quantized.onnx");
         assert_eq!(d.dims, Some(384));
         assert!(d.onnx_graph_fp32.is_none());
+    }
+
+    #[test]
+    fn configured_model_present_uses_declared_files_and_size_guard() {
+        let tmp = tempdir().unwrap();
+        write_cfg(tmp.path(), BGE_SMALL_MODEL_CONFIG_JSON);
+        let payload = vec![0xAB; 2048];
+        let graph = tmp.path().join("onnx/model_quantized.onnx");
+        std::fs::create_dir_all(graph.parent().unwrap()).unwrap();
+        std::fs::write(&graph, &payload).unwrap();
+        std::fs::write(tmp.path().join("tokenizer.json"), &payload).unwrap();
+
+        assert!(configured_model_present(tmp.path(), true));
+        std::fs::write(&graph, [0u8; 1]).unwrap();
+        assert!(!configured_model_present(tmp.path(), true));
+        assert!(!configured_model_present(tmp.path(), false));
     }
 
     #[test]

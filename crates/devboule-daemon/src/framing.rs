@@ -65,6 +65,7 @@ impl Framed {
         self.send_with_deadline(value, None, true)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn send_unflushed<T: Serialize>(&self, value: &T) -> Result<(), DaemonError> {
         // Event streaming must not call FlushFileBuffers. On Windows, when this
         // handle is the server end of a named pipe, FlushFileBuffers waits for
@@ -85,6 +86,7 @@ impl Framed {
     /// Establish a pipe delivery barrier during connection teardown. This is
     /// intentionally separate from event writes: on Windows the barrier waits
     /// for the client to read all bytes buffered on the server end.
+    #[allow(dead_code)]
     pub(crate) fn flush_pipe(&self) -> Result<(), DaemonError> {
         #[cfg(windows)]
         {
@@ -129,6 +131,7 @@ impl Framed {
         }
     }
 
+    #[allow(dead_code)]
     pub fn recv<T: DeserializeOwned>(&self) -> Result<T, DaemonError> {
         let line = self.read_line(None)?;
         Ok(serde_json::from_slice(&line)?)
@@ -146,6 +149,7 @@ impl Framed {
 
     /// Cancel a blocking server-side read during daemon shutdown.
     #[cfg(windows)]
+    #[allow(dead_code)]
     pub fn cancel_read(&self) {
         unsafe {
             let _ = windows_sys::Win32::System::IO::CancelIoEx(
@@ -156,6 +160,7 @@ impl Framed {
     }
 
     #[cfg(not(windows))]
+    #[allow(dead_code)]
     pub fn cancel_read(&self) {}
 
     fn read_line(&self, deadline: Option<Instant>) -> Result<Vec<u8>, DaemonError> {

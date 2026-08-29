@@ -11,7 +11,9 @@ pub mod model_descriptor;
 pub mod ort_backend;
 
 pub use candle_backend::CandleEmbedder;
-pub use model_descriptor::{DeclaredModelConfig, KvGeometry, ModelDescriptor, PoolingStrategy};
+pub use model_descriptor::{
+    configured_model_present, DeclaredModelConfig, KvGeometry, ModelDescriptor, PoolingStrategy,
+};
 pub use ort_backend::OrtEmbedder;
 
 use anyhow::{Context, Result};
@@ -954,11 +956,11 @@ pub trait Embedder: Send {
 
 /// Resolve the default backend for this build/platform.
 ///
-/// macOS + `metal` feature → candle Metal F16 (index-parity proven, model in
-/// the shared HF cache). Everything else → ONNX int8 with the platform GPU EP
-/// auto-selected (CoreML/DirectML) and CPU fallback. `ORACLE_RS_BACKEND=candle|onnx`
-/// overrides; `ORACLE_EMBED_DEVICE=cpu` forces CPU on the candle path
-/// (mirroring the Python env knob); `ORACLE_RS_EP` forces the ONNX EP.
+/// ONNX int8 with the platform GPU EP auto-selected (CoreML/DirectML) and CPU
+/// fallback is the portable default on every platform. Candle remains an
+/// explicit developer override; it uses its own model cache and is not the
+/// configured ONNX model path. `ORACLE_RS_BACKEND=candle|onnx` overrides and
+/// `ORACLE_RS_EP` forces the ONNX EP.
 pub fn default_backend(ort_model_dir: PathBuf) -> BackendChoice {
     let forced = std::env::var("ORACLE_RS_BACKEND").ok();
     let force_cpu = std::env::var("ORACLE_EMBED_DEVICE")
@@ -976,10 +978,6 @@ pub fn default_backend(ort_model_dir: PathBuf) -> BackendChoice {
         Some(v) if v.eq_ignore_ascii_case("candle") => BackendChoice::Candle {
             metal: metal_available,
             f16: metal_available,
-        },
-        _ if metal_available => BackendChoice::Candle {
-            metal: true,
-            f16: true,
         },
         _ => BackendChoice::Ort {
             model_dir: ort_model_dir,

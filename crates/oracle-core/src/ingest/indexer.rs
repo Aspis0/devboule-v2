@@ -868,36 +868,61 @@ pub fn gpu_temperature_c() -> Option<i32> {
     first_line.trim().parse::<f32>().ok().map(|v| v as i32)
 }
 
-/// Sleep-and-retry while the combined memory guard ([`memory_pause_reason`])
-/// wants a pause. Returns the final observed free-RAM reading (never faked
-/// above the floor).
-///
-/// Exits only when the combined guard genuinely clears (kernel signals healthy
-/// / GB floor recovered, per the [`combined_pause_reason`] precedence), or when
-/// the bounded retry count is exhausted. Callers must re-check
-/// [`memory_pause_reason`] after return and treat a still-blocking result as
-/// [`IndexStatus::PausedLowMemory`].
-fn wait_for_memory_recovery(min_free_gb: f64, progress: Option<&dyn Fn(&str)>) -> f64 {
-    wait_for_memory_recovery_with(
+fn wait_for_memory_recovery_with_cancel(
+    min_free_gb: f64,
+    progress: Option<&dyn Fn(&str)>,
+    free_reader: impl FnMut() -> f64,
+    still_blocked: impl FnMut(f64) -> bool,
+    retry_seconds: u64,
+    retry_cycles: usize,
+    cancel: Option<&CancelFlag>,
+) -> f64 {
+    wait_for_memory_recovery_with_cancel_inner(
         min_free_gb,
         progress,
-        free_memory_gb,
-        |free_gb| memory_pause_reason(free_gb, min_free_gb).is_some(),
-        LOW_MEMORY_RETRY_SECONDS,
-        LOW_MEMORY_RETRY_CYCLES,
+        free_reader,
+        still_blocked,
+        retry_seconds,
+        retry_cycles,
+        cancel,
     )
 }
 
 /// Testable core of [`wait_for_memory_recovery`]: inject the free-RAM reader,
 /// the blocking predicate (the combined guard in production), and retry timing
 /// (use `retry_seconds = 0` in unit tests to avoid sleeping).
+#[cfg(test)]
 fn wait_for_memory_recovery_with<F, G>(
+    min_free_gb: f64,
+    progress: Option<&dyn Fn(&str)>,
+    free_reader: F,
+    still_blocked: G,
+    retry_seconds: u64,
+    retry_cycles: usize,
+) -> f64
+where
+    F: FnMut() -> f64,
+    G: FnMut(f64) -> bool,
+{
+    wait_for_memory_recovery_with_cancel_inner(
+        min_free_gb,
+        progress,
+        free_reader,
+        still_blocked,
+        retry_seconds,
+        retry_cycles,
+        None,
+    )
+}
+
+fn wait_for_memory_recovery_with_cancel_inner<F, G>(
     min_free_gb: f64,
     progress: Option<&dyn Fn(&str)>,
     mut free_reader: F,
     mut still_blocked: G,
     retry_seconds: u64,
     retry_cycles: usize,
+    cancel: Option<&CancelFlag>,
 ) -> f64
 where
     F: FnMut() -> f64,
@@ -908,6 +933,9 @@ where
         return free_gb;
     }
     for cycle in 0..retry_cycles {
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            return free_gb;
+        }
         log_progress(
             progress,
             &format!(
@@ -918,7 +946,7 @@ where
             ),
         );
         if retry_seconds > 0 {
-            std::thread::sleep(Duration::from_secs(retry_seconds));
+            sleep_with_cancel(Duration::from_secs(retry_seconds), cancel);
         }
         free_gb = free_reader();
         if !still_blocked(free_gb) {
@@ -929,11 +957,17 @@ where
     free_gb
 }
 
-/// Wait for GPU cooldown. Returns the final observed temperature.
-fn wait_for_gpu_cooldown(max_gpu_temp_c: i32, progress: Option<&dyn Fn(&str)>) -> Option<i32> {
+fn wait_for_gpu_cooldown_with_cancel(
+    max_gpu_temp_c: i32,
+    progress: Option<&dyn Fn(&str)>,
+    cancel: Option<&CancelFlag>,
+) -> Option<i32> {
     let resume_temp_c = GPU_RESUME_TEMP_C.min(max_gpu_temp_c - 1);
     let mut temp_c = gpu_temperature_c();
     for cycle in 0..GPU_COOLDOWN_MAX_CYCLES {
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            return temp_c;
+        }
         if temp_c.is_none() || temp_c.unwrap() <= resume_temp_c {
             return temp_c;
         }
@@ -947,10 +981,23 @@ fn wait_for_gpu_cooldown(max_gpu_temp_c: i32, progress: Option<&dyn Fn(&str)>) -
                 GPU_COOLDOWN_MAX_CYCLES,
             ),
         );
-        std::thread::sleep(Duration::from_secs(GPU_COOLDOWN_SECONDS));
+        sleep_with_cancel(Duration::from_secs(GPU_COOLDOWN_SECONDS), cancel);
         temp_c = gpu_temperature_c();
     }
     temp_c
+}
+
+fn sleep_with_cancel(duration: Duration, cancel: Option<&CancelFlag>) {
+    let deadline = std::time::Instant::now() + duration;
+    while std::time::Instant::now() < deadline {
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            return;
+        }
+        std::thread::sleep(
+            Duration::from_millis(100)
+                .min(deadline.saturating_duration_since(std::time::Instant::now())),
+        );
+    }
 }
 
 /// Emit a progress message to the callback (if any) and always to stderr so
@@ -1268,7 +1315,15 @@ pub async fn index_file_chunks(
     if config.min_free_gb > 0.0 {
         let free_gb = free_memory_gb();
         if memory_pause_reason(free_gb, config.min_free_gb).is_some() {
-            let recovered = wait_for_memory_recovery(config.min_free_gb, progress);
+            let recovered = wait_for_memory_recovery_with_cancel(
+                config.min_free_gb,
+                progress,
+                free_memory_gb,
+                |free_gb| memory_pause_reason(free_gb, config.min_free_gb).is_some(),
+                LOW_MEMORY_RETRY_SECONDS,
+                LOW_MEMORY_RETRY_CYCLES,
+                Some(cancel),
+            );
             if let Some(reason) = memory_pause_reason(recovered, config.min_free_gb) {
                 log_progress(
                     progress,
@@ -1299,10 +1354,32 @@ pub async fn index_file_chunks(
     }
 
     let out_paths = output_paths_set(&sqlite_path, &vector_path, &manifest_path);
-    let files: Vec<PathBuf> = collect::collect_text_files(&root)
-        .into_iter()
-        .filter(|p| !is_output_path(p, &out_paths))
-        .collect();
+    let files: Vec<PathBuf> = match collect::collect_text_files_with_cancel(&root, cancel) {
+        Some(files) => files,
+        None => {
+            log_progress(progress, "chunk-index cancelled during file collection");
+            return Ok(make_index_result(
+                IndexStatus::Complete,
+                &root,
+                &sqlite_path,
+                &vector_path,
+                &manifest_path,
+                0,
+                Some(0),
+                0,
+                0,
+                None,
+                None,
+                None,
+                free_memory_gb(),
+                None,
+                None,
+            ));
+        }
+    }
+    .into_iter()
+    .filter(|p| !is_output_path(p, &out_paths))
+    .collect();
 
     let model_id = embedder.model_id()?;
     let embedding_dims = embedder.dims()?;
@@ -1428,7 +1505,15 @@ pub async fn index_file_chunks(
             }
             sync_legacy_manifest_root(&mut manifest, &root);
             save_manifest(&manifest_path, &manifest)?;
-            let recovered = wait_for_memory_recovery(config.min_free_gb, progress);
+            let recovered = wait_for_memory_recovery_with_cancel(
+                config.min_free_gb,
+                progress,
+                free_memory_gb,
+                |free_gb| memory_pause_reason(free_gb, config.min_free_gb).is_some(),
+                LOW_MEMORY_RETRY_SECONDS,
+                LOW_MEMORY_RETRY_CYCLES,
+                Some(cancel),
+            );
             if let Some(reason) = memory_pause_reason(recovered, config.min_free_gb) {
                 log_progress(
                     progress,
@@ -1512,7 +1597,8 @@ pub async fn index_file_chunks(
                     if temp >= max_temp {
                         sync_legacy_manifest_root(&mut manifest, &root);
                         save_manifest(&manifest_path, &manifest)?;
-                        let cooled = wait_for_gpu_cooldown(max_temp, progress);
+                        let cooled =
+                            wait_for_gpu_cooldown_with_cancel(max_temp, progress, Some(cancel));
                         if let Some(t) = cooled {
                             if t >= max_temp {
                                 log_progress(
@@ -1556,7 +1642,15 @@ pub async fn index_file_chunks(
             if memory_pause_reason(free_gb, config.min_free_gb).is_some() {
                 sync_legacy_manifest_root(&mut manifest, &root);
                 save_manifest(&manifest_path, &manifest)?;
-                let recovered = wait_for_memory_recovery(config.min_free_gb, progress);
+                let recovered = wait_for_memory_recovery_with_cancel(
+                    config.min_free_gb,
+                    progress,
+                    free_memory_gb,
+                    |free_gb| memory_pause_reason(free_gb, config.min_free_gb).is_some(),
+                    LOW_MEMORY_RETRY_SECONDS,
+                    LOW_MEMORY_RETRY_CYCLES,
+                    Some(cancel),
+                );
                 if let Some(reason) = memory_pause_reason(recovered, config.min_free_gb) {
                     log_progress(
                         progress,

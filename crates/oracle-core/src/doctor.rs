@@ -14,7 +14,7 @@
 //! filesystem path, the OS username, or any secret value.  `safe_detail`
 //! redacts path-like substrings defensively.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -86,20 +86,38 @@ fn check(id: &str, ok: bool, detail: &str, remediation: &str) -> DoctorCheck {
 // 1) Runtime check — model files present
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Check if the candle HF cache OR ort model directory is readable.
-fn check_runtime(ort_model_dir: Option<&Path>) -> DoctorCheck {
-    let candle_ok = check_candle_cache();
-    let ort_ok = match ort_model_dir {
-        Some(dir) => dir.exists() && dir.is_dir(),
-        None => false,
+/// Check the configured ONNX bundle in the same data tree used by the app. The
+/// doctor deliberately reports a stable relative layout rather than leaking an
+/// absolute user path in its JSON report.
+fn check_runtime(root: Option<&Path>) -> DoctorCheck {
+    let model_id = std::env::var("DEVBOULE_ORACLE_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| crate::model_download::BGE_SMALL_MODEL_ID.to_string())
+        .trim()
+        .to_string();
+    let Some(root) = root else {
+        return check(
+            "runtime",
+            false,
+            &format!("The configured model {model_id} has no workspace data root."),
+            "Choose an Oracle workspace folder in the panel to download the approximately 34 MB model.",
+        );
     };
 
-    if candle_ok || ort_ok {
-        let backend = if candle_ok { "candle" } else { "ort" };
+    let paths = OracleDataPaths::from_root(root);
+    let model_dir = crate::model_download::model_dir_for(&paths.root, &model_id);
+    let model_ok = crate::embed::configured_model_present(&model_dir, true);
+    let size = if model_id == crate::model_download::BGE_SMALL_MODEL_ID {
+        "approximately 34 MB"
+    } else {
+        "size is declared by the configured bundle"
+    };
+    if model_ok {
         return check(
             "runtime",
             true,
-            &format!("Model files available ({} backend).", backend),
+            &format!("Configured model {model_id} is installed in oracle-data/models/{model_id}."),
             "",
         );
     }
@@ -107,32 +125,11 @@ fn check_runtime(ort_model_dir: Option<&Path>) -> DoctorCheck {
     check(
         "runtime",
         false,
-        "Embedding model files not found.",
-        "Install the Oracle runtime from Oracle - Setup.",
+        &format!(
+            "Configured model {model_id} is missing from oracle-data/models/{model_id} ({size})."
+        ),
+        "Open Devboule - Oracle and wait for the model download to finish, or retry it from the panel.",
     )
-}
-
-/// Check for candle qwen3 model in the HuggingFace cache.
-fn check_candle_cache() -> bool {
-    if let Ok(home) = std::env::var("HOME") {
-        let cache = PathBuf::from(home)
-            .join(".cache")
-            .join("huggingface")
-            .join("hub")
-            .join("models--Qwen--Qwen3-Embedding-0.6B");
-        if cache.exists() {
-            return true;
-        }
-        if let Ok(hf_home) = std::env::var("HF_HOME") {
-            let cache = PathBuf::from(hf_home)
-                .join("hub")
-                .join("models--Qwen--Qwen3-Embedding-0.6B");
-            if cache.exists() {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -360,7 +357,7 @@ pub fn build_report(root: Option<&Path>) -> DoctorReport {
     };
 
     let checks = vec![
-        check_runtime(None),
+        check_runtime(root),
         check_stores(&paths),
         check_workspace(root, &paths.manifest),
         check_index(root, &paths),

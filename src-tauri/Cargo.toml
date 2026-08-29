@@ -31,6 +31,9 @@ devboule-protocol = { path = "../crates/devboule-protocol" }
 devboule-daemon = { path = "../crates/devboule-daemon", default-features = false }
 # Oracle is the local index/query runtime used by the Tauri command boundary.
 oracle-core = { path = "../crates/oracle-core" }
+tauri-plugin-dialog = "2.7.2"
+serde_json = "=1.0.151"
+tempfile = "3"
 
 [dev-dependencies]
 # Already in the workspace; used to assert the Tauri error payload JSON.

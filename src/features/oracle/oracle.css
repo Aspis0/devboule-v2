@@ -478,6 +478,20 @@
   font-size: 10.5px;
 }
 
+.oracle-model-download {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.oracle-model-retry-button {
+  height: 22px;
+  margin-left: 8px;
+  padding: 0 8px;
+  border: 1px solid var(--danger);
+  font-size: 10px;
+}
+
 .oracle-job {
   margin-top: 12px;
 }

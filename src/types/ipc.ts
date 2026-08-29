@@ -178,6 +178,35 @@ export interface OracleIndexStatus {
   pending_files: number;
   stale_files: number;
   resource_budget: OracleResourceBudget;
+  model: OracleModelStatus;
+}
+
+export type OracleModelState =
+  | "not_applicable"
+  | "missing"
+  | "downloading"
+  | "ready"
+  | "failed"
+  | "cancelled";
+
+export interface OracleModelStatus {
+  state: OracleModelState;
+  model_id: string;
+  directory: string;
+  file: string | null;
+  file_index: number;
+  total_files: number;
+  bytes_done: number;
+  bytes_total: number | null;
+  approximate_bytes: number;
+  message: string | null;
+}
+
+export interface OracleWorkspace {
+  path: string | null;
+  source: "environment" | "saved" | "unset";
+  exists: boolean;
+  editable: boolean;
 }
 
 export type OracleProgressState =

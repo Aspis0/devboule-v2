@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::chunking;
+use crate::embed::CancelFlag;
 
 // ── Excluded directories (lowercased) ────────────────────────────────────────
 
@@ -614,11 +615,19 @@ pub fn priority_key(path: &Path, root: &Path) -> (usize, String) {
 // ── collect_text_files ──────────────────────────────────────────────────────
 
 pub fn collect_text_files(root: &Path) -> Vec<PathBuf> {
+    collect_text_files_with_cancel(root, &CancelFlag::new()).unwrap_or_default()
+}
+
+/// Collect text files while allowing a long directory walk to stop promptly.
+/// `None` means the caller cancelled the walk before it completed.
+pub fn collect_text_files_with_cancel(root: &Path, cancel: &CancelFlag) -> Option<Vec<PathBuf>> {
     let root = root.to_path_buf();
     let ignore_policy = load_workspace_ignore_policy(&root);
     let mut files = Vec::new();
 
-    walk_recursive(&root, &root, &ignore_policy, &mut files);
+    if walk_recursive_with_cancel(&root, &root, &ignore_policy, &mut files, Some(cancel)) {
+        return None;
+    }
 
     files.sort_by(|a, b| {
         let ka = priority_key(a, &root);
@@ -626,19 +635,36 @@ pub fn collect_text_files(root: &Path) -> Vec<PathBuf> {
         ka.cmp(&kb)
     });
 
-    files
+    Some(files)
 }
 
-fn walk_recursive(
+/// Return `true` when the walk was cancelled.
+fn walk_recursive_with_cancel(
     current: &Path,
     root: &Path,
     ignore_policy: &IgnorePolicy,
     files: &mut Vec<PathBuf>,
-) {
+    cancel: Option<&CancelFlag>,
+) -> bool {
+    if cancel.is_some_and(CancelFlag::is_cancelled) {
+        return true;
+    }
+
     // Read directory entries
     let entries: Vec<fs::DirEntry> = match fs::read_dir(current) {
-        Ok(rd) => rd.filter_map(|e| e.ok()).collect(),
-        Err(_) => return,
+        Ok(rd) => {
+            let mut entries = Vec::new();
+            for entry in rd {
+                if cancel.is_some_and(CancelFlag::is_cancelled) {
+                    return true;
+                }
+                if let Ok(entry) = entry {
+                    entries.push(entry);
+                }
+            }
+            entries
+        }
+        Err(_) => return false,
     };
 
     // Separate into dirs and files, mimicking `os.walk(followlinks=False)`:
@@ -650,6 +676,9 @@ fn walk_recursive(
     let mut filenames: Vec<String> = Vec::new();
 
     for entry in &entries {
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            return true;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         let Ok(ft) = entry.file_type() else { continue };
         if ft.is_symlink() {
@@ -676,7 +705,7 @@ fn walk_recursive(
 
     // Installed-package / vendored env pruning
     if current != root && dir_is_install_root(&dirnames, &filenames) {
-        return;
+        return false;
     }
 
     // Filter directories
@@ -687,6 +716,9 @@ fn walk_recursive(
 
     // Check files
     for filename in &filenames {
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            return true;
+        }
         let path = current.join(filename);
         let ext = path
             .extension()
@@ -718,11 +750,17 @@ fn walk_recursive(
     // Sort dirnames for deterministic walk order
     dirnames.sort();
     for dirname in &dirnames {
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            return true;
+        }
         if no_descend.contains(dirname) {
             continue; // symlink-to-dir: listed, never walked (os.walk parity)
         }
-        walk_recursive(&current.join(dirname), root, ignore_policy, files);
+        if walk_recursive_with_cancel(&current.join(dirname), root, ignore_policy, files, cancel) {
+            return true;
+        }
     }
+    false
 }
 
 /// True when `path` resolves to a regular file whose canonical target stays
@@ -757,6 +795,15 @@ mod tests {
         assert!(!fnmatch("[!]a]", "]"));
         assert!(fnmatch("[!]a]", "b"));
         assert!(!fnmatch("[!]a]", "a"));
+    }
+
+    #[test]
+    fn cancellable_collection_stops_before_walking() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("readme.md"), "text").unwrap();
+        let cancel = CancelFlag::new();
+        cancel.cancel();
+        assert!(collect_text_files_with_cancel(tmp.path(), &cancel).is_none());
     }
 
     /// Python: dotfiles (rfind('.') == 0) never take the content-word branch.

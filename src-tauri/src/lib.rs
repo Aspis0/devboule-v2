@@ -15,6 +15,23 @@ pub fn run() {
     tauri::Builder::default()
         .manage(client::DaemonBridge::start())
         .manage(oracle::OracleRuntime::from_environment())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let runtime = app.state::<oracle::OracleRuntime>();
+            match app.path().app_config_dir() {
+                Ok(config_dir) => runtime.load_persisted_root(&config_dir),
+                Err(error) => eprintln!("devboule: Oracle preferences unavailable: {error}"),
+            }
+            // Start the installer as soon as Oracle has a configured root. The
+            // command status exposes its progress when the panel is opened.
+            if let Err(error) = runtime.start_model_download_for_startup() {
+                eprintln!(
+                    "devboule: Oracle model download did not start: {}",
+                    error.message
+                );
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             app_identity,
             client::daemon_status,
@@ -25,6 +42,11 @@ pub fn run() {
             backend::session::session_resize,
             backend::session::session_close,
             backend::session::sessions_list,
+            oracle::oracle_workspace_get,
+            oracle::oracle_workspace_set,
+            oracle::oracle_model_download_start,
+            oracle::oracle_model_download_cancel,
+            oracle::oracle_index_cancel,
             oracle::oracle_status,
             oracle::oracle_doctor,
             oracle::oracle_stats,
@@ -38,6 +60,8 @@ pub fn run() {
         .expect("error while building Devboule")
         .run(|app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                let oracle = app_handle.state::<oracle::OracleRuntime>();
+                oracle.shutdown();
                 let daemon = app_handle.state::<client::DaemonBridge>();
                 daemon.shutdown();
             }

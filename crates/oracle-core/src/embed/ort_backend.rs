@@ -31,9 +31,13 @@ impl OrtEmbedder {
         Ok(OrtEmbedder { inner, model_id })
     }
 
-    /// Default on-disk location for the Qwen3 ONNX bundle (unchanged path).
-    pub fn default_model_dir(oracle_data_root: &Path) -> PathBuf {
-        Self::model_dir(oracle_data_root, "qwen3-onnx")
+    /// Default on-disk location for the configured ONNX bundle.
+    ///
+    /// The model id is part of the path. Keeping it at the call site prevents
+    /// the downloader and the loader from silently selecting different model
+    /// directories when the configured model changes.
+    pub fn default_model_dir(oracle_data_root: &Path, model_id: &str) -> PathBuf {
+        Self::model_dir(oracle_data_root, model_id)
     }
 
     /// `<root>/models/<id>`.
