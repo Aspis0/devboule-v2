@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   isCommandError,
@@ -29,12 +29,19 @@ import { OracleAdmin, type WatchNotice } from "./OracleAdmin";
 import { OracleSearch } from "./OracleSearch";
 import { OracleSetup } from "./OracleSetup";
 import { useTrackedRequest, type TrackedRequestState } from "./oracleRequests";
-import { commandErrorMessage, getOracleStage, isIndexEmpty, type OracleStage } from "./oracleUtils";
+import {
+  commandErrorMessage,
+  formatCount,
+  getOracleStage,
+  isIndexEmpty,
+  type OracleStage,
+} from "./oracleUtils";
 import "./oracle.css";
 
 const ORACLE_FILE_PAGE = 0;
 
 export function OraclePanel() {
+  const [searchQuery, setSearchQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState<string | null>(null);
   const [indexStarting, setIndexStarting] = useState(false);
   const [indexActionError, setIndexActionError] = useState<string | null>(null);
@@ -50,6 +57,8 @@ export function OraclePanel() {
   const mountedRef = useRef(false);
   const searchQueryRef = useRef("");
   const modelDownloadWorkspaceRef = useRef<string | null>(null);
+  const modelDownloadInFlightRef = useRef(false);
+  const [modelDownloadBusy, setModelDownloadBusy] = useState(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -98,6 +107,15 @@ export function OraclePanel() {
     reset: resetSearch,
   } = useTrackedRequest<OracleSearchResponse>(searchRequest, { status: "idle" });
 
+  const submitOracleQuery = useCallback(
+    (query: string) => {
+      searchQueryRef.current = query;
+      setSubmittedQuery(query);
+      runSearch();
+    },
+    [runSearch],
+  );
+
   const requestIndexedFiles = useCallback(() => oracleFiles("indexed", ORACLE_FILE_PAGE), []);
   const requestPendingFiles = useCallback(() => oracleFiles("pending", ORACLE_FILE_PAGE), []);
   const requestStaleFiles = useCallback(() => oracleFiles("stale", ORACLE_FILE_PAGE), []);
@@ -116,11 +134,14 @@ export function OraclePanel() {
     { status: "idle" },
     workspaceExists && adminOpen,
   );
-  const filesByTab: Record<FileTab, typeof indexedFilesState> = {
-    indexed: indexedFilesState,
-    pending: pendingFilesState,
-    stale: staleFilesState,
-  };
+  const filesByTab = useMemo<Record<FileTab, typeof indexedFilesState>>(
+    () => ({
+      indexed: indexedFilesState,
+      pending: pendingFilesState,
+      stale: staleFilesState,
+    }),
+    [indexedFilesState, pendingFilesState, staleFilesState],
+  );
 
   const refreshFiles = useCallback(() => {
     refreshIndexedFiles();
@@ -129,11 +150,18 @@ export function OraclePanel() {
   }, [refreshIndexedFiles, refreshPendingFiles, refreshStaleFiles]);
 
   const handleModelDownload = useCallback(() => {
-    setWorkspaceActionError(null);
+    if (!mountedRef.current || modelDownloadInFlightRef.current) return;
+    modelDownloadInFlightRef.current = true;
+    setModelDownloadBusy(true);
+    if (mountedRef.current) setWorkspaceActionError(null);
     void oracleModelDownloadStart()
       .then(() => refreshStatus())
       .catch((error: unknown) => {
         if (mountedRef.current) setWorkspaceActionError(commandErrorMessage(error));
+      })
+      .finally(() => {
+        modelDownloadInFlightRef.current = false;
+        if (mountedRef.current) setModelDownloadBusy(false);
       });
   }, [refreshStatus]);
 
@@ -147,12 +175,6 @@ export function OraclePanel() {
     modelDownloadWorkspaceRef.current = workspacePath;
     handleModelDownload();
   }, [handleModelDownload, workspacePath]);
-
-  function submitOracleQuery(query: string) {
-    searchQueryRef.current = query;
-    setSubmittedQuery(query);
-    runSearch();
-  }
 
   const handleChooseWorkspace = useCallback(async () => {
     if (workspaceBusy) return;
@@ -257,6 +279,12 @@ export function OraclePanel() {
   const stats = statsRequest.status === "ready" ? statsRequest.value : null;
   const stage = getOracleStage({ workspaceRequest, statusRequest });
   const indexEmpty = isIndexEmpty(stats, status);
+  const chooseWorkspace = useCallback(() => {
+    void handleChooseWorkspace();
+  }, [handleChooseWorkspace]);
+  const refreshStatusAction = useCallback(() => {
+    refreshStatus();
+  }, [refreshStatus]);
 
   useEffect(() => {
     const poll = window.setInterval(() => {
@@ -282,12 +310,13 @@ export function OraclePanel() {
         <p>Ask where code lives and get the smallest useful source spans to open.</p>
       </header>
 
-      {stage === "ready" ? (
+      {stage === "ready" || stage === "incomplete" ? (
         <ReadyOracle
           workspace={workspace}
           status={status}
           stats={stats}
           searchState={searchState}
+          searchQuery={searchQuery}
           submittedQuery={submittedQuery}
           indexEmpty={indexEmpty}
           reranker={status?.reranker ?? null}
@@ -303,30 +332,34 @@ export function OraclePanel() {
           workspaceBusy={workspaceBusy}
           indexStarting={indexStarting}
           cancelBusy={cancelBusy}
+          modelDownloadBusy={modelDownloadBusy}
+          incomplete={stage === "incomplete"}
           onSearch={submitOracleQuery}
-          onChooseWorkspace={() => void handleChooseWorkspace()}
+          onSearchQueryChange={setSearchQuery}
+          onChooseWorkspace={chooseWorkspace}
           onStartIndex={handleIndexStart}
           onCancel={handleCancelOperations}
           onWatch={handleWatchAction}
-          onRunDoctor={() => refreshDoctor()}
+          onRunDoctor={refreshDoctor}
           onRetryReranker={handleModelDownload}
           onAdminToggle={handleAdminToggle}
           onFileTabChange={setFileTab}
         />
       ) : (
         <OracleSetup
-          stage={stage as Exclude<OracleStage, "ready">}
+          stage={stage as Exclude<OracleStage, "ready" | "incomplete">}
           workspaceRequest={workspaceRequest}
           statusRequest={statusRequest}
           workspaceBusy={workspaceBusy}
           indexStarting={indexStarting}
           cancelBusy={cancelBusy}
+          modelDownloadBusy={modelDownloadBusy}
           workspaceActionError={workspaceActionError}
           indexActionError={indexActionError}
-          onChooseWorkspace={() => void handleChooseWorkspace()}
+          onChooseWorkspace={chooseWorkspace}
           onStartIndex={handleIndexStart}
           onCancel={handleCancelOperations}
-          onRefreshStatus={() => refreshStatus()}
+          onRefreshStatus={refreshStatusAction}
           onRetryModels={handleModelDownload}
         />
       )}
@@ -339,6 +372,7 @@ interface ReadyOracleProps {
   status: OracleIndexStatus | null;
   stats: OracleIndexStats | null;
   searchState: TrackedRequestState<OracleSearchResponse>;
+  searchQuery: string;
   submittedQuery: string | null;
   indexEmpty: boolean;
   reranker: OracleIndexStatus["reranker"];
@@ -354,7 +388,10 @@ interface ReadyOracleProps {
   workspaceBusy: boolean;
   indexStarting: boolean;
   cancelBusy: boolean;
+  modelDownloadBusy: boolean;
+  incomplete: boolean;
   onSearch: (query: string) => void;
+  onSearchQueryChange: (query: string) => void;
   onChooseWorkspace: () => void;
   onStartIndex: () => void;
   onCancel: () => void;
@@ -365,11 +402,12 @@ interface ReadyOracleProps {
   onFileTabChange: (tab: FileTab) => void;
 }
 
-function ReadyOracle({
+const ReadyOracle = memo(function ReadyOracle({
   workspace,
   status,
   stats,
   searchState,
+  searchQuery,
   submittedQuery,
   indexEmpty,
   reranker,
@@ -385,7 +423,10 @@ function ReadyOracle({
   workspaceBusy,
   indexStarting,
   cancelBusy,
+  modelDownloadBusy,
+  incomplete,
   onSearch,
+  onSearchQueryChange,
   onChooseWorkspace,
   onStartIndex,
   onCancel,
@@ -400,23 +441,50 @@ function ReadyOracle({
       <div className="oracle-ready-context">
         <div>
           <span className="oracle-ready-dot" aria-hidden="true" />
-          <strong>Oracle is ready</strong>
+          <strong>{incomplete ? "Oracle has a partial index" : "Oracle is ready"}</strong>
           <code title={workspace?.path ?? undefined}>{workspace?.path ?? "Selected folder"}</code>
         </div>
-        <span className={`oracle-index-state oracle-index-state-${status?.state ?? "unknown"}`}>
-          {status?.state === "stale"
-            ? "Index needs a refresh"
-            : `${stats?.indexed_files ?? status?.indexed_files ?? 0} files indexed`}
+        <span
+          className={`oracle-index-state oracle-index-state-${incomplete ? "incomplete" : (status?.state ?? "unknown")}`}
+        >
+          {incomplete
+            ? `${status?.indexed_files ?? 0} of ${status?.total_files ?? 0} files indexed`
+            : status?.state === "stale"
+              ? "Index needs a refresh"
+              : `${stats?.indexed_files ?? status?.indexed_files ?? 0} files indexed`}
         </span>
       </div>
+      {incomplete && status && (
+        <div className="oracle-incomplete-notice" role="status">
+          <div>
+            <strong>Indexing is incomplete.</strong>
+            <span>
+              Search is available across {formatCount(status.indexed_files)} indexed files, but{" "}
+              {formatCount(status.pending_files)} files still need to be indexed.
+            </span>
+            <small>Resume continues from the existing index; it does not start over.</small>
+          </div>
+          <button
+            className="oracle-button oracle-button-primary"
+            type="button"
+            onClick={onStartIndex}
+            disabled={indexStarting}
+          >
+            {indexStarting ? "Resuming index…" : "Resume indexing"}
+          </button>
+        </div>
+      )}
       <OracleSearch
         searchState={searchState}
+        query={searchQuery}
+        onQueryChange={onSearchQueryChange}
         submittedQuery={submittedQuery}
         stats={stats}
         indexIsEmpty={indexEmpty}
         reranker={reranker}
         onSearch={onSearch}
         onRetryReranker={onRetryReranker}
+        retryDisabled={modelDownloadBusy}
       />
       <OracleAdmin
         open={adminOpen}
@@ -426,6 +494,7 @@ function ReadyOracle({
         doctorRequest={doctorRequest}
         statsRequest={statsRequest}
         reranker={reranker}
+        modelDownloadBusy={modelDownloadBusy}
         filesByTab={filesByTab}
         fileTab={fileTab}
         watching={watching}
@@ -444,4 +513,4 @@ function ReadyOracle({
       />
     </>
   );
-}
+});

@@ -1432,7 +1432,9 @@ fn status_from_snapshot(
         "indexing"
     } else if runtime.index_error().is_some() {
         "error"
-    } else if snapshot.pending_files > 0 || snapshot.stale_files > 0 {
+    } else if snapshot.pending_files > 0 {
+        "incomplete"
+    } else if snapshot.stale_files > 0 {
         "stale"
     } else if snapshot.indexed_files == 0 {
         // Nothing indexed yet, whether or not files are expected. The contract
@@ -1673,6 +1675,34 @@ mod tests {
         assert_eq!(status.total_files, oracle_core::RERANKER_FILES.len());
         assert_eq!(status.approximate_bytes, oracle_core::RERANKER_APPROX_BYTES);
         assert!(status.message.unwrap().contains("reranker"));
+    }
+
+    #[test]
+    fn status_exposes_pending_files_as_an_incomplete_index() {
+        let _env = TestEnvironment::new("candle");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = OracleRuntime::from_environment();
+        runtime.configure_root(temp.path().to_path_buf());
+        let snapshot = IndexStatusSnapshot {
+            root: temp.path().display().to_string(),
+            manifest_path: temp.path().join("manifest.json").display().to_string(),
+            expected_files: 200,
+            indexed_files: 80,
+            pending_files: 120,
+            stale_files: 0,
+            sqlite_chunk_files: 80,
+            sqlite_chunks: 160,
+            vector_records: 160,
+            chunk_profile: "test".to_string(),
+            first_pending: Vec::new(),
+            first_stale: Vec::new(),
+            free_gb: 10.0,
+        };
+
+        let status = status_from_snapshot(&runtime, &snapshot);
+        assert_eq!(status.state, "incomplete");
+        assert_eq!(status.indexed_files, 80);
+        assert_eq!(status.pending_files, 120);
     }
 
     struct TestEnvironment {

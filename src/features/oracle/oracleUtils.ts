@@ -107,8 +107,20 @@ export type OracleStage =
   | "models"
   | "index"
   | "indexing"
+  | "incomplete"
   | "oracle-error"
   | "ready";
+
+export type OracleErrorAction = "choose-workspace" | "retry-index" | "retry-status";
+
+export function isOracleWorkspaceError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("oracle workspace") ||
+    normalized.includes("no workspace folder") ||
+    normalized.includes("workspace configuration")
+  );
+}
 
 export function getOracleStage({
   workspaceRequest,
@@ -135,8 +147,23 @@ export function getOracleStage({
     return "models";
   }
   if (status.state === "indexing") return "indexing";
+  if (status.state === "incomplete" || status.pending_files > 0) return "incomplete";
   if (status.indexed_files === 0) return "index";
   return "ready";
+}
+
+export function getOracleErrorAction({
+  statusRequest,
+  status,
+}: {
+  statusRequest: TrackedRequestState<OracleIndexStatus>;
+  status: OracleIndexStatus | null;
+}): OracleErrorAction {
+  if (statusRequest.status === "error" && isOracleWorkspaceError(statusRequest.message)) {
+    return "choose-workspace";
+  }
+  if (status?.state === "error") return "retry-index";
+  return "retry-status";
 }
 
 export function isIndexEmpty(

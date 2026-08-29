@@ -162,7 +162,7 @@ export interface OracleSearchResponse {
   results: OracleResult[];
 }
 
-export type OracleIndexState = "idle" | "indexing" | "ready" | "stale" | "error";
+export type OracleIndexState = "idle" | "indexing" | "ready" | "incomplete" | "stale" | "error";
 
 export interface OracleResourceBudget {
   max_cpu_percent: number;

@@ -25,6 +25,7 @@ interface OracleAdminProps {
   doctorRequest: TrackedRequestState<OracleHealth>;
   statsRequest: TrackedRequestState<OracleIndexStats>;
   reranker: OracleModelStatus | null;
+  modelDownloadBusy: boolean;
   filesByTab: Record<FileTab, TrackedRequestState<IndexedFile[]>>;
   fileTab: FileTab;
   watching: boolean;
@@ -54,6 +55,7 @@ export function OracleAdmin({
   doctorRequest,
   statsRequest,
   reranker,
+  modelDownloadBusy,
   filesByTab,
   fileTab,
   watching,
@@ -72,6 +74,7 @@ export function OracleAdmin({
 }: OracleAdminProps) {
   const status = statusRequest.status === "ready" ? statusRequest.value : null;
   const stats = statsRequest.status === "ready" ? statsRequest.value : null;
+  const incomplete = status?.state === "incomplete" || (status?.pending_files ?? 0) > 0;
   const files = filesByTab[fileTab];
   return (
     <details
@@ -87,6 +90,7 @@ export function OracleAdmin({
         <span className="oracle-admin-summary-meta">
           {stats ? `${formatCount(stats.indexed_files)} files indexed` : "Index details"}
           {status?.state === "stale" && " · stale"}
+          {incomplete && " · incomplete"}
         </span>
         <span className="oracle-admin-summary-action">
           {open ? "Hide details" : "Show details"}
@@ -101,6 +105,7 @@ export function OracleAdmin({
             reranker={reranker}
             model={status?.model ?? null}
             onRetryReranker={onRetryReranker}
+            retryDisabled={modelDownloadBusy}
           />
         </div>
 
@@ -211,10 +216,12 @@ function AdminModels({
   model,
   reranker,
   onRetryReranker,
+  retryDisabled,
 }: {
   model: OracleModelStatus | null;
   reranker: OracleModelStatus | null;
   onRetryReranker: () => void;
+  retryDisabled: boolean;
 }) {
   return (
     <section className="oracle-admin-block" aria-labelledby="oracle-admin-models-title">
@@ -230,7 +237,7 @@ function AdminModels({
           {modelStateLabel(reranker)}
         </span>
       </div>
-      <RerankerStatus status={reranker} onRetry={onRetryReranker} />
+      <RerankerStatus status={reranker} onRetry={onRetryReranker} retryDisabled={retryDisabled} />
     </section>
   );
 }
@@ -260,6 +267,7 @@ function OracleAdminActions({
   onCancel: () => void;
   onWatch: (action: "start" | "stop") => void;
 }) {
+  const canResume = status?.state === "incomplete" || (status?.pending_files ?? 0) > 0;
   const canCancel =
     status?.state === "indexing" ||
     status?.model.state === "downloading" ||
@@ -272,7 +280,13 @@ function OracleAdminActions({
         onClick={onStartIndex}
         disabled={indexStarting || status?.state === "indexing"}
       >
-        {indexStarting ? "Starting index…" : "Re-index folder"}
+        {indexStarting
+          ? canResume
+            ? "Resuming index…"
+            : "Starting index…"
+          : canResume
+            ? "Resume indexing"
+            : "Re-index folder"}
       </button>
       <button
         className="oracle-button oracle-button-secondary"

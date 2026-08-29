@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import type { ReactNode } from "react";
 import type { OracleIndexStatus, OracleModelStatus, OracleWorkspace } from "../../types/ipc";
 import type { TrackedRequestState } from "./oracleRequests";
@@ -6,17 +7,19 @@ import {
   modelProgressPercentage,
   modelStateLabel,
   progressPercentage,
+  getOracleErrorAction,
   type OracleStage,
 } from "./oracleUtils";
 import { RerankerStatus } from "./OracleSearch";
 
 interface OracleSetupProps {
-  stage: Exclude<OracleStage, "ready">;
+  stage: Exclude<OracleStage, "ready" | "incomplete">;
   workspaceRequest: TrackedRequestState<OracleWorkspace>;
   statusRequest: TrackedRequestState<OracleIndexStatus>;
   workspaceBusy: boolean;
   indexStarting: boolean;
   cancelBusy: boolean;
+  modelDownloadBusy: boolean;
   workspaceActionError: string | null;
   indexActionError: string | null;
   onChooseWorkspace: () => void;
@@ -35,6 +38,7 @@ export function OracleSetup({
   workspaceBusy,
   indexStarting,
   cancelBusy,
+  modelDownloadBusy,
   workspaceActionError,
   indexActionError,
   onChooseWorkspace,
@@ -67,6 +71,7 @@ export function OracleSetup({
           onCancel={onCancel}
           cancelBusy={cancelBusy}
           onRetry={onRetryModels}
+          retryDisabled={modelDownloadBusy}
         />
       )}
       {stage === "index" && (
@@ -77,6 +82,7 @@ export function OracleSetup({
           starting={indexStarting}
           onStart={onStartIndex}
           onRetryReranker={onRetryModels}
+          retryDisabled={modelDownloadBusy}
         />
       )}
       {stage === "indexing" && (
@@ -214,12 +220,14 @@ function ModelSetup({
   onCancel,
   cancelBusy,
   onRetry,
+  retryDisabled,
 }: {
   status: OracleIndexStatus | null;
   actionError: string | null;
   onCancel: () => void;
   cancelBusy: boolean;
   onRetry: () => void;
+  retryDisabled: boolean;
 }) {
   const model = status?.model ?? null;
   const reranker = status?.reranker ?? null;
@@ -239,6 +247,7 @@ function ModelSetup({
           purpose="Builds the local index Oracle searches."
           status={model}
           onRetry={onRetry}
+          retryDisabled={retryDisabled}
         />
         <ModelDownloadCard
           label="Reranker"
@@ -247,6 +256,7 @@ function ModelSetup({
           status={reranker}
           optional
           onRetry={onRetry}
+          retryDisabled={retryDisabled}
         />
       </div>
       {actionError && (
@@ -280,6 +290,7 @@ function ModelDownloadCard({
   status,
   optional,
   onRetry,
+  retryDisabled,
 }: {
   label: string;
   size: string;
@@ -287,6 +298,7 @@ function ModelDownloadCard({
   status: OracleModelStatus | null;
   optional?: boolean;
   onRetry: () => void;
+  retryDisabled: boolean;
 }) {
   const percentage = modelProgressPercentage(status);
   const ready = status?.state === "ready";
@@ -334,6 +346,7 @@ function ModelDownloadCard({
             className="oracle-button oracle-button-secondary oracle-model-retry-button"
             type="button"
             onClick={onRetry}
+            disabled={retryDisabled}
           >
             Retry download
           </button>
@@ -356,6 +369,7 @@ function IndexSetup({
   starting,
   onStart,
   onRetryReranker,
+  retryDisabled,
 }: {
   workspace: OracleWorkspace | null;
   status: OracleIndexStatus | null;
@@ -363,6 +377,7 @@ function IndexSetup({
   starting: boolean;
   onStart: () => void;
   onRetryReranker: () => void;
+  retryDisabled: boolean;
 }) {
   return (
     <StageContent
@@ -380,7 +395,11 @@ function IndexSetup({
       </div>
       {status?.reranker?.state !== "ready" && (
         <div className="oracle-watch-notice" role="status">
-          <RerankerStatus status={status?.reranker ?? null} onRetry={onRetryReranker} />
+          <RerankerStatus
+            status={status?.reranker ?? null}
+            onRetry={onRetryReranker}
+            retryDisabled={retryDisabled}
+          />
         </div>
       )}
       <button
@@ -417,6 +436,16 @@ function IndexingSetup({
   cancelBusy: boolean;
 }) {
   const percentage = progressPercentage(status);
+  const progressBucket = percentage === null ? null : Math.floor(percentage / 10);
+  const hasStatus = status !== null;
+  const totalFiles = status?.total_files ?? 0;
+  const progressAnnouncement = useMemo(() => {
+    if (!hasStatus) return "Oracle is preparing to index this folder.";
+    if (progressBucket === null) return "Oracle is counting the files in this folder.";
+    const milestone = progressBucket * 10;
+    const milestoneFiles = Math.floor((totalFiles * milestone) / 100);
+    return `Oracle indexing is about ${milestone}% complete: roughly ${formatCount(milestoneFiles)} of ${formatCount(totalFiles)} files indexed.`;
+  }, [hasStatus, progressBucket, totalFiles]);
   return (
     <StageContent
       eyebrow="Step 3 · Indexing"
@@ -431,6 +460,9 @@ function IndexingSetup({
               : "Preparing files…"}
           </strong>
           <span>{percentage === null ? "—" : `${percentage}%`}</span>
+        </div>
+        <div className="oracle-visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+          {progressAnnouncement}
         </div>
         {percentage === null ? (
           <div className="oracle-state-message" role="status">
@@ -493,6 +525,8 @@ function OracleErrorSetup({
   workspaceBusy: boolean;
 }) {
   const requestError = statusRequest.status === "error" ? statusRequest.message : null;
+  const primaryAction = getOracleErrorAction({ statusRequest, status });
+  const chooseWorkspacePrimary = primaryAction === "choose-workspace";
   return (
     <StageContent
       eyebrow="Oracle needs attention"
@@ -508,17 +542,28 @@ function OracleErrorSetup({
         <button
           className="oracle-button oracle-button-primary"
           type="button"
-          onClick={status?.state === "error" ? onRetryIndex : onRetryStatus}
+          onClick={
+            chooseWorkspacePrimary
+              ? onChooseWorkspace
+              : primaryAction === "retry-index"
+                ? onRetryIndex
+                : onRetryStatus
+          }
+          disabled={chooseWorkspacePrimary && (workspaceBusy || workspace?.editable === false)}
         >
-          {status?.state === "error" ? "Retry index" : "Try again"}
+          {chooseWorkspacePrimary
+            ? "Choose another folder"
+            : primaryAction === "retry-index"
+              ? "Retry index"
+              : "Try again"}
         </button>
         <button
           className="oracle-button oracle-button-secondary"
           type="button"
-          onClick={onChooseWorkspace}
-          disabled={workspaceBusy || workspace?.editable === false}
+          onClick={chooseWorkspacePrimary ? onRetryStatus : onChooseWorkspace}
+          disabled={chooseWorkspacePrimary ? false : workspaceBusy || workspace?.editable === false}
         >
-          Choose another folder
+          {chooseWorkspacePrimary ? "Try again" : "Choose another folder"}
         </button>
       </div>
       <FailureGuide kind="all" />

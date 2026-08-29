@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import type {
   OracleIndexStats,
@@ -9,28 +9,35 @@ import type {
 import type { TrackedRequestState } from "./oracleRequests";
 import { formatCount, resultLineCount, totalReadLines } from "./oracleUtils";
 
+const EMPTY_RESULTS: OracleResult[] = [];
+
 interface OracleSearchProps {
   searchState: TrackedRequestState<OracleSearchResponse>;
+  query: string;
+  onQueryChange: (query: string) => void;
   submittedQuery: string | null;
   stats: OracleIndexStats | null;
   indexIsEmpty: boolean;
   reranker: OracleModelStatus | null;
   onSearch: (query: string) => void;
   onRetryReranker: () => void;
+  retryDisabled?: boolean;
 }
 
-export function OracleSearch({
+export const OracleSearch = memo(function OracleSearch({
   searchState,
+  query,
+  onQueryChange,
   submittedQuery,
   stats,
   indexIsEmpty,
   reranker,
   onSearch,
   onRetryReranker,
+  retryDisabled = false,
 }: OracleSearchProps) {
-  const [query, setQuery] = useState("");
-  const results = searchState.status === "ready" ? searchState.value.results : [];
-  const totalResultLines = totalReadLines(results);
+  const results = searchState.status === "ready" ? searchState.value.results : EMPTY_RESULTS;
+  const totalResultLines = useMemo(() => totalReadLines(results), [results]);
 
   function submitQuery() {
     const trimmedQuery = query.trim();
@@ -60,7 +67,7 @@ export function OracleSearch({
             answer.
           </p>
         </div>
-        <RerankerStatus status={reranker} onRetry={onRetryReranker} />
+        <RerankerStatus status={reranker} onRetry={onRetryReranker} retryDisabled={retryDisabled} />
       </div>
 
       <form className="oracle-search" onSubmit={handleSubmit}>
@@ -69,7 +76,7 @@ export function OracleSearch({
         </span>
         <input
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => onQueryChange(event.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="e.g. where is the workspace root resolved?"
           aria-label="Ask Oracle a question"
@@ -149,7 +156,7 @@ export function OracleSearch({
       </section>
     </section>
   );
-}
+});
 
 function OracleResultRow({ result, index }: { result: OracleResult; index: number }) {
   const lineCount = resultLineCount(result);
@@ -181,9 +188,11 @@ function OracleResultRow({ result, index }: { result: OracleResult; index: numbe
 export function RerankerStatus({
   status,
   onRetry,
+  retryDisabled = false,
 }: {
   status: OracleModelStatus | null;
   onRetry: () => void;
+  retryDisabled?: boolean;
 }) {
   if (!status) {
     return (
@@ -218,7 +227,12 @@ export function RerankerStatus({
         Reranker unavailable · dense only
         <small>Audit measured about 4% lower recall without reranking.</small>
       </span>
-      <button className="oracle-inline-action" type="button" onClick={onRetry}>
+      <button
+        className="oracle-inline-action"
+        type="button"
+        onClick={onRetry}
+        disabled={retryDisabled}
+      >
         Retry
       </button>
     </div>

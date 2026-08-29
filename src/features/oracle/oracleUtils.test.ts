@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OracleIndexStatus, OracleWorkspace } from "../../types/ipc";
-import { getOracleStage, isIndexEmpty } from "./oracleUtils";
+import { getOracleErrorAction, getOracleStage, isIndexEmpty } from "./oracleUtils";
 
 const workspace: OracleWorkspace = {
   path: "C:/code/project",
@@ -83,11 +83,54 @@ describe("Oracle stage routing", () => {
           value: makeStatus({
             indexed_files: 4,
             indexed_chunks: 9,
+            pending_files: 0,
             reranker: { ...makeStatus().reranker!, state: "failed", message: "offline" },
           }),
         },
       }),
     ).toBe("ready");
+  });
+
+  it("keeps a cancelled partial index useful without presenting it as complete", () => {
+    expect(
+      getOracleStage({
+        workspaceRequest: { status: "ready", value: workspace },
+        statusRequest: {
+          status: "ready",
+          value: makeStatus({
+            indexed_files: 80,
+            total_files: 200,
+            indexed_chunks: 160,
+            pending_files: 120,
+            state: "idle",
+          }),
+        },
+      }),
+    ).toBe("incomplete");
+  });
+
+  it("sends a failed status request to folder recovery first", () => {
+    expect(
+      getOracleErrorAction({
+        statusRequest: {
+          status: "error",
+          message: "Oracle workspace C:/code/project no longer exists",
+        },
+        status: null,
+      }),
+    ).toBe("choose-workspace");
+    expect(
+      getOracleErrorAction({
+        statusRequest: { status: "error", message: "reading Oracle index status failed" },
+        status: null,
+      }),
+    ).toBe("retry-status");
+    expect(
+      getOracleErrorAction({
+        statusRequest: { status: "ready", value: makeStatus({ state: "error" }) },
+        status: makeStatus({ state: "error" }),
+      }),
+    ).toBe("retry-index");
   });
 
   it("does not confuse an empty index with a populated one", () => {
