@@ -7,9 +7,12 @@
 //!          [--n K] [--queries F.json] --out F.json   timed embedding via OnnxEmbedder
 //!   eval   --chunks F.jsonl --queries F.json --dense F.json [--ref F.json] [--k 5]
 //!                                                    lexical vs dense vs hybrid_max vs hybrid_rrf + fidelity
+//!          --k controls the requested chunk candidate depth (3*k); it is not a
+//!          file-level recall cutoff. Eval metrics keep enough candidates to
+//!          measure recall through 50 distinct files and MRR through 10 files.
 //!   store  --chunks F.jsonl --out DIR               sqlite+lance commit-cadence timing
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -856,7 +859,20 @@ fn run_eval() -> anyhow::Result<()> {
         .filter_map(|(i, id)| dvecs.get(i).map(|v| (id.as_str(), v.as_slice())))
         .collect();
 
-    let limit = k * 3;
+    // `--k` requests chunk depth (historically expanded to 3*k), not the
+    // file-level recall threshold. Keep the full chunk ranking here so that
+    // recall@50 is really the first 50 distinct files and mrr@10 can always
+    // inspect the first 10 distinct files, even when the caller uses --k 5.
+    let requested_candidate_limit = k.saturating_mul(3);
+    let limit = requested_candidate_limit.max(records.len());
+    let file_of: HashMap<&str, &str> = records
+        .iter()
+        .filter_map(|r| {
+            r["id"]
+                .as_str()
+                .map(|id| (id, r["file_sorgente"].as_str().unwrap_or("")))
+        })
+        .collect();
     let mut rows = Vec::new();
     for (qi, q) in queries.iter().enumerate() {
         let query = q["q"].as_str().unwrap_or("");
@@ -915,45 +931,54 @@ fn run_eval() -> anyhow::Result<()> {
         hybrid_rrf.truncate(limit);
 
         // file-level metrics helpers
-        let file_of = |id: &str| -> String {
-            records
-                .iter()
-                .find(|r| r["id"].as_str() == Some(id))
-                .and_then(|r| r["file_sorgente"].as_str())
-                .unwrap_or("")
-                .to_string()
-        };
         let metrics = |ranked: &[(String, f64)]| -> serde_json::Value {
             let files: Vec<String> = ranked
                 .iter()
-                .map(|(id, _)| file_of(id))
+                .map(|(id, _)| file_of.get(id.as_str()).copied().unwrap_or(""))
+                .map(String::from)
                 .filter(|f| !f.is_empty())
                 .collect();
-            let mut distinct: Vec<String> = Vec::new();
-            for f in files {
-                if !distinct.contains(&f) {
-                    distinct.push(f);
+            let mut seen = HashSet::new();
+            let distinct: Vec<String> = files
+                .into_iter()
+                .filter(|f| seen.insert(f.clone()))
+                .collect();
+            let hits_at = |cutoff: usize| {
+                targets
+                    .iter()
+                    .filter(|t| distinct.iter().take(cutoff).any(|f| f == *t))
+                    .count()
+            };
+            let recall_at = |cutoff: usize| {
+                let hits = hits_at(cutoff);
+                if targets.is_empty() {
+                    0.0
+                } else {
+                    hits as f64 / targets.len() as f64
                 }
-            }
-            let top5: Vec<&String> = distinct.iter().take(5).collect();
-            let hits = targets.iter().filter(|t| top5.contains(t)).count();
+            };
+            let hits5 = hits_at(5);
             let recall5 = if targets.is_empty() {
                 0.0
             } else {
-                hits as f64 / targets.len() as f64
+                hits5 as f64 / targets.len() as f64
             };
-            let hit5 = if hits > 0 { 1.0 } else { 0.0 };
+            let hit5 = if hits5 > 0 { 1.0 } else { 0.0 };
             let mut mrr = 0.0;
-            for (i, f) in distinct.iter().enumerate() {
+            for (i, f) in distinct.iter().take(10).enumerate() {
                 if targets.contains(f) {
                     mrr = 1.0 / (i as f64 + 1.0);
                     break;
                 }
-                if i >= 9 {
-                    break;
-                }
             }
-            serde_json::json!({"recall@5": recall5, "hit@5": hit5, "mrr@10": mrr})
+            serde_json::json!({
+                "recall@5": recall5,
+                "recall@10": recall_at(10),
+                "recall@20": recall_at(20),
+                "recall@50": recall_at(50),
+                "hit@5": hit5,
+                "mrr@10": mrr,
+            })
         };
 
         let lex_ranked: Vec<(String, f64)> =
@@ -981,6 +1006,9 @@ fn run_eval() -> anyhow::Result<()> {
     let pack = |mode: &str| {
         serde_json::json!({
             "recall@5": mean("recall@5", mode),
+            "recall@10": mean("recall@10", mode),
+            "recall@20": mean("recall@20", mode),
+            "recall@50": mean("recall@50", mode),
             "hit@5": mean("hit@5", mode),
             "mrr@10": mean("mrr@10", mode),
         })
@@ -1001,17 +1029,51 @@ fn run_eval() -> anyhow::Result<()> {
         serde_json::json!({
             "n": rows.iter().filter(|r| r["kind"].as_str() == Some(kind)).count(),
             "recall@5": mean_kind("recall@5", mode, kind),
+            "recall@10": mean_kind("recall@10", mode, kind),
+            "recall@20": mean_kind("recall@20", mode, kind),
+            "recall@50": mean_kind("recall@50", mode, kind),
             "hit@5": mean_kind("hit@5", mode, kind),
             "mrr@10": mean_kind("mrr@10", mode, kind),
         })
     };
+    let dense_miss_at5_queries = rows
+        .iter()
+        .filter(|r| {
+            r["targets"].as_array().is_some_and(|t| !t.is_empty())
+                && r["dense"]["hit@5"].as_f64() == Some(0.0)
+        })
+        .count();
+    let dense_miss_at5_recovered_by50 = rows
+        .iter()
+        .filter(|r| {
+            r["targets"].as_array().is_some_and(|t| !t.is_empty())
+                && r["dense"]["hit@5"].as_f64() == Some(0.0)
+                && r["dense"]["recall@50"].as_f64().is_some_and(|v| v > 0.0)
+        })
+        .count();
     let mut summary = serde_json::json!({
         "n_queries": rows.len(),
+        "eval_config": {
+            "k": k,
+            "requested_candidate_chunks": requested_candidate_limit,
+            "candidate_chunks_used": limit,
+            "candidate_depth_note": "--k requests chunk depth (3*k); eval uses the full available chunk ranking so recall@50 and mrr@10 are not truncated by --k.",
+        },
         "uses_semantic_prefix": dense.get("uses_semantic_prefix"),
         "lexical": pack("lexical"),
         "dense": pack("dense"),
         "hybrid_max": pack("hybrid_max"),
         "hybrid_rrf": pack("hybrid_rrf"),
+        "dense_miss_at5_recovered_by50": {
+            "definition": "Among non-empty queries where dense hit@5 is 0, queries with any target in dense recall@50.",
+            "miss_at5_queries": dense_miss_at5_queries,
+            "recovered_by50_queries": dense_miss_at5_recovered_by50,
+            "recovery_rate": if dense_miss_at5_queries > 0 {
+                dense_miss_at5_recovered_by50 as f64 / dense_miss_at5_queries as f64
+            } else {
+                0.0
+            },
+        },
         "rrf_note": "hybrid_rrf copies oracle_core::query::engine::{RRF_K, rrf_contribution} (private). k=60, 1/(k+rank), ranks 1-based on kept lists, scores sum on overlap.",
         "by_kind": {
             "literal": {
@@ -1217,15 +1279,34 @@ fn run_store() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn print_usage() {
+    eprintln!(
+        "recon_bench modes:\n\
+  corpus --root DIR [--limit N] --out DIR\n\
+  embed --model-dir DIR --variant V --ep cpu|directml --chunks F.jsonl [--n K] [--queries F.json] --out F.json\n\
+  eval --chunks F.jsonl --queries F.json --dense F.json [--ref F.json] [--k K]\n\
+       --k controls requested chunk candidate depth (3*K); it is not the file-level recall cutoff.\n\
+       Eval reports recall@5/@10/@20/@50 on distinct files and mrr@10 on distinct files.\n\
+  store --chunks F.jsonl --out DIR"
+    );
+}
+
 fn main() -> anyhow::Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
+    if mode == "-h"
+        || mode == "--help"
+        || std::env::args().any(|arg| arg == "-h" || arg == "--help")
+    {
+        print_usage();
+        return Ok(());
+    }
     match mode.as_str() {
         "corpus" => run_corpus(),
         "embed" => run_embed(),
         "eval" => run_eval(),
         "store" => run_store(),
         _ => {
-            eprintln!("modes: corpus | embed | eval | store");
+            print_usage();
             Ok(())
         }
     }
