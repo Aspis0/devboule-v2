@@ -19,7 +19,14 @@ pub fn run() {
         .setup(|app| {
             let runtime = app.state::<oracle::OracleRuntime>();
             match app.path().app_config_dir() {
-                Ok(config_dir) => runtime.load_persisted_root(&config_dir),
+                Ok(config_dir) => {
+                    if let Err(error) = runtime.load_persisted_root(&config_dir) {
+                        eprintln!(
+                            "devboule: Oracle preferences could not be loaded: {}",
+                            error.message
+                        );
+                    }
+                }
                 Err(error) => eprintln!("devboule: Oracle preferences unavailable: {error}"),
             }
             // Start the installer as soon as Oracle has a configured root. The

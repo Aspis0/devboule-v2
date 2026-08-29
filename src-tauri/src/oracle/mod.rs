@@ -203,7 +203,7 @@ impl OracleRuntime {
 
     /// Load Oracle's one persisted panel preference. The developer env var is
     /// intentionally checked first and always wins over this file.
-    pub fn load_persisted_root(&self, config_dir: &Path) {
+    pub fn load_persisted_root(&self, config_dir: &Path) -> Result<(), CommandError> {
         let settings_path = config_dir.join(ORACLE_SETTINGS_FILE);
         *self
             .settings_path
@@ -214,37 +214,37 @@ impl OracleRuntime {
             .filter(|value| !value.is_empty())
             .is_some()
         {
-            return;
+            return Ok(());
         }
 
         let raw = match fs::read_to_string(&settings_path) {
             Ok(raw) => raw,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
-                eprintln!(
-                    "devboule: cannot read Oracle preferences at {}: {error}. Choose the Oracle folder again from the panel.",
-                    settings_path.display()
-                );
-                return;
+                return Err(core_error(
+                    &format!(
+                        "reading Oracle preferences at {} failed. Choose the Oracle folder again from the panel",
+                        settings_path.display()
+                    ),
+                    error,
+                ));
             }
         };
         let settings = match serde_json::from_str::<PersistedOracleSettings>(&raw) {
             Ok(settings) => settings,
             Err(error) => {
-                eprintln!(
-                    "devboule: Oracle preferences at {} are invalid JSON: {error}. Choose the Oracle folder again from the panel.",
+                return Err(invalid_configuration(format!(
+                    "Oracle preferences at {} contain invalid JSON: {error}. Choose the Oracle folder again from the panel.",
                     settings_path.display()
-                );
-                return;
+                )));
             }
         };
         let root = PathBuf::from(settings.oracle_root);
         if root.as_os_str().is_empty() {
-            eprintln!(
-                "devboule: Oracle preferences at {} contain an empty workspace path. Choose the Oracle folder again from the panel.",
+            return Err(invalid_configuration(format!(
+                "Oracle preferences at {} contain an empty workspace path. Choose the Oracle folder again from the panel.",
                 settings_path.display()
-            );
-            return;
+            )));
         }
         *self
             .root_source
@@ -255,6 +255,7 @@ impl OracleRuntime {
         } else {
             *self.root.lock().unwrap_or_else(|error| error.into_inner()) = Some(root);
         }
+        Ok(())
     }
 
     pub fn workspace(&self) -> OracleWorkspace {
@@ -384,12 +385,7 @@ impl OracleRuntime {
                 "Choose an absolute Oracle workspace folder, not a relative path.",
             ));
         }
-        if !path.is_dir() {
-            return Err(invalid_configuration(format!(
-                "The selected Oracle workspace is not an existing folder: {}. Choose a folder that is already on disk.",
-                path.display()
-            )));
-        }
+        ensure_workspace_accessible(&path)?;
         let path = path.canonicalize().map_err(|error| {
             core_error(
                 "resolving the selected Oracle workspace failed",
@@ -440,6 +436,7 @@ impl OracleRuntime {
                 ),
             ));
         }
+        ensure_workspace_readable(&paths.workspace)?;
         Ok(paths.clone())
     }
 
@@ -671,6 +668,35 @@ impl OracleRuntime {
     }
 }
 
+fn ensure_workspace_accessible(path: &Path) -> Result<(), CommandError> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => ensure_workspace_readable(path),
+        Ok(_) => Err(invalid_configuration(format!(
+            "The selected Oracle workspace is not a folder: {}. Choose an existing folder that is already on disk.",
+            path.display()
+        ))),
+        Err(error) => Err(core_error(
+            &format!(
+                "accessing the selected Oracle workspace {} failed. Check that the folder exists and that Devboule can read it, then choose another folder",
+                path.display()
+            ),
+            error,
+        )),
+    }
+}
+
+fn ensure_workspace_readable(path: &Path) -> Result<(), CommandError> {
+    fs::read_dir(path).map(|_| ()).map_err(|error| {
+        core_error(
+            &format!(
+                "reading Oracle workspace {} failed. Check the folder permissions and choose a readable folder",
+                path.display()
+            ),
+            error,
+        )
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OracleResourceBudget {
@@ -767,52 +793,39 @@ pub struct OracleSearchResponse {
     pub results: Vec<OracleResult>,
 }
 
-#[tauri::command]
-pub fn oracle_workspace_get(
-    runtime: State<'_, OracleRuntime>,
-) -> Result<OracleWorkspace, CommandError> {
+fn oracle_workspace_get_inner(runtime: &OracleRuntime) -> Result<OracleWorkspace, CommandError> {
     Ok(runtime.workspace())
 }
 
-#[tauri::command]
-pub fn oracle_workspace_set(
-    runtime: State<'_, OracleRuntime>,
-    path: String,
+fn oracle_workspace_set_inner(
+    runtime: &OracleRuntime,
+    path: &str,
 ) -> Result<OracleWorkspace, CommandError> {
-    runtime.set_workspace(&path)
+    runtime.set_workspace(path)
 }
 
-#[tauri::command]
-pub fn oracle_model_download_start(runtime: State<'_, OracleRuntime>) -> Result<(), CommandError> {
+fn oracle_model_download_start_inner(runtime: &OracleRuntime) -> Result<(), CommandError> {
     runtime.start_model_download(true)
 }
 
-#[tauri::command]
-pub fn oracle_model_download_cancel(runtime: State<'_, OracleRuntime>) -> Result<(), CommandError> {
+fn oracle_model_download_cancel_inner(runtime: &OracleRuntime) -> Result<(), CommandError> {
     runtime.cancel_model_download();
     Ok(())
 }
 
-#[tauri::command]
-pub fn oracle_index_cancel(runtime: State<'_, OracleRuntime>) -> Result<(), CommandError> {
+fn oracle_index_cancel_inner(runtime: &OracleRuntime) -> Result<(), CommandError> {
     runtime.cancel_index();
     Ok(())
 }
 
-#[tauri::command]
-pub async fn oracle_status(
-    runtime: State<'_, OracleRuntime>,
-) -> Result<OracleIndexStatus, CommandError> {
+async fn oracle_status_inner(runtime: &OracleRuntime) -> Result<OracleIndexStatus, CommandError> {
     let paths = runtime.paths()?;
     runtime.start_model_download(false)?;
     let snapshot = read_index_snapshot(&paths).await?;
-    Ok(status_from_snapshot(&runtime, &snapshot))
+    Ok(status_from_snapshot(runtime, &snapshot))
 }
 
-#[tauri::command]
-pub async fn oracle_doctor(
-    runtime: State<'_, OracleRuntime>,
-) -> Result<OracleHealth, CommandError> {
+async fn oracle_doctor_inner(runtime: &OracleRuntime) -> Result<OracleHealth, CommandError> {
     let paths = match runtime.paths() {
         Ok(paths) => paths,
         Err(error) => {
@@ -909,10 +922,7 @@ pub async fn oracle_doctor(
     })
 }
 
-#[tauri::command]
-pub async fn oracle_stats(
-    runtime: State<'_, OracleRuntime>,
-) -> Result<OracleIndexStats, CommandError> {
+async fn oracle_stats_inner(runtime: &OracleRuntime) -> Result<OracleIndexStats, CommandError> {
     let paths = runtime.paths()?;
     let snapshot = read_index_snapshot(&paths).await?;
     let pool = runtime.pool()?;
@@ -925,121 +935,8 @@ pub async fn oracle_stats(
     })
 }
 
-#[tauri::command]
-pub fn oracle_index_start(runtime: State<'_, OracleRuntime>) -> Result<(), CommandError> {
-    let paths = runtime.paths()?;
-    let pool = runtime.pool()?;
-    runtime.start_model_download(false)?;
-    ensure_model_is_available(pool.backend(), &runtime.model_status())?;
-
-    if runtime.indexing.swap(true, Ordering::AcqRel) {
-        return Err(CommandError::new(
-            ErrorCode::InvalidRequest,
-            "Oracle indexing is already running.",
-        ));
-    }
-    *runtime
-        .last_index_error
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = None;
-
-    let indexing = Arc::clone(&runtime.indexing);
-    let index_cancel = Arc::clone(&runtime.index_cancel);
-    let last_index_error = Arc::clone(&runtime.last_index_error);
-    let cancel = CancelFlag::new();
-    *runtime
-        .index_cancel
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some(cancel.clone());
-    let thread_result = std::thread::Builder::new()
-        .name("oracle-index".to_string())
-        .spawn(move || {
-            let sqlite = match SqliteStore::new(&paths.data.metadata) {
-                Ok(sqlite) => sqlite,
-                Err(error) => {
-                    finish_index(
-                        &indexing,
-                        &index_cancel,
-                        &last_index_error,
-                        &cancel,
-                        Some(format!("opening Oracle metadata store failed: {error}")),
-                    );
-                    return;
-                }
-            };
-            let chunk_vectors = LanceStore::new(&paths.data.chunks);
-            let config = indexer::IndexerConfig::default();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                tauri::async_runtime::block_on(indexer::index_file_chunks(
-                    &paths.workspace,
-                    &sqlite,
-                    &chunk_vectors,
-                    &paths.data.manifest,
-                    pool.as_ref(),
-                    &cancel,
-                    &config,
-                    None,
-                ))
-            }));
-            match result {
-                Ok(Ok(_)) => {
-                    finish_index(&indexing, &index_cancel, &last_index_error, &cancel, None)
-                }
-                Ok(Err(error)) => finish_index(
-                    &indexing,
-                    &index_cancel,
-                    &last_index_error,
-                    &cancel,
-                    Some(format!("Oracle indexing failed: {error}")),
-                ),
-                Err(_) => finish_index(
-                    &indexing,
-                    &index_cancel,
-                    &last_index_error,
-                    &cancel,
-                    Some("Oracle indexing task panicked.".to_string()),
-                ),
-            }
-        });
-
-    if let Err(error) = thread_result {
-        runtime.indexing.store(false, Ordering::Release);
-        runtime
-            .index_cancel
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        *runtime
-            .last_index_error
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(format!("starting Oracle indexing failed: {error}"));
-        return Err(CommandError::new(
-            ErrorCode::Io,
-            "Could not start the Oracle indexing task.",
-        ));
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-pub fn oracle_watch_start() -> Result<(), CommandError> {
-    Err(unimplemented_command(
-        "Oracle filesystem watching is not implemented in M4.",
-    ))
-}
-
-#[tauri::command]
-pub fn oracle_watch_stop() -> Result<(), CommandError> {
-    Err(unimplemented_command(
-        "Oracle filesystem watching is not implemented in M4.",
-    ))
-}
-
-#[tauri::command]
-pub async fn oracle_files(
-    runtime: State<'_, OracleRuntime>,
+async fn oracle_files_inner(
+    runtime: &OracleRuntime,
     tab: FileTab,
     page: usize,
 ) -> Result<Vec<IndexedFile>, CommandError> {
@@ -1092,9 +989,8 @@ pub async fn oracle_files(
     Ok(files.into_iter().skip(offset).take(PAGE_SIZE).collect())
 }
 
-#[tauri::command]
-pub async fn oracle_ask(
-    runtime: State<'_, OracleRuntime>,
+async fn oracle_ask_inner(
+    runtime: &OracleRuntime,
     query: String,
 ) -> Result<OracleSearchResponse, CommandError> {
     let query = query.trim().to_string();
@@ -1140,6 +1036,207 @@ pub async fn oracle_ask(
         .map(|context| result_from_context(&paths.workspace, context))
         .collect();
     Ok(OracleSearchResponse { query, results })
+}
+
+#[tauri::command]
+pub fn oracle_workspace_get(
+    runtime: State<'_, OracleRuntime>,
+) -> Result<OracleWorkspace, CommandError> {
+    oracle_workspace_get_inner(&runtime)
+}
+
+#[tauri::command]
+pub fn oracle_workspace_set(
+    runtime: State<'_, OracleRuntime>,
+    path: String,
+) -> Result<OracleWorkspace, CommandError> {
+    oracle_workspace_set_inner(&runtime, &path)
+}
+
+#[tauri::command]
+pub fn oracle_model_download_start(runtime: State<'_, OracleRuntime>) -> Result<(), CommandError> {
+    oracle_model_download_start_inner(&runtime)
+}
+
+#[tauri::command]
+pub fn oracle_model_download_cancel(runtime: State<'_, OracleRuntime>) -> Result<(), CommandError> {
+    oracle_model_download_cancel_inner(&runtime)
+}
+
+#[tauri::command]
+pub fn oracle_index_cancel(runtime: State<'_, OracleRuntime>) -> Result<(), CommandError> {
+    oracle_index_cancel_inner(&runtime)
+}
+
+#[tauri::command]
+pub async fn oracle_status(
+    runtime: State<'_, OracleRuntime>,
+) -> Result<OracleIndexStatus, CommandError> {
+    oracle_status_inner(&runtime).await
+}
+
+#[tauri::command]
+pub async fn oracle_doctor(
+    runtime: State<'_, OracleRuntime>,
+) -> Result<OracleHealth, CommandError> {
+    oracle_doctor_inner(&runtime).await
+}
+
+#[tauri::command]
+pub async fn oracle_stats(
+    runtime: State<'_, OracleRuntime>,
+) -> Result<OracleIndexStats, CommandError> {
+    oracle_stats_inner(&runtime).await
+}
+
+fn oracle_index_start_inner(runtime: &OracleRuntime) -> Result<(), CommandError> {
+    let paths = runtime.paths()?;
+    let pool = runtime.pool()?;
+    runtime.start_model_download(false)?;
+    ensure_model_is_available(pool.backend(), &runtime.model_status())?;
+    let embedder: Arc<dyn indexer::TextEmbedder> = pool;
+
+    if runtime.indexing.swap(true, Ordering::AcqRel) {
+        return Err(CommandError::new(
+            ErrorCode::InvalidRequest,
+            "Oracle indexing is already running.",
+        ));
+    }
+    *runtime
+        .last_index_error
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = None;
+
+    let indexing = Arc::clone(&runtime.indexing);
+    let index_cancel = Arc::clone(&runtime.index_cancel);
+    let last_index_error = Arc::clone(&runtime.last_index_error);
+    let cancel = CancelFlag::new();
+    *runtime
+        .index_cancel
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = Some(cancel.clone());
+    let thread_result = std::thread::Builder::new()
+        .name("oracle-index".to_string())
+        .spawn(move || {
+            run_index_job(
+                paths,
+                embedder,
+                indexing,
+                index_cancel,
+                last_index_error,
+                cancel,
+            );
+        });
+
+    if let Err(error) = thread_result {
+        runtime.indexing.store(false, Ordering::Release);
+        runtime
+            .index_cancel
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        *runtime
+            .last_index_error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(format!("starting Oracle indexing failed: {error}"));
+        return Err(CommandError::new(
+            ErrorCode::Io,
+            "Could not start the Oracle indexing task.",
+        ));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn oracle_index_start(runtime: State<'_, OracleRuntime>) -> Result<(), CommandError> {
+    oracle_index_start_inner(&runtime)
+}
+
+fn run_index_job(
+    paths: ResolvedOraclePaths,
+    embedder: Arc<dyn indexer::TextEmbedder>,
+    indexing: Arc<AtomicBool>,
+    index_cancel: Arc<Mutex<Option<CancelFlag>>>,
+    last_index_error: Arc<Mutex<Option<String>>>,
+    cancel: CancelFlag,
+) {
+    let sqlite = match SqliteStore::new(&paths.data.metadata) {
+        Ok(sqlite) => sqlite,
+        Err(error) => {
+            finish_index(
+                &indexing,
+                &index_cancel,
+                &last_index_error,
+                &cancel,
+                Some(format!("opening Oracle metadata store failed: {error}")),
+            );
+            return;
+        }
+    };
+    let chunk_vectors = LanceStore::new(&paths.data.chunks);
+    let config = indexer::IndexerConfig::default();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tauri::async_runtime::block_on(indexer::index_file_chunks(
+            &paths.workspace,
+            &sqlite,
+            &chunk_vectors,
+            &paths.data.manifest,
+            embedder.as_ref(),
+            &cancel,
+            &config,
+            None,
+        ))
+    }));
+    match result {
+        Ok(Ok(_)) => finish_index(&indexing, &index_cancel, &last_index_error, &cancel, None),
+        Ok(Err(error)) => finish_index(
+            &indexing,
+            &index_cancel,
+            &last_index_error,
+            &cancel,
+            Some(format!("Oracle indexing failed: {error}")),
+        ),
+        Err(_) => finish_index(
+            &indexing,
+            &index_cancel,
+            &last_index_error,
+            &cancel,
+            Some("Oracle indexing task panicked.".to_string()),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn oracle_watch_start() -> Result<(), CommandError> {
+    Err(unimplemented_command(
+        "Oracle filesystem watching is not implemented in M4.",
+    ))
+}
+
+#[tauri::command]
+pub fn oracle_watch_stop() -> Result<(), CommandError> {
+    Err(unimplemented_command(
+        "Oracle filesystem watching is not implemented in M4.",
+    ))
+}
+
+#[tauri::command]
+pub async fn oracle_files(
+    runtime: State<'_, OracleRuntime>,
+    tab: FileTab,
+    page: usize,
+) -> Result<Vec<IndexedFile>, CommandError> {
+    oracle_files_inner(&runtime, tab, page).await
+}
+
+#[tauri::command]
+pub async fn oracle_ask(
+    runtime: State<'_, OracleRuntime>,
+    query: String,
+) -> Result<OracleSearchResponse, CommandError> {
+    oracle_ask_inner(&runtime, query).await
 }
 
 fn finish_index(
@@ -1376,4 +1473,666 @@ fn unimplemented_command(message: impl Into<String>) -> CommandError {
 
 fn core_error(context: &str, error: impl Display) -> CommandError {
     CommandError::new(ErrorCode::Internal, format!("{context}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{OsStr, OsString};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex, MutexGuard, OnceLock};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    static ENV_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+
+    struct TestEnvironment {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl TestEnvironment {
+        fn new(backend: &str) -> Self {
+            let lock = ENV_LOCK
+                .get_or_init(|| StdMutex::new(()))
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let keys = [
+                ORACLE_ROOT_ENV,
+                ORACLE_MODEL_ENV,
+                "ORACLE_DIR",
+                "ORACLE_RS_BACKEND",
+                "ORACLE_RS_EP",
+                "ORACLE_CHUNK_MIN_FREE_RAM_GB",
+                "ORACLE_CHUNK_MIN_FREE_GB",
+                "ORACLE_CHUNK_BATCH_FILES",
+                "ORACLE_CHUNK_BATCH_CHARS",
+                "ORACLE_CHUNK_ATTENTION_BUDGET",
+            ];
+            let saved = keys
+                .iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect();
+            for key in keys {
+                std::env::remove_var(key);
+            }
+            std::env::set_var("ORACLE_RS_BACKEND", backend);
+            Self { _lock: lock, saved }
+        }
+
+        fn set(&self, key: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+            std::env::set_var(key, value);
+        }
+    }
+
+    impl Drop for TestEnvironment {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    fn runtime_with_config(config_dir: &Path) -> OracleRuntime {
+        let runtime = OracleRuntime::from_environment();
+        runtime
+            .load_persisted_root(config_dir)
+            .expect("missing preferences are a valid first-run state");
+        runtime
+    }
+
+    fn assert_actionable(error: CommandError, fragments: &[&str]) {
+        let message = error.message.to_lowercase();
+        for fragment in fragments {
+            assert!(
+                message.contains(&fragment.to_lowercase()),
+                "error message did not contain {fragment:?}: {}",
+                error.message
+            );
+        }
+    }
+
+    fn resolved_paths(root: &Path) -> ResolvedOraclePaths {
+        ResolvedOraclePaths {
+            workspace: root.to_path_buf(),
+            data: OracleDataPaths::from_root(root),
+        }
+    }
+
+    #[test]
+    fn commands_explain_that_a_workspace_must_be_chosen() {
+        let _env = TestEnvironment::new("candle");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = runtime_with_config(&temp.path().join("config"));
+
+        let workspace = oracle_workspace_get_inner(&runtime).expect("workspace getter");
+        assert!(workspace.path.is_none());
+        assert_eq!(workspace.source, "unset");
+
+        let model_error = oracle_model_download_start_inner(&runtime).expect_err("no workspace");
+        assert_actionable(model_error, &["no workspace", "choose"]);
+
+        let status_error = tauri::async_runtime::block_on(oracle_status_inner(&runtime))
+            .expect_err("no workspace");
+        assert_actionable(status_error, &["no workspace", "choose"]);
+
+        let stats_error =
+            tauri::async_runtime::block_on(oracle_stats_inner(&runtime)).expect_err("no workspace");
+        assert_actionable(stats_error, &["no workspace", "choose"]);
+
+        let files_error =
+            tauri::async_runtime::block_on(oracle_files_inner(&runtime, FileTab::Indexed, 1))
+                .expect_err("no workspace");
+        assert_actionable(files_error, &["no workspace", "choose"]);
+
+        let ask_error = tauri::async_runtime::block_on(oracle_ask_inner(
+            &runtime,
+            "find the deployment code".to_string(),
+        ))
+        .expect_err("no workspace");
+        assert_actionable(ask_error, &["no workspace", "choose"]);
+
+        let index_error = oracle_index_start_inner(&runtime).expect_err("no workspace");
+        assert_actionable(index_error, &["no workspace", "choose"]);
+
+        let doctor = tauri::async_runtime::block_on(oracle_doctor_inner(&runtime))
+            .expect("doctor returns a health explanation");
+        assert_eq!(doctor.state, "unavailable");
+        assert_eq!(doctor.checks[0].id, "configuration");
+        assert_eq!(doctor.checks[0].state, "failed");
+        assert_actionable(
+            CommandError::new(
+                ErrorCode::InvalidRequest,
+                doctor.checks[0]
+                    .message
+                    .clone()
+                    .expect("configuration check message"),
+            ),
+            &["no workspace", "choose"],
+        );
+
+        assert_actionable(
+            oracle_watch_start().expect_err("watcher is not implemented"),
+            &["watching", "not implemented"],
+        );
+        assert_actionable(
+            oracle_watch_stop().expect_err("watcher is not implemented"),
+            &["watching", "not implemented"],
+        );
+
+        // Cancellation is intentionally idempotent because the panel invokes it
+        // during cleanup, including when the first-run workspace is still unset.
+        oracle_model_download_cancel_inner(&runtime).expect("cancel is safe before start");
+        oracle_index_cancel_inner(&runtime).expect("cancel is safe before start");
+    }
+
+    #[test]
+    fn workspace_path_errors_tell_the_user_how_to_fix_them() {
+        let _env = TestEnvironment::new("candle");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = runtime_with_config(&temp.path().join("config"));
+
+        let relative = oracle_workspace_set_inner(&runtime, "relative/oracle")
+            .expect_err("relative path must be rejected");
+        assert_actionable(relative, &["absolute", "relative"]);
+
+        let missing = temp.path().join("does-not-exist");
+        let missing_error = oracle_workspace_set_inner(&runtime, missing.to_str().unwrap())
+            .expect_err("missing folder must be rejected");
+        assert_actionable(missing_error, &["workspace", "exists", "choose"]);
+
+        let file = temp.path().join("not-a-folder.txt");
+        fs::write(&file, "not a directory").expect("file");
+        let file_error = oracle_workspace_set_inner(&runtime, file.to_str().unwrap())
+            .expect_err("file must be rejected as a workspace");
+        assert_actionable(file_error, &["not a folder", "choose"]);
+    }
+
+    #[test]
+    fn unreadable_workspace_path_has_an_actionable_error() {
+        let _env = TestEnvironment::new("candle");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = runtime_with_config(&temp.path().join("config"));
+        let unreadable = temp.path().join("unreadable");
+        fs::create_dir(&unreadable).expect("unreadable directory");
+
+        let _permissions = UnreadableDirectory::new(&unreadable);
+        let error = oracle_workspace_set_inner(&runtime, unreadable.to_str().unwrap())
+            .expect_err("unreadable folder must be rejected");
+        assert_actionable(error, &["workspace", "read", "permissions", "choose"]);
+    }
+
+    #[test]
+    fn persisted_workspace_round_trips_and_corruption_is_reported() {
+        let _env = TestEnvironment::new("candle");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = temp.path().join("config");
+        let selected = temp.path().join("selected");
+        fs::create_dir(&selected).expect("selected directory");
+
+        let runtime = runtime_with_config(&config);
+        let selected_workspace = oracle_workspace_set_inner(&runtime, selected.to_str().unwrap())
+            .expect("choose workspace");
+        assert_eq!(selected_workspace.source, "saved");
+        let selected_path = PathBuf::from(
+            selected_workspace
+                .path
+                .as_deref()
+                .expect("selected workspace path"),
+        );
+        assert!(selected_path.is_absolute());
+        assert_eq!(selected_path.file_name(), selected.file_name());
+
+        let settings_path = config.join(ORACLE_SETTINGS_FILE);
+        let settings: PersistedOracleSettings =
+            serde_json::from_str(&fs::read_to_string(&settings_path).expect("settings file"))
+                .expect("persisted settings JSON");
+        assert_eq!(settings.oracle_root, selected_path.to_string_lossy());
+
+        let reloaded = runtime_with_config(&config);
+        let reloaded_workspace = oracle_workspace_get_inner(&reloaded).expect("workspace getter");
+        assert_eq!(reloaded_workspace.source, "saved");
+        assert_eq!(reloaded_workspace.path, selected_workspace.path);
+
+        fs::write(&settings_path, r#"{"oracle_root":"#).expect("truncated settings");
+        let corrupted = OracleRuntime::from_environment();
+        let error = corrupted
+            .load_persisted_root(&config)
+            .expect_err("truncated settings must not be swallowed");
+        assert_actionable(error, &["preferences", "invalid json", "choose"]);
+        assert!(
+            corrupted.workspace().path.is_none(),
+            "invalid settings must not select a partial workspace"
+        );
+    }
+
+    #[test]
+    fn environment_workspace_wins_for_multiple_commands() {
+        let env = TestEnvironment::new("candle");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = temp.path().join("config");
+        let saved = temp.path().join("saved");
+        let environment = temp.path().join("environment");
+        fs::create_dir(&saved).expect("saved directory");
+        fs::create_dir(&environment).expect("environment directory");
+        fs::write(environment.join("environment.txt"), "environment sentinel")
+            .expect("environment file");
+        fs::create_dir_all(&config).expect("config directory");
+        fs::write(
+            config.join(ORACLE_SETTINGS_FILE),
+            serde_json::to_vec(&PersistedOracleSettings {
+                oracle_root: saved.to_str().unwrap().to_string(),
+            })
+            .expect("settings JSON"),
+        )
+        .expect("saved settings");
+        env.set(ORACLE_ROOT_ENV, environment.to_str().unwrap());
+
+        let runtime = OracleRuntime::from_environment();
+        runtime
+            .load_persisted_root(&config)
+            .expect("environment override bypasses saved settings");
+
+        let workspace = oracle_workspace_get_inner(&runtime).expect("workspace getter");
+        assert_eq!(workspace.source, "environment");
+        assert!(!workspace.editable);
+        assert_eq!(
+            workspace.path,
+            Some(environment.to_str().unwrap().to_string())
+        );
+
+        let files =
+            tauri::async_runtime::block_on(oracle_files_inner(&runtime, FileTab::Pending, 1))
+                .expect("files command");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "environment.txt");
+
+        let stats =
+            tauri::async_runtime::block_on(oracle_stats_inner(&runtime)).expect("stats command");
+        assert_eq!(stats.pending_files, 1);
+        assert_eq!(stats.indexed_files, 0);
+
+        let status =
+            tauri::async_runtime::block_on(oracle_status_inner(&runtime)).expect("status command");
+        assert_eq!(status.total_files, 1);
+        assert_eq!(status.pending_files, 1);
+        assert_eq!(status.indexed_files, 0);
+    }
+
+    #[test]
+    fn second_model_download_start_does_not_replace_an_in_flight_state() {
+        let env = TestEnvironment::new("onnx");
+        env.set(ORACLE_MODEL_ENV, "model-without-an-installer");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = OracleRuntime::from_environment();
+        runtime.configure_root(temp.path().to_path_buf());
+        {
+            let mut state = runtime
+                .model_download
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.status.state = OracleModelState::Downloading;
+            state.cancel = Some(CancelFlag::new());
+            state.attempted = true;
+        }
+
+        oracle_model_download_start_inner(&runtime).expect("second start is an idempotent no-op");
+        let state = runtime
+            .model_download
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(state.status.state, OracleModelState::Downloading);
+        assert!(state.cancel.is_some());
+        assert!(state.attempted);
+    }
+
+    #[test]
+    fn index_start_rejects_a_second_run() {
+        let _env = TestEnvironment::new("candle");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = OracleRuntime::from_environment();
+        runtime.configure_root(temp.path().to_path_buf());
+        runtime.indexing.store(true, Ordering::Release);
+
+        let error = oracle_index_start_inner(&runtime).expect_err("second index must fail");
+        assert_actionable(error, &["already running"]);
+        runtime.indexing.store(false, Ordering::Release);
+    }
+
+    struct SlowTestEmbedder {
+        started: Arc<AtomicBool>,
+    }
+
+    impl indexer::TextEmbedder for SlowTestEmbedder {
+        fn model_id(&self) -> anyhow::Result<String> {
+            Ok("oracle-command-test-model".to_string())
+        }
+
+        fn dims(&self) -> anyhow::Result<usize> {
+            Ok(4)
+        }
+
+        fn embed(
+            &self,
+            texts: &[String],
+            _batch_size: usize,
+            _cancel: &CancelFlag,
+        ) -> anyhow::Result<Vec<Vec<f32>>> {
+            self.started.store(true, Ordering::Release);
+            thread::sleep(Duration::from_millis(100));
+            Ok(texts.iter().map(|_| vec![1.0, 0.0, 0.0, 0.0]).collect())
+        }
+
+        fn embedding_recipe(&self) -> anyhow::Result<String> {
+            Ok("oracle-command-test-recipe".to_string())
+        }
+    }
+
+    #[test]
+    fn index_cancel_reaches_the_real_indexer_loop() {
+        let env = TestEnvironment::new("candle");
+        env.set("ORACLE_CHUNK_MIN_FREE_RAM_GB", "0");
+        env.set("ORACLE_CHUNK_BATCH_FILES", "1");
+        env.set("ORACLE_CHUNK_BATCH_CHARS", "10000000");
+        env.set("ORACLE_CHUNK_ATTENTION_BUDGET", "1000000000");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let file_count = 24;
+        for index in 0..file_count {
+            fs::write(
+                root.join(format!("slow-{index}.txt")),
+                format!("cancellation sentinel file {index}\n"),
+            )
+            .expect("test source file");
+        }
+
+        let runtime = OracleRuntime::from_environment();
+        let paths = resolved_paths(&root);
+        let cancel = CancelFlag::new();
+        let started = Arc::new(AtomicBool::new(false));
+        let embedder: Arc<dyn indexer::TextEmbedder> = Arc::new(SlowTestEmbedder {
+            started: Arc::clone(&started),
+        });
+        let indexing = Arc::clone(&runtime.indexing);
+        let index_cancel = Arc::clone(&runtime.index_cancel);
+        let last_index_error = Arc::clone(&runtime.last_index_error);
+        indexing.store(true, Ordering::Release);
+        *index_cancel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(cancel.clone());
+
+        let worker = thread::spawn(move || {
+            run_index_job(
+                paths,
+                embedder,
+                indexing,
+                index_cancel,
+                last_index_error,
+                cancel,
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !started.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            started.load(Ordering::Acquire),
+            "index worker never embedded"
+        );
+        oracle_index_cancel_inner(&runtime).expect("cancel command");
+        worker.join().expect("index worker should not panic");
+
+        let sqlite =
+            SqliteStore::new(&OracleDataPaths::from_root(&root).metadata).expect("metadata store");
+        assert!(
+            sqlite.chunk_file_count().expect("chunk file count") < file_count,
+            "index cancellation must stop the worker before all files are committed"
+        );
+        assert!(!runtime.indexing.load(Ordering::Acquire));
+        assert!(runtime
+            .index_cancel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_none());
+        assert!(runtime.index_error().is_none());
+    }
+
+    /// Real model proof. Run manually from the repository root with:
+    ///
+    ///     cargo test -p devboule --lib oracle::tests::real_model_choose_index_query -- --ignored --nocapture
+    ///
+    /// The test uses `recon/models/bge-small-en-v1.5` by default (or the path
+    /// in `DEVBOULE_E2E_MODEL_DIR`) and is ignored because the sandbox cannot
+    /// link or execute the local ONNX Runtime reliably.
+    #[test]
+    #[ignore]
+    fn real_model_choose_index_query() {
+        let env = TestEnvironment::new("onnx");
+        env.set("ORACLE_RS_EP", "cpu");
+        let source = std::env::var_os("DEVBOULE_E2E_MODEL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+                    .join("recon")
+                    .join("models")
+                    .join(DEFAULT_ORACLE_MODEL)
+            });
+        let source = source
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("real model directory {}: {error}", source.display()));
+        for required in [
+            "model_config.json",
+            "tokenizer.json",
+            "onnx/model_quantized.onnx",
+        ] {
+            assert!(
+                source.join(required).is_file(),
+                "real model is missing {} under {}",
+                required,
+                source.display()
+            );
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let model_target = OracleDataPaths::from_root(&root)
+            .root
+            .join("models")
+            .join(DEFAULT_ORACLE_MODEL);
+        for required in [
+            "model_config.json",
+            "tokenizer.json",
+            "onnx/model_quantized.onnx",
+        ] {
+            let target = model_target.join(required);
+            fs::create_dir_all(target.parent().expect("model parent")).expect("model parent");
+            fs::copy(source.join(required), &target).expect("copy real model asset");
+        }
+
+        let deployment = root.join("src").join("zephyr_release.rs");
+        fs::create_dir_all(deployment.parent().expect("source parent")).expect("source parent");
+        fs::write(
+            &deployment,
+            "pub fn reconcile_zephyr_release() {\n    // The release gate records the heliograph attestation in the deployment ledger.\n}\n",
+        )
+        .expect("deployment source");
+        fs::write(
+            root.join("cooking.txt"),
+            "A sourdough starter needs flour, water, and time before baking.\n",
+        )
+        .expect("decoy text");
+        fs::write(
+            root.join("billing.txt"),
+            "Invoices are collected from a saved card at the end of each cycle.\n",
+        )
+        .expect("decoy text");
+
+        // The settings file must live outside the indexed workspace, as it does
+        // in production (`app_config_dir()`). Putting it under `root` made the
+        // indexer pick up `config/oracle-settings.json` as a project file.
+        let config_home = tempfile::tempdir().expect("config tempdir");
+        let config = config_home.path().join("config");
+        let runtime = runtime_with_config(&config);
+        let chosen = oracle_workspace_set_inner(&runtime, root.to_str().unwrap())
+            .expect("choose temporary workspace");
+        let chosen_path = PathBuf::from(chosen.path.as_deref().expect("chosen path"));
+        assert!(chosen_path.is_absolute());
+        assert_eq!(chosen_path.file_name(), root.file_name());
+        wait_for_model_ready(&runtime);
+        assert!(configured_model_present(&model_target, true));
+
+        oracle_index_start_inner(&runtime).expect("start real index");
+        wait_for_index(&runtime);
+        let status = tauri::async_runtime::block_on(oracle_status_inner(&runtime))
+            .expect("status after real index");
+        assert_eq!(status.state, "ready");
+        assert_eq!(status.indexed_files, 3);
+
+        let indexed =
+            tauri::async_runtime::block_on(oracle_files_inner(&runtime, FileTab::Indexed, 1))
+                .expect("indexed files");
+        assert!(indexed
+            .iter()
+            .any(|file| file.path == "src/zephyr_release.rs"));
+
+        let response = tauri::async_runtime::block_on(oracle_ask_inner(
+            &runtime,
+            "Where is the heliograph attestation recorded for the release gate?".to_string(),
+        ))
+        .expect("real Oracle query");
+        assert!(
+            !response.results.is_empty(),
+            "real query returned no results"
+        );
+        assert_eq!(
+            response.results[0].path,
+            "src/zephyr_release.rs",
+            "real query returned the wrong top file: {:?}",
+            response
+                .results
+                .iter()
+                .map(|result| &result.path)
+                .collect::<Vec<_>>()
+        );
+        assert!(response
+            .results
+            .iter()
+            .any(|result| result.path == "src/zephyr_release.rs"));
+    }
+
+    fn wait_for_model_ready(runtime: &OracleRuntime) {
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while runtime.model_status().state == OracleModelState::Downloading {
+            assert!(Instant::now() < deadline, "model download did not finish");
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            matches!(
+                runtime.model_status().state,
+                OracleModelState::Ready | OracleModelState::Failed
+            ),
+            "unexpected model state: {:?}",
+            runtime.model_status().state
+        );
+    }
+
+    fn wait_for_index(runtime: &OracleRuntime) {
+        let deadline = Instant::now() + Duration::from_secs(300);
+        while runtime.indexing.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "real index did not finish");
+            thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            runtime.index_error().is_none(),
+            "real index failed: {:?}",
+            runtime.index_error()
+        );
+    }
+
+    struct UnreadableDirectory {
+        path: PathBuf,
+        #[cfg(windows)]
+        user: String,
+        #[cfg(unix)]
+        original_mode: std::fs::Permissions,
+    }
+
+    impl UnreadableDirectory {
+        fn new(path: &Path) -> Self {
+            #[cfg(windows)]
+            {
+                let user = String::from_utf8(
+                    std::process::Command::new("whoami")
+                        .output()
+                        .expect("whoami")
+                        .stdout,
+                )
+                .expect("whoami output")
+                .trim()
+                .to_string();
+                let deny = format!("{user}:(OI)(CI)(RX)");
+                let result = std::process::Command::new("icacls")
+                    .args([path.as_os_str(), OsStr::new("/deny"), OsStr::new(&deny)])
+                    .status()
+                    .expect("icacls");
+                assert!(result.success(), "icacls failed to deny directory access");
+                Self {
+                    path: path.to_path_buf(),
+                    user,
+                }
+            }
+
+            #[cfg(unix)]
+            {
+                let metadata = fs::metadata(path).expect("directory metadata");
+                let original_mode = metadata.permissions();
+                let mut denied = original_mode.clone();
+                use std::os::unix::fs::PermissionsExt;
+                denied.set_mode(0);
+                fs::set_permissions(path, denied).expect("remove directory permissions");
+                Self {
+                    path: path.to_path_buf(),
+                    original_mode,
+                }
+            }
+
+            #[cfg(not(any(unix, windows)))]
+            {
+                panic!("no portable unreadable-directory test implementation");
+            }
+        }
+    }
+
+    impl Drop for UnreadableDirectory {
+        fn drop(&mut self) {
+            #[cfg(windows)]
+            {
+                let result = std::process::Command::new("icacls")
+                    .args([
+                        self.path.as_os_str(),
+                        OsStr::new("/remove:d"),
+                        OsStr::new(&self.user),
+                    ])
+                    .status()
+                    .expect("icacls restore");
+                assert!(
+                    result.success(),
+                    "icacls failed to restore directory access"
+                );
+            }
+
+            #[cfg(unix)]
+            fs::set_permissions(&self.path, self.original_mode.clone())
+                .expect("restore directory permissions");
+        }
+    }
 }

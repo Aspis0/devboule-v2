@@ -2358,6 +2358,7 @@ dependencies = [
 name = "devboule"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "devboule-daemon",
  "devboule-protocol",
  "oracle-core",

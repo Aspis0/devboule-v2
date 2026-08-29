@@ -38,3 +38,5 @@ tempfile = "3"
 [dev-dependencies]
 # Already in the workspace; used to assert the Tauri error payload JSON.
 serde_json = "=1.0.151"
+# Used by the command-boundary fake embedder in Oracle runtime tests.
+anyhow = "1"
