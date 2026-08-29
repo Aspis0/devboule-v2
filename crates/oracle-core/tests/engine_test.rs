@@ -416,7 +416,7 @@ async fn test_empty_chunk_store_uses_query_model_dimensions() {
 }
 
 #[tokio::test]
-async fn test_context_rrf_ignores_huge_lexical_score_when_dense_rank_is_better() {
+async fn test_context_dense_answer_shuts_out_a_huge_lexical_score() {
     let tmp = tempfile::TempDir::new().unwrap();
     let sqlite = SqliteStore::new(&tmp.path().join("metadata.sqlite")).unwrap();
     let chunk_vectors = LanceStore::new(&tmp.path().join("chunk_vectors.json"));
@@ -593,26 +593,22 @@ async fn test_context_rrf_ignores_huge_lexical_score_when_dense_rank_is_better()
         .iter()
         .find(|chunk| chunk.chunk_id == dense_id)
         .expect("dense-only chunk should survive the final limit");
-    let lexical = results
-        .iter()
-        .find(|chunk| chunk.chunk_id == lexical_id)
-        .expect("lexical-only chunk should survive the final limit");
-    let dense_position = results
-        .iter()
-        .position(|chunk| chunk.chunk_id == dense_id)
-        .unwrap();
-    let lexical_position = results
-        .iter()
-        .position(|chunk| chunk.chunk_id == lexical_id)
-        .unwrap();
-
     assert_eq!(dense.retrieval, "dense");
-    assert_eq!(lexical.retrieval, "lexical");
     assert!((dense.score - (1.0 / 61.0)).abs() < 1e-12);
-    assert!((lexical.score - (1.0 / 62.0)).abs() < 1e-12);
+
+    // Under `max` fusion the 17.8 above outranked every cosine. Under rank
+    // fusion it landed second. Now it does not compete at all: the lexical scan
+    // is a fallback, so a dense answer ends the query before it runs. Measured
+    // on the frozen corpus, fusing cost recall (0.725 -> 0.650) and MRR
+    // (0.549 -> 0.429) on top of a 10,000-chunk scan per query.
     assert!(
-        dense.score > lexical.score && dense_position < lexical_position,
-        "RRF must keep dense rank 1 above lexical rank 2 despite lexical raw score 17.8: dense={dense:?}, lexical={lexical:?}"
+        results.iter().all(|chunk| chunk.chunk_id != lexical_id),
+        "a dense answer must end the query before the lexical scan runs, so the \
+         raw-17.8 lexical candidate cannot appear: {results:?}"
+    );
+    assert!(
+        results.iter().all(|chunk| chunk.retrieval == "dense"),
+        "every row must come from the dense path here: {results:?}"
     );
 }
 
@@ -1084,4 +1080,49 @@ async fn test_response_exact_key_sets() {
     .map(|s| s.to_string())
     .collect();
     assert_eq!(ctx_keys, expected_ctx, "ContextChunk key set drifted");
+}
+
+#[tokio::test]
+async fn test_context_falls_back_to_lexical_when_dense_finds_nothing() {
+    // The lexical scan is a fallback now, not a second opinion, and it is
+    // reached by two routes: prefer_lexical, and a dense store that answers
+    // nothing. This covers the second — the one production hits when the index
+    // is configured but empty. Without it, turning the short-circuit into an
+    // unconditional return would silently leave those queries with no results.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sqlite = SqliteStore::new(&tmp.path().join("metadata.sqlite")).unwrap();
+    sqlite.replace_all_chunks(&test_chunks()).unwrap();
+
+    let engine = QueryEngine::new(
+        sqlite,
+        LanceStore::new(&tmp.path().join("node_vectors.json")),
+        // Present but never written to: dense search returns nothing.
+        Some(LanceStore::new(&tmp.path().join("chunk_vectors.json"))),
+        None,
+    );
+
+    let results = engine
+        .context(
+            "Helios GPU provider",
+            5,
+            &HashQueryEmbedder,
+            None,
+            false, // prefer_lexical = false: the dense path is tried first
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !results.is_empty(),
+        "an empty dense store must fall through to the lexical scan"
+    );
+    assert!(
+        results.iter().all(|chunk| chunk.retrieval == "lexical"),
+        "nothing came from the dense path, so every row must be lexical: {results:?}"
+    );
 }

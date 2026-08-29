@@ -30,6 +30,18 @@ fn rrf_contribution(rank: usize) -> f64 {
     1.0 / (RRF_K + rank as f64)
 }
 
+/// Score descending, then file and chunk index so equal scores stay ordered.
+/// RRF makes ties common: its scores come from a small discrete set of ranks.
+fn sort_context_rows(rows: &mut [ContextChunk]) {
+    rows.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.file_source.cmp(&b.file_source))
+            .then_with(|| a.chunk_index.cmp(&b.chunk_index))
+    });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Traits
 // ═══════════════════════════════════════════════════════════════════════════
@@ -581,9 +593,26 @@ impl QueryEngine {
             }
         }
 
-        // ── Lexical path (bounded scan — never materialize the full corpus) ─
-        // Prefer dense when available: lexical still runs for hybrid merge, but
-        // only over a hard-capped window so concurrent queries cannot OOM.
+        // ── Lexical path: a fallback, not a second opinion ──────────────────
+        // Measured on the frozen 40-question corpus with bge-small, recall@5 /
+        // MRR@10: dense alone 0.725 / 0.549, rank-fused with lexical 0.650 /
+        // 0.429, lexical alone 0.263 / 0.188. Fusing does not add signal the
+        // lexical side does not have — RRF weights both lists equally, so a
+        // retriever three times weaker drags the ranking down. It also cost a
+        // 10,000-chunk scan on every query that already had a dense answer.
+        //
+        // This is a verdict on *our* lexical scorer, not on lexical retrieval:
+        // it is an ad-hoc additive scale, not BM25, and its window covers 10,000
+        // of 23,210 chunks. Exit condition: re-measure if a real BM25 over the
+        // full corpus replaces it. The rank-fusion merge below is kept for that
+        // day; today the dense branch above leaves nothing for it to merge.
+        if !combined.is_empty() {
+            let mut rows: Vec<ContextChunk> = combined.into_values().collect();
+            sort_context_rows(&mut rows);
+            rows.truncate(limit.max(1));
+            return Ok(rows);
+        }
+
         let total_chunks = self.sqlite.chunk_count().unwrap_or(0);
         let scan_cap = MAX_LEXICAL_SCAN;
         if total_chunks > scan_cap {
@@ -618,13 +647,7 @@ impl QueryEngine {
         }
 
         let mut rows: Vec<ContextChunk> = combined.into_values().collect();
-        rows.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.file_source.cmp(&b.file_source))
-                .then_with(|| a.chunk_index.cmp(&b.chunk_index))
-        });
+        sort_context_rows(&mut rows);
         rows.truncate(limit.max(1));
         Ok(rows)
     }
