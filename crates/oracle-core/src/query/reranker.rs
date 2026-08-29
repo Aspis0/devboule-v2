@@ -21,6 +21,17 @@ use crate::embed::EpArg;
 /// Default on-disk location for the optional reranker.
 pub const DEFAULT_RERANKER_MODEL_ID: &str = "ms-marco-TinyBERT-L-2-v2";
 
+/// Configuration written next to the downloaded Xenova export.  The ONNX
+/// artifact does not carry the pair semantics or the declared tokenizer
+/// limit that the query path needs, so keep those facts in our sidecar.
+pub const RERANKER_MODEL_CONFIG_JSON: &str = r#"{
+  "id": "ms-marco-TinyBERT-L-2-v2",
+  "onnx_graph": "onnx/model_quantized.onnx",
+  "tokenizer_file": "tokenizer.json",
+  "max_seq_tokens": 512,
+  "pair": {"mode": "tokenizer_pair", "first": "query", "second": "document"}
+}"#;
+
 /// Production rerank depth.  The benchmark overrides this through its own
 /// explicit 20/50 passes; production can tune it without changing an index.
 pub const DEFAULT_RERANKER_CANDIDATES: usize = 50;
@@ -210,6 +221,15 @@ impl RerankerConfig {
         }
         Ok(path)
     }
+}
+
+/// UI/installer-only check for a complete reranker bundle.  Loading the ONNX
+/// session remains lazy; this only validates the declared sidecar and files.
+pub fn configured_reranker_present(model_dir: &Path) -> bool {
+    let Ok(config) = RerankerConfig::load(model_dir) else {
+        return false;
+    };
+    config.graph_path(model_dir).is_ok() && config.tokenizer_path(model_dir).is_ok()
 }
 
 fn required_string(value: Option<String>, field: &str, model_dir: &Path) -> Result<String> {
@@ -454,10 +474,10 @@ pub struct RerankerHandle {
 }
 
 impl RerankerHandle {
-    /// Return `None` when the optional directory is absent.  An existing but
-    /// malformed bundle is retained and fails loudly when first used.
+    /// Return `None` when the optional bundle is absent or incomplete.  The
+    /// graph itself is still loaded lazily on first use.
     pub fn if_present(model_dir: PathBuf, ep: EpArg) -> Option<Self> {
-        model_dir.is_dir().then_some(Self {
+        configured_reranker_present(&model_dir).then_some(Self {
             model_dir,
             ep,
             model: Mutex::new(None),
@@ -542,5 +562,24 @@ mod tests {
     fn absent_optional_bundle_is_a_noop() {
         let dir = tempdir().unwrap().path().join("missing");
         assert!(RerankerHandle::if_present(dir, EpArg::Cpu).is_none());
+    }
+
+    #[test]
+    fn configured_bundle_requires_the_sidecar_and_declared_files() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("model_config.json"),
+            RERANKER_MODEL_CONFIG_JSON,
+        )
+        .unwrap();
+        assert!(!configured_reranker_present(dir.path()));
+
+        std::fs::write(dir.path().join("tokenizer.json"), "{}").unwrap();
+        assert!(!configured_reranker_present(dir.path()));
+
+        std::fs::create_dir(dir.path().join("onnx")).unwrap();
+        std::fs::write(dir.path().join("onnx/model_quantized.onnx"), "test graph").unwrap();
+        assert!(configured_reranker_present(dir.path()));
+        assert!(RerankerHandle::if_present(dir.path().to_path_buf(), EpArg::Cpu).is_some());
     }
 }

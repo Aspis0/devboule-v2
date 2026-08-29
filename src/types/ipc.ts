@@ -144,7 +144,7 @@ export interface IndexedFile {
 }
 
 /** A ranked pointer returned by Oracle. It is evidence to read, not prose to consume. */
-export type OracleMatchType = "lexical" | "dense" | "dense+lexical";
+export type OracleMatchType = "lexical" | "dense" | "dense+lexical" | "dense+reranked";
 
 export interface OracleResult {
   path: string;
@@ -179,6 +179,8 @@ export interface OracleIndexStatus {
   stale_files: number;
   resource_budget: OracleResourceBudget;
   model: OracleModelStatus;
+  /** Optional query-time cross-encoder; dense retrieval works without it. */
+  reranker: OracleModelStatus | null;
 }
 
 export type OracleModelState =

@@ -1,5 +1,6 @@
-//! Downloads ONNX embedding bundles for the `ort` backend. Oracle's portable
-//! default is the BGE-small bundle (about 34 MB).
+//! Downloads ONNX bundles for Oracle's embedding and query-time models. The
+//! portable default is the BGE-small bundle (about 34 MB), with the optional
+//! TinyBERT reranker alongside it (about 5 MB).
 //!
 //! This is the Rust engine's replacement for the Python venv + pip + warmup
 //! flow: instead of installing a Python runtime that pulls the model into the
@@ -18,7 +19,11 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 
 use crate::embed::CancelFlag;
-use crate::embed::{write_model_config_if_missing, OrtEmbedder, BGE_SMALL_MODEL_CONFIG_JSON};
+use crate::embed::{
+    configured_model_present, write_model_config_if_missing, OrtEmbedder,
+    BGE_SMALL_MODEL_CONFIG_JSON,
+};
+use crate::query::reranker::{DEFAULT_RERANKER_MODEL_ID, RERANKER_MODEL_CONFIG_JSON};
 
 /// The model shipped as Oracle's portable default.
 pub const BGE_SMALL_MODEL_ID: &str = "bge-small-en-v1.5";
@@ -26,6 +31,24 @@ pub const BGE_SMALL_MODEL_ID: &str = "bge-small-en-v1.5";
 /// Approximate complete package size used in UI/doctor messages. The actual
 /// progress uses the server-reported Content-Length for each file.
 pub const BGE_SMALL_APPROX_BYTES: u64 = 34_000_000;
+
+/// The optional query-time cross-encoder shipped with Oracle's default setup.
+pub const RERANKER_MODEL_ID: &str = DEFAULT_RERANKER_MODEL_ID;
+
+/// Approximate complete package size used in UI/doctor messages.
+pub const RERANKER_APPROX_BYTES: u64 = 5_000_000;
+
+/// A complete ONNX bundle declaration. The downloader is shared by the
+/// embedder and reranker; only the artifact facts differ.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelBundleDescriptor {
+    pub model_id: &'static str,
+    pub hf_resolve_base: &'static str,
+    pub files: &'static [&'static str],
+    pub approximate_bytes: u64,
+    pub model_config_json: &'static str,
+    pub is_complete: fn(&Path) -> bool,
+}
 
 /// Hard ceiling on a single downloaded file. The BGE bundle is much smaller;
 /// anything unexpectedly larger means a wrong or hostile server, and we must
@@ -237,14 +260,23 @@ pub fn clear_broken_model_dir_symlink(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Download the declared files of any ONNX bundle under
-/// `<oracle_data_root>/models/<model_id>/`. `hf_resolve_base` is the HuggingFace
-/// resolve URL *without* a trailing slash (e.g. `https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main`).
-fn ensure_bundle_onnx_with_cancel(
+/// Download the declared files of an ONNX bundle under
+/// `<oracle_data_root>/models/<model_id>/`.
+pub fn ensure_model_onnx_with_cancel(
     oracle_data_root: &Path,
-    model_id: &str,
-    hf_resolve_base: &str,
-    files: &[&str],
+    descriptor: &ModelBundleDescriptor,
+    cancel: &CancelFlag,
+    progress: impl FnMut(FileProgress),
+) -> Result<PathBuf> {
+    let dir = OrtEmbedder::model_dir(oracle_data_root, descriptor.model_id);
+    ensure_model_onnx_at_with_cancel(&dir, descriptor, cancel, progress)
+}
+
+/// Same installer as [`ensure_model_onnx_with_cancel`], for a caller that has
+/// explicitly overridden the model directory.
+pub fn ensure_model_onnx_at_with_cancel(
+    dir: &Path,
+    descriptor: &ModelBundleDescriptor,
     cancel: &CancelFlag,
     progress: impl FnMut(FileProgress),
 ) -> Result<PathBuf> {
@@ -252,30 +284,20 @@ fn ensure_bundle_onnx_with_cancel(
         .enable_all()
         .build()
         .context("creating the model download runtime")?;
-    runtime.block_on(ensure_bundle_onnx_async(
-        oracle_data_root,
-        model_id,
-        hf_resolve_base,
-        files,
-        cancel,
-        progress,
-    ))
+    runtime.block_on(ensure_model_onnx_async(dir, descriptor, cancel, progress))
 }
 
-async fn ensure_bundle_onnx_async(
-    oracle_data_root: &Path,
-    model_id: &str,
-    hf_resolve_base: &str,
-    files: &[&str],
+async fn ensure_model_onnx_async(
+    dir: &Path,
+    descriptor: &ModelBundleDescriptor,
     cancel: &CancelFlag,
     mut progress: impl FnMut(FileProgress),
 ) -> Result<PathBuf> {
-    let dir = OrtEmbedder::model_dir(oracle_data_root, model_id);
-    clear_broken_model_dir_symlink(&dir)?;
+    clear_broken_model_dir_symlink(dir)?;
     let client = http_client()?;
-    let base = hf_resolve_base.trim_end_matches('/');
+    let base = descriptor.hf_resolve_base.trim_end_matches('/');
 
-    for (i, rel) in files.iter().enumerate() {
+    for (i, rel) in descriptor.files.iter().enumerate() {
         if cancel.is_cancelled() {
             bail!("model download cancelled");
         }
@@ -288,7 +310,7 @@ async fn ensure_bundle_onnx_async(
                 progress(FileProgress {
                     file: (*rel).to_string(),
                     index: i + 1,
-                    total_files: files.len(),
+                    total_files: descriptor.files.len(),
                     bytes_done: expected,
                     bytes_total: Some(expected),
                 });
@@ -297,7 +319,7 @@ async fn ensure_bundle_onnx_async(
         }
 
         let rel_owned = (*rel).to_string();
-        let files_len = files.len();
+        let files_len = descriptor.files.len();
         download_file(&client, &url, &dest, bytes_total, cancel, |done| {
             progress(FileProgress {
                 file: rel_owned.clone(),
@@ -314,13 +336,45 @@ async fn ensure_bundle_onnx_async(
     if cancel.is_cancelled() {
         bail!("model download cancelled");
     }
-    Ok(dir)
+    write_model_config_if_missing(dir, descriptor.model_config_json)?;
+    if !(descriptor.is_complete)(dir) {
+        bail!(
+            "downloaded {} model bundle is incomplete under {}",
+            descriptor.model_id,
+            dir.display()
+        );
+    }
+    Ok(dir.to_path_buf())
 }
 
 /// HuggingFace resolve base for the Xenova bge-small quantized export.
 pub const BGE_SMALL_HF_BASE: &str = "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/main";
 
 pub const BGE_SMALL_FILES: &[&str] = &["onnx/model_quantized.onnx", "tokenizer.json"];
+
+/// HuggingFace resolve base for the Xenova TinyBERT reranker export.
+pub const RERANKER_HF_BASE: &str =
+    "https://huggingface.co/Xenova/ms-marco-TinyBERT-L-2-v2/resolve/main";
+
+pub const RERANKER_FILES: &[&str] = &["onnx/model_quantized.onnx", "tokenizer.json"];
+
+pub const BGE_SMALL_BUNDLE: ModelBundleDescriptor = ModelBundleDescriptor {
+    model_id: BGE_SMALL_MODEL_ID,
+    hf_resolve_base: BGE_SMALL_HF_BASE,
+    files: BGE_SMALL_FILES,
+    approximate_bytes: BGE_SMALL_APPROX_BYTES,
+    model_config_json: BGE_SMALL_MODEL_CONFIG_JSON,
+    is_complete: |dir| configured_model_present(dir, true),
+};
+
+pub const RERANKER_BUNDLE: ModelBundleDescriptor = ModelBundleDescriptor {
+    model_id: RERANKER_MODEL_ID,
+    hf_resolve_base: RERANKER_HF_BASE,
+    files: RERANKER_FILES,
+    approximate_bytes: RERANKER_APPROX_BYTES,
+    model_config_json: RERANKER_MODEL_CONFIG_JSON,
+    is_complete: crate::query::reranker::configured_reranker_present,
+};
 
 pub fn ensure_bge_small_onnx(
     oracle_data_root: &Path,
@@ -335,19 +389,34 @@ pub fn ensure_bge_small_onnx_with_cancel(
     cancel: &CancelFlag,
     progress: impl FnMut(FileProgress),
 ) -> Result<PathBuf> {
-    let dir = ensure_bundle_onnx_with_cancel(
-        oracle_data_root,
-        BGE_SMALL_MODEL_ID,
-        BGE_SMALL_HF_BASE,
-        BGE_SMALL_FILES,
-        cancel,
-        progress,
-    )?;
-    if cancel.is_cancelled() {
-        bail!("model download cancelled");
-    }
-    write_model_config_if_missing(&dir, BGE_SMALL_MODEL_CONFIG_JSON)?;
-    Ok(dir)
+    ensure_model_onnx_with_cancel(oracle_data_root, &BGE_SMALL_BUNDLE, cancel, progress)
+}
+
+/// Download the optional TinyBERT reranker bundle into the default model tree.
+pub fn ensure_reranker_onnx(
+    oracle_data_root: &Path,
+    progress: impl FnMut(FileProgress),
+) -> Result<PathBuf> {
+    ensure_reranker_onnx_with_cancel(oracle_data_root, &CancelFlag::new(), progress)
+}
+
+/// Cancellable installer for the optional TinyBERT reranker bundle.
+pub fn ensure_reranker_onnx_with_cancel(
+    oracle_data_root: &Path,
+    cancel: &CancelFlag,
+    progress: impl FnMut(FileProgress),
+) -> Result<PathBuf> {
+    ensure_model_onnx_with_cancel(oracle_data_root, &RERANKER_BUNDLE, cancel, progress)
+}
+
+/// Cancellable installer for a reranker directory explicitly selected by the
+/// developer override.
+pub fn ensure_reranker_onnx_at_with_cancel(
+    model_dir: &Path,
+    cancel: &CancelFlag,
+    progress: impl FnMut(FileProgress),
+) -> Result<PathBuf> {
+    ensure_model_onnx_at_with_cancel(model_dir, &RERANKER_BUNDLE, cancel, progress)
 }
 
 #[cfg(test)]
@@ -362,6 +431,16 @@ mod tests {
             root.join("models").join("bge-small-en-v1.5"),
             "must match OrtEmbedder::default_model_dir so the backend finds it"
         );
+    }
+
+    #[test]
+    fn reranker_bundle_declares_the_default_artifact() {
+        assert_eq!(RERANKER_BUNDLE.model_id, RERANKER_MODEL_ID);
+        assert_eq!(RERANKER_BUNDLE.files, RERANKER_FILES);
+        assert_eq!(RERANKER_BUNDLE.approximate_bytes, 5_000_000);
+        assert!(RERANKER_BUNDLE
+            .model_config_json
+            .contains("onnx/model_quantized.onnx"));
     }
 
     #[test]

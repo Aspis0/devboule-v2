@@ -35,8 +35,11 @@ pub use ingest::indexer::{
     IndexerConfig, TextEmbedder,
 };
 pub use model_download::{
-    ensure_bge_small_onnx, ensure_bge_small_onnx_with_cancel, model_dir, model_dir_for,
-    BGE_SMALL_APPROX_BYTES, BGE_SMALL_FILES, BGE_SMALL_MODEL_ID,
+    ensure_bge_small_onnx, ensure_bge_small_onnx_with_cancel, ensure_model_onnx_at_with_cancel,
+    ensure_model_onnx_with_cancel, ensure_reranker_onnx, ensure_reranker_onnx_at_with_cancel,
+    ensure_reranker_onnx_with_cancel, model_dir, model_dir_for, ModelBundleDescriptor,
+    BGE_SMALL_APPROX_BYTES, BGE_SMALL_BUNDLE, BGE_SMALL_FILES, BGE_SMALL_MODEL_ID,
+    RERANKER_APPROX_BYTES, RERANKER_BUNDLE, RERANKER_FILES, RERANKER_HF_BASE, RERANKER_MODEL_ID,
 };
 pub use query::engine::{
     ClusterInfo, ClusterMember, ClusterMemberResponse, ClusterResponse, ContextChunk,
@@ -44,7 +47,9 @@ pub use query::engine::{
 };
 pub use query::pool_embedder::PoolQueryEmbedder;
 pub use query::redact::redact_secret_tokens;
-pub use query::reranker::{default_model_dir, RerankerHandle, SharedReranker};
+pub use query::reranker::{
+    configured_reranker_present, default_model_dir, RerankerHandle, SharedReranker,
+};
 pub use store::ckg::{CkgEdgeRow, CkgNodeRow, CkgStore};
 pub use store::lance::{LanceHit, LanceRow, LanceStore};
 pub use store::manifest::{
@@ -98,7 +103,7 @@ pub use query::lexical::{
     lexical_chunk_context, lexical_chunk_score, query_terms, semantic_expansions, ScoredChunk,
 };
 #[doc(hidden)]
-pub use query::reranker::{OnnxReranker, RerankerConfig};
+pub use query::reranker::{OnnxReranker, RerankerConfig, RERANKER_MODEL_CONFIG_JSON};
 #[doc(hidden)]
 pub use store::lance::hash_embed;
 #[doc(hidden)]

@@ -13,11 +13,11 @@ use tauri::State;
 use devboule_protocol::ErrorCode;
 use oracle_core::redact_secret_tokens;
 use oracle_core::{
-    chunk_index_status, collect_text_files, configured_model_present, default_backend,
-    default_model_dir, file_needs_index, index_file_chunks, load_manifest, manifest_files_for_root,
-    BackendChoice, CancelFlag, ContextChunk, EmbedderPool, EpArg, IndexStatusSnapshot,
-    IndexerConfig, LanceStore, OracleDataPaths, PoolQueryEmbedder, QueryEngine, RerankerHandle,
-    SharedReranker, SqliteStore, TextEmbedder, MAX_BOUNDED_LIMIT,
+    chunk_index_status, collect_text_files, configured_model_present, configured_reranker_present,
+    default_backend, default_model_dir, file_needs_index, index_file_chunks, load_manifest,
+    manifest_files_for_root, BackendChoice, CancelFlag, ContextChunk, EmbedderPool, EpArg,
+    IndexStatusSnapshot, IndexerConfig, LanceStore, OracleDataPaths, PoolQueryEmbedder,
+    QueryEngine, RerankerHandle, SharedReranker, SqliteStore, TextEmbedder, MAX_BOUNDED_LIMIT,
 };
 
 use crate::backend::error::CommandError;
@@ -46,6 +46,7 @@ pub struct OracleRuntime {
     model_id: String,
     settings_path: Mutex<Option<PathBuf>>,
     model_download: Arc<Mutex<ModelDownloadState>>,
+    reranker_download: Arc<Mutex<ModelDownloadState>>,
     indexing: Arc<AtomicBool>,
     index_cancel: Arc<Mutex<Option<CancelFlag>>>,
     last_index_error: Arc<Mutex<Option<String>>>,
@@ -98,10 +99,14 @@ struct ModelDownloadState {
 }
 
 impl ModelDownloadState {
-    fn new(model_id: String, directory: PathBuf) -> Self {
-        let present =
-            !directory.as_os_str().is_empty() && configured_model_present(&directory, true);
-        let approximate_bytes = approximate_model_size(&model_id);
+    fn new(
+        model_id: String,
+        directory: PathBuf,
+        total_files: usize,
+        approximate_bytes: u64,
+        present: bool,
+        component: &str,
+    ) -> Self {
         Self {
             status: OracleModelStatus {
                 state: if present {
@@ -113,22 +118,22 @@ impl ModelDownloadState {
                 directory: directory.display().to_string(),
                 file: None,
                 file_index: 0,
-                total_files: oracle_core::BGE_SMALL_FILES.len(),
+                total_files,
                 bytes_done: 0,
                 bytes_total: None,
                 approximate_bytes,
                 message: Some(if present {
-                    "Oracle's embedding model is installed.".to_string()
+                    format!("Oracle's {component} model is installed.")
                 } else {
                     if approximate_bytes > 0 {
                         format!(
-                            "Model `{model_id}` is missing. Oracle looks in {}. The download is about {} MB.",
+                            "Oracle's {component} model `{model_id}` is missing. Oracle looks in {}. The download is about {} MB.",
                             directory.display(),
                             approximate_bytes / 1_000_000
                         )
                     } else {
                         format!(
-                            "Model `{model_id}` is missing. Oracle looks in {}.",
+                            "Oracle's {component} model `{model_id}` is missing. Oracle looks in {}.",
                             directory.display()
                         )
                     }
@@ -175,6 +180,18 @@ impl OracleRuntime {
             model_download: Arc::new(Mutex::new(ModelDownloadState::new(
                 model_id.clone(),
                 PathBuf::new(),
+                oracle_core::BGE_SMALL_FILES.len(),
+                oracle_core::BGE_SMALL_APPROX_BYTES,
+                false,
+                "embedding",
+            ))),
+            reranker_download: Arc::new(Mutex::new(ModelDownloadState::new(
+                oracle_core::RERANKER_MODEL_ID.to_string(),
+                PathBuf::new(),
+                oracle_core::RERANKER_FILES.len(),
+                oracle_core::RERANKER_APPROX_BYTES,
+                false,
+                "reranker",
             ))),
             model_id,
             settings_path: Mutex::new(None),
@@ -280,8 +297,10 @@ impl OracleRuntime {
         let data = OracleDataPaths::from_root(&root);
         let model_dir = oracle_core::model_dir_for(&data.root, &self.model_id);
         let pool = Arc::new(EmbedderPool::new(default_backend(model_dir.clone())));
-        let reranker =
-            RerankerHandle::if_present(default_model_dir(&data.root), EpArg::Cpu).map(Arc::new);
+        let reranker_dir = default_model_dir(&data.root);
+        let model_present = configured_model_present(&model_dir, true);
+        let reranker_present = configured_reranker_present(&reranker_dir);
+        let reranker = RerankerHandle::if_present(reranker_dir.clone(), EpArg::Cpu).map(Arc::new);
         let paths = ResolvedOraclePaths {
             workspace: root.clone(),
             data,
@@ -293,7 +312,14 @@ impl OracleRuntime {
             .reranker
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = reranker;
-        let mut model_download = ModelDownloadState::new(self.model_id.clone(), model_dir);
+        let mut model_download = ModelDownloadState::new(
+            self.model_id.clone(),
+            model_dir,
+            oracle_core::BGE_SMALL_FILES.len(),
+            approximate_model_size(&self.model_id),
+            model_present,
+            "embedding",
+        );
         if matches!(pool.backend(), BackendChoice::Candle { .. }) {
             model_download.status.state = OracleModelState::NotApplicable;
             model_download.status.message = Some(
@@ -306,6 +332,17 @@ impl OracleRuntime {
             .model_download
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = model_download;
+        *self
+            .reranker_download
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = ModelDownloadState::new(
+            oracle_core::RERANKER_MODEL_ID.to_string(),
+            reranker_dir,
+            oracle_core::RERANKER_FILES.len(),
+            oracle_core::RERANKER_APPROX_BYTES,
+            reranker_present,
+            "reranker",
+        );
     }
 
     fn persist_root(&self, root: &Path) -> Result<(), CommandError> {
@@ -458,10 +495,27 @@ impl OracleRuntime {
     }
 
     fn reranker(&self) -> Option<SharedReranker> {
-        self.reranker
+        let mut slot = self
+            .reranker
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone()
+            .unwrap_or_else(|error| error.into_inner());
+        if slot.is_none() {
+            let directory = self
+                .reranker_download
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .status
+                .directory
+                .clone();
+            if !directory.is_empty() {
+                if let Some(handle) =
+                    RerankerHandle::if_present(PathBuf::from(directory), EpArg::Cpu)
+                {
+                    *slot = Some(Arc::new(handle));
+                }
+            }
+        }
+        slot.clone()
     }
 
     fn model_status(&self) -> OracleModelStatus {
@@ -472,27 +526,51 @@ impl OracleRuntime {
             .clone()
     }
 
+    fn reranker_status(&self) -> OracleModelStatus {
+        let mut state = self
+            .reranker_download
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.status.state != OracleModelState::Downloading
+            && configured_reranker_present(Path::new(&state.status.directory))
+        {
+            state.status.state = OracleModelState::Ready;
+            state.status.message = Some("Oracle's reranker model is ready.".to_string());
+        }
+        state.status.clone()
+    }
+
     fn is_model_downloading(&self) -> bool {
-        self.model_download
+        let embedding_downloading = self
+            .model_download
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .status
             .state
-            == OracleModelState::Downloading
+            == OracleModelState::Downloading;
+        let reranker_downloading = self
+            .reranker_download
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .status
+            .state
+            == OracleModelState::Downloading;
+        embedding_downloading || reranker_downloading
     }
 
-    /// Start the default model installer once per configured workspace. The
-    /// ensure function still performs its own HEAD/size verification; the
-    /// UI-only presence check is deliberately not used to skip that attempt.
-    fn start_model_download(&self, force: bool) -> Result<(), CommandError> {
-        let paths = self.paths()?;
-        let pool = self.pool()?;
-        let BackendChoice::Ort { model_dir, .. } = pool.backend() else {
-            return Ok(());
-        };
-
-        let progress = Arc::clone(&self.model_download);
-        let cancel_slot = Arc::clone(&self.model_download);
+    /// Start one descriptor-driven bundle installer. The ensure function owns
+    /// HEAD/size verification, `.part` writes, atomic rename, timeouts,
+    /// cancellation, and progress for both models.
+    fn start_bundle_download(
+        &self,
+        slot: Arc<Mutex<ModelDownloadState>>,
+        descriptor: &'static oracle_core::ModelBundleDescriptor,
+        model_dir: PathBuf,
+        component: &'static str,
+        force: bool,
+    ) -> Result<(), CommandError> {
+        let progress = Arc::clone(&slot);
+        let cancel_slot = Arc::clone(&slot);
         let cancel = {
             let mut state = progress.lock().unwrap_or_else(|error| error.into_inner());
             if state.status.state == OracleModelState::Downloading {
@@ -504,55 +582,37 @@ impl OracleRuntime {
             if state.attempted && !force {
                 return Ok(());
             }
-            if self.model_id != oracle_core::BGE_SMALL_MODEL_ID {
-                state.attempted = true;
-                state.status = OracleModelStatus {
-                    state: OracleModelState::Failed,
-                    model_id: self.model_id.clone(),
-                    directory: model_dir.display().to_string(),
-                    file: None,
-                    file_index: 0,
-                    total_files: 0,
-                    bytes_done: 0,
-                    bytes_total: None,
-                    approximate_bytes: approximate_model_size(&self.model_id),
-                    message: Some(format!(
-                        "Model `{}` has no automatic installer. Put its declared ONNX bundle in {} or remove {ORACLE_MODEL_ENV} to use the supported BGE model.",
-                        self.model_id,
-                        model_dir.display()
-                    )),
-                };
-                return Ok(());
-            }
             let cancel = CancelFlag::new();
             state.attempted = true;
             state.cancel = Some(cancel.clone());
             state.status = OracleModelStatus {
                 state: OracleModelState::Downloading,
-                model_id: self.model_id.clone(),
+                model_id: descriptor.model_id.to_string(),
                 directory: model_dir.display().to_string(),
                 file: None,
                 file_index: 0,
-                total_files: oracle_core::BGE_SMALL_FILES.len(),
+                total_files: descriptor.files.len(),
                 bytes_done: 0,
                 bytes_total: None,
-                approximate_bytes: oracle_core::BGE_SMALL_APPROX_BYTES,
+                approximate_bytes: descriptor.approximate_bytes,
                 message: Some(format!(
-                    "Downloading about {} MB from Hugging Face.",
-                    oracle_core::BGE_SMALL_APPROX_BYTES / 1_000_000
+                    "Downloading Oracle's {component} model (about {} MB) from Hugging Face.",
+                    descriptor.approximate_bytes / 1_000_000
                 )),
             };
             cancel
         };
 
-        let data_root = paths.data.root.clone();
-        let model_id = self.model_id.clone();
-        let model_dir = model_dir.clone();
+        let model_id = descriptor.model_id.to_string();
+        let total_files = descriptor.files.len();
+        let approximate_bytes = descriptor.approximate_bytes;
+        let failure_slot = Arc::clone(&slot);
         std::thread::Builder::new()
-            .name("oracle-model-download".to_string())
+            .name(format!("oracle-{component}-model-download"))
             .spawn(move || {
-                let result = oracle_core::ensure_bge_small_onnx_with_cancel(
-                    &data_root,
+                let result = oracle_core::ensure_model_onnx_at_with_cancel(
+                    &model_dir,
+                    descriptor,
                     &cancel,
                     |file_progress| {
                         let mut state = progress
@@ -573,28 +633,28 @@ impl OracleRuntime {
                 state.status = match result {
                     Ok(_) => OracleModelStatus {
                         state: OracleModelState::Ready,
-                        model_id,
+                        model_id: model_id.clone(),
                         directory: model_dir.display().to_string(),
                         file: None,
-                        file_index: oracle_core::BGE_SMALL_FILES.len(),
-                        total_files: oracle_core::BGE_SMALL_FILES.len(),
+                        file_index: total_files,
+                        total_files,
                         bytes_done: 0,
                         bytes_total: None,
-                        approximate_bytes: oracle_core::BGE_SMALL_APPROX_BYTES,
-                        message: Some("Oracle's embedding model is ready.".to_string()),
+                        approximate_bytes,
+                        message: Some(format!("Oracle's {component} model is ready.")),
                     },
                     Err(error) if cancelled => OracleModelStatus {
                         state: OracleModelState::Cancelled,
-                        model_id,
+                        model_id: model_id.clone(),
                         directory: model_dir.display().to_string(),
                         file: None,
                         file_index: 0,
-                        total_files: oracle_core::BGE_SMALL_FILES.len(),
+                        total_files,
                         bytes_done: 0,
                         bytes_total: None,
-                        approximate_bytes: oracle_core::BGE_SMALL_APPROX_BYTES,
+                        approximate_bytes,
                         message: Some(format!(
-                            "Model download cancelled ({error}). Start it again from the Oracle panel."
+                            "Oracle's {component} model download cancelled ({error}). Start it again from the Oracle panel."
                         )),
                     },
                     Err(error) => OracleModelStatus {
@@ -603,26 +663,25 @@ impl OracleRuntime {
                         directory: model_dir.display().to_string(),
                         file: None,
                         file_index: 0,
-                        total_files: oracle_core::BGE_SMALL_FILES.len(),
+                        total_files,
                         bytes_done: 0,
                         bytes_total: None,
-                        approximate_bytes: oracle_core::BGE_SMALL_APPROX_BYTES,
+                        approximate_bytes,
                         message: Some(format!(
-                            "Model download failed: {error:#}. Retry from the Oracle panel; the model is expected at {}.",
+                            "Oracle's {component} model download failed: {error:#}. Retry from the Oracle panel; the model is expected at {}.",
                             model_dir.display()
                         )),
                     },
                 };
             })
             .map_err(|error| {
-                let mut state = self
-                    .model_download
+                let mut state = failure_slot
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.cancel = None;
                 state.status.state = OracleModelState::Failed;
                 state.status.message = Some(format!(
-                    "Could not start the model download: {error}. Retry from the Oracle panel."
+                    "Could not start Oracle's {component} model download: {error}. Retry from the Oracle panel."
                 ));
                 CommandError::new(
                     ErrorCode::Io,
@@ -630,6 +689,67 @@ impl OracleRuntime {
                 )
             })?;
         Ok(())
+    }
+
+    /// Start both model transfers in the background. The reranker is optional:
+    /// its absence never blocks the dense query path.
+    fn start_model_download(&self, force: bool) -> Result<(), CommandError> {
+        self.paths()?;
+        let pool = self.pool()?;
+
+        if let BackendChoice::Ort { model_dir, .. } = pool.backend() {
+            if self.model_id == oracle_core::BGE_SMALL_MODEL_ID {
+                self.start_bundle_download(
+                    Arc::clone(&self.model_download),
+                    &oracle_core::BGE_SMALL_BUNDLE,
+                    model_dir.clone(),
+                    "embedding",
+                    force,
+                )?;
+            } else {
+                let mut state = self
+                    .model_download
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if state.status.state != OracleModelState::Downloading
+                    && (!state.attempted || force)
+                {
+                    state.attempted = true;
+                    state.status = OracleModelStatus {
+                        state: OracleModelState::Failed,
+                        model_id: self.model_id.clone(),
+                        directory: model_dir.display().to_string(),
+                        file: None,
+                        file_index: 0,
+                        total_files: 0,
+                        bytes_done: 0,
+                        bytes_total: None,
+                        approximate_bytes: approximate_model_size(&self.model_id),
+                        message: Some(format!(
+                            "Model `{}` has no automatic installer. Put its declared ONNX bundle in {} or remove {ORACLE_MODEL_ENV} to use the supported BGE model.",
+                            self.model_id,
+                            model_dir.display()
+                        )),
+                    };
+                }
+            }
+        }
+
+        let reranker_dir = {
+            self.reranker_download
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .status
+                .directory
+                .clone()
+        };
+        self.start_bundle_download(
+            Arc::clone(&self.reranker_download),
+            &oracle_core::RERANKER_BUNDLE,
+            PathBuf::from(reranker_dir),
+            "reranker",
+            force,
+        )
     }
 
     pub(crate) fn start_model_download_for_startup(&self) -> Result<(), CommandError> {
@@ -645,14 +765,15 @@ impl OracleRuntime {
     }
 
     fn cancel_model_download(&self) {
-        if let Some(cancel) = self
-            .model_download
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .cancel
-            .clone()
-        {
-            cancel.cancel();
+        for slot in [&self.model_download, &self.reranker_download] {
+            if let Some(cancel) = slot
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .cancel
+                .clone()
+            {
+                cancel.cancel();
+            }
         }
     }
 
@@ -728,6 +849,7 @@ pub struct OracleIndexStatus {
     pub stale_files: usize,
     pub resource_budget: OracleResourceBudget,
     pub model: OracleModelStatus,
+    pub reranker: Option<OracleModelStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -788,7 +910,7 @@ pub struct OracleResult {
     pub match_type: Option<OracleMatchType>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum OracleMatchType {
     #[serde(rename = "lexical")]
     Lexical,
@@ -796,6 +918,8 @@ pub enum OracleMatchType {
     Dense,
     #[serde(rename = "dense+lexical")]
     DenseLexical,
+    #[serde(rename = "dense+reranked")]
+    DenseReranked,
 }
 
 #[derive(Debug, Serialize)]
@@ -1330,6 +1454,7 @@ fn status_from_snapshot(
             max_parallelism: 1.0,
         },
         model: runtime.model_status(),
+        reranker: Some(runtime.reranker_status()),
     }
 }
 
@@ -1346,6 +1471,7 @@ fn result_from_context(root: &Path, context: &ContextChunk) -> OracleResult {
             "lexical" => Some(OracleMatchType::Lexical),
             "dense" => Some(OracleMatchType::Dense),
             "dense+lexical" => Some(OracleMatchType::DenseLexical),
+            "dense+reranked" => Some(OracleMatchType::DenseReranked),
             _ => None,
         },
     }
@@ -1504,6 +1630,51 @@ mod tests {
 
     static ENV_LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
 
+    #[test]
+    fn result_mapping_preserves_the_reranked_match_type() {
+        let context = ContextChunk {
+            chunk_id: "chunk-1".to_string(),
+            file_source: "src/lib.rs".to_string(),
+            chunk_index: 0,
+            start_char: 0,
+            end_char: 10,
+            score: 0.5,
+            rerank_score: Some(0.9),
+            retrieval: "dense+reranked".to_string(),
+            text: "fn answer() {}".to_string(),
+            last_modified: String::new(),
+            kind: "function".to_string(),
+            symbol_name: "answer".to_string(),
+            signature: String::new(),
+            language: "rust".to_string(),
+            line_start: 1,
+            line_end: 1,
+            symbols_used: Vec::new(),
+        };
+
+        let result = result_from_context(Path::new("."), &context);
+        assert_eq!(result.match_type, Some(OracleMatchType::DenseReranked));
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["match_type"],
+            "dense+reranked"
+        );
+    }
+
+    #[test]
+    fn status_exposes_a_missing_optional_reranker() {
+        let _env = TestEnvironment::new("candle");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime = OracleRuntime::from_environment();
+        runtime.configure_root(temp.path().to_path_buf());
+
+        let status = runtime.reranker_status();
+        assert_eq!(status.state, OracleModelState::Missing);
+        assert_eq!(status.model_id, oracle_core::RERANKER_MODEL_ID);
+        assert_eq!(status.total_files, oracle_core::RERANKER_FILES.len());
+        assert_eq!(status.approximate_bytes, oracle_core::RERANKER_APPROX_BYTES);
+        assert!(status.message.unwrap().contains("reranker"));
+    }
+
     struct TestEnvironment {
         _lock: MutexGuard<'static, ()>,
         saved: Vec<(&'static str, Option<OsString>)>,
@@ -1521,6 +1692,9 @@ mod tests {
                 "ORACLE_DIR",
                 "ORACLE_RS_BACKEND",
                 "ORACLE_RS_EP",
+                "ORACLE_RERANKER_MODEL_DIR",
+                "ORACLE_RERANK_CANDIDATES",
+                "ORACLE_RERANK_BATCH_SIZE",
                 "ORACLE_CHUNK_MIN_FREE_RAM_GB",
                 "ORACLE_CHUNK_MIN_FREE_GB",
                 "ORACLE_CHUNK_BATCH_FILES",

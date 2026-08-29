@@ -21,6 +21,7 @@ import type {
   FileTab,
   OracleIndexStats,
   OracleIndexStatus,
+  OracleModelStatus,
   OracleResult,
   OracleWorkspace,
 } from "../../types/ipc";
@@ -193,10 +194,77 @@ function progressPercentage(status: OracleIndexStatus | null): number | null {
   return Math.min(100, Math.max(0, Math.round((status.indexed_files / status.total_files) * 100)));
 }
 
-function modelProgressPercentage(status: OracleIndexStatus | null): number | null {
-  const model = status?.model;
+function modelProgressPercentage(model: OracleModelStatus | null): number | null {
   if (!model?.bytes_total || model.bytes_total <= 0) return null;
   return Math.min(100, Math.max(0, Math.round((model.bytes_done / model.bytes_total) * 100)));
+}
+
+function OracleModelStatusCard({
+  status,
+  label,
+  optional,
+  onRetry,
+}: {
+  status: OracleModelStatus | null;
+  label: string;
+  optional?: boolean;
+  onRetry: () => void;
+}) {
+  if (!status || status.state === "not_applicable") return null;
+  const percentage = modelProgressPercentage(status);
+
+  if (status.state === "downloading") {
+    return (
+      <div className="oracle-model-download" aria-live="polite">
+        <div className="oracle-job-heading">
+          <span>
+            Downloading {label} · file {status.file_index || 1} / {status.total_files}
+          </span>
+          <span>{percentage === null ? "—" : `${percentage}%`}</span>
+        </div>
+        <div className="oracle-folder-meta">
+          {status.file ?? "Preparing download…"} · expected at {status.directory}
+        </div>
+        {percentage !== null && (
+          <div
+            className="oracle-progress-track"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percentage}
+            aria-label={`${label} download progress`}
+          >
+            <div className="oracle-progress-fill" style={{ width: `${percentage}%` }} />
+          </div>
+        )}
+        <div className="oracle-job-note">
+          {status.message ?? `About ${formatMegabytes(status.approximate_bytes)}.`}
+        </div>
+      </div>
+    );
+  }
+
+  if (["missing", "failed", "cancelled"].includes(status.state)) {
+    return (
+      <div className="oracle-error-message" role="alert">
+        {status.message ?? `${label} is unavailable.`}
+        {optional && " Dense retrieval remains available without reranking."}
+        <button
+          className="oracle-button oracle-button-secondary oracle-model-retry-button"
+          type="button"
+          onClick={onRetry}
+        >
+          Retry {label.toLowerCase()} download
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="oracle-folder-ok" role="status">
+      {label} is ready ({formatMegabytes(status.approximate_bytes)}).
+    </div>
+  );
 }
 
 export function OraclePanel() {
@@ -430,7 +498,6 @@ export function OraclePanel() {
     return () => window.clearInterval(poll);
   }, [refreshFiles, refreshStats, refreshStatus, status?.state]);
 
-  const modelPercentage = modelProgressPercentage(status);
   const allFilesReady = ORACLE_FILE_TABS.every((tab) => filesByTab[tab.id].status === "ready");
   const noFiles =
     allFilesReady &&
@@ -666,56 +733,25 @@ export function OraclePanel() {
             {workspaceActionError}
           </div>
         )}
-        {status?.model && status.model.state === "downloading" && (
-          <div className="oracle-model-download" aria-live="polite">
-            <div className="oracle-job-heading">
-              <span>
-                Downloading {status.model.model_id} · file {status.model.file_index || 1} /{" "}
-                {status.model.total_files}
-              </span>
-              <span>{modelPercentage === null ? "—" : `${modelPercentage}%`}</span>
-            </div>
-            <div className="oracle-folder-meta">
-              {status.model.file ?? "Preparing download…"} · expected at {status.model.directory}
-            </div>
-            {modelPercentage !== null && (
-              <div
-                className="oracle-progress-track"
-                role="progressbar"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={modelPercentage}
-                aria-label="Oracle model download progress"
-              >
-                <div className="oracle-progress-fill" style={{ width: `${modelPercentage}%` }} />
-              </div>
-            )}
-            <div className="oracle-job-note">
-              {status.model.message ?? `About ${formatMegabytes(status.model.approximate_bytes)}.`}
-            </div>
-          </div>
-        )}
-        {status?.model && ["missing", "failed", "cancelled"].includes(status.model.state) && (
-          <div className="oracle-error-message" role="alert">
-            {status.model.message ?? `Oracle needs ${status.model.model_id} before it can run.`}
-            <button
-              className="oracle-button oracle-button-secondary oracle-model-retry-button"
-              type="button"
-              onClick={() => {
-                void oracleModelDownloadStart()
-                  .then(() => refreshStatus())
-                  .catch((error: unknown) => setWorkspaceActionError(commandErrorMessage(error)));
-              }}
-            >
-              Retry download
-            </button>
-          </div>
-        )}
-        {status?.model?.state === "ready" && (
-          <div className="oracle-folder-ok" role="status">
-            {status.model.model_id} is ready ({formatMegabytes(status.model.approximate_bytes)}).
-          </div>
-        )}
+        <OracleModelStatusCard
+          status={status?.model ?? null}
+          label="Embedding model"
+          onRetry={() => {
+            void oracleModelDownloadStart()
+              .then(() => refreshStatus())
+              .catch((error: unknown) => setWorkspaceActionError(commandErrorMessage(error)));
+          }}
+        />
+        <OracleModelStatusCard
+          status={status?.reranker ?? null}
+          label="Reranker"
+          optional
+          onRetry={() => {
+            void oracleModelDownloadStart()
+              .then(() => refreshStatus())
+              .catch((error: unknown) => setWorkspaceActionError(commandErrorMessage(error)));
+          }}
+        />
         {indexIsEmpty && (
           <div className="oracle-empty-state" role="status" aria-live="polite">
             The Oracle index is empty. No files are indexed yet.
@@ -859,7 +895,9 @@ export function OraclePanel() {
           >
             {indexStarting ? "Starting index…" : "Index now"}
           </button>
-          {(status?.state === "indexing" || status?.model.state === "downloading") && (
+          {(status?.state === "indexing" ||
+            status?.model.state === "downloading" ||
+            status?.reranker?.state === "downloading") && (
             <button
               className="oracle-button oracle-button-secondary oracle-stop-button"
               type="button"
