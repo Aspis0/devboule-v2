@@ -57,10 +57,19 @@ pub fn chunk_geometry_fingerprint() -> String {
 
 // ── Extension sets ───────────────────────────────────────────────────────────
 
+/// Extensions the collector will read at all.
+///
+/// The prose formats here — `.tex`, `.rst`, `.org`, `.adoc`, `.bib` — were added
+/// on 2026-08-30 so a folder of writing is not silently skipped. They are text,
+/// and the embedder is a text model; nothing about the code path changes. This
+/// is emphatically *not* support for scientific documents: a paper is a PDF, and
+/// Oracle cannot read one. See `recon/oracle-scientific-documents.md`.
 pub fn is_text_extension(ext: &str) -> bool {
     matches!(
         ext,
-        ".css"
+        ".adoc"
+            | ".bib"
+            | ".css"
             | ".gradle"
             | ".html"
             | ".java"
@@ -75,14 +84,17 @@ pub fn is_text_extension(ext: &str) -> bool {
             | ".cjs"
             | ".mts"
             | ".cts"
+            | ".org"
             | ".properties"
             | ".ps1"
             | ".py"
             | ".r"
             | ".rmd"
             | ".rs"
+            | ".rst"
             | ".sh"
             | ".sql"
+            | ".tex"
             | ".toml"
             | ".ts"
             | ".tsx"
@@ -94,13 +106,14 @@ pub fn is_text_extension(ext: &str) -> bool {
 }
 
 fn is_doc_extension(ext: &str) -> bool {
-    matches!(ext, ".md" | ".txt")
+    matches!(ext, ".adoc" | ".md" | ".org" | ".rst" | ".tex" | ".txt")
 }
 
 fn is_structured_extension(ext: &str) -> bool {
     matches!(
         ext,
-        ".gradle"
+        ".bib"
+            | ".gradle"
             | ".html"
             | ".json"
             | ".jsonc"
@@ -548,5 +561,37 @@ mod split_text_tests {
         assert!(fingerprint.contains("\"code_max_chars\":1024"));
         assert!(fingerprint.contains("\"code_overlap_chars\":164"));
         assert!(!fingerprint.contains("max_chars/8"));
+    }
+
+    #[test]
+    fn prose_formats_are_collected_and_read_as_documents() {
+        for name in ["paper.tex", "guide.rst", "notes.org", "manual.adoc"] {
+            assert!(
+                is_text_extension(&format!(".{}", name.rsplit('.').next().unwrap())),
+                "{name} would be skipped by the collector"
+            );
+            assert_eq!(
+                chunk_limits_for_file(Path::new(name)),
+                (CHUNK_DOC_MAX_CHARS, CHUNK_DOC_OVERLAP_CHARS),
+                "{name} should be chunked as prose, not with the default profile"
+            );
+        }
+        // A bibliography is a list of records, so it takes the structured
+        // geometry the other record formats take.
+        assert_eq!(
+            chunk_limits_for_file(Path::new("refs.bib")),
+            (CHUNK_STRUCTURED_MAX_CHARS, CHUNK_STRUCTURED_OVERLAP_CHARS)
+        );
+    }
+
+    #[test]
+    fn adding_prose_formats_left_the_code_profile_alone() {
+        for name in ["a.rs", "b.ts", "c.py", "d.tsx", "e.sql", "f.sh"] {
+            assert_eq!(
+                chunk_limits_for_file(Path::new(name)),
+                (CHUNK_CODE_MAX_CHARS, CHUNK_CODE_OVERLAP_CHARS),
+                "{name} changed profile"
+            );
+        }
     }
 }

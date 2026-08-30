@@ -596,7 +596,14 @@ pub fn priority_rank(relative: &str) -> usize {
     if r.contains("/tests/") || r.starts_with("tests/") {
         return 1;
     }
-    if r.ends_with(".md") || r.ends_with(".txt") || r.contains("/docs/") || r.starts_with("docs/") {
+    // Prose ranks with documentation, whatever its markup: the collector's cap
+    // must not drop a folder of writing on the floor because it is .tex.
+    if [".md", ".txt", ".tex", ".rst", ".org", ".adoc"]
+        .iter()
+        .any(|extension| r.ends_with(extension))
+        || r.contains("/docs/")
+        || r.starts_with("docs/")
+    {
         return 2;
     }
     3
