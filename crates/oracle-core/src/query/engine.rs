@@ -551,7 +551,7 @@ impl QueryEngine {
             }
             apply_test_policy(query, &mut rows);
             let mut selected = diversify_context_rows(rows, limit.max(1));
-            self.narrow_citations(query, &mut selected)?;
+            self.narrow_citations(query, &mut selected);
             return Ok(selected);
         }
 
@@ -592,7 +592,7 @@ impl QueryEngine {
         sort_context_rows(&mut rows);
         apply_test_policy(query, &mut rows);
         let mut selected = diversify_context_rows(rows, limit.max(1));
-        self.narrow_citations(query, &mut selected)?;
+        self.narrow_citations(query, &mut selected);
         Ok(selected)
     }
 
@@ -608,7 +608,21 @@ impl QueryEngine {
     /// per-query window budget, simply keeps its chunk-wide range. That is a
     /// smaller citation lost, never a wrong one: nothing here can change which
     /// chunks were retrieved or in which order.
-    fn narrow_citations(&self, query: &str, rows: &mut [ContextChunk]) -> Result<()> {
+    ///
+    /// Returns `()` and not `Result` on purpose. The focus is advisory, so a
+    /// cross-encoder that fails here must cost the caller a hint, never the
+    /// answer it already had — the reranking pass above may treat its own
+    /// failure as fatal because it decides the *order*, but this only decides
+    /// where to look inside a result that is already chosen. The failure is
+    /// reported rather than swallowed: absence of `focus` is visible in the
+    /// response, and the reason goes to the log.
+    fn narrow_citations(&self, query: &str, rows: &mut [ContextChunk]) {
+        if let Err(error) = self.try_narrow_citations(query, rows) {
+            eprintln!("[oracle] citation focus unavailable for this query: {error:#}");
+        }
+    }
+
+    fn try_narrow_citations(&self, query: &str, rows: &mut [ContextChunk]) -> Result<()> {
         let Some(ref reranker) = self.reranker else {
             return Ok(());
         };
