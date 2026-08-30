@@ -2034,13 +2034,25 @@ fn run_citation_eval() -> anyhow::Result<()> {
                 .map(|id| (id, r["file_sorgente"].as_str().unwrap_or("")))
         })
         .collect();
-    let text_of: HashMap<&str, &str> = records
+    // Production reranks and narrows the REDACTED chunk text: the engine calls
+    // `redact_secret_tokens` in `ContextChunk::from_file_chunk`, before either
+    // pass sees it. Scoring the raw text here would measure a pipeline we do
+    // not ship. Redaction preserves line counts, so the geometry is unaffected;
+    // only what the cross-encoder reads changes.
+    let redacted_text: HashMap<&str, String> = records
         .iter()
         .filter_map(|r| {
-            r["id"]
-                .as_str()
-                .map(|id| (id, r["text"].as_str().unwrap_or("")))
+            r["id"].as_str().map(|id| {
+                (
+                    id,
+                    oracle_core::redact_secret_tokens(r["text"].as_str().unwrap_or("")),
+                )
+            })
         })
+        .collect();
+    let text_of: HashMap<&str, &str> = redacted_text
+        .iter()
+        .map(|(id, text)| (*id, text.as_str()))
         .collect();
     let lines_of: HashMap<&str, (usize, usize)> = records
         .iter()
@@ -2216,10 +2228,29 @@ fn run_citation_eval() -> anyhow::Result<()> {
                 .map(|c| recall(c.baseline_hits as f64, c.evidence as f64)),
         );
         let base_lines = mean(scored.iter().map(|c| c.baseline_lines as f64));
+        let per_case: Vec<serde_json::Value> = scored
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "evidence": c.evidence,
+                    "baseline_hits": c.baseline_hits,
+                    "baseline_lines": c.baseline_lines,
+                    "focus_hits": c.focus_hits,
+                    "focus_lines": c.focus_lines,
+                    "random_hits": c.random_hits,
+                    "best_hits": c.best_hits,
+                })
+            })
+            .collect();
         by_geometry.insert(
             windows.to_string(),
             serde_json::json!({
                 "cases": scored.len(),
+                // Emitted in a stable order across geometries — the same cases
+                // in the same sequence — so differences can be tested pairwise
+                // instead of by comparing two marginal confidence intervals,
+                // which understates power on paired data.
+                "per_case": per_case,
                 "too_short_to_narrow": too_short,
                 "focus": {
                     "evidence_recall": focus_recall,

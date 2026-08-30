@@ -160,13 +160,30 @@ pub fn classify_source_kind(source: &str) -> String {
     if is_test_source(source) {
         return "test_regression_secondary".to_string();
     }
+    // The prose markups must be listed here as well as in `is_doc_extension`.
+    // Two lists, one idea, and this one is easy to forget: it is dead for the
+    // model we ship, because bge declares `uses_semantic_prefix: false` and
+    // `chunk_embedding_text_for_model` returns before building the header. It
+    // wakes up the moment a model that does use the prefix is selected — Qwen3
+    // declares `true` — and a `.tex` file would then be labelled
+    // `structured_config` and hinted at as a schema question. Cheap to keep
+    // right, expensive to notice when wrong.
     if lower.ends_with(".md")
         || lower.ends_with(".txt")
         || lower.ends_with(".rmd")
+        || lower.ends_with(".tex")
+        || lower.ends_with(".rst")
+        || lower.ends_with(".org")
+        || lower.ends_with(".adoc")
         || lower.contains("/docs/")
         || lower.contains("roadmap")
         || lower.contains("handoff")
     {
+        return "documentation_or_plan_secondary".to_string();
+    }
+    // A bibliography is references, not configuration: it belongs with the
+    // writing it supports rather than with schemas.
+    if lower.ends_with(".bib") {
         return "documentation_or_plan_secondary".to_string();
     }
     if lower.contains("/dist/")
@@ -706,5 +723,30 @@ mod tests {
             query
         );
         assert_eq!(query_embedding_text_for_model(query, None, false), query);
+    }
+    /// The prose markups accepted by the collector must classify as prose here
+    /// too. This is dead for bge (no semantic prefix) and live for any model
+    /// that declares one, which is why it is asserted rather than trusted.
+    #[test]
+    fn prose_markups_are_documentation_not_configuration() {
+        for source in [
+            "paper.tex",
+            "guide.rst",
+            "notes.org",
+            "manual.adoc",
+            "refs.bib",
+            "README.md",
+        ] {
+            assert_eq!(
+                classify_source_kind(source),
+                "documentation_or_plan_secondary",
+                "{source} was classified as something other than prose"
+            );
+        }
+        assert_eq!(
+            classify_source_kind("src/main.rs"),
+            "implementation_primary"
+        );
+        assert_eq!(classify_source_kind("Cargo.toml"), "structured_config");
     }
 }

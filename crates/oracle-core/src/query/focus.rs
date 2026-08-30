@@ -32,20 +32,25 @@
 ///
 /// Swept over 2, 3, 4, 6 and 8 on the 160-question bench, against the 150
 /// retrieved target chunks that carry line-level evidence
-/// (`recon/bench-citation-focus.md`). Two results decided it:
+/// (`recon/bench-citation-focus.md`). Two results decided it, both from a
+/// paired bootstrap over those cases rather than from eyeballing the means:
 ///
-/// - **Resolution barely moves whether the focus lands on evidence at all.**
-///   Two windows of 16 lines hit 0.300 and eight windows of 6 lines hit 0.287,
-///   flat inside the noise of 150 cases. So the limit is the cross-encoder's
-///   choice, not how finely the chunk is cut, and buying resolution past this
-///   point buys nothing.
-/// - **What resolution does move is how much evidence survives the narrowing**:
-///   66% of the chunk's evidence at four windows against 58% at six. Four keeps
-///   the most evidence among the geometries whose hit rate is at the top of that
-///   flat band, while still citing 2.32x fewer lines (10.0 against 22.5).
+/// - **Resolution does not decide whether the focus lands on evidence at all.**
+///   No pair of geometries is distinguishable on hit rate; two windows of 16
+///   lines and eight of 6 are equally likely to land. So the limit is the
+///   cross-encoder's choice, not how finely the chunk is cut.
+/// - **Resolution does decide how much evidence survives**, and there the steps
+///   are real: 3 to 4 costs nothing measurable, 4 to 6 costs recall at 95%.
 ///
-/// Cost is not a factor: every geometry measured between 6 and 9 ms per query,
-/// against the 158 ms the reranking pass itself already spends.
+/// So the criterion is the narrowest geometry reachable without a measurable
+/// recall loss from its predecessor, which is four: 10.05 cited lines instead
+/// of 23.29. That criterion encodes a preference for a narrow citation. Two
+/// windows really does retain more evidence, measurably, while citing 16 lines;
+/// someone who would rather read six more lines than miss evidence should
+/// change this constant, and the bench supports that reading of the same table.
+///
+/// Cost is not part of the decision: every geometry measured between 5.5 and
+/// 8.5 ms per query, against the 158 ms the reranking pass already spends.
 pub const FOCUS_WINDOWS_PER_CHUNK: usize = 4;
 
 /// Below this the chunk is already a precise citation and narrowing it further
