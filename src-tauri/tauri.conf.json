@@ -29,17 +29,25 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:6767 ws://127.0.0.1:6767",
+        // `http://plugin.localhost` is the origin our own registered scheme gets
+        // on Windows (src/plugin_assets.rs). A plugin's UI is served by us, from
+        // a directory we resolved, but it is a DIFFERENT origin than the app, so
+        // 'self' does not cover it. This is a real widening and a narrow one: no
+        // string becomes executable, unlike 'unsafe-eval'.
+        "connect-src": "'self' ipc: http://ipc.localhost http://plugin.localhost ws://localhost:6767 ws://127.0.0.1:6767",
         "font-src": "'self'",
-        "img-src": "'self' data:",
-        // M5 does NOT need this relaxed, contrary to what this comment used to
-        // say. PixiJS compiles shader glue with `new Function`, but it ships
-        // `pixi.js/unsafe-eval` — a patch whose npm description is "adds support
-        // for environments that disallow support of new Function". Polis already
-        // imports it (old-devboule src/components/polis/createPolis.ts:18) with a
-        // comment saying not to add 'unsafe-eval' to the CSP. Importing that
-        // module is what keeps this directive strict; verified 2026-08-30.
-        "script-src": "'self'",
+        "img-src": "'self' data: http://plugin.localhost",
+        // Still no 'unsafe-eval', and M5 does not need it, contrary to what this
+        // comment used to say. PixiJS compiles shader glue with `new Function`,
+        // but it ships `pixi.js/unsafe-eval` — a patch whose npm description is
+        // "adds support for environments that disallow support of new Function".
+        // Polis already imports it (old-devboule createPolis.ts:18) under its own
+        // comment saying not to open the CSP. Verified 2026-08-30.
+        //
+        // The plugin origin is listed because a plugin's UI module is served by
+        // us on a separate origin; see connect-src above. Listing one local
+        // origin we serve is not the same kind of change as allowing eval.
+        "script-src": "'self' http://plugin.localhost",
         "style-src": "'self' 'unsafe-inline'",
         "worker-src": "'self' blob:"
       }

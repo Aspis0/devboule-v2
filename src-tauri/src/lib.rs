@@ -1,6 +1,7 @@
 mod backend;
 mod client;
 mod oracle;
+mod plugin_assets;
 
 use tauri::Manager;
 
@@ -12,7 +13,8 @@ fn app_identity(app: tauri::AppHandle) -> String {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let builder = plugin_assets::register(tauri::Builder::default());
+    builder
         .manage(client::DaemonBridge::start())
         .manage(oracle::OracleRuntime::from_environment())
         .plugin(tauri_plugin_dialog::init())
