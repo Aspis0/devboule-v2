@@ -284,12 +284,12 @@ function OracleAdminActions({
         {waitingForMemory
           ? "Waiting for memory…"
           : indexStarting
-          ? canResume
-            ? "Resuming index…"
-            : "Starting index…"
-          : canResume
-            ? "Resume indexing"
-            : "Re-index folder"}
+            ? canResume
+              ? "Resuming index…"
+              : "Starting index…"
+            : canResume
+              ? "Resume indexing"
+              : "Re-index folder"}
       </button>
       <button
         className="oracle-button oracle-button-secondary"

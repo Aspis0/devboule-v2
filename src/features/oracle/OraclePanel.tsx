@@ -457,7 +457,9 @@ const ReadyOracle = memo(function ReadyOracle({
       {incomplete && status && (
         <div className="oracle-incomplete-notice" role="status">
           <div>
-            <strong>{status.pause_reason ? "Indexing is paused for memory." : "Indexing is incomplete."}</strong>
+            <strong>
+              {status.pause_reason ? "Indexing is paused for memory." : "Indexing is incomplete."}
+            </strong>
             <span>
               {status.pause_reason ?? (
                 <>
