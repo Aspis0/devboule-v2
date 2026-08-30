@@ -3,7 +3,7 @@
  *
  * M5 installs Polis as files the user drops in, not as code compiled into
  * Devboule. Those files are served by the app on a registered URI scheme
- * (`src-tauri/src/plugin_assets.rs`), which the platform puts on a **different
+ * (`src-tauri/src/plugins/assets.rs`), which the platform puts on a **different
  * origin** from the app: `http://plugin.localhost` on Windows,
  * `plugin://localhost` elsewhere.
  *

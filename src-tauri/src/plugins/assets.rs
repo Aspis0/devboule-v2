@@ -30,8 +30,21 @@
 //! this WebView load a plugin module at all" has to be answerable before any
 //! plugin is installed — which is the state the app ships in — and a probe that
 //! needs a file present would only ever report on the file.
+//!
+//! ## Nothing is served that discovery did not verify
+//!
+//! Every request other than the self test is checked against
+//! [`super::PluginRegistry`]: the plugin named by the first path segment must
+//! have passed verification, and the rest of the path must be a file its
+//! manifest listed. Without that, refusing a plugin would only ever be advice —
+//! the window could load it anyway by asking for the file directly, and the
+//! content-policy entry that lets this origin execute scripts would be pointing
+//! at bytes nothing vouched for.
+//!
+//! Refused and absent share a status on purpose. Telling them apart turns this
+//! handler into a way to ask what exists on disk.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{Manager, UriSchemeContext, UriSchemeResponder};
@@ -81,9 +94,20 @@ fn safe_relative_path(uri_path: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let decoded = percent_decode(trimmed)?;
+    safe_relative_segments(&percent_decode(trimmed)?)
+}
+
+/// The same check without the percent-decoding, for paths that never travelled
+/// through a URL.
+///
+/// The manifest uses this one, and the split is not cosmetic: a manifest path is
+/// written as-is, so decoding it would turn a file genuinely named `a%20b.js`
+/// into `a b.js`. The verifier would hash one file and the server would serve
+/// another, which is the sort of disagreement that only ever shows up on the one
+/// plugin that has an odd file name.
+pub(super) fn safe_relative_segments(path: &str) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
-    for segment in decoded.split('/') {
+    for segment in path.split('/') {
         match segment {
             "" | "." => continue,
             ".." => return None,
@@ -138,15 +162,6 @@ fn respond(responder: UriSchemeResponder, status: StatusCode, kind: &str, body: 
     responder.respond(response);
 }
 
-fn plugins_root<R: tauri::Runtime>(context: &UriSchemeContext<'_, R>) -> Option<PathBuf> {
-    context
-        .app_handle()
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|dir| dir.join("plugins"))
-}
-
 /// Serve one request for a plugin file.
 fn handle<R: tauri::Runtime>(
     context: UriSchemeContext<'_, R>,
@@ -174,7 +189,7 @@ fn handle<R: tauri::Runtime>(
         );
         return;
     };
-    let Some(root) = plugins_root(&context) else {
+    let Some(root) = super::plugins_root(context.app_handle()) else {
         respond(
             responder,
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -183,6 +198,36 @@ fn handle<R: tauri::Runtime>(
         );
         return;
     };
+
+    // Every asset belongs to a plugin, and the first segment names it. A file
+    // sitting loose at the plugins root has no manifest vouching for it, so
+    // there is nothing that could authorise serving it.
+    let Some((plugin_id, inside)) = relative.split_once('/') else {
+        respond(
+            responder,
+            StatusCode::NOT_FOUND,
+            "text/plain",
+            b"no such plugin asset".to_vec(),
+        );
+        return;
+    };
+    // Fail closed on every branch: a registry that is not there yet, a plugin
+    // that did not verify, a path its manifest never listed. Without this the
+    // verification would be advice — the window could load a refused plugin
+    // simply by asking for it.
+    let verified = context
+        .app_handle()
+        .try_state::<super::PluginRegistry>()
+        .is_some_and(|registry| registry.is_verified_asset(&root, plugin_id, inside));
+    if !verified {
+        respond(
+            responder,
+            StatusCode::NOT_FOUND,
+            "text/plain",
+            b"no such plugin asset".to_vec(),
+        );
+        return;
+    }
 
     match read_contained(&root, &relative) {
         Some(bytes) => respond(

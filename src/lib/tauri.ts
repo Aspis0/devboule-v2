@@ -12,6 +12,7 @@ import type {
   OracleWorkspace,
   OracleSearchResponse,
   PermissionOutcome,
+  PluginInventory,
   Project,
   ProviderInfo,
   Session,
@@ -50,6 +51,8 @@ type CommandArgs = {
   oracle_watch_stop: undefined;
   oracle_files: { tab: FileTab; page: number };
   oracle_ask: { query: string };
+  plugins_list: undefined;
+  plugins_rescan: undefined;
 };
 
 type CommandResults = {
@@ -82,6 +85,8 @@ type CommandResults = {
   oracle_watch_stop: void;
   oracle_files: IndexedFile[];
   oracle_ask: OracleSearchResponse;
+  plugins_list: PluginInventory;
+  plugins_rescan: PluginInventory;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -150,3 +155,6 @@ export const oracleWatchStop = () => invokeTyped("oracle_watch_stop");
 export const oracleFiles = (tab: FileTab, page: number) =>
   invokeTyped("oracle_files", { tab, page });
 export const oracleAsk = (query: string) => invokeTyped("oracle_ask", { query });
+export const pluginsList = () => invokeTyped("plugins_list");
+/** Look at the disk again, for someone who just installed something. */
+export const pluginsRescan = () => invokeTyped("plugins_rescan");

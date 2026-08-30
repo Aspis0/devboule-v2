@@ -265,3 +265,24 @@ export interface OracleIndexStats {
   stale_files: number;
   backend: string;
 }
+
+/**
+ * One installed plugin, as discovery found it. A refused plugin is reported
+ * here with its reason rather than left out: telling someone who installed a
+ * plugin that nothing is installed sends them to fix the wrong thing.
+ */
+export interface PluginEntry {
+  id: string;
+  name: string | null;
+  version: string | null;
+  capabilities: string[];
+  ready: boolean;
+  reason: string | null;
+}
+
+export interface PluginInventory {
+  root: string;
+  plugins: PluginEntry[];
+  /** Set when the plugins directory exists but could not be read. */
+  problem: string | null;
+}

@@ -1,7 +1,7 @@
 mod backend;
 mod client;
 mod oracle;
-mod plugin_assets;
+mod plugins;
 
 use tauri::Manager;
 
@@ -13,10 +13,13 @@ fn app_identity(app: tauri::AppHandle) -> String {
 }
 
 pub fn run() {
-    let builder = plugin_assets::register(tauri::Builder::default());
+    let builder = plugins::assets::register(tauri::Builder::default());
     builder
         .manage(client::DaemonBridge::start())
         .manage(oracle::OracleRuntime::from_environment())
+        // The asset server refuses everything until this exists, so it is
+        // managed before any window can ask for a plugin file.
+        .manage(plugins::PluginRegistry::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let runtime = app.state::<oracle::OracleRuntime>();
@@ -64,6 +67,8 @@ pub fn run() {
             oracle::oracle_watch_stop,
             oracle::oracle_files,
             oracle::oracle_ask,
+            plugins::plugins_list,
+            plugins::plugins_rescan,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Devboule")

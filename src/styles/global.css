@@ -578,3 +578,28 @@ button:focus-visible {
 .polis-readiness-blocked {
   border-left-color: var(--danger);
 }
+
+/* Installing a plugin does not restart the app, so the one readout that can
+   change while the window is open can be asked again. */
+.polis-readiness-button {
+  margin-top: 10px;
+  padding: 0 11px;
+  height: 26px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.polis-readiness-button:hover:not(:disabled),
+.polis-readiness-button:focus-visible:not(:disabled) {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta-deep);
+}
+
+.polis-readiness-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
