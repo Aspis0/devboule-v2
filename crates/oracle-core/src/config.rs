@@ -19,6 +19,9 @@ pub const CHUNKS_DIR: &str = "chunks.lancedb";
 pub const FILE_VECTORS_DIR: &str = "file_vectors.lancedb";
 pub const METADATA_SQLITE: &str = "metadata.sqlite";
 pub const CHUNK_MANIFEST: &str = "chunk-index-manifest.json";
+/// Code-knowledge-graph database. Name and `CKG_DB_PATH` override are v1's,
+/// so an existing graph is found rather than silently rebuilt beside itself.
+pub const CKG_SQLITE: &str = "ckg.sqlite";
 
 /// Env var selecting the real (Qwen) query embedder vs. the hash fallback.
 /// Mirrors `ORACLE_QUERY_EMBEDDER` usage in `oracle/store/lance_store.py`.
@@ -135,6 +138,8 @@ pub struct OracleDataPaths {
     pub metadata: PathBuf,
     /// Chunk-index manifest (`chunk-index-manifest.json`).
     pub manifest: PathBuf,
+    /// Code-knowledge-graph database (`ckg.sqlite`).
+    pub ckg: PathBuf,
 }
 
 impl OracleDataPaths {
@@ -173,6 +178,7 @@ impl OracleDataPaths {
                 data_dir.join(CHUNK_MANIFEST),
                 &data_dir,
             ),
+            ckg: confined_env_or(&["CKG_DB_PATH"], data_dir.join(CKG_SQLITE), &data_dir),
             root: data_dir,
         }
     }

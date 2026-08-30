@@ -46,8 +46,10 @@ use serde::Serialize;
 use crate::config::{active_chunk_profile_version, EMBED_DIMS};
 use crate::embed::{self, CancelFlag};
 use crate::ingest::chunking;
+use crate::ingest::ckg_build;
 use crate::ingest::collect;
 use crate::ingest::retrieval_text::{self, ChunkMeta};
+use crate::store::ckg::CkgStore;
 use crate::store::lance::{LanceRow, LanceStore};
 use crate::store::manifest::{
     self, file_signature, load_manifest, manifest_files_for_root, save_manifest,
@@ -266,6 +268,12 @@ pub struct IndexerConfig {
     pub max_batches: Option<usize>,
     /// Force re-indexing of all files, ignoring manifest signatures.
     pub force: bool,
+    /// Where to write the code-knowledge graph, or `None` to not build one.
+    ///
+    /// Passed explicitly rather than derived from `manifest_path`'s parent: the
+    /// manifest honours its own env override and need not sit directly in the
+    /// data directory, so deriving would put the graph somewhere nobody looks.
+    pub ckg_path: Option<PathBuf>,
 }
 
 impl Default for IndexerConfig {
@@ -286,6 +294,7 @@ impl Default for IndexerConfig {
                 .or(Some(DEFAULT_MAX_GPU_TEMP_C)),
             max_batches: None,
             force: false,
+            ckg_path: None,
         }
     }
 }
@@ -1337,6 +1346,39 @@ pub async fn prune_excluded_chunks(
     })
 }
 
+/// Build and store the graph rows for one committed batch.
+///
+/// Sources are re-read here rather than threaded through the embedding path:
+/// one read of an already-warm file per changed file is nothing next to the
+/// embedding, and it keeps the chunk schema — which feeds the index — untouched.
+/// A file that cannot be read contributes nothing instead of failing the batch.
+fn write_batch_graph(
+    store: &CkgStore,
+    root: &Path,
+    batch_file_ids: &[String],
+    file_chunks_map: &HashMap<String, Vec<serde_json::Value>>,
+    universe: &HashSet<String>,
+) -> Result<()> {
+    let empty: Vec<serde_json::Value> = Vec::new();
+    let mut sources: Vec<(String, String)> = Vec::with_capacity(batch_file_ids.len());
+    for file_id in batch_file_ids {
+        match std::fs::read_to_string(root.join(file_id)) {
+            Ok(source) => sources.push((file_id.clone(), source)),
+            Err(_) => continue,
+        }
+    }
+    let inputs: Vec<ckg_build::FileGraphInput<'_>> = sources
+        .iter()
+        .map(|(file_id, source)| ckg_build::FileGraphInput {
+            file_id: file_id.as_str(),
+            source: source.as_str(),
+            chunks: file_chunks_map.get(file_id).unwrap_or(&empty),
+        })
+        .collect();
+    let graph = ckg_build::build_graph_within(&inputs, universe);
+    store.replace_for_files(batch_file_ids, &graph.nodes, &graph.edges)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // index_file_chunks — the main embed+write pipeline
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1516,6 +1558,24 @@ pub async fn index_file_chunks(
             ),
         );
     }
+
+    // Import resolution needs the WHOLE indexed file set, not this batch's:
+    // resolving against one batch would drop every edge that crosses a batch
+    // boundary, which is most of them. Paths only, so this stays cheap.
+    let graph_universe: HashSet<String> = files
+        .iter()
+        .filter_map(|path| relative_posix(path, &root).ok())
+        .collect();
+    let ckg_store = config.ckg_path.as_ref().and_then(|path| {
+        CkgStore::new(path)
+            .map_err(|error| {
+                log_progress(
+                    progress,
+                    &format!("chunk-index ckg unavailable, continuing without it: {error:#}"),
+                );
+            })
+            .ok()
+    });
 
     log_progress(
         progress,
@@ -1885,6 +1945,27 @@ pub async fn index_file_chunks(
         }
         sync_legacy_manifest_root(&mut manifest, &root);
         save_manifest(&manifest_path, &manifest)?;
+
+        // The graph is written only after the chunks it describes are
+        // committed, so it can never point at spans the stores do not have.
+        // Failure is reported and skipped: an index without a graph is a
+        // working index, and losing the index to a graph error would be the
+        // tail wagging the dog. It is not silent — the reason goes to the same
+        // progress channel as everything else in this loop.
+        if let Some(ref ckg) = ckg_store {
+            if let Err(error) = write_batch_graph(
+                ckg,
+                &root,
+                &batch_file_ids,
+                &file_chunks_map,
+                &graph_universe,
+            ) {
+                log_progress(
+                    progress,
+                    &format!("chunk-index ckg batch skipped: {error:#}"),
+                );
+            }
+        }
 
         processed_files += committed_file_count;
         processed_chunks += committed_chunk_count;

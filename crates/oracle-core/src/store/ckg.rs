@@ -216,6 +216,89 @@ impl CkgStore {
         }
         Ok(())
     }
+
+    // ── Reads ────────────────────────────────────────────────────────────────
+    //
+    // Until 2026-08-30 this store had none: it was written by nobody and read
+    // by nobody. The plan on record said the graph "was written but never
+    // queried" and that only these queries were missing — which was the wrong
+    // way round, and is why the builder landed first.
+
+    /// Nodes reachable from `node_id` within `depth` edges.
+    ///
+    /// Ported from the recursive CTE in the v1 MCP tool, with one deliberate
+    /// change: a node reachable by two paths is returned once, at its shortest
+    /// depth. The original returned it once per depth, which is not what a
+    /// neighbourhood is; nothing reads the old shape, so parity would only have
+    /// preserved a defect.
+    pub fn neighborhood(
+        &self,
+        node_id: &str,
+        depth: i64,
+        kind: Option<&str>,
+    ) -> Result<Vec<(String, i64)>> {
+        let conn = self.connect()?;
+        let mut stmt = conn
+            .prepare(
+                "WITH RECURSIVE nbr(id, depth) AS ( \
+                     SELECT ?1, 0 \
+                     UNION \
+                     SELECT e.dst, n.depth + 1 FROM ckg_edges e JOIN nbr n ON e.src = n.id \
+                     WHERE n.depth < ?2 AND (?3 IS NULL OR e.kind = ?3) \
+                 ) \
+                 SELECT id, MIN(depth) FROM nbr WHERE id != ?1 GROUP BY id ORDER BY MIN(depth), id",
+            )
+            .context("preparing ckg neighborhood query")?;
+        let rows = stmt
+            .query_map(params![node_id, depth.max(0), kind], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .context("running ckg neighborhood query")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("reading ckg neighborhood rows")
+    }
+
+    /// Files that `file` imports, as edges.
+    pub fn imports_of(&self, file: &str) -> Result<Vec<CkgEdgeRow>> {
+        self.edges_where(
+            "SELECT src, dst, kind, src_file FROM ckg_edges \
+             WHERE src_file = ?1 AND kind = 'IMPORT' ORDER BY dst",
+            file,
+        )
+    }
+
+    /// Files that import `file`, as edges — the reverse of [`Self::imports_of`],
+    /// served by the `(dst, kind)` index.
+    ///
+    /// This is *not* "find callers". Call edges do not exist in this graph and
+    /// never have: the builder emits `CONTAIN` and `IMPORT` only. Answering
+    /// "who calls this function" needs a call extractor first, and naming this
+    /// method after callers would have hidden that behind a query that returns
+    /// an empty list for a reason nobody could see.
+    pub fn importers_of(&self, file: &str) -> Result<Vec<CkgEdgeRow>> {
+        self.edges_where(
+            "SELECT src, dst, kind, src_file FROM ckg_edges \
+             WHERE dst = ?1 AND kind = 'IMPORT' ORDER BY src",
+            file,
+        )
+    }
+
+    fn edges_where(&self, sql: &str, argument: &str) -> Result<Vec<CkgEdgeRow>> {
+        let conn = self.connect()?;
+        let mut stmt = conn.prepare(sql).context("preparing ckg edge query")?;
+        let rows = stmt
+            .query_map(params![argument], |row| {
+                Ok(CkgEdgeRow {
+                    src: row.get(0)?,
+                    dst: row.get(1)?,
+                    kind: row.get(2)?,
+                    src_file: row.get(3)?,
+                })
+            })
+            .context("running ckg edge query")?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("reading ckg edge rows")
+    }
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -477,5 +560,77 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(db.parent().unwrap());
+    }
+    fn edge(src: &str, dst: &str, kind: &str) -> CkgEdgeRow {
+        CkgEdgeRow {
+            src: src.to_string(),
+            dst: dst.to_string(),
+            kind: kind.to_string(),
+            src_file: src.to_string(),
+        }
+    }
+
+    #[test]
+    fn neighborhood_walks_edges_and_reports_the_shortest_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CkgStore::new(&dir.path().join("ckg.sqlite")).unwrap();
+        store
+            .replace_all(
+                &[],
+                &[
+                    edge("a", "b", "IMPORT"),
+                    edge("b", "c", "IMPORT"),
+                    edge("a", "c", "IMPORT"),
+                    edge("c", "d", "CONTAIN"),
+                ],
+            )
+            .unwrap();
+
+        let one = store.neighborhood("a", 1, None).unwrap();
+        assert_eq!(one, vec![("b".into(), 1), ("c".into(), 1)]);
+
+        // `c` is reachable at depth 1 and at depth 2; it appears once, at 1.
+        let two = store.neighborhood("a", 2, None).unwrap();
+        assert_eq!(
+            two,
+            vec![("b".into(), 1), ("c".into(), 1), ("d".into(), 2)],
+            "a node reached by two paths must appear once, at its shortest depth"
+        );
+
+        let imports_only = store.neighborhood("a", 3, Some("IMPORT")).unwrap();
+        assert!(
+            imports_only.iter().all(|(id, _)| id != "d"),
+            "the kind filter must stop the walk crossing a CONTAIN edge"
+        );
+
+        assert!(store.neighborhood("missing", 2, None).unwrap().is_empty());
+        assert!(store.neighborhood("a", 0, None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn imports_and_importers_are_two_directions_of_one_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CkgStore::new(&dir.path().join("ckg.sqlite")).unwrap();
+        store
+            .replace_all(
+                &[],
+                &[
+                    edge("src/a.ts", "src/lib.ts", "IMPORT"),
+                    edge("src/b.ts", "src/lib.ts", "IMPORT"),
+                    edge("src/a.ts", "src/a.ts#1-2-0", "CONTAIN"),
+                ],
+            )
+            .unwrap();
+
+        let out = store.imports_of("src/a.ts").unwrap();
+        assert_eq!(out.len(), 1, "CONTAIN is not an import");
+        assert_eq!(out[0].dst, "src/lib.ts");
+
+        let incoming = store.importers_of("src/lib.ts").unwrap();
+        assert_eq!(
+            incoming.iter().map(|e| e.src.as_str()).collect::<Vec<_>>(),
+            vec!["src/a.ts", "src/b.ts"]
+        );
+        assert!(store.importers_of("src/a.ts").unwrap().is_empty());
     }
 }

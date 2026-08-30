@@ -1324,7 +1324,13 @@ fn run_index_job(
         }
     };
     let chunk_vectors = LanceStore::new(&paths.data.chunks);
-    let config = IndexerConfig::default();
+    // Build the code-knowledge graph alongside the index. Without this the
+    // store exists, is exported, and stays empty — which is what it did until
+    // now, and what made "the CKG only needs its read queries" a false premise.
+    let config = IndexerConfig {
+        ckg_path: Some(paths.data.ckg.clone()),
+        ..IndexerConfig::default()
+    };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tauri::async_runtime::block_on(index_file_chunks(
             &paths.workspace,
@@ -2512,6 +2518,48 @@ mod tests {
             queries.len()
         );
         println!("\nfocus: {focused} results narrowed, {unfocused} left at chunk width");
+
+        // The code-knowledge graph has the same failure mode as the reranker
+        // had: a store that exists, is exported, and is empty looks exactly like
+        // a store that works. Assert against real data rather than a row count,
+        // by asking a question whose answer is knowable from this repository.
+        {
+            let paths = runtime.paths().expect("oracle paths after indexing");
+            let ckg = oracle_core::CkgStore::new(&paths.data.ckg).expect("opening the ckg store");
+            let engine_file = "crates/oracle-core/src/query/engine.rs";
+            let imports = ckg
+                .imports_of(engine_file)
+                .expect("reading imports out of the ckg");
+            let targets: Vec<&str> = imports.iter().map(|edge| edge.dst.as_str()).collect();
+            println!("\nckg: {engine_file} imports {} files", targets.len());
+            for target in &targets {
+                println!("  -> {target}");
+            }
+            assert!(
+                !targets.is_empty(),
+                "the graph has no imports for {engine_file}, which uses `crate::` on \
+                 several lines: either nothing built the graph or resolution is broken"
+            );
+            for expected in [
+                "crates/oracle-core/src/query/focus.rs",
+                "crates/oracle-core/src/query/reranker.rs",
+            ] {
+                assert!(
+                    targets.contains(&expected),
+                    "the graph is missing the edge {engine_file} -> {expected}"
+                );
+            }
+            // A neighbourhood walk must reach further than one hop, otherwise
+            // the recursive query is returning direct edges and nothing else.
+            let reach = ckg
+                .neighborhood(engine_file, 2, Some("IMPORT"))
+                .expect("walking the ckg");
+            println!("ckg: {} files within two imports", reach.len());
+            assert!(
+                reach.iter().any(|(_, depth)| *depth == 2),
+                "no node sits two imports away, so the recursive walk is not walking"
+            );
+        }
 
         let outside_top5 = queries.len().saturating_sub(top5 + missing);
         println!(

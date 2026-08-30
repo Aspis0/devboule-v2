@@ -4,6 +4,7 @@
 
 pub mod ast_chunker;
 pub mod chunking;
+pub mod ckg_build;
 pub mod collect;
 pub mod indexer;
 pub mod retrieval_text;
