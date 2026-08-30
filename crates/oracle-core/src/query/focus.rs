@@ -102,7 +102,10 @@ pub fn plan_focus_windows(total_lines: usize) -> Vec<(usize, usize)> {
 
 /// The plan above with the window count left open, so a benchmark can sweep the
 /// resolution without the production path growing a knob nobody sets.
-pub fn plan_focus_windows_with(windows_per_chunk: usize, total_lines: usize) -> Vec<(usize, usize)> {
+pub fn plan_focus_windows_with(
+    windows_per_chunk: usize,
+    total_lines: usize,
+) -> Vec<(usize, usize)> {
     let windows_per_chunk = windows_per_chunk.max(1);
     if total_lines < MIN_CHUNK_LINES_TO_NARROW {
         return Vec::new();
@@ -165,6 +168,82 @@ pub fn select_focus(plan: &[(usize, usize)], scores: &[f64]) -> Option<FocusSpan
 mod tests {
     use super::*;
 
+    /// Every invariant the rest of this module depends on, over every geometry
+    /// and every chunk height that can occur, rather than the handful a reviewer
+    /// would think to try. 12 x 2001 plans is instant, and it is the difference
+    /// between believing the arithmetic and knowing it.
+    #[test]
+    fn the_plan_holds_for_every_geometry_and_every_chunk_height() {
+        for windows in 1..=12usize {
+            for total in 0..=2000usize {
+                let plan = plan_focus_windows_with(windows, total);
+                if plan.is_empty() {
+                    // Refusing to plan is only allowed when there is nothing to
+                    // gain: too short to narrow, or one window would be the
+                    // whole chunk.
+                    let stride = total.div_ceil(windows.max(1) + 1).max(1);
+                    let width = (stride * 2).max(MIN_FOCUS_LINES).min(total);
+                    assert!(
+                        total < MIN_CHUNK_LINES_TO_NARROW || width >= total,
+                        "no plan for {total} lines at {windows} windows, but one was possible"
+                    );
+                    continue;
+                }
+
+                let width = plan[0].1;
+                assert!(
+                    plan.iter().all(|&(_, count)| count == width),
+                    "unequal window lengths at {total}/{windows} would let length bias decide"
+                );
+                assert!(
+                    width < total,
+                    "{width} lines is not narrower than {total} at {windows} windows"
+                );
+                assert!(
+                    width >= MIN_FOCUS_LINES,
+                    "window of {width} lines is below the floor at {total}/{windows}"
+                );
+                assert!(
+                    plan.len() <= windows + 1,
+                    "{total}/{windows} planned {} windows",
+                    plan.len()
+                );
+                assert_eq!(plan[0].0, 0, "first line unscored at {total}/{windows}");
+                let (last_offset, last_count) = *plan.last().unwrap();
+                assert_eq!(
+                    last_offset + last_count,
+                    total,
+                    "last line unscored at {total}/{windows}"
+                );
+                for &(offset, count) in &plan {
+                    assert!(
+                        offset + count <= total,
+                        "window {offset}+{count} runs past {total} at {windows} windows"
+                    );
+                }
+                // Offsets are strictly increasing, so no window is scored twice
+                // and the random-window control is an average over distinct
+                // spans rather than a duplicate-weighted one.
+                assert!(
+                    plan.windows(2).all(|pair| pair[0].0 < pair[1].0),
+                    "repeated or unordered offsets at {total}/{windows}: {plan:?}"
+                );
+                // Coverage: every line of the chunk falls in some window, so a
+                // chunk cannot hide its answer between two of them.
+                let mut covered = vec![false; total];
+                for &(offset, count) in &plan {
+                    for line in covered.iter_mut().skip(offset).take(count) {
+                        *line = true;
+                    }
+                }
+                assert!(
+                    covered.iter().all(|line| *line),
+                    "gap in coverage at {total}/{windows}: {plan:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn short_chunks_are_left_alone() {
         for total in 0..MIN_CHUNK_LINES_TO_NARROW {
@@ -172,66 +251,6 @@ mod tests {
                 plan_focus_windows(total).is_empty(),
                 "chunk of {total} lines should not be narrowed"
             );
-        }
-    }
-
-    #[test]
-    fn every_window_of_a_chunk_has_the_same_length() {
-        for total in MIN_CHUNK_LINES_TO_NARROW..400 {
-            let plan = plan_focus_windows(total);
-            if plan.is_empty() {
-                continue;
-            }
-            let width = plan[0].1;
-            assert!(
-                plan.iter().all(|&(_, count)| count == width),
-                "unequal window lengths at {total} lines would let length bias decide"
-            );
-        }
-    }
-
-    #[test]
-    fn windows_stay_inside_the_chunk_and_cover_it() {
-        for total in MIN_CHUNK_LINES_TO_NARROW..400 {
-            let plan = plan_focus_windows(total);
-            if plan.is_empty() {
-                continue;
-            }
-            for &(offset, count) in &plan {
-                assert!(
-                    offset + count <= total,
-                    "window {offset}+{count} runs past {total} lines"
-                );
-            }
-            assert_eq!(plan[0].0, 0, "first line of the chunk is never scored");
-            let (last_offset, last_count) = *plan.last().unwrap();
-            assert_eq!(
-                last_offset + last_count,
-                total,
-                "last line of the chunk is never scored"
-            );
-        }
-    }
-
-    #[test]
-    fn the_plan_stays_within_its_cost_budget() {
-        for total in MIN_CHUNK_LINES_TO_NARROW..4000 {
-            let plan = plan_focus_windows(total);
-            assert!(
-                plan.len() <= FOCUS_WINDOWS_PER_CHUNK + 1,
-                "{total} lines planned {} windows",
-                plan.len()
-            );
-        }
-    }
-
-    #[test]
-    fn narrowing_is_a_real_narrowing() {
-        for total in MIN_CHUNK_LINES_TO_NARROW..400 {
-            let plan = plan_focus_windows(total);
-            if let Some(&(_, width)) = plan.first() {
-                assert!(width < total, "{width} lines is not narrower than {total}");
-            }
         }
     }
 

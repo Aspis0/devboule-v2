@@ -100,13 +100,13 @@ pub use query::engine::{
     node_card_terms, node_card_token_re, summarize_chunk, truncate_chars, GroupChunk, GroupEntry,
 };
 #[doc(hidden)]
-pub use query::lexical::{
-    lexical_chunk_context, lexical_chunk_score, query_terms, semantic_expansions, ScoredChunk,
-};
-#[doc(hidden)]
 pub use query::focus::{
     plan_focus_windows, plan_focus_windows_with, select_focus, window_texts,
     FOCUS_WINDOWS_PER_CHUNK, MAX_FOCUS_WINDOWS_PER_QUERY, MIN_CHUNK_LINES_TO_NARROW,
+};
+#[doc(hidden)]
+pub use query::lexical::{
+    lexical_chunk_context, lexical_chunk_score, query_terms, semantic_expansions, ScoredChunk,
 };
 #[doc(hidden)]
 pub use query::reranker::{

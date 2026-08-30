@@ -1962,9 +1962,7 @@ fn run_citation_eval() -> anyhow::Result<()> {
     let queries_file = PathBuf::from(arg_of("--queries").expect("--queries"));
     let dense_file = PathBuf::from(arg_of("--dense").expect("--dense"));
     let reranker_dir = PathBuf::from(arg_of("--reranker").expect("--reranker"));
-    let k: usize = arg_of("--k")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10); // the shipped Tauri QUERY_LIMIT
+    let k: usize = arg_of("--k").and_then(|v| v.parse().ok()).unwrap_or(10); // the shipped Tauri QUERY_LIMIT
     let depth: usize = arg_of("--depth")
         .and_then(|v| v.parse().ok())
         .unwrap_or(oracle_core::DEFAULT_RERANKER_CANDIDATES);

@@ -616,8 +616,7 @@ impl QueryEngine {
         let mut documents: Vec<String> = Vec::new();
         for (index, row) in rows.iter().enumerate() {
             let plan = focus::plan_focus_windows(row.text.lines().count());
-            if plan.is_empty()
-                || documents.len() + plan.len() > focus::MAX_FOCUS_WINDOWS_PER_QUERY
+            if plan.is_empty() || documents.len() + plan.len() > focus::MAX_FOCUS_WINDOWS_PER_QUERY
             {
                 continue;
             }
