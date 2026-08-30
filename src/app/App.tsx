@@ -23,6 +23,12 @@ const LazySettings = lazy(() =>
   })),
 );
 
+const LazyPolis = lazy(() =>
+  import("../features/polis/PolisSurface").then(({ PolisSurface }) => ({
+    default: PolisSurface,
+  })),
+);
+
 const LazyDesign = lazy(() =>
   import("../features/design/DesignSurface").then(({ DesignSurface }) => ({
     default: () => <DesignSurface />,
@@ -31,7 +37,7 @@ const LazyDesign = lazy(() =>
 
 const SURFACE_COMPONENTS: Record<SurfaceKey, SurfaceComponent> = {
   workspace: LazyWorkspace,
-  polis: SurfacePlaceholder,
+  polis: LazyPolis,
   pubvia: SurfacePlaceholder,
   design: LazyDesign,
   settings: LazySettings,

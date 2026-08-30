@@ -528,3 +528,53 @@ button:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Polis readiness readout — a fact about this machine, not a gate. It sits
+   under the placeholder because the question it answers ("will the isometric
+   view draw here?") is the one that decides whether M5 is worth starting. */
+.polis-readiness {
+  margin-top: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--silence);
+  border-radius: 12px;
+}
+
+.polis-readiness-kicker {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.polis-readiness p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.polis-readiness-note {
+  margin-top: 6px !important;
+  color: var(--ink-soft) !important;
+  font-size: 12px !important;
+}
+
+.polis-readiness-ready {
+  border-left-color: var(--green);
+}
+
+.polis-readiness-degraded {
+  border-left-color: var(--ochre);
+}
+
+.polis-readiness-unknown {
+  border-left-color: var(--silence);
+}
+
+.polis-readiness-blocked {
+  border-left-color: var(--danger);
+}
