@@ -30,6 +30,115 @@ fn rrf_contribution(rank: usize) -> f64 {
     1.0 / (RRF_K + rank as f64)
 }
 
+fn query_asks_for_tests(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    [
+        "test",
+        "tests",
+        "testing",
+        "regression",
+        "fixture",
+        "fixtures",
+        "spec",
+        "assert",
+        "assertion",
+        "vitest",
+    ]
+    .iter()
+    .any(|term| {
+        lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == *term)
+    })
+}
+
+/// Keep test hits after non-test hits for ordinary implementation questions.
+/// The operation is a stable rank partition: it adds no score or model weight.
+fn demote_test_rows_to_tail(rows: &mut Vec<ContextChunk>) {
+    let mut non_tests = Vec::with_capacity(rows.len());
+    let mut tests = Vec::new();
+    for row in rows.drain(..) {
+        if retrieval_text::is_test_source(&row.file_source) {
+            tests.push(row);
+        } else {
+            non_tests.push(row);
+        }
+    }
+    rows.extend(non_tests);
+    rows.extend(tests);
+}
+
+fn apply_test_policy(query: &str, rows: &mut Vec<ContextChunk>) {
+    if !query_asks_for_tests(query) {
+        demote_test_rows_to_tail(rows);
+    }
+}
+
+#[cfg(test)]
+mod diversity_tests {
+    use super::*;
+
+    fn row(file_source: &str, chunk_id: &str) -> ContextChunk {
+        ContextChunk {
+            chunk_id: chunk_id.to_string(),
+            file_source: file_source.to_string(),
+            chunk_index: 0,
+            start_char: 0,
+            end_char: 10,
+            score: 0.0,
+            rerank_score: None,
+            retrieval: "dense".to_string(),
+            text: String::new(),
+            last_modified: String::new(),
+            kind: String::new(),
+            symbol_name: String::new(),
+            signature: String::new(),
+            language: String::new(),
+            line_start: 1,
+            line_end: 10,
+            symbols_used: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn diversification_keeps_first_ranked_chunk_per_file() {
+        let rows = vec![
+            row("src/session.rs", "session-a"),
+            row("src/session.rs", "session-b"),
+            row("README.md", "readme"),
+            row("src/query.rs", "query"),
+        ];
+        let selected = diversify_context_rows(rows, 3);
+        assert_eq!(
+            selected
+                .iter()
+                .map(|row| row.chunk_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session-a", "readme", "query"]
+        );
+    }
+
+    #[test]
+    fn diversification_is_empty_for_zero_limit() {
+        assert!(diversify_context_rows(vec![row("a", "a")], 0).is_empty());
+    }
+
+    #[test]
+    fn ordinary_questions_demote_test_hits_without_changing_scores() {
+        let mut rows = vec![row("tests/query.rs", "test"), row("src/query.rs", "impl")];
+        apply_test_policy("Where is the lexical fallback decided?", &mut rows);
+        assert_eq!(rows[0].chunk_id, "impl");
+        assert_eq!(rows[1].chunk_id, "test");
+    }
+
+    #[test]
+    fn test_questions_keep_test_hits_at_their_rank() {
+        let mut rows = vec![row("tests/query.rs", "test"), row("src/query.rs", "impl")];
+        apply_test_policy("Which tests cover the lexical fallback?", &mut rows);
+        assert_eq!(rows[0].chunk_id, "test");
+    }
+}
+
 /// Score descending, then file and chunk index so equal scores stay ordered.
 /// RRF makes ties common: its scores come from a small discrete set of ranks.
 fn sort_context_rows(rows: &mut [ContextChunk]) {
@@ -41,6 +150,24 @@ fn sort_context_rows(rows: &mut [ContextChunk]) {
             .then_with(|| a.file_source.cmp(&b.file_source))
             .then_with(|| a.chunk_index.cmp(&b.chunk_index))
     });
+}
+
+/// Keep the result list at file granularity.
+///
+/// The public result is a list of files, while the vector index is a list of
+/// chunks.  Selecting the first ranked chunk for each file prevents repeated
+/// or overlapping line ranges from consuming the caller's result slots.  It
+/// is deliberately a hard file boundary rather than a score adjustment: the
+/// file-level evaluation and the UI both treat `limit` as a number of files.
+pub fn diversify_context_rows(rows: Vec<ContextChunk>, limit: usize) -> Vec<ContextChunk> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut seen_files = HashSet::new();
+    rows.into_iter()
+        .filter(|row| seen_files.insert(row.file_source.clone()))
+        .take(limit)
+        .collect()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -340,10 +467,18 @@ impl QueryEngine {
         if !prefer_lexical {
             if let Some(ref chunk_vectors) = self.chunk_vectors {
                 let query_vec = self.embed_query(embedder, query).await?;
+                // The index is chunk-level but the public result is file-level.
+                // Search through the existing public bound so duplicate chunks
+                // cannot consume all `limit` slots before file diversification.
+                // A reranker may request a smaller candidate depth, but it still
+                // needs at least the bound to give the final selector enough
+                // distinct files to choose from.
                 let search_limit = if self.reranker.is_some() {
-                    limit.max(reranker::resolve_candidate_limit())
-                } else {
                     limit
+                        .max(reranker::resolve_candidate_limit())
+                        .max(config::MAX_BOUNDED_LIMIT)
+                } else {
+                    limit.max(config::MAX_BOUNDED_LIMIT)
                 };
                 let hits = chunk_vectors.search(&query_vec, search_limit).await?;
                 // Rank counts kept hits only. A filtered-out hit must not burn a
@@ -406,8 +541,8 @@ impl QueryEngine {
                 sort_context_rows(&mut rows);
                 rows.append(&mut tail);
             }
-            rows.truncate(limit.max(1));
-            return Ok(rows);
+            apply_test_policy(query, &mut rows);
+            return Ok(diversify_context_rows(rows, limit.max(1)));
         }
 
         let total_chunks = self.sqlite.chunk_count().unwrap_or(0);
@@ -425,7 +560,7 @@ impl QueryEngine {
             .filter(|c| chunk_matches_filters(c, kind, language, symbols, imports, module))
             .collect();
         let scored: Vec<ScoredChunk> = filtered.iter().map(file_chunk_to_scored).collect();
-        let lexical_limit = (limit * 3).max(limit);
+        let lexical_limit = config::MAX_BOUNDED_LIMIT.max(limit);
         let lexical_results = lexical::lexical_chunk_context(query, &scored, lexical_limit);
 
         // Build a map from FileChunk id → FileChunk for fast lookup
@@ -445,8 +580,8 @@ impl QueryEngine {
 
         let mut rows: Vec<ContextChunk> = combined.into_values().collect();
         sort_context_rows(&mut rows);
-        rows.truncate(limit.max(1));
-        Ok(rows)
+        apply_test_policy(query, &mut rows);
+        Ok(diversify_context_rows(rows, limit.max(1)))
     }
 
     /// Similar nodes: node-card store first, file_vectors fallback.

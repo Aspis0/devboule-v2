@@ -139,15 +139,25 @@ fn semantic_prefix_enabled(profile: Option<&str>) -> bool {
 // classify_source_kind
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Return whether a path follows a conventional test-source naming rule.
+///
+/// This is intentionally based on path syntax rather than repository-specific
+/// directory names, so test files in Rust, TypeScript, Python, and similar
+/// projects receive the same treatment.
+pub fn is_test_source(source: &str) -> bool {
+    let normalized = source.replace('\\', "/").to_lowercase();
+    normalized
+        .split('/')
+        .any(|part| part == "tests" || part == "__tests__")
+        || normalized.contains(".test.")
+        || normalized.contains(".spec.")
+        || normalized.contains("_test.")
+        || normalized.contains("_spec.")
+}
+
 pub fn classify_source_kind(source: &str) -> String {
     let lower = source.to_lowercase();
-    if lower.contains("/tests/")
-        || lower.ends_with(".test.js")
-        || lower.ends_with(".test.ts")
-        || lower.ends_with(".spec.js")
-        || lower.ends_with(".spec.ts")
-        || lower.ends_with("_test.py")
-    {
+    if is_test_source(source) {
         return "test_regression_secondary".to_string();
     }
     if lower.ends_with(".md")

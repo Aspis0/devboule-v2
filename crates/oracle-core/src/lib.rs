@@ -89,14 +89,14 @@ pub use ingest::indexer::{
 #[doc(hidden)]
 pub use ingest::retrieval_text::{
     chunk_embedding_text, chunk_embedding_text_for_model, classify_domains, classify_source_kind,
-    query_embedding_text, query_embedding_text_for_model, ChunkMeta,
+    is_test_source, query_embedding_text, query_embedding_text_for_model, ChunkMeta,
 };
 #[doc(hidden)]
 pub use query::engine::HashQueryEmbedder;
 #[doc(hidden)]
 pub use query::engine::{
-    group_by_file_fn, is_frontend_view_query, is_provider_backend_query, node_card_terms,
-    node_card_token_re, summarize_chunk, truncate_chars, GroupChunk, GroupEntry,
+    diversify_context_rows, group_by_file_fn, is_frontend_view_query, is_provider_backend_query,
+    node_card_terms, node_card_token_re, summarize_chunk, truncate_chars, GroupChunk, GroupEntry,
 };
 #[doc(hidden)]
 pub use query::lexical::{

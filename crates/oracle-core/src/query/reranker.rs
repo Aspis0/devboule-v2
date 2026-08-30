@@ -32,9 +32,15 @@ pub const RERANKER_MODEL_CONFIG_JSON: &str = r#"{
   "pair": {"mode": "tokenizer_pair", "first": "query", "second": "document"}
 }"#;
 
-/// Production rerank depth.  The benchmark overrides this through its own
-/// explicit 20/50 passes; production can tune it without changing an index.
-pub const DEFAULT_RERANKER_CANDIDATES: usize = 50;
+/// Production rerank depth. Measured on the 160-question bench once per-file
+/// deduplication landed: depth 20 and depth 50 reach the same recall@5
+/// (0.89687), while 20 ranks better (MRR@10 0.74820 against 0.72600) and costs
+/// half the latency (158 ms average against 333 ms). Before deduplication the
+/// extra depth was buying variety that duplicate spans had eaten, so 50 was
+/// worth its price; it no longer is. The benchmark still overrides this with
+/// explicit 20/50 passes, and production can tune it without touching an index
+/// because reranking is not part of the embedding recipe.
+pub const DEFAULT_RERANKER_CANDIDATES: usize = 20;
 
 /// Query-side candidate depth, clamped to the public retrieval bound.
 pub fn resolve_candidate_limit() -> usize {

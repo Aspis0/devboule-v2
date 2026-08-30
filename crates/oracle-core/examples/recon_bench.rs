@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use oracle_core::{
     build_chunks_for_file, build_chunks_for_file_with_limits, chunk_embedding_text_for_model,
-    collect_text_files, query_embedding_text_for_model, resolve_embed_window_bytes,
+    collect_text_files, is_test_source, query_embedding_text_for_model, resolve_embed_window_bytes,
     resolve_embed_window_overlap_bytes, window_text, CancelFlag, ChunkMeta, EpArg, FileChunk,
     LanceRow, LanceStore, OnnxEmbedder, SqliteStore,
 };
@@ -982,6 +982,11 @@ fn run_eval() -> anyhow::Result<()> {
 
         let lex_ranked: Vec<(String, f64)> =
             lex.iter().map(|l| (l.chunk_id.clone(), l.score)).collect();
+        let dense_test_mild = demote_tests_one_rank(&denser, &file_of);
+        let dense_test_conditional = conditional_test_policy(query, &denser, &file_of);
+        let dense_test_tail = demote_tests_to_tail(&denser, &file_of);
+        let dense_test_conditional_tail = conditional_test_tail_policy(query, &denser, &file_of);
+        let dense_distinct_files = distinct_file_ranking(&denser, &file_of);
         rows.push(serde_json::json!({
             "q": query,
             "kind": q["kind"].as_str().unwrap_or(""),
@@ -989,6 +994,12 @@ fn run_eval() -> anyhow::Result<()> {
             "targets": targets,
             "lexical": metrics(&lex_ranked),
             "dense": metrics(&denser),
+            "dense_returned_slots": metric_for_ranked_prefix(&denser, &file_of, &targets, k),
+            "dense_distinct_files": metrics(&dense_distinct_files),
+            "dense_test_mild": metrics(&dense_test_mild),
+            "dense_test_conditional": metrics(&dense_test_conditional),
+            "dense_test_tail": metrics(&dense_test_tail),
+            "dense_test_conditional_tail": metrics(&dense_test_conditional_tail),
             "hybrid_max": metrics(&hybrid_max),
             "hybrid_rrf": metrics(&hybrid_rrf),
         }));
@@ -1061,6 +1072,15 @@ fn run_eval() -> anyhow::Result<()> {
         "uses_semantic_prefix": dense.get("uses_semantic_prefix"),
         "lexical": pack("lexical"),
         "dense": pack("dense"),
+        "dense_returned_slots": {
+            "recall@5": mean("recall@5", "dense_returned_slots"),
+            "mrr@10": mean("mrr@10", "dense_returned_slots"),
+        },
+        "dense_distinct_files": pack("dense_distinct_files"),
+        "dense_test_mild": pack("dense_test_mild"),
+        "dense_test_conditional": pack("dense_test_conditional"),
+        "dense_test_tail": pack("dense_test_tail"),
+        "dense_test_conditional_tail": pack("dense_test_conditional_tail"),
         "hybrid_max": pack("hybrid_max"),
         "hybrid_rrf": pack("hybrid_rrf"),
         "dense_miss_at5_recovered_by50": {
@@ -1078,12 +1098,20 @@ fn run_eval() -> anyhow::Result<()> {
             "literal": {
                 "lexical": pack_kind("lexical", "literal"),
                 "dense": pack_kind("dense", "literal"),
+                "dense_test_mild": pack_kind("dense_test_mild", "literal"),
+                "dense_test_conditional": pack_kind("dense_test_conditional", "literal"),
+                "dense_test_tail": pack_kind("dense_test_tail", "literal"),
+                "dense_test_conditional_tail": pack_kind("dense_test_conditional_tail", "literal"),
                 "hybrid_max": pack_kind("hybrid_max", "literal"),
                 "hybrid_rrf": pack_kind("hybrid_rrf", "literal"),
             },
             "conceptual": {
                 "lexical": pack_kind("lexical", "conceptual"),
                 "dense": pack_kind("dense", "conceptual"),
+                "dense_test_mild": pack_kind("dense_test_mild", "conceptual"),
+                "dense_test_conditional": pack_kind("dense_test_conditional", "conceptual"),
+                "dense_test_tail": pack_kind("dense_test_tail", "conceptual"),
+                "dense_test_conditional_tail": pack_kind("dense_test_conditional_tail", "conceptual"),
                 "hybrid_max": pack_kind("hybrid_max", "conceptual"),
                 "hybrid_rrf": pack_kind("hybrid_rrf", "conceptual"),
             },
@@ -1252,6 +1280,126 @@ fn metric_for_ranked(
     })
 }
 
+fn metric_for_ranked_prefix(
+    ranked: &[(String, f64)],
+    file_of: &HashMap<&str, &str>,
+    targets: &[String],
+    slots: usize,
+) -> serde_json::Value {
+    let prefix: Vec<(String, f64)> = ranked.iter().take(slots).cloned().collect();
+    metric_for_ranked(&prefix, file_of, targets)
+}
+
+fn query_asks_for_tests(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    [
+        "test",
+        "tests",
+        "testing",
+        "regression",
+        "fixture",
+        "fixtures",
+        "spec",
+        "assert",
+        "assertion",
+        "vitest",
+    ]
+    .iter()
+    .any(|term| {
+        lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|word| word == *term)
+    })
+}
+
+/// Move a test hit down by one ranked position, with non-tests winning ties.
+/// This is a rank-only probe: it adds no hand-tuned score or model weight.
+fn demote_tests_one_rank(
+    ranked: &[(String, f64)],
+    file_of: &HashMap<&str, &str>,
+) -> Vec<(String, f64)> {
+    let mut rows: Vec<(usize, bool, String, f64)> = ranked
+        .iter()
+        .enumerate()
+        .map(|(index, (id, score))| {
+            let is_test = file_of
+                .get(id.as_str())
+                .is_some_and(|path| is_test_source(path));
+            (index, is_test, id.clone(), *score)
+        })
+        .collect();
+    rows.sort_by_key(|(index, is_test, _, _)| {
+        let test_rank = if *is_test { 1 } else { 0 };
+        (*index + test_rank, test_rank, *index)
+    });
+    rows.into_iter()
+        .map(|(_, _, id, score)| (id, score))
+        .collect()
+}
+
+/// Stable partition that keeps non-test hits ahead of test hits.
+/// This is a rank boundary, not a score weight; it is measured separately
+/// because it is intentionally stronger than the one-position probe above.
+fn demote_tests_to_tail(
+    ranked: &[(String, f64)],
+    file_of: &HashMap<&str, &str>,
+) -> Vec<(String, f64)> {
+    ranked
+        .iter()
+        .filter(|(id, _)| {
+            !file_of
+                .get(id.as_str())
+                .is_some_and(|path| is_test_source(path))
+        })
+        .chain(ranked.iter().filter(|(id, _)| {
+            file_of
+                .get(id.as_str())
+                .is_some_and(|path| is_test_source(path))
+        }))
+        .cloned()
+        .collect()
+}
+
+fn conditional_test_policy(
+    query: &str,
+    ranked: &[(String, f64)],
+    file_of: &HashMap<&str, &str>,
+) -> Vec<(String, f64)> {
+    if query_asks_for_tests(query) {
+        ranked.to_vec()
+    } else {
+        demote_tests_one_rank(ranked, file_of)
+    }
+}
+
+fn conditional_test_tail_policy(
+    query: &str,
+    ranked: &[(String, f64)],
+    file_of: &HashMap<&str, &str>,
+) -> Vec<(String, f64)> {
+    if query_asks_for_tests(query) {
+        ranked.to_vec()
+    } else {
+        demote_tests_to_tail(ranked, file_of)
+    }
+}
+
+fn distinct_file_ranking(
+    ranked: &[(String, f64)],
+    file_of: &HashMap<&str, &str>,
+) -> Vec<(String, f64)> {
+    let mut seen = HashSet::new();
+    ranked
+        .iter()
+        .filter(|(id, _)| {
+            file_of
+                .get(id.as_str())
+                .is_some_and(|file| seen.insert((*file).to_string()))
+        })
+        .cloned()
+        .collect()
+}
+
 fn mean_metric(rows: &[serde_json::Value], mode: &str, key: &str) -> f64 {
     let values: Vec<f64> = rows
         .iter()
@@ -1268,6 +1416,32 @@ fn metric_pack(rows: &[serde_json::Value], mode: &str) -> serde_json::Value {
     serde_json::json!({
         "recall@5": mean_metric(rows, mode, "recall@5"),
         "mrr@10": mean_metric(rows, mode, "mrr@10"),
+    })
+}
+
+fn target_is_test(row: &serde_json::Value) -> bool {
+    row["targets"].as_array().is_some_and(|targets| {
+        targets
+            .iter()
+            .filter_map(|target| target.as_str())
+            .any(is_test_source)
+    })
+}
+
+fn metric_pack_target_subset(
+    rows: &[serde_json::Value],
+    mode: &str,
+    test_targets: bool,
+) -> serde_json::Value {
+    let subset: Vec<serde_json::Value> = rows
+        .iter()
+        .filter(|row| target_is_test(row) == test_targets)
+        .cloned()
+        .collect();
+    serde_json::json!({
+        "n": subset.len(),
+        "recall@5": mean_metric(&subset, mode, "recall@5"),
+        "mrr@10": mean_metric(&subset, mode, "mrr@10"),
     })
 }
 
@@ -1392,6 +1566,39 @@ fn run_rerank_eval() -> anyhow::Result<()> {
                 "kind": query["kind"].as_str().unwrap_or(""),
                 "targets": targets,
                 "dense": metric_for_ranked(ranking, &file_of, &targets),
+                "dense_diverse": metric_for_ranked(
+                    &distinct_file_ranking(ranking, &file_of),
+                    &file_of,
+                    &targets,
+                ),
+                "dense_test_mild": metric_for_ranked(
+                    &demote_tests_one_rank(ranking, &file_of),
+                    &file_of,
+                    &targets,
+                ),
+                "dense_test_conditional": metric_for_ranked(
+                    &conditional_test_policy(
+                        query["q"].as_str().unwrap_or(""),
+                        ranking,
+                        &file_of,
+                    ),
+                    &file_of,
+                    &targets,
+                ),
+                "dense_test_tail": metric_for_ranked(
+                    &demote_tests_to_tail(ranking, &file_of),
+                    &file_of,
+                    &targets,
+                ),
+                "dense_test_conditional_tail": metric_for_ranked(
+                    &conditional_test_tail_policy(
+                        query["q"].as_str().unwrap_or(""),
+                        ranking,
+                        &file_of,
+                    ),
+                    &file_of,
+                    &targets,
+                ),
             })
         })
         .collect();
@@ -1444,6 +1651,31 @@ fn run_rerank_eval() -> anyhow::Result<()> {
                 "kind": query["kind"].as_str().unwrap_or(""),
                 "targets": targets,
                 "reranked": metric_for_ranked(&final_ranking, &file_of, &targets),
+                "reranked_diverse": metric_for_ranked(
+                    &distinct_file_ranking(&final_ranking, &file_of),
+                    &file_of,
+                    &targets,
+                ),
+                "reranked_test_mild": metric_for_ranked(
+                    &demote_tests_one_rank(&final_ranking, &file_of),
+                    &file_of,
+                    &targets,
+                ),
+                "reranked_test_conditional": metric_for_ranked(
+                    &conditional_test_policy(query_text, &final_ranking, &file_of),
+                    &file_of,
+                    &targets,
+                ),
+                "reranked_test_tail": metric_for_ranked(
+                    &demote_tests_to_tail(&final_ranking, &file_of),
+                    &file_of,
+                    &targets,
+                ),
+                "reranked_test_conditional_tail": metric_for_ranked(
+                    &conditional_test_tail_policy(query_text, &final_ranking, &file_of),
+                    &file_of,
+                    &targets,
+                ),
             }));
         }
         latency_by_depth.insert(key.clone(), latencies);
@@ -1481,9 +1713,85 @@ fn run_rerank_eval() -> anyhow::Result<()> {
             "recall@5": mean_metric(&baseline_rows, "dense", "recall@5"),
             "mrr@10": mean_metric(&baseline_rows, "dense", "mrr@10"),
         },
+        "diversity": {
+            "without_reorder": metric_pack(&baseline_rows, "dense_diverse"),
+            "with_reorder": {
+                "20": metric_pack(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_diverse"),
+                "50": metric_pack(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_diverse"),
+            },
+        },
         "reranked": {
             "20": metric_pack(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked"),
             "50": metric_pack(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked"),
+        },
+        "test_policy": {
+            "definition": "mild moves each test hit down by one rank; conditional applies that move only when the query does not ask for tests/regressions/fixtures/assertions; tail stably partitions non-tests before tests under the same condition.",
+            "without_reorder": {
+                "none": metric_pack(&baseline_rows, "dense"),
+                "mild": metric_pack(&baseline_rows, "dense_test_mild"),
+                "conditional": metric_pack(&baseline_rows, "dense_test_conditional"),
+                "tail": metric_pack(&baseline_rows, "dense_test_conditional_tail"),
+            },
+            "with_reorder": {
+                "20": {
+                    "none": metric_pack(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked"),
+                    "mild": metric_pack(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_mild"),
+                    "conditional": metric_pack(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_conditional"),
+                    "tail": metric_pack(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_conditional_tail"),
+                },
+                "50": {
+                    "none": metric_pack(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked"),
+                    "mild": metric_pack(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_mild"),
+                    "conditional": metric_pack(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_conditional"),
+                    "tail": metric_pack(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_conditional_tail"),
+                },
+            },
+        },
+        "test_target_split": {
+            "without_reorder": {
+                "test_targets": {
+                    "none": metric_pack_target_subset(&baseline_rows, "dense", true),
+                    "mild": metric_pack_target_subset(&baseline_rows, "dense_test_mild", true),
+                    "conditional": metric_pack_target_subset(&baseline_rows, "dense_test_conditional", true),
+                    "tail": metric_pack_target_subset(&baseline_rows, "dense_test_conditional_tail", true),
+                },
+                "other_targets": {
+                    "none": metric_pack_target_subset(&baseline_rows, "dense", false),
+                    "mild": metric_pack_target_subset(&baseline_rows, "dense_test_mild", false),
+                    "conditional": metric_pack_target_subset(&baseline_rows, "dense_test_conditional", false),
+                    "tail": metric_pack_target_subset(&baseline_rows, "dense_test_conditional_tail", false),
+                },
+            },
+            "with_reorder": {
+                "20": {
+                    "test_targets": {
+                        "none": metric_pack_target_subset(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked", true),
+                        "mild": metric_pack_target_subset(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_mild", true),
+                        "conditional": metric_pack_target_subset(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_conditional", true),
+                        "tail": metric_pack_target_subset(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_conditional_tail", true),
+                    },
+                    "other_targets": {
+                        "none": metric_pack_target_subset(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked", false),
+                        "mild": metric_pack_target_subset(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_mild", false),
+                        "conditional": metric_pack_target_subset(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_conditional", false),
+                        "tail": metric_pack_target_subset(reranked_rows.get("20").unwrap_or(&empty_rows), "reranked_test_conditional_tail", false),
+                    },
+                },
+                "50": {
+                    "test_targets": {
+                        "none": metric_pack_target_subset(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked", true),
+                        "mild": metric_pack_target_subset(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_mild", true),
+                        "conditional": metric_pack_target_subset(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_conditional", true),
+                        "tail": metric_pack_target_subset(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_conditional_tail", true),
+                    },
+                    "other_targets": {
+                        "none": metric_pack_target_subset(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked", false),
+                        "mild": metric_pack_target_subset(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_mild", false),
+                        "conditional": metric_pack_target_subset(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_conditional", false),
+                        "tail": metric_pack_target_subset(reranked_rows.get("50").unwrap_or(&empty_rows), "reranked_test_conditional_tail", false),
+                    },
+                },
+            },
         },
         "latency_added_ms": {"20": latency_json(20), "50": latency_json(50)},
         "cpu_during_rerank": summarize(&samples),
