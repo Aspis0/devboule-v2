@@ -7,7 +7,13 @@ import type {
   OracleSearchResponse,
 } from "../../types/ipc";
 import type { TrackedRequestState } from "./oracleRequests";
-import { formatCount, resultLineCount, totalReadLines } from "./oracleUtils";
+import {
+  focusLineRange,
+  formatCount,
+  resultLineCount,
+  splitSnippetAtFocus,
+  totalReadLines,
+} from "./oracleUtils";
 
 const EMPTY_RESULTS: OracleResult[] = [];
 
@@ -160,11 +166,17 @@ export const OracleSearch = memo(function OracleSearch({
 
 function OracleResultRow({ result, index }: { result: OracleResult; index: number }) {
   const lineCount = resultLineCount(result);
+  const focus = focusLineRange(result);
+  const parts = splitSnippetAtFocus(result);
   return (
     <li
       className="oracle-result"
       tabIndex={0}
-      aria-label={`${result.path}, lines ${result.line_start} to ${result.line_end}`}
+      aria-label={
+        focus
+          ? `${result.path}, lines ${result.line_start} to ${result.line_end}, suggested starting point lines ${focus[0]} to ${focus[1]}`
+          : `${result.path}, lines ${result.line_start} to ${result.line_end}`
+      }
     >
       <div className="oracle-result-heading">
         <span className="oracle-result-rank">#{String(index + 1).padStart(2, "0")}</span>
@@ -174,10 +186,28 @@ function OracleResultRow({ result, index }: { result: OracleResult; index: numbe
         </span>
       </div>
       <pre className="oracle-result-snippet">
-        <code>{result.snippet}</code>
+        <code>
+          {parts ? (
+            <>
+              {parts.before}
+              <mark className="oracle-result-focus">{parts.focus}</mark>
+              {parts.after}
+            </>
+          ) : (
+            result.snippet
+          )}
+        </code>
       </pre>
       <div className="oracle-result-reason" aria-label="Why this result was returned">
         <span className="oracle-result-cost">{lineCount} lines to read</span>
+        {/* Stated as a starting point, not a verdict: the highlight covers the
+            lines a cross-encoder ranked highest, and it is wrong often enough
+            that presenting it as the answer would cost more than it saves. */}
+        {focus && (
+          <span className="oracle-result-focus-hint">
+            start at {focus[0]}–{focus[1]}
+          </span>
+        )}
         {result.match_type && <span>match {result.match_type}</span>}
         {result.symbol_name && <span>symbol {result.symbol_name}</span>}
       </div>

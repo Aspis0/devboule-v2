@@ -1900,6 +1900,385 @@ fn print_usage() {
     );
 }
 
+// ───────────────────────────── cite mode ─────────────────────────────
+
+/// One (query, retrieved target file) pair, scored for citation quality.
+struct CitationCase {
+    evidence: usize,
+    baseline_lines: usize,
+    baseline_hits: usize,
+    focus_lines: usize,
+    focus_hits: usize,
+    /// Expected hits of a window drawn uniformly at random from the same plan.
+    /// This is the control that decides whether the cross-encoder is choosing
+    /// or whether shrinking the citation would score the same by luck.
+    random_hits: f64,
+    /// Hits of the best window in the plan: the ceiling this geometry allows.
+    best_hits: usize,
+}
+
+/// One retrieved target chunk, kept so every window geometry is scored against
+/// the same retrieval result instead of re-running the search per variant.
+struct MatchedCase {
+    query: String,
+    text: String,
+    line_start: usize,
+    line_end: usize,
+    evidence: Vec<usize>,
+}
+
+/// Parse `path/to/file.rs:123 - source line` into (path, line).
+fn parse_evidence(entry: &str) -> Option<(&str, usize)> {
+    let (locator, _) = entry.split_once(" - ")?;
+    let (path, line) = locator.rsplit_once(':')?;
+    line.trim().parse().ok().map(|line| (path, line))
+}
+
+fn hits_in(span: (usize, usize), lines: &[usize]) -> usize {
+    lines
+        .iter()
+        .filter(|line| **line >= span.0 && **line <= span.1)
+        .count()
+}
+
+fn mean(values: impl Iterator<Item = f64>) -> f64 {
+    let collected: Vec<f64> = values.collect();
+    if collected.is_empty() {
+        0.0
+    } else {
+        collected.iter().sum::<f64>() / collected.len() as f64
+    }
+}
+
+/// Measure how precisely the shipped pipeline points at the answering lines.
+///
+/// The metric this set warns about is recall of evidence lines on its own: a
+/// taller span covers more evidence by construction, so "wider is better" is
+/// the trivial winner. Every recall here is therefore reported next to the span
+/// length that bought it, and against two controls — a uniformly random window
+/// of the same width, and the best window the plan could have picked.
+fn run_citation_eval() -> anyhow::Result<()> {
+    let chunks_file = PathBuf::from(arg_of("--chunks").expect("--chunks"));
+    let queries_file = PathBuf::from(arg_of("--queries").expect("--queries"));
+    let dense_file = PathBuf::from(arg_of("--dense").expect("--dense"));
+    let reranker_dir = PathBuf::from(arg_of("--reranker").expect("--reranker"));
+    let k: usize = arg_of("--k")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10); // the shipped Tauri QUERY_LIMIT
+    let depth: usize = arg_of("--depth")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(oracle_core::DEFAULT_RERANKER_CANDIDATES);
+    let variants: Vec<usize> = arg_of("--windows")
+        .unwrap_or_else(|| "2,3,4,6,8".to_string())
+        .split(',')
+        .filter_map(|value| value.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .collect();
+    let out = arg_of("--out").map(PathBuf::from);
+
+    let records = read_jsonl(&chunks_file)?;
+    let queries = load_eval_queries(&queries_file)?;
+    let dense: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&dense_file)?)?;
+    let dvecs: Vec<Vec<f32>> = dense["vectors"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("dense file has no vectors[]"))?
+        .iter()
+        .map(|v| {
+            v.as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+                        .collect()
+                })
+                .ok_or_else(|| anyhow::anyhow!("dense vector is not an array"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let query_vectors: Vec<Vec<f32>> = dense["query_vectors"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("dense file has no query_vectors[]"))?
+        .iter()
+        .map(|v| {
+            v.as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|x| x.as_f64().unwrap_or(0.0) as f32)
+                        .collect()
+                })
+                .ok_or_else(|| anyhow::anyhow!("dense query vector is not an array"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let ids: Vec<String> = dense["chunk_ids"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("dense file has no chunk_ids[]"))?
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect();
+    if query_vectors.len() != queries.len() {
+        anyhow::bail!(
+            "dense query_vectors has {} rows but queries has {}",
+            query_vectors.len(),
+            queries.len()
+        );
+    }
+
+    let vec_of: HashMap<&str, &[f32]> = ids
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| dvecs.get(i).map(|v| (id.as_str(), v.as_slice())))
+        .collect();
+    let file_of: HashMap<&str, &str> = records
+        .iter()
+        .filter_map(|r| {
+            r["id"]
+                .as_str()
+                .map(|id| (id, r["file_sorgente"].as_str().unwrap_or("")))
+        })
+        .collect();
+    let text_of: HashMap<&str, &str> = records
+        .iter()
+        .filter_map(|r| {
+            r["id"]
+                .as_str()
+                .map(|id| (id, r["text"].as_str().unwrap_or("")))
+        })
+        .collect();
+    let lines_of: HashMap<&str, (usize, usize)> = records
+        .iter()
+        .filter_map(|r| {
+            let start = r["line_start"].as_i64().unwrap_or(0);
+            let end = r["line_end"].as_i64().unwrap_or(0);
+            r["id"]
+                .as_str()
+                .filter(|_| start > 0 && end >= start)
+                .map(|id| (id, (start as usize, end as usize)))
+        })
+        .collect();
+
+    let mut reranker = oracle_core::OnnxReranker::load(&reranker_dir, EpArg::Cpu)?;
+    reranker.score_pairs("reranker warmup", &["fn warmup() {}".to_string()])?;
+
+    // Retrieval runs once. Every geometry below is scored against the same
+    // selected chunks, so the comparison isolates the window plan and cannot be
+    // moved by a different set of results.
+    let mut matched: Vec<MatchedCase> = Vec::new();
+    let mut matched_without_line_base = 0usize;
+    let mut queries_with_a_case = 0usize;
+
+    for (query, query_vector) in queries.iter().zip(&query_vectors) {
+        let query_text = query["q"].as_str().unwrap_or("");
+        let targets: Vec<String> = query["targets"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut evidence_by_file: HashMap<String, Vec<usize>> = HashMap::new();
+        for entry in query["evidence"].as_array().into_iter().flatten() {
+            if let Some((path, line)) = entry.as_str().and_then(parse_evidence) {
+                evidence_by_file
+                    .entry(path.to_string())
+                    .or_default()
+                    .push(line);
+            }
+        }
+
+        // Mirror the shipped query path: dense, rerank the head, test policy,
+        // one chunk per file, then the caller's limit.
+        let mut ranking: Vec<(String, f64)> = ids
+            .iter()
+            .filter_map(|id| {
+                vec_of
+                    .get(id.as_str())
+                    .map(|vector| (id.clone(), cosine(query_vector, vector)))
+            })
+            .collect();
+        ranking.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let candidate_count = depth.min(ranking.len());
+        let documents: Vec<String> = ranking
+            .iter()
+            .take(candidate_count)
+            .map(|(id, _)| text_of.get(id.as_str()).copied().unwrap_or("").to_string())
+            .collect();
+        let scores = reranker.score_pairs(query_text, &documents)?;
+        let mut prefix: Vec<(String, f64)> = ranking
+            .iter()
+            .take(candidate_count)
+            .zip(scores)
+            .map(|((id, _), score)| (id.clone(), score))
+            .collect();
+        prefix.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut final_ranking = prefix;
+        final_ranking.extend(ranking.iter().skip(candidate_count).cloned());
+        let selected: Vec<(String, f64)> = distinct_file_ranking(
+            &conditional_test_tail_policy(query_text, &final_ranking, &file_of),
+            &file_of,
+        )
+        .into_iter()
+        .take(k)
+        .collect();
+
+        let before = matched.len();
+        for (chunk_id, _) in &selected {
+            let Some(file) = file_of.get(chunk_id.as_str()).copied() else {
+                continue;
+            };
+            if !targets.iter().any(|target| target == file) {
+                continue;
+            }
+            let Some(evidence) = evidence_by_file.get(file).filter(|lines| !lines.is_empty())
+            else {
+                continue;
+            };
+            let Some(&(line_start, line_end)) = lines_of.get(chunk_id.as_str()) else {
+                matched_without_line_base += 1;
+                continue;
+            };
+            matched.push(MatchedCase {
+                query: query_text.to_string(),
+                text: text_of
+                    .get(chunk_id.as_str())
+                    .copied()
+                    .unwrap_or("")
+                    .to_string(),
+                line_start,
+                line_end,
+                evidence: evidence.clone(),
+            });
+        }
+        if matched.len() > before {
+            queries_with_a_case += 1;
+        }
+    }
+
+    let recall = |hits: f64, evidence: f64| if evidence > 0.0 { hits / evidence } else { 0.0 };
+    let baseline = serde_json::json!({
+        "evidence_recall": mean(matched.iter().map(|case| {
+            recall(
+                hits_in((case.line_start, case.line_end), &case.evidence) as f64,
+                case.evidence.len() as f64,
+            )
+        })),
+        "hit_rate": mean(matched.iter().map(|case| {
+            (hits_in((case.line_start, case.line_end), &case.evidence) > 0) as u8 as f64
+        })),
+        "mean_lines": mean(matched.iter().map(|case| (case.line_end - case.line_start + 1) as f64)),
+    });
+
+    let mut by_geometry = serde_json::Map::new();
+    for windows in &variants {
+        let mut scored: Vec<CitationCase> = Vec::new();
+        let mut too_short = 0usize;
+        let mut windows_scored = 0usize;
+        let started = Instant::now();
+        for case in &matched {
+            let plan = oracle_core::plan_focus_windows_with(*windows, case.text.lines().count());
+            if plan.is_empty() {
+                too_short += 1;
+                continue;
+            }
+            let texts = oracle_core::window_texts(&case.text, &plan);
+            windows_scored += texts.len();
+            let window_scores = reranker.score_pairs(&case.query, &texts)?;
+            let focus = oracle_core::select_focus(&plan, &window_scores)
+                .ok_or_else(|| anyhow::anyhow!("a non-empty plan selected no window"))?;
+            let absolute = |offset: usize, count: usize| {
+                let start = case.line_start + offset;
+                (start, (start + count.saturating_sub(1)).min(case.line_end))
+            };
+            let focus_span = absolute(focus.line_offset, focus.line_count);
+            let per_window: Vec<usize> = plan
+                .iter()
+                .map(|&(offset, count)| hits_in(absolute(offset, count), &case.evidence))
+                .collect();
+            scored.push(CitationCase {
+                evidence: case.evidence.len(),
+                baseline_lines: case.line_end - case.line_start + 1,
+                baseline_hits: hits_in((case.line_start, case.line_end), &case.evidence),
+                focus_lines: focus_span.1 - focus_span.0 + 1,
+                focus_hits: hits_in(focus_span, &case.evidence),
+                random_hits: per_window.iter().sum::<usize>() as f64 / per_window.len() as f64,
+                best_hits: per_window.iter().copied().max().unwrap_or(0),
+            });
+        }
+        let elapsed_ms = started.elapsed().as_millis();
+        let focus_recall = mean(
+            scored
+                .iter()
+                .map(|c| recall(c.focus_hits as f64, c.evidence as f64)),
+        );
+        let focus_lines = mean(scored.iter().map(|c| c.focus_lines as f64));
+        let base_recall = mean(
+            scored
+                .iter()
+                .map(|c| recall(c.baseline_hits as f64, c.evidence as f64)),
+        );
+        let base_lines = mean(scored.iter().map(|c| c.baseline_lines as f64));
+        by_geometry.insert(
+            windows.to_string(),
+            serde_json::json!({
+                "cases": scored.len(),
+                "too_short_to_narrow": too_short,
+                "focus": {
+                    "evidence_recall": focus_recall,
+                    "hit_rate": mean(scored.iter().map(|c| (c.focus_hits > 0) as u8 as f64)),
+                    "mean_lines": focus_lines,
+                },
+                "control_random_window": {
+                    "evidence_recall": mean(scored.iter().map(|c| recall(c.random_hits, c.evidence as f64))),
+                },
+                "control_best_window": {
+                    "evidence_recall": mean(scored.iter().map(|c| recall(c.best_hits as f64, c.evidence as f64))),
+                    "hit_rate": mean(scored.iter().map(|c| (c.best_hits > 0) as u8 as f64)),
+                },
+                "baseline_on_the_same_cases": {
+                    "evidence_recall": base_recall,
+                    "hit_rate": mean(scored.iter().map(|c| (c.baseline_hits > 0) as u8 as f64)),
+                    "mean_lines": base_lines,
+                },
+                "trade": {
+                    "lines_saved_factor": if focus_lines > 0.0 { base_lines / focus_lines } else { 0.0 },
+                    "recall_kept_fraction": if base_recall > 0.0 { focus_recall / base_recall } else { 0.0 },
+                    "evidence_per_line_gain": if base_recall > 0.0 && focus_lines > 0.0 && base_lines > 0.0 {
+                        (focus_recall / focus_lines) / (base_recall / base_lines)
+                    } else { 0.0 },
+                },
+                "cost": {
+                    "windows_scored": windows_scored,
+                    "total_ms": elapsed_ms,
+                    "ms_per_query": if queries_with_a_case > 0 { elapsed_ms as f64 / queries_with_a_case as f64 } else { 0.0 },
+                    "pairs_per_sec": if elapsed_ms > 0 { windows_scored as f64 * 1000.0 / elapsed_ms as f64 } else { 0.0 },
+                },
+            }),
+        );
+    }
+
+    let result = serde_json::json!({
+        "mode": "cite",
+        "model_id": reranker.config().id,
+        "queries": queries.len(),
+        "k": k,
+        "rerank_depth": depth,
+        "matched_cases": matched.len(),
+        "queries_with_a_case": queries_with_a_case,
+        "matched_without_line_base": matched_without_line_base,
+        "note": "A case is one retrieved file that is a target of its query and carries evidence lines. Recall of evidence lines rewards taller spans mechanically, so every recall is paired with the span length that produced it and with two controls on the same geometry: a window drawn uniformly at random, and the best window the plan contains. Retrieval runs once; the geometries below are scored against the same selected chunks.",
+        "baseline_chunk_span": baseline,
+        "by_windows_per_chunk": by_geometry,
+    });
+    let rendered = serde_json::to_string_pretty(&result)?;
+    println!("{rendered}");
+    if let Some(path) = out {
+        std::fs::write(&path, &rendered)?;
+        eprintln!("[cite] wrote {}", path.display());
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
     if mode == "-h"
@@ -1914,6 +2293,7 @@ fn main() -> anyhow::Result<()> {
         "embed" => run_embed(),
         "eval" => run_eval(),
         "rerank" => run_rerank_eval(),
+        "cite" => run_citation_eval(),
         "store" => run_store(),
         _ => {
             print_usage();

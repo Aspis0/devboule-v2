@@ -27,6 +27,42 @@ export function resultLineCount(result: OracleResult): number {
   return Math.max(0, end - start + 1);
 }
 
+/** The focus span clamped into the result's own range, or null when absent. */
+export function focusLineRange(result: OracleResult): [number, number] | null {
+  const { focus_line_start: start, focus_line_end: end } = result;
+  if (typeof start !== "number" || typeof end !== "number") return null;
+  const [lineStart, lineEnd] = normalizedLineRange(result);
+  const from = Math.max(lineStart, Math.min(start, end));
+  const to = Math.min(lineEnd, Math.max(start, end));
+  return from <= to ? [from, to] : null;
+}
+
+/**
+ * Split a snippet into the lines before the focus, the focus itself, and the
+ * lines after it. The three parts concatenate back to the original snippet, so
+ * highlighting never hides a line: the reader sees the whole chunk and the
+ * suggestion inside it, and can disregard the suggestion at a glance.
+ */
+export function splitSnippetAtFocus(
+  result: OracleResult,
+): { before: string; focus: string; after: string } | null {
+  const range = focusLineRange(result);
+  if (!range) return null;
+  const [lineStart] = normalizedLineRange(result);
+  const lines = result.snippet.split("\n");
+  const from = range[0] - lineStart;
+  const to = range[1] - lineStart;
+  if (from < 0 || from > to || from >= lines.length) return null;
+  const end = Math.min(to, lines.length - 1);
+  const join = (slice: string[], trailing: boolean) =>
+    slice.length === 0 ? "" : slice.join("\n") + (trailing ? "\n" : "");
+  return {
+    before: join(lines.slice(0, from), true),
+    focus: lines.slice(from, end + 1).join("\n"),
+    after: end + 1 < lines.length ? "\n" + lines.slice(end + 1).join("\n") : "",
+  };
+}
+
 export function formatCount(value: number): string {
   return value.toLocaleString("en-US").replaceAll(",", " ");
 }

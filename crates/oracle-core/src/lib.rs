@@ -45,6 +45,7 @@ pub use query::engine::{
     ClusterInfo, ClusterMember, ClusterMemberResponse, ClusterResponse, ContextChunk,
     DuplicateGroup, HealthResponse, QueryEmbedder, QueryEngine, ResultEntry, SnapshotResponse,
 };
+pub use query::focus::FocusSpan;
 pub use query::pool_embedder::PoolQueryEmbedder;
 pub use query::redact::redact_secret_tokens;
 pub use query::reranker::{
@@ -103,7 +104,14 @@ pub use query::lexical::{
     lexical_chunk_context, lexical_chunk_score, query_terms, semantic_expansions, ScoredChunk,
 };
 #[doc(hidden)]
-pub use query::reranker::{OnnxReranker, RerankerConfig, RERANKER_MODEL_CONFIG_JSON};
+pub use query::focus::{
+    plan_focus_windows, plan_focus_windows_with, select_focus, window_texts,
+    FOCUS_WINDOWS_PER_CHUNK, MAX_FOCUS_WINDOWS_PER_QUERY, MIN_CHUNK_LINES_TO_NARROW,
+};
+#[doc(hidden)]
+pub use query::reranker::{
+    OnnxReranker, RerankerConfig, DEFAULT_RERANKER_CANDIDATES, RERANKER_MODEL_CONFIG_JSON,
+};
 #[doc(hidden)]
 pub use store::lance::hash_embed;
 #[doc(hidden)]

@@ -906,6 +906,14 @@ pub struct OracleResult {
     pub path: String,
     pub line_start: usize,
     pub line_end: usize,
+    /// The narrower span inside `[line_start, line_end]` that the cross-encoder
+    /// scored as the answer, when it could pick one. It is a suggestion about
+    /// where to look first, not a replacement for the range: `snippet` still
+    /// carries the whole chunk, so a caller that disagrees loses nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_line_start: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus_line_end: Option<usize>,
     pub snippet: String,
     pub score: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1467,10 +1475,16 @@ fn status_from_snapshot(
 
 fn result_from_context(root: &Path, context: &ContextChunk) -> OracleResult {
     let (line_start, line_end) = line_range(root, context);
+    let (focus_line_start, focus_line_end) = match context.focus {
+        Some(focus) => focus_range(line_start, line_end, focus),
+        None => (None, None),
+    };
     OracleResult {
         path: context.file_source.clone(),
         line_start,
         line_end,
+        focus_line_start,
+        focus_line_end,
         snippet: redact_secret_tokens(&context.text),
         score: context.score,
         symbol_name: (!context.symbol_name.is_empty()).then(|| context.symbol_name.clone()),
@@ -1482,6 +1496,32 @@ fn result_from_context(root: &Path, context: &ContextChunk) -> OracleResult {
             _ => None,
         },
     }
+}
+
+/// Turn a chunk-relative focus window into absolute file lines.
+///
+/// The engine reports the window as an offset into the chunk text because only
+/// this layer knows the chunk's line base: code chunks carry it in the index,
+/// prose chunks have it derived from character offsets just above. A chunk with
+/// no known base (both ends zero) gets no focus rather than a guessed one, and
+/// a window that would fall outside the chunk's own range is dropped for the
+/// same reason — a citation that cannot be trusted is worse than a wide one.
+fn focus_range(
+    line_start: usize,
+    line_end: usize,
+    focus: oracle_core::FocusSpan,
+) -> (Option<usize>, Option<usize>) {
+    if line_start == 0 || focus.line_count == 0 {
+        return (None, None);
+    }
+    let start = line_start.saturating_add(focus.line_offset);
+    if start > line_end {
+        return (None, None);
+    }
+    let end = start
+        .saturating_add(focus.line_count.saturating_sub(1))
+        .min(line_end);
+    (Some(start), Some(end))
 }
 
 fn line_range(root: &Path, context: &ContextChunk) -> (usize, usize) {
@@ -1647,6 +1687,7 @@ mod tests {
             end_char: 10,
             score: 0.5,
             rerank_score: Some(0.9),
+            focus: None,
             retrieval: "dense+reranked".to_string(),
             text: "fn answer() {}".to_string(),
             last_modified: String::new(),

@@ -830,6 +830,20 @@
   font-weight: 600;
 }
 
+/* The suggested starting lines. Deliberately a background tint rather than a
+   change of text colour or weight: the surrounding lines must stay exactly as
+   readable, because the suggestion is wrong often enough that a reader who
+   ignores it should lose nothing. */
+.oracle-result-focus {
+  color: var(--ink);
+  background: var(--selection);
+  border-radius: 3px;
+}
+
+.oracle-result-focus-hint {
+  color: var(--ochre-deep);
+}
+
 .oracle-admin {
   margin-top: 14px;
   border-top: 1px solid var(--border);

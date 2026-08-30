@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::ingest::retrieval_text;
+use crate::query::focus::{self, FocusSpan};
 use crate::query::lexical::{self, ScoredChunk};
 use crate::query::redact::redact_secret_tokens;
 use crate::query::reranker::{self, SharedReranker};
@@ -87,6 +88,7 @@ mod diversity_tests {
             end_char: 10,
             score: 0.0,
             rerank_score: None,
+            focus: None,
             retrieval: "dense".to_string(),
             text: String::new(),
             last_modified: String::new(),
@@ -226,6 +228,12 @@ pub struct ContextChunk {
     /// candidate. It is query-time metadata and never enters the index recipe.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerank_score: Option<f64>,
+    /// Sub-span of this chunk that the cross-encoder scored highest, in lines
+    /// relative to `text`. Advisory and additive: the whole chunk stays in
+    /// `text` and the chunk's own range stays in `line_start`/`line_end`, so a
+    /// caller that ignores this field sees exactly what it saw before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focus: Option<FocusSpan>,
     pub retrieval: String,
     pub text: String,
     pub last_modified: String,
@@ -542,7 +550,9 @@ impl QueryEngine {
                 rows.append(&mut tail);
             }
             apply_test_policy(query, &mut rows);
-            return Ok(diversify_context_rows(rows, limit.max(1)));
+            let mut selected = diversify_context_rows(rows, limit.max(1));
+            self.narrow_citations(query, &mut selected)?;
+            return Ok(selected);
         }
 
         let total_chunks = self.sqlite.chunk_count().unwrap_or(0);
@@ -581,7 +591,57 @@ impl QueryEngine {
         let mut rows: Vec<ContextChunk> = combined.into_values().collect();
         sort_context_rows(&mut rows);
         apply_test_policy(query, &mut rows);
-        Ok(diversify_context_rows(rows, limit.max(1)))
+        let mut selected = diversify_context_rows(rows, limit.max(1));
+        self.narrow_citations(query, &mut selected)?;
+        Ok(selected)
+    }
+
+    /// Point the citation at the lines that answer, not at the whole chunk.
+    ///
+    /// This runs on the *selected* results only, after diversification, so its
+    /// cost is a function of `limit` and not of the candidate depth. All the
+    /// windows of all the results go through one `score_pairs` call: the query
+    /// side of the pair is identical, and batching lets the reranker fill its
+    /// padded tensor instead of running one graph pass per result.
+    ///
+    /// A result whose chunk is too short to narrow, or that falls past the
+    /// per-query window budget, simply keeps its chunk-wide range. That is a
+    /// smaller citation lost, never a wrong one: nothing here can change which
+    /// chunks were retrieved or in which order.
+    fn narrow_citations(&self, query: &str, rows: &mut [ContextChunk]) -> Result<()> {
+        let Some(ref reranker) = self.reranker else {
+            return Ok(());
+        };
+        let mut plans: Vec<(usize, Vec<(usize, usize)>)> = Vec::new();
+        let mut documents: Vec<String> = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            let plan = focus::plan_focus_windows(row.text.lines().count());
+            if plan.is_empty()
+                || documents.len() + plan.len() > focus::MAX_FOCUS_WINDOWS_PER_QUERY
+            {
+                continue;
+            }
+            documents.extend(focus::window_texts(&row.text, &plan));
+            plans.push((index, plan));
+        }
+        if documents.is_empty() {
+            return Ok(());
+        }
+        let scores = reranker.score_pairs(query, &documents)?;
+        if scores.len() != documents.len() {
+            anyhow::bail!(
+                "reranker returned {} scores for {} focus windows",
+                scores.len(),
+                documents.len()
+            );
+        }
+        let mut cursor = 0usize;
+        for (index, plan) in plans {
+            let window_scores = &scores[cursor..cursor + plan.len()];
+            cursor += plan.len();
+            rows[index].focus = focus::select_focus(&plan, window_scores);
+        }
+        Ok(())
     }
 
     /// Similar nodes: node-card store first, file_vectors fallback.
@@ -1013,6 +1073,7 @@ impl ContextChunk {
             end_char: chunk.end_char as usize,
             score,
             rerank_score: None,
+            focus: None,
             retrieval: retrieval.to_string(),
             // Redact at the retrieval serialization boundary so citations
             // (file + line, previews) never carry secret-looking tokens.
@@ -1154,6 +1215,7 @@ mod tests {
             end_char: text.len(),
             score: 1.0,
             rerank_score: None,
+            focus: None,
             retrieval: "lexical".into(),
             text,
             last_modified: String::new(),

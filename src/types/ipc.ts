@@ -150,6 +150,14 @@ export interface OracleResult {
   path: string;
   line_start: number;
   line_end: number;
+  /**
+   * The narrower span inside the range that Oracle's cross-encoder scored as
+   * the answer. It is where to look first, not the whole of what is relevant:
+   * `snippet` still carries the full chunk and the range is unchanged, so a
+   * reader who disagrees with the narrowing loses nothing by ignoring it.
+   */
+  focus_line_start?: number | null;
+  focus_line_end?: number | null;
   /** Redacted by Oracle before IPC; the frontend must never render unredacted source text. */
   snippet: string;
   score: number;

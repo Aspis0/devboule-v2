@@ -3,6 +3,7 @@
 //! Ported from `oracle/server/query_engine.py` with golden-verified parity.
 
 pub mod engine;
+pub mod focus;
 pub mod lexical;
 pub mod pool_embedder;
 pub mod redact;
