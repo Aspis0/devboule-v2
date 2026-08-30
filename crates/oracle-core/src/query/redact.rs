@@ -140,19 +140,40 @@ mod tests {
     /// records them before redaction, the citation uses them after. If a
     /// redaction can swallow a newline, every line below it in the chunk points
     /// one line too high, on exactly the files nobody wants to misread.
+    ///
+    /// Each case now declares whether it is supposed to redact at all, and that
+    /// is asserted. An audit claimed most of these matched nothing and so said
+    /// nothing about newline handling; the flag settles that by failing instead
+    /// of by argument, and a case that stops matching after a pattern change
+    /// stops being silent padding.
     #[test]
     fn redaction_never_changes_the_number_of_lines() {
+        // (input, must this input actually redact something?)
         let cases = [
-            "let header = format!(\n    \"Bearer\n    abcdefghijklmnopqrstuvwx\"\n);\n",
-            "const c = {\n  token: 'abcd\nefgh',\n};\n",
-            "deploy:\n  api_key:\n    ${{ secrets.DEPLOY_TOKEN }}\n  run: build\n",
-            "password\n= hunter2000\nnext_line()\n",
-            "let blob = \"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbg==\";\nafter();\n",
-            "hash = 0123456789abcdef0123456789abcdef01234567\nafter();\n",
-            "no secrets here\njust two lines\n",
-            "",
+            (
+                "let header = format!(\n    \"Bearer\n    abcdefghijklmnopqrstuvwx\"\n);\n",
+                true,
+            ),
+            ("const c = {\n  token: 'abcd\nefgh',\n};\n", true),
+            (
+                // A YAML value on the line below its key: `\s*` after the colon
+                // eats the newline, so this is precisely the shape that loses a
+                // line. The first version of this case used a `${{ ... }}`
+                // template, which matches nothing and so proved nothing — an
+                // audit caught it and the assertion below now would too.
+                "deploy:\n  api_key:\n    ABCDEFGHIJKLMNOP\n  run: build\n",
+                true,
+            ),
+            ("password\n= hunter2000\nnext_line()\n", true),
+            (
+                "let blob = \"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbg==\";\nafter();\n",
+                true,
+            ),
+            ("hash = 0123456789abcdef0123456789abcdef01234567\nafter();\n", true),
+            ("no secrets here\njust two lines\n", false),
+            ("", false),
         ];
-        for text in cases {
+        for (text, expect_redaction) in cases {
             let out = redact_secret_tokens(text);
             assert_eq!(
                 out.lines().count(),
@@ -163,6 +184,11 @@ mod tests {
                 out.bytes().filter(|b| *b == b'\n').count(),
                 text.bytes().filter(|b| *b == b'\n').count(),
                 "newline count changed for {text:?} -> {out:?}"
+            );
+            assert_eq!(
+                out.contains(SECRET_REDACTION),
+                expect_redaction,
+                "this case no longer exercises what it was written for: {text:?} -> {out:?}"
             );
         }
     }

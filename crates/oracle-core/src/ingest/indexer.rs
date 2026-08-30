@@ -39,7 +39,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -1199,12 +1199,42 @@ pub async fn prune_excluded_chunks(
     progress: Option<&dyn Fn(&str)>,
 ) -> Result<PruneResult> {
     let root = root.to_path_buf();
+
+    // Refuse to prune against a workspace we cannot read.
+    //
+    // `collect_text_files` reports an unreadable directory as an EMPTY LIST,
+    // not as an error: the walk returns `false` on `read_dir` failure and the
+    // wrapper does `unwrap_or_default()`. So a workspace on a network drive
+    // that is not mounted yet, a folder renamed between sessions, or a
+    // directory an antivirus has locked all look identical to "the user deleted
+    // every file" — and this function's job is to delete the index of every
+    // file the user deleted. It would erase the whole index and report success.
+    //
+    // That was harmless while nothing called this in production. It stopped
+    // being harmless the moment it was wired into the indexing path, so the
+    // check lives here, next to the deletion, rather than in the collector
+    // where a future caller could forget it.
+    std::fs::read_dir(&root).with_context(|| {
+        format!(
+            "refusing to prune: cannot read workspace {}",
+            root.display()
+        )
+    })?;
+
     let expected: BTreeSet<String> = collect::collect_text_files(&root)
         .iter()
         .map(|p| relative_posix(p, &root))
         .collect::<Result<_>>()?;
 
     // Gather expected files from other roots too (for node-card pruning).
+    //
+    // The same trap as the current root, one level out: a root that exists but
+    // cannot be walked contributes nothing, and everything indexed under it then
+    // looks deleted. The current root is protected above; these were not, so a
+    // second workspace on an unplugged drive would have had its whole index
+    // erased while pruning an unrelated one. Refuse the entire prune rather than
+    // proceed on a partial picture — a stale index is recoverable, a deleted one
+    // is not.
     let mut expected_all_roots = expected.clone();
     let mut manifest = load_manifest(manifest_path);
     {
@@ -1214,11 +1244,21 @@ pub async fn prune_excluded_chunks(
                 continue;
             }
             let other_root = Path::new(root_key);
-            if other_root.is_dir() {
-                for path in collect::collect_text_files(other_root) {
-                    if let Ok(rel) = relative_posix(&path, other_root) {
-                        expected_all_roots.insert(rel);
-                    }
+            if !other_root.is_dir() {
+                // Genuinely gone, rather than unreadable: nothing to gather and
+                // nothing to protect. Its files are stale by definition.
+                continue;
+            }
+            std::fs::read_dir(other_root).with_context(|| {
+                format!(
+                    "refusing to prune: workspace {} is registered but cannot be read, \
+                     and its files would be mistaken for deleted",
+                    other_root.display()
+                )
+            })?;
+            for path in collect::collect_text_files(other_root) {
+                if let Ok(rel) = relative_posix(&path, other_root) {
+                    expected_all_roots.insert(rel);
                 }
             }
         }
@@ -1232,6 +1272,22 @@ pub async fn prune_excluded_chunks(
         .difference(&expected_all_roots)
         .cloned()
         .collect();
+
+    // Second guard, for the case the first cannot see: the root reads fine but
+    // a subtree does not, and the walk swallows that too. "Every single indexed
+    // file disappeared at once" is not something a user does; it is the
+    // signature of a failed walk. Refuse rather than empty the index and say it
+    // worked. A user really deleting everything is left with a stale index and
+    // an error message, which is the recoverable side of this trade.
+    if !existing_file_ids.is_empty() && removed_files.len() == existing_file_ids.len() {
+        anyhow::bail!(
+            "refusing to prune: every one of the {} indexed files looks absent from {}. \
+             A directory that cannot be read is reported as empty, so this is far more \
+             likely to be an unreadable workspace than a deleted one",
+            existing_file_ids.len(),
+            root.display()
+        );
+    }
     let mut ckg_files_removed = 0usize;
     let mut ckg_edges_removed = 0usize;
     let removed_ids = if !removed_files.is_empty() {

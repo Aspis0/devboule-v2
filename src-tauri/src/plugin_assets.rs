@@ -31,7 +31,7 @@
 //! plugin is installed — which is the state the app ships in — and a probe that
 //! needs a file present would only ever report on the file.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{Manager, UriSchemeContext, UriSchemeResponder};
@@ -66,9 +66,16 @@ fn content_type_for(path: &str) -> &'static str {
 /// Strip the request path out of the URI and reject anything that could climb
 /// out of the plugin directory.
 ///
-/// Rejection is on the *raw* segments, before any filesystem call: a check that
-/// canonicalizes first can be defeated by a symlink, and one that trusts the
-/// operating system to normalise is trusting the wrong layer.
+/// This is the FIRST of two checks and is not sufficient alone. It rejects the
+/// *syntax* of an escape — `..`, backslashes, drive colons, control characters,
+/// names Windows silently rewrites — before any filesystem call. It cannot see a
+/// symlink, because a link is not in the syntax; that is what the containment
+/// check in [`read_contained`] is for.
+///
+/// An earlier version of this comment claimed segment checking sufficed
+/// *because* canonicalising can be defeated by a symlink. That was confused:
+/// canonicalising is exactly how a symlink is caught, provided the result is
+/// then tested for containment.
 fn safe_relative_path(uri_path: &str) -> Option<String> {
     let trimmed = uri_path.trim_start_matches('/');
     if trimmed.is_empty() {
@@ -80,7 +87,19 @@ fn safe_relative_path(uri_path: &str) -> Option<String> {
         match segment {
             "" | "." => continue,
             ".." => return None,
-            other if other.contains('\\') || other.contains(':') => return None,
+            // Backslash and colon are path syntax on Windows. A control
+            // character or a NUL is either an encoder bug or an attempt to
+            // truncate the name at a layer below this one.
+            other
+                if other.contains('\\')
+                    || other.contains(':')
+                    || other.chars().any(char::is_control) =>
+            {
+                return None
+            }
+            // Windows strips trailing dots and spaces, so `a.js.` names the
+            // same file as `a.js` while comparing differently here.
+            other if other.ends_with('.') || other.ends_with(' ') => return None,
             other => parts.push(other),
         }
     }
@@ -165,21 +184,50 @@ fn handle<R: tauri::Runtime>(
         return;
     };
 
-    let target = root.join(&relative);
-    match std::fs::read(&target) {
-        Ok(bytes) => respond(
+    match read_contained(&root, &relative) {
+        Some(bytes) => respond(
             responder,
             StatusCode::OK,
             content_type_for(&relative),
             bytes,
         ),
-        Err(_) => respond(
+        // One status for "not there" and for "not allowed", deliberately:
+        // telling them apart turns this handler into a filesystem probe.
+        None => respond(
             responder,
             StatusCode::NOT_FOUND,
             "text/plain",
             b"no such plugin asset".to_vec(),
         ),
     }
+}
+
+/// A file is read only if it really lives under `root` once every link is
+/// followed, and only if it is small enough to hold in memory.
+///
+/// The syntactic check in [`safe_relative_path`] cannot see a symlink or an
+/// NTFS junction — a link is not in the syntax. Someone able to write into the
+/// plugin directory could otherwise drop a link to any file the app can read
+/// and have it served back. Both sides are canonicalised so the comparison is
+/// between real locations, and a file that escapes is treated exactly like a
+/// file that is absent.
+///
+/// The ceiling is not incidental: the whole file is read into memory to answer
+/// one request, so without it a large asset — hostile or merely careless — is
+/// an out-of-memory in the app process.
+fn read_contained(root: &Path, relative: &str) -> Option<Vec<u8>> {
+    const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
+
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    let target = std::fs::canonicalize(canonical_root.join(relative)).ok()?;
+    if !target.starts_with(&canonical_root) {
+        return None;
+    }
+    let metadata = std::fs::metadata(&target).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_ASSET_BYTES {
+        return None;
+    }
+    std::fs::read(&target).ok()
 }
 
 /// Register the scheme on the builder.
@@ -231,6 +279,52 @@ mod tests {
         assert!(percent_decode("%").is_none());
         assert!(percent_decode("%zz").is_none());
         assert_eq!(percent_decode("plain").as_deref(), Some("plain"));
+    }
+
+    #[test]
+    fn a_link_out_of_the_plugin_directory_is_not_served() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("plugins");
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = temp.path().join("private.txt");
+        std::fs::write(&outside, b"a secret the app can read").unwrap();
+        std::fs::write(
+            root.join("inside.js"),
+            b"export const x = 1;
+",
+        )
+        .unwrap();
+
+        assert!(
+            read_contained(&root, "inside.js").is_some(),
+            "an ordinary file inside the directory must still be served"
+        );
+        // A traversal that survived the syntax check would land here.
+        assert!(read_contained(&root, "../private.txt").is_none());
+
+        // The link is the case the syntax check cannot see at all.
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&outside, root.join("link.txt")).is_ok();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, root.join("link.txt")).is_ok();
+        if linked {
+            assert!(
+                read_contained(&root, "link.txt").is_none(),
+                "a symlink pointing out of the plugin directory was served"
+            );
+        } else {
+            // Creating a symlink on Windows needs privilege; skipping is
+            // honest, silently passing would not be.
+            eprintln!("skipped the symlink case: this machine would not create one");
+        }
+    }
+
+    #[test]
+    fn a_directory_is_not_an_asset() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("plugins");
+        std::fs::create_dir_all(root.join("ui")).unwrap();
+        assert!(read_contained(&root, "ui").is_none());
     }
 
     #[test]

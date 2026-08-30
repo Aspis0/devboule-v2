@@ -110,6 +110,13 @@ export function probeGraphics(
   }
 
   const { renderer, vendor, unmasked } = readRendererStrings(context);
+  // Hand the context back deterministically. Browsers cap how many live WebGL
+  // contexts a page may have — around eight — and evict the oldest when the cap
+  // is reached. Waiting for the garbage collector means this probe can, on a
+  // remount, silently cost PixiJS the context it is drawing the city with. One
+  // call avoids that; the extension is absent on some drivers, hence the
+  // optional chain.
+  context.getExtension("WEBGL_lose_context")?.loseContext();
   return {
     webgl2: true,
     renderer,

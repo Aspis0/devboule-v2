@@ -561,6 +561,98 @@ async fn test_incremental_reindex() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Test 3a: a workspace we cannot see is not a workspace with nothing in it
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_prune_refuses_when_the_workspace_cannot_be_read() {
+    let world = TestWorld::new();
+    let sqlite = world.sqlite();
+    let vectors = world.vectors();
+    let embedder = FakeEmbedder::new();
+    let cancel = CancelFlag::new();
+
+    index_file_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        &embedder,
+        &cancel,
+        &world.config(),
+        None,
+    )
+    .await
+    .unwrap();
+    let chunks_before = sqlite.chunk_count().unwrap();
+    assert!(chunks_before > 0, "nothing indexed, so nothing to protect");
+
+    // A root that cannot be read reports as EMPTY, not as an error, all the way
+    // up: the walk returns on `read_dir` failure and the wrapper defaults. A
+    // missing directory reproduces that exactly, and is what a workspace on an
+    // unmounted network drive looks like.
+    let vanished = world.root.join("not-a-directory-any-more");
+    let error = prune_excluded_chunks(
+        &vanished,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect_err("pruning an unreadable workspace must fail, not empty the index");
+    assert!(
+        format!("{error:#}").contains("refusing to prune"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        sqlite.chunk_count().unwrap(),
+        chunks_before,
+        "the index was modified while refusing to prune"
+    );
+
+    // The second guard, for the case the first cannot see: the root reads fine
+    // but the walk yields nothing, which is what a failed walk of a subtree
+    // looks like. Reproduced by emptying the indexed root itself — pointing at
+    // some other empty directory would not do it, because the prune also
+    // gathers the files of every other root in the manifest and would then
+    // correctly remove nothing.
+    for entry in std::fs::read_dir(&world.root).unwrap() {
+        let path = entry.unwrap().path();
+        if path == world.manifest_path.parent().unwrap() {
+            continue; // keep the oracle-data directory, it is not source
+        }
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+    let error = prune_excluded_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect_err("wiping the whole index must be refused, not reported as success");
+    assert!(
+        format!("{error:#}").contains("refusing to prune"),
+        "unexpected error: {error:#}"
+    );
+    assert_eq!(
+        sqlite.chunk_count().unwrap(),
+        chunks_before,
+        "the index was emptied by a prune that should have refused"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Test 3b: a deleted file leaves nothing behind in the graph either
 // ═══════════════════════════════════════════════════════════════════════════
 

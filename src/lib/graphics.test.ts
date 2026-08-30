@@ -6,6 +6,8 @@ const DEBUG_EXTENSION = {
   UNMASKED_VENDOR_WEBGL: 37445,
 };
 
+const released: string[] = [];
+
 function fakeCanvas(options: {
   context?: "throw" | "null" | "ok";
   extension?: boolean;
@@ -31,7 +33,12 @@ function fakeCanvas(options: {
       return {
         RENDERER: 1,
         VENDOR: 2,
-        getExtension: () => (extension ? DEBUG_EXTENSION : null),
+        getExtension: (name: string) => {
+          if (name === "WEBGL_lose_context") {
+            return { loseContext: () => released.push(name) };
+          }
+          return extension ? DEBUG_EXTENSION : null;
+        },
         getParameter: (name: number) => parameters[name] ?? "",
       };
     },
@@ -39,6 +46,14 @@ function fakeCanvas(options: {
 }
 
 describe("probeGraphics", () => {
+  it("hands the context back instead of waiting for the collector", () => {
+    released.length = 0;
+    probeGraphics(() => fakeCanvas({}));
+    // Browsers cap live WebGL contexts and evict the oldest; a probe that
+    // leaks one can cost the renderer the context it is drawing with.
+    expect(released).toContain("WEBGL_lose_context");
+  });
+
   it("reports hardware when the renderer names a GPU", () => {
     const capability = probeGraphics(() => fakeCanvas({}));
     expect(capability.webgl2).toBe(true);

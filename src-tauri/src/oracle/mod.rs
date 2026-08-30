@@ -1351,8 +1351,16 @@ fn run_index_job(
     // which is indistinguishable from a missing one until someone deletes a
     // file. It runs here, after a successful run, on the same stores.
     //
-    // Not on a cancelled or failed run: a partial index has not seen every file
-    // and pruning against it would delete the ones it never reached.
+    // Not on a cancelled run — but not for the reason first written here. That
+    // comment said a partial index "would delete the files it never reached",
+    // which is false: the prune removes files that have chunks in the index and
+    // no file on disk, and a file the run never reached has no chunks, so it
+    // cannot be removed. Completeness of the run is irrelevant to correctness.
+    //
+    // The real reason is narrower: cancelling is the user asking us to stop
+    // doing work, and a prune is work. Note that a run PAUSED for memory or a
+    // batch limit still returns `Ok(Ok(_))` and does prune, which is both
+    // intended and safe by the argument above.
     if matches!(result, Ok(Ok(_))) && !cancel.is_cancelled() {
         let node_vectors = LanceStore::new(&paths.data.vectors);
         match tauri::async_runtime::block_on(prune_excluded_chunks(
