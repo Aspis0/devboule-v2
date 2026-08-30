@@ -2436,6 +2436,8 @@ mod tests {
         let mut top1 = 0;
         let mut top5 = 0;
         let mut missing = 0;
+        let mut focused = 0;
+        let mut unfocused = 0;
         for (index, query) in queries.iter().enumerate() {
             let expected = normalize_expected_path(&workspace, &query.expect);
             let response =
@@ -2455,12 +2457,31 @@ mod tests {
 
             println!("\nquery {}: {}", index + 1, query.q);
             for (position, result) in response.results.iter().take(5).enumerate() {
+                let focus = match (result.focus_line_start, result.focus_line_end) {
+                    (Some(start), Some(end)) => {
+                        assert!(
+                            start >= result.line_start && end <= result.line_end && start <= end,
+                            "focus {start}-{end} escapes the cited range {}-{} for {}",
+                            result.line_start,
+                            result.line_end,
+                            result.path
+                        );
+                        focused += 1;
+                        format!(" -> start at {start}-{end}")
+                    }
+                    (None, None) => {
+                        unfocused += 1;
+                        String::new()
+                    }
+                    _ => panic!("half a focus span on {}", result.path),
+                };
                 println!(
-                    "  {}. {} (lines {}-{})",
+                    "  {}. {} (lines {}-{}){}",
                     position + 1,
                     result.path,
                     result.line_start,
-                    result.line_end
+                    result.line_end,
+                    focus
                 );
             }
             match rank {
@@ -2477,6 +2498,20 @@ mod tests {
                 top5 += 1;
             }
         }
+
+        // The reranker was once written, measured, committed and never
+        // delivered, because nothing downloaded its model and no test asserted
+        // that it had run. The citation focus rides on that same reranker, so
+        // this asserts the focus arrived rather than printing a line range that
+        // looks identical whether it did or not.
+        assert!(
+            focused > 0,
+            "no result carried a focus span across {} queries. The reranker model is \
+             staged by this test, so either the narrowing never ran or every retrieved \
+             chunk was too short to narrow — both are regressions",
+            queries.len()
+        );
+        println!("\nfocus: {focused} results narrowed, {unfocused} left at chunk width");
 
         let outside_top5 = queries.len().saturating_sub(top5 + missing);
         println!(
