@@ -32,7 +32,13 @@
         "connect-src": "'self' ipc: http://ipc.localhost ws://localhost:6767 ws://127.0.0.1:6767",
         "font-src": "'self'",
         "img-src": "'self' data:",
-        // M5: PixiJS will require 'unsafe-eval' in script-src for its runtime; keep it out until that milestone needs it.
+        // M5 does NOT need this relaxed, contrary to what this comment used to
+        // say. PixiJS compiles shader glue with `new Function`, but it ships
+        // `pixi.js/unsafe-eval` — a patch whose npm description is "adds support
+        // for environments that disallow support of new Function". Polis already
+        // imports it (old-devboule src/components/polis/createPolis.ts:18) with a
+        // comment saying not to add 'unsafe-eval' to the CSP. Importing that
+        // module is what keeps this directive strict; verified 2026-08-30.
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
         "worker-src": "'self' blob:"
