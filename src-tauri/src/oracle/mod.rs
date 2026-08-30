@@ -15,9 +15,10 @@ use oracle_core::redact_secret_tokens;
 use oracle_core::{
     chunk_index_status, collect_text_files, configured_model_present, configured_reranker_present,
     default_backend, default_model_dir, file_needs_index, index_file_chunks, load_manifest,
-    manifest_files_for_root, BackendChoice, CancelFlag, ContextChunk, EmbedderPool, EpArg,
-    IndexStatusSnapshot, IndexerConfig, LanceStore, OracleDataPaths, PoolQueryEmbedder,
-    QueryEngine, RerankerHandle, SharedReranker, SqliteStore, TextEmbedder, MAX_BOUNDED_LIMIT,
+    manifest_files_for_root, prune_excluded_chunks, BackendChoice, CancelFlag, ContextChunk,
+    EmbedderPool, EpArg, IndexStatusSnapshot, IndexerConfig, LanceStore, OracleDataPaths,
+    PoolQueryEmbedder, QueryEngine, RerankerHandle, SharedReranker, SqliteStore, TextEmbedder,
+    MAX_BOUNDED_LIMIT,
 };
 
 use crate::backend::error::CommandError;
@@ -1343,6 +1344,39 @@ fn run_index_job(
             None,
         ))
     }));
+    // Deleting a file from the workspace used to leave its chunks, its vectors
+    // and its manifest entry in place for ever, so Oracle went on citing a file
+    // that was not there. `prune_excluded_chunks` had existed since the port and
+    // was reachable only from its own tests — a real function with no caller,
+    // which is indistinguishable from a missing one until someone deletes a
+    // file. It runs here, after a successful run, on the same stores.
+    //
+    // Not on a cancelled or failed run: a partial index has not seen every file
+    // and pruning against it would delete the ones it never reached.
+    if matches!(result, Ok(Ok(_))) && !cancel.is_cancelled() {
+        let node_vectors = LanceStore::new(&paths.data.vectors);
+        match tauri::async_runtime::block_on(prune_excluded_chunks(
+            &paths.workspace,
+            &sqlite,
+            &chunk_vectors,
+            &paths.data.manifest,
+            Some(&node_vectors),
+            Some(&paths.data.ckg),
+            None,
+        )) {
+            Ok(pruned) if pruned.removed_files > 0 => {
+                eprintln!(
+                    "[oracle] pruned {} file(s) that no longer exist, {} vector(s)",
+                    pruned.removed_files, pruned.removed_vectors
+                );
+            }
+            Ok(_) => {}
+            // A prune failure leaves stale rows, which is worse than nothing but
+            // far better than losing an index that just finished building.
+            Err(error) => eprintln!("[oracle] pruning deleted files failed: {error:#}"),
+        }
+    }
+
     match result {
         Ok(Ok(_)) => finish_index(&indexing, &index_cancel, &last_index_error, &cancel, None),
         Ok(Err(error)) => finish_index(

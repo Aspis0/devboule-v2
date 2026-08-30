@@ -283,6 +283,29 @@ impl CkgStore {
         )
     }
 
+    /// Drop every edge whose destination is one of `files`, returning how many.
+    ///
+    /// `replace_for_files` keys deletion on `src_file`, so it cannot reach an
+    /// edge that *points at* a file being removed — that edge belongs to its
+    /// source. Left alone it dangles: a walk arrives at a node the store no
+    /// longer has, and a caller that opens it finds nothing. Pruning calls this
+    /// straight after, so the graph is consistent when the prune returns rather
+    /// than whenever each importer happens to be re-indexed.
+    pub fn forget_edges_pointing_at(&self, files: &[String]) -> Result<usize> {
+        if files.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.connect()?;
+        let placeholders: Vec<&str> = vec!["?"; files.len()];
+        let sql = format!(
+            "DELETE FROM ckg_edges WHERE dst IN ({})",
+            placeholders.join(",")
+        );
+        let params: Vec<&dyn ToSql> = files.iter().map(|file| file as &dyn ToSql).collect();
+        conn.execute(&sql, params_from_iter(params))
+            .context("deleting ckg edges pointing at removed files")
+    }
+
     fn edges_where(&self, sql: &str, argument: &str) -> Result<Vec<CkgEdgeRow>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(sql).context("preparing ckg edge query")?;
@@ -632,5 +655,42 @@ mod tests {
             vec!["src/a.ts", "src/b.ts"]
         );
         assert!(store.importers_of("src/a.ts").unwrap().is_empty());
+    }
+    #[test]
+    fn forgetting_a_file_takes_the_edges_that_pointed_at_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CkgStore::new(&dir.path().join("ckg.sqlite")).unwrap();
+        store
+            .replace_all(
+                &[],
+                &[
+                    edge("src/a.ts", "src/gone.ts", "IMPORT"),
+                    edge("src/b.ts", "src/gone.ts", "IMPORT"),
+                    edge("src/a.ts", "src/kept.ts", "IMPORT"),
+                ],
+            )
+            .unwrap();
+
+        // Removing the file's own rows cannot reach edges owned by other files.
+        store
+            .replace_for_files(&["src/gone.ts".to_string()], &[], &[])
+            .unwrap();
+        assert_eq!(
+            store.importers_of("src/gone.ts").unwrap().len(),
+            2,
+            "this is the dangling state the second call exists to clear"
+        );
+
+        let removed = store
+            .forget_edges_pointing_at(&["src/gone.ts".to_string()])
+            .unwrap();
+        assert_eq!(removed, 2);
+        assert!(store.importers_of("src/gone.ts").unwrap().is_empty());
+        assert_eq!(
+            store.imports_of("src/a.ts").unwrap().len(),
+            1,
+            "an unrelated edge from the same source must survive"
+        );
+        assert_eq!(store.forget_edges_pointing_at(&[]).unwrap(), 0);
     }
 }

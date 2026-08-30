@@ -561,6 +561,70 @@ async fn test_incremental_reindex() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Test 3b: a deleted file leaves nothing behind in the graph either
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_prune_removes_the_graph_rows_of_a_deleted_file() {
+    let world = TestWorld::new();
+    let sqlite = world.sqlite();
+    let vectors = world.vectors();
+    let embedder = FakeEmbedder::new();
+    let cancel = CancelFlag::new();
+    let ckg_path = world.root.join("oracle-data").join("ckg.sqlite");
+
+    let config = IndexerConfig {
+        ckg_path: Some(ckg_path.clone()),
+        ..world.config()
+    };
+    index_file_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        &embedder,
+        &cancel,
+        &config,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let store = oracle_core::CkgStore::new(&ckg_path).unwrap();
+    // A source file, not the JSON one: a file with no symbols and no imports
+    // produces a FILE node and nothing else, so asserting that its rows vanish
+    // would pass whether or not the prune did anything.
+    let doomed = "src/app.py";
+    let before = store.neighborhood(doomed, 1, None).unwrap();
+    assert!(
+        !before.is_empty(),
+        "the graph must reach out of {doomed} before deletion, or this test proves nothing"
+    );
+
+    std::fs::remove_file(world.root.join(doomed)).unwrap();
+    prune_excluded_chunks(
+        &world.root,
+        &sqlite,
+        &vectors,
+        &world.manifest_path,
+        None,
+        Some(&ckg_path),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        store.neighborhood(doomed, 2, None).unwrap().is_empty(),
+        "the graph still reaches out of a file that no longer exists"
+    );
+    assert!(
+        store.imports_of(doomed).unwrap().is_empty(),
+        "the graph still records imports for a file that no longer exists"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Test 3: Prune — delete a file → removes chunks/vectors/manifest + orphan
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -601,6 +665,7 @@ async fn test_prune_removes_stale() {
         &vectors,
         &world.manifest_path,
         None, // no node vector store
+        None, // no code-knowledge graph
         None,
     )
     .await
@@ -642,6 +707,7 @@ async fn test_prune_removes_stale() {
         &sqlite,
         &vectors,
         &world.manifest_path,
+        None,
         None,
         None,
     )

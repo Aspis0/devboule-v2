@@ -82,7 +82,7 @@ pub use ingest::chunking::{
     build_chunks_for_file, build_chunks_for_file_with_limits, chunk_geometry_fingerprint,
 };
 #[doc(hidden)]
-pub use ingest::ckg_build::{build_graph, build_graph_within, import_specifiers, FileGraphInput};
+pub use ingest::ckg_build::{build_graph_within, import_specifiers, FileGraphInput};
 #[doc(hidden)]
 pub use ingest::collect::priority_rank;
 #[doc(hidden)]

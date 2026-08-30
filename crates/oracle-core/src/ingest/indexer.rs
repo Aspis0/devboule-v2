@@ -365,6 +365,10 @@ pub struct PruneResult {
     pub removed_node_vectors: usize,
     pub removed_orphan_node_vectors: usize,
     pub manifest_removed: usize,
+    /// Files whose graph nodes and outgoing edges were dropped.
+    pub ckg_files_removed: usize,
+    /// Edges that pointed *at* a removed file and would have dangled.
+    pub ckg_dangling_edges_removed: usize,
     pub sqlite_chunk_files: usize,
     pub sqlite_chunks: usize,
     pub vector_records: usize,
@@ -1184,12 +1188,14 @@ pub fn sync_text_chunks(
 ///
 /// `node_vectors` is the node-card vector store (optional — when `None` the
 /// node-vector pruning step is skipped).
+#[allow(clippy::too_many_arguments)]
 pub async fn prune_excluded_chunks(
     root: &Path,
     sqlite: &SqliteStore,
     chunk_vectors: &LanceStore,
     manifest_path: &Path,
     node_vectors: Option<&LanceStore>,
+    ckg_path: Option<&Path>,
     progress: Option<&dyn Fn(&str)>,
 ) -> Result<PruneResult> {
     let root = root.to_path_buf();
@@ -1226,6 +1232,8 @@ pub async fn prune_excluded_chunks(
         .difference(&expected_all_roots)
         .cloned()
         .collect();
+    let mut ckg_files_removed = 0usize;
+    let mut ckg_edges_removed = 0usize;
     let removed_ids = if !removed_files.is_empty() {
         sqlite.chunk_ids_for_files(&removed_files)?
     } else {
@@ -1233,6 +1241,26 @@ pub async fn prune_excluded_chunks(
     };
     if !removed_files.is_empty() {
         sqlite.replace_chunks_for_files(&removed_files, &[])?;
+        // The graph outlives the chunks unless it is told otherwise: nodes are
+        // keyed by `file` and edges by `src_file`, so passing no replacements
+        // deletes both. That alone would leave edges *pointing at* a deleted
+        // file, because those are keyed by their own source — a walk would then
+        // reach a node that no longer exists, and a caller opening it would get
+        // a missing file. So incoming edges go too, and the graph stays
+        // self-consistent instead of self-consistent-eventually.
+        if let Some(path) = ckg_path {
+            match CkgStore::new(path) {
+                Ok(store) => {
+                    store.replace_for_files(&removed_files, &[], &[])?;
+                    ckg_edges_removed = store.forget_edges_pointing_at(&removed_files)?;
+                    ckg_files_removed = removed_files.len();
+                }
+                Err(error) => log_progress(
+                    progress,
+                    &format!("chunk-prune ckg unavailable, graph rows kept: {error:#}"),
+                ),
+            }
+        }
     }
 
     let valid_chunk_ids: BTreeSet<String> =
@@ -1318,13 +1346,16 @@ pub async fn prune_excluded_chunks(
         progress,
         &format!(
             "chunk-prune removed_files={} removed_vectors={} orphan_vectors={} \
-             removed_nodes={} removed_node_vectors={} manifest_removed={}",
+             removed_nodes={} removed_node_vectors={} manifest_removed={} \
+             ckg_files={} ckg_dangling_edges={}",
             removed_files.len(),
             removed_vector_count,
             orphan_count,
             removed_node_count,
             removed_node_vector_count,
             manifest_removed,
+            ckg_files_removed,
+            ckg_edges_removed,
         ),
     );
 
@@ -1338,6 +1369,8 @@ pub async fn prune_excluded_chunks(
         removed_node_vectors: removed_node_vector_count,
         removed_orphan_node_vectors: removed_orphan_node_vector_count,
         manifest_removed,
+        ckg_files_removed,
+        ckg_dangling_edges_removed: ckg_edges_removed,
         sqlite_chunk_files: chunk_file_count,
         sqlite_chunks: chunk_count,
         vector_records: vector_count,

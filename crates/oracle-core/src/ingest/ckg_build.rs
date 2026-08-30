@@ -25,6 +25,25 @@
 //! languages contribute nodes and `CONTAIN` edges but no imports, which is
 //! visible in the graph rather than silently wrong.
 //!
+//! ## Known limits, found by audit and accepted rather than hidden
+//!
+//! - **The source is re-read after the chunks are computed.** If a file changes
+//!   in that window — seconds, while its batch embeds — the chunks describe the
+//!   old text and the edges the new. It self-heals the next time that file is
+//!   indexed. Closing it properly means threading the source through the
+//!   embedding path, which would put a field on the chunk schema that feeds the
+//!   index, and that is a worse trade for a race this small.
+//! - **`crate::` finds the crate root with the *last* `/src/` in the importer's
+//!   path.** A pathological layout — `project/src/src/module.rs` — picks the
+//!   inner one and resolves against the wrong root. The result is a missing
+//!   edge, or a wrong one if a same-named file happens to sit at that depth.
+//!   Neither `find` nor `rfind` is right for every layout (`vendor/src/x/src/`
+//!   wants the inner one), so this stays a documented heuristic.
+//! - **The universe slightly over-approximates the index.** It comes from the
+//!   collected file set, which includes files later skipped as oversized or
+//!   sensitive. An edge can therefore name a real file that has no chunks. The
+//!   path is still openable, which is what an import edge promises.
+//!
 //! ## What this cannot do
 //!
 //! There are no `CALL` edges here, and there were none in v1 either — its
@@ -271,22 +290,28 @@ fn chunk_i64(chunk: &serde_json::Value, key: &str) -> i64 {
     chunk.get(key).and_then(|value| value.as_i64()).unwrap_or(0)
 }
 
-/// Build nodes and edges for the given files.
+/// Convenience entry that treats the given files as the whole universe.
 ///
-/// The FILE node id is the repository-relative path and a symbol node id is
-/// `<path>#<start>-<end>-<index>`, matching the scheme v1 wrote so anything
-/// reading an existing database keeps working. `file_id_of_node` in the old MCP
-/// splits on `#`, which this preserves.
+/// Only the tests want this: production always knows the full file set and
+/// calls [`build_graph_within`] with it. Kept because a test that has to build
+/// a universe by hand is a test that is easy to get wrong.
+#[cfg(test)]
 pub fn build_graph(files: &[FileGraphInput<'_>]) -> CkgGraph {
     let universe: HashSet<String> = files.iter().map(|file| file.file_id.to_string()).collect();
     build_graph_within(files, &universe)
 }
 
-/// The same, with the resolution universe supplied separately.
+/// Build nodes and edges for the given files, resolving imports against
+/// `universe`.
 ///
-/// Indexing runs in batches, and an import almost always crosses a batch
-/// boundary. Resolving against only the files in hand would drop those edges
-/// silently, so the caller passes every path the index will contain.
+/// The FILE node id is the repository-relative path and a symbol node id is
+/// `<path>#<start>-<end>-<index>`, matching the scheme v1 wrote so anything
+/// reading an existing database keeps working; `file_id_of_node` in the old MCP
+/// splits on `#`, which this preserves.
+///
+/// The universe is separate from the inputs because indexing runs in batches and
+/// an import almost always crosses a batch boundary. Resolving against only the
+/// files in hand would drop those edges silently.
 pub fn build_graph_within(files: &[FileGraphInput<'_>], universe: &HashSet<String>) -> CkgGraph {
     let indexed: HashSet<&str> = universe.iter().map(String::as_str).collect();
     let mut graph = CkgGraph::default();
