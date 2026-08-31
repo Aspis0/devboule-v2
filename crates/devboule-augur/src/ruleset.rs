@@ -22,10 +22,10 @@ pub fn is_gitleaks_rule(rule: &str) -> bool {
                 .expect("shipped gitleaks.toml must parse")
                 .rules
                 .into_iter()
-                .map(|rule| rule.id)
+                .map(|rule| rule.id.to_ascii_lowercase())
                 .collect()
         })
-        .contains(rule)
+        .contains(&rule.to_ascii_lowercase())
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -131,7 +131,7 @@ impl Ruleset {
 }
 
 fn parse_toml(toml: &str) -> Result<File, Error> {
-    toml::from_str(toml).map_err(|error| Error::Rules(error.to_string()))
+    toml::from_str(toml).map_err(|error| Error::rules(error.to_string()))
 }
 
 fn parse_and_compile(toml: &str) -> Result<Ruleset, Error> {
@@ -290,6 +290,10 @@ mod tests {
             "identity choke point must recognise gitleaks ids"
         );
         assert!(!is_gitleaks_rule("unused_variables"));
+        assert!(
+            is_gitleaks_rule("AWS-ACCESS-TOKEN"),
+            "rule ids are matched case-insensitively"
+        );
         let declared = declared_ids(GITLEAKS_TOML)
             .into_iter()
             .chain(declared_ids(LOCATIONS_TOML))

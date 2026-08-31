@@ -69,10 +69,12 @@ impl Registry {
     /// do not silence the others: a clippy that cannot start should not hide
     /// a secret that is already on disk. The failure is reported, not swallowed.
     pub fn review(&self, ctx: &Context<'_>, budget: Cost) -> Review {
+        let registered: Vec<&'static str> = self.detectors.iter().map(|d| d.id()).collect();
         let mut review = Review {
             findings: Vec::new(),
             completed: Vec::new(),
             failed: Vec::new(),
+            registered,
         };
         for detector in &self.detectors {
             if detector.cost() > budget {
@@ -80,6 +82,9 @@ impl Registry {
             }
             match detector.scan(ctx) {
                 Ok(mut produced) => {
+                    for finding in &mut produced {
+                        finding.stamp_source(detector.id());
+                    }
                     review.findings.append(&mut produced);
                     review.completed.push(detector.id());
                 }
@@ -89,17 +94,21 @@ impl Registry {
                 }),
             }
         }
+        review.findings = crate::finding::coalesce(review.findings);
         review
     }
 }
 
 /// Outcome of one [`Registry::review`]. `completed` is what actually ran
 /// (including empty-clean detectors) so the ledger can replace only those.
+/// `registered` is every detector this registry knows, so a removed
+/// detector's rows can be dropped on a later scan.
 #[derive(Debug)]
 pub struct Review {
     pub findings: Vec<Finding>,
     pub completed: Vec<&'static str>,
     pub failed: Vec<FailedDetector>,
+    pub registered: Vec<&'static str>,
 }
 
 #[derive(Debug)]

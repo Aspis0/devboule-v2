@@ -38,13 +38,17 @@ fn run_clippy(root: &std::path::Path) -> Result<String, Error> {
         .current_dir(root)
         .output()
         .map_err(|error| Error::tool(format!("could not run clippy: {error}")))?;
-    if output.stdout.is_empty() && !output.status.success() {
+    interpret_clippy_output(output.status.success(), &output.stdout, &output.stderr)
+}
+
+fn interpret_clippy_output(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<String, Error> {
+    if !success {
         return Err(Error::tool(format!(
             "clippy failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(stderr)
         )));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(stdout).into_owned())
 }
 
 impl Detector for Clippy {
@@ -63,20 +67,25 @@ impl Detector for Clippy {
             findings.retain(|finding| {
                 ctx.files
                     .iter()
-                    .any(|asked| asked_this_file(asked, finding.file()))
+                    .any(|asked| asked_this_file(ctx.root, asked, finding.file()))
             });
         }
         Ok(findings)
     }
 }
 
-fn asked_this_file(asked: &std::path::Path, found: &std::path::Path) -> bool {
-    let asked: Vec<_> = asked.components().collect();
-    let found: Vec<_> = found.components().collect();
-    if asked.is_empty() || found.is_empty() {
-        return false;
+fn asked_this_file(
+    root: &std::path::Path,
+    asked: &std::path::Path,
+    found: &std::path::Path,
+) -> bool {
+    match (
+        crate::finding::canonical_file(root, asked),
+        crate::finding::canonical_file(root, found),
+    ) {
+        (Some(asked), Some(found)) => asked == found,
+        _ => false,
     }
-    asked == found || asked.ends_with(&found) || found.ends_with(&asked)
 }
 
 /// Turn cargo/clippy JSON lines into findings that resolve to a real file.
@@ -129,13 +138,12 @@ pub fn findings_from_json(root: &std::path::Path, jsonl: &str) -> Vec<Finding> {
                 source: "clippy",
                 title: &message.message,
                 raw_excerpt: excerpt,
-                occurrence: 0,
             },
         ) {
             findings.push(finding);
         }
     }
-    findings
+    crate::finding::coalesce(findings)
 }
 
 #[derive(serde::Deserialize)]
@@ -187,24 +195,38 @@ mod tests {
 
     #[test]
     fn asked_this_file_does_not_treat_a_suffix_string_as_the_same_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("src")).expect("mkdir");
+        std::fs::create_dir_all(root.join("vendor/src")).expect("mkdir");
+        std::fs::write(root.join("src/lib.rs"), "fn a() {}\n").expect("write");
+        std::fs::write(root.join("src/notlib.rs"), "fn b() {}\n").expect("write");
+        std::fs::write(root.join("vendor/src/lib.rs"), "fn c() {}\n").expect("write");
         assert!(asked_this_file(
+            root,
             std::path::Path::new("src/lib.rs"),
             std::path::Path::new("src/lib.rs")
         ));
+        assert!(!asked_this_file(
+            root,
+            std::path::Path::new("src/lib.rs"),
+            std::path::Path::new("src/notlib.rs")
+        ));
         assert!(
             !asked_this_file(
+                root,
                 std::path::Path::new("src/lib.rs"),
-                std::path::Path::new("src/notlib.rs")
+                std::path::Path::new("vendor/src/lib.rs")
             ),
-            "string ends_with must not keep an unrelated file"
+            "a suffix path is not the asked file"
         );
-        assert!(
-            !asked_this_file(
-                std::path::Path::new("lib.rs"),
-                std::path::Path::new("src/notlib.rs")
-            ),
-            "lib.rs is not a component suffix of src/notlib.rs"
-        );
+    }
+
+    #[test]
+    fn a_nonzero_clippy_exit_is_a_failure_even_with_stdout() {
+        let err = interpret_clippy_output(false, b"{\"reason\":\"compiler-message\"}\n", b"boom")
+            .expect_err("must fail");
+        assert!(err.to_string().contains("clippy failed"));
     }
 
     #[test]

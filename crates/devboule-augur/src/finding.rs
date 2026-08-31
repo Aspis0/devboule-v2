@@ -22,22 +22,11 @@ impl FindingId {
         }
     }
 
-    /// Port of v1 `compute_sin_id`, with two corrections the v1 never needed:
-    /// evidence normalisation is per-rule (secret values are not excerpts),
-    /// and fields are length-prefixed so a `0x1f` inside a field cannot forge
-    /// a neighbour. `occurrence` distinguishes two copies of the same secret
-    /// in one file without putting the line back into the hash.
+    /// Port of v1 `compute_sin_id`. Evidence normalisation is per-rule.
+    /// Fields are length-prefixed so a `0x1f` inside a field cannot forge
+    /// a neighbour. Two byte-identical secrets in one file share this id:
+    /// they are one finding with more than one location.
     pub fn of(rule: &str, file: &Path, line: Option<usize>, evidence: &str) -> Self {
-        Self::of_at(rule, file, line, evidence, 0)
-    }
-
-    pub fn of_at(
-        rule: &str,
-        file: &Path,
-        line: Option<usize>,
-        evidence: &str,
-        occurrence: u32,
-    ) -> Self {
         let line_token = if line_is_decorative(rule) {
             String::new()
         } else {
@@ -45,10 +34,9 @@ impl FindingId {
         };
         let mut hasher = Sha256::new();
         put(&mut hasher, normalise_path(file).as_bytes());
-        put(&mut hasher, rule.as_bytes());
+        put(&mut hasher, rule_key(rule).as_bytes());
         put(&mut hasher, line_token.as_bytes());
         put(&mut hasher, evidence_key(rule, evidence).as_bytes());
-        put(&mut hasher, &occurrence.to_be_bytes());
         let digest = hasher.finalize();
         FindingId(
             digest
@@ -70,9 +58,14 @@ fn put(hasher: &mut Sha256, bytes: &[u8]) {
 /// secret, function name, partner path, hardcoded URI). Clippy lints keep
 /// the line: two unused variables of the same shape on different lines are
 /// different findings. Enforced here, the single choke point.
+fn rule_key(rule: &str) -> String {
+    rule.to_ascii_lowercase()
+}
+
 fn line_is_decorative(rule: &str) -> bool {
+    let rule = rule_key(rule);
     matches!(
-        rule,
+        rule.as_str(),
         "complexity"
             | "clone"
             | "secret"
@@ -80,7 +73,7 @@ fn line_is_decorative(rule: &str) -> bool {
             | "path.unix-absolute"
             | "url.localhost"
     ) || rule.starts_with("secret.")
-        || crate::ruleset::is_gitleaks_rule(rule)
+        || crate::ruleset::is_gitleaks_rule(&rule)
 }
 
 fn normalise_path(file: &Path) -> String {
@@ -94,27 +87,62 @@ fn normalise_path(file: &Path) -> String {
             std::path::Component::Prefix(prefix) => {
                 parts.push(prefix.as_os_str().to_string_lossy().to_lowercase());
             }
-            other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+            other => {
+                let part = other.as_os_str().to_string_lossy();
+                parts.push(if cfg!(windows) {
+                    part.to_lowercase()
+                } else {
+                    part.into_owned()
+                });
+            }
         }
     }
     parts.join("/")
 }
 
-/// Relativise `file` against `root` and collapse `.` / `..` / separators /
-/// drive-letter case. Used by [`Finding::grounded`] so identity and the
-/// stored path agree.
-pub(crate) fn canonical_file(root: &Path, file: &Path) -> PathBuf {
+/// Relativise `file` against an **absolute** `root`. Files outside the root
+/// are rejected. On Windows the whole path is case-folded and verbatim
+/// prefixes (`\\?\`) are stripped.
+pub(crate) fn canonical_file(root: &Path, file: &Path) -> Option<PathBuf> {
+    let root_abs = make_absolute(root)?;
     let joined = if file.is_absolute() {
         file.to_path_buf()
     } else {
-        root.join(file)
+        root_abs.join(file)
     };
-    let joined_norm = PathBuf::from(normalise_path(&joined));
-    let root_norm = PathBuf::from(normalise_path(root));
-    joined_norm
+    let joined_abs = make_absolute(&joined)?;
+    let root_norm = fold_platform(&strip_verbatim(&root_abs));
+    let file_norm = fold_platform(&strip_verbatim(&joined_abs));
+    let root_norm = PathBuf::from(normalise_path(&root_norm));
+    let file_norm = PathBuf::from(normalise_path(&file_norm));
+    file_norm
         .strip_prefix(&root_norm)
+        .ok()
+        .filter(|rel| !rel.as_os_str().is_empty())
         .map(Path::to_path_buf)
-        .unwrap_or(joined_norm)
+}
+
+fn make_absolute(path: &Path) -> Option<PathBuf> {
+    std::path::absolute(path).ok()
+}
+
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn fold_platform(path: &Path) -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(path.to_string_lossy().to_lowercase())
+    } else {
+        path.to_path_buf()
+    }
 }
 
 /// Evidence normalisation is per-rule, at the same choke point as the line.
@@ -129,7 +157,36 @@ fn evidence_key(rule: &str, evidence: &str) -> String {
 }
 
 fn evidence_is_verbatim(rule: &str) -> bool {
-    rule == "secret" || rule.starts_with("secret.") || crate::ruleset::is_gitleaks_rule(rule)
+    let rule = rule_key(rule);
+    rule == "secret" || rule.starts_with("secret.") || crate::ruleset::is_gitleaks_rule(&rule)
+}
+
+/// Text that has already passed the redaction constructor. The inner string
+/// is private; the only way to obtain one is [`Outbound::new`] / [`Outbound::secret`].
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Outbound(String);
+
+impl Outbound {
+    pub(crate) fn new(raw: &str) -> Self {
+        Self(oracle_core::redact_secret_tokens(raw))
+    }
+
+    pub(crate) fn secret(raw: &str) -> Self {
+        let newlines = raw.bytes().filter(|byte| *byte == b'\n').count();
+        let mut marker = String::from("[redacted-secret]");
+        marker.extend(std::iter::repeat_n('\n', newlines));
+        Self(marker)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Outbound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 fn fold_excerpt(evidence: &str) -> String {
@@ -194,26 +251,44 @@ pub struct Draft<'a> {
     pub source: &'a str,
     pub title: &'a str,
     pub raw_excerpt: &'a str,
-    /// Among equal (rule, evidence) matches in this file, counting from 0.
-    /// Line is not this number; it is display-only for decorative-line rules.
-    pub occurrence: u32,
 }
 
-/// One problem in a real file, at a real line range.
-///
-/// Fields are private so callers and storage do not freeze this layout.
+/// One span inside a finding. A secret that appears twice is one finding
+/// with two locations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Location {
+    start_line: usize,
+    end_line: usize,
+}
+
+impl Location {
+    pub(crate) fn new(start_line: usize, end_line: usize) -> Self {
+        Self {
+            start_line,
+            end_line,
+        }
+    }
+    pub fn start_line(self) -> usize {
+        self.start_line
+    }
+    pub fn end_line(self) -> usize {
+        self.end_line
+    }
+}
+
+/// One problem in a real file. Fields are private and every string is
+/// constructed through [`Outbound`], so a raw secret cannot sit on this type.
 /// Interchange lives in [`crate::exchange`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Finding {
     id: FindingId,
     file: PathBuf,
-    start_line: usize,
-    end_line: usize,
-    rule: String,
+    locations: Vec<Location>,
+    rule: Outbound,
     severity: Severity,
-    source: String,
-    title: String,
-    evidence: String,
+    source: Outbound,
+    title: Outbound,
+    evidence: Outbound,
 }
 
 impl Finding {
@@ -224,99 +299,173 @@ impl Finding {
         &self.file
     }
     pub fn start_line(&self) -> usize {
-        self.start_line
+        self.locations
+            .first()
+            .map(|loc| loc.start_line)
+            .unwrap_or(1)
     }
     pub fn end_line(&self) -> usize {
-        self.end_line
+        self.locations
+            .last()
+            .map(|loc| loc.end_line)
+            .unwrap_or(self.start_line())
+    }
+    pub fn locations(&self) -> &[Location] {
+        &self.locations
     }
     pub fn rule(&self) -> &str {
-        &self.rule
+        self.rule.as_str()
     }
     pub fn severity(&self) -> Severity {
         self.severity
     }
     pub fn source(&self) -> &str {
-        &self.source
+        self.source.as_str()
     }
     pub fn title(&self) -> &str {
-        &self.title
+        self.title.as_str()
     }
     pub fn evidence(&self) -> &str {
-        &self.evidence
+        self.evidence.as_str()
+    }
+
+    pub(crate) fn stamp_source(&mut self, source: &str) {
+        self.source = Outbound::new(source);
+    }
+
+    pub(crate) fn add_location(&mut self, start_line: usize, end_line: usize) {
+        let loc = Location {
+            start_line,
+            end_line,
+        };
+        if !self.locations.contains(&loc) {
+            self.locations.push(loc);
+            self.locations.sort_unstable();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_snapshot(
         id: FindingId,
         file: PathBuf,
-        start_line: usize,
-        end_line: usize,
+        locations: Vec<Location>,
         rule: String,
         severity: Severity,
         source: String,
         title: String,
         evidence: String,
     ) -> Option<Self> {
-        Some(Self {
+        if locations.is_empty() {
+            return None;
+        }
+        Some(Self::assemble(
+            id, file, locations, &rule, severity, &source, &title, &evidence,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        id: FindingId,
+        file: PathBuf,
+        locations: Vec<Location>,
+        rule: &str,
+        severity: Severity,
+        source: &str,
+        title: &str,
+        evidence: &str,
+    ) -> Self {
+        let file = PathBuf::from(Outbound::new(&file.to_string_lossy()).as_str());
+        let evidence = if evidence_is_verbatim(rule) {
+            Outbound::secret(evidence)
+        } else {
+            Outbound::new(evidence)
+        };
+        Self {
             id,
             file,
-            start_line,
-            end_line,
-            rule,
+            locations,
+            rule: Outbound::new(rule),
             severity,
-            source,
-            title: outbound_text(&title),
+            source: Outbound::new(source),
+            title: Outbound::new(title),
             evidence,
-        })
+        }
+    }
+}
+
+impl std::fmt::Debug for Finding {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Finding")
+            .field("id", &self.id)
+            .field("file", &self.file)
+            .field("locations", &self.locations)
+            .field("rule", &self.rule)
+            .field("severity", &self.severity)
+            .field("source", &self.source)
+            .field("title", &self.title)
+            .field("evidence", &self.evidence)
+            .finish()
     }
 }
 
 impl Finding {
-    /// Build a finding only if `file` exists and the line range is inside it.
+    /// Build a finding only if `file` exists, is inside `root`, and the line
+    /// range is inside it.
     pub fn grounded(root: &Path, draft: Draft<'_>) -> Option<Self> {
-        let absolute = if draft.file.is_absolute() {
-            draft.file.clone()
-        } else {
-            root.join(&draft.file)
-        };
+        let file = canonical_file(root, &draft.file)?;
+        let absolute = root.join(&file);
         let contents = read_source(&absolute)?;
-        Self::grounded_on(root, draft, &contents)
+        Self::grounded_on(root, draft, contents.lines().count())
     }
 
-    /// Ground against text already in memory so a detector that has the file
-    /// does not re-read it once per match.
-    pub(crate) fn grounded_on(root: &Path, draft: Draft<'_>, contents: &str) -> Option<Self> {
+    /// Ground with a precomputed line count so a detector that already
+    /// indexed the file does not rescan it per match.
+    pub(crate) fn grounded_on(root: &Path, draft: Draft<'_>, lines: usize) -> Option<Self> {
         if draft.start_line == 0 || draft.end_line < draft.start_line {
             return None;
         }
-        let lines = contents.lines().count();
         if draft.end_line > lines {
             return None;
         }
-        let file = canonical_file(root, &draft.file);
-        Some(Self {
-            id: FindingId::of_at(
-                draft.rule,
-                &file,
-                Some(draft.start_line),
-                draft.raw_excerpt,
-                draft.occurrence,
-            ),
+        let file = canonical_file(root, &draft.file)?;
+        Some(Self::assemble(
+            FindingId::of(draft.rule, &file, Some(draft.start_line), draft.raw_excerpt),
             file,
-            start_line: draft.start_line,
-            end_line: draft.end_line,
-            rule: draft.rule.to_string(),
-            severity: draft.severity,
-            source: draft.source.to_string(),
-            title: outbound_text(draft.title),
-            evidence: evidence_for(draft.rule, draft.raw_excerpt),
-        })
+            vec![Location {
+                start_line: draft.start_line,
+                end_line: draft.end_line,
+            }],
+            draft.rule,
+            draft.severity,
+            draft.source,
+            draft.title,
+            draft.raw_excerpt,
+        ))
     }
 }
 
-/// Anything that leaves a Finding string field or an Error goes through here.
-pub(crate) fn outbound_text(text: &str) -> String {
-    oracle_core::redact_secret_tokens(text)
+/// Collapse findings that share an id into one, keeping every location.
+/// The v1 ledger did last-wins on duplicate ids; with the line dropped for
+/// secrets that would forget a real place. One problem, many positions.
+pub(crate) fn coalesce(findings: Vec<Finding>) -> Vec<Finding> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_id: std::collections::HashMap<String, Finding> = std::collections::HashMap::new();
+    for finding in findings {
+        let key = finding.id().as_str().to_string();
+        if let Some(existing) = by_id.get_mut(&key) {
+            for loc in finding.locations {
+                existing.add_location(loc.start_line, loc.end_line);
+            }
+        } else {
+            order.push(key.clone());
+            by_id.insert(key, finding);
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|key| by_id.remove(&key))
+        .collect()
 }
 
 const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
@@ -331,20 +480,6 @@ pub(crate) fn read_source(path: &Path) -> Option<String> {
         return None;
     }
     String::from_utf8(bytes).ok()
-}
-
-/// Gitleaks excerpts *are* the secret. oracle-core redacts retrieval-shaped
-/// spans (`api_key = …`, `AKIA…`); a captured value like `sk-…T3BlbkFJ…`
-/// would pass through. Secret rules always store the marker.
-fn evidence_for(rule: &str, raw: &str) -> String {
-    if rule == "secret" || rule.starts_with("secret.") || crate::ruleset::is_gitleaks_rule(rule) {
-        let newlines = raw.bytes().filter(|byte| *byte == b'\n').count();
-        let mut marker = String::from("[redacted-secret]");
-        marker.extend(std::iter::repeat_n('\n', newlines));
-        marker
-    } else {
-        oracle_core::redact_secret_tokens(raw)
-    }
 }
 
 #[cfg(test)]
@@ -386,7 +521,6 @@ mod tests {
             source: "secrets",
             title: "A secret",
             raw_excerpt: excerpt,
-            occurrence: 0,
         }
     }
 
@@ -504,17 +638,23 @@ mod tests {
     }
 
     #[test]
-    fn two_occurrences_are_told_apart_by_ordinal_not_line() {
+    fn two_copies_of_the_same_secret_share_an_id() {
         let file = Path::new("src/auth.rs");
         let token = "same-token-twice";
-        assert_ne!(
-            FindingId::of_at("secret", file, Some(1), token, 0),
-            FindingId::of_at("secret", file, Some(4), token, 1),
-        );
         assert_eq!(
-            FindingId::of_at("secret", file, Some(1), token, 0),
-            FindingId::of_at("secret", file, Some(9), token, 0),
-            "an edit above must not mint a new id for the same occurrence"
+            FindingId::of("secret", file, Some(1), token),
+            FindingId::of("secret", file, Some(4), token),
+            "byte-identical secrets in one file are one finding"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_path_case_is_folded() {
+        let evidence = "fn foo exceeds the cyclomatic threshold";
+        assert_eq!(
+            FindingId::of("complexity", Path::new(r"src\A.rs"), Some(1), evidence),
+            FindingId::of("complexity", Path::new("src/a.rs"), Some(1), evidence),
         );
     }
 
@@ -566,7 +706,6 @@ mod tests {
                 source: "clippy",
                 title: &title,
                 raw_excerpt: "let x = 1;",
-                occurrence: 0,
             },
         )
         .expect("grounded");
@@ -591,6 +730,72 @@ mod tests {
         assert_ne!(
             a, b,
             "0x1f inside a field must not rewrite the field boundaries"
+        );
+    }
+
+    #[test]
+    fn a_file_outside_the_root_is_rejected() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        let excerpt = tokens::aws_example();
+        std::fs::write(outside.path().join("x.rs"), format!("{excerpt}\n")).expect("write");
+        assert!(
+            Finding::grounded(
+                temp.path(),
+                draft(outside.path().join("x.rs"), 1, 1, &excerpt),
+            )
+            .is_none(),
+            "a path that escapes the root must not become a finding"
+        );
+    }
+
+    #[test]
+    fn a_rule_id_is_matched_without_regard_to_case() {
+        let file = Path::new("src/a.rs");
+        let evidence = "fn foo exceeds the cyclomatic threshold";
+        assert_eq!(
+            FindingId::of("complexity", file, Some(10), evidence),
+            FindingId::of("COMPLEXITY", file, Some(10), evidence),
+        );
+        assert_eq!(
+            FindingId::of("secret", file, Some(1), "Aa"),
+            FindingId::of("SECRET", file, Some(1), "Aa"),
+        );
+    }
+
+    #[test]
+    fn the_public_api_cannot_hold_a_raw_secret() {
+        let secret = tokens::aws_access_token();
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("a.rs"), format!("let x = \"{secret}\";\n"))
+            .expect("write");
+        let finding = Finding::grounded(
+            temp.path(),
+            Draft {
+                file: PathBuf::from("a.rs"),
+                start_line: 1,
+                end_line: 1,
+                rule: "secret",
+                severity: Severity::Inferno,
+                source: "secrets",
+                title: &format!("found {secret}"),
+                raw_excerpt: &secret,
+            },
+        )
+        .expect("grounded");
+        let dump = format!("{finding:?}");
+        assert!(
+            !dump.contains(&secret),
+            "Finding Debug carried a raw secret: {dump}"
+        );
+        assert!(!finding.title().contains(&secret));
+        assert!(!finding.evidence().contains(&secret));
+        let payload = crate::exchange::encode_ledger(&finding);
+        let smuggled = payload.replace("[redacted-secret]", &secret);
+        let back = crate::exchange::decode_ledger(&smuggled).expect("decode");
+        assert!(
+            !back.evidence().contains(&secret) && !format!("{back:?}").contains(&secret),
+            "from_snapshot reconstituted a raw secret"
         );
     }
 }

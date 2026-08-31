@@ -6,7 +6,7 @@
 
 use serde_sarif::sarif::Sarif;
 
-use crate::finding::{Finding, FindingId, Severity};
+use crate::finding::{Finding, FindingId, Location, Severity};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct LedgerPayload {
@@ -16,6 +16,8 @@ struct LedgerPayload {
     start_line: usize,
     #[serde(rename = "endLine")]
     end_line: usize,
+    #[serde(default)]
+    locations: Vec<PayloadLocation>,
     #[serde(rename = "ruleId")]
     rule_id: String,
     level: String,
@@ -24,12 +26,29 @@ struct LedgerPayload {
     tool: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PayloadLocation {
+    #[serde(rename = "startLine")]
+    start_line: usize,
+    #[serde(rename = "endLine")]
+    end_line: usize,
+}
+
 pub fn encode_ledger(finding: &Finding) -> String {
+    let locations: Vec<PayloadLocation> = finding
+        .locations()
+        .iter()
+        .map(|loc| PayloadLocation {
+            start_line: loc.start_line(),
+            end_line: loc.end_line(),
+        })
+        .collect();
     let payload = LedgerPayload {
         fingerprint: finding.id().as_str().to_string(),
         uri: finding.file().to_string_lossy().into_owned(),
         start_line: finding.start_line(),
         end_line: finding.end_line(),
+        locations,
         rule_id: finding.rule().to_string(),
         level: sarif_level(finding.severity()).to_string(),
         message: finding.title().to_string(),
@@ -41,11 +60,18 @@ pub fn encode_ledger(finding: &Finding) -> String {
 
 pub fn decode_ledger(json: &str) -> Option<Finding> {
     let payload: LedgerPayload = serde_json::from_str(json).ok()?;
+    let mut locations: Vec<Location> = payload
+        .locations
+        .iter()
+        .map(|loc| Location::new(loc.start_line, loc.end_line))
+        .collect();
+    if locations.is_empty() {
+        locations.push(Location::new(payload.start_line, payload.end_line));
+    }
     Finding::from_snapshot(
         FindingId::from_stored(payload.fingerprint)?,
         std::path::PathBuf::from(payload.uri),
-        payload.start_line,
-        payload.end_line,
+        locations,
         payload.rule_id,
         from_sarif_level(&payload.level)?,
         payload.tool,
@@ -63,15 +89,15 @@ pub fn to_sarif(findings: &[Finding]) -> Sarif {
                 "ruleId": finding.rule(),
                 "level": sarif_level(finding.severity()),
                 "message": { "text": finding.title() },
-                "locations": [{
+                "locations": finding.locations().iter().map(|loc| serde_json::json!({
                     "physicalLocation": {
                         "artifactLocation": { "uri": finding.file().to_string_lossy() },
                         "region": {
-                            "startLine": finding.start_line(),
-                            "endLine": finding.end_line()
+                            "startLine": loc.start_line(),
+                            "endLine": loc.end_line()
                         }
                     }
-                }],
+                })).collect::<Vec<_>>(),
                 "partialFingerprints": {
                     "devboule/v1": finding.id().as_str()
                 }
@@ -129,7 +155,6 @@ mod tests {
                 source: "clippy",
                 title: "unused variable: `x`",
                 raw_excerpt: "let x = 1;",
-                occurrence: 0,
             },
         )
         .expect("grounded");
@@ -157,7 +182,6 @@ mod tests {
                 source: "test",
                 title: "demo",
                 raw_excerpt: "let x = 1;",
-                occurrence: 0,
             },
         )
         .expect("grounded");

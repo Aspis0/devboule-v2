@@ -34,14 +34,20 @@ impl Ledger {
                 k TEXT PRIMARY KEY,
                 v TEXT NOT NULL
              );
-             INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', '1');",
+             INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', '2');",
         )?;
         Ok(Self { conn })
     }
 
-    /// Replace findings for detectors in `completed`. Detectors that did not
-    /// run, or that failed, keep their previous rows.
-    pub fn record_scan(&self, findings: &[Finding], completed: &[&str]) -> Result<(), Error> {
+    /// Replace findings for detectors in `completed`. Detectors that failed
+    /// keep their previous rows. Sources not in `registered` are dropped
+    /// (a detector that no longer exists).
+    pub fn record_scan(
+        &self,
+        findings: &[Finding],
+        completed: &[&str],
+        registered: &[&str],
+    ) -> Result<(), Error> {
         let tx = self.conn.unchecked_transaction()?;
         let mut stale = Vec::new();
         {
@@ -52,7 +58,10 @@ impl Ledger {
             for row in rows {
                 let (id, payload) = row?;
                 if let Some(finding) = crate::exchange::decode_ledger(&payload) {
-                    if completed.iter().any(|source| *source == finding.source()) {
+                    let source = finding.source();
+                    let completed_now = completed.contains(&source);
+                    let unknown = !registered.is_empty() && !registered.contains(&source);
+                    if completed_now || unknown {
                         stale.push(id);
                     }
                 }
@@ -106,7 +115,9 @@ mod tests {
     use std::path::PathBuf;
 
     fn record(ledger: &Ledger, findings: &[Finding]) {
-        ledger.record_scan(findings, &["secrets"]).expect("record");
+        ledger
+            .record_scan(findings, &["secrets"], &["secrets"])
+            .expect("record");
     }
 
     fn a_finding(root: &Path, file: &str, excerpt: &str, line: usize) -> Finding {
@@ -132,7 +143,6 @@ mod tests {
                 source: "secrets",
                 title: "A secret-looking token",
                 raw_excerpt: excerpt,
-                occurrence: 0,
             },
         )
         .expect("grounded")
@@ -233,15 +243,22 @@ mod tests {
                 source: "clippy",
                 title: "unused variable: `x`",
                 raw_excerpt: "let x = 1;",
-                occurrence: 0,
             },
         )
         .expect("clippy finding");
         ledger
-            .record_scan(&[secret.clone(), lint.clone()], &["secrets", "clippy"])
+            .record_scan(
+                &[secret.clone(), lint.clone()],
+                &["secrets", "clippy"],
+                &["secrets", "clippy"],
+            )
             .expect("full");
         ledger
-            .record_scan(std::slice::from_ref(&secret), &["secrets"])
+            .record_scan(
+                std::slice::from_ref(&secret),
+                &["secrets"],
+                &["secrets", "clippy"],
+            )
             .expect("secrets only");
         let active = ledger.active().expect("active");
         assert!(
@@ -268,14 +285,15 @@ mod tests {
                 source: "clippy",
                 title: "unused variable: `x`",
                 raw_excerpt: "let x = 1;",
-                occurrence: 0,
             },
         )
         .expect("clippy finding");
         ledger
-            .record_scan(std::slice::from_ref(&lint), &["clippy"])
+            .record_scan(std::slice::from_ref(&lint), &["clippy"], &["clippy"])
             .expect("record");
-        ledger.record_scan(&[], &["clippy"]).expect("clean clippy");
+        ledger
+            .record_scan(&[], &["clippy"], &["clippy"])
+            .expect("clean clippy");
         let active = ledger.active().expect("active");
         assert!(
             active.is_empty(),
@@ -293,6 +311,6 @@ mod tests {
                 row.get(0)
             })
             .expect("schema_version");
-        assert_eq!(version, "1");
+        assert_eq!(version, "2");
     }
 }

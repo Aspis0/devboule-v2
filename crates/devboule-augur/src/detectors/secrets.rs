@@ -70,9 +70,8 @@ fn scan_file(
         return Vec::new();
     }
     let lower_file = text.to_lowercase();
+    let line_index = LineIndex::new(text);
     let mut findings = Vec::new();
-    let mut ordinals: std::collections::HashMap<(String, String), u32> =
-        std::collections::HashMap::new();
     for rule in &rules.rules {
         if rule
             .skip_paths
@@ -99,7 +98,7 @@ fn scan_file(
                 rule,
                 excerpt,
                 full_match,
-                enclosing_line(text, start),
+                line_index.enclosing(text, start),
             ) {
                 continue;
             }
@@ -112,31 +111,25 @@ fn scan_file(
                 .get(0)
                 .map(|span| span.end().saturating_sub(1).max(start))
                 .unwrap_or(start);
-            let start_line = line_of(text, start);
-            let end_line = line_of(text, end);
-            let key = (rule.id.clone(), excerpt.to_string());
-            let occurrence = ordinals.get(&key).copied().unwrap_or(0);
             if let Some(finding) = Finding::grounded_on(
                 root,
                 Draft {
                     file: relative.to_path_buf(),
-                    start_line,
-                    end_line,
+                    start_line: line_index.line(start),
+                    end_line: line_index.line(end),
                     rule: &rule.id,
                     severity: rule.severity,
                     source: "secrets",
                     title: &rule.title,
                     raw_excerpt: excerpt,
-                    occurrence,
                 },
-                text,
+                line_index.line_count(),
             ) {
-                *ordinals.entry(key).or_insert(0) += 1;
                 findings.push(finding);
             }
         }
     }
-    findings
+    crate::finding::coalesce(findings)
 }
 
 fn slashy(path: &str) -> String {
@@ -175,24 +168,44 @@ fn is_allowlisted(
         || rules.stopwords.iter().any(|word| lower.contains(word))
 }
 
-fn line_of(text: &str, byte: usize) -> usize {
-    text.get(..byte)
-        .map(|prefix| prefix.bytes().filter(|byte| *byte == b'\n').count() + 1)
-        .unwrap_or(1)
+struct LineIndex {
+    starts: Vec<usize>,
+    count: usize,
 }
 
-fn enclosing_line(text: &str, byte: usize) -> &str {
-    let start = text
-        .get(..byte)
-        .and_then(|prefix| prefix.rfind('\n'))
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let end = text
-        .get(byte..)
-        .and_then(|suffix| suffix.find('\n'))
-        .map(|index| byte + index)
-        .unwrap_or(text.len());
-    text.get(start..end).unwrap_or("")
+impl LineIndex {
+    fn new(text: &str) -> Self {
+        let mut starts = vec![0];
+        for (index, byte) in text.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(index + 1);
+            }
+        }
+        Self {
+            starts,
+            count: text.lines().count(),
+        }
+    }
+
+    fn line_count(&self) -> usize {
+        self.count
+    }
+
+    fn line(&self, byte: usize) -> usize {
+        self.starts.partition_point(|&start| start <= byte).max(1)
+    }
+
+    fn enclosing<'a>(&self, text: &'a str, byte: usize) -> &'a str {
+        let line = self.line(byte);
+        let start = self
+            .starts
+            .get(line.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
+        let end = self.starts.get(line).copied().unwrap_or(text.len());
+        let end = end.min(text.len()).max(start);
+        text.get(start..end).unwrap_or("").trim_end_matches('\n')
+    }
 }
 
 fn excerpt_from<'a>(capture: &'a regex::Captures<'a>, rule: &CompiledRule) -> &'a str {
@@ -301,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn two_copies_of_the_same_secret_are_two_findings() {
+    fn two_copies_of_the_same_secret_are_one_finding() {
         let aws = tokens::aws_access_token();
         assert_assembled_matches_rule("aws-access-token", &aws);
         let temp = tempfile::tempdir().expect("tempdir");
@@ -317,14 +330,10 @@ mod tests {
             .into_iter()
             .filter(|finding| finding.rule() == "aws-access-token")
             .collect();
-        assert_eq!(hits.len(), 2, "expected both occurrences: {hits:?}");
-        assert_ne!(
-            hits[0].id(),
-            hits[1].id(),
-            "dismissing one copy must not suppress the other"
-        );
-        assert_eq!(hits[0].start_line(), 1);
-        assert_eq!(hits[1].start_line(), 2);
+        assert_eq!(hits.len(), 1, "one secret, one finding: {hits:?}");
+        assert_eq!(hits[0].locations().len(), 2, "both places kept: {hits:?}");
+        assert_eq!(hits[0].locations()[0].start_line(), 1);
+        assert_eq!(hits[0].locations()[1].start_line(), 2);
     }
 
     #[test]
