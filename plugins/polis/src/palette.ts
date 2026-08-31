@@ -42,6 +42,14 @@ export const DISTRICT_TINTS = [
   PALETTE.districtGreen,
 ] as const;
 
+/** Road arrows keep their direction cue while sitting on two different
+ * surfaces: the urban tone is quieted against pale limestone, the country
+ * tone keeps the warmer original signal against dirt. */
+export const ROAD_ARROW_COLORS = {
+  urban: darken(PALETTE.roadArrow, 0.55),
+  country: PALETTE.roadArrow,
+} as const;
+
 export function darken(color: number, amount: number): number {
   const factor = 1 - Math.max(0, Math.min(1, amount));
   return pack(

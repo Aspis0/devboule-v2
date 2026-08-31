@@ -35,6 +35,25 @@ export interface RouteResult {
   stats: RouteStats;
 }
 
+/**
+ * Count routed waypoint segments the way the v1 surface pass does. This is a
+ * second pass over the simplified paths, deliberately separate from the A*
+ * `usage` set: the set is only a routing discount, while this map is the
+ * renderer's stable shared-road fact. Endpoint order does not matter.
+ */
+export function segmentUsage(roads: readonly Pick<RoutedRoad, "path">[]): Map<string, number> {
+  const usage = new Map<string, number>();
+  for (const road of roads) {
+    const path = road.path;
+    if (path === null || path.length < 2) continue;
+    for (let index = 1; index < path.length; index += 1) {
+      const key = segmentKey(path[index - 1], path[index]);
+      usage.set(key, (usage.get(key) ?? 0) + 1);
+    }
+  }
+  return usage;
+}
+
 // These are the v1 grid router's safety and visual tuning values. The search
 // window keeps ordinary roads cheap; the caps keep a pathological city from
 // hanging the renderer, in which case the honest straight fallback is used.
@@ -78,6 +97,13 @@ function roundCell(value: number): number {
 
 function cellKey(cell: GridCell): string {
   return `${cell.x},${cell.y}`;
+}
+
+/** Stable undirected key for one adjacent routed segment. */
+export function segmentKey(left: GridCell, right: GridCell): string {
+  const a = cellKey(left);
+  const b = cellKey(right);
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
 function sameCell(left: GridCell, right: GridCell): boolean {

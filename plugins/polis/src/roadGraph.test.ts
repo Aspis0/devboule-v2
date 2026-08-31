@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cellOf, routeRoads, simplify, type GridCell } from "./roadGraph";
+import { cellOf, routeRoads, segmentUsage, simplify, type GridCell } from "./roadGraph";
 import type { CityImport } from "./model";
 
 interface TestBuilding {
@@ -116,5 +116,34 @@ describe("v1 shared-grid road router", () => {
     expect(cellOf(path?.[0] ?? { x: 0, y: 0 })).toEqual({ x: 1, y: 1 });
     expect(cellOf(path?.at(-1) ?? { x: 0, y: 0 })).toEqual({ x: 7, y: 4 });
     expect(result.stats.totalWaypoints).toBeGreaterThanOrEqual(2);
+  });
+
+  it("counts every routed waypoint segment independently of route order", () => {
+    const roads = [
+      {
+        ...road("a", "b"),
+        roadId: "road-0",
+        path: [
+          { x: 0, y: 0 },
+          { x: 2, y: 0 },
+          { x: 2, y: 2 },
+        ],
+      },
+      {
+        ...road("c", "d"),
+        roadId: "road-1",
+        path: [
+          { x: 2, y: 2 },
+          { x: 2, y: 0 },
+          { x: 4, y: 0 },
+        ],
+      },
+    ];
+
+    const usage = segmentUsage(roads);
+
+    expect(usage.get("0,0|2,0")).toBe(1);
+    expect(usage.get("2,0|2,2")).toBe(2);
+    expect(usage.get("2,0|4,0")).toBe(1);
   });
 });

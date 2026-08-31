@@ -16,6 +16,15 @@ export const DERIVED = {
   groundTexDirt: MAT.sand,
   groundTexDirtWorn: MAT.earth,
   shoreSand: MAT.sand,
+  // V1 road authority: limestone streets sit above the meadow, while the
+  // country track is only a warm shift from packed earth so the inter-district
+  // lattice recedes at the overview. These are named derived tones, not
+  // renderer-local hex values.
+  roadUrbanPave: shade(MAT.stone, 1.08),
+  roadUrbanPaveAlt: shade(MAT.stone, 0.98),
+  roadUrbanKerb: shade(MAT.groundEdge, 0.92),
+  roadCountryDirt: mix(MAT.ground, MAT.earth, 0.42),
+  roadCountryDirtSoft: mix(MAT.ground, MAT.earth, 0.28),
   waterMid: MAT.water,
   waterDeep: MAT.waterDeep,
   waterFoam: shade(MAT.water, 1.32),
