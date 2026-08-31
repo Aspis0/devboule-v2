@@ -105,6 +105,7 @@ describe("v1 road surface hierarchy", () => {
     let trunk = 0;
     let rural = 0;
     let urbanStreet = 0;
+    const trunkBaseWidths: number[] = [];
     const isUrban = (a: { x: number; y: number }, b: { x: number; y: number }) => {
       const points = [a, b, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }];
       return points.some((point) =>
@@ -131,6 +132,11 @@ describe("v1 road surface hierarchy", () => {
         if (kind === "urban-trunk") trunk += 1;
         else if (kind === "country-track") rural += 1;
         else urbanStreet += 1;
+        if (kind === "urban-trunk") {
+          const trunkWeight = Math.max(1, Math.min(road.weight, 5));
+          const trunkShared = Math.max(1, Math.min(usage.get(segmentKey(from, to)) ?? 1, 8));
+          trunkBaseWidths.push(Math.min(6 + trunkWeight * 1.4 + (trunkShared - 1) * 0.8, 22));
+        }
       }
     }
     const weightCounts = new Map<number, number>();
@@ -149,6 +155,12 @@ describe("v1 road surface hierarchy", () => {
       32,
       1.1,
     ).zoom;
+    const measurementZoom = 0.172;
+    const overviewWidth = 3.2 / measurementZoom;
+    const minTrunk = Math.min(...trunkBaseWidths);
+    const maxTrunk = Math.max(...trunkBaseWidths);
+    const averageTrunk =
+      trunkBaseWidths.reduce((sum, width) => sum + width, 0) / trunkBaseWidths.length;
     expect({ total, trunk, rural, urbanStreet, routed: routes.stats.routed }).toEqual({
       total: 1093,
       trunk: 697,
@@ -161,5 +173,18 @@ describe("v1 road surface hierarchy", () => {
       [2, 11],
     ]);
     expect(footprintFitZoom * 7).toBeLessThan(3.2);
+    expect(roadOverviewVisible(measurementZoom, measurementZoom)).toBe(true);
+    expect(7 * measurementZoom).toBeCloseTo(1.204, 6);
+    expect(overviewWidth * measurementZoom).toBeCloseTo(3.2, 6);
+    expect([
+      minTrunk * measurementZoom,
+      averageTrunk * measurementZoom,
+      maxTrunk * measurementZoom,
+    ]).toEqual([1.5479999999999998, 1.92699225251076, 2.4768000000000003]);
+    expect([
+      Math.max(minTrunk, overviewWidth) * measurementZoom,
+      Math.max(averageTrunk, overviewWidth) * measurementZoom,
+      Math.max(maxTrunk, overviewWidth) * measurementZoom,
+    ]).toEqual([3.1999999999999997, 3.1999999999999997, 3.1999999999999997]);
   });
 });

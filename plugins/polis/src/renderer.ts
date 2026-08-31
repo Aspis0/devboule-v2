@@ -77,6 +77,8 @@ export class CityRenderer {
   private readonly animated: AnimatedDisplay[] = [];
   private readonly layoutById = new Map<string, LayoutFile>();
   private cityBounds: ProjectedBounds | null = null;
+  private pendingRoads: readonly RoutedRoad[] | null = null;
+  private pendingLayouts: readonly LayoutFile[] | null = null;
   private zoom = 0.82;
   private panX = 0;
   private panY = 32;
@@ -122,6 +124,16 @@ export class CityRenderer {
     this.agentLayer.setAgents(options.city.agents);
     this.bindCamera();
     this.fitCity();
+    // Road overview geometry is baked from the actual fitted camera. Building
+    // it before fitCity() could capture pre-fit/pre-resize screen dimensions
+    // for the world-space compensation, even though the first frame used a
+    // different zoom. Keep this one-time pass after fitting so its LOD window
+    // and width are measured in the same camera space as the first paint.
+    if (this.pendingRoads !== null && this.pendingLayouts !== null) {
+      this.drawRoads(this.pendingRoads, this.pendingLayouts);
+      this.pendingRoads = null;
+      this.pendingLayouts = null;
+    }
     this.updateCamera();
     this.app.ticker.add((ticker) => {
       const deltaMs = Math.min(1000, ticker.deltaMS);
@@ -159,7 +171,10 @@ export class CityRenderer {
 
     for (const layout of layouts) this.addBuilding(layout);
     this.drawGround(layouts);
-    this.drawRoads(routes.roads, layouts);
+    // Roads are drawn after fitCity() so the static overview copy is baked
+    // against the real first-paint zoom, not the constructor's default zoom.
+    this.pendingRoads = routes.roads;
+    this.pendingLayouts = layouts;
     const blockedFootprints = layouts.map((layout) => ({
       x: roundGrid(layout.gridX),
       y: roundGrid(layout.gridY),
@@ -222,16 +237,7 @@ export class CityRenderer {
     this.roadMinorLayer = minorLayer;
     this.roadUrbanLayer = urbanLayer;
     this.roadOverviewLayer = overviewLayer;
-    this.roadInitialZoom =
-      this.cityBounds === null
-        ? 0
-        : fitInitialCamera(
-            this.cityBounds,
-            this.app.screen.width,
-            this.app.screen.height,
-            INITIAL_CAMERA_MARGIN,
-            1.1,
-          ).zoom;
+    this.roadInitialZoom = this.zoom;
     // Country tracks are below the urban paving, matching the v1 draw order.
     // The measured far-overview copy sits between them and normal urban roads.
     this.roads.addChild(minorLayer, overviewLayer, urbanLayer);
