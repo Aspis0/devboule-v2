@@ -1,18 +1,20 @@
-// Ambient crowd — the v1's scenery walkers, backed by the curated walk atlas.
+// Ambient crowd — the v1's scenery walkers, backed by the Greek citizen cache.
 //
 // This layer is deliberately separate from AgentLayer and TradeRouteLayer:
 // ambient walkers have no file, state, badge, or semantic identity. They are
 // scenery only. The v1 used the same road graph and locomotion helpers for
 // them; this port keeps that contract while replacing its procedural fallback
-// with the shipped Unknown Horizons walk frames.
+// with the existing Greek citizen drawing and cache.
 //
 // PERFORMANCE: routes, spline samples, sprites, and atlas variants are built
 // at setWorld/spawn time. The ticker only advances numbers, swaps an already
 // resolved Texture, updates transforms, and culls. No Graphics is redrawn and
 // no array or object is allocated per frame.
 
-import { Container, Rectangle, Sprite, type Texture } from "pixi.js";
+import { Container, Rectangle, Sprite } from "pixi.js";
 
+import { CITIZEN_PHASE_STEPS, CitizenTextureAtlas, type CitizenPhaseStep } from "./citizenAtlas";
+import { BuildingTextureAtlas, type TextureSource } from "./buildingAtlas";
 import { cartToIso, isoToCart } from "./iso";
 import {
   applyPerpendicularOffset,
@@ -22,21 +24,16 @@ import {
 } from "./locomotion";
 import { rngFromString, type Rng } from "./rng";
 import type { RoadPoint, RoutedRoad } from "./roadGraph";
-import type { SpriteBank } from "./spriteAssets";
 
-/** Source atlas convention: bucket 0 faces east in screen space. */
-export const AMBIENT_WALK_DIR_FOLDERS = [180, 225, 270, 315, 0, 45, 90, 135] as const;
-export const AMBIENT_WALK_FRAMES = 4;
 export const AMBIENT_WALK_SPEED = 42;
+/** The eight baked citizen phase steps replace the discarded sprite frames. */
+export const AMBIENT_CITIZEN_STEP_DISTANCE = AMBIENT_WALK_SPEED / 30;
 /** The v1's rich profile threshold: below this, a 24x40 walker is a speck. */
 export const AMBIENT_LOD_ZOOM = 0.35;
 export const AMBIENT_MAX_WALKERS = 64;
 export const AMBIENT_MIN_WALKERS = 6;
 export const AMBIENT_PER_NODE = 0.4;
-/** v1 advanced one of four frames every ~1/30 s at 42 px/s. */
-export const AMBIENT_WALK_FRAME_DISTANCE = AMBIENT_WALK_SPEED / 30;
 
-const AMBIENT_SPRITE_SCALE = 0.42;
 const AMBIENT_ALPHA = 0.88;
 const AMBIENT_CULL_MARGIN = 48;
 const PAUSE_MIN_MS = 500;
@@ -44,7 +41,8 @@ const PAUSE_SPAN_MS = 1_800;
 const MAX_STEP_MS = 100;
 const ITINERARY_LENGTH = 6;
 
-export type AmbientSex = "m" | "f";
+const AMBIENT_CITIZEN_TYPES = ["citizen", "noble", "foreigner"] as const;
+type AmbientCitizenType = (typeof AMBIENT_CITIZEN_TYPES)[number];
 
 export interface AmbientNode {
   id: string;
@@ -62,11 +60,6 @@ interface AmbientEdge {
   path: RoadPoint[];
 }
 
-interface AmbientWalkFrames {
-  textures: Record<AmbientSex, Texture[][]>;
-  anchor: readonly [number, number];
-}
-
 interface AmbientPath {
   points: IPoint[];
   depth: number[];
@@ -82,7 +75,7 @@ interface AmbientTrip {
 
 interface AmbientWalker {
   id: string;
-  sex: AmbientSex;
+  type: AmbientCitizenType;
   rng: Rng;
   container: Container;
   body: Sprite;
@@ -100,28 +93,15 @@ interface AmbientWalker {
   x: number;
   y: number;
   depth: number;
-  direction: number;
-  lastFrame: number;
-  lastDirection: number;
+  lastStep: CitizenPhaseStep;
+  lastMoving: boolean;
 }
 
-/** Resolve a screen heading to the nearest one of the eight atlas headings. */
-export function walkDirectionBucket(dx: number, dy: number): number {
-  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return 0;
-  const raw = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
-  return ((raw % 8) + 8) % 8;
-}
-
-export function walkTextureKey(sex: AmbientSex, direction: number, frame: number): string {
-  const safeDirection = ((direction % 8) + 8) % 8;
-  const safeFrame = ((frame % AMBIENT_WALK_FRAMES) + AMBIENT_WALK_FRAMES) % AMBIENT_WALK_FRAMES;
-  return `walk:citizen${sex}:${AMBIENT_WALK_DIR_FOLDERS[safeDirection]}:f${safeFrame}`;
-}
-
-/** Frame selection is distance-based so zooming cannot make a walker moonwalk. */
-export function walkFrameForDistance(distance: number, offset: number): number {
+/** Citizen phase selection is distance-based so zooming cannot cause moonwalking. */
+export function citizenStepForDistance(distance: number, offset: number): CitizenPhaseStep {
   const phase = Math.max(0, distance) + Math.max(0, offset);
-  return Math.floor(phase / AMBIENT_WALK_FRAME_DISTANCE) % AMBIENT_WALK_FRAMES;
+  return (Math.floor(phase / AMBIENT_CITIZEN_STEP_DISTANCE) %
+    CITIZEN_PHASE_STEPS) as CitizenPhaseStep;
 }
 
 export function ambientLodVisible(zoom: number): boolean {
@@ -292,30 +272,10 @@ export class AmbientRoadNetwork {
   }
 }
 
-/** Resolve every walk atlas key once. A partial sheet disables this layer. */
-export function buildAmbientWalkFrames(bank: SpriteBank | null): AmbientWalkFrames | null {
-  if (bank === null) return null;
-  const textures: Record<AmbientSex, Texture[][]> = { m: [], f: [] };
-  for (const sex of ["m", "f"] as const) {
-    for (let direction = 0; direction < 8; direction += 1) {
-      const directionFrames: Texture[] = [];
-      for (let frame = 0; frame < AMBIENT_WALK_FRAMES; frame += 1) {
-        const texture = bank.get(walkTextureKey(sex, direction, frame));
-        if (texture === null) return null;
-        directionFrames.push(texture);
-      }
-      textures[sex].push(directionFrames);
-    }
-  }
-  return {
-    textures,
-    anchor: bank.anchor(walkTextureKey("m", 0, 0)),
-  };
-}
-
 export class AmbientLayer {
   private readonly root: Container;
-  private readonly frames: AmbientWalkFrames | null;
+  private readonly renderer: TextureSource;
+  private readonly citizenAtlas: CitizenTextureAtlas;
   private readonly walkers: AmbientWalker[] = [];
   private readonly nodes = new Map<string, AmbientNode>();
   private readonly view = new Rectangle();
@@ -323,10 +283,11 @@ export class AmbientLayer {
   private blocked: (gx: number, gy: number) => boolean = () => false;
   private lodVisible = false;
 
-  constructor(root: Container, bank: SpriteBank | null) {
+  constructor(root: Container, renderer: TextureSource, atlas: BuildingTextureAtlas) {
     this.root = root;
+    this.renderer = renderer;
+    this.citizenAtlas = new CitizenTextureAtlas(atlas);
     this.root.sortableChildren = true;
-    this.frames = buildAmbientWalkFrames(bank);
   }
 
   get count(): number {
@@ -353,8 +314,7 @@ export class AmbientLayer {
   }
 
   setCount(count: number): void {
-    const target =
-      this.frames === null ? 0 : Math.min(AMBIENT_MAX_WALKERS, Math.max(0, Math.floor(count)));
+    const target = Math.min(AMBIENT_MAX_WALKERS, Math.max(0, Math.floor(count)));
     while (this.walkers.length < target) this.walkers.push(this.spawn(this.walkers.length));
     while (this.walkers.length > target) {
       const walker = this.walkers.pop()!;
@@ -399,7 +359,7 @@ export class AmbientLayer {
 
   /** Swap only cached atlas textures and cull using one reusable rectangle. */
   step(): void {
-    if (!this.lodVisible || this.frames === null) return;
+    if (!this.lodVisible) return;
     for (const walker of this.walkers) {
       const onScreen =
         walker.x >= this.view.x - AMBIENT_CULL_MARGIN &&
@@ -411,13 +371,11 @@ export class AmbientLayer {
         continue;
       }
       walker.container.visible = true;
-      const frame = walker.moving
-        ? walkFrameForDistance(walker.distanceTravelled, walker.distanceOffset)
+      const step = walker.moving
+        ? citizenStepForDistance(walker.distanceTravelled, walker.distanceOffset)
         : 0;
-      if (frame !== walker.lastFrame || walker.direction !== walker.lastDirection) {
-        walker.body.texture = this.frames.textures[walker.sex][walker.direction][frame];
-        walker.lastFrame = frame;
-        walker.lastDirection = walker.direction;
+      if (step !== walker.lastStep || walker.moving !== walker.lastMoving) {
+        this.setBody(walker, step);
       }
     }
   }
@@ -439,10 +397,11 @@ export class AmbientLayer {
     const startId = network.nodeIds[rng.int(0, network.nodeIds.length - 1)];
     const node = this.nodes.get(startId);
     if (node === undefined) throw new Error(`Ambient node '${startId}' was not resolved`);
-    const sex: AmbientSex = rng.bool() ? "m" : "f";
-    const body = new Sprite();
-    body.anchor.set(this.frames!.anchor[0], this.frames!.anchor[1]);
-    body.scale.set(AMBIENT_SPRITE_SCALE);
+    const type = ambientCitizenType(rng);
+    this.prewarm(type);
+    const initial = this.citizenAtlas.get(this.renderer, type, "idle", 0);
+    const body = new Sprite(initial.texture);
+    body.position.set(initial.frame.x, initial.frame.y);
     const container = new Container();
     container.alpha = AMBIENT_ALPHA;
     container.visible = false;
@@ -451,7 +410,7 @@ export class AmbientLayer {
     this.root.addChild(container);
     const walker: AmbientWalker = {
       id: `ambient:${index}`,
-      sex,
+      type,
       rng,
       container,
       body,
@@ -463,23 +422,37 @@ export class AmbientLayer {
       segment: 0,
       distanceOnPath: 0,
       distanceTravelled: 0,
-      distanceOffset: rng.float() * AMBIENT_WALK_FRAME_DISTANCE * AMBIENT_WALK_FRAMES,
+      distanceOffset: rng.float() * AMBIENT_CITIZEN_STEP_DISTANCE * CITIZEN_PHASE_STEPS,
       pauseRemaining: 200 + index * 120,
       moving: false,
       x: node.worldX,
       y: node.worldY,
       depth: node.gridX + node.gridY,
-      direction: 0,
-      lastFrame: -1,
-      lastDirection: -1,
+      lastStep: 0,
+      lastMoving: false,
     };
     container.position.set(walker.x, walker.y);
     container.zIndex = walker.depth + 0.12;
-    body.texture = this.frames!.textures[sex][0][0];
-    walker.lastFrame = 0;
-    walker.lastDirection = 0;
     walker.itinerary = this.buildItinerary(walker, startId);
     return walker;
+  }
+
+  /** Warm every citizen variant this scenery layer can request before ticking. */
+  private prewarm(type: AmbientCitizenType): void {
+    this.citizenAtlas.get(this.renderer, type, "idle", 0);
+    for (let step = 0; step < CITIZEN_PHASE_STEPS; step += 1) {
+      this.citizenAtlas.get(this.renderer, type, "working", step as CitizenPhaseStep);
+    }
+  }
+
+  private setBody(walker: AmbientWalker, step: CitizenPhaseStep): void {
+    const state = walker.moving ? "working" : "idle";
+    const effectiveStep = walker.moving ? step : 0;
+    const variant = this.citizenAtlas.get(this.renderer, walker.type, state, effectiveStep);
+    walker.body.texture = variant.texture;
+    walker.body.position.set(variant.frame.x, variant.frame.y);
+    walker.lastStep = effectiveStep;
+    walker.lastMoving = walker.moving;
   }
 
   private pickNextTarget(walker: AmbientWalker): void {
@@ -658,7 +631,6 @@ function setWalkerPosition(walker: AmbientWalker): void {
   walker.x = from.x + (to.x - from.x) * local;
   walker.y = from.y + (to.y - from.y) * local;
   walker.depth = path.depth[segment] + (path.depth[segment + 1] - path.depth[segment]) * local;
-  walker.direction = walkDirectionBucket(to.x - from.x, to.y - from.y);
   walker.container.position.set(walker.x, walker.y);
   walker.container.zIndex = walker.depth + 0.12;
 }
@@ -697,6 +669,13 @@ function rectContains(
 
 function roundGrid(value: number): number {
   return value >= 0 ? Math.floor(value + 0.5) : Math.ceil(value - 0.5);
+}
+
+function ambientCitizenType(rng: Rng): AmbientCitizenType {
+  const pick = rng.float();
+  if (pick < 0.7) return AMBIENT_CITIZEN_TYPES[0];
+  if (pick < 0.85) return AMBIENT_CITIZEN_TYPES[1];
+  return AMBIENT_CITIZEN_TYPES[2];
 }
 
 function compareStrings(left: string, right: string): number {

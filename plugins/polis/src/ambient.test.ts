@@ -1,17 +1,16 @@
 import { describe, expect, it } from "vitest";
 
+import { CITIZEN_PHASE_STEPS } from "./citizenAtlas";
 import type { RoutedRoad } from "./roadGraph";
 import {
   AMBIENT_LOD_ZOOM,
   AMBIENT_MAX_WALKERS,
-  AMBIENT_WALK_FRAME_DISTANCE,
+  AMBIENT_CITIZEN_STEP_DISTANCE,
   AmbientRoadNetwork,
   ambientLodVisible,
+  citizenStepForDistance,
   desiredAmbientCount,
   trimAmbientRoute,
-  walkDirectionBucket,
-  walkFrameForDistance,
-  walkTextureKey,
 } from "./ambient";
 
 function road(
@@ -32,20 +31,11 @@ describe("ambient crowd planning", () => {
     expect(desiredAmbientCount(500)).toBe(AMBIENT_MAX_WALKERS);
   });
 
-  it("uses the nearest eight-way heading and the walk atlas convention", () => {
-    expect(walkDirectionBucket(1, 0)).toBe(0);
-    expect(walkDirectionBucket(1, 1)).toBe(1);
-    expect(walkDirectionBucket(0, 1)).toBe(2);
-    expect(walkDirectionBucket(-1, 0)).toBe(4);
-    expect(walkTextureKey("m", 0, 0)).toBe("walk:citizenm:180:f0");
-    expect(walkTextureKey("f", 2, 3)).toBe("walk:citizenf:270:f3");
-  });
-
-  it("advances frames by travelled distance, not elapsed time", () => {
-    expect(walkFrameForDistance(0, 0)).toBe(0);
-    expect(walkFrameForDistance(AMBIENT_WALK_FRAME_DISTANCE, 0)).toBe(1);
-    expect(walkFrameForDistance(AMBIENT_WALK_FRAME_DISTANCE * 4, 0)).toBe(0);
-    expect(walkFrameForDistance(0, AMBIENT_WALK_FRAME_DISTANCE * 2)).toBe(2);
+  it("quantises the citizen walk phase by travelled distance", () => {
+    expect(citizenStepForDistance(0, 0)).toBe(0);
+    expect(citizenStepForDistance(AMBIENT_CITIZEN_STEP_DISTANCE, 0)).toBe(1);
+    expect(citizenStepForDistance(AMBIENT_CITIZEN_STEP_DISTANCE * CITIZEN_PHASE_STEPS, 0)).toBe(0);
+    expect(citizenStepForDistance(0, AMBIENT_CITIZEN_STEP_DISTANCE * 2)).toBe(2);
   });
 
   it("does not make scenery visible at the speck-sized city view", () => {

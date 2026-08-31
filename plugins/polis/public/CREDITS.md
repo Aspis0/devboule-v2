@@ -29,8 +29,7 @@ License notes:
   ("released under the CC0/Public Domain License", pack License.txt).
   Used rescaled, some desaturated/brightened to fit the palette. Thank you!
 
-- **Unknown Horizons team** — tree sprites (`prop:tree`, `prop:cypress`),
-  the ambient crowd's walk cycles (`walk:citizen*`, 8 directions × 4 frames),
+- **Unknown Horizons team** — tree sprites (`prop:tree`, `prop:cypress`)
   and the countryside resource art: mountain mine, stone-deposit and stone-pit
   quarries, ambient rocks (`res:mine`, `res:quarry:*`, `prop:rock:*`).
   https://github.com/unknown-horizons/unknown-horizons (content/gfx) —

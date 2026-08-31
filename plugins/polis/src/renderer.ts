@@ -109,7 +109,7 @@ export class CityRenderer {
       this.buildings,
     );
     this.tradeRouteLayer = new TradeRouteLayer(this.buildings, this.app.renderer, this.atlas);
-    this.ambientLayer = new AmbientLayer(this.buildings, this.bank);
+    this.ambientLayer = new AmbientLayer(this.buildings, this.app.renderer, this.atlas);
     this.world.addChild(
       this.ground,
       this.roads,
