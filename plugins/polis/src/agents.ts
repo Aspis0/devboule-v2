@@ -495,9 +495,6 @@ function stateAlpha(state: CityAgentState): number {
 }
 
 function layoutDepth(layout: AgentLayout): number {
-  if (layout.gridX !== undefined && layout.gridY !== undefined) {
-    return layout.gridX + layout.gridY;
-  }
   return isoDepth(layout.worldX, layout.worldY);
 }
 

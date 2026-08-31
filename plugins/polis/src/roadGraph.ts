@@ -145,6 +145,7 @@ class OccupancyGrid {
   readonly width: number;
   readonly height: number;
   private readonly occupied: boolean[];
+  private readonly facade: boolean[];
 
   private constructor(minX: number, minY: number, width: number, height: number) {
     this.minX = minX;
@@ -152,6 +153,7 @@ class OccupancyGrid {
     this.width = width;
     this.height = height;
     this.occupied = Array.from({ length: width * height }, () => false);
+    this.facade = Array.from({ length: width * height }, () => false);
   }
 
   static build(buildings: readonly RoutableBuilding[]): OccupancyGrid | null {
@@ -184,6 +186,15 @@ class OccupancyGrid {
           grid.set({ x, y }, true);
         }
       }
+      // The kit is front-anchored: keep the first row/column in front of its
+      // occupied rectangle clear as well, so a street cannot put a walker
+      // inside the wall's ground line. The corner belongs to both faces.
+      for (let x = rect.x0; x <= rect.x0 + rect.w; x += 1) {
+        grid.setFacade({ x, y: rect.y0 + rect.h }, true);
+      }
+      for (let y = rect.y0; y <= rect.y0 + rect.h; y += 1) {
+        grid.setFacade({ x: rect.x0 + rect.w, y }, true);
+      }
     }
     return grid;
   }
@@ -201,12 +212,20 @@ class OccupancyGrid {
     return this.inBounds(cell) && this.occupied[this.index(cell)];
   }
 
+  isFacade(cell: GridCell): boolean {
+    return this.inBounds(cell) && this.facade[this.index(cell)];
+  }
+
   private index(cell: GridCell): number {
     return (cell.y - this.minY) * this.width + (cell.x - this.minX);
   }
 
   private set(cell: GridCell, value: boolean): void {
     if (this.inBounds(cell)) this.occupied[this.index(cell)] = value;
+  }
+
+  private setFacade(cell: GridCell, value: boolean): void {
+    if (this.inBounds(cell)) this.facade[this.index(cell)] = value;
   }
 }
 
@@ -290,7 +309,9 @@ function astar(
     cell.x >= winMinX && cell.x <= winMaxX && cell.y >= winMinY && cell.y <= winMaxY;
   const walkable = (cell: GridCell) =>
     grid.inBounds(cell) &&
-    (!grid.isOccupied(cell) || rectContains(fromRect, cell) || rectContains(toRect, cell));
+    (rectContains(fromRect, cell) ||
+      rectContains(toRect, cell) ||
+      (!grid.isOccupied(cell) && !grid.isFacade(cell)));
 
   const startKey = cellKey(start);
   const goalKey = cellKey(goal);

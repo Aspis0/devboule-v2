@@ -56,6 +56,19 @@ stand on their buildings and live **above** them. `zIndex` orders only siblings:
 building vs building (front ground corner, `buildingDepth`), walker vs walker
 (ground `x + y`).
 
+"Crowd under buildings" is only sound if no street touches a facade: a walker is
+~23px tall against 24px tile rows, so on the facade's own ground line his whole
+body sits inside the wall and vanishes. The router therefore masks the L of
+front-face cells of every footprint (`roadGraph.ts`), and `BUILDING_STREET_GAP`
+is 2 so each corridor keeps one routable row — with gap 1 the mask disconnected
+82 doors (measured). This margin existed in the v1 only as an accident of its
+art anchoring; here it is explicit and tested (`facadeRouting.test.ts`).
+
+One more expensive fact: `http://plugin.localhost` serves the INSTALLED copy
+under `%APPDATA%/com.devboule.desktop/plugins/<id>`, not this repo's `dist/`.
+Rebuilding and reloading shows the old build; reinstall (or copy `dist/` over
+the installed folder and restart the app) before believing a screenshot.
+
 ## Building
 
     pnpm install

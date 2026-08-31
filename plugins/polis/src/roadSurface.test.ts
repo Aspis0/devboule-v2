@@ -165,10 +165,10 @@ describe("v1 road surface hierarchy", () => {
     const averageTrunk =
       trunkBaseWidths.reduce((sum, width) => sum + width, 0) / trunkBaseWidths.length;
     expect({ total, trunk, rural, urbanStreet, routed: routes.stats.routed }).toEqual({
-      total: 1093,
-      trunk: 697,
-      rural: 0,
-      urbanStreet: 396,
+      total: 1310,
+      trunk: 877,
+      rural: 28,
+      urbanStreet: 405,
       routed: 196,
     });
     expect([...weightCounts.entries()].sort((left, right) => left[0] - right[0])).toEqual([
@@ -183,7 +183,7 @@ describe("v1 road surface hierarchy", () => {
       minTrunk * measurementZoom,
       averageTrunk * measurementZoom,
       maxTrunk * measurementZoom,
-    ]).toEqual([1.5479999999999998, 1.92699225251076, 2.4768000000000003]);
+    ]).toEqual([1.5479999999999998, 1.9425213226909903, 2.4768000000000003]);
     expect([
       Math.max(minTrunk, overviewWidth) * measurementZoom,
       Math.max(averageTrunk, overviewWidth) * measurementZoom,

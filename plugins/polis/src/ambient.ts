@@ -427,7 +427,7 @@ export class AmbientLayer {
       moving: false,
       x: node.worldX,
       y: node.worldY,
-      depth: node.gridX + node.gridY,
+      depth: node.gridX + node.gridY + node.footprint[0] + node.footprint[1],
       lastStep: 0,
       lastMoving: false,
     };

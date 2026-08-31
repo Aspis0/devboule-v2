@@ -14,7 +14,7 @@ import {
 } from "./camera";
 import { FindingLayer } from "./findings";
 import { buildingDepth } from "./depth";
-import { cartToIso, depthKey } from "./iso";
+import { cartToIso } from "./iso";
 import type { City, CityFile } from "./model";
 import { createLayout, type LayoutFile } from "./layout";
 import { ROAD_ARROW_COLORS } from "./palette";
@@ -555,7 +555,7 @@ export class CityRenderer {
 
     const monument = buildGreekMonument(layout.file.path, layout.worldX, layout.worldY, this.bank);
     if (monument !== null) {
-      monument.display.zIndex = depthKey(layout.gridX, layout.gridY) + 0.1;
+      monument.display.zIndex = buildingDepth(layout.gridX, layout.gridY, layout.footprint) + 0.1;
       this.monuments.addChild(monument.display);
       this.monumentViews.push({
         display: monument.display,
