@@ -2,6 +2,13 @@ import { Application, Container, Graphics, Rectangle } from "pixi.js";
 import { BuildingTextureAtlas } from "./buildingAtlas";
 import { AgentLayer } from "./agents";
 import { animationPoint, buildGreekBuildingArt, buildGreekMonument, metricsFromFrame } from "./art";
+import {
+  fitInitialCamera,
+  includeProjectedRadius,
+  projectedBuildingBounds,
+  unionProjectedBounds,
+  type ProjectedBounds,
+} from "./camera";
 import { FindingLayer } from "./findings";
 import { cartToIso, depthKey } from "./iso";
 import type { City, CityFile } from "./model";
@@ -14,6 +21,7 @@ import type { SpriteBank } from "./spriteAssets";
 
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 2.4;
+const INITIAL_CAMERA_MARGIN = 32;
 
 interface ViewEntry {
   display: Container;
@@ -51,6 +59,7 @@ export class CityRenderer {
   private readonly monumentViews: ViewEntry[] = [];
   private readonly animated: AnimatedDisplay[] = [];
   private readonly layoutById = new Map<string, LayoutFile>();
+  private cityBounds: ProjectedBounds | null = null;
   private zoom = 0.82;
   private panX = 0;
   private panY = 32;
@@ -106,6 +115,13 @@ export class CityRenderer {
   private build(city: City): void {
     const layouts = createLayout(city.files, city.imports);
     for (const layout of layouts) this.layoutById.set(layout.file.id, layout);
+    this.cityBounds = projectedBuildingBounds(
+      layouts.map((layout) => ({
+        x: layout.gridX,
+        y: layout.gridY,
+        footprint: layout.footprint,
+      })),
+    );
     const routes = routeRoads(
       layouts.map((layout) => ({
         id: layout.file.id,
@@ -228,6 +244,13 @@ export class CityRenderer {
     layout.width = metrics.width;
     layout.depth = art.frame.height;
     layout.height = metrics.height;
+    const scale = Math.abs(art.display.scale.x) || 1;
+    this.cityBounds = unionProjectedBounds(this.cityBounds!, {
+      minX: layout.worldX + art.frame.x * scale,
+      minY: layout.worldY + art.frame.y * scale,
+      maxX: layout.worldX + (art.frame.x + art.frame.width) * scale,
+      maxY: layout.worldY + (art.frame.y + art.frame.height) * scale,
+    });
 
     art.display.position.set(layout.worldX, layout.worldY);
     art.display.zIndex = depthKey(layout.gridX, layout.gridY);
@@ -263,6 +286,8 @@ export class CityRenderer {
         worldY: animationPoint(monument).y,
         radius: monument.radius,
       });
+      const point = animationPoint(monument);
+      this.cityBounds = includeProjectedRadius(this.cityBounds!, point.x, point.y, monument.radius);
       if (monument.anims.length > 0)
         this.animated.push({ display: monument.display, anims: monument.anims });
     }
@@ -316,31 +341,19 @@ export class CityRenderer {
   }
 
   private fitCity(): void {
-    if (this.app.screen.width <= 0 || this.app.screen.height <= 0) return;
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const view of this.buildingViews) {
-      minX = Math.min(minX, view.worldX - view.radius);
-      maxX = Math.max(maxX, view.worldX + view.radius);
-      minY = Math.min(minY, view.worldY - view.radius);
-      maxY = Math.max(maxY, view.worldY + view.radius);
+    if (this.cityBounds === null || this.app.screen.width <= 0 || this.app.screen.height <= 0) {
+      return;
     }
-    if (!Number.isFinite(minX)) return;
-    const padding = 1.16;
-    this.zoom = clamp(
-      Math.min(
-        this.app.screen.width / ((maxX - minX) * padding),
-        this.app.screen.height / ((maxY - minY) * padding),
-      ),
-      MIN_ZOOM,
+    const camera = fitInitialCamera(
+      this.cityBounds,
+      this.app.screen.width,
+      this.app.screen.height,
+      INITIAL_CAMERA_MARGIN,
       1.1,
     );
-    const cityCenterX = (minX + maxX) / 2;
-    const cityCenterY = (minY + maxY) / 2;
-    this.panX = -cityCenterX * this.zoom;
-    this.panY = -cityCenterY * this.zoom;
+    this.zoom = camera.zoom;
+    this.panX = camera.panX;
+    this.panY = camera.panY;
   }
 
   private updateCamera(): void {

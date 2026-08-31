@@ -3,7 +3,7 @@
     {
       "id": "crates/devboule-augur/src/detector.rs",
       "path": "crates/devboule-augur/src/detector.rs",
-      "lines": 142,
+      "lines": 145,
       "district": "crates"
     },
     {
@@ -21,7 +21,7 @@
     {
       "id": "crates/devboule-augur/src/detectors/secrets.rs",
       "path": "crates/devboule-augur/src/detectors/secrets.rs",
-      "lines": 433,
+      "lines": 449,
       "district": "crates"
     },
     {
@@ -39,25 +39,31 @@
     {
       "id": "crates/devboule-augur/src/finding.rs",
       "path": "crates/devboule-augur/src/finding.rs",
-      "lines": 406,
+      "lines": 404,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/ledger.rs",
       "path": "crates/devboule-augur/src/ledger.rs",
-      "lines": 198,
+      "lines": 199,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/lib.rs",
       "path": "crates/devboule-augur/src/lib.rs",
-      "lines": 21,
+      "lines": 23,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/ruleset.rs",
       "path": "crates/devboule-augur/src/ruleset.rs",
-      "lines": 302,
+      "lines": 301,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/tokens.rs",
+      "path": "crates/devboule-augur/src/tokens.rs",
+      "lines": 46,
       "district": "crates"
     },
     {
@@ -970,9 +976,19 @@
       "weight": 1
     },
     {
+      "from": "crates/devboule-augur/src/detectors/secrets.rs",
+      "to": "crates/devboule-augur/src/tokens.rs",
+      "weight": 1
+    },
+    {
       "from": "crates/devboule-augur/src/exchange.rs",
       "to": "crates/devboule-augur/src/finding.rs",
       "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/finding.rs",
+      "to": "crates/devboule-augur/src/tokens.rs",
+      "weight": 1
     },
     {
       "from": "crates/devboule-augur/src/ledger.rs",
@@ -983,6 +999,11 @@
       "from": "crates/devboule-augur/src/ledger.rs",
       "to": "crates/devboule-augur/src/finding.rs",
       "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/ledger.rs",
+      "to": "crates/devboule-augur/src/tokens.rs",
+      "weight": 1
     },
     {
       "from": "crates/devboule-augur/src/ruleset.rs",
