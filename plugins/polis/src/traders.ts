@@ -26,13 +26,19 @@ import { defaultTunic, shadeColor } from "./kitcd/people";
 import { type RoutedRoad, type RoadPoint } from "./roadGraph";
 import { rngFromString } from "./rng";
 
-const OMINO_Y_OFFSET = -4;
+/** CitizenTextureAtlas already preserves the figure's y=0 feet/shadow anchor.
+ * The v1's -4 belonged to its smaller procedural omino and would lift this
+ * cached figure into a facade. */
+export const OMINO_Y_OFFSET = 0;
 const WALK_SPEED = 40;
 const MAX_STEP_MS = 50;
 const WALK_PHASE_INCREMENT = 0.6;
 const WALK_STEP_SECONDS = 0.22;
 const WALK_PHASE_RATE = WALK_PHASE_INCREMENT / WALK_STEP_SECONDS;
-const BOB_OFFSETS = [0, -1, -2, -1] as const;
+/** The citizen drawing already animates the walk and carried crate. Keep the
+ * outer container at its road anchor so a whole-body bob cannot lift the head
+ * across the one-tile facade margin. */
+export const BOB_OFFSETS = [0, 0, 0, 0] as const;
 const TRADE_ALPHA = 0.9;
 
 export const TRADE_LOD_ZOOM = 0.45;
@@ -40,6 +46,14 @@ export const TRADE_WEIGHT_MIN = 3;
 export const TRADE_TOP_N = 24;
 export const TRADE_PORTERS_PER_EDGE_CAP = 4;
 export const TRADE_PORTERS_GLOBAL_CAP = 80;
+
+/** Keep lane separation while choosing the down-screen side whenever a lane
+ * has a screen-vertical component. This preserves the deterministic lane
+ * magnitude but never spends the facade margin by moving a figure up-screen. */
+export function downscreenLaneOffset(offset: number, dx: number, _dy: number): number {
+  if (dx === 0) return offset;
+  return Math.sign(dx) * Math.abs(offset);
+}
 
 /** Cartesian footprint used to trim a building endpoint. */
 export interface TradeFootprint {
@@ -241,7 +255,9 @@ function buildLanePath(
     const dy = to.y - from.y;
     const length = Math.hypot(dx, dy) || 1;
     const safe = buildSafeSplineLeg(isoRoute, leg, blocked);
-    const lane = safe.laneOffsetClamped ? 0 : directedLaneOffset(walkerId, dx, dy);
+    const lane = safe.laneOffsetClamped
+      ? 0
+      : downscreenLaneOffset(directedLaneOffset(walkerId, dx, dy), dx, dy);
     const samples = Math.max(2, Math.ceil(length / 8));
     for (let sampleIndex = 0; sampleIndex <= samples; sampleIndex += 1) {
       const raw = safe.sample(sampleIndex / samples);
