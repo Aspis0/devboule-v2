@@ -126,6 +126,36 @@ function limb(
   g.moveTo(ax, ay).lineTo(bx, by).stroke({ width: w, color: col, cap: "round" });
 }
 
+/**
+ * A limb with a joint in it. `limb` is one round-capped stroke, so arms and legs
+ * were bars of constant thickness and the eye read them as sticks. This bends at
+ * the midpoint by `bendX` and thins to 78% past the joint, which is enough for a
+ * knee and an elbow to exist at the size these actually render. The bend is a
+ * plain screen-space offset rather than a rotation: the limbs are near vertical,
+ * so sideways is the only direction a joint can read from.
+ */
+function jointedLimb(
+  g: Graphics,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  w: number,
+  col: number,
+  bendX: number,
+): void {
+  const jx = (ax + bx) / 2 + bendX;
+  const jy = (ay + by) / 2;
+  g.moveTo(ax, ay).lineTo(jx, jy).stroke({ width: w, color: col, cap: "round" });
+  g.moveTo(jx, jy)
+    .lineTo(bx, by)
+    .stroke({ width: w * 0.82, color: col, cap: "round" });
+  // The thinner second segment leaves a notch on the outside of the bend, which
+  // reads as a dislocation rather than a joint. A disc the width of the thicker
+  // half fills it and becomes the knee or the elbow.
+  g.circle(jx, jy, (w / 2) * 1.02).fill({ color: col });
+}
+
 // ---------------------------------------------------------------------------
 // Public entry: draw ONE frame of a citizen into `g`. Clears + redraws `g`,
 // exactly like the source `_draw()` (limbs animate by clear+redraw). The caller
@@ -167,8 +197,8 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
   // the separation without the compass.
   const swing = sw * 1.55;
   const stride = moving ? (swing >= 0 ? swing + 0.55 : swing - 0.55) : 1.5;
-  limb(g, 0.4 * s, hipY, stride * s, 0, 2.3 * s, SKd);
-  limb(g, -0.4 * s, hipY, -stride * s, 0, 2.5 * s, SK);
+  jointedLimb(g, 0.4 * s, hipY, stride * s, 0, 2.3 * s, SKd, 0.26 * s);
+  jointedLimb(g, -0.4 * s, hipY, -stride * s, 0, 2.5 * s, SK, 0.26 * s);
   // feet
   g.ellipse(stride * s, 0, 1.45 * s, 0.95 * s).fill({ color: 0x4a3320 });
   g.ellipse(-stride * s, 0, 1.45 * s, 0.95 * s).fill({ color: 0x4a3320 });
@@ -269,7 +299,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
     // Arms sit outboard of the tunic and are thinner than the source's 2 units.
     // At 2.7 with width 2 they overlapped a tunic 2.6 wide, so arm and body
     // merged into one mass and the silhouette lost its shoulders.
-    limb(g, -3.2 * s, shY, -3.8 * s - aSw, -8.6 * s, 1.7 * s, SKd);
+    jointedLimb(g, -3.2 * s, shY, -3.8 * s - aSw, -8.6 * s, 1.7 * s, SKd, -0.3 * s);
     if (type === "firefighter") {
       // front arm holds a bucket
       limb(g, 2.7 * s, shY, 3.7 * s, -10 * s, 2 * s, SK);
@@ -284,7 +314,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
         .stroke({ width: 0.9 * s, color: 0x4a3320 });
     } else {
       // ordinary front arm swings with the walk
-      limb(g, 3.2 * s, shY, 3.8 * s + aSw, -8.6 * s, 1.7 * s, SK);
+      jointedLimb(g, 3.2 * s, shY, 3.8 * s + aSw, -8.6 * s, 1.7 * s, SK, 0.3 * s);
     }
     // Hands. The source ended an arm with the limb's round cap, which at the
     // size these render reads as the blunt end of a plank. A slightly wider
@@ -418,7 +448,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
     // front-facing rectangle reads as a sticker pasted on the city. Top and
     // right faces first, front over them.
     const WOOD = 0x8a6a3a;
-    const dep = 1 * s;
+    const dep = 0.75 * s;
     g.poly([
       cx - cw / 2,
       cy - ch / 2,
@@ -428,7 +458,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
       cy - ch / 2 - dep,
       cx + cw / 2,
       cy - ch / 2,
-    ]).fill({ color: shade(WOOD, 1.2) });
+    ]).fill({ color: shade(WOOD, 1.12) });
     g.poly([
       cx + cw / 2,
       cy - ch / 2,
@@ -438,7 +468,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
       cy + ch / 2 - dep,
       cx + cw / 2,
       cy + ch / 2,
-    ]).fill({ color: shade(WOOD, 0.7) });
+    ]).fill({ color: shade(WOOD, 0.76) });
     g.rect(cx - cw / 2, cy - ch / 2, cw, ch).fill({ color: WOOD });
     // one plank seam and a cord across the face
     g.moveTo(cx - cw / 2, cy - 0.2 * s)
