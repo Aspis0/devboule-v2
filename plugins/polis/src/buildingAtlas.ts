@@ -70,6 +70,13 @@ export interface BuildingVariant {
   foot: [number, number];
 }
 
+/** Shared baked-sprite entry for non-building art that uses the same atlas
+ * ownership and texture lifetime rules (currently the procedural citizens). */
+export interface BakedSpriteVariant {
+  texture: Texture;
+  frame: { x: number; y: number; width: number; height: number };
+}
+
 /**
  * Resolution cap for generated textures. We honour the device pixel ratio so the
  * baked art stays crisp on a HiDPI display, but CAP it at 2 so a 3x/4x display
@@ -169,6 +176,7 @@ export function landmarkPresenceScale(purpose: string): number {
 
 export class BuildingTextureAtlas {
   private cache = new Map<string, BuildingVariant>();
+  private spriteCache = new Map<string, BakedSpriteVariant>();
   private resolution: number;
 
   /**
@@ -251,6 +259,40 @@ export class BuildingTextureAtlas {
   }
 
   /**
+   * Capture a generic static Sprite/overlay composition into this same atlas
+   * owner. The key is supplied by the caller because non-building assets do not
+   * have a purpose/level/footprint tuple. The source tree is destroyed after
+   * capture just like a building body, leaving only the shared Texture.
+   */
+  getSprite(
+    renderer: TextureSource,
+    key: string,
+    build: () => Container,
+    resolution = this.resolution,
+  ): BakedSpriteVariant {
+    const hit = this.spriteCache.get(key);
+    if (hit !== undefined) return hit;
+
+    const body = build();
+    const bounds = body.getLocalBounds();
+    const frame = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+    const texture = renderer.generateTexture({
+      target: body,
+      resolution,
+      antialias: true,
+    });
+    body.destroy({ children: true });
+
+    const variant = { texture, frame } satisfies BakedSpriteVariant;
+    this.spriteCache.set(key, variant);
+    return variant;
+  }
+
+  hasSprite(key: string): boolean {
+    return this.spriteCache.has(key);
+  }
+
+  /**
    * Release every cached variant texture. Called from PolisRenderer.destroy (the
    * atlas OWNS the textures — a building node never destroys a shared texture, or
    * it would pull the rug out from under every sibling using the same variant).
@@ -262,5 +304,7 @@ export class BuildingTextureAtlas {
       v.shadowTexture.destroy(true);
     }
     this.cache.clear();
+    for (const v of this.spriteCache.values()) v.texture.destroy(true);
+    this.spriteCache.clear();
   }
 }

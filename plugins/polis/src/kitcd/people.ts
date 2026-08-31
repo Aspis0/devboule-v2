@@ -153,11 +153,16 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
   g.ellipse(0, 0, 6 * s, 2.2 * s).fill({ color: 0x241a10, alpha: 0.16 });
 
   // ---- legs (front opposite to back) ----
-  limb(g, 0.4 * s, hipY, sw * 2.6 * s, 0, 2.3 * s, SKd);
-  limb(g, -0.4 * s, hipY, -sw * 2.6 * s, 0, 2.5 * s, SK);
+  // The source drove both feet from `sw`, which is 0 while standing, so a still
+  // citizen put both feet on exactly the same spot: one wide column of skin with
+  // a single dark blob under it. Standing now has a stance; walking is unchanged,
+  // and the legs still cross at mid-stride as they should.
+  const stride = moving ? sw * 2.6 : 1.6;
+  limb(g, 0.4 * s, hipY, stride * s, 0, 2.3 * s, SKd);
+  limb(g, -0.4 * s, hipY, -stride * s, 0, 2.5 * s, SK);
   // feet
-  g.ellipse(sw * 2.6 * s, 0, 2 * s, 1 * s).fill({ color: 0x4a3320 });
-  g.ellipse(-sw * 2.6 * s, 0, 2 * s, 1 * s).fill({ color: 0x4a3320 });
+  g.ellipse(stride * s, 0, 1.45 * s, 0.95 * s).fill({ color: 0x4a3320 });
+  g.ellipse(-stride * s, 0, 1.45 * s, 0.95 * s).fill({ color: 0x4a3320 });
 
   // ---- tunic ----
   g.poly([
@@ -246,31 +251,62 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
       // ordinary front arm swings with the walk
       limb(g, 2.7 * s, shY, 3.3 * s + aSw, -8.6 * s, 2 * s, SK);
     }
+    // Hands. The source ended an arm with the limb's round cap, which at the
+    // size these render reads as the blunt end of a plank. A slightly wider
+    // circle turns the same shape into an arm with a hand on it.
+    g.circle(-3.3 * s - aSw, -8.6 * s, 1.25 * s).fill({ color: SKd });
+    if (type !== "firefighter") {
+      g.circle(3.3 * s + aSw, -8.6 * s, 1.25 * s).fill({ color: SK });
+    }
   }
 
   // ---- water-carrier yoke + amphorae (over shoulders) ----
   if (type === "watercarrier") {
-    g.moveTo(-6.2 * s, shY - 0.5 * s)
-      .lineTo(6.2 * s, shY - 0.5 * s)
-      .stroke({ width: 1.5 * s, color: 0x6e4a2a, cap: "round" });
-    for (const x of [-6, 6]) {
+    // Deliberate deviation from the v1, measured at the zoom a person actually
+    // uses. The source hung the amphorae at x=+-6 with a 2.4 radius, so the two
+    // of them spanned 16.8 units across a body 7.2 wide, in 0xc0613a lifted a
+    // further 15% for the highlight. On screen they were the loudest thing in
+    // the frame and read as floats rather than pottery, and they hid the arms
+    // entirely. Brought inboard and narrowed so the silhouette stays a person
+    // carrying something, and the clay moved towards the roof-tile tone so it
+    // belongs to the same city.
+    const CLAY = 0xa85a38;
+    g.moveTo(-5.4 * s, shY - 0.5 * s)
+      .lineTo(5.4 * s, shY - 0.5 * s)
+      .stroke({ width: 1.15 * s, color: 0x6e4a2a, cap: "round" });
+    for (const x of [-5.2, 5.2]) {
       // rope
       g.moveTo(x * s, shY - 0.3 * s)
-        .lineTo(x * s, -11 * s)
+        .lineTo(x * s, -11.4 * s)
         .stroke({ width: 0.8 * s, color: 0x4a3320 });
-      // amphora body + highlight
-      g.ellipse(x * s, -9 * s, 2.4 * s, 3.6 * s).fill({
-        color: shade(0xc0613a, 0.95),
+      // amphora: neck and lip first, then the belly over them
+      g.rect(x * s - 0.55 * s, -12 * s, 1.1 * s, 1.6 * s).fill({
+        color: shade(CLAY, 0.86),
       });
-      g.ellipse(x * s - 0.8 * s, -9.8 * s, 0.9 * s, 2 * s).fill({
-        color: shade(0xc0613a, 1.15),
+      g.ellipse(x * s, -11.9 * s, 1.15 * s, 0.45 * s).fill({
+        color: shade(CLAY, 1.04),
+      });
+      g.ellipse(x * s, -9.2 * s, 1.85 * s, 3 * s).fill({ color: CLAY });
+      // highlight down the lit side, and a shaded edge on the other
+      g.ellipse(x * s - 0.6 * s, -9.9 * s, 0.6 * s, 1.5 * s).fill({
+        color: shade(CLAY, 1.1),
+      });
+      g.ellipse(x * s + 1.15 * s, -9.2 * s, 0.5 * s, 2.2 * s).fill({
+        color: shade(CLAY, 0.8),
       });
     }
   }
 
   // ---- head ----
+  // Neck first, so the head sits on it instead of floating over the shoulders.
+  g.rect(-0.95 * s, -16.6 * s, 1.9 * s, 1.9 * s).fill({ color: SKd });
   g.circle(0, -19.3 * s, 2.95 * s).fill({ color: HAIR });
   g.circle(0, -18.3 * s, 2.6 * s).fill({ color: SK });
+  // Eyes. Two dots are the whole difference between a head and a face at the
+  // zoom a person can now reach; they disappear into the head at city scale,
+  // which is the correct behaviour rather than a compromise.
+  g.circle(-1 * s, -18.6 * s, 0.42 * s).fill({ color: 0x2a1d12 });
+  g.circle(1 * s, -18.6 * s, 0.42 * s).fill({ color: 0x2a1d12 });
 
   // ---- noble himation cloak + staff ----
   if (type === "noble") {

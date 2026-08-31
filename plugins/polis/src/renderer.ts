@@ -3,6 +3,8 @@ import { BuildingTextureAtlas } from "./buildingAtlas";
 import { AgentLayer } from "./agents";
 import { animationPoint, buildGreekBuildingArt, buildGreekMonument, metricsFromFrame } from "./art";
 import {
+  MAX_ZOOM,
+  MIN_ZOOM,
   fitInitialCamera,
   includeProjectedRadius,
   projectedBuildingBounds,
@@ -19,8 +21,6 @@ import { computeExtent, drawTerrain } from "./terrain";
 import type { AnimInstance } from "./kitcd/anims";
 import type { SpriteBank } from "./spriteAssets";
 
-const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 2.4;
 const INITIAL_CAMERA_MARGIN = 32;
 
 interface ViewEntry {
@@ -84,7 +84,8 @@ export class CityRenderer {
       this.layoutById,
       options.city.imports,
       this.app.renderer,
-      window.devicePixelRatio || 1,
+      this.atlas,
+      this.buildings,
     );
     this.world.addChild(
       this.ground,
@@ -93,7 +94,6 @@ export class CityRenderer {
       this.buildings,
       this.monuments,
       this.findingLayer.root,
-      this.agentLayer.root,
     );
     this.buildings.sortableChildren = true;
     this.shadows.sortableChildren = true;

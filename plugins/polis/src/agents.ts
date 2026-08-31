@@ -1,7 +1,13 @@
 import { Container, Graphics, Sprite } from "pixi.js";
 import type { CityAgent, CityAgentState, CityImport } from "./model";
 import { PALETTE, providerColor } from "./palette";
-import { FigureTextureAtlas, type FigurePose, type FigureTextureSource } from "./figureAtlas";
+import {
+  CITIZEN_PHASE_STEPS,
+  CitizenTextureAtlas,
+  citizenTypeForProvider,
+  type CitizenPhaseStep,
+} from "./citizenAtlas";
+import { BuildingTextureAtlas, type TextureSource } from "./buildingAtlas";
 import { farLodBlend } from "./lod";
 import { hashString } from "./rng";
 
@@ -14,6 +20,19 @@ export interface AgentLayout {
   gridY?: number;
 }
 
+export interface BadgeMetrics {
+  y: number;
+  scale: number;
+}
+
+const BADGE_GAP = 2;
+
+/** Size and place a badge from the baked citizen bounds, never over its head. */
+export function badgeMetrics(frame: { y: number; width: number }): BadgeMetrics {
+  const scale = Math.min(0.8, Math.max(0.35, frame.width / 16));
+  return { y: frame.y - 4 * scale - BADGE_GAP, scale };
+}
+
 interface AgentView {
   id: string;
   provider: string;
@@ -24,16 +43,16 @@ interface AgentView {
   farA: Graphics;
   farB: Graphics;
   figure: Container;
-  bodyA: Sprite;
-  bodyB: Sprite;
+  body: Sprite;
   badgeA: Graphics;
   badgeB: Graphics;
-  glow: Graphics;
   state: CityAgentState;
   phase: number;
+  lastStep: CitizenPhaseStep;
   x: number;
   y: number;
   radius: number;
+  facing: 1 | -1;
   route: RoutePoint[] | null;
   routeIndex: number;
   routeProgress: number;
@@ -54,10 +73,10 @@ const BOB = [0, -0.8, 0, -0.4] as const;
  * the session's next touched file without inventing a position for null files.
  */
 export class AgentLayer {
-  readonly root = new Container();
+  readonly root: Container;
   private readonly layouts: ReadonlyMap<string, AgentLayout>;
-  private readonly renderer: FigureTextureSource;
-  private readonly figureAtlas: FigureTextureAtlas;
+  private readonly renderer: TextureSource;
+  private readonly citizenAtlas: CitizenTextureAtlas;
   private readonly neighbors = new Map<string, string[]>();
   private readonly viewsById = new Map<string, AgentView>();
   private readonly views: AgentView[] = [];
@@ -67,12 +86,13 @@ export class AgentLayer {
   constructor(
     layouts: ReadonlyMap<string, AgentLayout>,
     imports: readonly CityImport[],
-    renderer: FigureTextureSource,
-    dpr = 1,
+    renderer: TextureSource,
+    atlas: BuildingTextureAtlas,
+    root: Container = new Container(),
   ) {
     this.layouts = layouts;
     this.renderer = renderer;
-    this.figureAtlas = new FigureTextureAtlas(dpr);
+    this.citizenAtlas = new CitizenTextureAtlas(atlas);
     for (const cityImport of imports) {
       if (layouts.get(cityImport.from) === undefined || layouts.get(cityImport.to) === undefined)
         continue;
@@ -80,7 +100,7 @@ export class AgentLayer {
       if (targets === undefined) this.neighbors.set(cityImport.from, [cityImport.to]);
       else targets.push(cityImport.to);
     }
-    this.root.eventMode = "none";
+    this.root = root;
     this.root.sortableChildren = true;
   }
 
@@ -140,21 +160,22 @@ export class AgentLayer {
     const display = new Container();
     const near = new Container();
     const far = new Container();
-    const glow = new Graphics();
-    glow.ellipse(0, 2, 10, 4).fill({ color: stateColor(agent.state), alpha: 0.3 });
 
     const figure = new Container();
-    const bodyA = this.figureSprite(this.renderer, agent.provider, agent.state, 0);
-    const bodyB = this.figureSprite(this.renderer, agent.provider, agent.state, 1);
-    bodyB.visible = false;
+    const type = citizenTypeForProvider(agent.provider);
+    const variant = this.citizenAtlas.get(this.renderer, type, agent.state, 0);
+    const body = new Sprite(variant.texture);
+    body.position.set(variant.frame.x, variant.frame.y);
 
     const badgeA = new Graphics();
     const badgeB = new Graphics();
+    setBadgeLayout(badgeA, variant.frame);
+    setBadgeLayout(badgeB, variant.frame);
     drawBadge(badgeA, agent.state, 0);
     drawBadge(badgeB, agent.state, 1);
     badgeB.visible = false;
-    figure.addChild(bodyA, bodyB, badgeA, badgeB);
-    near.addChild(glow, figure);
+    figure.addChild(body, badgeA, badgeB);
+    near.addChild(figure);
 
     const farA = new Graphics();
     const farB = new Graphics();
@@ -180,16 +201,16 @@ export class AgentLayer {
       farA,
       farB,
       figure,
-      bodyA,
-      bodyB,
+      body,
       badgeA,
       badgeB,
-      glow,
       state: agent.state,
       phase: stablePhase(agent.id),
+      lastStep: 0,
       x,
       y,
-      radius: 64,
+      radius: variant.radius,
+      facing: 1,
       route: null,
       routeIndex: 0,
       routeProgress: 0,
@@ -204,13 +225,14 @@ export class AgentLayer {
     fileId: string,
     layout: AgentLayout,
   ): void {
-    if (view.provider !== agent.provider || view.state !== agent.state) {
+    const providerChanged = view.provider !== agent.provider;
+    const stateChanged = view.state !== agent.state;
+    if (providerChanged || stateChanged) {
       view.badgeA.clear();
       view.badgeB.clear();
       view.farA.clear();
       view.farB.clear();
-      this.setFigureSprite(view.bodyA, agent.provider, agent.state, 0);
-      this.setFigureSprite(view.bodyB, agent.provider, agent.state, 1);
+      this.setBody(view, citizenTypeForProvider(agent.provider), agent.state, 0);
       drawBadge(view.badgeA, agent.state, 0);
       drawBadge(view.badgeB, agent.state, 1);
       drawFarMarker(view.farA, agent.provider, agent.state, 0);
@@ -235,44 +257,37 @@ export class AgentLayer {
     view.fileId = fileId;
   }
 
-  private figureSprite(
-    renderer: FigureTextureSource,
-    provider: string,
+  private setBody(
+    view: AgentView,
+    type: ReturnType<typeof citizenTypeForProvider>,
     state: CityAgentState,
-    pose: FigurePose,
-  ): Sprite {
-    const variant = this.figureAtlas.get(renderer, provider, state, pose);
-    const sprite = new Sprite(variant.texture);
-    sprite.position.set(variant.frame.x, variant.frame.y);
-    return sprite;
-  }
-
-  private setFigureSprite(
-    sprite: Sprite,
-    provider: string,
-    state: CityAgentState,
-    pose: FigurePose,
+    step: CitizenPhaseStep,
   ): void {
-    const variant = this.figureAtlas.get(this.renderer, provider, state, pose);
-    sprite.texture = variant.texture;
-    sprite.position.set(variant.frame.x, variant.frame.y);
+    const variant = this.citizenAtlas.get(this.renderer, type, state, step);
+    view.body.texture = variant.texture;
+    view.body.position.set(variant.frame.x, variant.frame.y);
+    view.radius = variant.radius;
+    view.lastStep = step;
+    setBadgeLayout(view.badgeA, variant.frame);
+    setBadgeLayout(view.badgeB, variant.frame);
   }
 
-  private updateAnimation(step: number): void {
+  private updateAnimation(elapsedStep: number): void {
     for (const view of this.views) {
-      const frame = (step + view.phase) & 1;
-      view.bodyA.visible = frame === 0;
-      view.bodyB.visible = frame === 1;
-      view.badgeA.visible = frame === 0;
-      view.badgeB.visible = frame === 1;
-      view.farA.visible = frame === 0;
-      view.farB.visible = frame === 1;
-      view.figure.position.y = BOB[(step + view.phase) % BOB.length];
-      const pulse = frame === 0 ? 1 : 0.72;
+      if (!view.display.renderable) continue;
+      const step = ((elapsedStep + view.phase) % CITIZEN_PHASE_STEPS) as CitizenPhaseStep;
+      if (view.lastStep !== step) {
+        this.setBody(view, citizenTypeForProvider(view.provider), view.state, step);
+      }
+      const badgeFrame = step & 1;
+      view.badgeA.visible = badgeFrame === 0;
+      view.badgeB.visible = badgeFrame === 1;
+      view.farA.visible = badgeFrame === 0;
+      view.farB.visible = badgeFrame === 1;
+      view.figure.position.y = BOB[(elapsedStep + view.phase) % BOB.length];
       view.near.alpha = stateAlpha(view.state) * (1 - this.farBlend);
       view.far.alpha = stateAlpha(view.state) * this.farBlend;
-      view.far.scale.set(view.state === "working" ? (frame === 0 ? 1.08 : 0.94) : 1);
-      view.glow.alpha = stateGlowAlpha(view.state) * pulse * (1 - this.farBlend);
+      view.far.scale.set(view.state === "working" ? (step === 0 ? 1.08 : 0.94) : 1);
     }
   }
 
@@ -286,6 +301,10 @@ export class AgentLayer {
       const dx = to.x - from.x;
       const dy = to.y - from.y;
       const length = Math.hypot(dx, dy);
+      if (Math.abs(dx) > 0.01) {
+        view.facing = dx > 0 ? 1 : -1;
+        view.display.scale.x = view.facing;
+      }
       if (length === 0) {
         view.routeIndex += 1;
         view.routeProgress = 0;
@@ -350,7 +369,7 @@ export class AgentLayer {
 function drawBadge(graphic: Graphics, state: CityAgentState, variant: number): void {
   const color = stateColor(state);
   const outline = PALETTE.outline;
-  const badgeY = -55;
+  const badgeY = 0;
   if (state === "working") {
     graphic
       .poly([0, badgeY - 4, 4, badgeY, 0, badgeY + 4, -4, badgeY])
@@ -388,6 +407,12 @@ function drawBadge(graphic: Graphics, state: CityAgentState, variant: number): v
   }
   graphic.circle(0, badgeY, 3.5).fill({ color: outline, alpha: 0.9 }).stroke({ color, width: 1.2 });
   graphic.circle(0, badgeY, variant === 0 ? 1 : 0.7).fill({ color });
+}
+
+function setBadgeLayout(graphic: Graphics, frame: { y: number; width: number }): void {
+  const scale = Math.min(0.8, Math.max(0.35, frame.width / 16));
+  graphic.position.set(0, frame.y - 4 * scale - BADGE_GAP);
+  graphic.scale.set(scale);
 }
 
 /**
@@ -465,10 +490,6 @@ function stateAlpha(state: CityAgentState): number {
   return state === "working" ? 1 : state === "silent" ? 0.82 : state === "finished" ? 0.7 : 0.9;
 }
 
-function stateGlowAlpha(state: CityAgentState): number {
-  return state === "working" ? 0.56 : state === "silent" ? 0.3 : state === "finished" ? 0.2 : 0.36;
-}
-
 function layoutDepth(layout: AgentLayout): number {
   if (layout.gridX !== undefined && layout.gridY !== undefined) {
     return layout.gridX + layout.gridY + 0.2;
@@ -479,5 +500,5 @@ function layoutDepth(layout: AgentLayout): number {
 }
 
 function stablePhase(id: string): number {
-  return hashString(id);
+  return hashString(id) % CITIZEN_PHASE_STEPS;
 }

@@ -1,5 +1,9 @@
 import { cartToIso } from "./iso";
 
+/** Interactive camera limits. Initial fitting uses its own fit ceiling below. */
+export const MIN_ZOOM = 0.35;
+export const MAX_ZOOM = 6;
+
 /** A placed building's cartesian anchor and occupied footprint. */
 export interface CameraBuilding {
   x: number;
