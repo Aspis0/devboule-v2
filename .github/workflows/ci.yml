@@ -126,6 +126,51 @@ jobs:
         # notices into a false-green workaround.
         run: cargo audit
 
+  polis-plugin:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.33.2
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install Polis dependencies
+        working-directory: plugins/polis
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check Polis
+        working-directory: plugins/polis
+        run: pnpm exec tsc --noEmit
+
+      - name: Test Polis
+        working-directory: plugins/polis
+        run: pnpm run test
+
+      - name: Build Polis
+        working-directory: plugins/polis
+        run: pnpm run build
+
+      - name: Verify Polis manifest
+        working-directory: plugins/polis
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath "dist/plugin.json" -PathType Leaf)) {
+            throw "Polis build did not produce dist/plugin.json"
+          }
+
+      - name: Check Polis formatting
+        working-directory: plugins/polis
+        run: pnpm run format:check
+
   # oracle-core is linted and tested here, not in the workspace job. src-tauri
   # depends on it, so the workspace job compiles it either way; what this job
   # owns is the -D warnings pass over oracle-core's own targets and the

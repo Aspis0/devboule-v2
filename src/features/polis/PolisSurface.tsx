@@ -11,6 +11,7 @@ import { useAppStore } from "../../store/appStore";
 import type { SurfaceDefinition } from "../../types/surface";
 import { chooseAndInstall } from "../plugins/install";
 import { PluginSurface } from "../plugins/PluginSurface";
+import "./polis.css";
 
 export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
   // The transport probe imports a module, so it cannot be synchronous. It runs
@@ -36,6 +37,10 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
   const dismissInstallError = useAppStore((state) => state.dismissInstallError);
   const refreshPlugins = useAppStore((state) => state.refreshPlugins);
   const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    void refreshPlugins(true);
+  }, [refreshPlugins]);
 
   const installed = plugins ? pluginState(plugins, POLIS_PLUGIN_ID) : null;
   const busy = checking || installing === POLIS_PLUGIN_ID;

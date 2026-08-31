@@ -1,5 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPluginBridge } from "./pluginBridge";
+import { useAppStore } from "../../store/appStore";
+
+const FRAME_START_TIMEOUT_MS = 15_000;
 
 export interface PluginSurfaceProps {
   pluginId: string;
@@ -29,7 +32,35 @@ export function PluginSurface({ pluginId, entry, assetOrigin, capabilities }: Pl
 
 function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: PluginSurfaceProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const frameTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const capabilitiesRef = useRef(capabilities);
   const origin = assetOrigin.replace(/\/+$/, "");
+  const capabilitiesKey = JSON.stringify(capabilities);
+  const refreshPlugins = useAppStore((state) => state.refreshPlugins);
+  const [frameState, setFrameState] = useState<"starting" | "starting-long" | "ready" | "failed">(
+    "starting",
+  );
+  const [reloadToken, setReloadToken] = useState(0);
+
+  function markFrameReady() {
+    if (frameTimeoutRef.current !== null) {
+      clearTimeout(frameTimeoutRef.current);
+      frameTimeoutRef.current = null;
+    }
+    setFrameState("ready");
+  }
+
+  function markFrameFailed() {
+    if (frameTimeoutRef.current !== null) {
+      clearTimeout(frameTimeoutRef.current);
+      frameTimeoutRef.current = null;
+    }
+    setFrameState("failed");
+  }
+
+  useEffect(() => {
+    capabilitiesRef.current = capabilities;
+  }, [capabilities]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -38,12 +69,31 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
       iframe,
       pluginId,
       pluginOrigin: origin,
-      capabilities,
+      capabilities: capabilitiesRef.current,
     });
+    const timeout = setTimeout(() => {
+      frameTimeoutRef.current = null;
+      setFrameState("starting-long");
+    }, FRAME_START_TIMEOUT_MS);
+    frameTimeoutRef.current = timeout;
+    iframe.addEventListener("load", markFrameReady);
+    iframe.addEventListener("error", markFrameFailed);
     return () => {
+      clearTimeout(timeout);
+      if (frameTimeoutRef.current === timeout) frameTimeoutRef.current = null;
+      iframe.removeEventListener("load", markFrameReady);
+      iframe.removeEventListener("error", markFrameFailed);
       bridge.dispose();
     };
-  }, [capabilities, origin, pluginId]);
+  }, [capabilitiesKey, origin, pluginId, reloadToken]);
+
+  function rescan() {
+    setFrameState("starting");
+    setReloadToken((token) => token + 1);
+    void refreshPlugins(true);
+  }
+
+  const label = pluginId === "polis" ? "Polis" : pluginId;
 
   return (
     <section className="surface-card plugin-surface" aria-label={`${pluginId} plugin surface`}>
@@ -64,11 +114,24 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
        */}
       <iframe
         ref={iframeRef}
+        key={reloadToken}
         className="plugin-surface-frame"
         title={`${pluginId} plugin`}
         src={`${origin}/${pluginId}/${entry}`}
         sandbox="allow-scripts allow-same-origin"
       />
+      {frameState === "failed" ? (
+        <div className="polis-plugin-failure" role="alert">
+          <span>{label} could not start — the plugin frame reported a loading error.</span>
+          <button type="button" onClick={rescan}>
+            Rescan
+          </button>
+        </div>
+      ) : frameState === "starting-long" ? (
+        <div className="polis-plugin-starting" role="status">
+          {label} is still starting — the plugin has not reported that it is ready yet.
+        </div>
+      ) : null}
     </section>
   );
 }
