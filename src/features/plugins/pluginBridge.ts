@@ -29,7 +29,7 @@ interface InvokeMessage {
 
 type ReplyMessage =
   | { v: 1; id: string; kind: "result"; value: unknown }
-  | { v: 1; id: string; kind: "error"; message: string };
+  | { v: 1; id: string; kind: "error"; message: string; code?: string };
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -89,12 +89,15 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
         },
         (error: unknown) => {
           if (disposed) return;
-          post({
+          const reply: Extract<ReplyMessage, { kind: "error" }> = {
             v: 1,
             id: requestId,
             kind: "error",
             message: routeErrorMessage(error),
-          });
+          };
+          const code = routeErrorCode(error);
+          if (code !== undefined) reply.code = code;
+          post(reply);
         },
       );
       return;
@@ -160,7 +163,11 @@ function parseMessage(value: unknown): InvokeMessage | ReplyMessage | null {
   if (value.kind === "result" && "value" in value) {
     return value as unknown as ReplyMessage;
   }
-  if (value.kind === "error" && typeof value.message === "string") {
+  if (
+    value.kind === "error" &&
+    typeof value.message === "string" &&
+    (value.code === undefined || typeof value.code === "string")
+  ) {
     return value as unknown as ReplyMessage;
   }
   return null;
@@ -179,4 +186,15 @@ function routeErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error) return error;
   return "plugin invoke failed";
+}
+
+function routeErrorCode(error: unknown): string | undefined {
+  if (isRecord(error) && typeof error.code === "string" && error.code !== "") {
+    return error.code;
+  }
+  if (error instanceof Error) {
+    const code = (error as Error & { code?: unknown }).code;
+    return typeof code === "string" && code !== "" ? code : undefined;
+  }
+  return undefined;
 }

@@ -29,6 +29,10 @@ pub enum ErrorCode {
     /// Journal is unreadable: corrupt, a future schema, or the disk refused
     /// the write. Live sessions still run; recovered replay cannot.
     Journal,
+    /// A workspace-root capability was requested while no project is open.
+    WorkspaceUnavailable,
+    /// The active workspace root was not safely confined to the project path.
+    WorkspaceConfinementRefused,
     Internal,
     Io,
 }
@@ -194,6 +198,8 @@ mod tests {
             IdempotencyConflict,
             ShuttingDown,
             Journal,
+            WorkspaceUnavailable,
+            WorkspaceConfinementRefused,
             Internal,
             Io,
         )

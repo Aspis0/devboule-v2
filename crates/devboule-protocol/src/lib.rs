@@ -136,7 +136,18 @@ pub const IDEMPOTENCY_MAX_ENTRIES: usize = 4096;
 /// output frame — see the frame-cap test in the `session` module before
 /// assuming snapshots are always small.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// Maximum serialized JSON payload accepted by the plugin invoke command.
+pub const MAX_PLUGIN_PAYLOAD_BYTES: usize = 1024 * 1024;
 
+pub fn plugin_payload_within_limit(payload: Option<&serde_json::Value>) -> bool {
+    payload
+        .map(|value| {
+            serde_json::to_vec(value)
+                .map(|bytes| bytes.len() <= MAX_PLUGIN_PAYLOAD_BYTES)
+                .unwrap_or(false)
+        })
+        .unwrap_or(true)
+}
 /// Capabilities this crate's daemon and app currently serve.
 ///
 /// Named `m3a_*` because the handshake helpers were introduced in M3a; M3b
@@ -209,5 +220,14 @@ mod tests {
         assert!(!plugin.iter().any(|cap| cap.as_str() == caps::STATUS));
         assert!(!plugin.iter().any(|cap| cap.as_str() == caps::SESSIONS));
         assert_eq!(invoke_method_capability("workspace.root"), caps::WORKSPACE_ROOT);
+    }
+
+    #[test]
+    fn plugin_payloads_are_capped_before_framing() {
+        let small = serde_json::Value::String("x".repeat(MAX_PLUGIN_PAYLOAD_BYTES - 16));
+        let large = serde_json::Value::String("x".repeat(MAX_PLUGIN_PAYLOAD_BYTES));
+        assert!(plugin_payload_within_limit(Some(&small)));
+        assert!(!plugin_payload_within_limit(Some(&large)));
+        assert!(plugin_payload_within_limit(None));
     }
 }

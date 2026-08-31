@@ -2,7 +2,12 @@ import "pixi.js/unsafe-eval";
 import { Application } from "pixi.js";
 import { loadPolisArt } from "./artAssets";
 import fixtureCity from "./fixture-city.json";
-import { formatHandshakeReadout, formatWorkspaceRootReadout, invokeHost } from "./hostBridge";
+import {
+  formatBackendFailureReadout,
+  formatHandshakeReadout,
+  formatWorkspaceRootReadout,
+  invokeHost,
+} from "./hostBridge";
 import { CityRenderer } from "./renderer";
 import type { City, CityFile } from "./model";
 
@@ -173,9 +178,9 @@ async function reportBackend(): Promise<void> {
     bridgeReadout.textContent = formatWorkspaceRootReadout(value);
     backendReadout.textContent = formatHandshakeReadout(value);
   } catch (error) {
-    const message = errorMessage(error);
-    bridgeReadout.textContent = `Bridge reply: error — ${message}`;
-    backendReadout.textContent = `Backend: error — ${message}`;
+    const backendFailure = formatBackendFailureReadout(error);
+    bridgeReadout.textContent = `Bridge reply: ${backendFailure.replace(/^Backend: /, "")}`;
+    backendReadout.textContent = backendFailure;
   }
 }
 

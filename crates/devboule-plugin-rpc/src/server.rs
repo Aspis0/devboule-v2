@@ -7,7 +7,8 @@ use devboule_protocol::{
 };
 
 use crate::error::PluginError;
-use crate::pipe::bind_and_accept;
+use crate::pipe::{bind_and_accept, verify_pipe_client_pid};
+use crate::spawn::HOST_PID_ENV;
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -22,7 +23,21 @@ pub struct PluginBackend {
 impl PluginBackend {
     /// Bind the pipe the host named, accept one client, complete handshake.
     pub fn listen(pipe_name: &str) -> Result<Self, PluginError> {
+        let raw_pid = std::env::var(HOST_PID_ENV).map_err(|_| {
+            PluginError::Protocol(format!(
+                "missing {HOST_PID_ENV}; refusing an unidentified host"
+            ))
+        })?;
+        let host_pid = raw_pid
+            .parse::<u32>()
+            .map_err(|_| PluginError::Protocol(format!("{HOST_PID_ENV} is not a process id")))?;
+        Self::listen_for_host(pipe_name, host_pid)
+    }
+
+    /// Testable form of [`Self::listen`] for an in-process host/client pair.
+    pub fn listen_for_host(pipe_name: &str, expected_host_pid: u32) -> Result<Self, PluginError> {
         let file = bind_and_accept(pipe_name, ACCEPT_TIMEOUT)?;
+        verify_pipe_client_pid(&file, expected_host_pid).map_err(PluginError::from)?;
         let framed = Framed::new(file);
         let first: ClientMessage = framed.recv_timeout(HANDSHAKE_TIMEOUT)?;
         let ClientMessage::Hello(client_hello) = first else {
@@ -97,7 +112,8 @@ mod tests {
     fn host_and_backend_handshake_on_a_named_pipe() {
         let pipe_name = unique_pipe_name("rpc-test");
         let server_name = pipe_name.clone();
-        let server = thread::spawn(move || PluginBackend::listen(&server_name));
+        let server =
+            thread::spawn(move || PluginBackend::listen_for_host(&server_name, std::process::id()));
 
         let mut last_err = None;
         let file = (0..50)
@@ -136,9 +152,42 @@ mod tests {
 
         let backend = server.join().expect("join").expect("listen");
         assert_eq!(
-            backend.grants().get(caps::WORKSPACE_ROOT).map(String::as_str),
+            backend
+                .grants()
+                .get(caps::WORKSPACE_ROOT)
+                .map(String::as_str),
             Some(r"C:\repo")
         );
         assert!(backend.capability_granted(caps::WORKSPACE_ROOT));
+    }
+
+    #[test]
+    fn a_client_from_the_wrong_host_pid_is_rejected_before_handshake() {
+        let pipe_name = unique_pipe_name("rpc-pid-test");
+        let server_name = pipe_name.clone();
+        let wrong_pid = std::process::id().wrapping_add(1).max(1);
+        let server = thread::spawn(move || PluginBackend::listen_for_host(&server_name, wrong_pid));
+
+        let mut last_err = None;
+        let file = (0..50)
+            .find_map(|_| match connect_pipe(&pipe_name) {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    last_err = Some(error);
+                    thread::sleep(Duration::from_millis(50));
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("connect: {last_err:?}"));
+        drop(file);
+
+        match server.join().expect("join") {
+            Err(PluginError::Io(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(error.to_string().contains("not expected PID"));
+            }
+            Ok(_) => panic!("expected PID refusal, but the connection was accepted"),
+            Err(other) => panic!("expected PID refusal, got {other}"),
+        }
     }
 }

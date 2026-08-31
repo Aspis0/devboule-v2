@@ -17,6 +17,7 @@ mod platform {
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
+    use windows_sys::Win32::System::Threading::ResumeThread;
 
     /// An owned Job Object configured to kill its members when this handle is
     /// closed. The handle is intentionally not duplicated: the owner is the
@@ -65,6 +66,26 @@ mod platform {
             }
             Ok(())
         }
+
+        /// Assign a process created with CREATE_SUSPENDED, then resume its
+        /// initial thread. The child cannot execute user code before it is in
+        /// the job, so there is no spawn-then-assign escape window.
+        pub fn assign_suspended(
+            &self,
+            process: RawHandle,
+            initial_thread: RawHandle,
+        ) -> io::Result<()> {
+            self.assign(process)?;
+            resume_initial_thread(initial_thread)
+        }
+    }
+
+    fn resume_initial_thread(initial_thread: RawHandle) -> io::Result<()> {
+        let resumed = unsafe { ResumeThread(initial_thread as HANDLE) };
+        if resumed == u32::MAX {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     impl Drop for JobObject {

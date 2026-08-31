@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use devboule_plugin_rpc::{host_owner, PluginSession, SpawnSpec};
 use devboule_protocol::{caps, plugin_backend_capabilities, DaemonMessage};
+use std::sync::Arc;
 
 fn spec(root: &std::path::Path) -> SpawnSpec {
     let mut grants = BTreeMap::new();
@@ -45,7 +46,7 @@ fn killing_the_backend_mid_request_errors_then_respawn_works() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut hung = spec(dir.path());
     hung.hang_ms = Some(3_000);
-    let mut session = PluginSession::spawn(hung).expect("spawn");
+    let session = PluginSession::spawn(hung).expect("spawn");
     let pid_before = session.pid();
 
     let id = session
@@ -71,6 +72,28 @@ fn killing_the_backend_mid_request_errors_then_respawn_works() {
 }
 
 #[test]
+fn stopping_does_not_wait_for_a_slow_invoke() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut slow = spec(dir.path());
+    slow.hang_ms = Some(5_000);
+    let session = Arc::new(PluginSession::spawn(slow).expect("spawn"));
+    let invoke_session = Arc::clone(&session);
+    let invoke = std::thread::spawn(move || {
+        invoke_session.invoke(caps::WORKSPACE_ROOT, None)
+    });
+
+    std::thread::sleep(Duration::from_millis(100));
+    let started = std::time::Instant::now();
+    session.kill_process().expect("stop");
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "stop waited for the slow IPC roundtrip: {:?}",
+        started.elapsed()
+    );
+    assert!(invoke.join().expect("invoke thread").is_err());
+}
+
+#[test]
 fn ungranted_method_never_leaves_the_host() {
     let dir = tempfile::tempdir().expect("tempdir");
     let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
@@ -90,7 +113,7 @@ fn ungranted_method_never_leaves_the_host() {
 #[test]
 fn dropping_the_session_reaps_the_backend() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut session = PluginSession::spawn(spec(dir.path())).expect("spawn");
+    let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
     session.ping().expect("ping");
     session.kill_process().expect("kill");
     // A reply after the process is gone must not hang the host.

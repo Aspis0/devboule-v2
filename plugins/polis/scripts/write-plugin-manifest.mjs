@@ -1,9 +1,10 @@
-import { access, cp, mkdir, rm } from "node:fs/promises";
-import { constants } from "node:fs";
+import { cp, mkdir, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { selectFreshestBackend } from "./write-plugin-manifest-selection.mjs";
 
 // The shared producer intentionally uses the package directory name as the id.
 // Stage under "polis" so dist can remain Vite's conventional install output.
@@ -20,20 +21,13 @@ await cp(dist, stage, { recursive: true });
 
 const repoRoot = resolve(packageRoot, "../..");
 const backendName = "polis-backend.exe";
-let backendCopied = false;
-for (const candidate of [
+const backend = await selectFreshestBackend([
   resolve(repoRoot, "target/release", backendName),
   resolve(repoRoot, "target/debug", backendName),
-]) {
-  try {
-    await access(candidate, constants.R_OK);
-    await cp(candidate, resolve(stage, backendName));
-    backendCopied = true;
-    break;
-  } catch {
-    // The UI plugin is still installable without a backend binary; the host
-    // will refuse plugin_invoke until this file is present and hashed.
-  }
+]);
+const backendCopied = backend !== null;
+if (backend) {
+  await cp(backend, resolve(stage, backendName));
 }
 
 try {

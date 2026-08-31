@@ -161,6 +161,7 @@ describe("createPluginBridge", () => {
         v: 1,
         id: "dead-1",
         kind: "error",
+        code: "io",
         message: "the plugin backend process exited during the request",
       },
       PLUGIN_ORIGIN,

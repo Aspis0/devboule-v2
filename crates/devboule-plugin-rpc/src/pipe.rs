@@ -9,7 +9,7 @@ use std::io;
 use std::time::Duration;
 
 #[cfg(windows)]
-use std::os::windows::io::{FromRawHandle, RawHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
 
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
@@ -21,17 +21,15 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 #[cfg(windows)]
-use windows_sys::Win32::Security::{
-    SECURITY_ATTRIBUTES, PSECURITY_DESCRIPTOR,
-};
+use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_BYTE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeClientProcessId, GetNamedPipeServerProcessId,
+    PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
@@ -99,6 +97,56 @@ pub fn bind_and_accept(pipe_name: &str, timeout: Duration) -> io::Result<File> {
             "plugin named pipes are Windows-only",
         ))
     }
+}
+
+/// Compare the kernel-reported peer PID with the PID the other side expected.
+/// Keeping this comparison pure makes the security rule testable without
+/// pretending a fabricated PID came from Windows.
+pub fn peer_pid_matches(actual: u32, expected: u32) -> io::Result<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("named-pipe peer PID {actual} is not expected PID {expected}"),
+        ))
+    }
+}
+
+#[cfg(windows)]
+pub fn verify_pipe_client_pid(file: &File, expected: u32) -> io::Result<()> {
+    let mut actual = 0u32;
+    let ok = unsafe { GetNamedPipeClientProcessId(file.as_raw_handle() as _, &mut actual) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    peer_pid_matches(actual, expected)
+}
+
+#[cfg(windows)]
+pub fn verify_pipe_server_pid(file: &File, expected: u32) -> io::Result<()> {
+    let mut actual = 0u32;
+    let ok = unsafe { GetNamedPipeServerProcessId(file.as_raw_handle() as _, &mut actual) };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    peer_pid_matches(actual, expected)
+}
+
+#[cfg(not(windows))]
+pub fn verify_pipe_client_pid(_file: &File, _expected: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "plugin named pipes are Windows-only",
+    ))
+}
+
+#[cfg(not(windows))]
+pub fn verify_pipe_server_pid(_file: &File, _expected: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "plugin named pipes are Windows-only",
+    ))
 }
 
 #[cfg(windows)]
@@ -188,4 +236,18 @@ fn bind_and_accept_windows(pipe_name: &str, timeout: Duration) -> io::Result<Fil
     }
     drop(security);
     Ok(unsafe { File::from_raw_handle(handle as RawHandle) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_known_wrong_peer_pid_is_rejected() {
+        let expected = std::process::id();
+        let wrong = expected.wrapping_add(1).max(1);
+        let error = peer_pid_matches(wrong, expected).expect_err("wrong peer");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("not expected PID"));
+    }
 }

@@ -17,12 +17,24 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../plugins/pluginBackend", () => ({
+  acquirePluginBackend: vi.fn(() => ({
+    ready: Promise.resolve({
+      pid: 1,
+      instanceId: "test",
+      protocolVersion: 1,
+      capabilities: ["workspace.root"],
+      pingOk: true,
+      generation: 1,
+    }),
+    release: vi.fn(async () => undefined),
+  })),
   ensurePluginBackend: vi.fn(async () => ({
     pid: 1,
     instanceId: "test",
     protocolVersion: 1,
     capabilities: ["workspace.root"],
     pingOk: true,
+    generation: 1,
   })),
   stopPluginBackend: vi.fn(async () => undefined),
   invokePlugin: vi.fn(async () => ({ root: "C:\\\\repo", status: "ok" })),

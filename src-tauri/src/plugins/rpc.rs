@@ -7,9 +7,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use devboule_plugin_rpc::{
-    granted_capabilities, host_owner, PluginError, PluginSession, SpawnSpec,
+    confine_project_path, granted_capabilities, host_owner, next_generation, verify_file_digest,
+    PluginError, PluginSession, SpawnSpec,
 };
-use devboule_protocol::{caps, ErrorCode};
+use devboule_protocol::{caps, plugin_payload_within_limit, ErrorCode};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};
@@ -19,7 +20,10 @@ use crate::backend::error::CommandError;
 use crate::oracle::OracleRuntime;
 
 struct Inner {
-    sessions: HashMap<String, PluginSession>,
+    sessions: HashMap<String, Arc<PluginSession>>,
+    /// One blocking spawn/ping operation per plugin id. The guard is never
+    /// held while the session map is locked or while a session is doing IPC.
+    ensure_locks: HashMap<String, Arc<Mutex<()>>>,
     /// Bumped on stop so a spawn that finishes after the surface closed is
     /// thrown away instead of becoming an orphan.
     generation: HashMap<String, u64>,
@@ -35,6 +39,7 @@ impl Default for PluginRuntime {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 sessions: HashMap::new(),
+                ensure_locks: HashMap::new(),
                 generation: HashMap::new(),
             })),
         }
@@ -48,30 +53,73 @@ impl PluginRuntime {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    fn ensure_session(&self, spec: SpawnSpec) -> Result<(), CommandError> {
+    fn ensure_session(&self, spec: SpawnSpec) -> Result<u64, CommandError> {
         let plugin_id = spec.plugin_id.clone();
-        let gen = {
+        let ensure_lock = {
             let mut inner = self.lock();
-            if let Some(session) = inner.sessions.get(&plugin_id) {
-                if session.ping().is_ok() {
-                    return Ok(());
+            inner
+                .ensure_locks
+                .entry(plugin_id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _ensure_guard = ensure_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+
+        let existing = self.lock().sessions.get(&plugin_id).cloned();
+        if let Some(session) = &existing {
+            if session.ping().is_ok() {
+                // A successful re-acquire is a new lease generation even
+                // when it reuses the same process. This invalidates any
+                // stop command issued for the previous, now-released lease.
+                let mut inner = self.lock();
+                if inner
+                    .sessions
+                    .get(&plugin_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, session))
+                {
+                    let generation =
+                        next_generation(inner.generation.get(&plugin_id).copied().unwrap_or(0));
+                    inner.generation.insert(plugin_id.clone(), generation);
+                    return Ok(generation);
                 }
             }
-            if let Some(mut stale) = inner.sessions.remove(&plugin_id) {
+        }
+        if let Some(stale) = existing {
+            let removed = {
+                let mut inner = self.lock();
+                inner
+                    .sessions
+                    .get(&plugin_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &stale))
+                    .then(|| inner.sessions.remove(&plugin_id).expect("checked session"))
+            };
+            if let Some(stale) = removed {
                 let _ = stale.kill_process();
             }
-            inner.generation.get(&plugin_id).copied().unwrap_or(0)
+        }
+
+        let generation = {
+            let mut inner = self.lock();
+            let generation =
+                next_generation(inner.generation.get(&plugin_id).copied().unwrap_or(0));
+            inner.generation.insert(plugin_id.clone(), generation);
+            generation
         };
-        let session = PluginSession::spawn(spec).map_err(command_error)?;
+        let session = Arc::new(PluginSession::spawn(spec).map_err(command_error)?);
         let mut inner = self.lock();
         let current = inner.generation.get(&plugin_id).copied().unwrap_or(0);
-        if current != gen {
-            let mut session = session;
+        if current != generation {
+            drop(inner);
             let _ = session.kill_process();
-            return Ok(());
+            return Err(CommandError::new(
+                ErrorCode::Io,
+                format!("plugin backend '{plugin_id}' ensure was cancelled"),
+            ));
         }
         inner.sessions.insert(plugin_id, session);
-        Ok(())
+        Ok(generation)
     }
 
     fn invoke(
@@ -82,16 +130,20 @@ impl PluginRuntime {
         payload: Option<Value>,
     ) -> Result<Value, CommandError> {
         self.ensure_session(spec)?;
-        let inner = self.lock();
-        let session = inner.sessions.get(plugin_id).ok_or_else(|| {
-            CommandError::new(
-                ErrorCode::Io,
-                format!("plugin backend '{plugin_id}' is not running"),
-            )
-        })?;
+        let session = self
+            .lock()
+            .sessions
+            .get(plugin_id)
+            .cloned()
+            .ok_or_else(|| {
+                CommandError::new(
+                    ErrorCode::Io,
+                    format!("plugin backend '{plugin_id}' is not running"),
+                )
+            })?;
         let value = session.invoke(method, payload).map_err(command_error)?;
         if method == caps::WORKSPACE_ROOT {
-            Ok(with_handshake(value, session))
+            Ok(with_handshake(value, &session))
         } else {
             Ok(value)
         }
@@ -102,14 +154,18 @@ impl PluginRuntime {
         plugin_id: &str,
         spec: SpawnSpec,
     ) -> Result<PluginBackendStatus, CommandError> {
-        self.ensure_session(spec)?;
-        let inner = self.lock();
-        let session = inner.sessions.get(plugin_id).ok_or_else(|| {
-            CommandError::new(
-                ErrorCode::Io,
-                format!("plugin backend '{plugin_id}' is not running"),
-            )
-        })?;
+        let generation = self.ensure_session(spec)?;
+        let session = self
+            .lock()
+            .sessions
+            .get(plugin_id)
+            .cloned()
+            .ok_or_else(|| {
+                CommandError::new(
+                    ErrorCode::Io,
+                    format!("plugin backend '{plugin_id}' is not running"),
+                )
+            })?;
         let ping_ok = session.ping().is_ok();
         let hello = session.hello();
         Ok(PluginBackendStatus {
@@ -122,14 +178,23 @@ impl PluginRuntime {
                 .map(|capability| capability.as_str().to_string())
                 .collect(),
             ping_ok,
+            generation,
         })
     }
 
-    pub fn stop(&self, plugin_id: &str) {
-        let mut inner = self.lock();
-        let generation = inner.generation.entry(plugin_id.to_string()).or_insert(0);
-        *generation = generation.wrapping_add(1);
-        if let Some(mut session) = inner.sessions.remove(plugin_id) {
+    pub fn stop(&self, plugin_id: &str, expected_generation: Option<u64>) {
+        let session = {
+            let mut inner = self.lock();
+            let current = inner.generation.get(plugin_id).copied().unwrap_or(0);
+            if expected_generation.is_some_and(|expected| expected != current) {
+                return;
+            }
+            inner
+                .generation
+                .insert(plugin_id.to_string(), next_generation(current));
+            inner.sessions.remove(plugin_id)
+        };
+        if let Some(session) = session {
             let _ = session.kill_process();
         }
     }
@@ -137,9 +202,11 @@ impl PluginRuntime {
     pub fn stop_all(&self) {
         let mut inner = self.lock();
         for generation in inner.generation.values_mut() {
-            *generation = generation.wrapping_add(1);
+            *generation = next_generation(*generation);
         }
-        for (_, mut session) in inner.sessions.drain() {
+        let sessions: Vec<_> = inner.sessions.drain().map(|(_, session)| session).collect();
+        drop(inner);
+        for session in sessions {
             let _ = session.kill_process();
         }
     }
@@ -153,6 +220,7 @@ pub struct PluginBackendStatus {
     pub protocol_version: u32,
     pub capabilities: Vec<String>,
     pub ping_ok: bool,
+    pub generation: u64,
 }
 
 fn with_handshake(value: Value, session: &PluginSession) -> Value {
@@ -210,9 +278,45 @@ fn spawn_spec<R: Runtime>(app: &AppHandle<R>, plugin_id: &str) -> Result<SpawnSp
             ),
         ));
     }
-    let workspace = app.state::<OracleRuntime>().workspace().path;
-    let (capabilities, grants) =
-        granted_capabilities(&manifest.capabilities, workspace.as_deref());
+    let expected_digest = manifest.files.get(backend).ok_or_else(|| {
+        CommandError::new(
+            ErrorCode::InvalidRequest,
+            format!("plugin '{plugin_id}' backend is not covered by its verified manifest"),
+        )
+    })?;
+    verify_file_digest(&binary, expected_digest).map_err(|error| {
+        CommandError::new(
+            ErrorCode::InvalidRequest,
+            format!("plugin '{plugin_id}' backend verification failed: {error}"),
+        )
+    })?;
+    let workspace = if manifest
+        .capabilities
+        .iter()
+        .any(|capability| capability == caps::WORKSPACE_ROOT)
+    {
+        let workspace = app
+            .state::<OracleRuntime>()
+            .workspace()
+            .path
+            .ok_or_else(|| {
+                CommandError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    "workspace.root is unavailable because no project is open",
+                )
+            })?;
+        let workspace =
+            confine_project_path(std::path::Path::new(&workspace)).map_err(|error| {
+                CommandError::new(
+                    ErrorCode::WorkspaceConfinementRefused,
+                    format!("workspace.root refused: {error}"),
+                )
+            })?;
+        Some(workspace.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    let (capabilities, grants) = granted_capabilities(&manifest.capabilities, workspace.as_deref());
     Ok(SpawnSpec {
         binary,
         plugin_id: plugin_id.to_string(),
@@ -255,8 +359,12 @@ pub async fn plugin_backend_ensure(
 }
 
 #[tauri::command]
-pub async fn plugin_backend_stop(app: AppHandle, plugin_id: String) -> Result<(), CommandError> {
-    app.state::<PluginRuntime>().stop(&plugin_id);
+pub async fn plugin_backend_stop(
+    app: AppHandle,
+    plugin_id: String,
+    generation: Option<u64>,
+) -> Result<(), CommandError> {
+    app.state::<PluginRuntime>().stop(&plugin_id, generation);
     Ok(())
 }
 
@@ -267,6 +375,12 @@ pub async fn plugin_invoke(
     method: String,
     payload: Option<Value>,
 ) -> Result<Value, CommandError> {
+    if !plugin_payload_within_limit(payload.as_ref()) {
+        return Err(CommandError::new(
+            ErrorCode::InvalidRequest,
+            "plugin invoke payload is too large (maximum 1 MiB)",
+        ));
+    }
     let spec = spawn_spec(&app, &plugin_id)?;
     let runtime = (*app.state::<PluginRuntime>()).clone();
     tauri::async_runtime::spawn_blocking(move || runtime.invoke(&plugin_id, spec, &method, payload))

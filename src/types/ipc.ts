@@ -97,6 +97,8 @@ export type ErrorCode =
   | "idempotency_conflict"
   | "shutting_down"
   | "journal"
+  | "workspace_unavailable"
+  | "workspace_confinement_refused"
   | "internal"
   | "io";
 
@@ -296,4 +298,6 @@ export interface PluginBackendStatus {
   protocolVersion: number;
   capabilities: string[];
   pingOk: boolean;
+  /** Host-side ownership token for generation-safe teardown. */
+  generation: number;
 }

@@ -56,7 +56,7 @@ type CommandArgs = {
   plugins_rescan: undefined;
   plugin_install: { id: string; source: string };
   plugin_backend_ensure: { pluginId: string };
-  plugin_backend_stop: { pluginId: string };
+  plugin_backend_stop: { pluginId: string; generation?: number };
   plugin_invoke: { pluginId: string; method: string; payload?: unknown };
 };
 
@@ -192,7 +192,10 @@ export const pluginInstall = (id: string, source: string) =>
   invokeTyped("plugin_install", { id, source });
 export const pluginBackendEnsure = (pluginId: string) =>
   invokeTyped("plugin_backend_ensure", { pluginId });
-export const pluginBackendStop = (pluginId: string) =>
-  invokeTyped("plugin_backend_stop", { pluginId });
+export const pluginBackendStop = (pluginId: string, generation?: number) =>
+  invokeTyped("plugin_backend_stop", {
+    pluginId,
+    ...(generation === undefined ? {} : { generation }),
+  });
 export const pluginInvoke = (pluginId: string, method: string, payload?: unknown) =>
   invokeTyped("plugin_invoke", { pluginId, method, payload });

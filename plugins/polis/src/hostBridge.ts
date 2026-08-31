@@ -28,7 +28,11 @@ export function invokeHost(
       window.clearTimeout(timer);
       window.removeEventListener("message", onMessage);
       if (message.kind === "result") resolve(message.value);
-      else reject(new Error(message.message));
+      else {
+        const error = new Error(message.message) as Error & { code?: string };
+        if (message.code !== undefined) error.code = message.code;
+        reject(error);
+      }
     }
 
     window.addEventListener("message", onMessage);
@@ -68,14 +72,48 @@ export function formatHandshakeReadout(value: unknown): string {
   return `Backend: handshake ok · protocol ${String(protocolVersion)} · pid ${String(pid)} · ${capabilities.join(", ") || "no capabilities"}`;
 }
 
+export function formatBackendFailureReadout(error: unknown): string {
+  const code = errorCode(error);
+  const message = errorMessage(error);
+  const lower = message.toLowerCase();
+  let state: string;
+  if (code === "workspace_unavailable") {
+    state = "no project open";
+  } else if (code === "workspace_confinement_refused") {
+    state = "workspace root refused";
+  } else if (lower.includes("did not declare a backend") || lower.includes("no backend")) {
+    state = "no backend declared";
+  } else if (lower.includes("timed out") || lower.includes("timeout")) {
+    state = "timeout";
+  } else if (lower.includes("capability") || lower.includes("not in the granted")) {
+    state = "capability refused";
+  } else if (
+    lower.includes("handshake") ||
+    lower.includes("peer pid") ||
+    lower.includes("protocol version") ||
+    lower.includes("hello")
+  ) {
+    state = "handshake refused";
+  } else {
+    state = "spawn failed";
+  }
+  return `Backend: ${state} — ${message}`;
+}
+
 function isReply(
   value: unknown,
 ): value is
   | { v: 1; id: string; kind: "result"; value: unknown }
-  | { v: 1; id: string; kind: "error"; message: string } {
+  | { v: 1; id: string; kind: "error"; message: string; code?: string } {
   if (!isRecord(value) || value.v !== 1 || typeof value.id !== "string") return false;
   if (value.kind === "result" && "value" in value) return true;
-  if (value.kind === "error" && typeof value.message === "string") return true;
+  if (
+    value.kind === "error" &&
+    typeof value.message === "string" &&
+    (value.code === undefined || typeof value.code === "string")
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -89,4 +127,22 @@ function safeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function errorMessage(error: unknown): string {
+  if (isRecord(error) && typeof error.message === "string" && error.message) {
+    return error.message;
+  }
+  return error instanceof Error ? error.message : "unknown error";
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (isRecord(error) && typeof error.code === "string" && error.code) {
+    return error.code;
+  }
+  if (error instanceof Error) {
+    const code = (error as Error & { code?: unknown }).code;
+    return typeof code === "string" && code ? code : undefined;
+  }
+  return undefined;
 }
