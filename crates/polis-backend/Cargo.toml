@@ -20,4 +20,5 @@ devboule-plugin-rpc = { path = "../devboule-plugin-rpc" }
 serde_json = "=1.0.151"
 
 [dev-dependencies]
+devboule-daemon = { path = "../devboule-daemon", default-features = false }
 tempfile = "3"

@@ -200,9 +200,36 @@ pub fn confine_project_path(path: &Path) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// Convert a canonical Windows path into the ordinary path form expected by
+/// plugin consumers. `canonicalize` may return the extended-length spelling;
+/// only the transport spelling is changed, never the path that was confined.
+pub fn workspace_root_for_grant(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        rest.to_string()
+    } else {
+        text.into_owned()
+    }
+}
+
 #[cfg(test)]
 mod path_tests {
     use super::*;
+
+    #[test]
+    fn workspace_grants_strip_windows_verbatim_prefixes() {
+        assert_eq!(
+            workspace_root_for_grant(Path::new(r"\\?\C:\repo")),
+            r"C:\repo"
+        );
+        assert_eq!(
+            workspace_root_for_grant(Path::new(r"\\?\UNC\server\share\repo")),
+            r"\\server\share\repo"
+        );
+        assert_eq!(workspace_root_for_grant(Path::new(r"C:\repo")), r"C:\repo");
+    }
 
     #[test]
     fn reacquiring_a_session_advances_its_generation() {

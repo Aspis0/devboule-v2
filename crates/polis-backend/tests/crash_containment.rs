@@ -6,9 +6,78 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use devboule_plugin_rpc::{host_owner, PluginSession, SpawnSpec};
-use devboule_protocol::{caps, plugin_backend_capabilities, DaemonMessage};
+use devboule_daemon::{connect_pipe, Framed};
+use devboule_plugin_rpc::{host_owner, PluginSession, SpawnSpec, HOST_PID_ENV};
+use devboule_protocol::{
+    caps, plugin_backend_capabilities, ClientHello, ClientMessage, DaemonMessage,
+};
 use std::sync::Arc;
+
+#[test]
+fn backend_started_through_cmd_parent_reaches_the_pipe() {
+    let pipe_name = devboule_plugin_rpc::unique_pipe_name("cmd-parent");
+    let mut child = spawn_backend_through_cmd(&pipe_name);
+    let mut last_error = None;
+    let file = (0..50)
+        .find_map(|_| match connect_pipe(&pipe_name) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                last_error = Some(error);
+                if child.try_wait().expect("poll cmd parent").is_some() {
+                    let mut stderr = child.stderr.take().expect("cmd stderr");
+                    let mut stderr_text = String::new();
+                    std::io::Read::read_to_string(&mut stderr, &mut stderr_text)
+                        .expect("read cmd stderr");
+                    panic!(
+                        "cmd parent exited before the backend pipe was ready: {last_error:?}; stderr={stderr_text:?}"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                None
+            }
+        })
+        .unwrap_or_else(|| panic!("connect through cmd parent: {last_error:?}"));
+
+    let framed = Framed::new(file);
+    framed
+        .send(&ClientMessage::Hello(ClientHello::plugin_host(
+            host_owner().expect("owner"),
+            "devboule-app",
+            plugin_backend_capabilities(),
+            BTreeMap::new(),
+        )))
+        .expect("hello");
+    assert!(matches!(
+        framed
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(2))
+            .expect("hello reply"),
+        DaemonMessage::Hello(_)
+    ));
+    framed
+        .send(&ClientMessage::Shutdown { id: 1 })
+        .expect("shutdown");
+    assert!(matches!(
+        framed
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(2))
+            .expect("shutdown reply"),
+        DaemonMessage::Shutdown { accepted: true, .. }
+    ));
+    child.wait().expect("cmd parent exit");
+}
+
+fn spawn_backend_through_cmd(pipe_name: &str) -> std::process::Child {
+    let binary = std::path::Path::new(env!("CARGO_BIN_EXE_polis-backend"));
+    let command_line = format!("polis-backend.exe --pipe {pipe_name}");
+    std::process::Command::new("cmd.exe")
+        .args(["/D", "/S", "/C", &command_line])
+        .current_dir(binary.parent().expect("backend directory"))
+        .env(HOST_PID_ENV, std::process::id().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn cmd parent")
+}
 
 fn spec(root: &std::path::Path) -> SpawnSpec {
     let mut grants = BTreeMap::new();
@@ -78,9 +147,7 @@ fn stopping_does_not_wait_for_a_slow_invoke() {
     slow.hang_ms = Some(5_000);
     let session = Arc::new(PluginSession::spawn(slow).expect("spawn"));
     let invoke_session = Arc::clone(&session);
-    let invoke = std::thread::spawn(move || {
-        invoke_session.invoke(caps::WORKSPACE_ROOT, None)
-    });
+    let invoke = std::thread::spawn(move || invoke_session.invoke(caps::WORKSPACE_ROOT, None));
 
     std::thread::sleep(Duration::from_millis(100));
     let started = std::time::Instant::now();
@@ -117,7 +184,9 @@ fn dropping_the_session_reaps_the_backend() {
     session.ping().expect("ping");
     session.kill_process().expect("kill");
     // A reply after the process is gone must not hang the host.
-    let error = session.invoke(caps::WORKSPACE_ROOT, None).expect_err("dead");
+    let error = session
+        .invoke(caps::WORKSPACE_ROOT, None)
+        .expect_err("dead");
     assert!(
         matches!(
             error,

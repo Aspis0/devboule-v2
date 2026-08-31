@@ -34,10 +34,22 @@ pub struct PipeSecurity {
 #[cfg(feature = "server")]
 unsafe impl Send for PipeSecurity {}
 
+fn security_context(step: &str, error: io::Error) -> io::Error {
+    let detail = error.to_string();
+    let detail = match error.raw_os_error() {
+        Some(code) if !detail.contains(&format!("os error {code}")) => {
+            format!("{detail} (os error {code})")
+        }
+        _ => detail,
+    };
+    io::Error::new(error.kind(), format!("{step}: {detail}"))
+}
+
 #[cfg(feature = "server")]
 impl PipeSecurity {
     pub fn current_user_only() -> io::Result<Self> {
-        let sid = current_user_sid()?;
+        let sid =
+            current_user_sid().map_err(|error| security_context("current_user_sid", error))?;
         let sddl = user_only_sddl(&sid);
         let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
         let wide = wide(&sddl);
@@ -50,7 +62,10 @@ impl PipeSecurity {
             )
         };
         if ok == 0 || descriptor.is_null() {
-            return Err(last_os_error());
+            return Err(security_context(
+                "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+                last_os_error(),
+            ));
         }
         Ok(Self { descriptor })
     }
@@ -87,7 +102,7 @@ pub fn process_user_sid(pid: u32) -> io::Result<String> {
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if process.is_null() {
-            return Err(last_os_error());
+            return Err(security_context("OpenProcess", last_os_error()));
         }
         let process = OwnedHandle::from_raw_handle(process as RawHandle);
         token_user_sid(open_process_token(process.as_raw_handle() as HANDLE)?)
@@ -101,7 +116,7 @@ unsafe fn current_process_token() -> io::Result<OwnedHandle> {
 unsafe fn open_process_token(process: HANDLE) -> io::Result<OwnedHandle> {
     let mut token: HANDLE = INVALID_HANDLE_VALUE;
     if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
-        return Err(last_os_error());
+        return Err(security_context("OpenProcessToken", last_os_error()));
     }
     Ok(OwnedHandle::from_raw_handle(token as RawHandle))
 }
@@ -118,25 +133,36 @@ unsafe fn token_user_sid(token: OwnedHandle) -> io::Result<String> {
         &mut needed,
     );
     if needed == 0 {
-        return Err(last_os_error());
+        return Err(security_context(
+            "GetTokenInformation(TokenUser, size query)",
+            last_os_error(),
+        ));
     }
-    let mut buf = vec![0u8; needed as usize];
+    // TOKEN_USER contains a pointer and must be read from suitably aligned
+    // storage. A Vec<u8> only promises byte alignment; allocator luck must
+    // not decide whether a child launched by cmd/Tauri gets a valid SID.
+    let word_count = (needed as usize).div_ceil(std::mem::size_of::<u64>());
+    let mut buf = vec![0u64; word_count];
     if GetTokenInformation(
         token.as_raw_handle() as HANDLE,
         TokenUser,
         buf.as_mut_ptr().cast(),
-        needed,
+        (buf.len() * std::mem::size_of::<u64>()) as u32,
         &mut needed,
     ) == 0
     {
-        return Err(last_os_error());
+        return Err(security_context(
+            "GetTokenInformation(TokenUser)",
+            last_os_error(),
+        ));
     }
     let user = &*(buf.as_ptr() as *const TOKEN_USER);
     let mut sid_str = ptr::null_mut();
     if ConvertSidToStringSidW(user.User.Sid, &mut sid_str) == 0 {
-        return Err(last_os_error());
+        return Err(security_context("ConvertSidToStringSidW", last_os_error()));
     }
-    let text = pwstr_to_string(sid_str)?;
+    let text = pwstr_to_string(sid_str)
+        .map_err(|error| security_context("SID wide-string conversion", error))?;
     LocalFree(sid_str as _);
     Ok(text)
 }

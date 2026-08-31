@@ -135,7 +135,7 @@
     {
       "id": "crates/devboule-daemon/src/process_tree.rs",
       "path": "crates/devboule-daemon/src/process_tree.rs",
-      "lines": 94,
+      "lines": 115,
       "district": "crates"
     },
     {
@@ -189,31 +189,31 @@
     {
       "id": "crates/devboule-plugin-rpc/src/lib.rs",
       "path": "crates/devboule-plugin-rpc/src/lib.rs",
-      "lines": 70,
+      "lines": 294,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/pipe.rs",
       "path": "crates/devboule-plugin-rpc/src/pipe.rs",
-      "lines": 191,
+      "lines": 253,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/server.rs",
       "path": "crates/devboule-plugin-rpc/src/server.rs",
-      "lines": 144,
+      "lines": 193,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/session.rs",
       "path": "crates/devboule-plugin-rpc/src/session.rs",
-      "lines": 348,
+      "lines": 437,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/spawn.rs",
       "path": "crates/devboule-plugin-rpc/src/spawn.rs",
-      "lines": 102,
+      "lines": 414,
       "district": "crates"
     },
     {
@@ -225,7 +225,7 @@
     {
       "id": "crates/devboule-protocol/src/error.rs",
       "path": "crates/devboule-protocol/src/error.rs",
-      "lines": 201,
+      "lines": 207,
       "district": "crates"
     },
     {
@@ -243,7 +243,7 @@
     {
       "id": "crates/devboule-protocol/src/lib.rs",
       "path": "crates/devboule-protocol/src/lib.rs",
-      "lines": 213,
+      "lines": 233,
       "district": "crates"
     },
     {
@@ -549,7 +549,7 @@
     {
       "id": "src-tauri/src/plugins/rpc.rs",
       "path": "src-tauri/src/plugins/rpc.rs",
-      "lines": 296,
+      "lines": 410,
       "district": "src-tauri"
     },
     {
@@ -679,21 +679,27 @@
       "district": "src"
     },
     {
+      "id": "src/features/plugins/pluginBackend.test.ts",
+      "path": "src/features/plugins/pluginBackend.test.ts",
+      "lines": 140,
+      "district": "src"
+    },
+    {
       "id": "src/features/plugins/pluginBackend.ts",
       "path": "src/features/plugins/pluginBackend.ts",
-      "lines": 21,
+      "lines": 147,
       "district": "src"
     },
     {
       "id": "src/features/plugins/pluginBridge.test.ts",
       "path": "src/features/plugins/pluginBridge.test.ts",
-      "lines": 260,
+      "lines": 261,
       "district": "src"
     },
     {
       "id": "src/features/plugins/pluginBridge.ts",
       "path": "src/features/plugins/pluginBridge.ts",
-      "lines": 182,
+      "lines": 200,
       "district": "src"
     },
     {
@@ -705,7 +711,7 @@
     {
       "id": "src/features/plugins/PluginSurface.tsx",
       "path": "src/features/plugins/PluginSurface.tsx",
-      "lines": 158,
+      "lines": 151,
       "district": "src"
     },
     {
@@ -717,7 +723,7 @@
     {
       "id": "src/features/polis/PolisSurface.test.tsx",
       "path": "src/features/polis/PolisSurface.test.tsx",
-      "lines": 171,
+      "lines": 183,
       "district": "src"
     },
     {
@@ -927,7 +933,7 @@
     {
       "id": "src/lib/tauri.ts",
       "path": "src/lib/tauri.ts",
-      "lines": 198,
+      "lines": 201,
       "district": "src"
     },
     {
@@ -975,7 +981,7 @@
     {
       "id": "src/types/ipc.ts",
       "path": "src/types/ipc.ts",
-      "lines": 299,
+      "lines": 303,
       "district": "src"
     },
     {
@@ -1249,11 +1255,16 @@
     {
       "from": "crates/devboule-plugin-rpc/src/server.rs",
       "to": "crates/devboule-plugin-rpc/src/spawn.rs",
-      "weight": 1
+      "weight": 2
     },
     {
       "from": "crates/devboule-plugin-rpc/src/session.rs",
       "to": "crates/devboule-plugin-rpc/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-plugin-rpc/src/session.rs",
+      "to": "crates/devboule-plugin-rpc/src/pipe.rs",
       "weight": 1
     },
     {
@@ -1704,6 +1715,21 @@
     {
       "from": "src/features/plugins/install.ts",
       "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/pluginBackend.test.ts",
+      "to": "src/features/plugins/pluginBackend.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/pluginBackend.test.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/pluginBackend.test.ts",
+      "to": "src/types/ipc.ts",
       "weight": 1
     },
     {

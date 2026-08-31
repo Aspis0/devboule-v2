@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use devboule_plugin_rpc::{
     confine_project_path, granted_capabilities, host_owner, next_generation, verify_file_digest,
-    PluginError, PluginSession, SpawnSpec,
+    workspace_root_for_grant, PluginError, PluginSession, SpawnSpec,
 };
 use devboule_protocol::{caps, plugin_payload_within_limit, ErrorCode};
 use serde::Serialize;
@@ -312,7 +312,7 @@ fn spawn_spec<R: Runtime>(app: &AppHandle<R>, plugin_id: &str) -> Result<SpawnSp
                     format!("workspace.root refused: {error}"),
                 )
             })?;
-        Some(workspace.to_string_lossy().into_owned())
+        Some(workspace_root_for_grant(&workspace))
     } else {
         None
     };

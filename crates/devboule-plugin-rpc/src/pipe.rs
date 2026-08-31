@@ -38,6 +38,17 @@ use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED
 
 const PIPE_BUFFER: u32 = 64 * 1024;
 
+fn startup_context(step: &str, error: io::Error) -> io::Error {
+    let detail = error.to_string();
+    let detail = match error.raw_os_error() {
+        Some(code) if !detail.contains(&format!("os error {code}")) => {
+            format!("{detail} (os error {code})")
+        }
+        _ => detail,
+    };
+    io::Error::new(error.kind(), format!("{step}: {detail}"))
+}
+
 #[cfg(windows)]
 struct PipeSecurity {
     descriptor: PSECURITY_DESCRIPTOR,
@@ -59,7 +70,10 @@ impl PipeSecurity {
             )
         };
         if ok == 0 || descriptor.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(startup_context(
+                "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+                io::Error::last_os_error(),
+            ));
         }
         Ok(Self { descriptor })
     }
@@ -118,9 +132,13 @@ pub fn verify_pipe_client_pid(file: &File, expected: u32) -> io::Result<()> {
     let mut actual = 0u32;
     let ok = unsafe { GetNamedPipeClientProcessId(file.as_raw_handle() as _, &mut actual) };
     if ok == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(startup_context(
+            "GetNamedPipeClientProcessId",
+            io::Error::last_os_error(),
+        ));
     }
     peer_pid_matches(actual, expected)
+        .map_err(|error| startup_context("verify_pipe_client_pid", error))
 }
 
 #[cfg(windows)]
@@ -128,9 +146,13 @@ pub fn verify_pipe_server_pid(file: &File, expected: u32) -> io::Result<()> {
     let mut actual = 0u32;
     let ok = unsafe { GetNamedPipeServerProcessId(file.as_raw_handle() as _, &mut actual) };
     if ok == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(startup_context(
+            "GetNamedPipeServerProcessId",
+            io::Error::last_os_error(),
+        ));
     }
     peer_pid_matches(actual, expected)
+        .map_err(|error| startup_context("verify_pipe_server_pid", error))
 }
 
 #[cfg(not(windows))]
@@ -171,18 +193,27 @@ fn bind_and_accept_windows(pipe_name: &str, timeout: Duration) -> io::Result<Fil
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
+        let step = format!("CreateNamedPipeW({pipe_name})");
+        return Err(startup_context(
+            &step,
+            io::Error::last_os_error(),
+        ));
     }
-    unsafe {
-        SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+    if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        let error = startup_context("SetHandleInformation", io::Error::last_os_error());
+        unsafe {
+            CloseHandle(handle);
+        }
+        return Err(error);
     }
 
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event.is_null() {
+        let error = startup_context("CreateEventW", io::Error::last_os_error());
         unsafe {
             CloseHandle(handle);
         }
-        return Err(io::Error::last_os_error());
+        return Err(error);
     }
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
     overlapped.hEvent = event;
@@ -202,21 +233,22 @@ fn bind_and_accept_windows(pipe_name: &str, timeout: Duration) -> io::Result<Fil
                 }
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "plugin backend timed out waiting for the host",
+                    "ConnectNamedPipe/WaitForSingleObject: plugin backend timed out waiting for the host",
                 ));
             }
             if wait != WAIT_OBJECT_0 {
+                let error = startup_context("WaitForSingleObject", io::Error::last_os_error());
                 unsafe {
                     CloseHandle(event);
                     CloseHandle(handle);
                 }
-                return Err(io::Error::last_os_error());
+                return Err(error);
             }
             let mut transferred = 0u32;
             let completed =
                 unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, 1) };
             if completed == 0 {
-                let error = io::Error::last_os_error();
+                let error = startup_context("GetOverlappedResult", io::Error::last_os_error());
                 unsafe {
                     CloseHandle(event);
                     CloseHandle(handle);
@@ -224,11 +256,12 @@ fn bind_and_accept_windows(pipe_name: &str, timeout: Duration) -> io::Result<Fil
                 return Err(error);
             }
         } else if err.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
+            let error = startup_context("ConnectNamedPipe", err);
             unsafe {
                 CloseHandle(event);
                 CloseHandle(handle);
             }
-            return Err(err);
+            return Err(error);
         }
     }
     unsafe {
@@ -241,6 +274,13 @@ fn bind_and_accept_windows(pipe_name: &str, timeout: Duration) -> io::Result<Fil
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_errors_name_the_failing_windows_call_and_keep_the_os_code() {
+        let error = startup_context("CreateNamedPipeW", io::Error::from_raw_os_error(123));
+        assert!(error.to_string().starts_with("CreateNamedPipeW: "));
+        assert!(error.to_string().contains("os error 123"));
+    }
 
     #[test]
     fn a_known_wrong_peer_pid_is_rejected() {

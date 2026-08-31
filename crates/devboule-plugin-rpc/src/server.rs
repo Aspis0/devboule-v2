@@ -25,18 +25,19 @@ impl PluginBackend {
     pub fn listen(pipe_name: &str) -> Result<Self, PluginError> {
         let raw_pid = std::env::var(HOST_PID_ENV).map_err(|_| {
             PluginError::Protocol(format!(
-                "missing {HOST_PID_ENV}; refusing an unidentified host"
+                "read {HOST_PID_ENV}: missing; refusing an unidentified host"
             ))
         })?;
         let host_pid = raw_pid
             .parse::<u32>()
-            .map_err(|_| PluginError::Protocol(format!("{HOST_PID_ENV} is not a process id")))?;
+            .map_err(|error| PluginError::Protocol(format!("parse {HOST_PID_ENV}: {error}")))?;
         Self::listen_for_host(pipe_name, host_pid)
     }
 
     /// Testable form of [`Self::listen`] for an in-process host/client pair.
     pub fn listen_for_host(pipe_name: &str, expected_host_pid: u32) -> Result<Self, PluginError> {
-        let file = bind_and_accept(pipe_name, ACCEPT_TIMEOUT)?;
+        let file =
+            bind_and_accept(pipe_name, ACCEPT_TIMEOUT).map_err(|error| PluginError::Io(error))?;
         verify_pipe_client_pid(&file, expected_host_pid).map_err(PluginError::from)?;
         let framed = Framed::new(file);
         let first: ClientMessage = framed.recv_timeout(HANDSHAKE_TIMEOUT)?;

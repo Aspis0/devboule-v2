@@ -1,0 +1,13 @@
+{
+  "id": "bge-small-en-v1.5",
+  "pooling": "cls",
+  "normalize": true,
+  "uses_semantic_prefix": false,
+  "query_instruction": "Represent this sentence for searching relevant passages: ",
+  "max_seq_tokens": 512,
+  "window_overlap_bytes": 82,
+  "window_overlap_tokens": 82,
+  "onnx_graph": "onnx/model_quantized.onnx",
+  "tokenizer_file": "tokenizer.json",
+  "dims": 384
+}

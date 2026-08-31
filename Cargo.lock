@@ -6725,6 +6725,7 @@ dependencies = [
 name = "polis-backend"
 version = "0.1.0"
 dependencies = [
+ "devboule-daemon",
  "devboule-plugin-rpc",
  "devboule-protocol",
  "serde_json",
