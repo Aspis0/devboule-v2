@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/extract-city-fixture.mjs && tsc --noEmit && vite build",
+    "build": "node scripts/extract-city-fixture.mjs && tsc --noEmit && vite build && node scripts/write-plugin-manifest.mjs",
     "test": "node scripts/extract-city-fixture.mjs && vitest run",
     "format": "oxfmt --write src scripts index.html vite.config.ts",
     "format:check": "oxfmt --check src scripts index.html vite.config.ts",

@@ -1,17 +1,11 @@
 import { Application, Container, Graphics, Rectangle } from "pixi.js";
 import { BuildingTextureAtlas } from "./buildingAtlas";
 import { AgentLayer } from "./agents";
-import {
-  animationPoint,
-  buildGreekBuildingArt,
-  buildGreekMonument,
-  metricsFromFrame,
-  visualLevel,
-  visualPurpose,
-} from "./art";
+import { animationPoint, buildGreekBuildingArt, buildGreekMonument, metricsFromFrame } from "./art";
 import { FindingLayer } from "./findings";
-import { cartToIso, depthKey, TILE_H, TILE_W } from "./iso";
+import { depthKey } from "./iso";
 import type { City, CityFile } from "./model";
+import { createLayout, type LayoutFile } from "./layout";
 import { PALETTE } from "./palette";
 import { computeExtent, drawTerrain } from "./terrain";
 import type { AnimInstance } from "./kitcd/anims";
@@ -19,23 +13,6 @@ import type { SpriteBank } from "./spriteAssets";
 
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 2.4;
-// The kit's largest common footprints need a real block-and-street rhythm.
-// Empty grid cells are deliberately preserved so import roads have ground on
-// which to read; this is a visual layout of the repository, not source data.
-const GRID_SPACING = 3.7;
-
-interface LayoutFile {
-  file: CityFile;
-  gridX: number;
-  gridY: number;
-  worldX: number;
-  worldY: number;
-  width: number;
-  depth: number;
-  height: number;
-  purpose: string;
-  level: number;
-}
 
 interface ViewEntry {
   display: Container;
@@ -126,7 +103,7 @@ export class CityRenderer {
   }
 
   private build(city: City): void {
-    const layouts = createLayout(city.files);
+    const layouts = createLayout(city.files, city.imports);
     for (const layout of layouts) this.layoutById.set(layout.file.id, layout);
 
     for (const layout of layouts) this.addBuilding(layout);
@@ -359,32 +336,6 @@ export class CityRenderer {
         screenY - radius <= height;
     }
   }
-}
-
-function createLayout(files: CityFile[]): LayoutFile[] {
-  const ordered = [...files].sort(
-    (left, right) =>
-      left.district.localeCompare(right.district) || left.path.localeCompare(right.path),
-  );
-  const columns = Math.max(1, Math.ceil(Math.sqrt(ordered.length * 1.35)));
-  const rows = Math.max(1, Math.ceil(ordered.length / columns));
-  return ordered.map((file, index) => {
-    const gridX = ((index % columns) - (columns - 1) / 2) * GRID_SPACING;
-    const gridY = (Math.floor(index / columns) - (rows - 1) / 2) * GRID_SPACING;
-    const point = cartToIso(gridX, gridY);
-    return {
-      file,
-      gridX,
-      gridY,
-      worldX: point.x,
-      worldY: point.y,
-      width: TILE_W,
-      depth: TILE_H,
-      height: TILE_H,
-      purpose: visualPurpose(file.path),
-      level: visualLevel(file.lines),
-    };
-  });
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

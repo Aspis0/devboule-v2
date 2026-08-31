@@ -9,7 +9,7 @@
     {
       "id": "crates/devboule-augur/src/detectors/clippy.rs",
       "path": "crates/devboule-augur/src/detectors/clippy.rs",
-      "lines": 205,
+      "lines": 206,
       "district": "crates"
     },
     {
@@ -21,7 +21,7 @@
     {
       "id": "crates/devboule-augur/src/detectors/secrets.rs",
       "path": "crates/devboule-augur/src/detectors/secrets.rs",
-      "lines": 277,
+      "lines": 387,
       "district": "crates"
     },
     {
@@ -39,13 +39,13 @@
     {
       "id": "crates/devboule-augur/src/finding.rs",
       "path": "crates/devboule-augur/src/finding.rs",
-      "lines": 380,
+      "lines": 392,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/ledger.rs",
       "path": "crates/devboule-augur/src/ledger.rs",
-      "lines": 177,
+      "lines": 179,
       "district": "crates"
     },
     {
@@ -57,7 +57,7 @@
     {
       "id": "crates/devboule-augur/src/ruleset.rs",
       "path": "crates/devboule-augur/src/ruleset.rs",
-      "lines": 190,
+      "lines": 264,
       "district": "crates"
     },
     {
@@ -639,7 +639,7 @@
     {
       "id": "src/features/polis/PolisSurface.tsx",
       "path": "src/features/polis/PolisSurface.tsx",
-      "lines": 158,
+      "lines": 135,
       "district": "src"
     },
     {
@@ -808,18 +808,6 @@
       "id": "src/features/workspace/workspaceResize.ts",
       "path": "src/features/workspace/workspaceResize.ts",
       "lines": 104,
-      "district": "src"
-    },
-    {
-      "id": "src/lib/graphics.test.ts",
-      "path": "src/lib/graphics.test.ts",
-      "lines": 107,
-      "district": "src"
-    },
-    {
-      "id": "src/lib/graphics.ts",
-      "path": "src/lib/graphics.ts",
-      "lines": 148,
       "district": "src"
     },
     {
@@ -1611,11 +1599,6 @@
     },
     {
       "from": "src/features/polis/PolisSurface.tsx",
-      "to": "src/lib/graphics.ts",
-      "weight": 1
-    },
-    {
-      "from": "src/features/polis/PolisSurface.tsx",
       "to": "src/lib/plugins.ts",
       "weight": 1
     },
@@ -1797,11 +1780,6 @@
     {
       "from": "src/features/workspace/workspaceProjects.ts",
       "to": "src/features/workspace/NewProjectDialog.tsx",
-      "weight": 1
-    },
-    {
-      "from": "src/lib/graphics.test.ts",
-      "to": "src/lib/graphics.ts",
       "weight": 1
     },
     {

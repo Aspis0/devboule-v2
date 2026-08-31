@@ -28,30 +28,102 @@ export interface GreekMonumentArt {
   radius: number;
 }
 
-/**
- * Resolve a visual purpose from a file without claiming that the CKG supplied
- * one. Polis v2 has only file path, line count, and district today, so this is
- * deliberately a stable art fixture; a host purpose field can replace it at
- * the bridge seam later without changing the renderer or atlas contract.
- */
-export function visualPurpose(path: string): string {
-  const lower = path.toLowerCase();
-  if (lower.endsWith("/main.tsx") || lower.endsWith("/main.rs")) return "townhall";
-  if (lower.includes("test")) return "workshop";
-  if (lower.endsWith(".json")) return "warehouse";
-  if (lower.endsWith(".rs")) return "fortress";
-  if (lower.endsWith(".tsx")) return "theater";
-  if (lower.endsWith(".ts")) return "library";
-  if (lower.endsWith(".md")) return "temple";
-  return "unknown";
+/** Real entry points known by the v2 fixture seam. The future CKG can provide
+ * an explicit set; these are the two configured entries present in the
+ * checked-in repository fixture (root index.html and the Tauri binary). */
+const DEFAULT_ENTRY_POINTS = new Set(["src/main.tsx", "src-tauri/src/main.rs"]);
+
+export interface VisualPurposeContext {
+  /** Real entry points discovered by the caller's project/CKG seam. */
+  entryPoints?: ReadonlySet<string>;
+  /** Import-graph in-degree for this file. */
+  inDegree?: number;
+  /** Import-graph out-degree for this file. */
+  outDegree?: number;
 }
 
-/** Map line count to the kit's five tested visual growth levels. */
+/**
+ * DATA-GROUNDED purpose classification ported from v1's
+ * `classify_purpose_grounded`. Precedence is intentional: real entry points,
+ * reliable extension, exact directory role, import-graph role, conservative
+ * filename keyword, then the honest generic house default. A path extension is
+ * not a building kind by itself; that was the v2 substitution that turned the
+ * 81 Rust files into a fortress forest.
+ */
+export function visualPurpose(path: string, context: VisualPurposeContext = {}): string {
+  const normalized = normalizePath(path).toLowerCase();
+  const file = normalized.slice(normalized.lastIndexOf("/") + 1);
+  const entries = context.entryPoints ?? DEFAULT_ENTRY_POINTS;
+  const normalizedEntries = new Set(
+    [...entries].map((entry) => normalizePath(entry).toLowerCase()),
+  );
+
+  if (normalizedEntries.has(normalized)) return "lighthouse";
+  if (file.endsWith(".toml")) return "tower";
+
+  const segments = normalized.split("/");
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    const role = DIRECTORY_ROLES[segments[index]];
+    if (role !== undefined) return role;
+  }
+
+  const inDegree = context.inDegree ?? 0;
+  const outDegree = context.outDegree ?? 0;
+  if (inDegree >= 3 && outDegree <= 1) return "library";
+  if (outDegree >= 8) return "fortress";
+
+  const stem = file.includes(".") ? file.slice(0, file.lastIndexOf(".")) : file;
+  if (hasKeyword(file, stem, ["oracle", "lancedb", "embedding", "embeddings"])) return "temple";
+  if (hasKeyword(file, stem, ["orchestrat", "dispatcher", "scheduler"])) return "fortress";
+  if (hasKeyword(file, stem, ["logger", "logging", "telemetry", "monitoring"])) return "theater";
+  if (hasKeyword(file, stem, ["middleware", "proxy", "router", "routing"])) return "conduit";
+  if (hasKeyword(file, stem, ["objectstore", "object_store", "bucket"])) return "warehouse";
+  if (hasKeyword(file, stem, ["upload", "download", "stream"])) return "harbor";
+  return "house";
+}
+
+const DIRECTORY_ROLES: Record<string, string> = {
+  types: "library",
+  models: "library",
+  constants: "library",
+  interfaces: "library",
+  schema: "library",
+  scripts: "workshop",
+  tools: "workshop",
+  bin: "workshop",
+  auth: "baths",
+  session: "baths",
+  oracle: "temple",
+  agents: "fortress",
+  orchestrator: "fortress",
+  store: "warehouse",
+  storage: "warehouse",
+  "object-store": "warehouse",
+  middleware: "conduit",
+  proxy: "conduit",
+  routing: "conduit",
+  logging: "theater",
+  telemetry: "theater",
+  monitoring: "theater",
+  providers: "market",
+  provider: "market",
+  clients: "market",
+};
+
+function hasKeyword(file: string, stem: string, needles: readonly string[]): boolean {
+  return needles.some((needle) => file.includes(needle) || stem === needle);
+}
+
+function normalizePath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+/** Map line count to v1's five tested visual growth levels. */
 export function visualLevel(lines: number): number {
-  if (lines <= 32) return 0;
-  if (lines <= 96) return 1;
-  if (lines <= 240) return 2;
-  if (lines <= 600) return 3;
+  if (lines <= 200) return 0;
+  if (lines <= 600) return 1;
+  if (lines <= 1200) return 2;
+  if (lines <= 2500) return 3;
   return 4;
 }
 
