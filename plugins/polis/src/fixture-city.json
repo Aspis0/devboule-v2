@@ -1,0 +1,1723 @@
+{
+  "files": [
+    {
+      "id": "crates/devboule-daemon/src/atomic.rs",
+      "path": "crates/devboule-daemon/src/atomic.rs",
+      "lines": 145,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/client.rs",
+      "path": "crates/devboule-daemon/src/client.rs",
+      "lines": 495,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/error.rs",
+      "path": "crates/devboule-daemon/src/error.rs",
+      "lines": 58,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/framing.rs",
+      "path": "crates/devboule-daemon/src/framing.rs",
+      "lines": 441,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/idempotency.rs",
+      "path": "crates/devboule-daemon/src/idempotency.rs",
+      "lines": 145,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/journal.rs",
+      "path": "crates/devboule-daemon/src/journal.rs",
+      "lines": 2180,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/lib.rs",
+      "path": "crates/devboule-daemon/src/lib.rs",
+      "lines": 68,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/lock.rs",
+      "path": "crates/devboule-daemon/src/lock.rs",
+      "lines": 143,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/main.rs",
+      "path": "crates/devboule-daemon/src/main.rs",
+      "lines": 47,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/outbound.rs",
+      "path": "crates/devboule-daemon/src/outbound.rs",
+      "lines": 117,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/paths.rs",
+      "path": "crates/devboule-daemon/src/paths.rs",
+      "lines": 103,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/process_tree.rs",
+      "path": "crates/devboule-daemon/src/process_tree.rs",
+      "lines": 94,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/screen.rs",
+      "path": "crates/devboule-daemon/src/screen.rs",
+      "lines": 860,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/security.rs",
+      "path": "crates/devboule-daemon/src/security.rs",
+      "lines": 384,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/server.rs",
+      "path": "crates/devboule-daemon/src/server.rs",
+      "lines": 1044,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/session.rs",
+      "path": "crates/devboule-daemon/src/session.rs",
+      "lines": 3296,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/spawn.rs",
+      "path": "crates/devboule-daemon/src/spawn.rs",
+      "lines": 65,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/transport.rs",
+      "path": "crates/devboule-daemon/src/transport.rs",
+      "lines": 112,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-daemon/src/transport/windows_pipe.rs",
+      "path": "crates/devboule-daemon/src/transport/windows_pipe.rs",
+      "lines": 275,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-protocol/src/capability.rs",
+      "path": "crates/devboule-protocol/src/capability.rs",
+      "lines": 56,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-protocol/src/error.rs",
+      "path": "crates/devboule-protocol/src/error.rs",
+      "lines": 201,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-protocol/src/handshake.rs",
+      "path": "crates/devboule-protocol/src/handshake.rs",
+      "lines": 185,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-protocol/src/ids.rs",
+      "path": "crates/devboule-protocol/src/ids.rs",
+      "lines": 137,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-protocol/src/lib.rs",
+      "path": "crates/devboule-protocol/src/lib.rs",
+      "lines": 169,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-protocol/src/messages.rs",
+      "path": "crates/devboule-protocol/src/messages.rs",
+      "lines": 425,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-protocol/src/session.rs",
+      "path": "crates/devboule-protocol/src/session.rs",
+      "lines": 575,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/bin/oracle-cli.rs",
+      "path": "crates/oracle-core/src/bin/oracle-cli.rs",
+      "lines": 128,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/cli/lance.rs",
+      "path": "crates/oracle-core/src/cli/lance.rs",
+      "lines": 131,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/cli/mod.rs",
+      "path": "crates/oracle-core/src/cli/mod.rs",
+      "lines": 3,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/cluster.rs",
+      "path": "crates/oracle-core/src/cluster.rs",
+      "lines": 412,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/config.rs",
+      "path": "crates/oracle-core/src/config.rs",
+      "lines": 346,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/doctor.rs",
+      "path": "crates/oracle-core/src/doctor.rs",
+      "lines": 370,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/embed/candle_backend.rs",
+      "path": "crates/oracle-core/src/embed/candle_backend.rs",
+      "lines": 109,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/embed/embedder.rs",
+      "path": "crates/oracle-core/src/embed/embedder.rs",
+      "lines": 350,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/embed/mod.rs",
+      "path": "crates/oracle-core/src/embed/mod.rs",
+      "lines": 1095,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/embed/model_descriptor.rs",
+      "path": "crates/oracle-core/src/embed/model_descriptor.rs",
+      "lines": 520,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/embed/onnx_embedder.rs",
+      "path": "crates/oracle-core/src/embed/onnx_embedder.rs",
+      "lines": 669,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/embed/ort_backend.rs",
+      "path": "crates/oracle-core/src/embed/ort_backend.rs",
+      "lines": 125,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/ingest/ast_chunker.rs",
+      "path": "crates/oracle-core/src/ingest/ast_chunker.rs",
+      "lines": 1056,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/ingest/chunking.rs",
+      "path": "crates/oracle-core/src/ingest/chunking.rs",
+      "lines": 597,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/ingest/ckg_build.rs",
+      "path": "crates/oracle-core/src/ingest/ckg_build.rs",
+      "lines": 629,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/ingest/collect.rs",
+      "path": "crates/oracle-core/src/ingest/collect.rs",
+      "lines": 880,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/ingest/indexer.rs",
+      "path": "crates/oracle-core/src/ingest/indexer.rs",
+      "lines": 2650,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/ingest/mod.rs",
+      "path": "crates/oracle-core/src/ingest/mod.rs",
+      "lines": 10,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/ingest/retrieval_text.rs",
+      "path": "crates/oracle-core/src/ingest/retrieval_text.rs",
+      "lines": 752,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/lib.rs",
+      "path": "crates/oracle-core/src/lib.rs",
+      "lines": 124,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/model_download.rs",
+      "path": "crates/oracle-core/src/model_download.rs",
+      "lines": 485,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/query/engine.rs",
+      "path": "crates/oracle-core/src/query/engine.rs",
+      "lines": 1320,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/query/focus.rs",
+      "path": "crates/oracle-core/src/query/focus.rs",
+      "lines": 301,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/query/lexical.rs",
+      "path": "crates/oracle-core/src/query/lexical.rs",
+      "lines": 431,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/query/mod.rs",
+      "path": "crates/oracle-core/src/query/mod.rs",
+      "lines": 10,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/query/pool_embedder.rs",
+      "path": "crates/oracle-core/src/query/pool_embedder.rs",
+      "lines": 65,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/query/redact.rs",
+      "path": "crates/oracle-core/src/query/redact.rs",
+      "lines": 203,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/query/reranker.rs",
+      "path": "crates/oracle-core/src/query/reranker.rs",
+      "lines": 591,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/store/ckg.rs",
+      "path": "crates/oracle-core/src/store/ckg.rs",
+      "lines": 696,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/store/lance.rs",
+      "path": "crates/oracle-core/src/store/lance.rs",
+      "lines": 807,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/store/manifest.rs",
+      "path": "crates/oracle-core/src/store/manifest.rs",
+      "lines": 315,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/store/mod.rs",
+      "path": "crates/oracle-core/src/store/mod.rs",
+      "lines": 7,
+      "district": "crates"
+    },
+    {
+      "id": "crates/oracle-core/src/store/sqlite.rs",
+      "path": "crates/oracle-core/src/store/sqlite.rs",
+      "lines": 744,
+      "district": "crates"
+    },
+    {
+      "id": "src-tauri/src/backend/error.rs",
+      "path": "src-tauri/src/backend/error.rs",
+      "lines": 186,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/backend/mod.rs",
+      "path": "src-tauri/src/backend/mod.rs",
+      "lines": 2,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/backend/session.rs",
+      "path": "src-tauri/src/backend/session.rs",
+      "lines": 166,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/client/mod.rs",
+      "path": "src-tauri/src/client/mod.rs",
+      "lines": 328,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/lib.rs",
+      "path": "src-tauri/src/lib.rs",
+      "lines": 84,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/main.rs",
+      "path": "src-tauri/src/main.rs",
+      "lines": 5,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/oracle/mod.rs",
+      "path": "src-tauri/src/oracle/mod.rs",
+      "lines": 2769,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/plugins/assets.rs",
+      "path": "src-tauri/src/plugins/assets.rs",
+      "lines": 521,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/plugins/discovery.rs",
+      "path": "src-tauri/src/plugins/discovery.rs",
+      "lines": 775,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/plugins/install.rs",
+      "path": "src-tauri/src/plugins/install.rs",
+      "lines": 342,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/plugins/manifest.rs",
+      "path": "src-tauri/src/plugins/manifest.rs",
+      "lines": 474,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/plugins/mod.rs",
+      "path": "src-tauri/src/plugins/mod.rs",
+      "lines": 250,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src/app/App.tsx",
+      "path": "src/app/App.tsx",
+      "lines": 66,
+      "district": "src"
+    },
+    {
+      "id": "src/app/Shell.test.tsx",
+      "path": "src/app/Shell.test.tsx",
+      "lines": 121,
+      "district": "src"
+    },
+    {
+      "id": "src/app/Shell.tsx",
+      "path": "src/app/Shell.tsx",
+      "lines": 217,
+      "district": "src"
+    },
+    {
+      "id": "src/app/SurfacePlaceholder.tsx",
+      "path": "src/app/SurfacePlaceholder.tsx",
+      "lines": 35,
+      "district": "src"
+    },
+    {
+      "id": "src/features/design/design.css",
+      "path": "src/features/design/design.css",
+      "lines": 1205,
+      "district": "src"
+    },
+    {
+      "id": "src/features/design/DesignSurface.tsx",
+      "path": "src/features/design/DesignSurface.tsx",
+      "lines": 1279,
+      "district": "src"
+    },
+    {
+      "id": "src/features/design/mockData.ts",
+      "path": "src/features/design/mockData.ts",
+      "lines": 222,
+      "district": "src"
+    },
+    {
+      "id": "src/features/design/README.md",
+      "path": "src/features/design/README.md",
+      "lines": 3,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/oracle.css",
+      "path": "src/features/oracle/oracle.css",
+      "lines": 1287,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/OracleAdmin.tsx",
+      "path": "src/features/oracle/OracleAdmin.tsx",
+      "lines": 414,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/OraclePanel.tsx",
+      "path": "src/features/oracle/OraclePanel.tsx",
+      "lines": 530,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/oracleRequests.ts",
+      "path": "src/features/oracle/oracleRequests.ts",
+      "lines": 80,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/OracleSearch.test.tsx",
+      "path": "src/features/oracle/OracleSearch.test.tsx",
+      "lines": 23,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/OracleSearch.tsx",
+      "path": "src/features/oracle/OracleSearch.tsx",
+      "lines": 270,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/OracleSetup.test.tsx",
+      "path": "src/features/oracle/OracleSetup.test.tsx",
+      "lines": 39,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/OracleSetup.tsx",
+      "path": "src/features/oracle/OracleSetup.tsx",
+      "lines": 612,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/oracleUtils.test.ts",
+      "path": "src/features/oracle/oracleUtils.test.ts",
+      "lines": 227,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/oracleUtils.ts",
+      "path": "src/features/oracle/oracleUtils.ts",
+      "lines": 239,
+      "district": "src"
+    },
+    {
+      "id": "src/features/oracle/README.md",
+      "path": "src/features/oracle/README.md",
+      "lines": 18,
+      "district": "src"
+    },
+    {
+      "id": "src/features/plugins/install.test.ts",
+      "path": "src/features/plugins/install.test.ts",
+      "lines": 51,
+      "district": "src"
+    },
+    {
+      "id": "src/features/plugins/install.ts",
+      "path": "src/features/plugins/install.ts",
+      "lines": 35,
+      "district": "src"
+    },
+    {
+      "id": "src/features/plugins/pluginBridge.test.ts",
+      "path": "src/features/plugins/pluginBridge.test.ts",
+      "lines": 166,
+      "district": "src"
+    },
+    {
+      "id": "src/features/plugins/pluginBridge.ts",
+      "path": "src/features/plugins/pluginBridge.ts",
+      "lines": 151,
+      "district": "src"
+    },
+    {
+      "id": "src/features/plugins/PluginSurface.test.tsx",
+      "path": "src/features/plugins/PluginSurface.test.tsx",
+      "lines": 33,
+      "district": "src"
+    },
+    {
+      "id": "src/features/plugins/PluginSurface.tsx",
+      "path": "src/features/plugins/PluginSurface.tsx",
+      "lines": 84,
+      "district": "src"
+    },
+    {
+      "id": "src/features/polis/PolisSurface.tsx",
+      "path": "src/features/polis/PolisSurface.tsx",
+      "lines": 158,
+      "district": "src"
+    },
+    {
+      "id": "src/features/polis/README.md",
+      "path": "src/features/polis/README.md",
+      "lines": 3,
+      "district": "src"
+    },
+    {
+      "id": "src/features/pubvia/README.md",
+      "path": "src/features/pubvia/README.md",
+      "lines": 3,
+      "district": "src"
+    },
+    {
+      "id": "src/features/settings/mockData.ts",
+      "path": "src/features/settings/mockData.ts",
+      "lines": 113,
+      "district": "src"
+    },
+    {
+      "id": "src/features/settings/README.md",
+      "path": "src/features/settings/README.md",
+      "lines": 5,
+      "district": "src"
+    },
+    {
+      "id": "src/features/settings/settings.css",
+      "path": "src/features/settings/settings.css",
+      "lines": 455,
+      "district": "src"
+    },
+    {
+      "id": "src/features/settings/SettingsSurface.tsx",
+      "path": "src/features/settings/SettingsSurface.tsx",
+      "lines": 327,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/createTerminalView.test.ts",
+      "path": "src/features/terminal/createTerminalView.test.ts",
+      "lines": 134,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/createTerminalView.ts",
+      "path": "src/features/terminal/createTerminalView.ts",
+      "lines": 217,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/dsrSuppression.test.ts",
+      "path": "src/features/terminal/dsrSuppression.test.ts",
+      "lines": 28,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/terminalDsr.ts",
+      "path": "src/features/terminal/terminalDsr.ts",
+      "lines": 17,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/terminalKeyPolicy.test.ts",
+      "path": "src/features/terminal/terminalKeyPolicy.test.ts",
+      "lines": 29,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/terminalKeyPolicy.ts",
+      "path": "src/features/terminal/terminalKeyPolicy.ts",
+      "lines": 21,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/terminalRegistry.ts",
+      "path": "src/features/terminal/terminalRegistry.ts",
+      "lines": 49,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/terminalSession.test.ts",
+      "path": "src/features/terminal/terminalSession.test.ts",
+      "lines": 677,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/terminalSession.ts",
+      "path": "src/features/terminal/terminalSession.ts",
+      "lines": 569,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/TerminalSurface.tsx",
+      "path": "src/features/terminal/TerminalSurface.tsx",
+      "lines": 138,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/xtermOracle.test.ts",
+      "path": "src/features/terminal/xtermOracle.test.ts",
+      "lines": 132,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/mockData.ts",
+      "path": "src/features/workspace/mockData.ts",
+      "lines": 235,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/NewProjectDialog.tsx",
+      "path": "src/features/workspace/NewProjectDialog.tsx",
+      "lines": 228,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/README.md",
+      "path": "src/features/workspace/README.md",
+      "lines": 19,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/sidePanels.tsx",
+      "path": "src/features/workspace/sidePanels.tsx",
+      "lines": 252,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/Workspace.css",
+      "path": "src/features/workspace/Workspace.css",
+      "lines": 2018,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/Workspace.tsx",
+      "path": "src/features/workspace/Workspace.tsx",
+      "lines": 479,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/WorkspaceComposer.tsx",
+      "path": "src/features/workspace/WorkspaceComposer.tsx",
+      "lines": 298,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/workspaceConversation.ts",
+      "path": "src/features/workspace/workspaceConversation.ts",
+      "lines": 69,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/workspaceDaemon.ts",
+      "path": "src/features/workspace/workspaceDaemon.ts",
+      "lines": 37,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/workspaceProjects.ts",
+      "path": "src/features/workspace/workspaceProjects.ts",
+      "lines": 113,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/workspaceResize.ts",
+      "path": "src/features/workspace/workspaceResize.ts",
+      "lines": 104,
+      "district": "src"
+    },
+    {
+      "id": "src/lib/graphics.test.ts",
+      "path": "src/lib/graphics.test.ts",
+      "lines": 107,
+      "district": "src"
+    },
+    {
+      "id": "src/lib/graphics.ts",
+      "path": "src/lib/graphics.ts",
+      "lines": 148,
+      "district": "src"
+    },
+    {
+      "id": "src/lib/plugins.test.ts",
+      "path": "src/lib/plugins.test.ts",
+      "lines": 85,
+      "district": "src"
+    },
+    {
+      "id": "src/lib/plugins.ts",
+      "path": "src/lib/plugins.ts",
+      "lines": 81,
+      "district": "src"
+    },
+    {
+      "id": "src/lib/pluginTransport.test.ts",
+      "path": "src/lib/pluginTransport.test.ts",
+      "lines": 42,
+      "district": "src"
+    },
+    {
+      "id": "src/lib/pluginTransport.ts",
+      "path": "src/lib/pluginTransport.ts",
+      "lines": 81,
+      "district": "src"
+    },
+    {
+      "id": "src/lib/tauri.test.ts",
+      "path": "src/lib/tauri.test.ts",
+      "lines": 59,
+      "district": "src"
+    },
+    {
+      "id": "src/lib/tauri.ts",
+      "path": "src/lib/tauri.ts",
+      "lines": 185,
+      "district": "src"
+    },
+    {
+      "id": "src/main.tsx",
+      "path": "src/main.tsx",
+      "lines": 16,
+      "district": "src"
+    },
+    {
+      "id": "src/store/appStore.test.ts",
+      "path": "src/store/appStore.test.ts",
+      "lines": 79,
+      "district": "src"
+    },
+    {
+      "id": "src/store/appStore.ts",
+      "path": "src/store/appStore.ts",
+      "lines": 72,
+      "district": "src"
+    },
+    {
+      "id": "src/styles/fonts/Fraunces-Latin.woff2",
+      "path": "src/styles/fonts/Fraunces-Latin.woff2",
+      "lines": 273,
+      "district": "src"
+    },
+    {
+      "id": "src/styles/fonts/Inter-Latin.woff2",
+      "path": "src/styles/fonts/Inter-Latin.woff2",
+      "lines": 366,
+      "district": "src"
+    },
+    {
+      "id": "src/styles/fonts/JetBrainsMono-Latin.woff2",
+      "path": "src/styles/fonts/JetBrainsMono-Latin.woff2",
+      "lines": 331,
+      "district": "src"
+    },
+    {
+      "id": "src/styles/global.css",
+      "path": "src/styles/global.css",
+      "lines": 694,
+      "district": "src"
+    },
+    {
+      "id": "src/types/ipc.ts",
+      "path": "src/types/ipc.ts",
+      "lines": 290,
+      "district": "src"
+    },
+    {
+      "id": "src/types/surface.ts",
+      "path": "src/types/surface.ts",
+      "lines": 59,
+      "district": "src"
+    }
+  ],
+  "imports": [
+    {
+      "from": "crates/devboule-daemon/src/client.rs",
+      "to": "crates/devboule-daemon/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/client.rs",
+      "to": "crates/devboule-daemon/src/framing.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/client.rs",
+      "to": "crates/devboule-daemon/src/paths.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/client.rs",
+      "to": "crates/devboule-daemon/src/spawn.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/client.rs",
+      "to": "crates/devboule-daemon/src/transport.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/framing.rs",
+      "to": "crates/devboule-daemon/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/lock.rs",
+      "to": "crates/devboule-daemon/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/lock.rs",
+      "to": "crates/devboule-daemon/src/paths.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/framing.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/idempotency.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/journal.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/lock.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/outbound.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/paths.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/process_tree.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/session.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/server.rs",
+      "to": "crates/devboule-daemon/src/transport.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/session.rs",
+      "to": "crates/devboule-daemon/src/journal.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/session.rs",
+      "to": "crates/devboule-daemon/src/outbound.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/session.rs",
+      "to": "crates/devboule-daemon/src/paths.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/session.rs",
+      "to": "crates/devboule-daemon/src/process_tree.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/session.rs",
+      "to": "crates/devboule-daemon/src/screen.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/session.rs",
+      "to": "crates/devboule-daemon/src/server.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/spawn.rs",
+      "to": "crates/devboule-daemon/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/spawn.rs",
+      "to": "crates/devboule-daemon/src/paths.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/transport.rs",
+      "to": "crates/devboule-daemon/src/paths.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/transport/windows_pipe.rs",
+      "to": "crates/devboule-daemon/src/paths.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-daemon/src/transport/windows_pipe.rs",
+      "to": "crates/devboule-daemon/src/security.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-daemon/src/transport/windows_pipe.rs",
+      "to": "crates/devboule-daemon/src/transport.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-protocol/src/handshake.rs",
+      "to": "crates/devboule-protocol/src/capability.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-protocol/src/handshake.rs",
+      "to": "crates/devboule-protocol/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-protocol/src/handshake.rs",
+      "to": "crates/devboule-protocol/src/ids.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-protocol/src/messages.rs",
+      "to": "crates/devboule-protocol/src/capability.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-protocol/src/messages.rs",
+      "to": "crates/devboule-protocol/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-protocol/src/messages.rs",
+      "to": "crates/devboule-protocol/src/handshake.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-protocol/src/messages.rs",
+      "to": "crates/devboule-protocol/src/session.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-protocol/src/session.rs",
+      "to": "crates/devboule-protocol/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/cli/lance.rs",
+      "to": "crates/oracle-core/src/embed/mod.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/cluster.rs",
+      "to": "crates/oracle-core/src/config.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/cluster.rs",
+      "to": "crates/oracle-core/src/store/lance.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/cluster.rs",
+      "to": "crates/oracle-core/src/store/sqlite.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/doctor.rs",
+      "to": "crates/oracle-core/src/config.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/doctor.rs",
+      "to": "crates/oracle-core/src/ingest/indexer.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/doctor.rs",
+      "to": "crates/oracle-core/src/store/lance.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/doctor.rs",
+      "to": "crates/oracle-core/src/store/manifest.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/doctor.rs",
+      "to": "crates/oracle-core/src/store/sqlite.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/embed/embedder.rs",
+      "to": "crates/oracle-core/src/embed/mod.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/oracle-core/src/embed/onnx_embedder.rs",
+      "to": "crates/oracle-core/src/embed/model_descriptor.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/ast_chunker.rs",
+      "to": "crates/oracle-core/src/ingest/chunking.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/ckg_build.rs",
+      "to": "crates/oracle-core/src/query/engine.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/ckg_build.rs",
+      "to": "crates/oracle-core/src/store/ckg.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/collect.rs",
+      "to": "crates/oracle-core/src/embed/mod.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/config.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/embed/mod.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/ingest/chunking.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/ingest/ckg_build.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/ingest/collect.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/ingest/retrieval_text.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/store/ckg.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/store/lance.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/store/manifest.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/indexer.rs",
+      "to": "crates/oracle-core/src/store/sqlite.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/ingest/retrieval_text.rs",
+      "to": "crates/oracle-core/src/config.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/model_download.rs",
+      "to": "crates/oracle-core/src/embed/mod.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/oracle-core/src/model_download.rs",
+      "to": "crates/oracle-core/src/query/reranker.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/engine.rs",
+      "to": "crates/oracle-core/src/config.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/engine.rs",
+      "to": "crates/oracle-core/src/ingest/retrieval_text.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/engine.rs",
+      "to": "crates/oracle-core/src/query/focus.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/engine.rs",
+      "to": "crates/oracle-core/src/query/lexical.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/engine.rs",
+      "to": "crates/oracle-core/src/query/redact.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/engine.rs",
+      "to": "crates/oracle-core/src/query/reranker.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/engine.rs",
+      "to": "crates/oracle-core/src/store/lance.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/engine.rs",
+      "to": "crates/oracle-core/src/store/sqlite.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/pool_embedder.rs",
+      "to": "crates/oracle-core/src/embed/mod.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/pool_embedder.rs",
+      "to": "crates/oracle-core/src/ingest/indexer.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/pool_embedder.rs",
+      "to": "crates/oracle-core/src/ingest/retrieval_text.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/pool_embedder.rs",
+      "to": "crates/oracle-core/src/query/engine.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/query/reranker.rs",
+      "to": "crates/oracle-core/src/embed/mod.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/store/manifest.rs",
+      "to": "crates/oracle-core/src/config.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/oracle-core/src/store/manifest.rs",
+      "to": "crates/oracle-core/src/store/sqlite.rs",
+      "weight": 1
+    },
+    {
+      "from": "src-tauri/src/backend/session.rs",
+      "to": "src-tauri/src/client/mod.rs",
+      "weight": 1
+    },
+    {
+      "from": "src-tauri/src/oracle/mod.rs",
+      "to": "src-tauri/src/backend/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "src-tauri/src/plugins/mod.rs",
+      "to": "src-tauri/src/backend/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "src/app/App.tsx",
+      "to": "src/app/Shell.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/app/App.tsx",
+      "to": "src/app/SurfacePlaceholder.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/app/App.tsx",
+      "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/app/App.tsx",
+      "to": "src/types/surface.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/app/Shell.test.tsx",
+      "to": "src/app/Shell.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/app/Shell.test.tsx",
+      "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/app/Shell.test.tsx",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/app/Shell.tsx",
+      "to": "src/features/plugins/install.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/app/Shell.tsx",
+      "to": "src/lib/plugins.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/app/Shell.tsx",
+      "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/app/Shell.tsx",
+      "to": "src/types/surface.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/app/SurfacePlaceholder.tsx",
+      "to": "src/types/surface.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleAdmin.tsx",
+      "to": "src/features/oracle/oracleRequests.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleAdmin.tsx",
+      "to": "src/features/oracle/OracleSearch.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleAdmin.tsx",
+      "to": "src/features/oracle/oracleUtils.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OraclePanel.tsx",
+      "to": "src/features/oracle/OracleAdmin.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OraclePanel.tsx",
+      "to": "src/features/oracle/oracleRequests.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OraclePanel.tsx",
+      "to": "src/features/oracle/OracleSearch.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OraclePanel.tsx",
+      "to": "src/features/oracle/OracleSetup.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/oracleRequests.ts",
+      "to": "src/features/oracle/oracleUtils.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleSearch.test.tsx",
+      "to": "src/features/oracle/OracleSearch.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleSearch.tsx",
+      "to": "src/features/oracle/oracleRequests.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleSetup.test.tsx",
+      "to": "src/features/oracle/OracleSetup.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleSetup.test.tsx",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleSetup.tsx",
+      "to": "src/features/oracle/oracleRequests.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleSetup.tsx",
+      "to": "src/features/oracle/OracleSearch.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/OracleSetup.tsx",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/oracleUtils.test.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/oracleUtils.ts",
+      "to": "src/features/oracle/oracleRequests.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/oracle/oracleUtils.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/install.test.ts",
+      "to": "src/features/plugins/install.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/install.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/install.ts",
+      "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/pluginBridge.test.ts",
+      "to": "src/features/plugins/pluginBridge.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/PluginSurface.test.tsx",
+      "to": "src/features/plugins/PluginSurface.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/PluginSurface.tsx",
+      "to": "src/features/plugins/pluginBridge.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.tsx",
+      "to": "src/app/SurfacePlaceholder.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.tsx",
+      "to": "src/features/plugins/install.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.tsx",
+      "to": "src/features/plugins/PluginSurface.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.tsx",
+      "to": "src/lib/graphics.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.tsx",
+      "to": "src/lib/plugins.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.tsx",
+      "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.tsx",
+      "to": "src/types/surface.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/settings/SettingsSurface.tsx",
+      "to": "src/features/oracle/OraclePanel.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/createTerminalView.test.ts",
+      "to": "src/features/terminal/createTerminalView.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/createTerminalView.test.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/createTerminalView.ts",
+      "to": "src/features/terminal/terminalDsr.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/createTerminalView.ts",
+      "to": "src/features/terminal/terminalKeyPolicy.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/createTerminalView.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/dsrSuppression.test.ts",
+      "to": "src/features/terminal/terminalDsr.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/terminalKeyPolicy.test.ts",
+      "to": "src/features/terminal/terminalKeyPolicy.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/terminalSession.test.ts",
+      "to": "src/features/terminal/createTerminalView.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/terminalSession.test.ts",
+      "to": "src/features/terminal/terminalRegistry.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/terminalSession.test.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/terminalSession.ts",
+      "to": "src/features/terminal/createTerminalView.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/terminalSession.ts",
+      "to": "src/features/terminal/terminalRegistry.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/terminalSession.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/terminalSession.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/TerminalSurface.tsx",
+      "to": "src/features/terminal/terminalRegistry.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/TerminalSurface.tsx",
+      "to": "src/features/terminal/terminalSession.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/terminal/TerminalSurface.tsx",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/mockData.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/sidePanels.tsx",
+      "to": "src/features/workspace/mockData.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/features/terminal/TerminalSurface.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/features/workspace/mockData.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/features/workspace/NewProjectDialog.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/features/workspace/WorkspaceComposer.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/features/workspace/workspaceConversation.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/features/workspace/workspaceDaemon.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/features/workspace/workspaceProjects.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/features/workspace/workspaceResize.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.tsx",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/workspaceConversation.ts",
+      "to": "src/features/workspace/mockData.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/workspaceDaemon.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/workspaceDaemon.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/workspaceProjects.ts",
+      "to": "src/features/workspace/mockData.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/workspaceProjects.ts",
+      "to": "src/features/workspace/NewProjectDialog.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/lib/graphics.test.ts",
+      "to": "src/lib/graphics.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/lib/plugins.test.ts",
+      "to": "src/lib/plugins.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/lib/plugins.test.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/lib/plugins.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/lib/pluginTransport.test.ts",
+      "to": "src/lib/pluginTransport.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/lib/tauri.test.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/main.tsx",
+      "to": "src/app/App.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/store/appStore.test.ts",
+      "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/store/appStore.test.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/store/appStore.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/store/appStore.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/store/appStore.ts",
+      "to": "src/types/surface.ts",
+      "weight": 1
+    }
+  ]
+}

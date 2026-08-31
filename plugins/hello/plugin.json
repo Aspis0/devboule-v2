@@ -1,0 +1,16 @@
+{
+  "manifestVersion": 1,
+  "id": "hello",
+  "name": "Hello",
+  "version": "0.1.0",
+  "entry": {
+    "ui": "ui/index.html"
+  },
+  "capabilities": [
+    "oracle.search"
+  ],
+  "files": {
+    "ui/index.html": "d859096ca5b25423817fb36fa14586296ac24127a45d4af6d4eb459548d47178",
+    "ui/index.js": "6582cb6ecd5c54e4eec855e1d1a7e82ffbfb6b7cbbed1f43ed0bef08a7c8dd3f"
+  }
+}

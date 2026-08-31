@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Polis v2</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+        background: #07101c;
+        color: #edf5f8;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #07101c;
+      }
+
+      canvas {
+        position: fixed;
+        inset: 0;
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: grab;
+      }
+
+      canvas:active {
+        cursor: grabbing;
+      }
+
+      .hud {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        padding: 1rem;
+      }
+
+      .panel {
+        width: min(31rem, calc(100% - 2rem));
+        padding: 1rem 1.1rem;
+        border: 1px solid rgb(207 235 239 / 25%);
+        border-radius: 0.8rem;
+        background: rgb(7 16 28 / 91%);
+        box-shadow: 0 1.3rem 3rem rgb(0 0 0 / 34%);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.35rem, 3vw, 2rem);
+        letter-spacing: 0.04em;
+      }
+
+      .lede,
+      .city,
+      .details,
+      .fact,
+      .gesture {
+        margin: 0.4rem 0 0;
+        line-height: 1.4;
+      }
+
+      .lede,
+      .gesture {
+        color: #9bb0bd;
+        font-size: 0.85rem;
+      }
+
+      .city {
+        color: #f0c979;
+        font-size: 0.85rem;
+        font-weight: 700;
+      }
+
+      .fact {
+        overflow-wrap: anywhere;
+        font-size: 0.88rem;
+      }
+
+      .label {
+        color: #8fe4da;
+        font-weight: 800;
+      }
+
+      .prominent {
+        margin-top: 0.55rem;
+        padding: 0.55rem 0.65rem;
+        border: 2px solid #ff6b6b;
+        border-radius: 0.5rem;
+        color: #fff;
+        background: rgb(127 29 29 / 70%);
+        font-weight: 900;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem 0.75rem;
+        margin-top: 0.8rem;
+        color: #c9d6dc;
+        font-size: 0.78rem;
+      }
+
+      .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+      }
+
+      .swatch {
+        width: 0.65rem;
+        height: 0.65rem;
+        border-radius: 50%;
+      }
+
+      .swatch.teal {
+        background: #52c7bd;
+      }
+      .swatch.amber {
+        background: #f0ad67;
+      }
+      .swatch.blue {
+        background: #8fa8ff;
+      }
+      .swatch.pink {
+        background: #e68abe;
+      }
+      .swatch.green {
+        background: #9bd27d;
+      }
+
+      .details {
+        position: fixed;
+        right: 1rem;
+        bottom: 1rem;
+        max-width: min(42rem, calc(100% - 2rem));
+        padding: 0.55rem 0.75rem;
+        border: 1px solid rgb(207 235 239 / 25%);
+        border-radius: 0.5rem;
+        background: rgb(7 16 28 / 88%);
+        color: #c9d6dc;
+        font:
+          0.78rem/1.4 "JetBrains Mono",
+          ui-monospace,
+          monospace;
+      }
+
+      code {
+        font-family: "JetBrains Mono", ui-monospace, monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene" aria-label="An isometric map of this repository"></canvas>
+    <aside class="hud" aria-live="polite">
+      <section class="panel">
+        <h1>POLIS <span aria-hidden="true">/</span> v2</h1>
+        <p class="lede">This repository as a city · files are buildings · imports are roads</p>
+        <p class="city" id="city">Fixture city · measuring…</p>
+        <p class="fact" id="webgl"><span class="label">WebGL2:</span> measuring…</p>
+        <p class="fact" id="tauri"><span class="label">Tauri internals:</span> measuring…</p>
+        <p class="fact" id="bridge"><span class="label">Bridge reply:</span> waiting…</p>
+        <div class="legend" aria-label="District color legend">
+          <span><i class="swatch teal"></i>src</span>
+          <span><i class="swatch amber"></i>src-tauri</span>
+          <span><i class="swatch blue"></i>crates</span>
+          <span><i class="swatch pink"></i>other</span>
+        </div>
+        <p class="gesture">Drag to pan · wheel to zoom · road arrows point importer → imported</p>
+      </section>
+    </aside>
+    <p class="details" id="details">Hover a building to inspect its file</p>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

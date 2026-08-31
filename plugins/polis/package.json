@@ -1,0 +1,23 @@
+{
+  "name": "@devboule/polis",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/extract-city-fixture.mjs && tsc --noEmit && vite build",
+    "test": "node scripts/extract-city-fixture.mjs && vitest run",
+    "format": "oxfmt --write src scripts index.html vite.config.ts",
+    "format:check": "oxfmt --check src scripts index.html vite.config.ts",
+    "manifest": "node scripts/write-plugin-manifest.mjs"
+  },
+  "dependencies": {
+    "pixi.js": "8.20.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.0",
+    "oxfmt": "0.65.0",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
+  }
+}
