@@ -157,7 +157,16 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
   // citizen put both feet on exactly the same spot: one wide column of skin with
   // a single dark blob under it. Standing now has a stance; walking is unchanged,
   // and the legs still cross at mid-stride as they should.
-  const stride = moving ? sw * 2.6 : 1.6;
+  // `sw` passes through zero twice per cycle, so a walking figure collapsed
+  // back into a single column at those steps — the standing bug again, hidden
+  // inside the walk. Each foot is pushed away from the centre line by a
+  // constant, so they swing and still never coincide.
+  // The source swung to 2.6 each way. Pushing each foot a further 0.6 off the
+  // centre line fixed the mid-stride collapse and immediately overshot: 3.2 a
+  // side on a body 7.2 wide reads as the splits. Amplitude comes down to keep
+  // the separation without the compass.
+  const swing = sw * 1.55;
+  const stride = moving ? (swing >= 0 ? swing + 0.55 : swing - 0.55) : 1.5;
   limb(g, 0.4 * s, hipY, stride * s, 0, 2.3 * s, SKd);
   limb(g, -0.4 * s, hipY, -stride * s, 0, 2.5 * s, SK);
   // feet
@@ -205,10 +214,22 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
 
   // ---- back accessory (behind body): merchant sack ----
   if (type === "merchant") {
-    g.ellipse(-2.8 * s, -13.5 * s, 3 * s, 3.8 * s).fill({ color: 0xb89a5c });
-    g.ellipse(-3.4 * s, -12.4 * s, 1.3 * s, 2.4 * s).fill({
-      color: shade(0xb89a5c, 0.82),
+    const SACK = 0xa8894e;
+    g.ellipse(-3.1 * s, -12.9 * s, 2.2 * s, 2.9 * s).fill({ color: SACK });
+    // shaded far side and a lit near edge: cloth, not a flat oval
+    g.ellipse(-2.35 * s, -12.9 * s, 1.1 * s, 2.5 * s).fill({
+      color: shade(SACK, 0.74),
     });
+    g.ellipse(-3.85 * s, -13.4 * s, 0.65 * s, 1.4 * s).fill({
+      color: shade(SACK, 1.14),
+    });
+    // gathered neck and cord, so it reads as a sack that was tied shut
+    g.moveTo(-3.7 * s, -15.2 * s)
+      .lineTo(-2.5 * s, -15.2 * s)
+      .stroke({ width: 0.85 * s, color: shade(SACK, 0.86), cap: "round" });
+    g.moveTo(-3.8 * s, -14.85 * s)
+      .lineTo(-2.4 * s, -14.85 * s)
+      .stroke({ width: 0.4 * s, color: 0x5e4d26 });
   }
 
   // ---- arms ----
@@ -268,9 +289,16 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
     // Hands. The source ended an arm with the limb's round cap, which at the
     // size these render reads as the blunt end of a plank. A slightly wider
     // circle turns the same shape into an arm with a hand on it.
-    g.circle(-3.8 * s - aSw, -8.6 * s, 1.15 * s).fill({ color: SKd });
-    if (type !== "firefighter") {
-      g.circle(3.8 * s + aSw, -8.6 * s, 1.15 * s).fill({ color: SK });
+    // A porter's hands belong on the crate. Left where they hang, they sat
+    // 3.8 out while the crate ended at 2.1, so the load floated in front of a
+    // figure that was not touching it.
+    // Hands are drawn here only when there is nothing in them. A porter's
+    // hands go on after the crate, further down, or the load covers them.
+    if (opts.carrying !== "crate") {
+      g.circle(-3.8 * s - aSw, -8.6 * s, 1.15 * s).fill({ color: SKd });
+      if (type !== "firefighter") {
+        g.circle(3.8 * s + aSw, -8.6 * s, 1.15 * s).fill({ color: SK });
+      }
     }
   }
 
@@ -386,16 +414,43 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
     const cy = -8 * s + bob; // hand height
     const cw = 4 * s;
     const ch = 3 * s;
-    // crate body
-    g.rect(cx - cw / 2, cy - ch / 2, cw, ch).fill({ color: 0x8a6a3a });
-    g.rect(cx - cw / 2, cy - ch / 2, cw, ch).stroke({ width: 0.6 * s, color: 0x5a4a28 });
-    // rope cross
-    g.moveTo(cx - cw / 2, cy)
-      .lineTo(cx + cw / 2, cy)
-      .stroke({ width: 0.5 * s, color: 0x4a3a1a });
+    // A box, not a label. Everything around it is isometric, so a flat
+    // front-facing rectangle reads as a sticker pasted on the city. Top and
+    // right faces first, front over them.
+    const WOOD = 0x8a6a3a;
+    const dep = 1 * s;
+    g.poly([
+      cx - cw / 2,
+      cy - ch / 2,
+      cx - cw / 2 + dep,
+      cy - ch / 2 - dep,
+      cx + cw / 2 + dep,
+      cy - ch / 2 - dep,
+      cx + cw / 2,
+      cy - ch / 2,
+    ]).fill({ color: shade(WOOD, 1.2) });
+    g.poly([
+      cx + cw / 2,
+      cy - ch / 2,
+      cx + cw / 2 + dep,
+      cy - ch / 2 - dep,
+      cx + cw / 2 + dep,
+      cy + ch / 2 - dep,
+      cx + cw / 2,
+      cy + ch / 2,
+    ]).fill({ color: shade(WOOD, 0.7) });
+    g.rect(cx - cw / 2, cy - ch / 2, cw, ch).fill({ color: WOOD });
+    // one plank seam and a cord across the face
+    g.moveTo(cx - cw / 2, cy - 0.2 * s)
+      .lineTo(cx + cw / 2, cy - 0.2 * s)
+      .stroke({ width: 0.4 * s, color: shade(WOOD, 0.62) });
     g.moveTo(cx, cy - ch / 2)
       .lineTo(cx, cy + ch / 2)
       .stroke({ width: 0.5 * s, color: 0x4a3a1a });
+    g.rect(cx - cw / 2, cy - ch / 2, cw, ch).stroke({ width: 0.5 * s, color: 0x5a4a28 });
+    // hands gripping the near corners, over the wood rather than behind it
+    g.circle(cx - cw / 2 - 0.1 * s, cy + 0.35 * s, 1 * s).fill({ color: SKd });
+    g.circle(cx + cw / 2 + 0.1 * s, cy + 0.35 * s, 1 * s).fill({ color: SK });
   }
 
   // ---- firefighter water-throw arc ----

@@ -18,6 +18,7 @@ import { createLayout, type LayoutFile } from "./layout";
 import { PALETTE } from "./palette";
 import { routeRoads, type RoadPoint } from "./roadGraph";
 import { computeExtent, drawTerrain } from "./terrain";
+import { TRADE_LOD_ZOOM, TradeRouteLayer } from "./traders";
 import type { AnimInstance } from "./kitcd/anims";
 import type { SpriteBank } from "./spriteAssets";
 
@@ -54,6 +55,7 @@ export class CityRenderer {
   private readonly monuments = new Container();
   private readonly findingLayer: FindingLayer;
   private readonly agentLayer: AgentLayer;
+  private readonly tradeRouteLayer: TradeRouteLayer;
   private readonly buildingViews: ViewEntry[] = [];
   private readonly roadViews: ViewEntry[] = [];
   private readonly monumentViews: ViewEntry[] = [];
@@ -87,6 +89,7 @@ export class CityRenderer {
       this.atlas,
       this.buildings,
     );
+    this.tradeRouteLayer = new TradeRouteLayer(this.buildings, this.app.renderer, this.atlas);
     this.world.addChild(
       this.ground,
       this.roads,
@@ -111,6 +114,8 @@ export class CityRenderer {
       this.stepAnimations(deltaMs / 1000);
       this.findingLayer.step(deltaMs);
       this.agentLayer.step(deltaMs);
+      this.tradeRouteLayer.update(deltaMs);
+      this.tradeRouteLayer.step(Math.floor((this.animTime * 1000) / 220));
       this.updateCulling();
       this.app.renderer.render(this.app.stage);
     });
@@ -144,6 +149,34 @@ export class CityRenderer {
       const to = this.layoutById.get(road.to);
       if (from !== undefined && to !== undefined) this.addRoad(from, to, road.weight, road.path);
     }
+    const blockedFootprints = layouts.map((layout) => ({
+      x: roundGrid(layout.gridX),
+      y: roundGrid(layout.gridY),
+      width: Math.max(1, Math.floor(layout.footprint[0])),
+      height: Math.max(1, Math.floor(layout.footprint[1])),
+    }));
+    this.tradeRouteLayer.setWorld(
+      routes.roads,
+      (fileId) => {
+        const layout = this.layoutById.get(fileId);
+        return layout === undefined
+          ? null
+          : {
+              x: layout.gridX,
+              y: layout.gridY,
+              width: layout.footprint[0],
+              height: layout.footprint[1],
+            };
+      },
+      (gridX, gridY) =>
+        blockedFootprints.some(
+          (footprint) =>
+            gridX >= footprint.x &&
+            gridX < footprint.x + footprint.width &&
+            gridY >= footprint.y &&
+            gridY < footprint.y + footprint.height,
+        ),
+    );
   }
 
   private drawGround(layouts: LayoutFile[]): void {
@@ -391,6 +424,14 @@ export class CityRenderer {
       height,
       this.zoom,
     );
+    this.tradeRouteLayer.updateViewport(
+      this.world.position.x,
+      this.world.position.y,
+      width,
+      height,
+      this.zoom,
+    );
+    this.tradeRouteLayer.setLodVisible(this.zoom >= TRADE_LOD_ZOOM);
   }
 
   private cullViews(views: readonly ViewEntry[], width: number, height: number): void {
@@ -409,6 +450,10 @@ export class CityRenderer {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+function roundGrid(value: number): number {
+  return value >= 0 ? Math.floor(value + 0.5) : Math.ceil(value - 0.5);
 }
 
 /** Keep the road source compact while retaining Pixi's concrete Graphics type. */

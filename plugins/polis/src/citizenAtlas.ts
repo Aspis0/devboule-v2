@@ -72,8 +72,11 @@ export function citizenVariantKey(
   type: CitizenType,
   state: CityAgentState,
   step: CitizenPhaseStep,
+  carrying?: CitizenDrawOpts["carrying"],
 ): string {
-  return `citizen:${type}:${state}:s${step}`;
+  return carrying === undefined
+    ? `citizen:${type}:${state}:s${step}`
+    : `citizen:${type}:${state}:carry-${carrying}:s${step}`;
 }
 
 export interface CitizenVariant {
@@ -83,6 +86,7 @@ export interface CitizenVariant {
   type: CitizenType;
   state: CityAgentState;
   step: CitizenPhaseStep;
+  carrying?: CitizenDrawOpts["carrying"];
 }
 
 /**
@@ -100,8 +104,13 @@ export class CitizenTextureAtlas {
     return this.variants.size;
   }
 
-  has(type: CitizenType, state: CityAgentState, step: CitizenPhaseStep): boolean {
-    return this.atlas.hasSprite(citizenVariantKey(type, state, step));
+  has(
+    type: CitizenType,
+    state: CityAgentState,
+    step: CitizenPhaseStep,
+    carrying?: CitizenDrawOpts["carrying"],
+  ): boolean {
+    return this.atlas.hasSprite(citizenVariantKey(type, state, step, carrying));
   }
 
   get(
@@ -109,8 +118,9 @@ export class CitizenTextureAtlas {
     type: CitizenType,
     state: CityAgentState,
     step: CitizenPhaseStep,
+    carrying?: CitizenDrawOpts["carrying"],
   ): CitizenVariant {
-    const key = citizenVariantKey(type, state, step);
+    const key = citizenVariantKey(type, state, step, carrying);
     const hit = this.variants.get(key);
     if (hit !== undefined) return hit;
 
@@ -124,6 +134,7 @@ export class CitizenTextureAtlas {
         drawCitizen(graphic, type, {
           ...params,
           tunic: defaultTunic(type),
+          carrying,
         });
         body.addChild(graphic);
         body.scale.set(CITIZEN_FIGURE_SCALE);
@@ -138,6 +149,7 @@ export class CitizenTextureAtlas {
       type,
       state,
       step,
+      carrying,
     } satisfies CitizenVariant;
     this.variants.set(key, variant);
     return variant;
