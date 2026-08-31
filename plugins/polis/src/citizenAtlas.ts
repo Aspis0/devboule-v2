@@ -13,8 +13,16 @@ export type CitizenPhaseStep = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 /** Placement scale from the v1 AgentLayer: people.ts is authored at ~23px tall. */
 export const CITIZEN_FIGURE_SCALE = 0.55;
 /** Citizen art is small; bake it at the highest interactive scale and let the
- * renderer reduce it at ordinary zooms instead of magnifying a tiny texture. */
-export const CITIZEN_BAKE_RESOLUTION = MAX_ZOOM;
+ * renderer reduce it at ordinary zooms instead of magnifying a tiny texture.
+ *
+ * The zoom is only half of it. The application renders at
+ * `min(devicePixelRatio, 2)`, so at maximum zoom a citizen occupies
+ * `MAX_ZOOM * devicePixelRatio` physical pixels per authored unit. Baking at
+ * MAX_ZOOM alone therefore handed the GPU a texture that had to be magnified by
+ * the pixel ratio — 25% on this machine — which is exactly the softness you see
+ * when you get close. Memory grows with the square of this number, so it is
+ * capped at 2 the same way the renderer caps its own resolution. */
+export const CITIZEN_BAKE_RESOLUTION = MAX_ZOOM * Math.min(globalThis.devicePixelRatio ?? 1, 2);
 
 const WALK_PHASE_INCREMENT = 0.6;
 const ACTION_PHASE_INCREMENT = 0.5;
