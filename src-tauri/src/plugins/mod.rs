@@ -13,13 +13,16 @@
 
 pub mod assets;
 pub mod discovery;
+pub mod install;
 pub mod manifest;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use devboule_protocol::ErrorCode;
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::backend::error::CommandError;
 use discovery::{scan, PluginInventory, Scan};
 
 /// Where installed plugins live, or nothing if this machine will not say where
@@ -44,6 +47,12 @@ pub struct PluginRegistry {
     // A cache, and nothing else lives behind this lock, so a panic elsewhere
     // must not turn every later request into a panic of its own.
     cached: Mutex<Option<Scan>>,
+    // Installs move directories around. Two of them at once, for the same id,
+    // would race on that move, and the interface disabling a button is not a
+    // guarantee — a second window or a repeated command is not the interface.
+    // Deliberately not the same lock as the cache: an install must not stop the
+    // asset server from answering for the plugins already installed.
+    installs: Mutex<()>,
 }
 
 impl PluginRegistry {
@@ -121,6 +130,38 @@ pub async fn plugins_rescan(app: AppHandle) -> PluginInventory {
     }
 }
 
+/// Install a plugin from a folder, and answer with what is installed afterwards.
+///
+/// Unlike the two above this one *is* a `Result`: an install either happened or
+/// it did not, and the caller has an action to report on rather than a readout
+/// to draw. Every refusal shares one code — nothing branches on it, the sentence
+/// is the payload, and a taxonomy no caller reads would be decoration.
+#[tauri::command]
+pub async fn plugin_install(
+    app: AppHandle,
+    id: String,
+    source: String,
+) -> Result<PluginInventory, CommandError> {
+    let Some(root) = plugins_root(&app) else {
+        return Err(CommandError::new(
+            ErrorCode::Internal,
+            "this machine did not say where application data belongs, so there is nowhere to \
+             install a plugin",
+        ));
+    };
+    let registry = app.state::<PluginRegistry>();
+    {
+        let _one_at_a_time = registry
+            .installs
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        install::install_from_directory(&root, &id, std::path::Path::new(&source))
+            .map_err(|reason| CommandError::new(ErrorCode::InvalidRequest, reason))?;
+    }
+    // The cache is now a description of a directory that changed underneath it.
+    Ok(registry.rescan(&root))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,7 +171,7 @@ mod tests {
         let directory = root.join("polis");
         std::fs::create_dir_all(directory.join("ui")).expect("mkdir");
         let ui = b"export const surface = 1;\n";
-        std::fs::write(directory.join("ui/index.js"), ui).expect("write");
+        std::fs::write(directory.join("ui/index.html"), ui).expect("write");
         let digest: String = Sha256::digest(ui)
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -140,8 +181,8 @@ mod tests {
             "id": "polis",
             "name": "Polis",
             "version": "0.1.0",
-            "entry": { "ui": "ui/index.js" },
-            "files": { "ui/index.js": digest },
+            "entry": { "ui": "ui/index.html" },
+            "files": { "ui/index.html": digest },
         });
         std::fs::write(
             directory.join("plugin.json"),
@@ -157,11 +198,11 @@ mod tests {
         install_one(&root);
         let registry = PluginRegistry::default();
 
-        assert!(registry.is_verified_asset(&root, "polis", "ui/index.js"));
+        assert!(registry.is_verified_asset(&root, "polis", "ui/index.html"));
         // Listed by nobody.
         assert!(!registry.is_verified_asset(&root, "polis", "ui/other.js"));
         // A plugin that is not installed at all.
-        assert!(!registry.is_verified_asset(&root, "pubvia", "ui/index.js"));
+        assert!(!registry.is_verified_asset(&root, "pubvia", "ui/index.html"));
     }
 
     #[test]
@@ -170,7 +211,7 @@ mod tests {
         let root = temp.path().join("plugins");
         install_one(&root);
         let registry = PluginRegistry::default();
-        assert!(registry.is_verified_asset(&root, "polis", "ui/index.js"));
+        assert!(registry.is_verified_asset(&root, "polis", "ui/index.html"));
 
         std::fs::write(root.join("polis/ui/extra.js"), b"export const x = 1;\n").expect("write");
         assert!(
@@ -182,7 +223,7 @@ mod tests {
         // the manifest no longer describes the directory.
         let inventory = registry.rescan(&root);
         assert!(!inventory.plugins[0].ready);
-        assert!(!registry.is_verified_asset(&root, "polis", "ui/index.js"));
+        assert!(!registry.is_verified_asset(&root, "polis", "ui/index.html"));
     }
 
     #[test]
@@ -194,7 +235,7 @@ mod tests {
         let first = registry.inventory(&root);
 
         // Break the plugin without telling the registry.
-        std::fs::write(root.join("polis/ui/index.js"), b"tampered\n").expect("write");
+        std::fs::write(root.join("polis/ui/index.html"), b"tampered\n").expect("write");
         assert_eq!(
             registry.inventory(&root),
             first,

@@ -159,12 +159,11 @@ pub fn parse_manifest(bytes: &[u8], directory_name: &str) -> Result<PluginManife
     }
 
     let ui_entry = check_entry("entry.ui", &raw.entry.ui, &files)?;
-    if !(ui_entry.ends_with(".js") || ui_entry.ends_with(".mjs")) {
-        // The WebView checks the content type before it parses a module, and a
-        // file served as anything else is refused outright. Catching it here
-        // turns a bewildering runtime failure into one sentence.
+    if !(ui_entry.ends_with(".html") || ui_entry.ends_with(".htm")) {
+        // The host loads this in a cross-origin iframe as a document. A module
+        // entry would be fetched as a script and the frame would render nothing.
         return Err(format!(
-            "entry.ui is loaded as a module and must end in .js or .mjs: {}",
+            "entry.ui is loaded as a document and must end in .html or .htm: {}",
             quote(&ui_entry)
         ));
     }
@@ -200,7 +199,7 @@ pub fn parse_manifest(bytes: &[u8], directory_name: &str) -> Result<PluginManife
 
 /// The id is a directory name, a URL path segment and a routing key at once, so
 /// it is held to the narrowest form that works as all three.
-fn check_id(id: &str) -> Result<(), String> {
+pub fn check_id(id: &str) -> Result<(), String> {
     let usable = !id.is_empty()
         && id.len() <= MAX_ID_LEN
         && id
@@ -304,10 +303,10 @@ mod tests {
             "id": "polis",
             "name": "Polis",
             "version": "0.1.0",
-            "entry": { "ui": "ui/index.js", "backend": "polis-backend.exe" },
+            "entry": { "ui": "ui/index.html", "backend": "polis-backend.exe" },
             "capabilities": ["oracle.search", "workspace.root"],
             "files": {
-                "ui/index.js": "a".repeat(64),
+                "ui/index.html": "a".repeat(64),
                 "polis-backend.exe": "b".repeat(64),
             }
         })
@@ -322,7 +321,7 @@ mod tests {
         let manifest = parse(&good_manifest()).expect("this manifest is meant to be accepted");
         assert_eq!(manifest.id, "polis");
         assert_eq!(manifest.name, "Polis");
-        assert_eq!(manifest.ui_entry, "ui/index.js");
+        assert_eq!(manifest.ui_entry, "ui/index.html");
         assert_eq!(manifest.backend_entry.as_deref(), Some("polis-backend.exe"));
         assert_eq!(
             manifest.capabilities,
@@ -334,8 +333,8 @@ mod tests {
     #[test]
     fn a_plugin_without_a_backend_is_allowed() {
         let mut value = good_manifest();
-        value["entry"] = serde_json::json!({ "ui": "ui/index.js" });
-        value["files"] = serde_json::json!({ "ui/index.js": "a".repeat(64) });
+        value["entry"] = serde_json::json!({ "ui": "ui/index.html" });
+        value["files"] = serde_json::json!({ "ui/index.html": "a".repeat(64) });
         let manifest = parse(&value).expect("a UI-only plugin is a legitimate plugin");
         assert_eq!(manifest.backend_entry, None);
     }
@@ -382,22 +381,22 @@ mod tests {
             (
                 "an entry point the browser would refuse to parse",
                 Box::new(|value| {
-                    value["entry"]["ui"] = serde_json::json!("ui/index.txt");
+                    value["entry"]["ui"] = serde_json::json!("ui/index.js");
                     value["files"] = serde_json::json!({
-                        "ui/index.txt": "a".repeat(64),
+                        "ui/index.js": "a".repeat(64),
                         "polis-backend.exe": "b".repeat(64),
                     });
                 }),
-                ".js or .mjs",
+                ".html",
             ),
             (
                 "a listed path that climbs out of the plugin",
                 Box::new(|value| {
                     value["files"] = serde_json::json!({
-                        "ui/index.js": "a".repeat(64),
+                        "ui/index.html": "a".repeat(64),
                         "../../evil.dll": "b".repeat(64),
                     });
-                    value["entry"] = serde_json::json!({ "ui": "ui/index.js" });
+                    value["entry"] = serde_json::json!({ "ui": "ui/index.html" });
                 }),
                 "outside the plugin",
             ),
@@ -405,10 +404,10 @@ mod tests {
                 "two spellings of one file",
                 Box::new(|value| {
                     value["files"] = serde_json::json!({
-                        "ui/index.js": "a".repeat(64),
-                        "ui//index.js": "b".repeat(64),
+                        "ui/index.html": "a".repeat(64),
+                        "ui//index.html": "b".repeat(64),
                     });
-                    value["entry"] = serde_json::json!({ "ui": "ui/index.js" });
+                    value["entry"] = serde_json::json!({ "ui": "ui/index.html" });
                 }),
                 "the same file",
             ),
@@ -419,7 +418,7 @@ mod tests {
             ),
             (
                 "a digest that is not one",
-                Box::new(|value| value["files"]["ui/index.js"] = serde_json::json!("abc")),
+                Box::new(|value| value["files"]["ui/index.html"] = serde_json::json!("abc")),
                 "64 hexadecimal",
             ),
             (
@@ -452,9 +451,9 @@ mod tests {
     #[test]
     fn an_uppercase_digest_is_folded_rather_than_refused() {
         let mut value = good_manifest();
-        value["files"]["ui/index.js"] = serde_json::json!("A".repeat(64));
+        value["files"]["ui/index.html"] = serde_json::json!("A".repeat(64));
         let manifest = parse(&value).expect("Get-FileHash output must be usable");
-        assert_eq!(manifest.files["ui/index.js"], "a".repeat(64));
+        assert_eq!(manifest.files["ui/index.html"], "a".repeat(64));
     }
 
     #[test]

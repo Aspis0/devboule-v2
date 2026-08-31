@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { SurfacePlaceholder } from "../../app/SurfacePlaceholder";
 import { describeGraphics, probeGraphics } from "../../lib/graphics";
 import { describePluginState, pluginState, pluginTone, POLIS_PLUGIN_ID } from "../../lib/plugins";
 import {
   describePluginTransport,
+  PLUGIN_ORIGINS,
   probePluginTransport,
   type PluginTransport,
 } from "../../lib/pluginTransport";
-import { isCommandError, pluginsList, pluginsRescan } from "../../lib/tauri";
-import type { PluginInventory } from "../../types/ipc";
+import { useAppStore } from "../../store/appStore";
 import type { SurfaceDefinition } from "../../types/surface";
+import { chooseAndInstall } from "../plugins/install";
+import { PluginSurface } from "../plugins/PluginSurface";
 
 /**
  * The Polis surface before Polis exists.
@@ -41,28 +43,15 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
     };
   }, []);
 
-  // Unlike the two probes above, what is installed can change while the app is
-  // open, so this one is re-askable and guards its own writes.
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
-  const [inventory, setInventory] = useState<PluginInventory | null>(null);
-  // True from the first render because the first look starts with the mount:
-  // deriving it that way rather than setting it inside the effect keeps the
-  // mount from costing a second render before anything has been asked.
-  const [checking, setChecking] = useState(true);
-  const apply = useCallback((found: PluginInventory) => {
-    if (!alive.current) return;
-    setInventory(found);
-    setChecking(false);
-  }, []);
-  useEffect(() => {
-    void look(false).then(apply);
-  }, [apply]);
+  // The inventory is the app's, not this component's: the crescent decides
+  // whether to draw a `+` from the same answer, and two fetches would be two
+  // answers that can disagree. The Shell asks for it on the way in.
+  const plugins = useAppStore((state) => state.plugins);
+  const installing = useAppStore((state) => state.installing);
+  const installError = useAppStore((state) => state.installError);
+  const dismissInstallError = useAppStore((state) => state.dismissInstallError);
+  const refreshPlugins = useAppStore((state) => state.refreshPlugins);
+  const [checking, setChecking] = useState(false);
 
   const tone = !capability.webgl2
     ? "polis-readiness-blocked"
@@ -71,11 +60,21 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
       : capability.softwareRendered === null
         ? "polis-readiness-unknown"
         : "polis-readiness-ready";
-  const installed = inventory ? pluginState(inventory, POLIS_PLUGIN_ID) : null;
+  const installed = plugins ? pluginState(plugins, POLIS_PLUGIN_ID) : null;
+  const busy = checking || installing === POLIS_PLUGIN_ID;
 
   return (
     <>
-      <SurfacePlaceholder surface={surface} />
+      {installed?.kind === "ready" ? (
+        <PluginSurface
+          pluginId={POLIS_PLUGIN_ID}
+          entry={installed.entry.uiEntry}
+          assetOrigin={transport?.origin ?? PLUGIN_ORIGINS[0]}
+          capabilities={installed.entry.capabilities}
+        />
+      ) : (
+        <SurfacePlaceholder surface={surface} />
+      )}
       <section className={`polis-readiness ${tone}`} aria-label="Polis rendering requirements">
         <span className="polis-readiness-kicker">This machine, for M5</span>
         <p>{describeGraphics(capability)}</p>
@@ -120,40 +119,40 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
           digest. Devboule reads nothing it was not told about, and a plugin whose files no longer
           match what the manifest describes is refused with a reason instead of half loaded.
         </p>
-        <button
-          className="polis-readiness-button"
-          type="button"
-          disabled={checking}
-          onClick={() => {
-            setChecking(true);
-            void look(true).then(apply);
-          }}
-        >
-          {checking ? "Looking…" : "Check again"}
-        </button>
+        {installError ? (
+          <div className="polis-readiness-error" role="alert">
+            <p className="polis-readiness-note polis-readiness-error">
+              The last install did not happen — {installError}
+            </p>
+            <button className="polis-readiness-button" type="button" onClick={dismissInstallError}>
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+        <div className="polis-readiness-actions">
+          {installed?.kind === "absent" ? (
+            <button
+              className="polis-readiness-button"
+              type="button"
+              disabled={busy}
+              onClick={() => void chooseAndInstall(POLIS_PLUGIN_ID, surface.label)}
+            >
+              {installing === POLIS_PLUGIN_ID ? "Installing…" : "Install from a folder"}
+            </button>
+          ) : null}
+          <button
+            className="polis-readiness-button"
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setChecking(true);
+              void refreshPlugins(true).finally(() => setChecking(false));
+            }}
+          >
+            {checking ? "Looking…" : "Check again"}
+          </button>
+        </div>
       </section>
     </>
   );
-}
-
-/**
- * Ask what is installed, and always come back with an answer.
- *
- * The command already reports "I could not look" inside the inventory, so a
- * rejection here means the app itself did not answer. Folding that into the
- * same shape leaves the readout with one case to render instead of two.
- */
-async function look(again: boolean): Promise<PluginInventory> {
-  try {
-    return again ? await pluginsRescan() : await pluginsList();
-  } catch (cause) {
-    return { root: "", plugins: [], problem: reasonFrom(cause) };
-  }
-}
-
-function reasonFrom(cause: unknown): string {
-  if (isCommandError(cause)) return cause.message;
-  if (cause instanceof Error && cause.message) return cause.message;
-  if (typeof cause === "string" && cause) return cause;
-  return "the app did not answer";
 }

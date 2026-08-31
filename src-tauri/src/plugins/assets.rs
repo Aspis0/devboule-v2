@@ -60,11 +60,36 @@ const SELF_TEST_PATH: &str = "__selftest.js";
 /// and nothing else.
 const SELF_TEST_MODULE: &str = "export const pluginTransportWorks = true;\n";
 
+/// Content-Security-Policy sent on plugin HTML documents.
+///
+/// Not yet measured against a real PixiJS page. If a plugin frame fails to
+/// render, suspect this first: it is the thing that changed between "the
+/// bytes arrived" and "the page would not run".
+const PLUGIN_DOCUMENT_CSP: &str = "\
+default-src 'self'; \
+script-src 'self' 'wasm-unsafe-eval'; \
+style-src 'self' 'unsafe-inline'; \
+img-src 'self' data: blob:; \
+connect-src 'self'; \
+worker-src 'self' blob:; \
+frame-ancestors http://localhost:1420 http://tauri.localhost; \
+base-uri 'none'; \
+form-action 'none'; \
+object-src 'none'";
+
+fn content_security_policy_for(kind: &str) -> Option<&'static str> {
+    (kind == "text/html").then_some(PLUGIN_DOCUMENT_CSP)
+}
+
 fn content_type_for(path: &str) -> &'static str {
     match path.rsplit_once('.').map(|(_, extension)| extension) {
         // A module served with the wrong type is refused by the browser before
         // it is ever parsed, so this is not cosmetic.
         Some("js") | Some("mjs") => "text/javascript",
+        // The plugin frame loads entry.ui as a document. octet-stream would
+        // render a blank frame, which is how this case was found: by reading,
+        // not by a failing test.
+        Some("html") | Some("htm") => "text/html",
         Some("css") => "text/css",
         Some("json") => "application/json",
         Some("wasm") => "application/wasm",
@@ -150,13 +175,17 @@ fn percent_decode(value: &str) -> Option<String> {
 }
 
 fn respond(responder: UriSchemeResponder, status: StatusCode, kind: &str, body: Vec<u8>) {
-    let response = Response::builder()
+    let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, kind)
         // ES modules are fetched in CORS mode even from the app's own window,
         // so without this a plugin module fails to load rather than 404ing.
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::CACHE_CONTROL, "no-store");
+    if let Some(policy) = content_security_policy_for(kind) {
+        builder = builder.header(header::CONTENT_SECURITY_POLICY, policy);
+    }
+    let response = builder
         .body(body)
         .expect("plugin asset response is always well formed");
     responder.respond(response);
@@ -247,6 +276,11 @@ fn handle<R: tauri::Runtime>(
     }
 }
 
+/// A single asset larger than this is not held in memory to answer a request.
+/// Discovery uses the same ceiling so a plugin that could never be served is
+/// refused at verification, with a sentence, instead of 404ing at load time.
+pub(super) const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
+
 /// A file is read only if it really lives under `root` once every link is
 /// followed, and only if it is small enough to hold in memory.
 ///
@@ -261,8 +295,6 @@ fn handle<R: tauri::Runtime>(
 /// one request, so without it a large asset — hostile or merely careless — is
 /// an out-of-memory in the app process.
 fn read_contained(root: &Path, relative: &str) -> Option<Vec<u8>> {
-    const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
-
     let canonical_root = std::fs::canonicalize(root).ok()?;
     let target = std::fs::canonicalize(canonical_root.join(relative)).ok()?;
     if !target.starts_with(&canonical_root) {
@@ -378,5 +410,65 @@ mod tests {
         assert_eq!(content_type_for("ui/index.mjs"), "text/javascript");
         assert_eq!(content_type_for("atlas/city.png"), "image/png");
         assert_eq!(content_type_for("no-extension"), "application/octet-stream");
+    }
+
+    #[test]
+    fn a_document_is_served_as_html_because_the_frame_renders_it() {
+        assert_eq!(content_type_for("ui/index.html"), "text/html");
+        assert_eq!(content_type_for("ui/index.htm"), "text/html");
+    }
+
+    #[test]
+    fn a_plugin_document_carries_a_csp_that_closes_the_network() {
+        let policy = content_security_policy_for("text/html")
+            .expect("a plugin document must send a Content-Security-Policy");
+        assert!(
+            policy.contains("connect-src 'self'"),
+            "connect-src 'self' is what stops a plugin phoning home: {policy}"
+        );
+        assert!(
+            policy.contains("frame-ancestors http://localhost:1420 http://tauri.localhost"),
+            "only the app may frame it: {policy}"
+        );
+        assert!(policy.contains("base-uri 'none'"), "{policy}");
+        assert!(policy.contains("form-action 'none'"), "{policy}");
+        assert!(policy.contains("object-src 'none'"), "{policy}");
+        assert!(
+            policy.contains("'wasm-unsafe-eval'"),
+            "PixiJS/WebGL may compile wasm: {policy}"
+        );
+        assert!(
+            policy.contains("'unsafe-inline'") && policy.contains("style-src"),
+            "bundlers inject styles: {policy}"
+        );
+        assert!(
+            policy.contains("data:") && policy.contains("blob:"),
+            "textures arrive as data/blob URLs: {policy}"
+        );
+        let tokens: Vec<&str> = policy
+            .split([' ', ';'])
+            .filter(|token| !token.is_empty())
+            .collect();
+        assert!(
+            !tokens.contains(&"'unsafe-eval'"),
+            "plain unsafe-eval is not the wasm token: {policy}"
+        );
+    }
+
+    #[test]
+    fn assets_that_are_not_documents_do_not_carry_a_csp() {
+        for kind in [
+            "text/javascript",
+            "text/css",
+            "image/png",
+            "application/json",
+            "application/octet-stream",
+        ] {
+            assert_eq!(
+                content_security_policy_for(kind),
+                None,
+                "{kind} is not a browsing context"
+            );
+        }
     }
 }

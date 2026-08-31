@@ -53,6 +53,7 @@ type CommandArgs = {
   oracle_ask: { query: string };
   plugins_list: undefined;
   plugins_rescan: undefined;
+  plugin_install: { id: string; source: string };
 };
 
 type CommandResults = {
@@ -87,6 +88,7 @@ type CommandResults = {
   oracle_ask: OracleSearchResponse;
   plugins_list: PluginInventory;
   plugins_rescan: PluginInventory;
+  plugin_install: PluginInventory;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -110,6 +112,20 @@ export function invokeTyped<K extends CommandName>(
  * directly — not wrapped in `Error`, not a string. `CommandError` arrives as
  * `{ code, message, details? }`.
  */
+/**
+ * One sentence for why an `invoke` rejected.
+ *
+ * Tauri hands back the serialized error type, a thrown `Error`, or — when the
+ * bridge itself failed — something else entirely. Callers want a line to show a
+ * person, not three branches each.
+ */
+export function reasonFromCause(cause: unknown): string {
+  if (isCommandError(cause)) return cause.message;
+  if (cause instanceof Error && cause.message) return cause.message;
+  if (typeof cause === "string" && cause) return cause;
+  return "the app did not answer";
+}
+
 export function isCommandError(error: unknown): error is CommandError {
   if (typeof error !== "object" || error === null || Array.isArray(error)) return false;
   if (!("code" in error) || !("message" in error)) return false;
@@ -158,3 +174,12 @@ export const oracleAsk = (query: string) => invokeTyped("oracle_ask", { query })
 export const pluginsList = () => invokeTyped("plugins_list");
 /** Look at the disk again, for someone who just installed something. */
 export const pluginsRescan = () => invokeTyped("plugins_rescan");
+/**
+ * Copy a plugin from a folder into the app's plugin directory.
+ *
+ * It verifies before it puts anything in place, so this either returns an
+ * inventory in which the plugin is installed and verified, or it rejects and
+ * nothing on disk changed.
+ */
+export const pluginInstall = (id: string, source: string) =>
+  invokeTyped("plugin_install", { id, source });

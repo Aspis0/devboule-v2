@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::assets::safe_relative_segments;
+use super::assets::{safe_relative_segments, MAX_ASSET_BYTES};
 use super::manifest::{
     parse_manifest, PluginManifest, MANIFEST_FILE_NAME, MAX_MANIFEST_BYTES, MAX_PLUGIN_FILES,
 };
@@ -31,7 +31,26 @@ use super::manifest::{
 /// byte is hashed. Verification reads everything it verifies, so without a
 /// ceiling a mistaken install — a virtual-machine image dropped in the
 /// directory — is an unbounded read on the path that opens a surface.
-const MAX_PLUGIN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub(super) const MAX_PLUGIN_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// A symlink, and on Windows any NTFS reparse point — junctions included.
+/// `FileType::is_symlink()` is only `IO_REPARSE_TAG_SYMLINK`.
+fn is_link(path: &Path, file_type: &std::fs::FileType) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+            Err(_) => file_type.is_symlink(),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        file_type.is_symlink()
+    }
+}
 
 /// One candidate directory and what came of it.
 pub struct ScannedPlugin {
@@ -72,6 +91,7 @@ impl Scan {
                         name: Some(manifest.name.clone()),
                         version: Some(manifest.version.clone()),
                         capabilities: manifest.capabilities.clone(),
+                        ui_entry: Some(manifest.ui_entry.clone()),
                         ready: true,
                         reason: None,
                     },
@@ -80,6 +100,7 @@ impl Scan {
                         name: None,
                         version: None,
                         capabilities: Vec::new(),
+                        ui_entry: None,
                         ready: false,
                         reason: Some(reason.clone()),
                     },
@@ -108,6 +129,10 @@ pub struct PluginEntry {
     pub name: Option<String>,
     pub version: Option<String>,
     pub capabilities: Vec<String>,
+    /// Path of the HTML document the host frames. Absent when the plugin was
+    /// refused, so the surface can hide a broken tile rather than pointing the
+    /// iframe at a 404.
+    pub ui_entry: Option<String>,
     pub ready: bool,
     pub reason: Option<String>,
 }
@@ -152,7 +177,7 @@ pub fn scan(root: &Path) -> Scan {
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if file_type.is_symlink() {
+        if is_link(&entry.path(), &file_type) {
             // A link would put the verified directory somewhere the asset
             // server refuses to serve from, so the plugin would verify and then
             // silently fail to load. Refusing here says why.
@@ -222,6 +247,12 @@ pub fn verify(directory: &Path, id: &str) -> Result<PluginManifest, String> {
         ));
     }
 
+    for (relative, size) in &present {
+        if *size > MAX_ASSET_BYTES && manifest.backend_entry.as_deref() != Some(relative.as_str()) {
+            return Err(format!("{relative} is too large to be served"));
+        }
+    }
+
     for (relative, expected) in &manifest.files {
         let digest = sha256_file(&directory.join(relative))
             .map_err(|error| format!("{relative} could not be read to verify it: {error}"))?;
@@ -239,7 +270,7 @@ pub fn verify(directory: &Path, id: &str) -> Result<PluginManifest, String> {
 ///
 /// The top-level manifest is left out: it is the thing doing the describing and
 /// cannot carry its own digest.
-fn list_files(directory: &Path) -> Result<BTreeMap<String, u64>, String> {
+pub(super) fn list_files(directory: &Path) -> Result<BTreeMap<String, u64>, String> {
     let mut files = BTreeMap::new();
     let mut pending: Vec<(PathBuf, String)> = vec![(directory.to_path_buf(), String::new())];
 
@@ -279,7 +310,7 @@ fn list_files(directory: &Path) -> Result<BTreeMap<String, u64>, String> {
             let file_type = entry
                 .file_type()
                 .map_err(|error| format!("{relative} could not be examined: {error}"))?;
-            if file_type.is_symlink() {
+            if is_link(&entry.path(), &file_type) {
                 return Err(format!(
                     "{relative} is a link, and a plugin has to be the files themselves"
                 ));
@@ -359,7 +390,7 @@ mod tests {
             "id": id,
             "name": "Polis",
             "version": "0.1.0",
-            "entry": { "ui": "ui/index.js" },
+            "entry": { "ui": "ui/index.html" },
             "capabilities": ["oracle.search"],
             "files": serde_json::Value::Object(listed),
         });
@@ -376,12 +407,12 @@ mod tests {
     #[test]
     fn a_correctly_installed_plugin_is_ready() {
         let temp = tempfile::tempdir().expect("tempdir");
-        install(temp.path(), "polis", &[("ui/index.js", UI)]);
+        install(temp.path(), "polis", &[("ui/index.html", UI)]);
         let scan = scan(temp.path());
         assert_eq!(scan.problem, None);
         assert_eq!(scan.plugins.len(), 1);
         let manifest = scan.ready("polis").expect("polis should be ready");
-        assert_eq!(manifest.ui_entry, "ui/index.js");
+        assert_eq!(manifest.ui_entry, "ui/index.html");
         let inventory = scan.inventory();
         assert!(inventory.plugins[0].ready);
         assert_eq!(inventory.plugins[0].reason, None);
@@ -389,11 +420,35 @@ mod tests {
     }
 
     #[test]
+    fn a_ready_plugin_serializes_its_document_path_as_ui_entry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        install(temp.path(), "polis", &[("ui/index.html", UI)]);
+        let json = serde_json::to_value(&scan(temp.path()).inventory().plugins[0]).expect("json");
+        assert_eq!(
+            json.get("uiEntry").and_then(|value| value.as_str()),
+            Some("ui/index.html"),
+            "the surface reads camelCase uiEntry: {json}"
+        );
+    }
+
+    #[test]
+    fn a_refused_plugin_serializes_ui_entry_as_null() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("polis")).expect("mkdir");
+        let json = serde_json::to_value(&scan(temp.path()).inventory().plugins[0]).expect("json");
+        assert_eq!(
+            json.get("uiEntry"),
+            Some(&serde_json::Value::Null),
+            "omitting the key is not the null the surface handles: {json}"
+        );
+    }
+
+    #[test]
     fn one_changed_byte_is_enough() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let directory = install(temp.path(), "polis", &[("ui/index.js", UI)]);
+        let directory = install(temp.path(), "polis", &[("ui/index.html", UI)]);
         std::fs::write(
-            directory.join("ui/index.js"),
+            directory.join("ui/index.html"),
             b"export const surface = 2;\n",
         )
         .expect("tamper");
@@ -404,7 +459,7 @@ mod tests {
             .clone()
             .expect("a refusal has a reason");
         assert!(
-            reason.contains("ui/index.js") && reason.contains("describes"),
+            reason.contains("ui/index.html") && reason.contains("describes"),
             "the reason should name the file that changed: {reason}"
         );
     }
@@ -412,7 +467,7 @@ mod tests {
     #[test]
     fn a_file_nobody_listed_is_refused_rather_than_ignored() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let directory = install(temp.path(), "polis", &[("ui/index.js", UI)]);
+        let directory = install(temp.path(), "polis", &[("ui/index.html", UI)]);
         // The shape this rule exists for: a library the manifest never mentions,
         // sitting where the plugin's own process would find it first.
         std::fs::write(directory.join("version.dll"), b"MZ").expect("write");
@@ -431,7 +486,7 @@ mod tests {
         let directory = install(
             temp.path(),
             "polis",
-            &[("ui/index.js", UI), ("data.bin", b"x")],
+            &[("ui/index.html", UI), ("data.bin", b"x")],
         );
         std::fs::remove_file(directory.join("data.bin")).expect("remove");
         let scan = scan(temp.path());
@@ -445,7 +500,7 @@ mod tests {
     #[test]
     fn a_plugin_in_the_wrong_directory_is_refused() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let directory = install(temp.path(), "polis", &[("ui/index.js", UI)]);
+        let directory = install(temp.path(), "polis", &[("ui/index.html", UI)]);
         std::fs::rename(&directory, temp.path().join("oracle")).expect("rename");
         let scan = scan(temp.path());
         let reason = scan.inventory().plugins[0].reason.clone().expect("reason");
@@ -499,7 +554,7 @@ mod tests {
     fn a_linked_plugin_directory_is_refused() {
         let temp = tempfile::tempdir().expect("tempdir");
         let elsewhere = temp.path().join("elsewhere");
-        install(&elsewhere, "polis", &[("ui/index.js", UI)]);
+        install(&elsewhere, "polis", &[("ui/index.html", UI)]);
         let root = temp.path().join("plugins");
         std::fs::create_dir_all(&root).expect("mkdir");
 
@@ -524,7 +579,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let secret = temp.path().join("private.txt");
         std::fs::write(&secret, b"a secret the app can read").expect("write");
-        let directory = install(temp.path(), "polis", &[("ui/index.js", UI)]);
+        let directory = install(temp.path(), "polis", &[("ui/index.html", UI)]);
 
         #[cfg(windows)]
         let linked =
@@ -537,6 +592,81 @@ mod tests {
         }
         let scan = scan(temp.path());
         let reason = scan.inventory().plugins[0].reason.clone().expect("reason");
+        assert!(reason.contains("link"), "wrong reason: {reason}");
+    }
+
+    /// NTFS junctions do not need privilege, unlike symlinks. `mklink /J` is the
+    /// way a machine that will not create a symlink still reproduces the hole.
+    #[cfg(windows)]
+    fn try_junction(link: &Path, target: &Path) -> bool {
+        std::process::Command::new("cmd")
+            .arg("/c")
+            .arg("mklink")
+            .arg("/J")
+            .arg(link)
+            .arg(target)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_inside_a_plugin_is_refused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let elsewhere = temp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).expect("mkdir");
+        std::fs::write(elsewhere.join("secret.txt"), b"not the plugin").expect("write");
+        // A dedicated plugins root, so the junction target is not itself a
+        // candidate sitting next to the plugin.
+        let root = temp.path().join("plugins");
+        let directory = install(&root, "polis", &[("ui/index.html", UI)]);
+        let escape = directory.join("escape");
+        if !try_junction(&escape, &elsewhere) {
+            eprintln!("skipped the junction-inside-plugin case: mklink /J failed");
+            return;
+        }
+        let scan = scan(&root);
+        let reason = scan
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "polis")
+            .expect("polis listed")
+            .outcome
+            .as_ref()
+            .expect_err("a junction inside the plugin must refuse it");
+        assert!(
+            reason.contains("link"),
+            "a junction walked as a directory is the hole this test exists for: {reason}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_used_as_the_plugin_directory_is_refused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let elsewhere = temp.path().join("elsewhere");
+        install(&elsewhere, "polis", &[("ui/index.html", UI)]);
+        let root = temp.path().join("plugins");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let linked = root.join("polis");
+        if !try_junction(&linked, &elsewhere.join("polis")) {
+            eprintln!("skipped the junction-as-plugin-directory case: mklink /J failed");
+            return;
+        }
+        let scan = scan(&root);
+        assert!(
+            scan.ready("polis").is_none(),
+            "a junction used as the plugin directory verified files that live elsewhere"
+        );
+        let reason = scan
+            .plugins
+            .iter()
+            .find(|plugin| plugin.id == "polis")
+            .expect("polis listed")
+            .outcome
+            .as_ref()
+            .expect_err("must be refused");
         assert!(reason.contains("link"), "wrong reason: {reason}");
     }
 
@@ -560,5 +690,86 @@ mod tests {
         let contents: Vec<u8> = (0..200_000_u32).map(|index| index as u8).collect();
         std::fs::write(&path, &contents).expect("write");
         assert_eq!(sha256_file(&path).expect("hash"), digest_of(&contents));
+    }
+
+    /// A sparse file of `bytes` length. `set_len` is enough: we need the size,
+    /// not 64 MiB of real zeroes on disk.
+    fn sparse_file(path: &Path, bytes: u64) -> String {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        let file = std::fs::File::create(path).expect("create");
+        file.set_len(bytes).expect("set_len");
+        sha256_file(path).expect("hash")
+    }
+
+    #[test]
+    fn a_ui_file_larger_than_the_servable_ceiling_is_refused() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let directory = temp.path().join("polis");
+        std::fs::create_dir_all(directory.join("ui")).expect("mkdir");
+        std::fs::write(directory.join("ui/index.html"), UI).expect("write");
+        let atlas_digest = sparse_file(&directory.join("ui/atlas.png"), super::MAX_ASSET_BYTES + 1);
+        let manifest = serde_json::json!({
+            "manifestVersion": 1,
+            "id": "polis",
+            "name": "Polis",
+            "version": "0.1.0",
+            "entry": { "ui": "ui/index.html" },
+            "files": {
+                "ui/index.html": digest_of(UI),
+                "ui/atlas.png": atlas_digest,
+            },
+        });
+        std::fs::write(
+            directory.join(MANIFEST_FILE_NAME),
+            serde_json::to_vec(&manifest).expect("json"),
+        )
+        .expect("write");
+
+        let scan = scan(temp.path());
+        assert!(
+            scan.ready("polis").is_none(),
+            "an asset too large to serve must not verify as ready"
+        );
+        let reason = scan.inventory().plugins[0].reason.clone().expect("reason");
+        assert!(
+            reason.contains("ui/atlas.png") && reason.contains("too large to be served"),
+            "the reason should name the file and say it cannot be served: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_backend_entry_larger_than_the_servable_ceiling_is_still_verified() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let directory = temp.path().join("polis");
+        std::fs::create_dir_all(directory.join("ui")).expect("mkdir");
+        std::fs::write(directory.join("ui/index.html"), UI).expect("write");
+        let backend_digest = sparse_file(
+            &directory.join("polis-backend.exe"),
+            super::MAX_ASSET_BYTES + 1,
+        );
+        let manifest = serde_json::json!({
+            "manifestVersion": 1,
+            "id": "polis",
+            "name": "Polis",
+            "version": "0.1.0",
+            "entry": { "ui": "ui/index.html", "backend": "polis-backend.exe" },
+            "files": {
+                "ui/index.html": digest_of(UI),
+                "polis-backend.exe": backend_digest,
+            },
+        });
+        std::fs::write(
+            directory.join(MANIFEST_FILE_NAME),
+            serde_json::to_vec(&manifest).expect("json"),
+        )
+        .expect("write");
+
+        let scan = scan(temp.path());
+        assert!(
+            scan.ready("polis").is_some(),
+            "the backend is executed as a process and never served, so its size is not the asset ceiling"
+        );
     }
 }

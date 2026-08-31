@@ -8,6 +8,15 @@ export interface SurfaceDefinition {
   eyebrow: string;
   description: string;
   tone: SurfaceTone;
+  /**
+   * The plugin this surface comes from, when it is not part of the app.
+   *
+   * A surface with this set is absent until the user installs it, so the
+   * navigation shows it as something to add rather than something to open. The
+   * id is the directory name under `<app data>/plugins/`, which is also the
+   * first segment of the URLs its files are served on.
+   */
+  plugin?: string;
 }
 
 export const SURFACES = [
@@ -24,6 +33,7 @@ export const SURFACES = [
     eyebrow: "the codebase as a city",
     description: "The Polis surface will mount the isometric codebase view from the v1 port.",
     tone: "purple",
+    plugin: "polis",
   },
   {
     key: "pubvia",

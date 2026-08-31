@@ -1,7 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
+import { chooseAndInstall } from "../features/plugins/install";
+import { pluginState } from "../lib/plugins";
 import { useAppStore } from "../store/appStore";
-import { SURFACES, type SurfaceKey } from "../types/surface";
+import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
 
 interface ShellProps {
   activeSurface: SurfaceKey;
@@ -16,12 +18,58 @@ const NAV_POINTS = [
   { key: "settings", x: 662, y: 44 },
 ] as const satisfies readonly { key: SurfaceKey; x: number; y: number }[];
 
+/**
+ * What a point in the crescent is offering.
+ *
+ * Only a surface that comes from a plugin has more than one: the rest are
+ * always `open`. `unknown` is deliberately distinct from `add` — before the
+ * inventory has arrived we have not looked, and drawing a `+` then would tell
+ * the user something is missing when nobody has checked.
+ */
+type PointOffer = "open" | "add" | "installing" | "broken" | "unknown";
+
+function offerFor(
+  surface: SurfaceDefinition,
+  plugins: ReturnType<typeof useAppStore.getState>["plugins"],
+  installing: string | null,
+): PointOffer {
+  const pluginId = surface.plugin;
+  if (!pluginId) return "open";
+  if (installing === pluginId) return "installing";
+  if (!plugins) return "unknown";
+  switch (pluginState(plugins, pluginId).kind) {
+    case "ready":
+      return "open";
+    case "absent":
+      return "add";
+    case "refused":
+    case "unknown":
+      return "broken";
+  }
+}
+
+const GLYPH: Record<Exclude<PointOffer, "open" | "installing">, string> = {
+  add: "+",
+  broken: "!",
+  unknown: "·",
+};
+
 export function Shell({ activeSurface, children }: ShellProps) {
   const selectSurface = useAppStore((state) => state.selectSurface);
+  const plugins = useAppStore((state) => state.plugins);
+  const installing = useAppStore((state) => state.installing);
+  const refreshPlugins = useAppStore((state) => state.refreshPlugins);
   const [navOpen, setNavOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const suppressTriggerFocusRef = useRef(false);
   const pageShift = navOpen ? "34px" : "0px";
   const pageDim = navOpen ? 0.34 : 1;
+
+  // Asked once, on the way in: the crescent has to know whether Polis is
+  // something to open or something to add before it is first drawn.
+  useEffect(() => {
+    void refreshPlugins();
+  }, [refreshPlugins]);
 
   function closeNav() {
     setNavOpen(false);
@@ -31,6 +79,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
     if (event.key === "Escape") {
       event.preventDefault();
       closeNav();
+      suppressTriggerFocusRef.current = true;
       triggerRef.current?.focus();
     }
   }
@@ -41,7 +90,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
   // at the surface toolbar underneath it.
   function handlePointerMove(event: PointerEvent<HTMLElement>) {
     if (navOpen && event.clientY > 150) {
-      setNavOpen(false);
+      closeNav();
     }
   }
 
@@ -68,7 +117,13 @@ export function Shell({ activeSurface, children }: ShellProps) {
           aria-expanded={navOpen}
           aria-controls="devboule-crescent-navigation"
           onPointerEnter={() => setNavOpen(true)}
-          onFocus={() => setNavOpen(true)}
+          onFocus={() => {
+            if (suppressTriggerFocusRef.current) {
+              suppressTriggerFocusRef.current = false;
+              return;
+            }
+            setNavOpen(true);
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" || event.key === " " || event.key === "ArrowDown") {
               event.preventDefault();
@@ -97,13 +152,35 @@ export function Shell({ activeSurface, children }: ShellProps) {
             const surface = SURFACES.find((item) => item.key === point.key);
             if (!surface) return null;
             const isActive = surface.key === activeSurface;
+            const offer = offerFor(surface, plugins, installing);
+            const pluginId = "plugin" in surface ? surface.plugin : undefined;
             return (
               <button
                 type="button"
                 key={surface.key}
-                className={`nav-point${isActive ? " nav-point-active" : ""}`}
+                className={`nav-point nav-point-${offer}${isActive ? " nav-point-active" : ""}`}
                 style={{ left: point.x, top: point.y }}
+                aria-label={
+                  offer === "open"
+                    ? `Open ${surface.label}`
+                    : offer === "add"
+                      ? `Install ${surface.label}`
+                      : offer === "installing"
+                        ? `Installing ${surface.label}`
+                        : offer === "broken"
+                          ? `${surface.label} unavailable`
+                          : `${surface.label} status unknown`
+                }
+                aria-busy={offer === "installing"}
+                disabled={offer === "installing"}
                 onClick={() => {
+                  // The `+` adds the plugin; every other state opens the
+                  // surface, including the broken one — that is where the
+                  // reason it was refused is written out.
+                  if (offer === "add" && pluginId) {
+                    void chooseAndInstall(pluginId, surface.label);
+                    return;
+                  }
                   selectSurface(surface.key);
                   closeNav();
                   triggerRef.current?.focus();
@@ -113,7 +190,13 @@ export function Shell({ activeSurface, children }: ShellProps) {
                 aria-current={isActive ? "page" : undefined}
               >
                 <span className="nav-point-circle">
-                  <span aria-hidden="true">{surface.label.slice(0, 1)}</span>
+                  {offer === "installing" ? (
+                    <span className="nav-point-spinner" aria-hidden="true" />
+                  ) : (
+                    <span aria-hidden="true">
+                      {offer === "open" ? surface.label.slice(0, 1) : GLYPH[offer]}
+                    </span>
+                  )}
                 </span>
                 <span className="nav-point-label">{surface.label}</span>
               </button>

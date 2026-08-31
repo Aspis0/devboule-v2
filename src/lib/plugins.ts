@@ -33,7 +33,11 @@ export type PluginState =
  */
 export function pluginState(inventory: PluginInventory, id: string): PluginState {
   const entry = inventory.plugins.find((plugin) => plugin.id === id);
-  if (entry) return entry.ready ? { kind: "ready", entry } : { kind: "refused", entry };
+  if (entry) {
+    return entry.ready && entry.uiEntry !== null
+      ? { kind: "ready", entry }
+      : { kind: "refused", entry };
+  }
   if (inventory.problem) return { kind: "unknown", problem: inventory.problem };
   return { kind: "absent" };
 }
@@ -45,8 +49,14 @@ export function describePluginState(state: PluginState, id: string): string {
       const { name, version } = state.entry;
       return `${name ?? id} ${version ?? ""}`.trim() + " is installed and verified";
     }
-    case "refused":
-      return `${id} is installed but was refused — ${state.entry.reason ?? "no reason reported"}`;
+    case "refused": {
+      const reason =
+        state.entry.reason ??
+        (state.entry.ready && state.entry.uiEntry === null
+          ? "ready but did not declare a UI entry path"
+          : "no reason reported");
+      return `${id} is installed but was refused — ${reason}`;
+    }
     case "unknown":
       return `Devboule could not tell whether ${id} is installed — ${state.problem}`;
     case "absent":

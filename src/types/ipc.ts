@@ -276,6 +276,8 @@ export interface PluginEntry {
   name: string | null;
   version: string | null;
   capabilities: string[];
+  /** Rust must serialize the manifest's HTML `ui_entry` into this field. */
+  uiEntry: string | null;
   ready: boolean;
   reason: string | null;
 }

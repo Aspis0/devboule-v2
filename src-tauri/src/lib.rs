@@ -69,6 +69,7 @@ pub fn run() {
             oracle::oracle_ask,
             plugins::plugins_list,
             plugins::plugins_rescan,
+            plugins::plugin_install,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Devboule")

@@ -454,6 +454,61 @@ button:focus-visible {
   border-color: var(--terracotta);
 }
 
+/* A surface that arrives as a plugin is drawn as an outline until it is there.
+   The dash is the whole message: the place exists, the thing does not yet. */
+.nav-point-add .nav-point-circle,
+.nav-point-installing .nav-point-circle {
+  border-style: dashed;
+  box-shadow: none;
+}
+
+.nav-point-add .nav-point-circle {
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* Refused is not absent, and must not look like it: the plugin is installed and
+   its files disagree with its manifest. Clicking opens the surface, which says
+   which file. */
+.nav-point-broken .nav-point-circle {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Nobody has looked yet. Not a `+`, because that would claim something is
+   missing before the question was asked. */
+.nav-point-unknown .nav-point-circle {
+  opacity: 0.55;
+}
+
+.nav-point-installing {
+  cursor: progress;
+}
+
+.nav-point-spinner {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid color-mix(in srgb, var(--terracotta-deep) 25%, transparent);
+  border-top-color: var(--terracotta-deep);
+  border-radius: 999px;
+  animation: nav-point-spin 0.8s linear infinite;
+}
+
+@keyframes nav-point-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The global reduced-motion rule freezes every animation, which would leave a
+   stalled arc reading as "stuck" rather than "working". A complete ring says
+   the same thing without moving. */
+@media (prefers-reduced-motion: reduce) {
+  .nav-point-spinner {
+    border-color: var(--terracotta-deep);
+  }
+}
+
 .nav-point-label {
   position: absolute;
   top: 34px;
@@ -541,6 +596,30 @@ button:focus-visible {
   border-radius: 12px;
 }
 
+/* The frame owns its document, so plugin DOM cannot be reconciled into the host
+   page. It stays a full-size child of the card. */
+.plugin-surface {
+  display: flex;
+  flex-direction: column;
+  min-height: 280px;
+}
+
+.plugin-surface-status {
+  margin: 0;
+  padding: 28px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.plugin-surface-frame {
+  display: block;
+  width: 100%;
+  flex: 1;
+  min-height: 280px;
+  border: 0;
+}
+
 .polis-readiness-kicker {
   display: block;
   margin-bottom: 6px;
@@ -577,6 +656,16 @@ button:focus-visible {
 
 .polis-readiness-blocked {
   border-left-color: var(--danger);
+}
+
+.polis-readiness-error {
+  color: var(--danger) !important;
+}
+
+.polis-readiness-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* Installing a plugin does not restart the app, so the one readout that can

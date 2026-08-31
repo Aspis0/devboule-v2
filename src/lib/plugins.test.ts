@@ -11,6 +11,7 @@ const READY: PluginEntry = {
   name: "Polis",
   version: "0.1.0",
   capabilities: ["oracle.search"],
+  uiEntry: "ui/index.html",
   ready: true,
   reason: null,
 };
@@ -20,8 +21,9 @@ const REFUSED: PluginEntry = {
   name: null,
   version: null,
   capabilities: [],
+  uiEntry: null,
   ready: false,
-  reason: "ui/index.js is not the file plugin.json describes",
+  reason: "ui/index.html is not the file plugin.json describes",
 };
 
 describe("pluginState", () => {
@@ -39,7 +41,7 @@ describe("pluginState", () => {
     expect(state.kind).toBe("refused");
     const line = describePluginState(state, POLIS_PLUGIN_ID);
     expect(line).toContain("was refused");
-    expect(line).toContain("ui/index.js");
+    expect(line).toContain("ui/index.html");
     expect(pluginTone(state)).toBe("blocked");
   });
 
@@ -70,5 +72,14 @@ describe("pluginState", () => {
     const nameless = { ...READY, name: null, version: null };
     const state = pluginState(inventory([nameless]), POLIS_PLUGIN_ID);
     expect(describePluginState(state, POLIS_PLUGIN_ID)).toBe("polis is installed and verified");
+  });
+
+  it("treats a verified plugin without an HTML entry as broken", () => {
+    const state = pluginState(inventory([{ ...READY, uiEntry: null }]), POLIS_PLUGIN_ID);
+
+    expect(state.kind).toBe("refused");
+    expect(describePluginState(state, POLIS_PLUGIN_ID)).toContain(
+      "did not declare a UI entry path",
+    );
   });
 });
