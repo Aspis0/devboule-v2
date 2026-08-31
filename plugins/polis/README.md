@@ -34,10 +34,32 @@ on what renderer, what happens when the plugin tries to reach Tauri directly, an
 what the host answered on the bridge. Both of the problems above were found by
 reading it, not by reading code. Keep it honest and keep it visible.
 
+## Depth: who draws over whom
+
+Two facts that were each learned the expensive way. First, the kit art is
+**front-anchored**: `makeProj(W, D)` puts the drawn footprint's front-bottom
+corner at local (0,0), so a sprite extends up-screen from its position. The
+layout therefore pins that position to the **front corner of the occupancy box**
+(`cartToIso(gridX + fw, gridY + fh)`) — anchor it to the back corner and the
+pixels cover tiles the road router believes are free, which is how roads once
+ran under temple platforms.
+
+Second, people never compete with buildings on `zIndex`. That was tried, with a
+per-person epsilon, and no scalar epsilon can order a walker against a multi-tile
+footprint (mid-face it loses by up to `fw + fh`). The v1's answer is structural
+and is what this plugin does: painter order is `ground → roads → shadows →
+crowd → buildings → monuments → agents → findings` (`mountWorldLayers`). The
+ambient crowd and the porters live **below** buildings — with front-anchored
+art, a walker in front of a building never overlaps it on screen, so "always
+under" only ever clips walkers that are genuinely behind one. File-bound agents
+stand on their buildings and live **above** them. `zIndex` orders only siblings:
+building vs building (front ground corner, `buildingDepth`), walker vs walker
+(ground `x + y`).
+
 ## Building
 
     pnpm install
     pnpm run build
-    node ../../scripts/make-plugin-manifest.mjs dist --entry-ui index.html --write
 
-`dist/` is what a user installs.
+`pnpm run build` extracts the fixture, typechecks, bundles, and writes the
+manifest; `dist/` is what a user installs.

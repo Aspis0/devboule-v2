@@ -8,9 +8,9 @@ import {
   type CitizenPhaseStep,
 } from "./citizenAtlas";
 import { BuildingTextureAtlas, type TextureSource } from "./buildingAtlas";
+import { isoToCart } from "./iso";
 import { farLodBlend } from "./lod";
 import { hashString } from "./rng";
-import { personDepth, personDepthFromIso } from "./depth";
 
 export interface AgentLayout {
   worldX: number;
@@ -250,6 +250,7 @@ export class AgentLayer {
       view.x = layout.worldX;
       view.y = layout.worldY - layout.height - 5;
       view.display.position.set(view.x, view.y);
+      view.display.zIndex = layoutDepth(layout);
     } else {
       view.route = route;
       view.routeIndex = 0;
@@ -324,12 +325,14 @@ export class AgentLayer {
       view.x = from.x + dx * progress;
       view.y = from.y + dy * progress;
       view.display.position.set(view.x, view.y);
+      view.display.zIndex = isoDepth(view.x, view.y);
     }
     if (view.routeIndex >= route.length - 1) {
       const destination = route[route.length - 1];
       view.x = destination.x;
       view.y = destination.y;
       view.display.position.set(view.x, view.y);
+      view.display.zIndex = isoDepth(view.x, view.y);
       view.route = null;
     }
   }
@@ -493,9 +496,14 @@ function stateAlpha(state: CityAgentState): number {
 
 function layoutDepth(layout: AgentLayout): number {
   if (layout.gridX !== undefined && layout.gridY !== undefined) {
-    return personDepth(layout.gridX, layout.gridY);
+    return layout.gridX + layout.gridY;
   }
-  return personDepthFromIso(layout.worldX, layout.worldY);
+  return isoDepth(layout.worldX, layout.worldY);
+}
+
+function isoDepth(x: number, y: number): number {
+  const ground = isoToCart(x, y);
+  return ground.x + ground.y;
 }
 
 function stablePhase(id: string): number {

@@ -13,8 +13,8 @@ import {
   type ProjectedBounds,
 } from "./camera";
 import { FindingLayer } from "./findings";
-import { cartToIso, depthKey } from "./iso";
 import { buildingDepth } from "./depth";
+import { cartToIso, depthKey } from "./iso";
 import type { City, CityFile } from "./model";
 import { createLayout, type LayoutFile } from "./layout";
 import { ROAD_ARROW_COLORS } from "./palette";
@@ -54,6 +54,32 @@ export interface RendererDetails {
   clearDetails(): void;
 }
 
+export interface WorldLayerSet {
+  ground: Container;
+  roads: Container;
+  shadows: Container;
+  crowd: Container;
+  buildings: Container;
+  monuments: Container;
+  agents: Container;
+  findings: Container;
+}
+
+/** Keep the v1's painter order explicit: scenery crowds are occluded by
+ * buildings, while real file-bound agents remain legible above them. */
+export function mountWorldLayers(world: Container, layers: WorldLayerSet): void {
+  world.addChild(
+    layers.ground,
+    layers.roads,
+    layers.shadows,
+    layers.crowd,
+    layers.buildings,
+    layers.monuments,
+    layers.agents,
+    layers.findings,
+  );
+}
+
 export class CityRenderer {
   private readonly app: Application;
   private readonly canvas: HTMLCanvasElement;
@@ -68,8 +94,10 @@ export class CityRenderer {
   private roadOverviewLayer: Container | null = null;
   private roadInitialZoom = 0;
   private readonly shadows = new Container();
+  private readonly crowd = new Container();
   private readonly buildings = new Container();
   private readonly monuments = new Container();
+  private readonly agents = new Container();
   private readonly findingLayer: FindingLayer;
   private readonly agentLayer: AgentLayer;
   private readonly tradeRouteLayer: TradeRouteLayer;
@@ -107,21 +135,25 @@ export class CityRenderer {
       options.city.imports,
       this.app.renderer,
       this.atlas,
-      this.buildings,
+      this.agents,
     );
-    this.tradeRouteLayer = new TradeRouteLayer(this.buildings, this.app.renderer, this.atlas);
-    this.ambientLayer = new AmbientLayer(this.buildings, this.app.renderer, this.atlas);
-    this.world.addChild(
-      this.ground,
-      this.roads,
-      this.shadows,
-      this.buildings,
-      this.monuments,
-      this.findingLayer.root,
-    );
+    this.tradeRouteLayer = new TradeRouteLayer(this.crowd, this.app.renderer, this.atlas);
+    this.ambientLayer = new AmbientLayer(this.crowd, this.app.renderer, this.atlas);
+    mountWorldLayers(this.world, {
+      ground: this.ground,
+      roads: this.roads,
+      shadows: this.shadows,
+      crowd: this.crowd,
+      buildings: this.buildings,
+      monuments: this.monuments,
+      agents: this.agents,
+      findings: this.findingLayer.root,
+    });
     this.buildings.sortableChildren = true;
+    this.crowd.sortableChildren = true;
     this.shadows.sortableChildren = true;
     this.monuments.sortableChildren = true;
+    this.agents.sortableChildren = true;
     this.app.stage.addChild(this.world);
     this.build(options.city);
     this.findingLayer.setFindings(options.city.findings);
@@ -423,8 +455,8 @@ export class CityRenderer {
         shared: 1,
         weight: road.weight,
       });
-      const screenFrom = { x: from.worldX, y: from.worldY };
-      const screenTo = { x: to.worldX, y: to.worldY };
+      const screenFrom = cartToIso(cartFrom.x, cartFrom.y);
+      const screenTo = cartToIso(cartTo.x, cartTo.y);
       addSegment(kind, screenFrom, screenTo, road.weight, 1);
       addOverviewSegment(kind, screenFrom, screenTo, road.weight, 1);
       addArrow(

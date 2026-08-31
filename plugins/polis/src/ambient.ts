@@ -23,7 +23,6 @@ import {
   type IPoint,
 } from "./locomotion";
 import { rngFromString, type Rng } from "./rng";
-import { personDepthValue } from "./depth";
 import type { RoadPoint, RoutedRoad } from "./roadGraph";
 
 export const AMBIENT_WALK_SPEED = 42;
@@ -433,7 +432,7 @@ export class AmbientLayer {
       lastMoving: false,
     };
     container.position.set(walker.x, walker.y);
-    container.zIndex = personDepthValue(walker.depth);
+    container.zIndex = walker.depth;
     walker.itinerary = this.buildItinerary(walker, startId);
     return walker;
   }
@@ -633,7 +632,7 @@ function setWalkerPosition(walker: AmbientWalker): void {
   walker.y = from.y + (to.y - from.y) * local;
   walker.depth = path.depth[segment] + (path.depth[segment + 1] - path.depth[segment]) * local;
   walker.container.position.set(walker.x, walker.y);
-  walker.container.zIndex = personDepthValue(walker.depth);
+  walker.container.zIndex = walker.depth;
 }
 
 function firstOutside(

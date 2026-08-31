@@ -287,7 +287,10 @@ export function createLayout(
     for (const placement of district.placements) {
       const gridX = origin.x + placement.x;
       const gridY = origin.y + placement.y;
-      const point = cartToIso(gridX, gridY);
+      const point = cartToIso(
+        gridX + placement.item.footprint[0],
+        gridY + placement.item.footprint[1],
+      );
       output.push({
         file: placement.item.file,
         gridX,

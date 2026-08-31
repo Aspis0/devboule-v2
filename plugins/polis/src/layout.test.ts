@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { cartToIso } from "./iso";
+import { makeProj } from "./kitcd/iso";
 import { createLayout } from "./layout";
 import type { CityFile, CityImport } from "./model";
 
@@ -63,5 +65,39 @@ describe("v1 footprint-aware city layout", () => {
     const separatedY = Math.max(aMinY - bMaxY, bMinY - aMaxY);
 
     expect(Math.max(separatedX, separatedY)).toBeGreaterThanOrEqual(4);
+  });
+
+  it("anchors the baked art diamond to the occupied footprint", () => {
+    const layout = createLayout(
+      [
+        {
+          id: "src-tauri/src/oracle/mod.rs",
+          path: "src-tauri/src/oracle/mod.rs",
+          lines: 1_300,
+          district: "src-tauri",
+        },
+      ],
+      [],
+    )[0];
+    const [width, depth] = layout.footprint;
+    const localProjection = makeProj(width, depth);
+    const localGround = [
+      localProjection.p(width, depth),
+      localProjection.p(0, depth),
+      localProjection.p(0, 0),
+      localProjection.p(width, 0),
+    ];
+    const artDiamond = localGround.map((point) => ({
+      x: point.x + layout.worldX,
+      y: point.y + layout.worldY,
+    }));
+    const occupiedDiamond = [
+      cartToIso(layout.gridX + width, layout.gridY + depth),
+      cartToIso(layout.gridX, layout.gridY + depth),
+      cartToIso(layout.gridX, layout.gridY),
+      cartToIso(layout.gridX + width, layout.gridY),
+    ];
+
+    expect(artDiamond).toEqual(occupiedDiamond);
   });
 });
