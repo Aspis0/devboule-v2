@@ -35,10 +35,6 @@ const MAX_STEP_MS = 50;
 const WALK_PHASE_INCREMENT = 0.6;
 const WALK_STEP_SECONDS = 0.22;
 const WALK_PHASE_RATE = WALK_PHASE_INCREMENT / WALK_STEP_SECONDS;
-/** The citizen drawing already animates the walk and carried crate. Keep the
- * outer container at its road anchor so a whole-body bob cannot lift the head
- * across the one-tile facade margin. */
-export const BOB_OFFSETS = [0, 0, 0, 0] as const;
 const TRADE_ALPHA = 0.9;
 
 export const TRADE_LOD_ZOOM = 0.45;
@@ -46,14 +42,6 @@ export const TRADE_WEIGHT_MIN = 3;
 export const TRADE_TOP_N = 24;
 export const TRADE_PORTERS_PER_EDGE_CAP = 4;
 export const TRADE_PORTERS_GLOBAL_CAP = 80;
-
-/** Keep lane separation while choosing the down-screen side whenever a lane
- * has a screen-vertical component. This preserves the deterministic lane
- * magnitude but never spends the facade margin by moving a figure up-screen. */
-export function downscreenLaneOffset(offset: number, dx: number, _dy: number): number {
-  if (dx === 0) return offset;
-  return Math.sign(dx) * Math.abs(offset);
-}
 
 /** Cartesian footprint used to trim a building endpoint. */
 export interface TradeFootprint {
@@ -93,7 +81,6 @@ interface Porter {
   phase: number;
   lastStep: CitizenPhaseStep | -1;
   facing: 1 | -1;
-  bobPhase: number;
 }
 
 export type TradeConnectionSelect = (from: string, to: string) => void;
@@ -255,9 +242,7 @@ function buildLanePath(
     const dy = to.y - from.y;
     const length = Math.hypot(dx, dy) || 1;
     const safe = buildSafeSplineLeg(isoRoute, leg, blocked);
-    const lane = safe.laneOffsetClamped
-      ? 0
-      : downscreenLaneOffset(directedLaneOffset(walkerId, dx, dy), dx, dy);
+    const lane = safe.laneOffsetClamped ? 0 : directedLaneOffset(walkerId, dx, dy);
     const samples = Math.max(2, Math.ceil(length / 8));
     for (let sampleIndex = 0; sampleIndex <= samples; sampleIndex += 1) {
       const raw = safe.sample(sampleIndex / samples);
@@ -364,7 +349,7 @@ export class TradeRouteLayer {
       if (!qualifying.has(edge)) continue;
       const wanted = porterCountForWeight(edge.weight);
       for (let slot = 0; slot < wanted && spawned < TRADE_PORTERS_GLOBAL_CAP; slot += 1) {
-        this.porters.push(this.spawn(edge, slot, wanted, spawned, blocked));
+        this.porters.push(this.spawn(edge, slot, wanted, blocked));
         spawned += 1;
       }
       if (spawned >= TRADE_PORTERS_GLOBAL_CAP) break;
@@ -405,7 +390,7 @@ export class TradeRouteLayer {
   }
 
   /** Swap a cached working/crate phase and cull off-screen porters. */
-  step(frame: number, view: Rectangle = this.view): void {
+  step(_frame: number, view: Rectangle = this.view): void {
     if (!this.lodVisible) return;
     for (const porter of this.porters) {
       const onScreen =
@@ -418,8 +403,6 @@ export class TradeRouteLayer {
         continue;
       }
       porter.container.visible = true;
-      const bob = BOB_OFFSETS[(Math.floor(frame / 2) + porter.bobPhase) % BOB_OFFSETS.length];
-      porter.container.position.y = porter.y + OMINO_Y_OFFSET + bob;
       const step = phaseStep(porter.phase);
       if (porter.lastStep !== step) this.setBody(porter, step);
     }
@@ -437,7 +420,6 @@ export class TradeRouteLayer {
     edge: TradeEdge,
     indexOnEdge: number,
     countOnEdge: number,
-    globalIndex: number,
     blocked: (gx: number, gy: number) => boolean,
   ): Porter {
     const rng = rngFromString(`trade:${edge.roadId}:${indexOnEdge}`);
@@ -470,7 +452,6 @@ export class TradeRouteLayer {
       phase: rng.float() * Math.PI * 2,
       lastStep: -1,
       facing: 1,
-      bobPhase: globalIndex % BOB_OFFSETS.length,
     };
     const fraction = ((indexOnEdge + rng.float() * 0.6) / Math.max(1, countOnEdge)) % 1;
     porter.distance = path.totalLength > 0 ? fraction * path.totalLength : 0;

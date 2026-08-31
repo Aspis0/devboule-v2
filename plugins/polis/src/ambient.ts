@@ -44,14 +44,6 @@ const ITINERARY_LENGTH = 6;
 const AMBIENT_CITIZEN_TYPES = ["citizen", "noble", "foreigner"] as const;
 type AmbientCitizenType = (typeof AMBIENT_CITIZEN_TYPES)[number];
 
-/** Keep lane separation while choosing the down-screen side whenever a lane
- * has a screen-vertical component. This preserves the deterministic lane
- * magnitude but never spends the facade margin by moving a figure up-screen. */
-export function downscreenLaneOffset(offset: number, dx: number, _dy: number): number {
-  if (dx === 0) return offset;
-  return Math.sign(dx) * Math.abs(offset);
-}
-
 export interface AmbientNode {
   id: string;
   gridX: number;
@@ -542,9 +534,7 @@ function buildAmbientPath(
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const safe = buildSafeSplineLeg(isoRoute, leg, blocked);
-    const lane = safe.laneOffsetClamped
-      ? 0
-      : downscreenLaneOffset(directedLaneOffset(walkerId, dx, dy), dx, dy);
+    const lane = safe.laneOffsetClamped ? 0 : directedLaneOffset(walkerId, dx, dy);
     const length = Math.hypot(dx, dy) || 1;
     const samples = Math.max(2, Math.ceil(length / 8));
     for (let sampleIndex = 0; sampleIndex <= samples; sampleIndex += 1) {
