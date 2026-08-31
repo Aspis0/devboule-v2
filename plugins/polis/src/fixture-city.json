@@ -75,7 +75,7 @@
     {
       "id": "crates/devboule-daemon/src/client.rs",
       "path": "crates/devboule-daemon/src/client.rs",
-      "lines": 495,
+      "lines": 496,
       "district": "crates"
     },
     {
@@ -105,7 +105,7 @@
     {
       "id": "crates/devboule-daemon/src/lib.rs",
       "path": "crates/devboule-daemon/src/lib.rs",
-      "lines": 68,
+      "lines": 69,
       "district": "crates"
     },
     {
@@ -153,7 +153,7 @@
     {
       "id": "crates/devboule-daemon/src/server.rs",
       "path": "crates/devboule-daemon/src/server.rs",
-      "lines": 1044,
+      "lines": 1051,
       "district": "crates"
     },
     {
@@ -181,6 +181,42 @@
       "district": "crates"
     },
     {
+      "id": "crates/devboule-plugin-rpc/src/error.rs",
+      "path": "crates/devboule-plugin-rpc/src/error.rs",
+      "lines": 84,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-plugin-rpc/src/lib.rs",
+      "path": "crates/devboule-plugin-rpc/src/lib.rs",
+      "lines": 70,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-plugin-rpc/src/pipe.rs",
+      "path": "crates/devboule-plugin-rpc/src/pipe.rs",
+      "lines": 191,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-plugin-rpc/src/server.rs",
+      "path": "crates/devboule-plugin-rpc/src/server.rs",
+      "lines": 144,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-plugin-rpc/src/session.rs",
+      "path": "crates/devboule-plugin-rpc/src/session.rs",
+      "lines": 348,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-plugin-rpc/src/spawn.rs",
+      "path": "crates/devboule-plugin-rpc/src/spawn.rs",
+      "lines": 102,
+      "district": "crates"
+    },
+    {
       "id": "crates/devboule-protocol/src/capability.rs",
       "path": "crates/devboule-protocol/src/capability.rs",
       "lines": 56,
@@ -195,7 +231,7 @@
     {
       "id": "crates/devboule-protocol/src/handshake.rs",
       "path": "crates/devboule-protocol/src/handshake.rs",
-      "lines": 185,
+      "lines": 281,
       "district": "crates"
     },
     {
@@ -207,13 +243,19 @@
     {
       "id": "crates/devboule-protocol/src/lib.rs",
       "path": "crates/devboule-protocol/src/lib.rs",
-      "lines": 169,
+      "lines": 213,
       "district": "crates"
     },
     {
       "id": "crates/devboule-protocol/src/messages.rs",
       "path": "crates/devboule-protocol/src/messages.rs",
-      "lines": 425,
+      "lines": 470,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-protocol/src/plugin.rs",
+      "path": "crates/devboule-protocol/src/plugin.rs",
+      "lines": 36,
       "district": "crates"
     },
     {
@@ -421,6 +463,18 @@
       "district": "crates"
     },
     {
+      "id": "crates/polis-backend/src/lib.rs",
+      "path": "crates/polis-backend/src/lib.rs",
+      "lines": 145,
+      "district": "crates"
+    },
+    {
+      "id": "crates/polis-backend/src/main.rs",
+      "path": "crates/polis-backend/src/main.rs",
+      "lines": 49,
+      "district": "crates"
+    },
+    {
       "id": "src-tauri/src/backend/error.rs",
       "path": "src-tauri/src/backend/error.rs",
       "lines": 186,
@@ -447,7 +501,7 @@
     {
       "id": "src-tauri/src/lib.rs",
       "path": "src-tauri/src/lib.rs",
-      "lines": 84,
+      "lines": 89,
       "district": "src-tauri"
     },
     {
@@ -489,7 +543,13 @@
     {
       "id": "src-tauri/src/plugins/mod.rs",
       "path": "src-tauri/src/plugins/mod.rs",
-      "lines": 324,
+      "lines": 334,
+      "district": "src-tauri"
+    },
+    {
+      "id": "src-tauri/src/plugins/rpc.rs",
+      "path": "src-tauri/src/plugins/rpc.rs",
+      "lines": 296,
       "district": "src-tauri"
     },
     {
@@ -619,15 +679,21 @@
       "district": "src"
     },
     {
+      "id": "src/features/plugins/pluginBackend.ts",
+      "path": "src/features/plugins/pluginBackend.ts",
+      "lines": 21,
+      "district": "src"
+    },
+    {
       "id": "src/features/plugins/pluginBridge.test.ts",
       "path": "src/features/plugins/pluginBridge.test.ts",
-      "lines": 166,
+      "lines": 260,
       "district": "src"
     },
     {
       "id": "src/features/plugins/pluginBridge.ts",
       "path": "src/features/plugins/pluginBridge.ts",
-      "lines": 151,
+      "lines": 182,
       "district": "src"
     },
     {
@@ -639,7 +705,7 @@
     {
       "id": "src/features/plugins/PluginSurface.tsx",
       "path": "src/features/plugins/PluginSurface.tsx",
-      "lines": 147,
+      "lines": 158,
       "district": "src"
     },
     {
@@ -651,7 +717,7 @@
     {
       "id": "src/features/polis/PolisSurface.test.tsx",
       "path": "src/features/polis/PolisSurface.test.tsx",
-      "lines": 159,
+      "lines": 171,
       "district": "src"
     },
     {
@@ -861,7 +927,7 @@
     {
       "id": "src/lib/tauri.ts",
       "path": "src/lib/tauri.ts",
-      "lines": 185,
+      "lines": 198,
       "district": "src"
     },
     {
@@ -909,7 +975,7 @@
     {
       "id": "src/types/ipc.ts",
       "path": "src/types/ipc.ts",
-      "lines": 290,
+      "lines": 299,
       "district": "src"
     },
     {
@@ -1171,9 +1237,34 @@
       "weight": 1
     },
     {
+      "from": "crates/devboule-plugin-rpc/src/server.rs",
+      "to": "crates/devboule-plugin-rpc/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-plugin-rpc/src/server.rs",
+      "to": "crates/devboule-plugin-rpc/src/pipe.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-plugin-rpc/src/server.rs",
+      "to": "crates/devboule-plugin-rpc/src/spawn.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-plugin-rpc/src/session.rs",
+      "to": "crates/devboule-plugin-rpc/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-plugin-rpc/src/session.rs",
+      "to": "crates/devboule-plugin-rpc/src/spawn.rs",
+      "weight": 1
+    },
+    {
       "from": "crates/devboule-protocol/src/handshake.rs",
       "to": "crates/devboule-protocol/src/capability.rs",
-      "weight": 1
+      "weight": 2
     },
     {
       "from": "crates/devboule-protocol/src/handshake.rs",
@@ -1441,6 +1532,16 @@
       "weight": 1
     },
     {
+      "from": "src-tauri/src/plugins/rpc.rs",
+      "to": "src-tauri/src/backend/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "src-tauri/src/plugins/rpc.rs",
+      "to": "src-tauri/src/oracle/mod.rs",
+      "weight": 1
+    },
+    {
       "from": "src/app/App.tsx",
       "to": "src/app/Shell.tsx",
       "weight": 1
@@ -1606,6 +1707,16 @@
       "weight": 1
     },
     {
+      "from": "src/features/plugins/pluginBackend.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/pluginBackend.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
       "from": "src/features/plugins/pluginBridge.test.ts",
       "to": "src/features/plugins/pluginBridge.ts",
       "weight": 1
@@ -1613,6 +1724,11 @@
     {
       "from": "src/features/plugins/PluginSurface.test.tsx",
       "to": "src/features/plugins/PluginSurface.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/PluginSurface.tsx",
+      "to": "src/features/plugins/pluginBackend.ts",
       "weight": 1
     },
     {

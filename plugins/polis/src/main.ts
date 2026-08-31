@@ -2,6 +2,7 @@ import "pixi.js/unsafe-eval";
 import { Application } from "pixi.js";
 import { loadPolisArt } from "./artAssets";
 import fixtureCity from "./fixture-city.json";
+import { formatHandshakeReadout, formatWorkspaceRootReadout, invokeHost } from "./hostBridge";
 import { CityRenderer } from "./renderer";
 import type { City, CityFile } from "./model";
 
@@ -9,6 +10,7 @@ const canvas = getElement<HTMLCanvasElement>("scene");
 const webglReadout = getElement<HTMLElement>("webgl");
 const tauriReadout = getElement<HTMLElement>("tauri");
 const bridgeReadout = getElement<HTMLElement>("bridge");
+const backendReadout = getElement<HTMLElement>("backend");
 const cityReadout = getElement<HTMLElement>("city");
 const agentReadout = getElement<HTMLElement>("agents");
 const rosterReadout = getElement<HTMLElement>("roster");
@@ -23,7 +25,7 @@ renderCityStats(city);
 bindHudToggle();
 const isolationMeasurement = measureTauriIsolation();
 void isolationMeasurement.then((isolation) => reportIsolationOutcome(isolation));
-requestBridgeProbe();
+void reportBackend();
 void startRenderer();
 
 type IsolationOutcome =
@@ -165,48 +167,16 @@ function isProbeTimeout(error: unknown): boolean {
   return error instanceof Error && error.name === "TauriProbeTimeoutError";
 }
 
-function requestBridgeProbe(): void {
-  const requestId = `polis-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
-  let replyReceived = false;
-  window.addEventListener("message", (event) => {
-    if (replyReceived || event.source !== window.parent) return;
-    const message = event.data;
-    if (
-      message === null ||
-      typeof message !== "object" ||
-      message.v !== 1 ||
-      message.id !== requestId ||
-      (message.kind !== "error" && message.kind !== "result")
-    ) {
-      return;
-    }
-
-    replyReceived = true;
-    if (message.kind === "error") {
-      const expected =
-        message.message === 'The host cannot route plugin method "oracle.search" yet';
-      bridgeReadout.textContent = expected
-        ? `Bridge reply: refusal (expected) — ${message.message}`
-        : `Bridge reply: error — ${message.message}`;
-    } else {
-      bridgeReadout.textContent = `Bridge reply: result — ${JSON.stringify(message.value)}`;
-    }
-  });
-
-  window.parent.postMessage(
-    {
-      v: 1,
-      id: requestId,
-      kind: "invoke",
-      method: "oracle.search",
-      payload: { isolation: { status: "measurement-pending" } },
-    },
-    "*",
-  );
-  window.setTimeout(() => {
-    if (!replyReceived)
-      bridgeReadout.textContent = "Bridge reply: no reply (silence after 4 seconds)";
-  }, 4000);
+async function reportBackend(): Promise<void> {
+  try {
+    const value = await invokeHost("workspace.root");
+    bridgeReadout.textContent = formatWorkspaceRootReadout(value);
+    backendReadout.textContent = formatHandshakeReadout(value);
+  } catch (error) {
+    const message = errorMessage(error);
+    bridgeReadout.textContent = `Bridge reply: error — ${message}`;
+    backendReadout.textContent = `Backend: error — ${message}`;
+  }
 }
 
 function reportIsolationOutcome(isolation: IsolationOutcome): void {
