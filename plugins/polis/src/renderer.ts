@@ -1,4 +1,5 @@
 import { Application, Container, Graphics, Matrix, Rectangle, type Texture } from "pixi.js";
+import { AmbientLayer, AMBIENT_LOD_ZOOM, desiredAmbientCount } from "./ambient";
 import { BuildingTextureAtlas } from "./buildingAtlas";
 import { AgentLayer } from "./agents";
 import { animationPoint, buildGreekBuildingArt, buildGreekMonument, metricsFromFrame } from "./art";
@@ -71,6 +72,7 @@ export class CityRenderer {
   private readonly findingLayer: FindingLayer;
   private readonly agentLayer: AgentLayer;
   private readonly tradeRouteLayer: TradeRouteLayer;
+  private readonly ambientLayer: AmbientLayer;
   private readonly buildingViews: ViewEntry[] = [];
   private readonly roadViews: ViewEntry[] = [];
   private readonly monumentViews: ViewEntry[] = [];
@@ -107,6 +109,7 @@ export class CityRenderer {
       this.buildings,
     );
     this.tradeRouteLayer = new TradeRouteLayer(this.buildings, this.app.renderer, this.atlas);
+    this.ambientLayer = new AmbientLayer(this.buildings, this.bank);
     this.world.addChild(
       this.ground,
       this.roads,
@@ -143,7 +146,9 @@ export class CityRenderer {
       this.agentLayer.step(deltaMs);
       this.tradeRouteLayer.update(deltaMs);
       this.tradeRouteLayer.step(Math.floor((this.animTime * 1000) / 220));
+      this.ambientLayer.update(deltaMs);
       this.updateCulling();
+      this.ambientLayer.step();
       this.app.renderer.render(this.app.stage);
     });
     this.app.ticker.start();
@@ -203,6 +208,31 @@ export class CityRenderer {
             gridY < footprint.y + footprint.height,
         ),
     );
+    this.ambientLayer.setWorld(
+      routes.roads,
+      (fileId) => {
+        const layout = this.layoutById.get(fileId);
+        return layout === undefined
+          ? null
+          : {
+              id: fileId,
+              gridX: layout.gridX,
+              gridY: layout.gridY,
+              worldX: layout.worldX,
+              worldY: layout.worldY,
+              footprint: layout.footprint,
+            };
+      },
+      (gridX, gridY) =>
+        blockedFootprints.some(
+          (footprint) =>
+            gridX >= footprint.x &&
+            gridX < footprint.x + footprint.width &&
+            gridY >= footprint.y &&
+            gridY < footprint.y + footprint.height,
+        ),
+    );
+    this.ambientLayer.setCount(desiredAmbientCount(this.ambientLayer.nodeCount));
   }
 
   private drawGround(layouts: LayoutFile[]): void {
@@ -609,6 +639,14 @@ export class CityRenderer {
       this.zoom,
     );
     this.tradeRouteLayer.setLodVisible(this.zoom >= TRADE_LOD_ZOOM);
+    this.ambientLayer.updateViewport(
+      this.world.position.x,
+      this.world.position.y,
+      width,
+      height,
+      this.zoom,
+    );
+    this.ambientLayer.setLodVisible(this.zoom >= AMBIENT_LOD_ZOOM);
   }
 
   private cullViews(views: readonly ViewEntry[], width: number, height: number): void {

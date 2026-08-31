@@ -196,7 +196,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
   // side on a body 7.2 wide reads as the splits. Amplitude comes down to keep
   // the separation without the compass.
   const swing = sw * 1.55;
-  const stride = moving ? (swing >= 0 ? swing + 0.55 : swing - 0.55) : 1.5;
+  const stride = moving ? (swing >= 0 ? swing + 1.2 : swing - 1.2) : 1.5;
   jointedLimb(g, 0.4 * s, hipY, stride * s, 0, 2.3 * s, SKd, 0.26 * s);
   jointedLimb(g, -0.4 * s, hipY, -stride * s, 0, 2.5 * s, SK, 0.26 * s);
   // feet
