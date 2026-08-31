@@ -62,6 +62,6 @@ describe("v1 footprint-aware city layout", () => {
     const separatedX = Math.max(aMinX - bMaxX, bMinX - aMaxX);
     const separatedY = Math.max(aMinY - bMaxY, bMinY - aMaxY);
 
-    expect(Math.max(separatedX, separatedY)).toBeGreaterThanOrEqual(8);
+    expect(Math.max(separatedX, separatedY)).toBeGreaterThanOrEqual(4);
   });
 });

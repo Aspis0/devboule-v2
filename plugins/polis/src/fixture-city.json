@@ -9,7 +9,7 @@
     {
       "id": "crates/devboule-augur/src/detectors/clippy.rs",
       "path": "crates/devboule-augur/src/detectors/clippy.rs",
-      "lines": 206,
+      "lines": 226,
       "district": "crates"
     },
     {
@@ -21,7 +21,7 @@
     {
       "id": "crates/devboule-augur/src/detectors/secrets.rs",
       "path": "crates/devboule-augur/src/detectors/secrets.rs",
-      "lines": 387,
+      "lines": 433,
       "district": "crates"
     },
     {
@@ -39,13 +39,13 @@
     {
       "id": "crates/devboule-augur/src/finding.rs",
       "path": "crates/devboule-augur/src/finding.rs",
-      "lines": 392,
+      "lines": 406,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/ledger.rs",
       "path": "crates/devboule-augur/src/ledger.rs",
-      "lines": 179,
+      "lines": 198,
       "district": "crates"
     },
     {
@@ -57,7 +57,7 @@
     {
       "id": "crates/devboule-augur/src/ruleset.rs",
       "path": "crates/devboule-augur/src/ruleset.rs",
-      "lines": 264,
+      "lines": 302,
       "district": "crates"
     },
     {
@@ -633,13 +633,25 @@
     {
       "id": "src/features/plugins/PluginSurface.tsx",
       "path": "src/features/plugins/PluginSurface.tsx",
-      "lines": 84,
+      "lines": 141,
+      "district": "src"
+    },
+    {
+      "id": "src/features/polis/polis.css",
+      "path": "src/features/polis/polis.css",
+      "lines": 39,
+      "district": "src"
+    },
+    {
+      "id": "src/features/polis/PolisSurface.test.tsx",
+      "path": "src/features/polis/PolisSurface.test.tsx",
+      "lines": 138,
       "district": "src"
     },
     {
       "id": "src/features/polis/PolisSurface.tsx",
       "path": "src/features/polis/PolisSurface.tsx",
-      "lines": 135,
+      "lines": 140,
       "district": "src"
     },
     {
@@ -1580,6 +1592,31 @@
     {
       "from": "src/features/plugins/PluginSurface.tsx",
       "to": "src/features/plugins/pluginBridge.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/PluginSurface.tsx",
+      "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.test.tsx",
+      "to": "src/features/polis/PolisSurface.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.test.tsx",
+      "to": "src/store/appStore.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.test.tsx",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/polis/PolisSurface.test.tsx",
+      "to": "src/types/surface.ts",
       "weight": 1
     },
     {

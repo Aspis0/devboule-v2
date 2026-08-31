@@ -3,10 +3,11 @@ import { BuildingTextureAtlas } from "./buildingAtlas";
 import { AgentLayer } from "./agents";
 import { animationPoint, buildGreekBuildingArt, buildGreekMonument, metricsFromFrame } from "./art";
 import { FindingLayer } from "./findings";
-import { depthKey } from "./iso";
+import { cartToIso, depthKey } from "./iso";
 import type { City, CityFile } from "./model";
 import { createLayout, type LayoutFile } from "./layout";
 import { PALETTE } from "./palette";
+import { routeRoads, type RoadPoint } from "./roadGraph";
 import { computeExtent, drawTerrain } from "./terrain";
 import type { AnimInstance } from "./kitcd/anims";
 import type { SpriteBank } from "./spriteAssets";
@@ -105,23 +106,35 @@ export class CityRenderer {
   private build(city: City): void {
     const layouts = createLayout(city.files, city.imports);
     for (const layout of layouts) this.layoutById.set(layout.file.id, layout);
+    const routes = routeRoads(
+      layouts.map((layout) => ({
+        id: layout.file.id,
+        x: layout.gridX,
+        y: layout.gridY,
+        footprint: layout.footprint,
+      })),
+      city.imports,
+    );
 
     for (const layout of layouts) this.addBuilding(layout);
     this.drawGround(layouts);
-    for (const cityImport of city.imports) {
-      const from = this.layoutById.get(cityImport.from);
-      const to = this.layoutById.get(cityImport.to);
-      if (from !== undefined && to !== undefined) this.addRoad(from, to, cityImport.weight);
+    for (const road of routes.roads) {
+      const from = this.layoutById.get(road.from);
+      const to = this.layoutById.get(road.to);
+      if (from !== undefined && to !== undefined) this.addRoad(from, to, road.weight, road.path);
     }
   }
 
   private drawGround(layouts: LayoutFile[]): void {
-    const extent = computeExtent(
-      layouts.map((layout) => ({ x: layout.gridX, y: layout.gridY })),
-      12,
-      12,
-      5,
-    );
+    const groundPoints: { x: number; y: number }[] = [];
+    for (const layout of layouts) {
+      groundPoints.push({ x: layout.gridX, y: layout.gridY });
+      groundPoints.push({
+        x: layout.gridX + layout.footprint[0],
+        y: layout.gridY + layout.footprint[1],
+      });
+    }
+    const extent = computeExtent(groundPoints, 12, 12, 8);
     const terrain = drawTerrain(extent, this.bank);
     for (const graphic of terrain.graphics) this.ground.addChild(graphic);
 
@@ -130,39 +143,75 @@ export class CityRenderer {
     // is invented here; its grass, dirt, texture, and edge work are real kit art.
   }
 
-  private addRoad(from: LayoutFile, to: LayoutFile, weight: number): void {
+  private addRoad(
+    from: LayoutFile,
+    to: LayoutFile,
+    weight: number,
+    path: readonly RoadPoint[] | null,
+  ): void {
     const road = new Container();
     // The road geometry is static: one Graphics path and arrow are retained for
     // the life of the city, while culling only changes `renderable`.
     const graphic = new Graphics();
-    const dx = to.worldX - from.worldX;
-    const dy = to.worldY - from.worldY;
-    const length = Math.hypot(dx, dy) || 1;
-    const ux = dx / length;
-    const uy = dy / length;
+    const routed = path !== null && path.length >= 2;
+    const points = routed
+      ? path.map((point) => cartToIso(point.x, point.y))
+      : [
+          { x: from.worldX, y: from.worldY },
+          { x: to.worldX, y: to.worldY },
+        ];
+    const first = points[0];
+    const last = points[points.length - 1];
+    const previous = points.length > 1 ? points[points.length - 2] : first;
+    const dx = last.x - previous.x;
+    const dy = last.y - previous.y;
+    const lastSegmentLength = Math.hypot(dx, dy) || 1;
+    const ux = dx / lastSegmentLength;
+    const uy = dy / lastSegmentLength;
     const width = Math.min(10, 2 + Math.log2(weight + 1) * 2.4);
-    const startInset = 25;
-    const endInset = 25;
-    graphic
-      .moveTo(from.worldX + ux * startInset, from.worldY + uy * startInset)
-      .lineTo(to.worldX - ux * endInset, to.worldY - uy * endInset)
-      .stroke({ color: PALETTE.road, alpha: 0.82, width });
-    const arrowX = to.worldX - ux * (endInset + 7);
-    const arrowY = to.worldY - uy * (endInset + 7);
-    const nx = -uy;
-    const ny = ux;
-    graphic
-      .moveTo(arrowX - ux * 9 + nx * 4, arrowY - uy * 9 + ny * 4)
-      .lineTo(arrowX, arrowY)
-      .lineTo(arrowX - ux * 9 - nx * 4, arrowY - uy * 9 - ny * 4)
-      .stroke({ color: PALETTE.roadArrow, alpha: 0.95, width: Math.max(1, width / 2) });
+    const startInset = routed ? 0 : 25;
+    const endInset = routed ? 0 : 25;
+    const start = {
+      x: first.x + ux * startInset,
+      y: first.y + uy * startInset,
+    };
+    const end = {
+      x: last.x - ux * endInset,
+      y: last.y - uy * endInset,
+    };
+    graphic.moveTo(start.x, start.y);
+    for (let index = 1; index < points.length - 1; index += 1) {
+      graphic.lineTo(points[index].x, points[index].y);
+    }
+    graphic.lineTo(end.x, end.y).stroke({ color: PALETTE.road, alpha: 0.82, width });
+    if (points.length > 1 && (end.x !== previous.x || end.y !== previous.y)) {
+      const arrowX = end.x - ux * 7;
+      const arrowY = end.y - uy * 7;
+      const nx = -uy;
+      const ny = ux;
+      graphic
+        .moveTo(arrowX - ux * 9 + nx * 4, arrowY - uy * 9 + ny * 4)
+        .lineTo(arrowX, arrowY)
+        .lineTo(arrowX - ux * 9 - nx * 4, arrowY - uy * 9 - ny * 4)
+        .stroke({ color: PALETTE.roadArrow, alpha: 0.95, width: Math.max(1, width / 2) });
+    }
     road.addChild(graphic);
     this.roads.addChild(road);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const point of points) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
     this.roadViews.push({
       display: road,
-      worldX: (from.worldX + to.worldX) / 2,
-      worldY: (from.worldY + to.worldY) / 2,
-      radius: length / 2 + 30,
+      worldX: (minX + maxX) / 2,
+      worldY: (minY + maxY) / 2,
+      radius: Math.hypot(maxX - minX, maxY - minY) / 2 + 30,
     });
   }
 
@@ -279,7 +328,7 @@ export class CityRenderer {
       maxY = Math.max(maxY, view.worldY + view.radius);
     }
     if (!Number.isFinite(minX)) return;
-    const padding = 1.12;
+    const padding = 1.16;
     this.zoom = clamp(
       Math.min(
         this.app.screen.width / ((maxX - minX) * padding),
@@ -288,8 +337,10 @@ export class CityRenderer {
       MIN_ZOOM,
       1.1,
     );
-    this.panX = 0;
-    this.panY = 36;
+    const cityCenterX = (minX + maxX) / 2;
+    const cityCenterY = (minY + maxY) / 2;
+    this.panX = -cityCenterX * this.zoom;
+    this.panY = -cityCenterY * this.zoom;
   }
 
   private updateCamera(): void {

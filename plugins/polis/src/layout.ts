@@ -55,11 +55,13 @@ interface DistrictCenter {
 }
 
 /** Empty tiles around every real footprint. These are the street/yard cells
- * that v1's A* router threads through instead of routing over buildings. */
-export const BUILDING_STREET_GAP = 3;
+ * that v1's A* router threads through instead of routing over buildings. One
+ * tile is enough for the v2 viewport: the routed polyline occupies the gap,
+ * while a larger reserve reads as countryside between small houses. */
+export const BUILDING_STREET_GAP = 1;
 
 /** Empty tiles between packed district boxes so quarters remain legible. */
-export const DISTRICT_MARGIN = 8;
+export const DISTRICT_MARGIN = 4;
 
 const GOLDEN_ANGLE = 2.399_963_229_728_653;
 
