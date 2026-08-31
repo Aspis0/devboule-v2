@@ -10,6 +10,7 @@ import {
 import { BuildingTextureAtlas, type TextureSource } from "./buildingAtlas";
 import { farLodBlend } from "./lod";
 import { hashString } from "./rng";
+import { personDepth, personDepthFromIso } from "./depth";
 
 export interface AgentLayout {
   worldX: number;
@@ -492,11 +493,9 @@ function stateAlpha(state: CityAgentState): number {
 
 function layoutDepth(layout: AgentLayout): number {
   if (layout.gridX !== undefined && layout.gridY !== undefined) {
-    return layout.gridX + layout.gridY + 0.2;
+    return personDepth(layout.gridX, layout.gridY);
   }
-  // Headless callers do not need grid coordinates; the projected fallback is
-  // stable and preserves front-to-back ordering among those callers.
-  return layout.worldX + layout.worldY;
+  return personDepthFromIso(layout.worldX, layout.worldY);
 }
 
 function stablePhase(id: string): number {

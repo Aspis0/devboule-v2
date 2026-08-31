@@ -14,6 +14,7 @@ import {
 } from "./camera";
 import { FindingLayer } from "./findings";
 import { cartToIso, depthKey } from "./iso";
+import { buildingDepth } from "./depth";
 import type { City, CityFile } from "./model";
 import { createLayout, type LayoutFile } from "./layout";
 import { ROAD_ARROW_COLORS } from "./palette";
@@ -497,7 +498,7 @@ export class CityRenderer {
     });
 
     art.display.position.set(layout.worldX, layout.worldY);
-    art.display.zIndex = depthKey(layout.gridX, layout.gridY);
+    art.display.zIndex = buildingDepth(layout.gridX, layout.gridY, layout.footprint);
     art.display.eventMode = "static";
     art.display.cursor = "pointer";
     art.display.hitArea = new Rectangle(
@@ -510,7 +511,7 @@ export class CityRenderer {
     art.display.on("pointerout", () => this.details.clearDetails());
     this.buildings.addChild(art.display);
     art.shadow.position.set(layout.worldX, layout.worldY);
-    art.shadow.zIndex = depthKey(layout.gridX, layout.gridY);
+    art.shadow.zIndex = buildingDepth(layout.gridX, layout.gridY, layout.footprint);
     this.shadows.addChild(art.shadow);
     this.buildingViews.push({
       display: art.display,

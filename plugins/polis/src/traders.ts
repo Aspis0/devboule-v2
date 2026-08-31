@@ -25,6 +25,7 @@ import {
 import { defaultTunic, shadeColor } from "./kitcd/people";
 import { type RoutedRoad, type RoadPoint } from "./roadGraph";
 import { rngFromString } from "./rng";
+import { personDepthValue } from "./depth";
 
 const OMINO_Y_OFFSET = -4;
 const WALK_SPEED = 40;
@@ -513,5 +514,5 @@ function setPosition(porter: Porter): void {
   else if (to.x - from.x < -0.01) porter.facing = -1;
   porter.container.position.set(porter.x, porter.y + OMINO_Y_OFFSET);
   porter.container.scale.x = porter.facing;
-  porter.container.zIndex = porter.depth + 0.25;
+  porter.container.zIndex = personDepthValue(porter.depth);
 }

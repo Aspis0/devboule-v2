@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import fixture from "./fixture-city.json";
 import { fitInitialCamera, projectedBuildingBounds } from "./camera";
 import { createLayout } from "./layout";
+import type { City } from "./model";
 import { ROAD_ARROW_COLORS } from "./palette";
 import { routeRoads, segmentKey, segmentUsage } from "./roadGraph";
 import {
@@ -15,6 +16,8 @@ import {
   type RoadSurfaceKind,
 } from "./roadSurface";
 import { DERIVED } from "./terrainPalette";
+
+const fixtureCity = fixture as unknown as City;
 
 describe("v1 road surface hierarchy", () => {
   it("promotes shared urban segments to limestone trunks", () => {
@@ -71,7 +74,7 @@ describe("v1 road surface hierarchy", () => {
   });
 
   it("measures the current fixture distribution before any threshold change", () => {
-    const layouts = createLayout(fixture.files, fixture.imports);
+    const layouts = createLayout(fixtureCity.files, fixtureCity.imports);
     const routes = routeRoads(
       layouts.map((layout) => ({
         id: layout.file.id,
@@ -79,7 +82,7 @@ describe("v1 road surface hierarchy", () => {
         y: layout.gridY,
         footprint: layout.footprint,
       })),
-      fixture.imports,
+      fixtureCity.imports,
     );
     const outlines = new Map<string, { minX: number; minY: number; maxX: number; maxY: number }>();
     for (const layout of layouts) {
@@ -140,7 +143,7 @@ describe("v1 road surface hierarchy", () => {
       }
     }
     const weightCounts = new Map<number, number>();
-    for (const road of fixture.imports)
+    for (const road of fixtureCity.imports)
       weightCounts.set(road.weight, (weightCounts.get(road.weight) ?? 0) + 1);
     const footprintFitZoom = fitInitialCamera(
       projectedBuildingBounds(
