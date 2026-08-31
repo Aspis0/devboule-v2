@@ -139,6 +139,11 @@ pub struct PluginEntry {
 
 /// Scan the plugins root once.
 pub fn scan(root: &Path) -> Scan {
+    // A crash between the two install renames leaves the working copy in
+    // staging. Repair is a named function so this one stays a read of what
+    // is installed after the disk is honest again.
+    super::install::restore_interrupted_swaps(root);
+
     let mut scanned = Scan {
         root: root.to_path_buf(),
         problem: None,

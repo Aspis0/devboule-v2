@@ -258,7 +258,7 @@ fn handle<R: tauri::Runtime>(
         return;
     }
 
-    match read_contained(&root, &relative) {
+    match read_plugin_asset(&root, plugin_id, inside) {
         Some(bytes) => respond(
             responder,
             StatusCode::OK,
@@ -276,6 +276,16 @@ fn handle<R: tauri::Runtime>(
     }
 }
 
+/// Serve one file of one plugin, following links only as far as that plugin's
+/// own directory.
+pub(super) fn read_plugin_asset(
+    plugins_root: &Path,
+    plugin_id: &str,
+    inside: &str,
+) -> Option<Vec<u8>> {
+    read_contained(&plugins_root.join(plugin_id), inside)
+}
+
 /// A single asset larger than this is not held in memory to answer a request.
 /// Discovery uses the same ceiling so a plugin that could never be served is
 /// refused at verification, with a sentence, instead of 404ing at load time.
@@ -283,6 +293,10 @@ pub(super) const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A file is read only if it really lives under `root` once every link is
 /// followed, and only if it is small enough to hold in memory.
+///
+/// `root` is **this plugin's directory**, not the plugins root. A link from
+/// plugin A to a file in plugin B would pass a containment check against the
+/// shared root and be served in A's origin.
 ///
 /// The syntactic check in [`safe_relative_path`] cannot see a symlink or an
 /// NTFS junction — a link is not in the syntax. Someone able to write into the
@@ -349,6 +363,16 @@ mod tests {
             safe_relative_path("/polis/a%20b.js").as_deref(),
             Some("polis/a b.js")
         );
+        // One decode: `%2520` is a file whose name contains `%20`, not a space.
+        assert_eq!(
+            safe_relative_path("/polis/a%2520b.js").as_deref(),
+            Some("polis/a%20b.js")
+        );
+        // NUL after decoding is a control character, not a path.
+        assert!(
+            safe_relative_path("/polis/a%00b.js").is_none(),
+            "a NUL in the path must not become a file name"
+        );
     }
 
     #[test]
@@ -394,6 +418,45 @@ mod tests {
             // honest, silently passing would not be.
             eprintln!("skipped the symlink case: this machine would not create one");
         }
+    }
+
+    #[test]
+    fn a_link_into_another_plugin_is_not_served() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("plugins");
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        std::fs::create_dir_all(alpha.join("ui")).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(alpha.join("ui/index.html"), b"<p>alpha</p>").unwrap();
+        std::fs::write(beta.join("secret.js"), b"export const stolen = 1;\n").unwrap();
+
+        #[cfg(windows)]
+        let linked = std::process::Command::new("cmd")
+            .arg("/c")
+            .arg("mklink")
+            .arg("/J")
+            .arg(alpha.join("stolen"))
+            .arg(&beta)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&beta, alpha.join("stolen")).is_ok();
+        if !linked {
+            eprintln!("skipped the cross-plugin link case: this machine would not create one");
+            return;
+        }
+
+        assert_eq!(
+            read_plugin_asset(&root, "alpha", "ui/index.html").as_deref(),
+            Some(&b"<p>alpha</p>"[..]),
+            "an ordinary file of alpha must still be served"
+        );
+        assert!(
+            read_plugin_asset(&root, "alpha", "stolen/secret.js").is_none(),
+            "beta's bytes were served in alpha's origin"
+        );
     }
 
     #[test]

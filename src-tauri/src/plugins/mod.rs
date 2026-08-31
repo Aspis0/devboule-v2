@@ -90,6 +90,14 @@ impl PluginRegistry {
     /// path must be one its manifest listed — otherwise a file dropped into the
     /// directory after the scan would be servable, and the manifest would be
     /// describing something other than what the window can load.
+    ///
+    /// The backend entry is listed in `files` (it has to be, to be hashed) and
+    /// is therefore servable. That is deliberate. A fetch from the plugin's
+    /// own document is a same-origin load governed by that document's CSP
+    /// (`script-src 'self'`), which is the same power as shipping a `.js`
+    /// file. An oversized backend is still a 404: the read still enforces
+    /// the per-asset ceiling, so there is no policy bypass and no
+    /// out-of-memory from serving it.
     pub fn is_verified_asset(&self, root: &Path, id: &str, relative: &str) -> bool {
         self.with_scan(root, |scan| {
             scan.ready(id)
@@ -245,6 +253,72 @@ mod tests {
             registry.rescan(&root),
             first,
             "and asking explicitly must actually look"
+        );
+    }
+
+    fn install_with_backend(root: &Path, backend: &[u8]) {
+        let directory = root.join("polis");
+        std::fs::create_dir_all(directory.join("ui")).expect("mkdir");
+        let ui = b"<html></html>\n";
+        std::fs::write(directory.join("ui/index.html"), ui).expect("write");
+        std::fs::write(directory.join("polis-backend.exe"), backend).expect("write");
+        let digest_of = |bytes: &[u8]| -> String {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        };
+        let manifest = serde_json::json!({
+            "manifestVersion": 1,
+            "id": "polis",
+            "name": "Polis",
+            "version": "0.1.0",
+            "entry": { "ui": "ui/index.html", "backend": "polis-backend.exe" },
+            "files": {
+                "ui/index.html": digest_of(ui),
+                "polis-backend.exe": digest_of(backend),
+            },
+        });
+        std::fs::write(
+            directory.join("plugin.json"),
+            serde_json::to_vec(&manifest).expect("json"),
+        )
+        .expect("write");
+    }
+
+    #[test]
+    fn a_backend_entry_is_servable_like_any_other_listed_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("plugins");
+        let backend = b"MZ not really an exe\n";
+        install_with_backend(&root, backend);
+        let registry = PluginRegistry::default();
+
+        assert!(
+            registry.is_verified_asset(&root, "polis", "polis-backend.exe"),
+            "the backend is listed in files, so the asset server may serve it"
+        );
+        assert_eq!(
+            assets::read_plugin_asset(&root, "polis", "polis-backend.exe").as_deref(),
+            Some(&backend[..]),
+        );
+    }
+
+    #[test]
+    fn an_oversized_backend_is_not_read_into_memory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("plugins");
+        install_with_backend(&root, b"placeholder\n");
+        {
+            let file = std::fs::File::create(root.join("polis/polis-backend.exe")).expect("create");
+            file.set_len(assets::MAX_ASSET_BYTES + 1).expect("set_len");
+        }
+        // The digest no longer matches, so verification would refuse the plugin
+        // if we rescanned. The serve path still has to refuse the read: that is
+        // the ceiling that stops the out-of-memory, independent of the scan.
+        assert!(
+            assets::read_plugin_asset(&root, "polis", "polis-backend.exe").is_none(),
+            "an oversized backend must 404, not be held in memory"
         );
     }
 }

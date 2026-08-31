@@ -32,8 +32,49 @@ use super::discovery::{self, MAX_PLUGIN_BYTES};
 use super::manifest::{check_id, MANIFEST_FILE_NAME, MAX_PLUGIN_FILES};
 
 /// Where a plugin is assembled before it is allowed to exist.
-fn staging_root(plugins_root: &Path) -> PathBuf {
+pub(super) fn staging_root(plugins_root: &Path) -> PathBuf {
     plugins_root.with_file_name("plugins-staging")
+}
+
+/// Put back a plugin that a crash between the two install renames left only in
+/// staging.
+///
+/// `swap_into_place` moves `<plugins>/<id>` to `<staging>/<id>.previous` and
+/// then moves the new copy into `<plugins>/<id>`. If the process dies between
+/// those two, the plugins directory has no entry and both copies sit in
+/// staging, where a scan would never look. Restoring `.previous` is the
+/// conservative choice: the version that was already working comes back, and
+/// the update that did not finish does not.
+///
+/// Called from [`discovery::scan`] rather than inlined there so a function
+/// named `scan` does not quietly repair the disk. This is the repair; scan
+/// just asks for it first.
+pub(super) fn restore_interrupted_swaps(plugins_root: &Path) {
+    let staging = staging_root(plugins_root);
+    let Ok(entries) = std::fs::read_dir(&staging) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(id) = name.strip_suffix(".previous") else {
+            continue;
+        };
+        if check_id(id).is_err() {
+            continue;
+        }
+        let target = plugins_root.join(id);
+        match std::fs::symlink_metadata(&target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => continue,
+        }
+        if std::fs::create_dir_all(plugins_root).is_err() {
+            continue;
+        }
+        let _ = std::fs::rename(staging.join(name), target);
+    }
 }
 
 /// Copy `source` into the plugin directory named `id`, if it verifies.
@@ -97,7 +138,16 @@ pub fn install_from_directory(plugins_root: &Path, id: &str, source: &Path) -> R
         return Err(reason);
     }
 
-    swap_into_place(plugins_root, &staging, &pending, id)
+    match swap_into_place(plugins_root, &staging, &pending, id) {
+        Ok(()) => Ok(()),
+        Err(reason) => {
+            // First install: nothing was put in place, so the copy is leftover.
+            // Update: the working version was moved back, and this copy is still
+            // not the installed plugin. Either way it is ours to throw away.
+            let _ = std::fs::remove_dir_all(&pending);
+            Err(reason)
+        }
+    }
 }
 
 /// Copy the manifest and every listed file, creating the directories on the way.
@@ -128,7 +178,7 @@ fn copy_into<'a>(
 
 /// Move the verified copy into the plugins directory, keeping whatever was
 /// there until the move has succeeded.
-fn swap_into_place(
+pub(super) fn swap_into_place(
     plugins_root: &Path,
     staging: &Path,
     pending: &Path,
@@ -338,5 +388,69 @@ mod tests {
             "wrong reason: {refusal}"
         );
         assert!(discovery::scan(&root).ready("polis").is_some());
+    }
+
+    #[test]
+    fn an_interrupted_update_is_put_back_on_the_next_scan() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("data/plugins");
+        install_from_directory(&root, "polis", &unpacked(temp.path(), "polis", UI))
+            .expect("first install");
+        let staging = staging_root(&root);
+        std::fs::create_dir_all(&staging).expect("mkdir");
+        // The crash window: old copy already moved aside, new copy never landed.
+        std::fs::rename(root.join("polis"), staging.join("polis.previous"))
+            .expect("simulate crash");
+
+        assert!(
+            discovery::scan(&root).ready("polis").is_some(),
+            "the working copy sat in staging and the scan never looked there"
+        );
+        assert!(
+            root.join("polis").is_dir(),
+            "the restored plugin is not where scan looks"
+        );
+        assert!(
+            !staging.join("polis.previous").exists(),
+            "staging still holds the copy that was put back"
+        );
+    }
+
+    #[test]
+    fn a_failed_swap_puts_the_working_version_back() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("data/plugins");
+        install_from_directory(&root, "polis", &unpacked(temp.path(), "polis", UI))
+            .expect("first install");
+        let staging = staging_root(&root);
+        // pending does not exist, so rename(pending → target) fails after the
+        // working copy has already been moved aside.
+        let pending = staging.join("polis");
+        swap_into_place(&root, &staging, &pending, "polis")
+            .expect_err("a missing pending copy must not finish the swap");
+        assert_eq!(
+            std::fs::read(root.join("polis/ui/index.html")).expect("read"),
+            UI,
+            "the recovery rename did not put the working plugin back"
+        );
+    }
+
+    #[test]
+    fn a_failed_first_install_does_not_leave_staging_behind() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data = temp.path().join("data");
+        std::fs::create_dir_all(&data).expect("mkdir");
+        let root = data.join("plugins");
+        // A file where the plugins directory should be: swap cannot put anything
+        // in place, which is the first-install failure this test is about.
+        std::fs::write(&root, b"not a directory").expect("write");
+        let source = unpacked(temp.path(), "polis", UI);
+
+        install_from_directory(&root, "polis", &source)
+            .expect_err("a file cannot be the plugins directory");
+        assert!(
+            !staging_root(&root).join("polis").exists(),
+            "a failed first install left the staging copy behind"
+        );
     }
 }
