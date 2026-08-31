@@ -1,0 +1,11 @@
+Upstream repository: https://github.com/gitleaks/gitleaks
+Tag: v8.21.2
+Commit: 43fae355e6fe4d99d2a7b240a224b85e2903aeb4
+License: MIT (Zachary Rice; LICENSE is the file published at this tag)
+
+Taken:
+  config/gitleaks.toml -> gitleaks.toml  (tag v8.21.2 / 43fae355e6fe4d99d2a7b240a224b85e2903aeb4)
+  LICENSE              -> LICENSE       (2026-08-31, same tag and commit)
+
+Do not update these files without pinning a new tag here and replacing LICENSE
+from that tag.

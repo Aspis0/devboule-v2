@@ -1,0 +1,16 @@
+# Extra location rules, same loader as gitleaks. Not secrets.
+
+[[rules]]
+id = "path.absolute"
+description = "A hardcoded absolute path"
+regex = '''[A-Za-z]:(?:\\{1,2}[^\\/:*?"<>|\s]+)+'''
+
+[[rules]]
+id = "path.unix-absolute"
+description = "A hardcoded absolute path"
+regex = '''['"]/(?:home|usr|var|tmp|opt|etc)/[^'"\s]+'''
+
+[[rules]]
+id = "url.localhost"
+description = "A hardcoded localhost URL"
+regex = '''(?i)https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?'''

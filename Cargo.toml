@@ -4,6 +4,7 @@ members = [
     "crates/devboule-protocol",
     "crates/devboule-daemon",
     "crates/oracle-core",
+    "crates/devboule-augur",
 ]
 resolver = "2"
 
