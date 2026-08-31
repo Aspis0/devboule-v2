@@ -1,40 +1,39 @@
-// Classic 2:1 isometric projection. Keeping this module free of PixiJS makes
-// camera math and draw-order rules cheap to test independently of a browser.
+/**
+ * Polis projection entry point.
+ *
+ * The projection primitives below are the v1 kitcd implementation. The small
+ * compatibility helpers keep the v2 city layout readable without duplicating
+ * its projection math; all renderer geometry goes through the same 96x48,
+ * 2:1 projection used by the Greek art kit.
+ */
+export * from "./kitcd/iso";
 
-export const TILE_W = 96;
-export const TILE_H = 48;
+import { makeProj, project, TILE_H, TILE_W } from "./kitcd/iso";
 
-const HALF_W = TILE_W / 2;
-const HALF_H = TILE_H / 2;
+const CITY_PROJECTION = makeProj(0, 0);
 
-export interface IsoPoint {
-  x: number;
-  y: number;
+export function cartToIso(x: number, y: number, z = 0): { x: number; y: number } {
+  return project(CITY_PROJECTION, x, y, z);
 }
 
-/** Project a cartesian tile coordinate into screen-space isometric pixels. */
-export function cartToIso(x: number, y: number): IsoPoint {
+export function isoToCart(x: number, y: number): { x: number; y: number } {
+  const horizontal = x / (TILE_W / 2);
+  const vertical = y / (TILE_H / 2);
   return {
-    x: (x - y) * HALF_W,
-    y: (x + y) * HALF_H,
+    x: (horizontal + vertical) / 2,
+    y: (vertical - horizontal) / 2,
   };
 }
 
-/** Invert {@link cartToIso}; useful for camera anchors while zooming. */
-export function isoToCart(sx: number, sy: number): IsoPoint {
-  return {
-    x: (sx / HALF_W + sy / HALF_H) / 2,
-    y: (sy / HALF_H - sx / HALF_W) / 2,
-  };
-}
-
-/** Isometric depth increases toward the viewer along the x+y diagonal. */
 export function depthKey(x: number, y: number): number {
   return x + y;
 }
 
-/** Four points for a flat isometric diamond centered at a screen point. */
-export function diamondPoints(center: IsoPoint, width: number, height: number): number[] {
+export function diamondPoints(
+  center: { x: number; y: number },
+  width = TILE_W,
+  height = TILE_H,
+): number[] {
   return [
     center.x,
     center.y - height / 2,

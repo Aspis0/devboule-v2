@@ -1,5 +1,6 @@
 import "pixi.js/unsafe-eval";
 import { Application } from "pixi.js";
+import { loadPolisArt } from "./artAssets";
 import fixtureCity from "./fixture-city.json";
 import { CityRenderer } from "./renderer";
 import type { City, CityFile } from "./model";
@@ -9,11 +10,17 @@ const webglReadout = getElement<HTMLElement>("webgl");
 const tauriReadout = getElement<HTMLElement>("tauri");
 const bridgeReadout = getElement<HTMLElement>("bridge");
 const cityReadout = getElement<HTMLElement>("city");
+const agentReadout = getElement<HTMLElement>("agents");
+const rosterReadout = getElement<HTMLElement>("roster");
+const findingReadout = getElement<HTMLElement>("findings");
 const detailsReadout = getElement<HTMLElement>("details");
+const hudToggle = getElement<HTMLButtonElement>("hud-toggle");
+const hudDetails = getElement<HTMLDivElement>("hud-details");
 const city = fixtureCity as City;
 const TAURI_PROBE_TIMEOUT_MS = 4000;
 
 renderCityStats(city);
+bindHudToggle();
 const isolationMeasurement = measureTauriIsolation();
 void isolationMeasurement.then((isolation) => reportIsolationOutcome(isolation));
 requestBridgeProbe();
@@ -60,6 +67,8 @@ async function startRenderer(): Promise<void> {
     return;
   }
 
+  const bank = await loadPolisArt();
+
   new CityRenderer({
     app,
     canvas,
@@ -68,6 +77,7 @@ async function startRenderer(): Promise<void> {
       setDetails: (file) => showFileDetails(file),
       clearDetails: () => clearFileDetails(),
     },
+    bank,
   });
 }
 
@@ -214,7 +224,22 @@ function reportIsolationOutcome(isolation: IsolationOutcome): void {
 }
 
 function renderCityStats(value: City): void {
-  cityReadout.textContent = `Fixture city · ${value.files.length} files · ${value.imports.length} directed roads`;
+  const knownFileIds = new Set(value.files.map((file) => file.id));
+  const placedAgents = value.agents.filter(
+    (agent) => agent.fileId !== null && knownFileIds.has(agent.fileId),
+  ).length;
+  const rosterAgents = value.agents.length - placedAgents;
+  const placedFindings = value.findings.filter((finding) =>
+    knownFileIds.has(finding.fileId),
+  ).length;
+  const source = value.dataSource === "host" ? "Host city" : "Fixture city";
+  cityReadout.textContent = `${source} · ${value.files.length} files · ${value.imports.length} directed roads`;
+  agentReadout.textContent = `Agents fixture · ${placedAgents} on buildings · ${rosterAgents} roster-only`;
+  rosterReadout.textContent =
+    rosterAgents === 0
+      ? "Roster: empty"
+      : `Roster: ${rosterAgents} session${rosterAgents === 1 ? "" : "s"} without a touched file (not drawn)`;
+  findingReadout.textContent = `Findings fixture · ${placedFindings} open · smoke / fire / inferno`;
 }
 
 function showFileDetails(file: CityFile): void {
@@ -223,6 +248,17 @@ function showFileDetails(file: CityFile): void {
 
 function clearFileDetails(): void {
   detailsReadout.textContent = "Hover a building to inspect its file";
+}
+
+function bindHudToggle(): void {
+  const setExpanded = (expanded: boolean): void => {
+    hudDetails.hidden = !expanded;
+    hudToggle.setAttribute("aria-expanded", String(expanded));
+    hudToggle.textContent = expanded ? "Hide facts" : "Show facts";
+  };
+
+  setExpanded(false);
+  hudToggle.addEventListener("click", () => setExpanded(hudDetails.hasAttribute("hidden")));
 }
 
 function getElement<T extends HTMLElement>(id: string): T {

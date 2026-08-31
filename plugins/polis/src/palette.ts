@@ -17,6 +17,21 @@ export const PALETTE = {
   districtBlue: 0x8fa8ff,
   districtPink: 0xe68abe,
   districtGreen: 0x9bd27d,
+  providerClaude: 0xe3a46f,
+  providerCodex: 0x63d5b9,
+  providerGrok: 0x9aa8ff,
+  providerPi: 0xd98bd4,
+  providerCopilot: 0x9bd27d,
+  providerUnknown: 0xc6d3d8,
+  agentSkin: 0xf1c49b,
+  stateWorking: 0xf0c979,
+  stateSilent: 0x8fa8ff,
+  stateFinished: 0x9bd27d,
+  stateIdle: 0xb1c1c9,
+  fireSmoke: 0x9daab3,
+  fireCore: 0xf08a3d,
+  fireHot: 0xffd06f,
+  fireInferno: 0xe84c3d,
 } as const;
 
 export const DISTRICT_TINTS = [
@@ -52,6 +67,24 @@ export function districtColor(district: string): number {
     hash = Math.imul(hash, 16777619);
   }
   return DISTRICT_TINTS[(hash >>> 0) % DISTRICT_TINTS.length];
+}
+
+/** Provider is the agent's livery channel; unknown providers stay legible. */
+export function providerColor(provider: string): number {
+  switch (provider.toLowerCase()) {
+    case "claude":
+      return PALETTE.providerClaude;
+    case "codex":
+      return PALETTE.providerCodex;
+    case "grok":
+      return PALETTE.providerGrok;
+    case "pi":
+      return PALETTE.providerPi;
+    case "copilot":
+      return PALETTE.providerCopilot;
+    default:
+      return PALETTE.providerUnknown;
+  }
 }
 
 function channel(color: number, shift: number): number {

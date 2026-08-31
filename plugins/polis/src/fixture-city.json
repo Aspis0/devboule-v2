@@ -1,6 +1,66 @@
 {
   "files": [
     {
+      "id": "crates/devboule-augur/src/detector.rs",
+      "path": "crates/devboule-augur/src/detector.rs",
+      "lines": 142,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/detectors/clippy.rs",
+      "path": "crates/devboule-augur/src/detectors/clippy.rs",
+      "lines": 205,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/detectors/mod.rs",
+      "path": "crates/devboule-augur/src/detectors/mod.rs",
+      "lines": 4,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/detectors/secrets.rs",
+      "path": "crates/devboule-augur/src/detectors/secrets.rs",
+      "lines": 277,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/error.rs",
+      "path": "crates/devboule-augur/src/error.rs",
+      "lines": 36,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/exchange.rs",
+      "path": "crates/devboule-augur/src/exchange.rs",
+      "lines": 168,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/finding.rs",
+      "path": "crates/devboule-augur/src/finding.rs",
+      "lines": 380,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/ledger.rs",
+      "path": "crates/devboule-augur/src/ledger.rs",
+      "lines": 177,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/lib.rs",
+      "path": "crates/devboule-augur/src/lib.rs",
+      "lines": 21,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/ruleset.rs",
+      "path": "crates/devboule-augur/src/ruleset.rs",
+      "lines": 190,
+      "district": "crates"
+    },
+    {
       "id": "crates/devboule-daemon/src/atomic.rs",
       "path": "crates/devboule-daemon/src/atomic.rs",
       "lines": 145,
@@ -399,19 +459,19 @@
     {
       "id": "src-tauri/src/plugins/assets.rs",
       "path": "src-tauri/src/plugins/assets.rs",
-      "lines": 521,
+      "lines": 537,
       "district": "src-tauri"
     },
     {
       "id": "src-tauri/src/plugins/discovery.rs",
       "path": "src-tauri/src/plugins/discovery.rs",
-      "lines": 775,
+      "lines": 780,
       "district": "src-tauri"
     },
     {
       "id": "src-tauri/src/plugins/install.rs",
       "path": "src-tauri/src/plugins/install.rs",
-      "lines": 342,
+      "lines": 456,
       "district": "src-tauri"
     },
     {
@@ -423,7 +483,7 @@
     {
       "id": "src-tauri/src/plugins/mod.rs",
       "path": "src-tauri/src/plugins/mod.rs",
-      "lines": 250,
+      "lines": 324,
       "district": "src-tauri"
     },
     {
@@ -854,6 +914,86 @@
     }
   ],
   "imports": [
+    {
+      "from": "crates/devboule-augur/src/detector.rs",
+      "to": "crates/devboule-augur/src/detectors/clippy.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/detector.rs",
+      "to": "crates/devboule-augur/src/detectors/secrets.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/detector.rs",
+      "to": "crates/devboule-augur/src/error.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/detector.rs",
+      "to": "crates/devboule-augur/src/finding.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/clippy.rs",
+      "to": "crates/devboule-augur/src/detector.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/clippy.rs",
+      "to": "crates/devboule-augur/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/clippy.rs",
+      "to": "crates/devboule-augur/src/finding.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/secrets.rs",
+      "to": "crates/devboule-augur/src/detector.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/secrets.rs",
+      "to": "crates/devboule-augur/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/secrets.rs",
+      "to": "crates/devboule-augur/src/finding.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/secrets.rs",
+      "to": "crates/devboule-augur/src/ruleset.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/exchange.rs",
+      "to": "crates/devboule-augur/src/finding.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/ledger.rs",
+      "to": "crates/devboule-augur/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/ledger.rs",
+      "to": "crates/devboule-augur/src/finding.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/ruleset.rs",
+      "to": "crates/devboule-augur/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/ruleset.rs",
+      "to": "crates/devboule-augur/src/finding.rs",
+      "weight": 1
+    },
     {
       "from": "crates/devboule-daemon/src/client.rs",
       "to": "crates/devboule-daemon/src/error.rs",
@@ -1719,5 +1859,67 @@
       "to": "src/types/surface.ts",
       "weight": 1
     }
-  ]
+  ],
+  "agents": [
+    {
+      "id": "fixture-agent-claude",
+      "provider": "claude",
+      "state": "working",
+      "fileId": "src/main.tsx"
+    },
+    {
+      "id": "fixture-agent-codex",
+      "provider": "codex",
+      "state": "silent",
+      "fileId": "src-tauri/src/main.rs"
+    },
+    {
+      "id": "fixture-agent-grok",
+      "provider": "grok",
+      "state": "finished",
+      "fileId": "crates/devboule-augur/src/finding.rs"
+    },
+    {
+      "id": "fixture-agent-pi",
+      "provider": "pi",
+      "state": "idle",
+      "fileId": "crates/devboule-augur/src/detector.rs"
+    },
+    {
+      "id": "fixture-agent-copilot",
+      "provider": "copilot",
+      "state": "working",
+      "fileId": "crates/devboule-augur/src/detectors/clippy.rs"
+    },
+    {
+      "id": "fixture-agent-roster-only",
+      "provider": "copilot",
+      "state": "idle",
+      "fileId": null
+    }
+  ],
+  "findings": [
+    {
+      "id": "fixture-finding-smoke",
+      "fileId": "crates/devboule-augur/src/finding.rs",
+      "severity": "smoke",
+      "rule": "fixture.contract",
+      "title": "Fixture smoke: inspect the city contract"
+    },
+    {
+      "id": "fixture-finding-fire",
+      "fileId": "src/main.tsx",
+      "severity": "fire",
+      "rule": "fixture.renderer",
+      "title": "Fixture fire: renderer path needs review"
+    },
+    {
+      "id": "fixture-finding-inferno",
+      "fileId": "src-tauri/src/main.rs",
+      "severity": "inferno",
+      "rule": "fixture.bridge",
+      "title": "Fixture inferno: host seam is not routed"
+    }
+  ],
+  "dataSource": "fixture"
 }

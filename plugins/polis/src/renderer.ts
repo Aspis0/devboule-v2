@@ -1,14 +1,29 @@
 import { Application, Container, Graphics, Rectangle } from "pixi.js";
-import { cartToIso, depthKey, diamondPoints, TILE_H, TILE_W } from "./iso";
+import { BuildingTextureAtlas } from "./buildingAtlas";
+import { AgentLayer } from "./agents";
+import {
+  animationPoint,
+  buildGreekBuildingArt,
+  buildGreekMonument,
+  metricsFromFrame,
+  visualLevel,
+  visualPurpose,
+} from "./art";
+import { FindingLayer } from "./findings";
+import { cartToIso, depthKey, TILE_H, TILE_W } from "./iso";
 import type { City, CityFile } from "./model";
-import { darken, districtColor, lighten, PALETTE } from "./palette";
+import { PALETTE } from "./palette";
+import { computeExtent, drawTerrain } from "./terrain";
+import type { AnimInstance } from "./kitcd/anims";
+import type { SpriteBank } from "./spriteAssets";
 
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 2.4;
-// A one-tile center spacing leaves no street once a large file grows past one
-// tile. Empty cartesian cells are the street grid: the file still occupies one
-// logical plot, while imports have visible ground between plots.
-const GRID_SPACING = 2.5;
+// The kit's largest common footprints need a real block-and-street rhythm.
+// Empty grid cells are deliberately preserved so import roads have ground on
+// which to read; this is a visual layout of the repository, not source data.
+const GRID_SPACING = 3.7;
+
 interface LayoutFile {
   file: CityFile;
   gridX: number;
@@ -18,13 +33,20 @@ interface LayoutFile {
   width: number;
   depth: number;
   height: number;
+  purpose: string;
+  level: number;
 }
 
 interface ViewEntry {
-  display: Graphics;
+  display: Container;
   worldX: number;
   worldY: number;
   radius: number;
+}
+
+interface AnimatedDisplay {
+  display: Container;
+  anims: AnimInstance[];
 }
 
 export interface RendererDetails {
@@ -36,125 +58,195 @@ export class CityRenderer {
   private readonly app: Application;
   private readonly canvas: HTMLCanvasElement;
   private readonly details: RendererDetails;
+  private readonly bank: SpriteBank | null;
+  private readonly atlas: BuildingTextureAtlas;
   private readonly world = new Container();
+  private readonly ground = new Container();
   private readonly roads = new Container();
+  private readonly shadows = new Container();
   private readonly buildings = new Container();
+  private readonly monuments = new Container();
+  private readonly findingLayer: FindingLayer;
+  private readonly agentLayer: AgentLayer;
   private readonly buildingViews: ViewEntry[] = [];
   private readonly roadViews: ViewEntry[] = [];
+  private readonly monumentViews: ViewEntry[] = [];
+  private readonly animated: AnimatedDisplay[] = [];
   private readonly layoutById = new Map<string, LayoutFile>();
   private zoom = 0.82;
   private panX = 0;
-  private panY = 16;
+  private panY = 32;
   private pointerId: number | null = null;
   private lastPointer = { x: 0, y: 0 };
+  private animTime = 0;
 
   constructor(options: {
     app: Application;
     canvas: HTMLCanvasElement;
     city: City;
     details: RendererDetails;
+    bank: SpriteBank | null;
   }) {
     this.app = options.app;
     this.canvas = options.canvas;
     this.details = options.details;
-    this.world.addChild(this.roads, this.buildings);
+    this.bank = options.bank;
+    this.atlas = new BuildingTextureAtlas(window.devicePixelRatio || 1);
+    this.findingLayer = new FindingLayer(this.layoutById);
+    this.agentLayer = new AgentLayer(this.layoutById, options.city.imports);
+    this.world.addChild(
+      this.ground,
+      this.roads,
+      this.shadows,
+      this.buildings,
+      this.monuments,
+      this.findingLayer.root,
+      this.agentLayer.root,
+    );
+    this.buildings.sortableChildren = true;
+    this.shadows.sortableChildren = true;
+    this.monuments.sortableChildren = true;
     this.app.stage.addChild(this.world);
     this.build(options.city);
+    this.findingLayer.setFindings(options.city.findings);
+    this.agentLayer.setAgents(options.city.agents);
     this.bindCamera();
+    this.fitCity();
     this.updateCamera();
-    this.app.ticker.stop();
+    this.app.ticker.add((ticker) => {
+      const deltaMs = Math.min(1000, ticker.deltaMS);
+      this.animTime += deltaMs / 1000;
+      this.stepAnimations(deltaMs / 1000);
+      this.findingLayer.step(deltaMs);
+      this.agentLayer.step(deltaMs);
+      this.updateCulling();
+      this.app.renderer.render(this.app.stage);
+    });
+    this.app.ticker.start();
   }
 
   private build(city: City): void {
     const layouts = createLayout(city.files);
     for (const layout of layouts) this.layoutById.set(layout.file.id, layout);
 
+    for (const layout of layouts) this.addBuilding(layout);
     this.drawGround(layouts);
     for (const cityImport of city.imports) {
       const from = this.layoutById.get(cityImport.from);
       const to = this.layoutById.get(cityImport.to);
       if (from !== undefined && to !== undefined) this.addRoad(from, to, cityImport.weight);
     }
-
-    for (const layout of layouts.sort(
-      (left, right) => depthKey(left.gridX, left.gridY) - depthKey(right.gridX, right.gridY),
-    )) {
-      this.addBuilding(layout);
-    }
   }
 
   private drawGround(layouts: LayoutFile[]): void {
-    const bounds = gridBounds(layouts);
-    const ground = new Graphics();
-    for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
-      for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
-        const center = cartToIso(x, y);
-        const points = diamondPoints(center, TILE_W, TILE_H);
-        ground.poly(points).fill({
-          color: (x + y) % 2 === 0 ? PALETTE.ground : PALETTE.groundAlternate,
-          alpha: 0.96,
-        });
-        ground.poly(points).stroke({ color: PALETTE.groundGrid, alpha: 0.26, width: 1 });
-      }
-    }
-    this.world.addChildAt(ground, 0);
+    const extent = computeExtent(
+      layouts.map((layout) => ({ x: layout.gridX, y: layout.gridY })),
+      12,
+      12,
+      5,
+    );
+    const terrain = drawTerrain(extent, this.bank);
+    for (const graphic of terrain.graphics) this.ground.addChild(graphic);
+
+    // The copied v1 terrain module has a full sparse water-frame API for the
+    // future host terrain contract. The fixture has no water facts, so no sea
+    // is invented here; its grass, dirt, texture, and edge work are real kit art.
   }
 
   private addRoad(from: LayoutFile, to: LayoutFile, weight: number): void {
-    const road = new Graphics();
+    const road = new Container();
+    // The road geometry is static: one Graphics path and arrow are retained for
+    // the life of the city, while culling only changes `renderable`.
+    const graphic = new Graphics();
     const dx = to.worldX - from.worldX;
     const dy = to.worldY - from.worldY;
     const length = Math.hypot(dx, dy) || 1;
     const ux = dx / length;
     const uy = dy / length;
     const width = Math.min(10, 2 + Math.log2(weight + 1) * 2.4);
-    const startInset = 15;
-    const endInset = 17;
-    road
+    const startInset = 25;
+    const endInset = 25;
+    graphic
       .moveTo(from.worldX + ux * startInset, from.worldY + uy * startInset)
       .lineTo(to.worldX - ux * endInset, to.worldY - uy * endInset)
-      .stroke({ color: PALETTE.road, alpha: 0.7, width });
-
-    const arrowX = to.worldX - ux * (endInset + 5);
-    const arrowY = to.worldY - uy * (endInset + 5);
+      .stroke({ color: PALETTE.road, alpha: 0.82, width });
+    const arrowX = to.worldX - ux * (endInset + 7);
+    const arrowY = to.worldY - uy * (endInset + 7);
     const nx = -uy;
     const ny = ux;
-    road
-      .moveTo(arrowX - ux * 8 + nx * 4, arrowY - uy * 8 + ny * 4)
+    graphic
+      .moveTo(arrowX - ux * 9 + nx * 4, arrowY - uy * 9 + ny * 4)
       .lineTo(arrowX, arrowY)
-      .lineTo(arrowX - ux * 8 - nx * 4, arrowY - uy * 8 - ny * 4)
-      .stroke({ color: PALETTE.roadArrow, alpha: 0.9, width: Math.max(1, width / 2) });
+      .lineTo(arrowX - ux * 9 - nx * 4, arrowY - uy * 9 - ny * 4)
+      .stroke({ color: PALETTE.roadArrow, alpha: 0.95, width: Math.max(1, width / 2) });
+    road.addChild(graphic);
     this.roads.addChild(road);
     this.roadViews.push({
       display: road,
       worldX: (from.worldX + to.worldX) / 2,
       worldY: (from.worldY + to.worldY) / 2,
-      radius: length / 2 + 22,
+      radius: length / 2 + 30,
     });
   }
 
   private addBuilding(layout: LayoutFile): void {
-    const color = districtColor(layout.file.district);
-    const building = createBuilding(layout, color);
-    building.position.set(layout.worldX, layout.worldY);
-    building.zIndex = depthKey(layout.gridX, layout.gridY);
-    building.eventMode = "static";
-    building.cursor = "pointer";
-    building.hitArea = new Rectangle(
-      -layout.width / 2,
-      -layout.height - layout.depth / 2,
-      layout.width,
-      layout.height + layout.depth,
-    );
-    building.on("pointerover", () => this.details.setDetails(layout.file));
-    building.on("pointerout", () => this.details.clearDetails());
-    this.buildings.addChild(building);
-    this.buildingViews.push({
-      display: building,
-      worldX: layout.worldX,
-      worldY: layout.worldY - layout.height / 2,
-      radius: Math.max(layout.width, layout.depth) + layout.height / 2,
+    const art = buildGreekBuildingArt({
+      renderer: this.app.renderer,
+      atlas: this.atlas,
+      bank: this.bank,
+      file: layout.file,
+      purpose: layout.purpose,
+      level: layout.level,
     });
+    const metrics = metricsFromFrame(art.frame);
+    layout.width = metrics.width;
+    layout.depth = art.frame.height;
+    layout.height = metrics.height;
+
+    art.display.position.set(layout.worldX, layout.worldY);
+    art.display.zIndex = depthKey(layout.gridX, layout.gridY);
+    art.display.eventMode = "static";
+    art.display.cursor = "pointer";
+    art.display.hitArea = new Rectangle(
+      art.frame.x,
+      art.frame.y,
+      art.frame.width,
+      art.frame.height,
+    );
+    art.display.on("pointerover", () => this.details.setDetails(layout.file));
+    art.display.on("pointerout", () => this.details.clearDetails());
+    this.buildings.addChild(art.display);
+    art.shadow.position.set(layout.worldX, layout.worldY);
+    art.shadow.zIndex = depthKey(layout.gridX, layout.gridY);
+    this.shadows.addChild(art.shadow);
+    this.buildingViews.push({
+      display: art.display,
+      worldX: layout.worldX,
+      worldY: layout.worldY + art.frame.y / 2,
+      radius: metrics.radius,
+    });
+    if (art.anims.length > 0) this.animated.push({ display: art.display, anims: art.anims });
+
+    const monument = buildGreekMonument(layout.file.path, layout.worldX, layout.worldY, this.bank);
+    if (monument !== null) {
+      monument.display.zIndex = depthKey(layout.gridX, layout.gridY) + 0.1;
+      this.monuments.addChild(monument.display);
+      this.monumentViews.push({
+        display: monument.display,
+        worldX: animationPoint(monument).x,
+        worldY: animationPoint(monument).y,
+        radius: monument.radius,
+      });
+      if (monument.anims.length > 0)
+        this.animated.push({ display: monument.display, anims: monument.anims });
+    }
+  }
+
+  private stepAnimations(deltaSeconds: number): void {
+    for (const animated of this.animated) {
+      if (!animated.display.renderable) continue;
+      for (const anim of animated.anims) anim.update(this.animTime, deltaSeconds);
+    }
   }
 
   private bindCamera(): void {
@@ -197,6 +289,32 @@ export class CityRenderer {
     this.updateCamera();
   }
 
+  private fitCity(): void {
+    if (this.app.screen.width <= 0 || this.app.screen.height <= 0) return;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (const view of this.buildingViews) {
+      minX = Math.min(minX, view.worldX - view.radius);
+      maxX = Math.max(maxX, view.worldX + view.radius);
+      minY = Math.min(minY, view.worldY - view.radius);
+      maxY = Math.max(maxY, view.worldY + view.radius);
+    }
+    if (!Number.isFinite(minX)) return;
+    const padding = 1.12;
+    this.zoom = clamp(
+      Math.min(
+        this.app.screen.width / ((maxX - minX) * padding),
+        this.app.screen.height / ((maxY - minY) * padding),
+      ),
+      MIN_ZOOM,
+      1.1,
+    );
+    this.panX = 0;
+    this.panY = 36;
+  }
+
   private updateCamera(): void {
     this.world.position.set(
       this.app.screen.width / 2 + this.panX,
@@ -210,7 +328,27 @@ export class CityRenderer {
   private updateCulling(): void {
     const width = this.app.screen.width;
     const height = this.app.screen.height;
-    for (const view of [...this.buildingViews, ...this.roadViews]) {
+    this.cullViews(this.buildingViews, width, height);
+    this.cullViews(this.roadViews, width, height);
+    this.cullViews(this.monumentViews, width, height);
+    this.findingLayer.updateViewport(
+      this.world.position.x,
+      this.world.position.y,
+      width,
+      height,
+      this.zoom,
+    );
+    this.agentLayer.updateViewport(
+      this.world.position.x,
+      this.world.position.y,
+      width,
+      height,
+      this.zoom,
+    );
+  }
+
+  private cullViews(views: readonly ViewEntry[], width: number, height: number): void {
+    for (const view of views) {
       const screenX = this.world.position.x + view.worldX * this.zoom;
       const screenY = this.world.position.y + view.worldY * this.zoom;
       const radius = view.radius * this.zoom;
@@ -234,137 +372,24 @@ function createLayout(files: CityFile[]): LayoutFile[] {
     const gridX = ((index % columns) - (columns - 1) / 2) * GRID_SPACING;
     const gridY = (Math.floor(index / columns) - (rows - 1) / 2) * GRID_SPACING;
     const point = cartToIso(gridX, gridY);
-    const magnitude = Math.log10(file.lines + 1);
-    const footprint = 0.62 + Math.min(0.72, magnitude * 0.28);
     return {
       file,
       gridX,
       gridY,
       worldX: point.x,
       worldY: point.y,
-      width: TILE_W * footprint,
-      depth: TILE_H * footprint,
-      height: Math.min(180, 18 + Math.sqrt(file.lines) * 4.5),
+      width: TILE_W,
+      depth: TILE_H,
+      height: TILE_H,
+      purpose: visualPurpose(file.path),
+      level: visualLevel(file.lines),
     };
   });
-}
-
-function createBuilding(layout: LayoutFile, color: number): Graphics {
-  const graphic = new Graphics();
-  const halfWidth = layout.width / 2;
-  const halfDepth = layout.depth / 2;
-  const baseRight = { x: halfWidth, y: 0 };
-  const baseBottom = { x: 0, y: halfDepth };
-  const baseLeft = { x: -halfWidth, y: 0 };
-  const topTop = { x: 0, y: -halfDepth - layout.height };
-  const topRight = { x: halfWidth, y: -layout.height };
-  const topBottom = { x: 0, y: halfDepth - layout.height };
-  const topLeft = { x: -halfWidth, y: -layout.height };
-  const stroke = { color: PALETTE.outline, alpha: 0.84, width: 1 };
-
-  graphic
-    .poly([
-      topLeft.x,
-      topLeft.y,
-      topBottom.x,
-      topBottom.y,
-      baseBottom.x,
-      baseBottom.y,
-      baseLeft.x,
-      baseLeft.y,
-    ])
-    .fill({ color: darken(color, 0.34) })
-    .stroke(stroke);
-  graphic
-    .poly([
-      topRight.x,
-      topRight.y,
-      topBottom.x,
-      topBottom.y,
-      baseBottom.x,
-      baseBottom.y,
-      baseRight.x,
-      baseRight.y,
-    ])
-    .fill({ color })
-    .stroke(stroke);
-  graphic
-    .poly([
-      topTop.x,
-      topTop.y,
-      topRight.x,
-      topRight.y,
-      topBottom.x,
-      topBottom.y,
-      topLeft.x,
-      topLeft.y,
-    ])
-    .fill({ color: lighten(color, 0.23) })
-    .stroke(stroke);
-
-  if (layout.height > 30) {
-    drawWindow(
-      graphic,
-      -halfWidth * 0.45,
-      -layout.height * 0.38,
-      layout.width * 0.16,
-      layout.height * 0.14,
-      darken(PALETTE.window, 0.28),
-    );
-    drawWindow(
-      graphic,
-      halfWidth * 0.16,
-      -layout.height * 0.38,
-      layout.width * 0.16,
-      layout.height * 0.14,
-      PALETTE.windowLit,
-    );
-  }
-  if (layout.file.lines > 80) {
-    graphic
-      .moveTo(-halfWidth * 0.55, -layout.height - 1)
-      .lineTo(halfWidth * 0.55, -layout.height - 1)
-      .stroke({ color: PALETTE.windowLit, alpha: 0.65, width: 2 });
-  }
-  return graphic;
-}
-
-function drawWindow(
-  graphic: Graphics,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  color: number,
-): void {
-  graphic.rect(x, y, width, height).fill({ color, alpha: 0.84 });
-}
-
-function gridBounds(layouts: LayoutFile[]): {
-  minX: number;
-  maxX: number;
-  minY: number;
-  maxY: number;
-} {
-  if (layouts.length === 0) return { minX: -3, maxX: 3, minY: -3, maxY: 3 };
-  // Tall buildings project above their ground plots in screen space. Extend
-  // the cartesian floor by the measured city height so edge plots still have
-  // ground behind them in the default view; this scales with the actual city.
-  const maxHeight = Math.max(...layouts.map((layout) => layout.height));
-  const maxFootprint = Math.max(
-    ...layouts.map((layout) => Math.max(layout.width / TILE_W, layout.depth / TILE_H)),
-  );
-  const edgeMargin = Math.ceil(maxHeight / TILE_H) + Math.ceil(maxFootprint) + 2;
-  return {
-    minX: Math.floor(Math.min(...layouts.map((layout) => layout.gridX))) - edgeMargin,
-    maxX: Math.ceil(Math.max(...layouts.map((layout) => layout.gridX))) + edgeMargin,
-    minY: Math.floor(Math.min(...layouts.map((layout) => layout.gridY))) - edgeMargin,
-    maxY: Math.ceil(Math.max(...layouts.map((layout) => layout.gridY))) + edgeMargin,
-  };
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+/** Keep the road source compact while retaining Pixi's concrete Graphics type. */
 export { createLayout };

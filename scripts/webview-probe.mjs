@@ -12,14 +12,21 @@
  * connects to it, evaluates an expression in the page, and prints the result as
  * JSON. No dependencies: Node has had a global WebSocket since 22.
  *
+ * It also takes the screenshot, because what a plugin *draws* is the other
+ * fact no amount of reading gives: every visual defect this milestone found —
+ * roads buried under building footprints, a plugin asset requested at an
+ * absolute path — was found by looking, and the agents doing the work have no
+ * browser of their own.
+ *
  *   npm run tauri dev          (with the env var above set)
  *   node scripts/webview-probe.mjs "document.title"
  *   node scripts/webview-probe.mjs --file probe.js
+ *   node scripts/webview-probe.mjs --screenshot ../recon/city.png
  *
- * Exit codes: 0 the expression evaluated, 1 it threw, 2 no WebView was found.
+ * Exit codes: 0 it worked, 1 the expression threw, 2 no WebView was found.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
 // Not 9222. That port is a common default and other WebView2 applications sit
@@ -32,17 +39,25 @@ const TARGET_URL_MATCH = process.env.WEBVIEW_TARGET_MATCH ?? "localhost:1420";
 const ATTACH_TIMEOUT_MS = Number(process.env.WEBVIEW_ATTACH_TIMEOUT_MS ?? 180_000);
 
 function usage(message) {
-  console.error(`${message}\n\nusage: node scripts/webview-probe.mjs <expression>`);
+  console.error(
+    `${message}\n\nusage: node scripts/webview-probe.mjs <expression>\n` +
+      `       node scripts/webview-probe.mjs --file <path>\n` +
+      `       node scripts/webview-probe.mjs --screenshot <path.png>`,
+  );
   process.exit(2);
 }
 
-function readExpression(argv) {
+function readTask(argv) {
+  if (argv[0] === "--screenshot") {
+    if (!argv[1]) usage("--screenshot needs a path");
+    return { kind: "screenshot", path: argv[1] };
+  }
   if (argv[0] === "--file") {
     if (!argv[1]) usage("--file needs a path");
-    return readFileSync(argv[1], "utf8");
+    return { kind: "evaluate", expression: readFileSync(argv[1], "utf8") };
   }
   if (argv.length === 0) usage("no expression given");
-  return argv.join(" ");
+  return { kind: "evaluate", expression: argv.join(" ") };
 }
 
 /**
@@ -113,7 +128,53 @@ function evaluate(webSocketDebuggerUrl, expression) {
   });
 }
 
-const expression = readExpression(process.argv.slice(2));
+/**
+ * Capture the window as a PNG. Two commands in order, not one: a
+ * Page.captureScreenshot on a domain that was never enabled answers with an
+ * error instead of a picture, and the error looks like a broken port.
+ */
+function screenshot(webSocketDebuggerUrl) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(webSocketDebuggerUrl);
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error("the WebView did not answer within 30s"));
+    }, 30_000);
+    const fail = (error) => {
+      clearTimeout(timer);
+      socket.close();
+      reject(error);
+    };
+
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ id: 1, method: "Page.enable" }));
+    });
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(event.data);
+      if (message.id === 1) {
+        if (message.error) return fail(new Error(message.error.message));
+        socket.send(
+          JSON.stringify({
+            id: 2,
+            method: "Page.captureScreenshot",
+            params: { format: "png" },
+          }),
+        );
+        return;
+      }
+      if (message.id !== 2) return;
+      if (message.error) return fail(new Error(message.error.message));
+      clearTimeout(timer);
+      socket.close();
+      resolve(Buffer.from(message.result.data, "base64"));
+    });
+    socket.addEventListener("error", () => {
+      fail(new Error(`could not open ${webSocketDebuggerUrl}`));
+    });
+  });
+}
+
+const task = readTask(process.argv.slice(2));
 const target = await waitForTarget();
 if (!target) {
   console.error(
@@ -127,8 +188,14 @@ if (!target) {
 
 console.error(`attached to ${target.url}`);
 try {
-  const value = await evaluate(target.webSocketDebuggerUrl, expression);
-  console.log(JSON.stringify(value, null, 2));
+  if (task.kind === "screenshot") {
+    const png = await screenshot(target.webSocketDebuggerUrl);
+    writeFileSync(task.path, png);
+    console.error(`wrote ${png.length} bytes to ${task.path}`);
+  } else {
+    const value = await evaluate(target.webSocketDebuggerUrl, task.expression);
+    console.log(JSON.stringify(value, null, 2));
+  }
 } catch (error) {
   console.error(String(error.message ?? error));
   process.exit(1);

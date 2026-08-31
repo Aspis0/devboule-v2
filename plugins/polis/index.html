@@ -55,6 +55,33 @@
         box-shadow: 0 1.3rem 3rem rgb(0 0 0 / 34%);
       }
 
+      .panel-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      .hud-toggle {
+        pointer-events: auto;
+        border: 1px solid rgb(143 228 218 / 50%);
+        border-radius: 999px;
+        padding: 0.35rem 0.6rem;
+        color: #8fe4da;
+        background: rgb(20 45 58 / 90%);
+        font: inherit;
+        font-size: 0.72rem;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      .hud-toggle:hover,
+      .hud-toggle:focus-visible {
+        background: rgb(36 73 83 / 95%);
+        outline: 2px solid #f0c979;
+        outline-offset: 2px;
+      }
+
       h1 {
         margin: 0;
         font-size: clamp(1.35rem, 3vw, 2rem);
@@ -139,6 +166,31 @@
         background: #9bd27d;
       }
 
+      .swatch.claude {
+        background: #e3a46f;
+      }
+      .swatch.codex {
+        background: #63d5b9;
+      }
+      .swatch.grok {
+        background: #9aa8ff;
+      }
+      .swatch.pi {
+        background: #d98bd4;
+      }
+      .swatch.copilot {
+        background: #9bd27d;
+      }
+      .swatch.smoke {
+        background: #9daab3;
+      }
+      .swatch.fire {
+        background: #f08a3d;
+      }
+      .swatch.inferno {
+        background: #e84c3d;
+      }
+
       .details {
         position: fixed;
         right: 1rem;
@@ -164,19 +216,51 @@
     <canvas id="scene" aria-label="An isometric map of this repository"></canvas>
     <aside class="hud" aria-live="polite">
       <section class="panel">
-        <h1>POLIS <span aria-hidden="true">/</span> v2</h1>
-        <p class="lede">This repository as a city · files are buildings · imports are roads</p>
-        <p class="city" id="city">Fixture city · measuring…</p>
-        <p class="fact" id="webgl"><span class="label">WebGL2:</span> measuring…</p>
-        <p class="fact" id="tauri"><span class="label">Tauri internals:</span> measuring…</p>
-        <p class="fact" id="bridge"><span class="label">Bridge reply:</span> waiting…</p>
-        <div class="legend" aria-label="District color legend">
-          <span><i class="swatch teal"></i>src</span>
-          <span><i class="swatch amber"></i>src-tauri</span>
-          <span><i class="swatch blue"></i>crates</span>
-          <span><i class="swatch pink"></i>other</span>
+        <div class="panel-head">
+          <h1>POLIS <span aria-hidden="true">/</span> v2</h1>
+          <button
+            class="hud-toggle"
+            id="hud-toggle"
+            type="button"
+            aria-controls="hud-details"
+            aria-expanded="false"
+          >
+            Show facts
+          </button>
         </div>
-        <p class="gesture">Drag to pan · wheel to zoom · road arrows point importer → imported</p>
+        <p class="city" id="city">Fixture city · measuring…</p>
+        <div id="hud-details" hidden>
+          <p class="lede">This repository as a city · files are buildings · imports are roads</p>
+          <p class="fact" id="webgl"><span class="label">WebGL2:</span> measuring…</p>
+          <p class="fact" id="tauri"><span class="label">Tauri internals:</span> measuring…</p>
+          <p class="fact" id="bridge"><span class="label">Bridge reply:</span> waiting…</p>
+          <p class="fact" id="agents">Agents fixture · measuring…</p>
+          <p class="fact" id="roster">Roster: measuring…</p>
+          <p class="fact" id="findings">Findings fixture · measuring…</p>
+          <div class="legend" aria-label="District color legend">
+            <span><i class="swatch teal"></i>src</span>
+            <span><i class="swatch amber"></i>src-tauri</span>
+            <span><i class="swatch blue"></i>crates</span>
+            <span><i class="swatch pink"></i>other</span>
+          </div>
+          <div class="legend" aria-label="Provider livery legend">
+            <span><i class="swatch claude"></i>claude</span>
+            <span><i class="swatch codex"></i>codex</span>
+            <span><i class="swatch grok"></i>grok</span>
+            <span><i class="swatch pi"></i>pi</span>
+            <span><i class="swatch copilot"></i>copilot</span>
+          </div>
+          <div class="legend" aria-label="Finding severity legend">
+            <span><i class="swatch smoke"></i>smoke</span>
+            <span><i class="swatch fire"></i>fire</span>
+            <span><i class="swatch inferno"></i>inferno</span>
+          </div>
+          <p class="gesture">Drag to pan · wheel to zoom · road arrows point importer → imported</p>
+          <p class="gesture">
+            Figure livery = provider · badge = working hammer / silent dots / finished check / idle
+            ring
+          </p>
+        </div>
       </section>
     </aside>
     <p class="details" id="details">Hover a building to inspect its file</p>

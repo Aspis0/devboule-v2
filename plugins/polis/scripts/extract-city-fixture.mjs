@@ -48,6 +48,63 @@ export function extractCityFromSources(sources) {
   return { files, imports };
 }
 
+/**
+ * These overlays are deliberately synthetic. The host does not route session
+ * or Augur data to plugins yet, so the build needs a small, unmistakable fixture
+ * to exercise the renderer without pretending that it is a live observation.
+ */
+export function createFixtureOverlays(files) {
+  const fileId = (suffix, fallbackIndex) =>
+    files.find((file) => file.path.endsWith(suffix))?.id ?? files[fallbackIndex]?.id ?? null;
+  const rendererFile = fileId("src/main.tsx", 0);
+  const mainFile = fileId("src-tauri/src/main.rs", 1);
+  const modelFile = fileId("crates/devboule-augur/src/finding.rs", 2);
+  const extractorFile = fileId("crates/devboule-augur/src/detector.rs", 3);
+  const used = new Set([rendererFile, mainFile, modelFile, extractorFile]);
+  const secondAgentFile = files.find((file) => !used.has(file.id))?.id ?? modelFile;
+
+  return {
+    agents: [
+      { id: "fixture-agent-claude", provider: "claude", state: "working", fileId: rendererFile },
+      { id: "fixture-agent-codex", provider: "codex", state: "silent", fileId: mainFile },
+      { id: "fixture-agent-grok", provider: "grok", state: "finished", fileId: modelFile },
+      { id: "fixture-agent-pi", provider: "pi", state: "idle", fileId: extractorFile },
+      {
+        id: "fixture-agent-copilot",
+        provider: "copilot",
+        state: "working",
+        fileId: secondAgentFile,
+      },
+      // The null fileId is intentional: a session without a real touched file
+      // belongs in a roster, never at an invented map coordinate.
+      { id: "fixture-agent-roster-only", provider: "copilot", state: "idle", fileId: null },
+    ],
+    findings: [
+      {
+        id: "fixture-finding-smoke",
+        fileId: modelFile,
+        severity: "smoke",
+        rule: "fixture.contract",
+        title: "Fixture smoke: inspect the city contract",
+      },
+      {
+        id: "fixture-finding-fire",
+        fileId: rendererFile,
+        severity: "fire",
+        rule: "fixture.renderer",
+        title: "Fixture fire: renderer path needs review",
+      },
+      {
+        id: "fixture-finding-inferno",
+        fileId: mainFile,
+        severity: "inferno",
+        rule: "fixture.bridge",
+        title: "Fixture inferno: host seam is not routed",
+      },
+    ],
+  };
+}
+
 function extractImportSpecifiers(filePath, source) {
   if (/\.(?:[cm]?js|[jt]sx?)$/i.test(filePath)) {
     const specifiers = [];
@@ -134,7 +191,12 @@ function outputPathFromArguments(argv) {
 
 async function main() {
   const outputPath = outputPathFromArguments(process.argv.slice(2));
-  const city = extractCityFromSources(await collectSources());
+  const graph = extractCityFromSources(await collectSources());
+  const city = {
+    ...graph,
+    ...createFixtureOverlays(graph.files),
+    dataSource: "fixture",
+  };
   await writeFile(outputPath, `${JSON.stringify(city, null, 2)}\n`, "utf8");
   process.stderr.write(
     `wrote fixture city ${outputPath} (${city.files.length} files, ${city.imports.length} directed roads)\n`,
