@@ -22,6 +22,7 @@
  *   node scripts/webview-probe.mjs "document.title"
  *   node scripts/webview-probe.mjs --file probe.js
  *   node scripts/webview-probe.mjs --screenshot ../recon/city.png
+ *   node scripts/webview-probe.mjs --input steps.json
  *
  * Exit codes: 0 it worked, 1 the expression threw, 2 no WebView was found.
  */
@@ -48,6 +49,10 @@ function usage(message) {
 }
 
 function readTask(argv) {
+  if (argv[0] === "--input") {
+    if (!argv[1]) usage("--input needs a path to a JSON list of steps");
+    return { kind: "input", steps: JSON.parse(readFileSync(argv[1], "utf8")) };
+  }
   if (argv[0] === "--screenshot") {
     if (!argv[1]) usage("--screenshot needs a path");
     return { kind: "screenshot", path: argv[1] };
@@ -129,6 +134,65 @@ function evaluate(webSocketDebuggerUrl, expression) {
 }
 
 /**
+ * Replay a list of CDP steps against the window: `{ method, params }` for a
+ * command, `{ wait: ms }` to let the page settle between them.
+ *
+ * Input has to be dispatched at the window rather than synthesised in the
+ * page, because the only thing worth driving lives in a cross-origin iframe:
+ * a MouseEvent constructed in the host document cannot reach it, and the frame
+ * is not exposed as a separate debugging target either. A real click at real
+ * window coordinates lands wherever the compositor says it lands, which is the
+ * same thing that happens to a person.
+ */
+function replay(webSocketDebuggerUrl, steps) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(webSocketDebuggerUrl);
+    const replies = [];
+    let index = 0;
+    let id = 0;
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error("the WebView did not answer within 60s"));
+    }, 60_000);
+
+    function next() {
+      if (index >= steps.length) {
+        clearTimeout(timer);
+        socket.close();
+        resolve(replies);
+        return;
+      }
+      const step = steps[index];
+      index += 1;
+      if (typeof step.wait === "number") {
+        setTimeout(next, step.wait);
+        return;
+      }
+      id += 1;
+      socket.send(JSON.stringify({ id, method: step.method, params: step.params ?? {} }));
+    }
+
+    socket.addEventListener("open", next);
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(event.data);
+      if (message.id !== id) return;
+      if (message.error) {
+        clearTimeout(timer);
+        socket.close();
+        reject(new Error(`${steps[index - 1].method}: ${message.error.message}`));
+        return;
+      }
+      replies.push(message.result);
+      next();
+    });
+    socket.addEventListener("error", () => {
+      clearTimeout(timer);
+      reject(new Error(`could not open ${webSocketDebuggerUrl}`));
+    });
+  });
+}
+
+/**
  * Capture the window as a PNG. Two commands in order, not one: a
  * Page.captureScreenshot on a domain that was never enabled answers with an
  * error instead of a picture, and the error looks like a broken port.
@@ -188,7 +252,10 @@ if (!target) {
 
 console.error(`attached to ${target.url}`);
 try {
-  if (task.kind === "screenshot") {
+  if (task.kind === "input") {
+    const replies = await replay(target.webSocketDebuggerUrl, task.steps);
+    console.log(JSON.stringify(replies.filter((reply) => Object.keys(reply).length > 0), null, 2));
+  } else if (task.kind === "screenshot") {
     const png = await screenshot(target.webSocketDebuggerUrl);
     writeFileSync(task.path, png);
     console.error(`wrote ${png.length} bytes to ${task.path}`);
