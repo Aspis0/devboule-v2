@@ -175,6 +175,18 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
     -2.6 * s,
     -16.4 * s,
   ]).fill({ color: tunic });
+  // Lit edge. Small-sprite practice is base + shadow + highlight per part; the
+  // source had base and shadow only, so the tunic read as one flat shape.
+  g.poly([
+    -3.6 * s,
+    hipY + 0.6 * s,
+    -2.3 * s,
+    hipY + 0.6 * s,
+    -1.75 * s,
+    -16.4 * s,
+    -2.6 * s,
+    -16.4 * s,
+  ]).fill({ color: shade(tunic, 1.09) });
   // tunic shadow (right half)
   g.poly([
     0.3 * s,
@@ -233,8 +245,10 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
     }
   } else {
     const aSw = sw * 2.4 * s;
-    // back arm swings with the walk
-    limb(g, -2.7 * s, shY, -3.3 * s - aSw, -8.6 * s, 2 * s, SKd);
+    // Arms sit outboard of the tunic and are thinner than the source's 2 units.
+    // At 2.7 with width 2 they overlapped a tunic 2.6 wide, so arm and body
+    // merged into one mass and the silhouette lost its shoulders.
+    limb(g, -3.2 * s, shY, -3.8 * s - aSw, -8.6 * s, 1.7 * s, SKd);
     if (type === "firefighter") {
       // front arm holds a bucket
       limb(g, 2.7 * s, shY, 3.7 * s, -10 * s, 2 * s, SK);
@@ -249,14 +263,14 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
         .stroke({ width: 0.9 * s, color: 0x4a3320 });
     } else {
       // ordinary front arm swings with the walk
-      limb(g, 2.7 * s, shY, 3.3 * s + aSw, -8.6 * s, 2 * s, SK);
+      limb(g, 3.2 * s, shY, 3.8 * s + aSw, -8.6 * s, 1.7 * s, SK);
     }
     // Hands. The source ended an arm with the limb's round cap, which at the
     // size these render reads as the blunt end of a plank. A slightly wider
     // circle turns the same shape into an arm with a hand on it.
-    g.circle(-3.3 * s - aSw, -8.6 * s, 1.25 * s).fill({ color: SKd });
+    g.circle(-3.8 * s - aSw, -8.6 * s, 1.15 * s).fill({ color: SKd });
     if (type !== "firefighter") {
-      g.circle(3.3 * s + aSw, -8.6 * s, 1.25 * s).fill({ color: SK });
+      g.circle(3.8 * s + aSw, -8.6 * s, 1.15 * s).fill({ color: SK });
     }
   }
 
@@ -299,14 +313,14 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
 
   // ---- head ----
   // Neck first, so the head sits on it instead of floating over the shoulders.
-  g.rect(-0.95 * s, -16.6 * s, 1.9 * s, 1.9 * s).fill({ color: SKd });
-  g.circle(0, -19.3 * s, 2.95 * s).fill({ color: HAIR });
-  g.circle(0, -18.3 * s, 2.6 * s).fill({ color: SK });
+  g.rect(-1 * s, -16.9 * s, 2 * s, 2.1 * s).fill({ color: SKd });
+  g.circle(0, -19.5 * s, 3.15 * s).fill({ color: HAIR });
+  g.circle(0, -18.45 * s, 2.8 * s).fill({ color: SK });
   // Eyes. Two dots are the whole difference between a head and a face at the
   // zoom a person can now reach; they disappear into the head at city scale,
   // which is the correct behaviour rather than a compromise.
-  g.circle(-1 * s, -18.6 * s, 0.42 * s).fill({ color: 0x2a1d12 });
-  g.circle(1 * s, -18.6 * s, 0.42 * s).fill({ color: 0x2a1d12 });
+  g.circle(-1.08 * s, -18.75 * s, 0.44 * s).fill({ color: 0x2a1d12 });
+  g.circle(1.08 * s, -18.75 * s, 0.44 * s).fill({ color: 0x2a1d12 });
 
   // ---- noble himation cloak + staff ----
   if (type === "noble") {
@@ -334,12 +348,12 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
   // ---- priest: long white robe, purple trim band, laurel circlet ----
   if (type === "priest") {
     // purple trim band across the tunic at chest height
-    g.moveTo(-3.4 * s, -12.8 * s)
-      .lineTo(3.4 * s, -12.8 * s)
-      .stroke({ width: 1.3 * s, color: 0x7a3f86 });
-    g.moveTo(-3.4 * s, -12.2 * s)
-      .lineTo(3.4 * s, -12.2 * s)
-      .stroke({ width: 0.8 * s, color: 0x7a3f86, alpha: 0.5 });
+    g.moveTo(-3.4 * s, -12.9 * s)
+      .lineTo(3.4 * s, -12.9 * s)
+      .stroke({ width: 0.75 * s, color: shade(0x7a3f86, 0.92) });
+    g.moveTo(-3.4 * s, -12.25 * s)
+      .lineTo(3.4 * s, -12.25 * s)
+      .stroke({ width: 0.35 * s, color: shade(0x7a3f86, 1.5), alpha: 0.75 });
     // laurel circlet: small leaf-shaped ovals around the crown
     for (let i = 0; i < 5; i++) {
       const a = -Math.PI * 0.8 + (i * Math.PI * 0.4) / 4;
