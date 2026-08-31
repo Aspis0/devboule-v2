@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{DaemonMessage, IDEMPOTENCY_MAX_ENTRIES, IDEMPOTENCY_TTL_SECS};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum IdempotencyOutcome {
     Hit(DaemonMessage),
     Conflict,

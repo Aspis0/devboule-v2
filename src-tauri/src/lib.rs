@@ -20,6 +20,7 @@ pub fn run() {
         // The asset server refuses everything until this exists, so it is
         // managed before any window can ask for a plugin file.
         .manage(plugins::PluginRegistry::default())
+        .manage(plugins::rpc::PluginRuntime::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let runtime = app.state::<oracle::OracleRuntime>();
@@ -70,6 +71,9 @@ pub fn run() {
             plugins::plugins_list,
             plugins::plugins_rescan,
             plugins::plugin_install,
+            plugins::rpc::plugin_backend_ensure,
+            plugins::rpc::plugin_backend_stop,
+            plugins::rpc::plugin_invoke,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Devboule")
@@ -79,6 +83,7 @@ pub fn run() {
                 oracle.shutdown();
                 let daemon = app_handle.state::<client::DaemonBridge>();
                 daemon.shutdown();
+                app_handle.state::<plugins::rpc::PluginRuntime>().stop_all();
             }
         })
 }

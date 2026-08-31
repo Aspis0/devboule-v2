@@ -17,7 +17,6 @@ mod lock;
 #[cfg(feature = "server")]
 mod outbound;
 mod paths;
-#[cfg(feature = "server")]
 mod process_tree;
 #[cfg(feature = "server")]
 mod screen;
@@ -35,6 +34,8 @@ mod security;
 pub use atomic::atomic_write;
 pub use client::{connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler};
 pub use error::DaemonError;
+pub use framing::Framed;
+pub use process_tree::JobObject;
 #[cfg(feature = "server")]
 pub use journal::{
     Journal, JournalError, JournalLimits, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_BYTES,
@@ -65,4 +66,4 @@ pub const IDLE_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 #[cfg(windows)]
 pub use security::{current_user_sid, dacl_is_current_user_only, user_only_sddl};
 #[cfg(windows)]
-pub use transport::inspect_pipe_dacl;
+pub use transport::{connect_pipe, inspect_pipe_dacl};

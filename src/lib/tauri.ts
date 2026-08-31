@@ -12,6 +12,7 @@ import type {
   OracleWorkspace,
   OracleSearchResponse,
   PermissionOutcome,
+  PluginBackendStatus,
   PluginInventory,
   Project,
   ProviderInfo,
@@ -54,6 +55,9 @@ type CommandArgs = {
   plugins_list: undefined;
   plugins_rescan: undefined;
   plugin_install: { id: string; source: string };
+  plugin_backend_ensure: { plugin_id: string };
+  plugin_backend_stop: { plugin_id: string };
+  plugin_invoke: { plugin_id: string; method: string; payload?: unknown };
 };
 
 type CommandResults = {
@@ -89,6 +93,9 @@ type CommandResults = {
   plugins_list: PluginInventory;
   plugins_rescan: PluginInventory;
   plugin_install: PluginInventory;
+  plugin_backend_ensure: PluginBackendStatus;
+  plugin_backend_stop: void;
+  plugin_invoke: unknown;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -183,3 +190,9 @@ export const pluginsRescan = () => invokeTyped("plugins_rescan");
  */
 export const pluginInstall = (id: string, source: string) =>
   invokeTyped("plugin_install", { id, source });
+export const pluginBackendEnsure = (pluginId: string) =>
+  invokeTyped("plugin_backend_ensure", { plugin_id: pluginId });
+export const pluginBackendStop = (pluginId: string) =>
+  invokeTyped("plugin_backend_stop", { plugin_id: pluginId });
+export const pluginInvoke = (pluginId: string, method: string, payload?: unknown) =>
+  invokeTyped("plugin_invoke", { plugin_id: pluginId, method, payload });

@@ -16,6 +16,18 @@ const mocks = vi.hoisted(() => ({
   probePluginTransport: vi.fn(),
 }));
 
+vi.mock("../plugins/pluginBackend", () => ({
+  ensurePluginBackend: vi.fn(async () => ({
+    pid: 1,
+    instanceId: "test",
+    protocolVersion: 1,
+    capabilities: ["workspace.root"],
+    pingOk: true,
+  })),
+  stopPluginBackend: vi.fn(async () => undefined),
+  invokePlugin: vi.fn(async () => ({ root: "C:\\\\repo", status: "ok" })),
+}));
+
 vi.mock("../../lib/pluginTransport", () => ({
   PLUGIN_ORIGINS: ["about:blank", "about:blank"],
   describePluginTransport: (transport: {

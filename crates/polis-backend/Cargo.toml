@@ -1,0 +1,23 @@
+[package]
+name = "polis-backend"
+version = "0.1.0"
+description = "Polis plugin backend process: city graph and Augur live here, never in the host"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "polis_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "polis-backend"
+path = "src/main.rs"
+
+[dependencies]
+devboule-protocol = { path = "../devboule-protocol" }
+devboule-plugin-rpc = { path = "../devboule-plugin-rpc" }
+serde_json = "=1.0.151"
+
+[dev-dependencies]
+tempfile = "3"

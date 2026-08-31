@@ -29,7 +29,7 @@ use crate::session::{
 ///
 /// M2 already implements detach vs close with this meaning in-process. `stop`
 /// is specified here so M3b does not have to change the protocol's meaning.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(
     tag = "type",
     rename_all = "snake_case",
@@ -105,6 +105,15 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    /// Plugin-backend tenant. `method` is a capability name (`workspace.root`
+    /// today). The daemon returns [`ErrorCode::Unimplemented`]; it is not a
+    /// plugin backend.
+    Invoke {
+        id: u64,
+        method: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<serde_json::Value>,
+    },
 }
 
 impl ClientMessage {
@@ -124,7 +133,8 @@ impl ClientMessage {
             | Self::SessionInterrupt { id, .. }
             | Self::SessionPermissionRespond { id, .. }
             | Self::SessionsList { id }
-            | Self::SessionResume { id, .. } => Some(*id),
+            | Self::SessionResume { id, .. }
+            | Self::Invoke { id, .. } => Some(*id),
         }
     }
 
@@ -148,7 +158,7 @@ impl ClientMessage {
 }
 
 /// Messages the daemon writes.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(
     tag = "type",
     rename_all = "snake_case",
@@ -186,6 +196,10 @@ pub enum DaemonMessage {
     Resume {
         id: u64,
         result: ResumeResult,
+    },
+    InvokeResult {
+        id: u64,
+        value: serde_json::Value,
     },
     Event(SessionEventEnvelope),
 }
@@ -364,6 +378,37 @@ mod tests {
         assert!(!encoded.contains('\n'));
         let decoded: ClientMessage = serde_json::from_str(&encoded).expect("parse");
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn invoke_is_the_plugin_tenant_on_the_same_frames() {
+        let msg = ClientMessage::Invoke {
+            id: 11,
+            method: crate::caps::WORKSPACE_ROOT.to_string(),
+            payload: None,
+        };
+        let value = serde_json::to_value(&msg).expect("json");
+        assert_eq!(value["type"], "invoke");
+        assert_eq!(value["id"], 11);
+        assert_eq!(value["method"], "workspace.root");
+        assert!(value.get("payload").is_none());
+        assert_eq!(msg.request_id(), Some(11));
+
+        let reply = DaemonMessage::InvokeResult {
+            id: 11,
+            value: serde_json::json!({
+                "root": r"C:\repo",
+                "status": "ok"
+            }),
+        };
+        let encoded = serde_json::to_string(&reply).expect("json");
+        assert!(!encoded.contains('\n'));
+        let decoded: DaemonMessage = serde_json::from_str(&encoded).expect("parse");
+        assert_eq!(decoded, reply);
+        let wire = serde_json::to_value(&reply).expect("json");
+        assert_eq!(wire["type"], "invoke_result");
+        assert_eq!(wire["value"]["root"], r"C:\repo");
+        assert_eq!(wire["value"]["status"], "ok");
     }
 
     #[test]

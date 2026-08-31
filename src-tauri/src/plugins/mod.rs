@@ -15,6 +15,7 @@ pub mod assets;
 pub mod discovery;
 pub mod install;
 pub mod manifest;
+pub mod rpc;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -82,6 +83,11 @@ impl PluginRegistry {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner()) = Some(fresh);
         inventory
+    }
+
+    /// Verified manifest for a ready plugin, if this id passed the last scan.
+    pub fn ready_manifest(&self, root: &Path, id: &str) -> Option<manifest::PluginManifest> {
+        self.with_scan(root, |scan| scan.ready(id).cloned())
     }
 
     /// May this exact file, of this exact plugin, be served?
@@ -294,6 +300,10 @@ mod tests {
         install_with_backend(&root, backend);
         let registry = PluginRegistry::default();
 
+        let manifest = registry
+            .ready_manifest(&root, "polis")
+            .expect("backend plugin is verified");
+        assert_eq!(manifest.backend_entry.as_deref(), Some("polis-backend.exe"));
         assert!(
             registry.is_verified_asset(&root, "polis", "polis-backend.exe"),
             "the backend is listed in files, so the asset server may serve it"

@@ -9,6 +9,8 @@ export interface PluginBridgeOptions {
   pluginOrigin: string;
   capabilities: readonly string[];
   timeoutMs?: number;
+  /** Forward a granted method to `plugin_invoke`. Absent: the host cannot route yet. */
+  route?: (method: string, payload: unknown) => Promise<unknown>;
 }
 
 export interface PluginBridge {
@@ -69,14 +71,32 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
         return;
       }
 
-      // The backend command is intentionally not faked here. Returning an
-      // error keeps the capability seam real until plugin_invoke exists.
-      post({
-        v: 1,
-        id: message.id,
-        kind: "error",
-        message: `The host cannot route plugin method "${message.method}" yet`,
-      });
+      if (options.route === undefined) {
+        post({
+          v: 1,
+          id: message.id,
+          kind: "error",
+          message: `The host cannot route plugin method "${message.method}" yet`,
+        });
+        return;
+      }
+
+      const requestId = message.id;
+      void options.route(message.method, message.payload).then(
+        (value) => {
+          if (disposed) return;
+          post({ v: 1, id: requestId, kind: "result", value });
+        },
+        (error: unknown) => {
+          if (disposed) return;
+          post({
+            v: 1,
+            id: requestId,
+            kind: "error",
+            message: routeErrorMessage(error),
+          });
+        },
+      );
       return;
     }
 
@@ -148,4 +168,15 @@ function parseMessage(value: unknown): InvokeMessage | ReplyMessage | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Tauri rejects with `{ code, message }`, not always an Error. */
+function routeErrorMessage(error: unknown): string {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message: unknown }).message;
+    if (typeof message === "string" && message !== "") return message;
+  }
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error) return error;
+  return "plugin invoke failed";
 }

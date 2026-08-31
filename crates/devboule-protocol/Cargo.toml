@@ -11,7 +11,6 @@ publish = false
 # version is already present in the workspace through Tauri; this does not
 # add a new package.
 serde = { version = "=1.0.229", features = ["derive"] }
-
-[dev-dependencies]
-# Already present in the workspace; used only to assert wire JSON.
+# Direct because plugin invoke payloads are JSON objects on the same frames
+# as ping/status. Already in the workspace (daemon, src-tauri).
 serde_json = "=1.0.151"

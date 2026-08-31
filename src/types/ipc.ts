@@ -288,3 +288,12 @@ export interface PluginInventory {
   /** Set when the plugins directory exists but could not be read. */
   problem: string | null;
 }
+
+/** Handshake readout after the host has spawned a plugin backend. */
+export interface PluginBackendStatus {
+  pid: number;
+  instanceId: string;
+  protocolVersion: number;
+  capabilities: string[];
+  pingOk: boolean;
+}

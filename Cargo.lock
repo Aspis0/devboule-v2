@@ -2370,6 +2370,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "devboule-daemon",
+ "devboule-plugin-rpc",
  "devboule-protocol",
  "oracle-core",
  "serde",
@@ -2406,6 +2407,18 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "devboule-plugin-rpc"
+version = "0.1.0"
+dependencies = [
+ "devboule-daemon",
+ "devboule-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 
@@ -6705,6 +6718,16 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide",
+]
+
+[[package]]
+name = "polis-backend"
+version = "0.1.0"
+dependencies = [
+ "devboule-plugin-rpc",
+ "devboule-protocol",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

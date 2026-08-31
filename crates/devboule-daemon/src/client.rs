@@ -484,7 +484,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Session { id, .. }
         | DaemonMessage::Sessions { id, .. }
         | DaemonMessage::Ok { id }
-        | DaemonMessage::Resume { id, .. } => Some(*id),
+        | DaemonMessage::Resume { id, .. }
+        | DaemonMessage::InvokeResult { id, .. } => Some(*id),
     }
 }
 

@@ -29,6 +29,8 @@ devboule-protocol = { path = "../crates/devboule-protocol" }
 # Blocking client + spawn helper. Pulls the daemon as a library; the GUI never
 # runs the server in-process.
 devboule-daemon = { path = "../crates/devboule-daemon", default-features = false }
+# Plugin backend lifecycle. ORT-free. Must never pull polis-backend.
+devboule-plugin-rpc = { path = "../crates/devboule-plugin-rpc" }
 # Oracle is the local index/query runtime used by the Tauri command boundary.
 oracle-core = { path = "../crates/oracle-core" }
 tauri-plugin-dialog = "2.7.2"

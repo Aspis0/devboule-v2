@@ -103,6 +103,100 @@ describe("createPluginBridge", () => {
     );
   });
 
+  it("forwards a granted method through route and posts the result", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const route = vi.fn().mockResolvedValue({ root: "C:\\\\repo", status: "ok" });
+    createPluginBridge({
+      iframe,
+      pluginId: "polis",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["workspace.root"],
+      route,
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "root-1",
+      kind: "invoke",
+      method: "workspace.root",
+    });
+
+    expect(route).toHaveBeenCalledWith("workspace.root", undefined);
+    await Promise.resolve();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      {
+        v: 1,
+        id: "root-1",
+        kind: "result",
+        value: { root: "C:\\\\repo", status: "ok" },
+      },
+      PLUGIN_ORIGIN,
+    );
+  });
+
+  it("posts a route rejection as a bridge error", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const route = vi.fn().mockRejectedValue({
+      code: "io",
+      message: "the plugin backend process exited during the request",
+    });
+    createPluginBridge({
+      iframe,
+      pluginId: "polis",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["workspace.root"],
+      route,
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "dead-1",
+      kind: "invoke",
+      method: "workspace.root",
+    });
+
+    await Promise.resolve();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      {
+        v: 1,
+        id: "dead-1",
+        kind: "error",
+        message: "the plugin backend process exited during the request",
+      },
+      PLUGIN_ORIGIN,
+    );
+  });
+
+  it("does not call route for a method whose capability was not requested", () => {
+    const { iframe, pluginWindow } = testFrame();
+    const route = vi.fn();
+    createPluginBridge({
+      iframe,
+      pluginId: "polis",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["workspace.root"],
+      route,
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "not-requested",
+      kind: "invoke",
+      method: "oracle.search",
+    });
+
+    expect(route).not.toHaveBeenCalled();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      {
+        v: 1,
+        id: "not-requested",
+        kind: "error",
+        message: 'Plugin capability "oracle.search" was not requested in the manifest',
+      },
+      PLUGIN_ORIGIN,
+    );
+  });
+
   it("reports that an allowed method cannot be routed yet", () => {
     const { iframe, pluginWindow } = testFrame();
     createPluginBridge({

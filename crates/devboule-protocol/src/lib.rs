@@ -76,6 +76,7 @@ mod error;
 mod handshake;
 mod ids;
 mod messages;
+mod plugin;
 mod session;
 
 pub use capability::{intersect_capabilities, Capability};
@@ -88,6 +89,7 @@ pub use ids::{
 pub use messages::{
     ClientMessage, DaemonMessage, DaemonStatusBody, JournalStats, SessionEventEnvelope,
 };
+pub use plugin::WorkspaceRootBody;
 pub use session::{
     cursor_replay_ok, Cursor, CursorShape, PermissionOutcome, Persistence, PersistenceKind,
     ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionState,
@@ -110,6 +112,15 @@ pub mod caps {
     pub const SESSIONS: &str = "sessions";
     /// Conversation journal. Advertised in M3c.
     pub const JOURNAL: &str = "journal";
+
+    /// Plugin-backend tenant. The host grants these at handshake from what
+    /// the plugin manifest requested; a name the host does not know is
+    /// ignored, not a handshake failure. Same open-set rule as the daemon.
+    pub const WORKSPACE_ROOT: &str = "workspace.root";
+    pub const ORACLE_SEARCH: &str = "oracle.search";
+    pub const GRAPH_IMPORTS: &str = "graph.imports";
+    pub const SESSIONS_WATCH: &str = "sessions.watch";
+    pub const AGENT_RUN: &str = "agent.run";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -146,6 +157,22 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
     m3a_daemon_capabilities()
 }
 
+/// Capabilities a plugin backend advertises today. The host may grant a
+/// subset. Later plugin work adds names here; unknown names on either side
+/// still complete the handshake.
+pub fn plugin_backend_capabilities() -> Vec<Capability> {
+    vec![
+        Capability::new(caps::PING),
+        Capability::new(caps::WORKSPACE_ROOT),
+    ]
+}
+
+/// The invoke method for a capability is the capability name. The host
+/// refuses a method that was not in the negotiated set.
+pub fn invoke_method_capability(method: &str) -> &str {
+    method
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +192,22 @@ mod tests {
         assert!(daemon.iter().any(|cap| cap.as_str() == caps::JOURNAL));
         assert!(client.iter().any(|cap| cap.as_str() == caps::JOURNAL));
         assert_eq!(daemon, client);
+    }
+
+    #[test]
+    fn plugin_backend_is_a_second_tenant_not_a_daemon_capability() {
+        let daemon = m3a_daemon_capabilities();
+        let plugin = plugin_backend_capabilities();
+        assert!(
+            !daemon
+                .iter()
+                .any(|cap| cap.as_str() == caps::WORKSPACE_ROOT),
+            "workspace.root belongs to the plugin tenant, not the daemon"
+        );
+        assert!(plugin.iter().any(|cap| cap.as_str() == caps::PING));
+        assert!(plugin.iter().any(|cap| cap.as_str() == caps::WORKSPACE_ROOT));
+        assert!(!plugin.iter().any(|cap| cap.as_str() == caps::STATUS));
+        assert!(!plugin.iter().any(|cap| cap.as_str() == caps::SESSIONS));
+        assert_eq!(invoke_method_capability("workspace.root"), caps::WORKSPACE_ROOT);
     }
 }

@@ -682,6 +682,13 @@ fn dispatch(
             }
             dispatch_session(state, owner, request, conn)
         }
+        ClientMessage::Invoke { id, method, .. } => DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::Unimplemented,
+                format!("this daemon is not a plugin backend; invoke '{method}' is refused"),
+            )
+            .with_id(id),
+        ),
     }
 }
 

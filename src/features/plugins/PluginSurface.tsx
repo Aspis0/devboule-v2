@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPluginBridge } from "./pluginBridge";
+import { ensurePluginBackend, invokePlugin, stopPluginBackend } from "./pluginBackend";
 import { useAppStore } from "../../store/appStore";
 
 const FRAME_START_TIMEOUT_MS = 15_000;
@@ -70,7 +71,15 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
       pluginId,
       pluginOrigin: origin,
       capabilities: capabilitiesRef.current,
+      route: (method, payload) => invokePlugin(pluginId, method, payload),
     });
+    let cancelled = false;
+    void ensurePluginBackend(pluginId).then(
+      () => {
+        if (cancelled) void stopPluginBackend(pluginId);
+      },
+      () => undefined,
+    );
     const timeout = setTimeout(() => {
       frameTimeoutRef.current = null;
       setFrameState("starting-long");
@@ -79,11 +88,13 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
     iframe.addEventListener("load", markFrameReady);
     iframe.addEventListener("error", markFrameFailed);
     return () => {
+      cancelled = true;
       clearTimeout(timeout);
       if (frameTimeoutRef.current === timeout) frameTimeoutRef.current = null;
       iframe.removeEventListener("load", markFrameReady);
       iframe.removeEventListener("error", markFrameFailed);
       bridge.dispose();
+      void stopPluginBackend(pluginId);
     };
   }, [capabilitiesKey, origin, pluginId, reloadToken]);
 

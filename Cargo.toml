@@ -5,6 +5,8 @@ members = [
     "crates/devboule-daemon",
     "crates/oracle-core",
     "crates/devboule-augur",
+    "crates/devboule-plugin-rpc",
+    "crates/polis-backend",
 ]
 resolver = "2"
 

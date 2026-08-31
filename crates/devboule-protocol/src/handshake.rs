@@ -1,5 +1,7 @@
 //! Bidirectional handshake and the version-overlap rule.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::capability::{intersect_capabilities, Capability};
@@ -18,6 +20,11 @@ pub struct ClientHello {
     pub client_version: String,
     pub capabilities: Vec<Capability>,
     pub owner: OwnerId,
+    /// Capability values the host grants this peer. Empty on the app↔daemon
+    /// conversation. A plugin backend reads `workspace.root` here: the
+    /// confined project root, chosen by the host, never by the plugin.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub grants: BTreeMap<String, String>,
 }
 
 impl ClientHello {
@@ -29,6 +36,26 @@ impl ClientHello {
             client_version: env!("CARGO_PKG_VERSION").to_string(),
             capabilities: crate::m3a_client_capabilities(),
             owner,
+            grants: BTreeMap::new(),
+        }
+    }
+
+    /// Host→plugin-backend hello. Same wire type as [`Self::m3a`]; a
+    /// different capability set and the grants map.
+    pub fn plugin_host(
+        owner: OwnerId,
+        client_name: impl Into<String>,
+        capabilities: Vec<Capability>,
+        grants: BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            min_protocol_version: PROTOCOL_MIN_VERSION,
+            client_name: client_name.into(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities,
+            owner,
+            grants,
         }
     }
 }
@@ -45,6 +72,21 @@ pub struct DaemonHello {
     pub instance_id: String,
     pub pid: u32,
     pub capabilities: Vec<Capability>,
+}
+
+impl DaemonHello {
+    /// Plugin-backend first reply after a successful hello. Same type as
+    /// the daemon's hello so a pipe client can reuse framing.
+    pub fn plugin_backend(instance_id: impl Into<String>, pid: u32) -> Self {
+        Self {
+            protocol_version: PROTOCOL_VERSION,
+            min_protocol_version: PROTOCOL_MIN_VERSION,
+            daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+            instance_id: instance_id.into(),
+            pid,
+            capabilities: crate::plugin_backend_capabilities(),
+        }
+    }
 }
 
 /// Result of [`negotiate`].
@@ -107,6 +149,8 @@ fn version_mismatch(client: &ClientHello, daemon: &DaemonHello) -> WireError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use crate::capability::Capability;
     use crate::ids::OwnerId;
 
     fn owner() -> OwnerId {
@@ -121,6 +165,7 @@ mod tests {
             client_version: "0.1.0".to_string(),
             capabilities: crate::m3a_client_capabilities(),
             owner: owner(),
+            grants: BTreeMap::new(),
         }
     }
 
@@ -181,5 +226,56 @@ mod tests {
         assert_eq!(value["minProtocolVersion"], 1);
         assert_eq!(value["clientName"], "devboule-app");
         assert!(value["owner"]["user"].is_string());
+        assert!(
+            value.get("grants").is_none(),
+            "empty grants must stay off the daemon wire"
+        );
+    }
+
+    #[test]
+    fn plugin_hello_carries_workspace_root_grant() {
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            crate::caps::WORKSPACE_ROOT.to_string(),
+            r"C:\repo".to_string(),
+        );
+        let hello = ClientHello::plugin_host(
+            owner(),
+            "devboule-app",
+            crate::plugin_backend_capabilities(),
+            grants,
+        );
+        let value = serde_json::to_value(&hello).expect("json");
+        assert_eq!(value["grants"]["workspace.root"], r"C:\repo");
+
+        let backend = DaemonHello::plugin_backend("plugin-1", 9);
+        let agreed = negotiate(&hello, &backend).expect("overlap");
+        assert!(agreed
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::WORKSPACE_ROOT));
+        assert!(!agreed
+            .capabilities
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::SESSIONS));
+    }
+
+    #[test]
+    fn plugin_handshake_drops_capabilities_the_backend_does_not_serve() {
+        let hello = ClientHello::plugin_host(
+            owner(),
+            "devboule-app",
+            vec![
+                Capability::new(crate::caps::WORKSPACE_ROOT),
+                Capability::new(crate::caps::ORACLE_SEARCH),
+            ],
+            BTreeMap::new(),
+        );
+        let backend = DaemonHello::plugin_backend("plugin-1", 9);
+        let agreed = negotiate(&hello, &backend).expect("overlap");
+        assert_eq!(
+            agreed.capabilities,
+            vec![Capability::new(crate::caps::WORKSPACE_ROOT)]
+        );
     }
 }
