@@ -23,6 +23,12 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl Error {
+    pub fn tool(message: impl AsRef<str>) -> Self {
+        Self::Tool(crate::finding::outbound_text(message.as_ref()))
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
@@ -32,5 +38,21 @@ impl From<std::io::Error> for Error {
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_error_does_not_echo_a_secret() {
+        let secret = crate::tokens::aws_access_token();
+        let error = Error::tool(format!("clippy failed: {secret}"));
+        let shown = error.to_string();
+        assert!(
+            !shown.contains(&secret),
+            "Error::Tool leaked a secret: {shown}"
+        );
     }
 }

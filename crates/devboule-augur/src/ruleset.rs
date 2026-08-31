@@ -93,12 +93,20 @@ pub struct CompiledRule {
     pub stopwords: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct SkippedRule {
+    pub id: String,
+    pub reason: String,
+}
+
 #[derive(Clone)]
 pub struct Ruleset {
     pub rules: Vec<CompiledRule>,
     pub skip_paths: Vec<Regex>,
     pub skip_secrets: Vec<Regex>,
     pub stopwords: Vec<String>,
+    pub skipped: Vec<SkippedRule>,
 }
 
 impl Ruleset {
@@ -110,6 +118,7 @@ impl Ruleset {
             let extra =
                 parse_and_compile(LOCATIONS_TOML).expect("shipped locations.toml must parse");
             set.rules.extend(extra.rules);
+            set.skipped.extend(extra.skipped);
             set
         });
         Ok(cached.clone())
@@ -133,17 +142,32 @@ fn parse_and_compile(toml: &str) -> Result<Ruleset, Error> {
     let skip_secrets = compile_regexes(global.regexes);
     let stopwords = lowercase(global.stopwords);
     let mut rules = Vec::new();
+    let mut skipped = Vec::new();
     for raw in file.rules {
         let Some(pattern_src) = raw.regex.or(raw.pattern) else {
+            skipped.push(SkippedRule {
+                id: raw.id,
+                reason: "no regex".into(),
+            });
             continue;
         };
         let Some(pattern) = compile_re(&pattern_src) else {
+            skipped.push(SkippedRule {
+                id: raw.id,
+                reason: "regex did not compile".into(),
+            });
             continue;
         };
         let path = match raw.path {
             Some(src) => match compile_re(&src) {
                 Some(regex) => Some(regex),
-                None => continue,
+                None => {
+                    skipped.push(SkippedRule {
+                        id: raw.id,
+                        reason: "path regex did not compile".into(),
+                    });
+                    continue;
+                }
             },
             None => None,
         };
@@ -194,6 +218,7 @@ fn parse_and_compile(toml: &str) -> Result<Ruleset, Error> {
         skip_paths,
         skip_secrets,
         stopwords,
+        skipped,
     })
 }
 
@@ -265,13 +290,28 @@ mod tests {
             "identity choke point must recognise gitleaks ids"
         );
         assert!(!is_gitleaks_rule("unused_variables"));
-        // 195 gitleaks ids + 3 location rules. A silent compile drop of a
-        // core rule is a miss, not a green test.
+        let declared = declared_ids(GITLEAKS_TOML)
+            .into_iter()
+            .chain(declared_ids(LOCATIONS_TOML))
+            .collect::<std::collections::HashSet<_>>();
+        let compiled: std::collections::HashSet<_> =
+            set.rules.iter().map(|rule| rule.id.clone()).collect();
+        let skipped: std::collections::HashSet<_> =
+            set.skipped.iter().map(|rule| rule.id.clone()).collect();
         assert!(
-            set.rules.len() >= 150,
-            "too many gitleaks regexes failed to compile in Rust: {}",
-            set.rules.len()
+            set.skipped.is_empty(),
+            "vendored rules vanished without a listed skip: {:?}",
+            set.skipped
         );
+        assert_eq!(
+            compiled.len() + skipped.len(),
+            declared.len(),
+            "compiled {} + skipped {} != declared {}",
+            compiled.len(),
+            skipped.len(),
+            declared.len()
+        );
+        assert_eq!(&compiled | &skipped, declared);
         let aws = set
             .rules
             .iter()
@@ -282,6 +322,12 @@ mod tests {
             aws.skip.iter().any(|skip| skip.is_match(&example)),
             "gitleaks EXAMPLE allowlist did not compile onto aws-access-token"
         );
+    }
+
+    fn declared_ids(toml: &str) -> Vec<String> {
+        let mut file = parse_toml(toml).expect("parse");
+        file.rules.append(&mut file.rule);
+        file.rules.into_iter().map(|rule| rule.id).collect()
     }
 
     #[test]
@@ -297,5 +343,7 @@ regex = "FIXME"
         let set = Ruleset::parse(toml).expect("parse");
         assert_eq!(set.rules.len(), 1);
         assert_eq!(set.rules[0].id, "ok");
+        assert_eq!(set.skipped.len(), 1);
+        assert_eq!(set.skipped[0].id, "broken");
     }
 }

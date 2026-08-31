@@ -129,6 +129,7 @@ mod tests {
                 source: "clippy",
                 title: "unused variable: `x`",
                 raw_excerpt: "let x = 1;",
+                occurrence: 0,
             },
         )
         .expect("grounded");
@@ -156,6 +157,7 @@ mod tests {
                 source: "test",
                 title: "demo",
                 raw_excerpt: "let x = 1;",
+                occurrence: 0,
             },
         )
         .expect("grounded");

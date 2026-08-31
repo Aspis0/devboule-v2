@@ -29,14 +29,38 @@ impl Ledger {
              );
              CREATE TABLE IF NOT EXISTS dismissed (
                 id TEXT PRIMARY KEY
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS meta (
+                k TEXT PRIMARY KEY,
+                v TEXT NOT NULL
+             );
+             INSERT OR IGNORE INTO meta (k, v) VALUES ('schema_version', '1');",
         )?;
         Ok(Self { conn })
     }
 
-    pub fn record_scan(&self, findings: &[Finding]) -> Result<(), Error> {
+    /// Replace findings for detectors in `completed`. Detectors that did not
+    /// run, or that failed, keep their previous rows.
+    pub fn record_scan(&self, findings: &[Finding], completed: &[&str]) -> Result<(), Error> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute("DELETE FROM findings", [])?;
+        let mut stale = Vec::new();
+        {
+            let mut statement = tx.prepare("SELECT id, payload FROM findings")?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, payload) = row?;
+                if let Some(finding) = crate::exchange::decode_ledger(&payload) {
+                    if completed.iter().any(|source| *source == finding.source()) {
+                        stale.push(id);
+                    }
+                }
+            }
+        }
+        for id in stale {
+            tx.execute("DELETE FROM findings WHERE id = ?1", [id])?;
+        }
         {
             let mut insert =
                 tx.prepare("INSERT OR REPLACE INTO findings (id, payload) VALUES (?1, ?2)")?;
@@ -81,6 +105,10 @@ mod tests {
     use crate::tokens;
     use std::path::PathBuf;
 
+    fn record(ledger: &Ledger, findings: &[Finding]) {
+        ledger.record_scan(findings, &["secrets"]).expect("record");
+    }
+
     fn a_finding(root: &Path, file: &str, excerpt: &str, line: usize) -> Finding {
         let path = root.join(file);
         if let Some(parent) = path.parent() {
@@ -104,6 +132,7 @@ mod tests {
                 source: "secrets",
                 title: "A secret-looking token",
                 raw_excerpt: excerpt,
+                occurrence: 0,
             },
         )
         .expect("grounded")
@@ -114,9 +143,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
         let finding = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
-        ledger
-            .record_scan(std::slice::from_ref(&finding))
-            .expect("record");
+        record(&ledger, std::slice::from_ref(&finding));
         ledger.dismiss(finding.id()).expect("dismiss");
 
         let shifted = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 4);
@@ -125,7 +152,7 @@ mod tests {
             shifted.id(),
             "the id must survive the line shift"
         );
-        ledger.record_scan(&[shifted]).expect("rescan");
+        record(&ledger, &[shifted]);
 
         let active = ledger.active().expect("active");
         assert!(
@@ -139,15 +166,11 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
         let first = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
-        ledger
-            .record_scan(std::slice::from_ref(&first))
-            .expect("record");
+        record(&ledger, std::slice::from_ref(&first));
         ledger.dismiss(first.id()).expect("dismiss");
 
         let second = a_finding(temp.path(), "src/auth.rs", &tokens::aws_changed(), 1);
-        ledger
-            .record_scan(std::slice::from_ref(&second))
-            .expect("rescan");
+        record(&ledger, std::slice::from_ref(&second));
         let active = ledger.active().expect("active");
         assert_eq!(active.len(), 1, "the new secret was swallowed: {active:?}");
         assert_eq!(active[0].id(), second.id());
@@ -159,9 +182,7 @@ mod tests {
         let path = temp.path().join("augur.sqlite");
         let ledger = Ledger::open(&path).expect("open");
         let finding = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
-        ledger
-            .record_scan(std::slice::from_ref(&finding))
-            .expect("record");
+        record(&ledger, std::slice::from_ref(&finding));
         let names: Vec<String> = ledger
             .conn
             .prepare("PRAGMA table_info(findings)")
@@ -189,11 +210,89 @@ mod tests {
         let first = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
         let twin = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 4);
         assert_eq!(first.id(), twin.id());
-        ledger
-            .record_scan(&[first.clone(), twin])
-            .expect("duplicate ids must not abort after DELETE");
+        record(&ledger, &[first.clone(), twin]);
         let active = ledger.active().expect("active");
         assert_eq!(active.len(), 1, "identity is unique: {active:?}");
         assert_eq!(active[0].id(), first.id());
+    }
+
+    #[test]
+    fn a_partial_rescan_does_not_drop_findings_from_detectors_that_did_not_run() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
+        let secret = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
+        std::fs::write(temp.path().join("src/lib.rs"), "let x = 1;\n").expect("write");
+        let lint = Finding::grounded(
+            temp.path(),
+            crate::finding::Draft {
+                file: PathBuf::from("src/lib.rs"),
+                start_line: 1,
+                end_line: 1,
+                rule: "unused_variables",
+                severity: Severity::Fire,
+                source: "clippy",
+                title: "unused variable: `x`",
+                raw_excerpt: "let x = 1;",
+                occurrence: 0,
+            },
+        )
+        .expect("clippy finding");
+        ledger
+            .record_scan(&[secret.clone(), lint.clone()], &["secrets", "clippy"])
+            .expect("full");
+        ledger
+            .record_scan(std::slice::from_ref(&secret), &["secrets"])
+            .expect("secrets only");
+        let active = ledger.active().expect("active");
+        assert!(
+            active.iter().any(|finding| finding.source() == "clippy"),
+            "clippy finding was wiped by a secrets-only rescan: {active:?}"
+        );
+        assert!(active.iter().any(|finding| finding.source() == "secrets"));
+    }
+
+    #[test]
+    fn a_clean_run_of_a_detector_clears_its_previous_findings() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
+        std::fs::create_dir_all(temp.path().join("src")).expect("mkdir");
+        std::fs::write(temp.path().join("src/lib.rs"), "let x = 1;\n").expect("write");
+        let lint = Finding::grounded(
+            temp.path(),
+            crate::finding::Draft {
+                file: PathBuf::from("src/lib.rs"),
+                start_line: 1,
+                end_line: 1,
+                rule: "unused_variables",
+                severity: Severity::Fire,
+                source: "clippy",
+                title: "unused variable: `x`",
+                raw_excerpt: "let x = 1;",
+                occurrence: 0,
+            },
+        )
+        .expect("clippy finding");
+        ledger
+            .record_scan(std::slice::from_ref(&lint), &["clippy"])
+            .expect("record");
+        ledger.record_scan(&[], &["clippy"]).expect("clean clippy");
+        let active = ledger.active().expect("active");
+        assert!(
+            active.is_empty(),
+            "a successful empty clippy must drop stale lints: {active:?}"
+        );
+    }
+
+    #[test]
+    fn the_ledger_records_a_schema_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
+        let version: String = ledger
+            .conn
+            .query_row("SELECT v FROM meta WHERE k = 'schema_version'", [], |row| {
+                row.get(0)
+            })
+            .expect("schema_version");
+        assert_eq!(version, "1");
     }
 }

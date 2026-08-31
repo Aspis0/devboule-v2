@@ -48,7 +48,7 @@ impl Detector for Secrets {
             } else {
                 ctx.root.join(relative)
             };
-            let Ok(text) = std::fs::read_to_string(&absolute) else {
+            let Some(text) = crate::finding::read_source(&absolute) else {
                 continue;
             };
             findings.extend(scan_file(&self.rules, ctx.root, relative, &absolute, &text));
@@ -71,6 +71,8 @@ fn scan_file(
     }
     let lower_file = text.to_lowercase();
     let mut findings = Vec::new();
+    let mut ordinals: std::collections::HashMap<(String, String), u32> =
+        std::collections::HashMap::new();
     for rule in &rules.rules {
         if rule
             .skip_paths
@@ -112,7 +114,9 @@ fn scan_file(
                 .unwrap_or(start);
             let start_line = line_of(text, start);
             let end_line = line_of(text, end);
-            if let Some(finding) = Finding::grounded(
+            let key = (rule.id.clone(), excerpt.to_string());
+            let occurrence = ordinals.get(&key).copied().unwrap_or(0);
+            if let Some(finding) = Finding::grounded_on(
                 root,
                 Draft {
                     file: relative.to_path_buf(),
@@ -123,8 +127,11 @@ fn scan_file(
                     source: "secrets",
                     title: &rule.title,
                     raw_excerpt: excerpt,
+                    occurrence,
                 },
+                text,
             ) {
+                *ordinals.entry(key).or_insert(0) += 1;
                 findings.push(finding);
             }
         }
@@ -294,6 +301,33 @@ mod tests {
     }
 
     #[test]
+    fn two_copies_of_the_same_secret_are_two_findings() {
+        let aws = tokens::aws_access_token();
+        assert_assembled_matches_rule("aws-access-token", &aws);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = write(
+            temp.path(),
+            "src/auth.rs",
+            &format!("const A: &str = \"{aws}\";\nconst B: &str = \"{aws}\";\n"),
+        );
+        let files = [file];
+        let hits: Vec<_> = Secrets::default()
+            .scan(&Context::new(temp.path(), &files))
+            .expect("scan")
+            .into_iter()
+            .filter(|finding| finding.rule() == "aws-access-token")
+            .collect();
+        assert_eq!(hits.len(), 2, "expected both occurrences: {hits:?}");
+        assert_ne!(
+            hits[0].id(),
+            hits[1].id(),
+            "dismissing one copy must not suppress the other"
+        );
+        assert_eq!(hits[0].start_line(), 1);
+        assert_eq!(hits[1].start_line(), 2);
+    }
+
+    #[test]
     fn a_hardcoded_windows_path_is_a_finding() {
         let temp = tempfile::tempdir().expect("tempdir");
         let file = write(
@@ -430,6 +464,25 @@ severity = "smoke"
             hit.evidence()
         );
         assert!(hit.evidence().contains("[redacted-secret]"));
+    }
+
+    #[test]
+    fn a_binary_file_is_not_scanned() {
+        let aws = tokens::aws_access_token();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut body = format!("const KEY: &str = \"{aws}\";\n").into_bytes();
+        body.push(0);
+        let path = temp.path().join("src/auth.rs");
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&path, body).expect("write");
+        let files = [PathBuf::from("src/auth.rs")];
+        let findings = Secrets::default()
+            .scan(&Context::new(temp.path(), &files))
+            .expect("scan");
+        assert!(
+            findings.is_empty(),
+            "a file with a NUL was scanned as text: {findings:?}"
+        );
     }
 
     #[test]

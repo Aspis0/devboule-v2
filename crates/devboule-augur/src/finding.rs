@@ -22,25 +22,33 @@ impl FindingId {
         }
     }
 
-    /// Port of v1 `compute_sin_id`: `path ⟂ rule ⟂ line ⟂ evidence_key`.
-    ///
-    /// The line is dropped for rules whose evidence already carries the
-    /// stable anchor (secrets, complexity, clone, hardcoded locations).
-    /// Enforced here so a caller cannot accidentally put the line back.
+    /// Port of v1 `compute_sin_id`, with two corrections the v1 never needed:
+    /// evidence normalisation is per-rule (secret values are not excerpts),
+    /// and fields are length-prefixed so a `0x1f` inside a field cannot forge
+    /// a neighbour. `occurrence` distinguishes two copies of the same secret
+    /// in one file without putting the line back into the hash.
     pub fn of(rule: &str, file: &Path, line: Option<usize>, evidence: &str) -> Self {
+        Self::of_at(rule, file, line, evidence, 0)
+    }
+
+    pub fn of_at(
+        rule: &str,
+        file: &Path,
+        line: Option<usize>,
+        evidence: &str,
+        occurrence: u32,
+    ) -> Self {
         let line_token = if line_is_decorative(rule) {
             String::new()
         } else {
             line.map(|n| n.to_string()).unwrap_or_default()
         };
         let mut hasher = Sha256::new();
-        hasher.update(normalise_path(file).as_bytes());
-        hasher.update([0x1f]);
-        hasher.update(rule.as_bytes());
-        hasher.update([0x1f]);
-        hasher.update(line_token.as_bytes());
-        hasher.update([0x1f]);
-        hasher.update(evidence_key(evidence).as_bytes());
+        put(&mut hasher, normalise_path(file).as_bytes());
+        put(&mut hasher, rule.as_bytes());
+        put(&mut hasher, line_token.as_bytes());
+        put(&mut hasher, evidence_key(rule, evidence).as_bytes());
+        put(&mut hasher, &occurrence.to_be_bytes());
         let digest = hasher.finalize();
         FindingId(
             digest
@@ -49,6 +57,11 @@ impl FindingId {
                 .collect::<String>(),
         )
     }
+}
+
+fn put(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
 }
 
 /// IDENTITY POLICY: for some rules the line is decorative — any edit above
@@ -71,14 +84,55 @@ fn line_is_decorative(rule: &str) -> bool {
 }
 
 fn normalise_path(file: &Path) -> String {
-    file.components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+    let mut parts: Vec<String> = Vec::new();
+    for component in file.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                parts.pop();
+            }
+            std::path::Component::Prefix(prefix) => {
+                parts.push(prefix.as_os_str().to_string_lossy().to_lowercase());
+            }
+            other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+        }
+    }
+    parts.join("/")
 }
 
-/// Lowercased, whitespace runs collapsed. Cosmetic rewrites do not mint an id.
-pub fn evidence_key(evidence: &str) -> String {
+/// Relativise `file` against `root` and collapse `.` / `..` / separators /
+/// drive-letter case. Used by [`Finding::grounded`] so identity and the
+/// stored path agree.
+pub(crate) fn canonical_file(root: &Path, file: &Path) -> PathBuf {
+    let joined = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        root.join(file)
+    };
+    let joined_norm = PathBuf::from(normalise_path(&joined));
+    let root_norm = PathBuf::from(normalise_path(root));
+    joined_norm
+        .strip_prefix(&root_norm)
+        .map(Path::to_path_buf)
+        .unwrap_or(joined_norm)
+}
+
+/// Evidence normalisation is per-rule, at the same choke point as the line.
+/// The v1 folded case and whitespace because evidence was a source excerpt.
+/// A secret *is* the matched value: case is identity, not cosmetics.
+fn evidence_key(rule: &str, evidence: &str) -> String {
+    if evidence_is_verbatim(rule) {
+        evidence.to_string()
+    } else {
+        fold_excerpt(evidence)
+    }
+}
+
+fn evidence_is_verbatim(rule: &str) -> bool {
+    rule == "secret" || rule.starts_with("secret.") || crate::ruleset::is_gitleaks_rule(rule)
+}
+
+fn fold_excerpt(evidence: &str) -> String {
     let lower = evidence.to_lowercase();
     let mut out = String::with_capacity(lower.len());
     let mut in_space = false;
@@ -140,6 +194,9 @@ pub struct Draft<'a> {
     pub source: &'a str,
     pub title: &'a str,
     pub raw_excerpt: &'a str,
+    /// Among equal (rule, evidence) matches in this file, counting from 0.
+    /// Line is not this number; it is display-only for decorative-line rules.
+    pub occurrence: u32,
 }
 
 /// One problem in a real file, at a real line range.
@@ -208,7 +265,7 @@ impl Finding {
             rule,
             severity,
             source,
-            title,
+            title: outbound_text(&title),
             evidence,
         })
     }
@@ -217,36 +274,63 @@ impl Finding {
 impl Finding {
     /// Build a finding only if `file` exists and the line range is inside it.
     pub fn grounded(root: &Path, draft: Draft<'_>) -> Option<Self> {
-        if draft.start_line == 0 || draft.end_line < draft.start_line {
-            return None;
-        }
         let absolute = if draft.file.is_absolute() {
             draft.file.clone()
         } else {
             root.join(&draft.file)
         };
-        let contents = std::fs::read_to_string(&absolute).ok()?;
+        let contents = read_source(&absolute)?;
+        Self::grounded_on(root, draft, &contents)
+    }
+
+    /// Ground against text already in memory so a detector that has the file
+    /// does not re-read it once per match.
+    pub(crate) fn grounded_on(root: &Path, draft: Draft<'_>, contents: &str) -> Option<Self> {
+        if draft.start_line == 0 || draft.end_line < draft.start_line {
+            return None;
+        }
         let lines = contents.lines().count();
         if draft.end_line > lines {
             return None;
         }
+        let file = canonical_file(root, &draft.file);
         Some(Self {
-            id: FindingId::of(
+            id: FindingId::of_at(
                 draft.rule,
-                &draft.file,
+                &file,
                 Some(draft.start_line),
                 draft.raw_excerpt,
+                draft.occurrence,
             ),
-            file: draft.file,
+            file,
             start_line: draft.start_line,
             end_line: draft.end_line,
             rule: draft.rule.to_string(),
             severity: draft.severity,
             source: draft.source.to_string(),
-            title: draft.title.to_string(),
+            title: outbound_text(draft.title),
             evidence: evidence_for(draft.rule, draft.raw_excerpt),
         })
     }
+}
+
+/// Anything that leaves a Finding string field or an Error goes through here.
+pub(crate) fn outbound_text(text: &str) -> String {
+    oracle_core::redact_secret_tokens(text)
+}
+
+const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
+
+pub(crate) fn read_source(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX_SOURCE_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.contains(&0) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// Gitleaks excerpts *are* the secret. oracle-core redacts retrieval-shaped
@@ -302,6 +386,7 @@ mod tests {
             source: "secrets",
             title: "A secret",
             raw_excerpt: excerpt,
+            occurrence: 0,
         }
     }
 
@@ -387,11 +472,108 @@ mod tests {
     }
 
     #[test]
-    fn cosmetic_evidence_does_not_change_the_id() {
+    fn cosmetic_excerpt_does_not_change_the_id() {
         let file = Path::new("src/a.rs");
         assert_eq!(
-            FindingId::of("secret", file, Some(1), "secret at line 1"),
-            FindingId::of("secret", file, Some(1), "SECRET AT LINE 1  "),
+            FindingId::of(
+                "complexity",
+                file,
+                Some(1),
+                "fn foo exceeds the cyclomatic threshold"
+            ),
+            FindingId::of(
+                "complexity",
+                file,
+                Some(1),
+                "FN FOO EXCEEDS THE CYCLOMATIC THRESHOLD  "
+            ),
+            "source excerpts still fold case and whitespace"
+        );
+    }
+
+    #[test]
+    fn a_secret_that_differs_only_in_case_is_a_different_finding() {
+        let file = Path::new("src/auth.rs");
+        let upper = "GhP_caseSensitiveTokenBody00000000001";
+        let lower = "ghp_casesensitivetokenbody00000000001";
+        assert_ne!(
+            FindingId::of("secret", file, Some(1), upper),
+            FindingId::of("secret", file, Some(1), lower),
+            "secret values are case-sensitive; excerpt normalisation must not apply"
+        );
+    }
+
+    #[test]
+    fn two_occurrences_are_told_apart_by_ordinal_not_line() {
+        let file = Path::new("src/auth.rs");
+        let token = "same-token-twice";
+        assert_ne!(
+            FindingId::of_at("secret", file, Some(1), token, 0),
+            FindingId::of_at("secret", file, Some(4), token, 1),
+        );
+        assert_eq!(
+            FindingId::of_at("secret", file, Some(1), token, 0),
+            FindingId::of_at("secret", file, Some(9), token, 0),
+            "an edit above must not mint a new id for the same occurrence"
+        );
+    }
+
+    #[test]
+    fn relative_and_dot_paths_hash_the_same() {
+        let evidence = "fn foo exceeds the cyclomatic threshold";
+        assert_eq!(
+            FindingId::of("complexity", Path::new("src/a.rs"), Some(1), evidence),
+            FindingId::of("complexity", Path::new("./src/a.rs"), Some(1), evidence),
+        );
+    }
+
+    #[test]
+    fn grounded_paths_are_relative_to_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let excerpt = tokens::aws_example();
+        std::fs::write(
+            temp.path().join("auth.rs"),
+            format!("const K: &str = \"{excerpt}\";\n"),
+        )
+        .expect("write");
+        let relative =
+            Finding::grounded(temp.path(), draft(PathBuf::from("auth.rs"), 1, 1, &excerpt))
+                .expect("relative");
+        let absolute = Finding::grounded(
+            temp.path(),
+            draft(temp.path().join("auth.rs"), 1, 1, &excerpt),
+        )
+        .expect("absolute");
+        assert_eq!(relative.id(), absolute.id());
+        assert_eq!(relative.file(), Path::new("auth.rs"));
+        assert_eq!(absolute.file(), Path::new("auth.rs"));
+    }
+
+    #[test]
+    fn a_title_is_redacted_before_it_leaves() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let excerpt = tokens::aws_access_token();
+        std::fs::write(temp.path().join("a.rs"), "let x = 1;\n").expect("write");
+        let title = format!("unused variable looks like {excerpt}");
+        let finding = Finding::grounded(
+            temp.path(),
+            Draft {
+                file: PathBuf::from("a.rs"),
+                start_line: 1,
+                end_line: 1,
+                rule: "unused_variables",
+                severity: Severity::Fire,
+                source: "clippy",
+                title: &title,
+                raw_excerpt: "let x = 1;",
+                occurrence: 0,
+            },
+        )
+        .expect("grounded");
+        assert!(
+            !finding.title().contains(&excerpt),
+            "title leaked a secret: {}",
+            finding.title()
         );
     }
 
@@ -400,5 +582,15 @@ mod tests {
         let a = FindingId::of("c", Path::new("ab"), Some(1), "d");
         let b = FindingId::of("bc", Path::new("a"), Some(1), "d");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_unit_separator_inside_a_field_does_not_forge_another_id() {
+        let a = FindingId::of("b\x1fc", Path::new("a"), Some(1), "d");
+        let b = FindingId::of("c", Path::new("a\x1fb"), Some(1), "d");
+        assert_ne!(
+            a, b,
+            "0x1f inside a field must not rewrite the field boundaries"
+        );
     }
 }

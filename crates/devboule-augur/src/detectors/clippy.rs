@@ -37,9 +37,9 @@ fn run_clippy(root: &std::path::Path) -> Result<String, Error> {
         ])
         .current_dir(root)
         .output()
-        .map_err(|error| Error::Tool(format!("could not run clippy: {error}")))?;
+        .map_err(|error| Error::tool(format!("could not run clippy: {error}")))?;
     if output.stdout.is_empty() && !output.status.success() {
-        return Err(Error::Tool(format!(
+        return Err(Error::tool(format!(
             "clippy failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
@@ -71,8 +71,11 @@ impl Detector for Clippy {
 }
 
 fn asked_this_file(asked: &std::path::Path, found: &std::path::Path) -> bool {
-    let asked = asked.to_string_lossy().replace('\\', "/");
-    let found = found.to_string_lossy().replace('\\', "/");
+    let asked: Vec<_> = asked.components().collect();
+    let found: Vec<_> = found.components().collect();
+    if asked.is_empty() || found.is_empty() {
+        return false;
+    }
     asked == found || asked.ends_with(&found) || found.ends_with(&asked)
 }
 
@@ -126,6 +129,7 @@ pub fn findings_from_json(root: &std::path::Path, jsonl: &str) -> Vec<Finding> {
                 source: "clippy",
                 title: &message.message,
                 raw_excerpt: excerpt,
+                occurrence: 0,
             },
         ) {
             findings.push(finding);
@@ -180,6 +184,28 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/fixtures/clippy-unused-variable.jsonl"
     ));
+
+    #[test]
+    fn asked_this_file_does_not_treat_a_suffix_string_as_the_same_path() {
+        assert!(asked_this_file(
+            std::path::Path::new("src/lib.rs"),
+            std::path::Path::new("src/lib.rs")
+        ));
+        assert!(
+            !asked_this_file(
+                std::path::Path::new("src/lib.rs"),
+                std::path::Path::new("src/notlib.rs")
+            ),
+            "string ends_with must not keep an unrelated file"
+        );
+        assert!(
+            !asked_this_file(
+                std::path::Path::new("lib.rs"),
+                std::path::Path::new("src/notlib.rs")
+            ),
+            "lib.rs is not a component suffix of src/notlib.rs"
+        );
+    }
 
     #[test]
     fn a_clippy_warning_becomes_a_finding_on_the_real_line() {

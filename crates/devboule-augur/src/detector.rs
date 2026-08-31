@@ -67,20 +67,45 @@ impl Registry {
 
     /// Run every detector at or under `budget`. Failures from one detector
     /// do not silence the others: a clippy that cannot start should not hide
-    /// a secret that is already on disk.
-    pub fn review(&self, ctx: &Context<'_>, budget: Cost) -> Vec<Finding> {
-        let mut findings = Vec::new();
+    /// a secret that is already on disk. The failure is reported, not swallowed.
+    pub fn review(&self, ctx: &Context<'_>, budget: Cost) -> Review {
+        let mut review = Review {
+            findings: Vec::new(),
+            completed: Vec::new(),
+            failed: Vec::new(),
+        };
         for detector in &self.detectors {
             if detector.cost() > budget {
                 continue;
             }
             match detector.scan(ctx) {
-                Ok(mut produced) => findings.append(&mut produced),
-                Err(_) => continue,
+                Ok(mut produced) => {
+                    review.findings.append(&mut produced);
+                    review.completed.push(detector.id());
+                }
+                Err(error) => review.failed.push(FailedDetector {
+                    detector: detector.id(),
+                    message: error.to_string(),
+                }),
             }
         }
-        findings
+        review
     }
+}
+
+/// Outcome of one [`Registry::review`]. `completed` is what actually ran
+/// (including empty-clean detectors) so the ledger can replace only those.
+#[derive(Debug)]
+pub struct Review {
+    pub findings: Vec<Finding>,
+    pub completed: Vec<&'static str>,
+    pub failed: Vec<FailedDetector>,
+}
+
+#[derive(Debug)]
+pub struct FailedDetector {
+    pub detector: &'static str,
+    pub message: String,
 }
 
 impl Default for Registry {
@@ -132,14 +157,47 @@ mod tests {
         let mut registry = Registry::new();
         registry.register(Box::new(Secrets::default()));
         registry.register(Box::new(Clippy::from_output(fixture)));
-        let findings = registry.review(&Context::new(temp.path(), &files), Cost::Tool);
+        let review = registry.review(&Context::new(temp.path(), &files), Cost::Tool);
         assert!(
-            findings.iter().any(|finding| finding.source() == "secrets"),
-            "in-process detector missing: {findings:?}"
+            review
+                .findings
+                .iter()
+                .any(|finding| finding.source() == "secrets"),
+            "in-process detector missing: {:?}",
+            review.findings
         );
         assert!(
-            findings.iter().any(|finding| finding.source() == "clippy"),
-            "tool detector missing: {findings:?}"
+            review
+                .findings
+                .iter()
+                .any(|finding| finding.source() == "clippy"),
+            "tool detector missing: {:?}",
+            review.findings
         );
+        assert!(review.failed.is_empty());
+        assert!(review.completed.contains(&"secrets"));
+        assert!(review.completed.contains(&"clippy"));
+    }
+
+    #[test]
+    fn a_broken_tool_is_reported_not_swallowed() {
+        fn boom(_root: &Path) -> Result<String, Error> {
+            Err(Error::tool("clippy failed: rustc exploded"))
+        }
+        let mut registry = Registry::new();
+        registry.register(Box::new(Secrets::default()));
+        registry.register(Box::new(Clippy::from_output(boom)));
+        let files: [PathBuf; 0] = [];
+        let review = registry.review(&Context::new(Path::new("."), &files), Cost::Tool);
+        assert!(
+            review
+                .failed
+                .iter()
+                .any(|failed| failed.detector == "clippy"),
+            "clippy failure was swallowed: {:?}",
+            review.failed
+        );
+        assert!(review.completed.contains(&"secrets"));
+        assert!(!review.completed.contains(&"clippy"));
     }
 }
