@@ -41,6 +41,11 @@ import type { Graphics } from "pixi.js";
 // ---------------------------------------------------------------------------
 const SK = 0xcb9f6e; // skin (lit)
 const SKd = 0xa67c4c; // skin (shadow)
+// The far-side limb. The source used SKd for it, which is 25% darker and more
+// saturated than SK: at this size, with the legs pushed apart, that stopped
+// reading as shading and started reading as two different skins. A straight 10%
+// darkening still separates near from far without looking like a second person.
+const SKb = shade(SK, 0.9);
 const HAIR = 0x35261a;
 
 // Per-type default tunic colours (verbatim TUNIC map from the source).
@@ -197,7 +202,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
   // the separation without the compass.
   const swing = sw * 1.55;
   const stride = moving ? (swing >= 0 ? swing + 1.2 : swing - 1.2) : 1.5;
-  jointedLimb(g, 0.4 * s, hipY, stride * s, 0, 2.3 * s, SKd, 0.26 * s);
+  jointedLimb(g, 0.4 * s, hipY, stride * s, 0, 2.3 * s, SKb, 0.26 * s);
   jointedLimb(g, -0.4 * s, hipY, -stride * s, 0, 2.5 * s, SK, 0.26 * s);
   // feet
   g.ellipse(stride * s, 0, 1.45 * s, 0.95 * s).fill({ color: 0x4a3320 });
@@ -265,7 +270,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
   // ---- arms ----
   if (type === "builder") {
     // back arm
-    limb(g, -2.7 * s, shY, -3.3 * s, -8.6 * s, 2 * s, SKd);
+    limb(g, -2.7 * s, shY, -3.3 * s, -8.6 * s, 2 * s, SKb);
     // swinging front arm + hammer
     const a = -1.2 + Math.sin(hammerPhase) * 1.0;
     const sx = 2.7 * s;
@@ -299,7 +304,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
     // Arms sit outboard of the tunic and are thinner than the source's 2 units.
     // At 2.7 with width 2 they overlapped a tunic 2.6 wide, so arm and body
     // merged into one mass and the silhouette lost its shoulders.
-    jointedLimb(g, -3.2 * s, shY, -3.8 * s - aSw, -8.6 * s, 1.7 * s, SKd, -0.3 * s);
+    jointedLimb(g, -3.2 * s, shY, -3.8 * s - aSw, -8.6 * s, 1.7 * s, SKb, -0.3 * s);
     if (type === "firefighter") {
       // front arm holds a bucket
       limb(g, 2.7 * s, shY, 3.7 * s, -10 * s, 2 * s, SK);
@@ -325,7 +330,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
     // Hands are drawn here only when there is nothing in them. A porter's
     // hands go on after the crate, further down, or the load covers them.
     if (opts.carrying !== "crate") {
-      g.circle(-3.8 * s - aSw, -8.6 * s, 1.15 * s).fill({ color: SKd });
+      g.circle(-3.8 * s - aSw, -8.6 * s, 1.15 * s).fill({ color: SKb });
       if (type !== "firefighter") {
         g.circle(3.8 * s + aSw, -8.6 * s, 1.15 * s).fill({ color: SK });
       }
@@ -479,7 +484,7 @@ export function drawCitizen(g: Graphics, type: CitizenType, opts: CitizenDrawOpt
       .stroke({ width: 0.5 * s, color: 0x4a3a1a });
     g.rect(cx - cw / 2, cy - ch / 2, cw, ch).stroke({ width: 0.5 * s, color: 0x5a4a28 });
     // hands gripping the near corners, over the wood rather than behind it
-    g.circle(cx - cw / 2 - 0.1 * s, cy + 0.35 * s, 1 * s).fill({ color: SKd });
+    g.circle(cx - cw / 2 - 0.1 * s, cy + 0.35 * s, 1 * s).fill({ color: SKb });
     g.circle(cx + cw / 2 + 0.1 * s, cy + 0.35 * s, 1 * s).fill({ color: SK });
   }
 
