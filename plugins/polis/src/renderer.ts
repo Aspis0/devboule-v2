@@ -80,7 +80,12 @@ export class CityRenderer {
     this.bank = options.bank;
     this.atlas = new BuildingTextureAtlas(window.devicePixelRatio || 1);
     this.findingLayer = new FindingLayer(this.layoutById);
-    this.agentLayer = new AgentLayer(this.layoutById, options.city.imports);
+    this.agentLayer = new AgentLayer(
+      this.layoutById,
+      options.city.imports,
+      this.app.renderer,
+      window.devicePixelRatio || 1,
+    );
     this.world.addChild(
       this.ground,
       this.roads,

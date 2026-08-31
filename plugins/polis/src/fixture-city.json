@@ -3,13 +3,13 @@
     {
       "id": "crates/devboule-augur/src/detector.rs",
       "path": "crates/devboule-augur/src/detector.rs",
-      "lines": 145,
+      "lines": 212,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/detectors/clippy.rs",
       "path": "crates/devboule-augur/src/detectors/clippy.rs",
-      "lines": 226,
+      "lines": 274,
       "district": "crates"
     },
     {
@@ -21,31 +21,31 @@
     {
       "id": "crates/devboule-augur/src/detectors/secrets.rs",
       "path": "crates/devboule-augur/src/detectors/secrets.rs",
-      "lines": 449,
+      "lines": 511,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/error.rs",
       "path": "crates/devboule-augur/src/error.rs",
-      "lines": 36,
+      "lines": 98,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/exchange.rs",
       "path": "crates/devboule-augur/src/exchange.rs",
-      "lines": 168,
+      "lines": 194,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/finding.rs",
       "path": "crates/devboule-augur/src/finding.rs",
-      "lines": 404,
+      "lines": 801,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/ledger.rs",
       "path": "crates/devboule-augur/src/ledger.rs",
-      "lines": 199,
+      "lines": 316,
       "district": "crates"
     },
     {
@@ -57,7 +57,7 @@
     {
       "id": "crates/devboule-augur/src/ruleset.rs",
       "path": "crates/devboule-augur/src/ruleset.rs",
-      "lines": 301,
+      "lines": 353,
       "district": "crates"
     },
     {
@@ -639,19 +639,19 @@
     {
       "id": "src/features/plugins/PluginSurface.tsx",
       "path": "src/features/plugins/PluginSurface.tsx",
-      "lines": 141,
+      "lines": 147,
       "district": "src"
     },
     {
       "id": "src/features/polis/polis.css",
       "path": "src/features/polis/polis.css",
-      "lines": 39,
+      "lines": 54,
       "district": "src"
     },
     {
       "id": "src/features/polis/PolisSurface.test.tsx",
       "path": "src/features/polis/PolisSurface.test.tsx",
-      "lines": 138,
+      "lines": 159,
       "district": "src"
     },
     {
@@ -978,6 +978,11 @@
     {
       "from": "crates/devboule-augur/src/detectors/secrets.rs",
       "to": "crates/devboule-augur/src/tokens.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/error.rs",
+      "to": "crates/devboule-augur/src/finding.rs",
       "weight": 1
     },
     {

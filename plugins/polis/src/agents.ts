@@ -1,14 +1,17 @@
-import { Container, Graphics } from "pixi.js";
+import { Container, Graphics, Sprite } from "pixi.js";
 import type { CityAgent, CityAgentState, CityImport } from "./model";
 import { PALETTE, providerColor } from "./palette";
-import { FIG } from "./kitcd/figures";
-import { MAT } from "./kitcd/iso";
+import { FigureTextureAtlas, type FigurePose, type FigureTextureSource } from "./figureAtlas";
 import { farLodBlend } from "./lod";
+import { hashString } from "./rng";
 
 export interface AgentLayout {
   worldX: number;
   worldY: number;
   height: number;
+  /** Present on the renderer's LayoutFile; optional keeps headless callers tiny. */
+  gridX?: number;
+  gridY?: number;
 }
 
 interface AgentView {
@@ -21,8 +24,8 @@ interface AgentView {
   farA: Graphics;
   farB: Graphics;
   figure: Container;
-  bodyA: Graphics;
-  bodyB: Graphics;
+  bodyA: Sprite;
+  bodyB: Sprite;
   badgeA: Graphics;
   badgeB: Graphics;
   glow: Graphics;
@@ -53,14 +56,23 @@ const BOB = [0, -0.8, 0, -0.4] as const;
 export class AgentLayer {
   readonly root = new Container();
   private readonly layouts: ReadonlyMap<string, AgentLayout>;
+  private readonly renderer: FigureTextureSource;
+  private readonly figureAtlas: FigureTextureAtlas;
   private readonly neighbors = new Map<string, string[]>();
   private readonly viewsById = new Map<string, AgentView>();
   private readonly views: AgentView[] = [];
   private elapsedMs = 0;
   private farBlend = 0;
 
-  constructor(layouts: ReadonlyMap<string, AgentLayout>, imports: readonly CityImport[]) {
+  constructor(
+    layouts: ReadonlyMap<string, AgentLayout>,
+    imports: readonly CityImport[],
+    renderer: FigureTextureSource,
+    dpr = 1,
+  ) {
     this.layouts = layouts;
+    this.renderer = renderer;
+    this.figureAtlas = new FigureTextureAtlas(dpr);
     for (const cityImport of imports) {
       if (layouts.get(cityImport.from) === undefined || layouts.get(cityImport.to) === undefined)
         continue;
@@ -69,6 +81,7 @@ export class AgentLayer {
       else targets.push(cityImport.to);
     }
     this.root.eventMode = "none";
+    this.root.sortableChildren = true;
   }
 
   setAgents(agents: readonly CityAgent[]): void {
@@ -131,10 +144,8 @@ export class AgentLayer {
     glow.ellipse(0, 2, 10, 4).fill({ color: stateColor(agent.state), alpha: 0.3 });
 
     const figure = new Container();
-    const bodyA = new Graphics();
-    const bodyB = new Graphics();
-    drawFigure(bodyA, agent.provider, agent.state, 0);
-    drawFigure(bodyB, agent.provider, agent.state, 1);
+    const bodyA = this.figureSprite(this.renderer, agent.provider, agent.state, 0);
+    const bodyB = this.figureSprite(this.renderer, agent.provider, agent.state, 1);
     bodyB.visible = false;
 
     const badgeA = new Graphics();
@@ -157,6 +168,7 @@ export class AgentLayer {
     const x = layout.worldX;
     const y = layout.worldY - layout.height - 5;
     display.position.set(x, y);
+    display.zIndex = layoutDepth(layout);
     this.root.addChild(display);
     const view = {
       id: agent.id,
@@ -177,7 +189,7 @@ export class AgentLayer {
       phase: stablePhase(agent.id),
       x,
       y,
-      radius: 42,
+      radius: 64,
       route: null,
       routeIndex: 0,
       routeProgress: 0,
@@ -193,14 +205,12 @@ export class AgentLayer {
     layout: AgentLayout,
   ): void {
     if (view.provider !== agent.provider || view.state !== agent.state) {
-      view.bodyA.clear();
-      view.bodyB.clear();
       view.badgeA.clear();
       view.badgeB.clear();
       view.farA.clear();
       view.farB.clear();
-      drawFigure(view.bodyA, agent.provider, agent.state, 0);
-      drawFigure(view.bodyB, agent.provider, agent.state, 1);
+      this.setFigureSprite(view.bodyA, agent.provider, agent.state, 0);
+      this.setFigureSprite(view.bodyB, agent.provider, agent.state, 1);
       drawBadge(view.badgeA, agent.state, 0);
       drawBadge(view.badgeB, agent.state, 1);
       drawFarMarker(view.farA, agent.provider, agent.state, 0);
@@ -223,6 +233,29 @@ export class AgentLayer {
       view.routeProgress = 0;
     }
     view.fileId = fileId;
+  }
+
+  private figureSprite(
+    renderer: FigureTextureSource,
+    provider: string,
+    state: CityAgentState,
+    pose: FigurePose,
+  ): Sprite {
+    const variant = this.figureAtlas.get(renderer, provider, state, pose);
+    const sprite = new Sprite(variant.texture);
+    sprite.position.set(variant.frame.x, variant.frame.y);
+    return sprite;
+  }
+
+  private setFigureSprite(
+    sprite: Sprite,
+    provider: string,
+    state: CityAgentState,
+    pose: FigurePose,
+  ): void {
+    const variant = this.figureAtlas.get(this.renderer, provider, state, pose);
+    sprite.texture = variant.texture;
+    sprite.position.set(variant.frame.x, variant.frame.y);
   }
 
   private updateAnimation(step: number): void {
@@ -314,34 +347,16 @@ export class AgentLayer {
   }
 }
 
-function drawFigure(
-  graphic: Graphics,
-  provider: string,
-  state: CityAgentState,
-  variant: number,
-): void {
-  // These are the v1 omini builders, not a second miniature figure language.
-  // Provider livery is the only v2-specific art input; state stays in the
-  // badge and pose so a silent session cannot be mistaken for a finished one.
-  const livery = providerColor(provider);
-  const scale = variant === 0 ? 0.27 : 0.275;
-  FIG.heroicMale(graphic, 0, 0, scale, {
-    mat: MAT.bronze,
-    cloth: livery,
-    helios: state === "working",
-    torch: state === "working",
-  });
-}
-
 function drawBadge(graphic: Graphics, state: CityAgentState, variant: number): void {
   const color = stateColor(state);
   const outline = PALETTE.outline;
+  const badgeY = -55;
   if (state === "working") {
     graphic
-      .poly([0, -39, 4, -35, 0, -31, -4, -35])
+      .poly([0, badgeY - 4, 4, badgeY, 0, badgeY + 4, -4, badgeY])
       .fill({ color })
       .stroke({ color: outline, width: 1 });
-    const hammerY = variant === 0 ? -37 : -34;
+    const hammerY = variant === 0 ? badgeY - 2 : badgeY + 1;
     graphic
       .moveTo(1, hammerY)
       .lineTo(5, hammerY - 3)
@@ -352,7 +367,7 @@ function drawBadge(graphic: Graphics, state: CityAgentState, variant: number): v
     return;
   }
   if (state === "silent") {
-    const y = -35;
+    const y = badgeY;
     graphic
       .circle(-3, y, 1.35)
       .fill({ color })
@@ -363,16 +378,16 @@ function drawBadge(graphic: Graphics, state: CityAgentState, variant: number): v
     return;
   }
   if (state === "finished") {
-    graphic.circle(0, -35, 4).fill({ color: outline, alpha: 0.9 }).stroke({ color, width: 1.4 });
+    graphic.circle(0, badgeY, 4).fill({ color: outline, alpha: 0.9 }).stroke({ color, width: 1.4 });
     graphic
-      .moveTo(-2.2, -35)
-      .lineTo(-0.5, -33.3)
-      .lineTo(2.5, -36.7)
+      .moveTo(-2.2, badgeY)
+      .lineTo(-0.5, badgeY + 1.7)
+      .lineTo(2.5, badgeY - 1.7)
       .stroke({ color, width: 1.3, cap: "round", join: "round" });
     return;
   }
-  graphic.circle(0, -35, 3.5).fill({ color: outline, alpha: 0.9 }).stroke({ color, width: 1.2 });
-  graphic.circle(0, -35, variant === 0 ? 1 : 0.7).fill({ color });
+  graphic.circle(0, badgeY, 3.5).fill({ color: outline, alpha: 0.9 }).stroke({ color, width: 1.2 });
+  graphic.circle(0, badgeY, variant === 0 ? 1 : 0.7).fill({ color });
 }
 
 /**
@@ -454,11 +469,15 @@ function stateGlowAlpha(state: CityAgentState): number {
   return state === "working" ? 0.56 : state === "silent" ? 0.3 : state === "finished" ? 0.2 : 0.36;
 }
 
-function stablePhase(id: string): number {
-  let hash = 2166136261;
-  for (const character of id) {
-    hash ^= character.codePointAt(0) ?? 0;
-    hash = Math.imul(hash, 16777619);
+function layoutDepth(layout: AgentLayout): number {
+  if (layout.gridX !== undefined && layout.gridY !== undefined) {
+    return layout.gridX + layout.gridY + 0.2;
   }
-  return hash >>> 0;
+  // Headless callers do not need grid coordinates; the projected fallback is
+  // stable and preserves front-to-back ordering among those callers.
+  return layout.worldX + layout.worldY;
+}
+
+function stablePhase(id: string): number {
+  return hashString(id);
 }
