@@ -147,7 +147,7 @@
     {
       "id": "crates/devboule-daemon/src/security.rs",
       "path": "crates/devboule-daemon/src/security.rs",
-      "lines": 384,
+      "lines": 410,
       "district": "crates"
     },
     {
@@ -189,19 +189,19 @@
     {
       "id": "crates/devboule-plugin-rpc/src/lib.rs",
       "path": "crates/devboule-plugin-rpc/src/lib.rs",
-      "lines": 294,
+      "lines": 321,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/pipe.rs",
       "path": "crates/devboule-plugin-rpc/src/pipe.rs",
-      "lines": 253,
+      "lines": 293,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/server.rs",
       "path": "crates/devboule-plugin-rpc/src/server.rs",
-      "lines": 193,
+      "lines": 194,
       "district": "crates"
     },
     {

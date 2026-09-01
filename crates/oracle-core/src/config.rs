@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 /// Last-resort embedding width for paths that have neither a loaded model nor
 /// stored vectors (for example the dimensionless hash fallback or a legacy
 /// empty-schema test). Model-backed indexing/querying must use model metadata.
+#[cfg(feature = "full")]
 pub const EMBED_DIMS: usize = 384;
 
 /// Store directory / file names (relative to the Oracle data dir).
@@ -25,10 +26,12 @@ pub const CKG_SQLITE: &str = "ckg.sqlite";
 
 /// Env var selecting the real (Qwen) query embedder vs. the hash fallback.
 /// Mirrors `ORACLE_QUERY_EMBEDDER` usage in `oracle/store/lance_store.py`.
+#[cfg(feature = "full")]
 pub const ENV_QUERY_EMBEDDER: &str = "ORACLE_QUERY_EMBEDDER";
 
 /// Env var forcing the real (Qwen) embedder; blocks the hash fallback.
 /// Mirrors `ORACLE_REQUIRE_REAL_EMBEDDER` in `oracle/ingestion/embedder.py`.
+#[cfg(feature = "full")]
 pub const ENV_REQUIRE_REAL_EMBEDDER: &str = "ORACLE_REQUIRE_REAL_EMBEDDER";
 
 /// Default Oracle data directory name (relative to the workspace root).
@@ -47,6 +50,7 @@ pub const MAX_BOUNDED_LIMIT: usize = 100;
 ///
 /// Bumped 2026-08-29 to invalidate indexes built with the previous model and
 /// token-window recipe. `t512` records bge-small-en-v1.5's token limit.
+#[cfg(feature = "full")]
 pub const RAW_CHUNK_PROFILE_VERSION: &str = "adaptive-bge-small-en-v1.5-2026-08-29-t512";
 
 /// Semantic-prefix chunk-profile version string (the default).
@@ -54,15 +58,18 @@ pub const RAW_CHUNK_PROFILE_VERSION: &str = "adaptive-bge-small-en-v1.5-2026-08-
 /// Bumped 2026-08-29 to invalidate indexes built with the previous model and
 /// chunk geometry. `c1024-o164` records the active code-chunk geometry and
 /// `t512` records bge-small-en-v1.5's token limit.
+#[cfg(feature = "full")]
 pub const SEMANTIC_PREFIX_PROFILE_VERSION: &str =
     "semantic-prefix-bge-small-en-v1.5-2026-08-29-c1024-o164-t512";
 
 /// Profile names that normalize to the semantic-prefix profile.
 /// Mirrors `SEMANTIC_PROFILE_NAMES` in `oracle/ingestion/retrieval_text.py`.
+#[cfg(feature = "full")]
 pub const SEMANTIC_PROFILE_NAMES: &[&str] =
     &["semantic-prefix-v2", "semantic_prefix_v2", "semantic", "v2"];
 
 /// Mirrors `oracle/ingestion/retrieval_text.py::normalize_profile`.
+#[cfg(feature = "full")]
 fn normalize_profile(value: &str) -> String {
     let profile = value.trim().to_lowercase();
     if SEMANTIC_PROFILE_NAMES.contains(&profile.as_str()) {
@@ -74,6 +81,7 @@ fn normalize_profile(value: &str) -> String {
 
 /// Mirrors `oracle/ingestion/retrieval_text.py::active_embed_profile`
 /// (defaults to `"semantic-prefix-v2"` when `ORACLE_EMBED_PROFILE` is unset).
+#[cfg(feature = "full")]
 fn active_embed_profile() -> String {
     let raw = env::var("ORACLE_EMBED_PROFILE").unwrap_or_else(|_| "semantic-prefix-v2".to_string());
     normalize_profile(&raw)
@@ -84,6 +92,7 @@ fn active_embed_profile() -> String {
 /// Mirrors `oracle/ingestion/retrieval_text.py::active_chunk_profile_version`.
 /// With no `profile` override and the default `ORACLE_EMBED_PROFILE`
 /// (`"semantic-prefix-v2"`) this returns the active semantic-prefix version.
+#[cfg(feature = "full")]
 pub fn active_chunk_profile_version(profile: Option<&str>) -> String {
     let effective = match profile {
         Some(p) => normalize_profile(p),
@@ -100,6 +109,7 @@ pub fn active_chunk_profile_version(profile: Option<&str>) -> String {
 ///
 /// Mirrors `oracle/ingestion/embedder.py::require_real_embedder`
 /// (`ORACLE_REQUIRE_REAL_EMBEDDER` in `{"1","true","yes"}`).
+#[cfg(feature = "full")]
 pub fn require_real_embedder() -> bool {
     match env::var(ENV_REQUIRE_REAL_EMBEDDER) {
         Ok(v) => matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"),
@@ -111,6 +121,7 @@ pub fn require_real_embedder() -> bool {
 ///
 /// Mirrors the `ORACLE_QUERY_EMBEDDER=hash` debug knob in
 /// `oracle/store/lance_store.py::embed_query_text`.
+#[cfg(feature = "full")]
 pub fn query_embedder_is_hash() -> bool {
     // Python: `os.getenv(...).lower() == "hash"` — any casing matches.
     env::var(ENV_QUERY_EMBEDDER)

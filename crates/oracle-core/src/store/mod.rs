@@ -2,6 +2,9 @@
 //! and the chunk-index manifest IO.
 
 pub mod ckg;
+#[cfg(feature = "full")]
 pub mod lance;
+#[cfg(feature = "full")]
 pub mod manifest;
+#[cfg(feature = "full")]
 pub mod sqlite;

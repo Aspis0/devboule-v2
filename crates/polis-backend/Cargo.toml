@@ -17,6 +17,8 @@ path = "src/main.rs"
 [dependencies]
 devboule-protocol = { path = "../devboule-protocol" }
 devboule-plugin-rpc = { path = "../devboule-plugin-rpc" }
+oracle-core = { path = "../oracle-core", default-features = false, features = ["city"] }
+regex = "1"
 serde_json = "=1.0.151"
 
 [dev-dependencies]

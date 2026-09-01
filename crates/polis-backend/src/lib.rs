@@ -1,5 +1,5 @@
 //! Polis plugin backend. The city graph and Augur will live here; today it
-//! only proves the pipe: handshake, ping, and `workspace.root`.
+//! serves the host-granted workspace city over the plugin pipe.
 
 use std::collections::BTreeMap;
 
@@ -8,6 +8,8 @@ use devboule_protocol::{
     caps, invoke_method_capability, Capability, ClientMessage, DaemonMessage, ErrorCode,
     WorkspaceRootBody, WireError,
 };
+mod city;
+pub use city::{build_city, CityBuildError, MAX_CITY_FILE_BYTES, MAX_CITY_FILES};
 
 pub fn dispatch(
     grants: &BTreeMap<String, String>,
@@ -70,6 +72,22 @@ fn dispatch_invoke(
             Ok(value) => DaemonMessage::InvokeResult { id, value },
             Err(error) => DaemonMessage::Error(
                 WireError::new(ErrorCode::Internal, error.to_string()).with_id(id),
+            ),
+        }
+    } else if method == caps::CITY_GET {
+        let Some(root) = grants.get(caps::WORKSPACE_ROOT) else {
+            return DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    "city.get requires the host-granted workspace.root",
+                )
+                .with_id(id),
+            );
+        };
+        match build_city(std::path::Path::new(root)) {
+            Ok(value) => DaemonMessage::InvokeResult { id, value },
+            Err(error) => DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, error.to_string()).with_id(id),
             ),
         }
     } else {
@@ -140,6 +158,40 @@ mod tests {
                 assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
             }
             other => panic!("expected capability error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn city_get_returns_host_city_when_workspace_is_granted() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("README.md"), "hello\n").unwrap();
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            caps::WORKSPACE_ROOT.to_string(),
+            root.path().to_string_lossy().into_owned(),
+        );
+        let granted = vec![
+            Capability::new(caps::PING),
+            Capability::new(caps::WORKSPACE_ROOT),
+            Capability::new(caps::CITY_GET),
+        ];
+        let reply = dispatch(
+            &grants,
+            &granted,
+            ClientMessage::Invoke {
+                id: 5,
+                method: caps::CITY_GET.to_string(),
+                payload: None,
+            },
+        );
+        match reply {
+            DaemonMessage::InvokeResult { id, value } => {
+                assert_eq!(id, 5);
+                assert_eq!(value["dataSource"], "host");
+                assert_eq!(value["agents"], serde_json::json!([]));
+                assert_eq!(value["findings"], serde_json::json!([]));
+            }
+            other => panic!("expected city result, got {other:?}"),
         }
     }
 }

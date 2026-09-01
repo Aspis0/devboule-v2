@@ -132,6 +132,9 @@ pub fn granted_capabilities(
         if let Some(root) = workspace_root {
             capabilities.push(Capability::new(caps::WORKSPACE_ROOT));
             grants.insert(caps::WORKSPACE_ROOT.to_string(), root.to_string());
+            if requested.iter().any(|name| name == caps::CITY_GET) {
+                capabilities.push(Capability::new(caps::CITY_GET));
+            }
         }
     }
     (capabilities, grants)
@@ -312,6 +315,17 @@ mod tests {
 
         let (caps, grants) = granted_capabilities(&["workspace.root".into()], None);
         assert!(!caps.iter().any(|cap| cap.as_str() == "workspace.root"));
+        assert!(grants.is_empty());
+
+        let (caps, grants) = granted_capabilities(
+            &["workspace.root".into(), "city.get".into()],
+            Some(r"C:\repo"),
+        );
+        assert!(caps.iter().any(|cap| cap.as_str() == "city.get"));
+        assert_eq!(grants.get("workspace.root").map(String::as_str), Some(r"C:\repo"));
+
+        let (caps, grants) = granted_capabilities(&["city.get".into()], Some(r"C:\repo"));
+        assert!(!caps.iter().any(|cap| cap.as_str() == "city.get"));
         assert!(grants.is_empty());
 
         let (caps, grants) = granted_capabilities(&["oracle.search".into()], Some(r"C:\repo"));

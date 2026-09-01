@@ -18,8 +18,6 @@ pub const CHUNK_STRUCTURED_MAX_CHARS: usize = 8000;
 pub const CHUNK_STRUCTURED_OVERLAP_CHARS: usize = 900;
 pub const CHUNK_CODE_MAX_CHARS: usize = 1024;
 pub const CHUNK_CODE_OVERLAP_CHARS: usize = 164;
-pub const CHUNK_MAX_FILE_BYTES: u64 = 1_200_000;
-
 #[derive(Debug, Clone, Copy, Serialize)]
 struct ChunkGeometry {
     default_max_chars: usize,
@@ -56,54 +54,6 @@ pub fn chunk_geometry_fingerprint() -> String {
 }
 
 // ── Extension sets ───────────────────────────────────────────────────────────
-
-/// Extensions the collector will read at all.
-///
-/// The prose formats here — `.tex`, `.rst`, `.org`, `.adoc`, `.bib` — were added
-/// on 2026-08-30 so a folder of writing is not silently skipped. They are text,
-/// and the embedder is a text model; nothing about the code path changes. This
-/// is emphatically *not* support for scientific documents: a paper is a PDF, and
-/// Oracle cannot read one. See `recon/oracle-scientific-documents.md`.
-pub fn is_text_extension(ext: &str) -> bool {
-    matches!(
-        ext,
-        ".adoc"
-            | ".bib"
-            | ".css"
-            | ".gradle"
-            | ".html"
-            | ".java"
-            | ".js"
-            | ".jsx"
-            | ".json"
-            | ".jsonc"
-            | ".kt"
-            | ".kts"
-            | ".md"
-            | ".mjs"
-            | ".cjs"
-            | ".mts"
-            | ".cts"
-            | ".org"
-            | ".properties"
-            | ".ps1"
-            | ".py"
-            | ".r"
-            | ".rmd"
-            | ".rs"
-            | ".rst"
-            | ".sh"
-            | ".sql"
-            | ".tex"
-            | ".toml"
-            | ".ts"
-            | ".tsx"
-            | ".xml"
-            | ".txt"
-            | ".yaml"
-            | ".yml"
-    )
-}
 
 fn is_doc_extension(ext: &str) -> bool {
     matches!(ext, ".adoc" | ".md" | ".org" | ".rst" | ".tex" | ".txt")
@@ -567,7 +517,7 @@ mod split_text_tests {
     fn prose_formats_are_collected_and_read_as_documents() {
         for name in ["paper.tex", "guide.rst", "notes.org", "manual.adoc"] {
             assert!(
-                is_text_extension(&format!(".{}", name.rsplit('.').next().unwrap())),
+                super::super::ingest::text_extensions::is_text_extension(&format!(".{}", name.rsplit('.').next().unwrap())),
                 "{name} would be skipped by the collector"
             );
             assert_eq!(

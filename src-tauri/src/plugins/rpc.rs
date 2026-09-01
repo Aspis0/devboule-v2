@@ -383,9 +383,18 @@ pub async fn plugin_invoke(
     }
     let spec = spawn_spec(&app, &plugin_id)?;
     let runtime = (*app.state::<PluginRuntime>()).clone();
-    tauri::async_runtime::spawn_blocking(move || runtime.invoke(&plugin_id, spec, &method, payload))
+    let value = tauri::async_runtime::spawn_blocking(move || {
+        runtime.invoke(&plugin_id, spec, &method, payload)
+    })
         .await
-        .map_err(|error| CommandError::new(ErrorCode::Internal, error.to_string()))?
+        .map_err(|error| CommandError::new(ErrorCode::Internal, error.to_string()))??;
+    if !plugin_payload_within_limit(Some(&value)) {
+        return Err(CommandError::new(
+            ErrorCode::InvalidRequest,
+            "plugin response is too large (maximum 1 MiB)",
+        ));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]

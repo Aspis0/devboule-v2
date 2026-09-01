@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  cityHudLabel,
+  formatCityFetchReadout,
+  loadCity,
+  pendingCityState,
   formatBackendFailureReadout,
   formatHandshakeReadout,
   formatWorkspaceRootReadout,
+  hostResponseWithinLimit,
 } from "./hostBridge";
 
 describe("backend overlay readout", () => {
@@ -60,5 +65,47 @@ describe("backend overlay readout", () => {
         message: "workspace.root refused: path escaped",
       }),
     ).toContain("Backend: workspace root refused");
+  });
+
+  it("rejects an oversized host response before the city reaches the iframe", () => {
+    expect(hostResponseWithinLimit({ files: [{ path: "x".repeat(1024 * 1024) }] })).toBe(false);
+  });
+
+  it("exposes a real pending state and falls back honestly when city.get fails", async () => {
+    const fallback = {
+      files: [],
+      imports: [],
+      agents: [],
+      findings: [],
+      dataSource: "fixture" as const,
+    };
+    expect(pendingCityState()).toEqual({ status: "pending", city: null });
+
+    const invoke = vi.fn().mockResolvedValue({
+      files: [{ id: "src/a.ts", path: "src/a.ts", lines: 1, district: "src" }],
+      imports: [],
+      agents: [{ fabricated: true }],
+      findings: [{ fabricated: true }],
+      dataSource: "fixture",
+    });
+    const host = await loadCity(invoke, fallback);
+    expect(host.status).toBe("host");
+    expect(host.city.dataSource).toBe("host");
+    expect(host.city.agents).toEqual([]);
+    expect(host.city.findings).toEqual([]);
+    expect(invoke).toHaveBeenCalledWith("city.get", undefined, expect.any(Number));
+    expect(cityHudLabel(host.city)).toBe("Host city");
+    expect(formatCityFetchReadout(host)).toBe("City: host · 1 files · 0 directed roads");
+
+    const failedInvoke = vi.fn().mockRejectedValue(new Error("city root unreadable"));
+    const fixture = await loadCity(failedInvoke, fallback);
+    expect(fixture.status).toBe("fixture");
+    if (fixture.status !== "fixture") throw new Error("expected fixture fallback");
+    expect(fixture.city).toBe(fallback);
+    expect(fixture.error).toBeInstanceOf(Error);
+    expect(cityHudLabel(fixture.city)).toBe("Fixture city");
+    expect(formatCityFetchReadout(fixture)).toContain(
+      "City: fixture fallback — host city fetch refused — city root unreadable",
+    );
   });
 });

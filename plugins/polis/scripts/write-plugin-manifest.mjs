@@ -44,6 +44,8 @@ try {
     "oracle.search",
     "--capability",
     "workspace.root",
+    "--capability",
+    "city.get",
   ];
   if (backendCopied) {
     producerArgs.push("--entry-backend", backendName);

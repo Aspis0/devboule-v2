@@ -1,9 +1,24 @@
+import type { City } from "./model";
+
 /**
  * The only way this document talks to the host. A raw Tauri invoke from
  * inside the frame hangs forever; everything goes through postMessage.
  */
 
 const DEFAULT_TIMEOUT_MS = 4000;
+export const MAX_HOST_RESPONSE_BYTES = 1024 * 1024;
+export const CITY_FETCH_TIMEOUT_MS = 30_000;
+
+export type CityLoadState =
+  | { status: "pending"; city: null }
+  | { status: "host"; city: City }
+  | { status: "fixture"; city: City; error: unknown };
+
+type HostInvoker = (
+  method: string,
+  payload?: unknown,
+  timeoutMs?: number,
+) => Promise<unknown>;
 
 export function invokeHost(
   method: string,
@@ -27,8 +42,17 @@ export function invokeHost(
       settled = true;
       window.clearTimeout(timer);
       window.removeEventListener("message", onMessage);
-      if (message.kind === "result") resolve(message.value);
-      else {
+      if (message.kind === "result") {
+        if (!hostResponseWithinLimit(message.value)) {
+          const error = new Error(
+            "plugin response is too large (maximum 1 MiB)",
+          ) as Error & { code?: string };
+          error.code = "response_too_large";
+          reject(error);
+        } else {
+          resolve(message.value);
+        }
+      } else {
         const error = new Error(message.message) as Error & { code?: string };
         if (message.code !== undefined) error.code = message.code;
         reject(error);
@@ -45,6 +69,51 @@ export function invokeHost(
     if (payload !== undefined) request.payload = payload;
     window.parent.postMessage(request, "*");
   });
+}
+
+/** Keep the returned Value bounded before it is retained by the plugin frame. */
+export function hostResponseWithinLimit(value: unknown): boolean {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) return true;
+    return new TextEncoder().encode(serialized).byteLength <= MAX_HOST_RESPONSE_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+export function pendingCityState(): CityLoadState {
+  return { status: "pending", city: null };
+}
+
+export async function loadCity(
+  invoke: HostInvoker,
+  fallback: City,
+  timeoutMs = CITY_FETCH_TIMEOUT_MS,
+): Promise<Exclude<CityLoadState, { status: "pending" }>> {
+  try {
+    const value = await invoke("city.get", undefined, timeoutMs);
+    if (!isCity(value)) throw new Error("city.get returned an invalid city payload");
+    return {
+      status: "host",
+      city: { ...value, agents: [], findings: [], dataSource: "host" },
+    };
+  } catch (error) {
+    return { status: "fixture", city: fallback, error };
+  }
+}
+
+export function cityHudLabel(city: City): "Host city" | "Fixture city" {
+  return city.dataSource === "host" ? "Host city" : "Fixture city";
+}
+
+export function formatCityFetchReadout(
+  state: Exclude<CityLoadState, { status: "pending" }>,
+): string {
+  if (state.status === "host") {
+    return `City: host · ${state.city.files.length} files · ${state.city.imports.length} directed roads`;
+  }
+  return `City: fixture fallback — host city fetch refused — ${errorMessage(state.error)}`;
 }
 
 export function formatWorkspaceRootReadout(value: unknown): string {
@@ -119,6 +188,29 @@ function isReply(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCity(value: unknown): value is City {
+  if (!isRecord(value) || !Array.isArray(value.files) || !Array.isArray(value.imports)) {
+    return false;
+  }
+  return (
+    value.files.every(
+      (file) =>
+        isRecord(file) &&
+        typeof file.id === "string" &&
+        typeof file.path === "string" &&
+        typeof file.lines === "number" &&
+        typeof file.district === "string",
+    ) &&
+    value.imports.every(
+      (edge) =>
+        isRecord(edge) &&
+        typeof edge.from === "string" &&
+        typeof edge.to === "string" &&
+        typeof edge.weight === "number",
+    )
+  );
 }
 
 function safeJson(value: unknown): string {

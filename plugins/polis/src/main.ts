@@ -3,10 +3,15 @@ import { Application } from "pixi.js";
 import { loadPolisArt } from "./artAssets";
 import fixtureCity from "./fixture-city.json";
 import {
+  CITY_FETCH_TIMEOUT_MS,
+  cityHudLabel,
+  formatCityFetchReadout,
   formatBackendFailureReadout,
   formatHandshakeReadout,
   formatWorkspaceRootReadout,
   invokeHost,
+  loadCity,
+  pendingCityState,
 } from "./hostBridge";
 import { CityRenderer } from "./renderer";
 import type { City, CityFile } from "./model";
@@ -23,15 +28,17 @@ const findingReadout = getElement<HTMLElement>("findings");
 const detailsReadout = getElement<HTMLElement>("details");
 const hudToggle = getElement<HTMLButtonElement>("hud-toggle");
 const hudDetails = getElement<HTMLDivElement>("hud-details");
-const city = fixtureCity as City;
+const fixture = fixtureCity as City;
 const TAURI_PROBE_TIMEOUT_MS = 4000;
 
-renderCityStats(city);
+const cityPending = pendingCityState();
+if (cityPending.status === "pending") renderPendingCity();
 bindHudToggle();
 const isolationMeasurement = measureTauriIsolation();
 void isolationMeasurement.then((isolation) => reportIsolationOutcome(isolation));
-void reportBackend();
-void startRenderer();
+const cityLoad = loadCity(invokeHost, fixture, CITY_FETCH_TIMEOUT_MS);
+void reportBackend(cityLoad);
+void startRenderer(cityLoad);
 
 type IsolationOutcome =
   | { status: "object-absent" }
@@ -45,7 +52,9 @@ type WindowWithTauriInternals = Window & {
   };
 };
 
-async function startRenderer(): Promise<void> {
+async function startRenderer(
+  cityLoadResult: ReturnType<typeof loadCity>,
+): Promise<void> {
   const probe = document.createElement("canvas");
   const gl = probe.getContext("webgl2", { antialias: true });
   if (gl === null) {
@@ -75,11 +84,13 @@ async function startRenderer(): Promise<void> {
   }
 
   const bank = await loadPolisArt();
+  const loadedCity = await cityLoadResult;
+  renderCityStats(loadedCity.city);
 
   new CityRenderer({
     app,
     canvas,
-    city,
+    city: loadedCity.city,
     details: {
       setDetails: (file) => showFileDetails(file),
       clearDetails: () => clearFileDetails(),
@@ -172,15 +183,16 @@ function isProbeTimeout(error: unknown): boolean {
   return error instanceof Error && error.name === "TauriProbeTimeoutError";
 }
 
-async function reportBackend(): Promise<void> {
+async function reportBackend(cityLoadResult: ReturnType<typeof loadCity>): Promise<void> {
+  const loadedCity = await cityLoadResult;
   try {
     const value = await invokeHost("workspace.root");
     bridgeReadout.textContent = formatWorkspaceRootReadout(value);
-    backendReadout.textContent = formatHandshakeReadout(value);
+    backendReadout.textContent = `${formatHandshakeReadout(value)} · ${formatCityFetchReadout(loadedCity)}`;
   } catch (error) {
     const backendFailure = formatBackendFailureReadout(error);
     bridgeReadout.textContent = `Bridge reply: ${backendFailure.replace(/^Backend: /, "")}`;
-    backendReadout.textContent = backendFailure;
+    backendReadout.textContent = `${backendFailure} · ${formatCityFetchReadout(loadedCity)}`;
   }
 }
 
@@ -207,7 +219,7 @@ function renderCityStats(value: City): void {
   const placedFindings = value.findings.filter((finding) =>
     knownFileIds.has(finding.fileId),
   ).length;
-  const source = value.dataSource === "host" ? "Host city" : "Fixture city";
+  const source = cityHudLabel(value);
   cityReadout.textContent = `${source} · ${value.files.length} files · ${value.imports.length} directed roads`;
   agentReadout.textContent = `Agents fixture · ${placedAgents} on buildings · ${rosterAgents} roster-only`;
   rosterReadout.textContent =
@@ -215,6 +227,13 @@ function renderCityStats(value: City): void {
       ? "Roster: empty"
       : `Roster: ${rosterAgents} session${rosterAgents === 1 ? "" : "s"} without a touched file (not drawn)`;
   findingReadout.textContent = `Findings fixture · ${placedFindings} open · smoke / fire / inferno`;
+}
+
+function renderPendingCity(): void {
+  cityReadout.textContent = "City: measuring host city…";
+  agentReadout.textContent = "Agents: host data pending";
+  rosterReadout.textContent = "Roster: host data pending";
+  findingReadout.textContent = "Findings: host data pending";
 }
 
 function showFileDetails(file: CityFile): void {

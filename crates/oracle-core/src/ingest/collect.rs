@@ -6,8 +6,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::chunking;
-use crate::embed::CancelFlag;
+use super::text_extensions::{is_text_extension, COLLECTOR_MAX_FILE_BYTES};
+use crate::cancel::CancelFlag;
 
 // ── Excluded directories (lowercased) ────────────────────────────────────────
 
@@ -628,11 +628,50 @@ pub fn collect_text_files(root: &Path) -> Vec<PathBuf> {
 /// Collect text files while allowing a long directory walk to stop promptly.
 /// `None` means the caller cancelled the walk before it completed.
 pub fn collect_text_files_with_cancel(root: &Path, cancel: &CancelFlag) -> Option<Vec<PathBuf>> {
+    collect_text_files_with_cancel_limited(root, cancel, None)
+}
+
+/// The same collector with an optional file-count ceiling for callers that
+/// expose a bounded, user-facing listing. Once the ceiling is reached the
+/// recursive walk stops descending and returns the deterministic prefix it has
+/// already collected. The normal Oracle indexer passes `None` and retains its
+/// historical unbounded collection behavior.
+pub fn collect_text_files_with_cancel_limited(
+    root: &Path,
+    cancel: &CancelFlag,
+    max_files: Option<usize>,
+) -> Option<Vec<PathBuf>> {
+    collect_text_files_with_cancel_limits(
+        root,
+        cancel,
+        max_files,
+        Some(COLLECTOR_MAX_FILE_BYTES),
+    )
+}
+
+/// The bounded collector with an explicit source-size ceiling. The default
+/// collector preserves Oracle's historical 1.2 MB indexing limit; a surface
+/// with a different published limit can reuse the same walker without
+/// changing indexing semantics.
+pub fn collect_text_files_with_cancel_limits(
+    root: &Path,
+    cancel: &CancelFlag,
+    max_files: Option<usize>,
+    max_file_bytes: Option<u64>,
+) -> Option<Vec<PathBuf>> {
     let root = root.to_path_buf();
     let ignore_policy = load_workspace_ignore_policy(&root);
     let mut files = Vec::new();
 
-    if walk_recursive_with_cancel(&root, &root, &ignore_policy, &mut files, Some(cancel)) {
+    if walk_recursive_with_cancel(
+        &root,
+        &root,
+        &ignore_policy,
+        &mut files,
+        Some(cancel),
+        max_files,
+        max_file_bytes,
+    ) {
         return None;
     }
 
@@ -652,9 +691,14 @@ fn walk_recursive_with_cancel(
     ignore_policy: &IgnorePolicy,
     files: &mut Vec<PathBuf>,
     cancel: Option<&CancelFlag>,
+    max_files: Option<usize>,
+    max_file_bytes: Option<u64>,
 ) -> bool {
     if cancel.is_some_and(CancelFlag::is_cancelled) {
         return true;
+    }
+    if max_files.is_some_and(|limit| files.len() >= limit) {
+        return false;
     }
 
     // Read directory entries
@@ -722,9 +766,13 @@ fn walk_recursive_with_cancel(
     });
 
     // Check files
+    filenames.sort();
     for filename in &filenames {
         if cancel.is_some_and(CancelFlag::is_cancelled) {
             return true;
+        }
+        if max_files.is_some_and(|limit| files.len() >= limit) {
+            break;
         }
         let path = current.join(filename);
         let ext = path
@@ -733,7 +781,7 @@ fn walk_recursive_with_cancel(
             .map(|e| format!(".{}", e.to_lowercase()))
             .unwrap_or_default();
 
-        if !chunking::is_text_extension(&ext) {
+        if !is_text_extension(&ext) {
             continue;
         }
         if !chunk_path_allowed(&path, root, ignore_policy) {
@@ -745,7 +793,7 @@ fn walk_recursive_with_cancel(
             continue;
         }
         if let Ok(metadata) = path.metadata() {
-            if metadata.len() > chunking::CHUNK_MAX_FILE_BYTES {
+            if max_file_bytes.is_some_and(|limit| metadata.len() > limit) {
                 continue;
             }
         } else {
@@ -760,10 +808,21 @@ fn walk_recursive_with_cancel(
         if cancel.is_some_and(CancelFlag::is_cancelled) {
             return true;
         }
+        if max_files.is_some_and(|limit| files.len() >= limit) {
+            break;
+        }
         if no_descend.contains(dirname) {
             continue; // symlink-to-dir: listed, never walked (os.walk parity)
         }
-        if walk_recursive_with_cancel(&current.join(dirname), root, ignore_policy, files, cancel) {
+        if walk_recursive_with_cancel(
+            &current.join(dirname),
+            root,
+            ignore_policy,
+            files,
+            cancel,
+            max_files,
+            max_file_bytes,
+        ) {
             return true;
         }
     }

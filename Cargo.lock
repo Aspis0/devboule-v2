@@ -6728,6 +6728,8 @@ dependencies = [
  "devboule-daemon",
  "devboule-plugin-rpc",
  "devboule-protocol",
+ "oracle-core",
+ "regex",
  "serde_json",
  "tempfile",
 ]

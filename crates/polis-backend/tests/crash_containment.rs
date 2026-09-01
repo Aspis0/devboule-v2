@@ -65,6 +65,68 @@ fn backend_started_through_cmd_parent_reaches_the_pipe() {
     child.wait().expect("cmd parent exit");
 }
 
+#[test]
+fn copied_backend_starts_from_an_empty_directory_without_sidecar_dlls() {
+    let source = std::path::Path::new(env!("CARGO_BIN_EXE_polis-backend"));
+    let temp = tempfile::tempdir().expect("tempdir");
+    let copied = temp.path().join("polis-backend.exe");
+    std::fs::copy(source, &copied).expect("copy backend by itself");
+    let pipe_name = devboule_plugin_rpc::unique_pipe_name("self-contained");
+    let mut child = std::process::Command::new(&copied)
+        .current_dir(temp.path())
+        .arg("--pipe")
+        .arg(&pipe_name)
+        .env(HOST_PID_ENV, std::process::id().to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn copied backend");
+
+    let mut last_error = None;
+    let file = (0..50)
+        .find_map(|_| match connect_pipe(&pipe_name) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                last_error = Some(error);
+                if child.try_wait().expect("poll copied backend").is_some() {
+                    let mut stderr = child.stderr.take().expect("copied stderr");
+                    let mut text = String::new();
+                    std::io::Read::read_to_string(&mut stderr, &mut text).expect("read stderr");
+                    panic!("copied backend exited before handshake: {last_error:?}; stderr={text:?}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                None
+            }
+        })
+        .unwrap_or_else(|| panic!("connect copied backend: {last_error:?}"));
+    let framed = Framed::new(file);
+    framed
+        .send(&ClientMessage::Hello(ClientHello::plugin_host(
+            host_owner().expect("owner"),
+            "devboule-app",
+            plugin_backend_capabilities(),
+            BTreeMap::new(),
+        )))
+        .expect("hello copied backend");
+    assert!(matches!(
+        framed
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(2))
+            .expect("copied hello reply"),
+        DaemonMessage::Hello(_)
+    ));
+    framed
+        .send(&ClientMessage::Shutdown { id: 2 })
+        .expect("shutdown copied backend");
+    assert!(matches!(
+        framed
+            .recv_timeout::<DaemonMessage>(Duration::from_secs(2))
+            .expect("copied shutdown reply"),
+        DaemonMessage::Shutdown { accepted: true, .. }
+    ));
+    child.wait().expect("copied backend exit");
+}
+
 fn spawn_backend_through_cmd(pipe_name: &str) -> std::process::Child {
     let binary = std::path::Path::new(env!("CARGO_BIN_EXE_polis-backend"));
     let command_line = format!("polis-backend.exe --pipe {pipe_name}");
@@ -108,6 +170,22 @@ fn workspace_root_round_trips_over_the_pipe() {
         dir.path().to_string_lossy().as_ref()
     );
     assert_eq!(value["status"], "ok");
+}
+
+#[test]
+fn city_get_round_trips_over_the_backend_pipe() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(dir.path().join("src")).expect("src directory");
+    std::fs::write(dir.path().join("src/main.ts"), "export const main = 1;\n")
+        .expect("main source");
+    let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
+    let city = session
+        .invoke(caps::CITY_GET, None)
+        .expect("city.get");
+    assert_eq!(city["dataSource"], "host");
+    assert_eq!(city["files"][0]["id"], "src/main.ts");
+    assert_eq!(city["agents"], serde_json::json!([]));
+    assert_eq!(city["findings"], serde_json::json!([]));
 }
 
 #[test]

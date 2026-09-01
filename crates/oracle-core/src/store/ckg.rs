@@ -13,7 +13,7 @@
 //! or the wire breaks.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, params_from_iter, Connection, ToSql};
+use rusqlite::{params, params_from_iter, Connection, OpenFlags, ToSql};
 use std::path::{Path, PathBuf};
 
 /// Busy timeout in milliseconds. Mirrors `ckg_store.py::_BUSY_TIMEOUT_MS`.
@@ -76,6 +76,7 @@ pub struct CkgEdgeRow {
 /// SQLite code-knowledge-graph store. Mirrors `oracle/store/ckg_store.py::CkgStore`.
 pub struct CkgStore {
     path: PathBuf,
+    read_only: bool,
 }
 
 impl CkgStore {
@@ -90,6 +91,7 @@ impl CkgStore {
         }
         let store = CkgStore {
             path: path.to_path_buf(),
+            read_only: false,
         };
         store.init_schema()?;
         Ok(store)
@@ -100,17 +102,42 @@ impl CkgStore {
         &self.path
     }
 
+    /// Open an existing graph without write permission or SQLite mutexes.
+    ///
+    /// The city surface is a read-only consumer. It must never create a new
+    /// schema beside an unindexed workspace, and `NO_MUTEX` matches the daemon's
+    /// extra-safety read path because each query owns its short-lived
+    /// connection.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        if !path.is_file() {
+            anyhow::bail!("CKG database is not a regular file: {}", path.display());
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            read_only: true,
+        })
+    }
+
     /// Open a fresh connection with the WAL + busy_timeout pragmas applied.
     ///
     /// Mirrors `ckg_store.py::_connect` (a new connection per call, committed
     /// and closed by the caller via RAII drop).
     fn connect(&self) -> Result<Connection> {
-        let conn = Connection::open(&self.path)
-            .with_context(|| format!("opening ckg store at {}", self.path.display()))?;
+        let conn = if self.read_only {
+            Connection::open_with_flags(
+                &self.path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+        } else {
+            Connection::open(&self.path)
+        }
+        .with_context(|| format!("opening ckg store at {}", self.path.display()))?;
         conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)
             .context("setting busy_timeout pragma")?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .context("setting journal_mode=WAL pragma")?;
+        if !self.read_only {
+            conn.pragma_update(None, "journal_mode", "WAL")
+                .context("setting journal_mode=WAL pragma")?;
+        }
         Ok(conn)
     }
 

@@ -23,25 +23,10 @@ pub use ort_backend::OrtEmbedder;
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Cooperative cancellation flag, checked between batches.
-#[derive(Debug, Clone, Default)]
-pub struct CancelFlag(Arc<AtomicBool>);
-
-impl CancelFlag {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
+pub use crate::cancel::CancelFlag;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Attention / sequence memory guards (Metal unified memory is wired — OOM freezes)
