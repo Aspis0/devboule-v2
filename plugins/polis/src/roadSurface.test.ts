@@ -84,6 +84,19 @@ describe("v1 road surface hierarchy", () => {
       })),
       fixtureCity.imports,
     );
+    expect(routes.stats.routed + routes.stats.fallback).toBe(fixtureCity.imports.length);
+
+    const facadeCells = new Set<string>();
+    for (const layout of layouts) {
+      const width = Math.max(1, Math.floor(layout.footprint[0]));
+      const height = Math.max(1, Math.floor(layout.footprint[1]));
+      for (let x = layout.gridX; x <= layout.gridX + width; x += 1) {
+        facadeCells.add(`${x},${layout.gridY + height}`);
+      }
+      for (let y = layout.gridY; y <= layout.gridY + height; y += 1) {
+        facadeCells.add(`${layout.gridX + width},${y}`);
+      }
+    }
     const outlines = new Map<string, { minX: number; minY: number; maxX: number; maxY: number }>();
     for (const layout of layouts) {
       const width = Math.max(1, layout.footprint[0]);
@@ -108,7 +121,7 @@ describe("v1 road surface hierarchy", () => {
     let trunk = 0;
     let rural = 0;
     let urbanStreet = 0;
-    const trunkBaseWidths: number[] = [];
+    let facadeHits = 0;
     const isUrban = (a: { x: number; y: number }, b: { x: number; y: number }) => {
       const points = [a, b, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }];
       return points.some((point) =>
@@ -134,17 +147,12 @@ describe("v1 road surface hierarchy", () => {
         total += 1;
         if (kind === "urban-trunk") trunk += 1;
         else if (kind === "country-track") rural += 1;
-        else urbanStreet += 1;
-        if (kind === "urban-trunk") {
-          const trunkWeight = Math.max(1, Math.min(road.weight, 5));
-          const trunkShared = Math.max(1, Math.min(usage.get(segmentKey(from, to)) ?? 1, 8));
-          trunkBaseWidths.push(Math.min(6 + trunkWeight * 1.4 + (trunkShared - 1) * 0.8, 22));
-        }
+        else if (kind === "urban-street") urbanStreet += 1;
+        else throw new Error(`unknown road surface kind: ${String(kind)}`);
+        if (facadeCells.has(`${from.x},${from.y}`)) facadeHits += 1;
+        if (facadeCells.has(`${to.x},${to.y}`)) facadeHits += 1;
       }
     }
-    const weightCounts = new Map<number, number>();
-    for (const road of fixtureCity.imports)
-      weightCounts.set(road.weight, (weightCounts.get(road.weight) ?? 0) + 1);
     const footprintFitZoom = fitInitialCamera(
       projectedBuildingBounds(
         layouts.map((layout) => ({
@@ -160,34 +168,47 @@ describe("v1 road surface hierarchy", () => {
     ).zoom;
     const measurementZoom = 0.172;
     const overviewWidth = 3.2 / measurementZoom;
-    const minTrunk = Math.min(...trunkBaseWidths);
-    const maxTrunk = Math.max(...trunkBaseWidths);
-    const averageTrunk =
-      trunkBaseWidths.reduce((sum, width) => sum + width, 0) / trunkBaseWidths.length;
-    expect({ total, trunk, rural, urbanStreet, routed: routes.stats.routed }).toEqual({
-      total: 1389,
-      trunk: 949,
-      rural: 16,
-      urbanStreet: 424,
-      routed: 210,
-    });
-    expect([...weightCounts.entries()].sort((left, right) => left[0] - right[0])).toEqual([
-      [1, 197],
-      [2, 13],
-    ]);
+    expect(total).toBeGreaterThan(0);
+    expect(routes.stats.routed).toBeGreaterThan(0);
+    expect(trunk + urbanStreet + rural).toBe(total);
+    expect(facadeHits).toBe(0);
+
+    // The live fixture is currently about 65% trunk. Keep a broad 25–90%
+    // band: it tolerates repository growth while catching all-minor and
+    // all-trunk threshold regressions in this urban fixture.
+    const trunkShare = trunk / total;
+    expect(trunk).toBeGreaterThan(0);
+    expect(trunkShare).toBeGreaterThanOrEqual(0.25);
+    expect(trunkShare).toBeLessThanOrEqual(0.9);
+
+    const severity: Record<RoadSurfaceKind, number> = {
+      "country-track": 0,
+      "urban-street": 1,
+      "urban-trunk": 2,
+    };
+    const observedWeights = [
+      ...new Set(fixtureCity.imports.map((road) => road.weight).filter(Number.isFinite)),
+    ].sort((left, right) => left - right);
+    expect(observedWeights.length).toBeGreaterThan(0);
+    for (let index = 1; index < observedWeights.length; index += 1) {
+      const lower = classifyRoadSegment({
+        urban: true,
+        shared: 1,
+        weight: observedWeights[index - 1],
+      });
+      const higher = classifyRoadSegment({
+        urban: true,
+        shared: 1,
+        weight: observedWeights[index],
+      });
+      expect(severity[higher]).toBeGreaterThanOrEqual(severity[lower]);
+    }
+
+    expect(Number.isFinite(footprintFitZoom)).toBe(true);
+    expect(footprintFitZoom).toBeGreaterThan(0);
     expect(footprintFitZoom * 7).toBeLessThan(3.2);
     expect(roadOverviewVisible(measurementZoom, measurementZoom)).toBe(true);
     expect(7 * measurementZoom).toBeCloseTo(1.204, 6);
     expect(overviewWidth * measurementZoom).toBeCloseTo(3.2, 6);
-    expect([
-      minTrunk * measurementZoom,
-      averageTrunk * measurementZoom,
-      maxTrunk * measurementZoom,
-    ]).toEqual([1.5479999999999998, 1.9242613277133809, 2.4768000000000003]);
-    expect([
-      Math.max(minTrunk, overviewWidth) * measurementZoom,
-      Math.max(averageTrunk, overviewWidth) * measurementZoom,
-      Math.max(maxTrunk, overviewWidth) * measurementZoom,
-    ]).toEqual([3.1999999999999997, 3.1999999999999997, 3.1999999999999997]);
   });
 });

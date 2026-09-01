@@ -189,7 +189,7 @@
     {
       "id": "crates/devboule-plugin-rpc/src/lib.rs",
       "path": "crates/devboule-plugin-rpc/src/lib.rs",
-      "lines": 321,
+      "lines": 335,
       "district": "crates"
     },
     {
@@ -213,7 +213,7 @@
     {
       "id": "crates/devboule-plugin-rpc/src/spawn.rs",
       "path": "crates/devboule-plugin-rpc/src/spawn.rs",
-      "lines": 414,
+      "lines": 477,
       "district": "crates"
     },
     {
@@ -243,7 +243,7 @@
     {
       "id": "crates/devboule-protocol/src/lib.rs",
       "path": "crates/devboule-protocol/src/lib.rs",
-      "lines": 233,
+      "lines": 236,
       "district": "crates"
     },
     {
@@ -271,6 +271,12 @@
       "district": "crates"
     },
     {
+      "id": "crates/oracle-core/src/cancel.rs",
+      "path": "crates/oracle-core/src/cancel.rs",
+      "lines": 22,
+      "district": "crates"
+    },
+    {
       "id": "crates/oracle-core/src/cli/lance.rs",
       "path": "crates/oracle-core/src/cli/lance.rs",
       "lines": 131,
@@ -291,7 +297,7 @@
     {
       "id": "crates/oracle-core/src/config.rs",
       "path": "crates/oracle-core/src/config.rs",
-      "lines": 346,
+      "lines": 394,
       "district": "crates"
     },
     {
@@ -315,7 +321,7 @@
     {
       "id": "crates/oracle-core/src/embed/mod.rs",
       "path": "crates/oracle-core/src/embed/mod.rs",
-      "lines": 1095,
+      "lines": 1080,
       "district": "crates"
     },
     {
@@ -345,7 +351,7 @@
     {
       "id": "crates/oracle-core/src/ingest/chunking.rs",
       "path": "crates/oracle-core/src/ingest/chunking.rs",
-      "lines": 597,
+      "lines": 547,
       "district": "crates"
     },
     {
@@ -357,7 +363,7 @@
     {
       "id": "crates/oracle-core/src/ingest/collect.rs",
       "path": "crates/oracle-core/src/ingest/collect.rs",
-      "lines": 880,
+      "lines": 983,
       "district": "crates"
     },
     {
@@ -369,7 +375,7 @@
     {
       "id": "crates/oracle-core/src/ingest/mod.rs",
       "path": "crates/oracle-core/src/ingest/mod.rs",
-      "lines": 10,
+      "lines": 16,
       "district": "crates"
     },
     {
@@ -379,9 +385,15 @@
       "district": "crates"
     },
     {
+      "id": "crates/oracle-core/src/ingest/text_extensions.rs",
+      "path": "crates/oracle-core/src/ingest/text_extensions.rs",
+      "lines": 45,
+      "district": "crates"
+    },
+    {
       "id": "crates/oracle-core/src/lib.rs",
       "path": "crates/oracle-core/src/lib.rs",
-      "lines": 124,
+      "lines": 178,
       "district": "crates"
     },
     {
@@ -435,7 +447,7 @@
     {
       "id": "crates/oracle-core/src/store/ckg.rs",
       "path": "crates/oracle-core/src/store/ckg.rs",
-      "lines": 696,
+      "lines": 723,
       "district": "crates"
     },
     {
@@ -453,7 +465,7 @@
     {
       "id": "crates/oracle-core/src/store/mod.rs",
       "path": "crates/oracle-core/src/store/mod.rs",
-      "lines": 7,
+      "lines": 10,
       "district": "crates"
     },
     {
@@ -463,9 +475,15 @@
       "district": "crates"
     },
     {
+      "id": "crates/polis-backend/src/city.rs",
+      "path": "crates/polis-backend/src/city.rs",
+      "lines": 368,
+      "district": "crates"
+    },
+    {
       "id": "crates/polis-backend/src/lib.rs",
       "path": "crates/polis-backend/src/lib.rs",
-      "lines": 145,
+      "lines": 242,
       "district": "crates"
     },
     {
@@ -549,7 +567,7 @@
     {
       "id": "src-tauri/src/plugins/rpc.rs",
       "path": "src-tauri/src/plugins/rpc.rs",
-      "lines": 410,
+      "lines": 419,
       "district": "src-tauri"
     },
     {
@@ -1363,6 +1381,11 @@
       "weight": 2
     },
     {
+      "from": "crates/oracle-core/src/embed/mod.rs",
+      "to": "crates/oracle-core/src/cancel.rs",
+      "weight": 1
+    },
+    {
       "from": "crates/oracle-core/src/embed/onnx_embedder.rs",
       "to": "crates/oracle-core/src/embed/model_descriptor.rs",
       "weight": 1
@@ -1384,7 +1407,7 @@
     },
     {
       "from": "crates/oracle-core/src/ingest/collect.rs",
-      "to": "crates/oracle-core/src/embed/mod.rs",
+      "to": "crates/oracle-core/src/cancel.rs",
       "weight": 1
     },
     {

@@ -46,9 +46,7 @@ describe("backend overlay readout", () => {
       ["timed out: plugin invoke", "timeout"],
     ];
     for (const [message, state] of cases) {
-      expect(formatBackendFailureReadout(new Error(message))).toContain(
-        `Backend: ${state}`,
-      );
+      expect(formatBackendFailureReadout(new Error(message))).toContain(`Backend: ${state}`);
     }
   });
 
@@ -69,6 +67,27 @@ describe("backend overlay readout", () => {
 
   it("rejects an oversized host response before the city reaches the iframe", () => {
     expect(hostResponseWithinLimit({ files: [{ path: "x".repeat(1024 * 1024) }] })).toBe(false);
+  });
+
+  it("names the host city degradation counters", () => {
+    const state = {
+      status: "host" as const,
+      city: {
+        files: Array.from({ length: 2 }, (_, index) => ({
+          id: `src/${index}.ts`,
+          path: `src/${index}.ts`,
+          lines: 1,
+          district: "src",
+        })),
+        imports: [],
+        agents: [],
+        findings: [],
+        dataSource: "host" as const,
+        truncatedFiles: 1,
+        skippedFiles: 2,
+      },
+    };
+    expect(formatCityFetchReadout(state)).toContain("at least 1 beyond the file cap, 2 skipped");
   });
 
   it("exposes a real pending state and falls back honestly when city.get fails", async () => {
@@ -107,5 +126,15 @@ describe("backend overlay readout", () => {
     expect(formatCityFetchReadout(fixture)).toContain(
       "City: fixture fallback — host city fetch refused — city root unreadable",
     );
+
+    const malformed = await loadCity(
+      vi.fn().mockResolvedValue({ files: "not-an-array" }),
+      fallback,
+    );
+    expect(formatCityFetchReadout(malformed)).toContain("host city malformed");
+
+    const timeout = Object.assign(new Error("request timed out"), { code: "timeout" });
+    const timedOut = await loadCity(vi.fn().mockRejectedValue(timeout), fallback);
+    expect(formatCityFetchReadout(timedOut)).toContain("host city timeout");
   });
 });

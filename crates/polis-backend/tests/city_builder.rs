@@ -31,8 +31,18 @@ fn builder_matches_fixture_ids_lines_districts_and_import_weights() {
     assert_eq!(
         rows,
         vec![
-            ("src/empty.ts".into(), "src/empty.ts".into(), 0, "src".into()),
-            ("src/helper.ts".into(), "src/helper.ts".into(), 1, "src".into()),
+            (
+                "src/empty.ts".into(),
+                "src/empty.ts".into(),
+                0,
+                "src".into()
+            ),
+            (
+                "src/helper.ts".into(),
+                "src/helper.ts".into(),
+                1,
+                "src".into()
+            ),
             ("src/main.ts".into(), "src/main.ts".into(), 5, "src".into()),
         ]
     );
@@ -71,6 +81,29 @@ fn line_counts_match_crlf_cr_lf_and_trailing_newline_semantics() {
     assert_eq!(lines["cr.ts"], 2);
     assert_eq!(lines["no-trailing.ts"], 2);
     assert_eq!(lines["empty.ts"], 0);
+}
+
+#[test]
+fn undecodable_file_is_counted_from_bytes_and_does_not_kill_the_city() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("good.ts"), b"one\ntwo\n").unwrap();
+    fs::write(
+        temp.path().join("undecodable.ts"),
+        [b'a', b'\n', 0xff, b'\r'],
+    )
+    .unwrap();
+
+    let city = build_city(temp.path()).expect("an undecodable file must not abort the city");
+    let files = city["files"].as_array().unwrap();
+    assert!(files.iter().any(|file| file["path"] == "good.ts"));
+    assert_eq!(
+        files
+            .iter()
+            .find(|file| file["path"] == "undecodable.ts")
+            .unwrap()["lines"],
+        2
+    );
+    assert!(city.get("skippedFiles").is_none());
 }
 
 #[test]
@@ -113,11 +146,14 @@ fn ckg_edges_are_read_only_and_collapsed_by_resolved_file_pair() {
     .unwrap();
 
     let city = build_city(root).expect("city should use the CKG");
-    assert_eq!(city["imports"], serde_json::json!([{
-        "from": "src/a.ts",
-        "to": "src/b.ts",
-        "weight": 2,
-    }]));
+    assert_eq!(
+        city["imports"],
+        serde_json::json!([{
+            "from": "src/a.ts",
+            "to": "src/b.ts",
+            "weight": 2,
+        }])
+    );
 }
 
 #[test]
@@ -133,11 +169,47 @@ fn absent_ckg_falls_back_to_extractor_compatible_regex_edges() {
     fs::write(root.join("src/b.ts"), "export const b = 1;\n").unwrap();
 
     let city = build_city(root).expect("city should fall back without a CKG");
-    assert_eq!(city["imports"], serde_json::json!([{
-        "from": "src/a.ts",
-        "to": "src/b.ts",
-        "weight": 2,
-    }]));
+    assert_eq!(
+        city["imports"],
+        serde_json::json!([{
+            "from": "src/a.ts",
+            "to": "src/b.ts",
+            "weight": 2,
+        }])
+    );
+}
+
+#[test]
+fn city_ignores_an_oracle_dir_override_from_another_workspace() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("root");
+    let foreign = temp.path().join("foreign");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(foreign.join("oracle-data")).unwrap();
+    fs::write(root.join("src/a.ts"), "export const a = 1;\n").unwrap();
+    fs::write(root.join("src/b.ts"), "export const b = 1;\n").unwrap();
+
+    let foreign_paths = OracleDataPaths::from_root_without_env(&foreign);
+    let ckg = CkgStore::new(&foreign_paths.ckg).unwrap();
+    ckg.replace_all(
+        &[],
+        &[CkgEdgeRow {
+            src: "src/a.ts#foreign".into(),
+            dst: "src/b.ts".into(),
+            kind: "IMPORT".into(),
+            src_file: "src/a.ts".into(),
+        }],
+    )
+    .unwrap();
+
+    let previous = std::env::var_os("ORACLE_DIR");
+    std::env::set_var("ORACLE_DIR", foreign_paths.root);
+    let city = build_city(&root).expect("city should use only the granted root");
+    match previous {
+        Some(value) => std::env::set_var("ORACLE_DIR", value),
+        None => std::env::remove_var("ORACLE_DIR"),
+    }
+    assert_eq!(city["imports"], serde_json::json!([]));
 }
 
 #[test]
@@ -170,24 +242,22 @@ fn city_sanity_caps_are_bounded_and_non_text_files_are_not_city_files() {
     }
     fs::write(temp.path().join("image.bin"), [0u8, 1, 2, 3]).unwrap();
     let city = build_city(temp.path()).expect("bounded city should build");
-    assert_eq!(city["files"].as_array().unwrap().len(), polis_backend::MAX_CITY_FILES);
-    assert!(
-        city["files"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|file| file["path"] != "image.bin")
+    assert_eq!(
+        city["files"].as_array().unwrap().len(),
+        polis_backend::MAX_CITY_FILES
     );
+    assert_eq!(city["truncatedFiles"], 1);
+    assert!(city["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|file| file["path"] != "image.bin"));
 }
 
 #[test]
 fn city_uses_the_two_megabyte_file_cap() {
     let temp = tempfile::tempdir().unwrap();
-    fs::write(
-        temp.path().join("medium.ts"),
-        "x".repeat(1_500_000),
-    )
-    .unwrap();
+    fs::write(temp.path().join("medium.ts"), "x".repeat(1_500_000)).unwrap();
     fs::write(
         temp.path().join("large.ts"),
         "x".repeat((polis_backend::MAX_CITY_FILE_BYTES + 1) as usize),
@@ -198,4 +268,17 @@ fn city_uses_the_two_megabyte_file_cap() {
     let files = city["files"].as_array().unwrap();
     assert!(files.iter().any(|file| file["path"] == "medium.ts"));
     assert!(files.iter().all(|file| file["path"] != "large.ts"));
+    assert_eq!(city["skippedFiles"], 1);
+}
+
+#[test]
+fn city_serialization_is_deterministic() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir(temp.path().join("src")).unwrap();
+    fs::write(temp.path().join("src/a.ts"), "import b from './b';\n").unwrap();
+    fs::write(temp.path().join("src/b.ts"), "export const b = 1;\n").unwrap();
+
+    let first = serde_json::to_vec(&build_city(temp.path()).unwrap()).unwrap();
+    let second = serde_json::to_vec(&build_city(temp.path()).unwrap()).unwrap();
+    assert_eq!(first, second);
 }

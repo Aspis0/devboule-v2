@@ -641,12 +641,19 @@ pub fn collect_text_files_with_cancel_limited(
     cancel: &CancelFlag,
     max_files: Option<usize>,
 ) -> Option<Vec<PathBuf>> {
-    collect_text_files_with_cancel_limits(
+    collect_text_files_with_cancel_limits_report(
         root,
         cancel,
         max_files,
         Some(COLLECTOR_MAX_FILE_BYTES),
     )
+    .map(|report| report.paths)
+}
+
+#[derive(Debug, Default)]
+pub struct CollectedTextFiles {
+    pub paths: Vec<PathBuf>,
+    pub truncated: bool,
 }
 
 /// The bounded collector with an explicit source-size ceiling. The default
@@ -659,9 +666,25 @@ pub fn collect_text_files_with_cancel_limits(
     max_files: Option<usize>,
     max_file_bytes: Option<u64>,
 ) -> Option<Vec<PathBuf>> {
+    collect_text_files_with_cancel_limits_report(root, cancel, max_files, max_file_bytes)
+        .map(|report| report.paths)
+}
+
+/// The bounded collector with a truncation signal. The signal is true only
+/// when the walk encountered more eligible entries after reaching `max_files`;
+/// it is intentionally a lower-cost "one or more omitted" declaration rather
+/// than a second walk of the workspace. Callers should expose it as a lower
+/// bound, not as an exact repository-wide count.
+pub fn collect_text_files_with_cancel_limits_report(
+    root: &Path,
+    cancel: &CancelFlag,
+    max_files: Option<usize>,
+    max_file_bytes: Option<u64>,
+) -> Option<CollectedTextFiles> {
     let root = root.to_path_buf();
     let ignore_policy = load_workspace_ignore_policy(&root);
     let mut files = Vec::new();
+    let mut truncated = false;
 
     if walk_recursive_with_cancel(
         &root,
@@ -671,6 +694,7 @@ pub fn collect_text_files_with_cancel_limits(
         Some(cancel),
         max_files,
         max_file_bytes,
+        &mut truncated,
     ) {
         return None;
     }
@@ -681,7 +705,10 @@ pub fn collect_text_files_with_cancel_limits(
         ka.cmp(&kb)
     });
 
-    Some(files)
+    Some(CollectedTextFiles {
+        paths: files,
+        truncated,
+    })
 }
 
 /// Return `true` when the walk was cancelled.
@@ -693,11 +720,13 @@ fn walk_recursive_with_cancel(
     cancel: Option<&CancelFlag>,
     max_files: Option<usize>,
     max_file_bytes: Option<u64>,
+    truncated: &mut bool,
 ) -> bool {
     if cancel.is_some_and(CancelFlag::is_cancelled) {
         return true;
     }
     if max_files.is_some_and(|limit| files.len() >= limit) {
+        *truncated = true;
         return false;
     }
 
@@ -772,6 +801,7 @@ fn walk_recursive_with_cancel(
             return true;
         }
         if max_files.is_some_and(|limit| files.len() >= limit) {
+            *truncated = true;
             break;
         }
         let path = current.join(filename);
@@ -809,6 +839,7 @@ fn walk_recursive_with_cancel(
             return true;
         }
         if max_files.is_some_and(|limit| files.len() >= limit) {
+            *truncated = true;
             break;
         }
         if no_descend.contains(dirname) {
@@ -822,6 +853,7 @@ fn walk_recursive_with_cancel(
             cancel,
             max_files,
             max_file_bytes,
+            truncated,
         ) {
             return true;
         }
@@ -935,5 +967,17 @@ mod tests {
         let ok = root.join("ok.md");
         fs::write(&ok, "hello").unwrap();
         assert!(resolved_file_under_root(&ok, &root));
+    }
+
+    #[test]
+    fn sibling_prefix_is_not_inside_the_canonical_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("project");
+        let sibling = tmp.path().join("project-evil");
+        fs::create_dir_all(&root).expect("root");
+        fs::create_dir_all(&sibling).expect("sibling");
+        let outside = sibling.join("secret.ts");
+        fs::write(&outside, "secret").expect("outside file");
+        assert!(!resolved_file_under_root(&outside, &root));
     }
 }

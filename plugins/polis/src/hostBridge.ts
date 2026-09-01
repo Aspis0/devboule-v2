@@ -12,13 +12,14 @@ export const CITY_FETCH_TIMEOUT_MS = 30_000;
 export type CityLoadState =
   | { status: "pending"; city: null }
   | { status: "host"; city: City }
-  | { status: "fixture"; city: City; error: unknown };
+  | {
+      status: "fixture";
+      city: City;
+      error: unknown;
+      failure: "timeout" | "refusal" | "malformed";
+    };
 
-type HostInvoker = (
-  method: string,
-  payload?: unknown,
-  timeoutMs?: number,
-) => Promise<unknown>;
+type HostInvoker = (method: string, payload?: unknown, timeoutMs?: number) => Promise<unknown>;
 
 export function invokeHost(
   method: string,
@@ -32,7 +33,11 @@ export function invokeHost(
       if (settled) return;
       settled = true;
       window.removeEventListener("message", onMessage);
-      reject(new Error(`Host request "${method}" timed out after ${timeoutMs / 1000} seconds`));
+      const error = new Error(
+        `Host request "${method}" timed out after ${timeoutMs / 1000} seconds`,
+      ) as Error & { code?: string };
+      error.code = "timeout";
+      reject(error);
     }, timeoutMs);
 
     function onMessage(event: MessageEvent<unknown>): void {
@@ -44,9 +49,9 @@ export function invokeHost(
       window.removeEventListener("message", onMessage);
       if (message.kind === "result") {
         if (!hostResponseWithinLimit(message.value)) {
-          const error = new Error(
-            "plugin response is too large (maximum 1 MiB)",
-          ) as Error & { code?: string };
+          const error = new Error("plugin response is too large (maximum 1 MiB)") as Error & {
+            code?: string;
+          };
           error.code = "response_too_large";
           reject(error);
         } else {
@@ -93,13 +98,19 @@ export async function loadCity(
 ): Promise<Exclude<CityLoadState, { status: "pending" }>> {
   try {
     const value = await invoke("city.get", undefined, timeoutMs);
-    if (!isCity(value)) throw new Error("city.get returned an invalid city payload");
+    if (!isCity(value)) {
+      const error = new Error("city.get returned an invalid city payload") as Error & {
+        code?: string;
+      };
+      error.code = "malformed_city";
+      throw error;
+    }
     return {
       status: "host",
       city: { ...value, agents: [], findings: [], dataSource: "host" },
     };
   } catch (error) {
-    return { status: "fixture", city: fallback, error };
+    return { status: "fixture", city: fallback, error, failure: cityFetchFailure(error) };
   }
 }
 
@@ -111,9 +122,26 @@ export function formatCityFetchReadout(
   state: Exclude<CityLoadState, { status: "pending" }>,
 ): string {
   if (state.status === "host") {
-    return `City: host · ${state.city.files.length} files · ${state.city.imports.length} directed roads`;
+    return `City: host · ${state.city.files.length} files${cityDegradationSuffix(state.city)} · ${state.city.imports.length} directed roads`;
   }
-  return `City: fixture fallback — host city fetch refused — ${errorMessage(state.error)}`;
+  const label =
+    state.failure === "refusal"
+      ? "fetch refused"
+      : state.failure === "malformed"
+        ? "malformed"
+        : "timeout";
+  return `City: fixture fallback — host city ${label} — ${errorMessage(state.error)}`;
+}
+
+export function cityDegradationSuffix(city: City): string {
+  const notices: string[] = [];
+  if (city.truncatedFiles !== undefined && city.truncatedFiles > 0) {
+    notices.push(`at least ${city.truncatedFiles} beyond the file cap`);
+  }
+  if (city.skippedFiles !== undefined && city.skippedFiles > 0) {
+    notices.push(`${city.skippedFiles} skipped`);
+  }
+  return notices.length === 0 ? "" : ` (${notices.join(", ")})`;
 }
 
 export function formatWorkspaceRootReadout(value: unknown): string {
@@ -191,10 +219,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isCity(value: unknown): value is City {
-  if (!isRecord(value) || !Array.isArray(value.files) || !Array.isArray(value.imports)) {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.files) ||
+    !Array.isArray(value.imports) ||
+    !Array.isArray(value.agents) ||
+    !Array.isArray(value.findings)
+  ) {
     return false;
   }
   return (
+    optionalCounterIsValid(value.truncatedFiles) &&
+    optionalCounterIsValid(value.skippedFiles) &&
     value.files.every(
       (file) =>
         isRecord(file) &&
@@ -211,6 +247,22 @@ function isCity(value: unknown): value is City {
         typeof edge.weight === "number",
     )
   );
+}
+
+function optionalCounterIsValid(value: unknown): value is number | undefined {
+  return (
+    value === undefined ||
+    (typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 0)
+  );
+}
+
+function cityFetchFailure(error: unknown): "timeout" | "refusal" | "malformed" {
+  const code = errorCode(error);
+  if (code === "timeout") return "timeout";
+  if (code === "malformed_city") return "malformed";
+  const message = errorMessage(error).toLowerCase();
+  if (message.includes("timed out") || message.includes("timeout")) return "timeout";
+  return "refusal";
 }
 
 function safeJson(value: unknown): string {

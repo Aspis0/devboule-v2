@@ -5,11 +5,36 @@ use std::collections::BTreeMap;
 
 use devboule_plugin_rpc::unix_millis;
 use devboule_protocol::{
-    caps, invoke_method_capability, Capability, ClientMessage, DaemonMessage, ErrorCode,
-    WorkspaceRootBody, WireError,
+    caps, invoke_method_capability, Capability, ClientMessage, DaemonMessage, ErrorCode, WireError,
+    WorkspaceRootBody,
 };
+
+/// Leave room for the serialized InvokeResult envelope and small protocol
+/// changes. The backend refuses before the pipe writer attempts a 1 MiB frame.
+pub const CITY_FRAME_ENVELOPE_MARGIN_BYTES: usize = 4096;
+
+fn city_response_within_frame(value: &serde_json::Value) -> bool {
+    let Ok(serialized) = serde_json::to_vec(value) else {
+        return false;
+    };
+    serialized.len()
+        <= devboule_protocol::MAX_FRAME_BYTES.saturating_sub(CITY_FRAME_ENVELOPE_MARGIN_BYTES)
+}
+
+fn city_response_too_large_error(id: u64) -> DaemonMessage {
+    DaemonMessage::Error(
+        WireError::new(
+            ErrorCode::InvalidRequest,
+            format!(
+                "plugin response is too large (maximum 1 MiB; {} bytes reserved for the frame envelope)",
+                CITY_FRAME_ENVELOPE_MARGIN_BYTES
+            ),
+        )
+        .with_id(id),
+    )
+}
 mod city;
-pub use city::{build_city, CityBuildError, MAX_CITY_FILE_BYTES, MAX_CITY_FILES};
+pub use city::{build_city, CityBuildError, MAX_CITY_FILES, MAX_CITY_FILE_BYTES};
 
 pub fn dispatch(
     grants: &BTreeMap<String, String>,
@@ -66,7 +91,10 @@ fn dispatch_invoke(
     }
     if method == caps::WORKSPACE_ROOT {
         maybe_hang_for_crash_test();
-        let root = grants.get(caps::WORKSPACE_ROOT).cloned().unwrap_or_default();
+        let root = grants
+            .get(caps::WORKSPACE_ROOT)
+            .cloned()
+            .unwrap_or_default();
         let body = WorkspaceRootBody::ok(root);
         match serde_json::to_value(body) {
             Ok(value) => DaemonMessage::InvokeResult { id, value },
@@ -85,10 +113,11 @@ fn dispatch_invoke(
             );
         };
         match build_city(std::path::Path::new(root)) {
+            Ok(value) if !city_response_within_frame(&value) => city_response_too_large_error(id),
             Ok(value) => DaemonMessage::InvokeResult { id, value },
-            Err(error) => DaemonMessage::Error(
-                WireError::new(ErrorCode::Io, error.to_string()).with_id(id),
-            ),
+            Err(error) => {
+                DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()).with_id(id))
+            }
         }
     } else {
         DaemonMessage::Error(
@@ -192,6 +221,22 @@ mod tests {
                 assert_eq!(value["findings"], serde_json::json!([]));
             }
             other => panic!("expected city result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn city_response_guard_rejects_a_value_just_over_the_frame_budget() {
+        let value = serde_json::Value::String(
+            "x".repeat(devboule_protocol::MAX_FRAME_BYTES - CITY_FRAME_ENVELOPE_MARGIN_BYTES + 1),
+        );
+        assert!(!city_response_within_frame(&value));
+        match city_response_too_large_error(7) {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.id, Some(7));
+                assert_eq!(error.code, ErrorCode::InvalidRequest);
+                assert!(error.message.contains("plugin response is too large"));
+            }
+            other => panic!("expected oversize refusal, got {other:?}"),
         }
     }
 }

@@ -31,8 +31,5 @@ test("fails loudly when present candidates have the same mtime", async () => {
   await utimes(release, new Date(3000), new Date(3000));
   await utimes(debug, new Date(3000), new Date(3000));
 
-  await assert.rejects(
-    selectFreshestBackend([release, debug]),
-    /ambiguous backend candidates/,
-  );
+  await assert.rejects(selectFreshestBackend([release, debug]), /ambiguous backend candidates/);
 });

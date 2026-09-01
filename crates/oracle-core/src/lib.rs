@@ -52,6 +52,8 @@ pub use ingest::collect::collect_text_files;
 pub use ingest::collect::collect_text_files_with_cancel_limited;
 #[cfg(any(feature = "city", feature = "full"))]
 pub use ingest::collect::collect_text_files_with_cancel_limits;
+#[cfg(any(feature = "city", feature = "full"))]
+pub use ingest::collect::collect_text_files_with_cancel_limits_report;
 #[cfg(feature = "full")]
 pub use ingest::indexer::{
     chunk_index_status, index_file_chunks, IndexResult, IndexStatus, IndexStatusSnapshot,

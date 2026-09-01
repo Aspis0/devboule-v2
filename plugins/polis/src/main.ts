@@ -5,6 +5,7 @@ import fixtureCity from "./fixture-city.json";
 import {
   CITY_FETCH_TIMEOUT_MS,
   cityHudLabel,
+  cityDegradationSuffix,
   formatCityFetchReadout,
   formatBackendFailureReadout,
   formatHandshakeReadout,
@@ -52,9 +53,7 @@ type WindowWithTauriInternals = Window & {
   };
 };
 
-async function startRenderer(
-  cityLoadResult: ReturnType<typeof loadCity>,
-): Promise<void> {
+async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promise<void> {
   const probe = document.createElement("canvas");
   const gl = probe.getContext("webgl2", { antialias: true });
   if (gl === null) {
@@ -220,7 +219,7 @@ function renderCityStats(value: City): void {
     knownFileIds.has(finding.fileId),
   ).length;
   const source = cityHudLabel(value);
-  cityReadout.textContent = `${source} · ${value.files.length} files · ${value.imports.length} directed roads`;
+  cityReadout.textContent = `${source} · ${value.files.length} files${cityDegradationSuffix(value)} · ${value.imports.length} directed roads`;
   agentReadout.textContent = `Agents fixture · ${placedAgents} on buildings · ${rosterAgents} roster-only`;
   rosterReadout.textContent =
     rosterAgents === 0

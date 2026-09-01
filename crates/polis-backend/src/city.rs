@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use oracle_core::{
-    collect_text_files_with_cancel_limits, CancelFlag, CkgStore, OracleDataPaths,
+    collect_text_files_with_cancel_limits_report, CancelFlag, CkgStore, OracleDataPaths,
 };
 use regex::Regex;
 
@@ -14,8 +14,15 @@ pub const MAX_CITY_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum CityBuildError {
-    UnreadableRoot { path: PathBuf, source: std::io::Error },
-    UnreadableFile { path: PathBuf, source: std::io::Error },
+    UnreadableRoot {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[allow(dead_code)]
+    UnreadableFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     Cancelled,
     Ckg(String),
 }
@@ -39,7 +46,14 @@ impl std::error::Error for CityBuildError {}
 
 struct CitySource {
     id: String,
-    source: String,
+    source: Option<String>,
+    lines: usize,
+}
+
+#[derive(Default)]
+struct CityBuildStats {
+    truncated_files: usize,
+    skipped_files: usize,
 }
 
 static TYPESCRIPT_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
@@ -65,39 +79,58 @@ pub fn build_city(root: &Path) -> Result<serde_json::Value, CityBuildError> {
     })?;
 
     let cancel = CancelFlag::new();
-    let paths = collect_text_files_with_cancel_limits(
-        &root,
-        &cancel,
-        Some(MAX_CITY_FILES),
-        Some(MAX_CITY_FILE_BYTES),
-    )
-    .ok_or(CityBuildError::Cancelled)?;
+    let report =
+        collect_text_files_with_cancel_limits_report(&root, &cancel, Some(MAX_CITY_FILES), None)
+            .ok_or(CityBuildError::Cancelled)?;
+    build_city_from_paths(&root, &report.paths, report.truncated)
+}
+
+fn build_city_from_paths(
+    root: &Path,
+    paths: &[PathBuf],
+    truncated: bool,
+) -> Result<serde_json::Value, CityBuildError> {
     let mut sources = Vec::with_capacity(paths.len());
+    let mut stats = CityBuildStats {
+        truncated_files: usize::from(truncated),
+        ..CityBuildStats::default()
+    };
     for path in paths {
         let metadata = match fs::metadata(&path) {
             Ok(metadata) => metadata,
-            Err(source) => {
-                return Err(CityBuildError::UnreadableFile {
-                    path,
-                    source,
-                })
+            Err(_) => {
+                stats.skipped_files += 1;
+                continue;
             }
         };
         // Keep the city contract's independent 2 MB ceiling here as a second
         // line of defense if the collector policy ever changes.
         if metadata.len() > MAX_CITY_FILE_BYTES {
+            stats.skipped_files += 1;
             continue;
         }
-        let source = fs::read_to_string(&path).map_err(|source| CityBuildError::UnreadableFile {
-            path: path.clone(),
-            source,
-        })?;
-        let id = path
-            .strip_prefix(&root)
-            .expect("collector returned a path outside its root")
-            .to_string_lossy()
-            .replace('\\', "/");
-        sources.push(CitySource { id, source });
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                stats.skipped_files += 1;
+                continue;
+            }
+        };
+        let Some(relative) = path.strip_prefix(root).ok() else {
+            stats.skipped_files += 1;
+            continue;
+        };
+        let id = relative.to_string_lossy().replace('\\', "/");
+        if id.is_empty() {
+            stats.skipped_files += 1;
+            continue;
+        }
+        let lines = count_lines(&bytes);
+        sources.push(CitySource {
+            id,
+            source: String::from_utf8(bytes).ok(),
+            lines,
+        });
     }
     sources.sort_by(|left, right| left.id.cmp(&right.id));
 
@@ -112,26 +145,32 @@ pub fn build_city(root: &Path) -> Result<serde_json::Value, CityBuildError> {
             serde_json::json!({
                 "id": source.id,
                 "path": source.id,
-                "lines": count_lines(&source.source),
+                "lines": source.lines,
                 "district": source.id.split('/').next().unwrap_or_default(),
             })
         })
         .collect::<Vec<_>>();
 
-    Ok(serde_json::json!({
+    let mut city = serde_json::json!({
         "files": files,
         "imports": imports,
         "agents": [],
         "findings": [],
         "dataSource": "host",
-    }))
+    });
+    if stats.truncated_files != 0 {
+        city["truncatedFiles"] = serde_json::json!(stats.truncated_files);
+    }
+    if stats.skipped_files != 0 {
+        city["skippedFiles"] = serde_json::json!(stats.skipped_files);
+    }
+    Ok(city)
 }
 
-fn count_lines(source: &str) -> usize {
-    if source.is_empty() {
+fn count_lines(bytes: &[u8]) -> usize {
+    if bytes.is_empty() {
         return 0;
     }
-    let bytes = source.as_bytes();
     let mut breaks = 0usize;
     let mut index = 0usize;
     while index < bytes.len() {
@@ -147,7 +186,7 @@ fn count_lines(source: &str) -> usize {
         }
         index += 1;
     }
-    if source.ends_with('\n') || source.ends_with('\r') {
+    if bytes.ends_with(b"\n") || bytes.ends_with(b"\r") {
         breaks
     } else {
         breaks + 1
@@ -159,7 +198,7 @@ fn ckg_imports(
     sources: &[CitySource],
     known_files: &HashSet<&str>,
 ) -> Result<Option<Vec<serde_json::Value>>, CityBuildError> {
-    let path = OracleDataPaths::from_root(root).ckg;
+    let path = OracleDataPaths::from_root_without_env(root).ckg;
     if !path.is_file() {
         return Ok(None);
     }
@@ -175,9 +214,7 @@ fn ckg_imports(
                 continue;
             };
             if target != source.id {
-                *weights
-                    .entry((source.id.clone(), target))
-                    .or_default() += 1;
+                *weights.entry((source.id.clone(), target)).or_default() += 1;
             }
         }
     }
@@ -206,18 +243,22 @@ fn ckg_target_file(raw: &str, known_files: &HashSet<&str>) -> Option<String> {
 fn regex_imports(sources: &[CitySource], known_files: &HashSet<&str>) -> Vec<serde_json::Value> {
     let mut weights: BTreeMap<(String, String), u64> = BTreeMap::new();
     for source in sources {
-        let targets = if is_typescript_file(&source.id) {
-            TYPESCRIPT_IMPORT
-                .captures_iter(&source.source)
-                .filter_map(|captures| captures.get(1).map(|value| value.as_str().to_string()))
-                .filter_map(|specifier| resolve_typescript(&source.id, &specifier, known_files))
-                .collect::<Vec<_>>()
-        } else if source.id.ends_with(".rs") {
-            RUST_CRATE_USE
-                .captures_iter(&source.source)
-                .filter_map(|captures| captures.get(1).map(|value| value.as_str().to_string()))
-                .filter_map(|specifier| resolve_rust(&source.id, &specifier, known_files))
-                .collect::<Vec<_>>()
+        let targets = if let Some(source_text) = source.source.as_deref() {
+            if is_typescript_file(&source.id) {
+                TYPESCRIPT_IMPORT
+                    .captures_iter(source_text)
+                    .filter_map(|captures| captures.get(1).map(|value| value.as_str().to_string()))
+                    .filter_map(|specifier| resolve_typescript(&source.id, &specifier, known_files))
+                    .collect::<Vec<_>>()
+            } else if source.id.ends_with(".rs") {
+                RUST_CRATE_USE
+                    .captures_iter(source_text)
+                    .filter_map(|captures| captures.get(1).map(|value| value.as_str().to_string()))
+                    .filter_map(|specifier| resolve_rust(&source.id, &specifier, known_files))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
@@ -229,9 +270,7 @@ fn regex_imports(sources: &[CitySource], known_files: &HashSet<&str>) -> Vec<ser
     }
     weights
         .into_iter()
-        .map(|((from, to), weight)| {
-            serde_json::json!({ "from": from, "to": to, "weight": weight })
-        })
+        .map(|((from, to), weight)| serde_json::json!({ "from": from, "to": to, "weight": weight }))
         .collect()
 }
 
@@ -264,7 +303,10 @@ fn resolve_typescript(
     if !specifier.starts_with('.') {
         return None;
     }
-    let importer_dir = source_path.rsplit_once('/').map(|(dir, _)| dir).unwrap_or("");
+    let importer_dir = source_path
+        .rsplit_once('/')
+        .map(|(dir, _)| dir)
+        .unwrap_or("");
     let base = normalize_relative(&format!("{importer_dir}/{specifier}"))?;
     let mut candidates = vec![base.clone()];
     for extension in [".ts", ".tsx", ".js", ".jsx", ".mjs", ".json"] {
@@ -278,13 +320,11 @@ fn resolve_typescript(
         .find(|candidate| known_files.contains(candidate.as_str()))
 }
 
-fn resolve_rust(
-    source_path: &str,
-    specifier: &str,
-    known_files: &HashSet<&str>,
-) -> Option<String> {
+fn resolve_rust(source_path: &str, specifier: &str, known_files: &HashSet<&str>) -> Option<String> {
     let source_segments: Vec<&str> = source_path.split('/').collect();
-    let src_index = source_segments.iter().rposition(|segment| *segment == "src")?;
+    let src_index = source_segments
+        .iter()
+        .rposition(|segment| *segment == "src")?;
     let source_root = source_segments[..=src_index].join("/");
     let module_segments: Vec<&str> = specifier.split("::").collect();
     for length in (1..=module_segments.len()).rev() {
@@ -296,4 +336,33 @@ fn resolve_rust(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn per_file_read_failures_are_skipped_and_counted() {
+        let temp = tempfile::tempdir().unwrap();
+        let good = temp.path().join("good.ts");
+        let undecodable = temp.path().join("undecodable.ts");
+        let missing = temp.path().join("missing.ts");
+        fs::write(&good, b"one\ntwo\n").unwrap();
+        fs::write(&undecodable, [b'a', b'\n', 0xff, b'\r']).unwrap();
+
+        let city = build_city_from_paths(temp.path(), &[good, undecodable, missing], false)
+            .expect("one bad file must not abort the city");
+        assert_eq!(city["skippedFiles"], 1);
+        assert_eq!(city["files"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            city["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|file| file["path"] == "undecodable.ts")
+                .unwrap()["lines"],
+            2
+        );
+    }
 }

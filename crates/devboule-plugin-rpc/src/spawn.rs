@@ -10,6 +10,21 @@ pub const PIPE_ENV: &str = "DEVBOULE_PLUGIN_PIPE";
 pub const PLUGIN_ID_ENV: &str = "DEVBOULE_PLUGIN_ID";
 pub const HOST_PID_ENV: &str = "DEVBOULE_PLUGIN_HOST_PID";
 
+/// Store/path and embedder overrides are host-process configuration. A
+/// plugin backend must derive all workspace data from its granted root.
+pub const ORACLE_CHILD_OVERRIDE_ENV_VARS: &[&str] = &[
+    "ORACLE_DIR",
+    "ORACLE_QUERY_EMBEDDER",
+    "ORACLE_REQUIRE_REAL_EMBEDDER",
+    "ORACLE_EMBED_PROFILE",
+    "LANCE_DB_PATH",
+    "CHUNK_DB_PATH",
+    "FILE_VECTORS_DB_PATH",
+    "SQLITE_PATH",
+    "CHUNK_MANIFEST_PATH",
+    "CKG_DB_PATH",
+];
+
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(windows)]
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
@@ -185,6 +200,7 @@ pub fn spawn_backend(
         if let Some(hang_ms) = hang_ms {
             command.env("DEVBOULE_PLUGIN_HANG_MS", hang_ms.to_string());
         }
+        sanitize_backend_environment(&mut command);
         command.spawn().map(|child| SpawnedBackend { child })
     }
 }
@@ -206,6 +222,7 @@ fn spawn_backend_windows(
     };
 
     let mut environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+    sanitize_backend_environment_map(&mut environment);
     environment.insert(OsString::from(PIPE_ENV), OsString::from(pipe_name));
     environment.insert(OsString::from(PLUGIN_ID_ENV), OsString::from(plugin_id));
     environment.insert(
@@ -260,6 +277,23 @@ fn spawn_backend_windows(
         primary_thread: information.hThread,
         pid: information.dwProcessId,
     })
+}
+
+/// Remove inherited Oracle overrides from a child `Command` on the portable
+/// process path. The Windows path sanitizes its explicit environment block.
+#[cfg(not(windows))]
+fn sanitize_backend_environment(command: &mut std::process::Command) {
+    for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
+        command.env_remove(key);
+    }
+}
+
+fn sanitize_backend_environment_map(
+    environment: &mut std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+) {
+    for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
+        environment.remove(std::ffi::OsStr::new(key));
+    }
 }
 
 #[cfg(windows)]
@@ -377,6 +411,35 @@ mod tests {
         let error = verify_file_digest(&binary, &expected).expect_err("tampered binary");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("digest mismatch"));
+    }
+
+    #[test]
+    fn backend_child_does_not_inherit_oracle_path_overrides() {
+        #[cfg(not(windows))]
+        {
+            let mut command = std::process::Command::new("polis-backend.exe");
+            for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
+                command.env(key, "foreign-value");
+            }
+            sanitize_backend_environment(&mut command);
+            for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
+                assert!(
+                    command.get_envs().all(|(name, value)| {
+                        name != std::ffi::OsStr::new(key) || value.is_none()
+                    }),
+                    "{key} must be removed from the child environment"
+                );
+            }
+        }
+
+        let mut environment = std::collections::BTreeMap::new();
+        for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
+            environment.insert(std::ffi::OsString::from(key), std::ffi::OsString::from("foreign"));
+        }
+        sanitize_backend_environment_map(&mut environment);
+        assert!(ORACLE_CHILD_OVERRIDE_ENV_VARS
+            .iter()
+            .all(|key| !environment.contains_key(std::ffi::OsStr::new(key))));
     }
 
     #[test]

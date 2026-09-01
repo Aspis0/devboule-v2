@@ -10,6 +10,11 @@ export interface City {
   agents: CityAgent[];
   findings: CityFinding[];
   dataSource?: "fixture" | "host";
+  /** Present only when the host could not enumerate the complete workspace; a
+   * value of 1 declares one or more files beyond the cap. */
+  truncatedFiles?: number;
+  /** Present only when individual files were skipped by the host. */
+  skippedFiles?: number;
 }
 
 export interface CityFile {

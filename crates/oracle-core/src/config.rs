@@ -166,6 +166,15 @@ impl OracleDataPaths {
         Self::from_resolved_data_dir(data_dir)
     }
 
+    /// Compute store paths from the granted workspace root without consulting
+    /// process environment overrides. Plugin capabilities must not be able to
+    /// redirect a read to another workspace's Oracle data.
+    pub fn from_root_without_env(root: &Path) -> Self {
+        let data_dir = absolute_path(&root.join(DEFAULT_ORACLE_DIR));
+        let data_dir = data_dir.canonicalize().unwrap_or(data_dir);
+        Self::from_fixed_data_dir(data_dir)
+    }
+
     /// Treat `data_dir` as the Oracle data directory itself (no re-join of
     /// `ORACLE_DIR`). Used by MCP where `ORACLE_DIR` already names the data dir.
     pub fn from_data_dir(data_dir: &Path) -> Self {
@@ -190,6 +199,18 @@ impl OracleDataPaths {
                 &data_dir,
             ),
             ckg: confined_env_or(&["CKG_DB_PATH"], data_dir.join(CKG_SQLITE), &data_dir),
+            root: data_dir,
+        }
+    }
+
+    fn from_fixed_data_dir(data_dir: PathBuf) -> Self {
+        OracleDataPaths {
+            vectors: data_dir.join(VECTORS_DIR),
+            chunks: data_dir.join(CHUNKS_DIR),
+            file_vectors: data_dir.join(FILE_VECTORS_DIR),
+            metadata: data_dir.join(METADATA_SQLITE),
+            manifest: data_dir.join(CHUNK_MANIFEST),
+            ckg: data_dir.join(CKG_SQLITE),
             root: data_dir,
         }
     }
@@ -353,5 +374,21 @@ mod tests {
         // Missing escape candidate (no create) must also be rejected.
         let missing_outside = tmp.path().join("also_outside").join("db.sqlite");
         assert!(!path_is_under_dir(&missing_outside, &root));
+    }
+
+    #[test]
+    fn root_only_paths_ignore_oracle_dir_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let foreign = temp.path().join("foreign");
+        fs::create_dir_all(&foreign).expect("foreign root");
+        let previous = env::var_os("ORACLE_DIR");
+        env::set_var("ORACLE_DIR", &foreign);
+        let paths = OracleDataPaths::from_root_without_env(temp.path());
+        match previous {
+            Some(value) => env::set_var("ORACLE_DIR", value),
+            None => env::remove_var("ORACLE_DIR"),
+        }
+        assert_eq!(paths.root, temp.path().join(DEFAULT_ORACLE_DIR));
+        assert_eq!(paths.ckg, paths.root.join(CKG_SQLITE));
     }
 }
