@@ -23,6 +23,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 const FINDINGS_GET_RPC_TIMEOUT: Duration = Duration::from_secs(60);
 const CITY_GET_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const FINDING_INSPECT_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Production `invoke()` budget. Cheap methods keep 5s; the city walk and
 /// the cheap Augur scan are host-perceived waits that routinely exceed that.
@@ -31,6 +32,7 @@ pub fn invoke_timeout_for(method: &str) -> Duration {
     match method {
         name if name == caps::FINDINGS_GET => FINDINGS_GET_RPC_TIMEOUT,
         name if name == caps::CITY_GET => CITY_GET_RPC_TIMEOUT,
+        name if name == caps::FINDING_INSPECT => FINDING_INSPECT_RPC_TIMEOUT,
         _ => DEFAULT_RPC_TIMEOUT,
     }
 }
@@ -483,6 +485,7 @@ mod tests {
     fn production_invoke_budgets_are_per_method() {
         assert_eq!(invoke_timeout_for(caps::FINDINGS_GET), Duration::from_secs(60));
         assert_eq!(invoke_timeout_for(caps::CITY_GET), Duration::from_secs(30));
+        assert_eq!(invoke_timeout_for(caps::FINDING_INSPECT), Duration::from_secs(10));
         assert_eq!(invoke_timeout_for(caps::WORKSPACE_ROOT), Duration::from_secs(5));
         assert_eq!(invoke_timeout_for(caps::PING), Duration::from_secs(5));
     }
