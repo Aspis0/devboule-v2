@@ -1,5 +1,5 @@
-import { sessionsList } from "../../lib/tauri";
-import type { Session } from "../../types/ipc";
+import { oracleAsk, oracleStatus, sessionsList } from "../../lib/tauri";
+import type { OracleIndexStatus, OracleSearchResponse, Session } from "../../types/ipc";
 
 /**
  * The only channel a plugin frame gets to ask the host for work. The frame is
@@ -18,6 +18,10 @@ export interface PluginBridgeOptions {
   servedCapabilities?: readonly string[];
   /** Injectable for tests; production uses the Tauri sessions_list command. */
   sessionList?: () => Promise<Session[]>;
+  /** Injectable for tests; production uses the Tauri oracle_ask command. */
+  oracleSearch?: (query: string) => Promise<OracleSearchResponse>;
+  /** Injectable for tests; production uses the Tauri oracle_status command. */
+  oracleIndexState?: () => Promise<OracleIndexStatus>;
 }
 
 export interface PluginBridge {
@@ -57,9 +61,12 @@ type SessionEventMessage = {
   value: SessionFeed;
 };
 
-export const HOST_SERVED_CAPABILITIES = ["sessions.watch"] as const;
+export const HOST_SERVED_CAPABILITIES = ["sessions.watch", "oracle.search"] as const;
 const SESSION_WATCH_INTERVAL_MS = 5000;
 const MAX_PLUGIN_MESSAGE_BYTES = 1024 * 1024;
+export const ORACLE_SOURCE_TIMEOUT_MS = 20_000;
+const ORACLE_INDEX_STATE_TIMEOUT_MS = 3000;
+const ORACLE_MAX_QUERY_CHARS = 4096;
 
 /**
  * Provisional provider inference. Session truth has no provider field yet, so
@@ -103,6 +110,11 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingOracleSearch {
+  id: string;
+  query: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -221,6 +233,7 @@ function sessionWatchInitial(state: SessionWatchState): Promise<SessionFeed> {
   const initial = withTimeout(
     Promise.resolve().then(() => state.source()),
     SESSION_SOURCE_TIMEOUT_MS,
+    "sessions.watch",
   )
     .then((sessions) => {
       const feed = sessionsToFeed(sessions);
@@ -246,8 +259,8 @@ function sessionWatchInitial(state: SessionWatchState): Promise<SessionFeed> {
   return initial;
 }
 
-function oversizedMessageError(): Error & { code: string } {
-  return Object.assign(new Error("plugin session feed is too large (maximum 1 MiB)"), {
+function oversizedMessageError(subject = "plugin session feed"): Error & { code: string } {
+  return Object.assign(new Error(`${subject} is too large (maximum 1 MiB)`), {
     code: "response_too_large",
   });
 }
@@ -267,6 +280,21 @@ function sessionWatchFailureReply(
   return reply;
 }
 
+function oracleSearchFailureReply(
+  id: string,
+  error: unknown,
+): Extract<ReplyMessage, { kind: "error" }> {
+  const reply: Extract<ReplyMessage, { kind: "error" }> = {
+    v: 1,
+    id,
+    kind: "error",
+    message: "oracle.search failed",
+  };
+  const code = routeErrorCode(error);
+  if (code !== undefined) reply.code = code;
+  return reply;
+}
+
 async function refreshSessionWatch(state: SessionWatchState): Promise<void> {
   if (state.stopped || state.subscribers.size === 0 || state.refreshing) return;
   state.refreshing = true;
@@ -275,6 +303,7 @@ async function refreshSessionWatch(state: SessionWatchState): Promise<void> {
       await withTimeout(
         Promise.resolve().then(() => state.source()),
         SESSION_SOURCE_TIMEOUT_MS,
+        "sessions.watch",
       ),
     );
     const serialized = JSON.stringify(next);
@@ -298,10 +327,10 @@ async function refreshSessionWatch(state: SessionWatchState): Promise<void> {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(Object.assign(new Error("sessions.watch timed out"), { code: "timeout" }));
+      reject(Object.assign(new Error(`${label} timed out`), { code: "timeout" }));
     }, timeoutMs);
     promise.then(
       (value) => {
@@ -327,6 +356,144 @@ function messageValueWithinLimit(value: unknown): boolean {
   }
 }
 
+type OraclePluginMatchType =
+  | "lexical"
+  | "dense"
+  | "dense+lexical"
+  | "dense+reranked";
+type OraclePluginIndexState = "idle" | "indexing" | "ready" | "incomplete" | "stale" | "error";
+
+interface OraclePluginResult {
+  path: string;
+  startLine: number;
+  endLine: number;
+  focusStartLine?: number;
+  focusEndLine?: number;
+  symbol?: string;
+  match?: OraclePluginMatchType;
+}
+
+interface OraclePluginSearchResponse {
+  query: string;
+  results: OraclePluginResult[];
+  indexState?: OraclePluginIndexState;
+}
+
+function oracleSearchQuery(payload: unknown): string | null {
+  if (!isRecord(payload) || typeof payload.query !== "string") return null;
+  const query = payload.query.trim();
+  // The user-facing limit applies to the query Oracle actually receives, after trimming.
+  return query === "" ? null : query;
+}
+
+function projectOracleSearchResponse(
+  response: unknown,
+  query: string,
+): OraclePluginSearchResponse {
+  if (!isOracleSearchResponse(response) || response.query !== query) {
+    throw invalidOracleResponseError();
+  }
+  return {
+    query,
+    results: response.results.slice(0, 10).map((result) => {
+      const projected: OraclePluginResult = {
+        path: result.path,
+        startLine: result.line_start,
+        endLine: result.line_end,
+      };
+      if (
+        typeof result.focus_line_start === "number" &&
+        typeof result.focus_line_end === "number"
+      ) {
+        projected.focusStartLine = result.focus_line_start;
+        projected.focusEndLine = result.focus_line_end;
+      }
+      if (typeof result.symbol_name === "string") projected.symbol = result.symbol_name;
+      if (isOracleMatchType(result.match_type)) projected.match = result.match_type;
+      return projected;
+    }),
+  };
+}
+
+function isOracleSearchResponse(value: unknown): value is OracleSearchResponse {
+  if (!isRecord(value) || typeof value.query !== "string" || !Array.isArray(value.results)) {
+    return false;
+  }
+  return value.results.every(isOracleResult);
+}
+
+function isOracleResult(value: unknown): value is OracleSearchResponse["results"][number] {
+  if (
+    !isRecord(value) ||
+    typeof value.path !== "string" ||
+    value.path.trim() === "" ||
+    !isNonNegativeInteger(value.line_start) ||
+    !isNonNegativeInteger(value.line_end) ||
+    value.line_end < value.line_start ||
+    typeof value.snippet !== "string" ||
+    typeof value.score !== "number" ||
+    !Number.isFinite(value.score)
+  ) {
+    return false;
+  }
+
+  const hasFocusStart = Object.prototype.hasOwnProperty.call(value, "focus_line_start");
+  const hasFocusEnd = Object.prototype.hasOwnProperty.call(value, "focus_line_end");
+  if (hasFocusStart !== hasFocusEnd) return false;
+  if (
+    hasFocusStart &&
+    (!isNonNegativeInteger(value.focus_line_start) ||
+      !isNonNegativeInteger(value.focus_line_end) ||
+      value.focus_line_end < value.focus_line_start)
+  ) {
+    return false;
+  }
+
+  if (
+    Object.prototype.hasOwnProperty.call(value, "symbol_name") &&
+    (typeof value.symbol_name !== "string" || value.symbol_name === "")
+  ) {
+    return false;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "match_type") &&
+    !isOracleMatchType(value.match_type)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isOracleMatchType(value: unknown): value is OraclePluginMatchType {
+  return (
+    value === "lexical" ||
+    value === "dense" ||
+    value === "dense+lexical" ||
+    value === "dense+reranked"
+  );
+}
+
+function isOracleIndexState(value: unknown): value is OraclePluginIndexState {
+  return (
+    value === "idle" ||
+    value === "indexing" ||
+    value === "ready" ||
+    value === "incomplete" ||
+    value === "stale" ||
+    value === "error"
+  );
+}
+
+function invalidOracleResponseError(): Error & { code: string } {
+  return Object.assign(new Error("oracle.search returned an invalid response"), {
+    code: "invalid_response",
+  });
+}
+
 export function resetSessionWatchesForTests(): void {
   for (const state of sessionWatches.values()) {
     if (state.timer !== null) clearInterval(state.timer);
@@ -342,11 +509,67 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
   const pending = new Map<string, PendingRequest>();
   const servedCapabilities = options.servedCapabilities ?? HOST_SERVED_CAPABILITIES;
   const sessionList = options.sessionList ?? sessionsList;
+  const oracleSearch = options.oracleSearch ?? oracleAsk;
+  const oracleIndexState = options.oracleIndexState ?? oracleStatus;
   let nextId = 0;
   let disposed = false;
+  let oracleSearchInFlight = false;
+  let pendingOracleSearch: PendingOracleSearch | null = null;
 
   function post(reply: ReplyMessage | SessionEventMessage): void {
     options.iframe.contentWindow?.postMessage(reply, pluginOrigin);
+  }
+
+  async function runOracleSearch(request: PendingOracleSearch): Promise<void> {
+    try {
+      const response = await withTimeout(
+        Promise.resolve().then(() => oracleSearch(request.query)),
+        ORACLE_SOURCE_TIMEOUT_MS,
+        "oracle.search",
+      );
+      const value = projectOracleSearchResponse(response, request.query);
+      if (value.results.length === 0) {
+        try {
+          const status = await withTimeout(
+            Promise.resolve().then(() => oracleIndexState()),
+            ORACLE_INDEX_STATE_TIMEOUT_MS,
+            "oracle.search index status",
+          );
+          if (isOracleIndexState(status.state)) value.indexState = status.state;
+        } catch {
+          // Index status is explanatory only; a status outage must not hide a valid empty search.
+        }
+      }
+      if (disposed) return;
+      if (!messageValueWithinLimit(value)) {
+        const error = oversizedMessageError("oracle.search response");
+        post({
+          v: 1,
+          id: request.id,
+          kind: "error",
+          code: error.code,
+          message: error.message,
+        });
+        return;
+      }
+      post({ v: 1, id: request.id, kind: "result", value });
+    } catch (error: unknown) {
+      if (disposed) return;
+      console.error("oracle.search failed", error);
+      post(oracleSearchFailureReply(request.id, error));
+    } finally {
+      oracleSearchInFlight = false;
+      if (disposed) {
+        pendingOracleSearch = null;
+        return;
+      }
+      const pending = pendingOracleSearch;
+      pendingOracleSearch = null;
+      if (pending !== null) {
+        oracleSearchInFlight = true;
+        void runOracleSearch(pending);
+      }
+    }
   }
 
   const postSessionMessage: SessionSubscriberPost = (message) => post(message);
@@ -428,6 +651,58 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
         return;
       }
 
+      if (capability === "oracle.search") {
+        if (!servedCapabilities.includes(capability)) {
+          post({
+            v: 1,
+            id: message.id,
+            kind: "error",
+            code: "capability_not_supported",
+            message: `The host does not serve plugin capability "${capability}"`,
+          });
+          return;
+        }
+
+        const query = oracleSearchQuery(message.payload);
+        if (query === null) {
+          post({
+            v: 1,
+            id: message.id,
+            kind: "error",
+            code: "invalid_request",
+            message: "oracle.search requires a non-empty query string",
+          });
+          return;
+        }
+        if (query.length > ORACLE_MAX_QUERY_CHARS) {
+          post({
+            v: 1,
+            id: message.id,
+            kind: "error",
+            code: "invalid_request",
+            message: "oracle.search query is too long (maximum 4096 characters)",
+          });
+          return;
+        }
+        if (oracleSearchInFlight) {
+          if (pendingOracleSearch !== null) {
+            post({
+              v: 1,
+              id: pendingOracleSearch.id,
+              kind: "error",
+              code: "busy",
+              message: "oracle.search is already running for this plugin",
+            });
+          }
+          pendingOracleSearch = { id: message.id, query };
+          return;
+        }
+
+        oracleSearchInFlight = true;
+        void runOracleSearch({ id: message.id, query });
+        return;
+      }
+
       if (options.route === undefined) {
         post({
           v: 1,
@@ -505,6 +780,7 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
         request.reject(new Error(`Plugin request "${id}" was cancelled`));
       }
       pending.clear();
+      pendingOracleSearch = null;
       detachSessionWatch(options.pluginId, postSessionMessage);
     },
   };

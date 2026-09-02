@@ -211,15 +211,14 @@ describe("createPluginBridge", () => {
       iframe,
       pluginId: "polis",
       pluginOrigin: PLUGIN_ORIGIN,
-      capabilities: ["oracle.search"],
+      capabilities: ["future.method"],
     });
 
     send(pluginWindow, PLUGIN_ORIGIN, {
       v: 1,
       id: "not-routed",
       kind: "invoke",
-      method: "oracle.search",
-      payload: { query: "where" },
+      method: "future.method",
     });
 
     expect(pluginWindow.postMessage).toHaveBeenCalledWith(
@@ -227,7 +226,7 @@ describe("createPluginBridge", () => {
         v: 1,
         id: "not-routed",
         kind: "error",
-        message: 'The host cannot route plugin method "oracle.search" yet',
+        message: 'The host cannot route plugin method "future.method" yet',
       },
       PLUGIN_ORIGIN,
     );
@@ -775,6 +774,635 @@ describe("createPluginBridge", () => {
       expect.objectContaining({ id: "private-watch", message: "sessions.watch failed" }),
     );
     expect(JSON.stringify(errorReply)).not.toContain("workspace");
+    bridge.dispose();
+  });
+
+  it("refuses oracle.search when the host allowlist does not serve it", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-denied",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      servedCapabilities: [],
+      oracleSearch: vi.fn(),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-denied-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "where" },
+    });
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      {
+        v: 1,
+        id: "oracle-denied-request",
+        kind: "error",
+        code: "capability_not_supported",
+        message: 'The host does not serve plugin capability "oracle.search"',
+      },
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("rejects oracle.search when the query is absent", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-missing-query",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn(),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-missing-query-request",
+      kind: "invoke",
+      method: "oracle.search",
+    });
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-missing-query-request",
+        kind: "error",
+        code: "invalid_request",
+        message: "oracle.search requires a non-empty query string",
+      }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("rejects oracle.search when the query is an empty string", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-empty-query",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn(),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-empty-query-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "" },
+    });
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-empty-query-request",
+        kind: "error",
+        code: "invalid_request",
+        message: "oracle.search requires a non-empty query string",
+      }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("rejects oracle.search when the query is whitespace-only", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-whitespace-query",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn(),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-whitespace-query-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "  \t\n" },
+    });
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-whitespace-query-request",
+        kind: "error",
+        code: "invalid_request",
+        message: "oracle.search requires a non-empty query string",
+      }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("rejects oracle.search when query is not a string", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-non-string-query",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn(),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-non-string-query-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: 42 },
+    });
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-non-string-query-request",
+        kind: "error",
+        code: "invalid_request",
+        message: "oracle.search requires a non-empty query string",
+      }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("rejects oracle.search when the trimmed query exceeds 4096 characters", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-long-query",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn(),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-long-query-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: ` ${"q".repeat(4097)} ` },
+    });
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-long-query-request",
+        kind: "error",
+        code: "invalid_request",
+        message: "oracle.search query is too long (maximum 4096 characters)",
+      }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("projects Oracle results without content or scores, preserves order, and caps at ten", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const results = [
+      {
+        path: "first.ts",
+        line_start: 1,
+        line_end: 4,
+        focus_line_start: 2,
+        focus_line_end: 3,
+        snippet: "secret source text",
+        score: 0.99,
+        symbol_name: "firstSymbol",
+        match_type: "dense" as const,
+      },
+      {
+        path: "second.ts",
+        line_start: 0,
+        line_end: 0,
+        snippet: "private prose",
+        score: 0.5,
+      },
+      ...Array.from({ length: 9 }, (_, index) => ({
+        path: `tail-${index}.ts`,
+        line_start: index + 1,
+        line_end: index + 1,
+        snippet: "not for the frame",
+        score: index,
+      })),
+    ];
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-projection",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn().mockResolvedValue({ query: "symbols", results }),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-projection-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "  symbols  " },
+    });
+    await flushPromises();
+
+    const reply = vi.mocked(pluginWindow.postMessage).mock.calls[0]?.[0];
+    if (!isRecord(reply) || !isRecord(reply.value)) throw new Error("missing Oracle reply");
+    if (!Array.isArray(reply.value.results)) throw new Error("missing projected results");
+    const projected = reply.value.results;
+    expect(projected).toHaveLength(10);
+    expect(projected).toEqual([
+      {
+        path: "first.ts",
+        startLine: 1,
+        endLine: 4,
+        focusStartLine: 2,
+        focusEndLine: 3,
+        symbol: "firstSymbol",
+        match: "dense",
+      },
+      { path: "second.ts", startLine: 0, endLine: 0 },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        path: `tail-${index}.ts`,
+        startLine: index + 1,
+        endLine: index + 1,
+      })),
+    ]);
+    expect(reply.value.query).toBe("symbols");
+    expect(projected[0]).not.toHaveProperty("snippet");
+    expect(projected[0]).not.toHaveProperty("score");
+    expect(projected[1]).not.toHaveProperty("focusStartLine");
+    expect(projected[1]).not.toHaveProperty("focusEndLine");
+    bridge.dispose();
+  });
+
+  it("keeps Oracle startLine zero as the legal unknown-line value", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-zero-line",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn().mockResolvedValue({
+        query: "prose",
+        results: [
+          { path: "README.md", line_start: 0, line_end: 0, snippet: "private", score: 1 },
+        ],
+      }),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-zero-line-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "prose" },
+    });
+    await flushPromises();
+
+    const reply = vi.mocked(pluginWindow.postMessage).mock.calls[0]?.[0];
+    if (!isRecord(reply) || !isRecord(reply.value)) throw new Error("missing Oracle reply");
+    expect(reply.value.results).toEqual([{ path: "README.md", startLine: 0, endLine: 0 }]);
+    bridge.dispose();
+  });
+
+  it("adds indexState only for empty results and ignores status failures", async () => {
+    const first = testFrame();
+    const firstBridge = createPluginBridge({
+      iframe: first.iframe,
+      pluginId: "oracle-empty-state",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn().mockResolvedValue({ query: "none", results: [] }),
+      oracleIndexState: vi.fn().mockResolvedValue({ state: "ready" }),
+    });
+    send(first.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-empty-state-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "none" },
+    });
+    await flushPromises();
+    const firstReply = vi.mocked(first.pluginWindow.postMessage).mock.calls[0]?.[0];
+    if (!isRecord(firstReply) || !isRecord(firstReply.value)) throw new Error("missing Oracle reply");
+    expect(firstReply.value).toEqual({ query: "none", results: [], indexState: "ready" });
+    firstBridge.dispose();
+
+    const second = testFrame();
+    const secondBridge = createPluginBridge({
+      iframe: second.iframe,
+      pluginId: "oracle-empty-status-failure",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn().mockResolvedValue({ query: "none", results: [] }),
+      oracleIndexState: vi.fn().mockRejectedValue(new Error("private workspace path")),
+    });
+    send(second.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-empty-status-failure-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "none" },
+    });
+    await flushPromises();
+    const secondReply = vi.mocked(second.pluginWindow.postMessage).mock.calls[0]?.[0];
+    if (!isRecord(secondReply) || !isRecord(secondReply.value)) throw new Error("missing Oracle reply");
+    expect(secondReply.value).toEqual({ query: "none", results: [] });
+    secondBridge.dispose();
+  });
+
+  it("coalesces concurrent oracle.search calls to the latest query", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    const oracleSearch = vi
+      .fn()
+      .mockReturnValueOnce(new Promise((resolve) => (resolveFirst = resolve)))
+      .mockResolvedValueOnce({ query: "third", results: [] });
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-single-flight",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch,
+      oracleIndexState: vi.fn().mockResolvedValue({ state: "idle" }),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-first-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "first" },
+    });
+    await flushPromises();
+    expect(oracleSearch).toHaveBeenCalledTimes(1);
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-second-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "second" },
+    });
+    await flushPromises();
+    expect(pluginWindow.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "oracle-second-request" }),
+      PLUGIN_ORIGIN,
+    );
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-third-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "third" },
+    });
+    await flushPromises();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-second-request",
+        kind: "error",
+        code: "busy",
+        message: "oracle.search is already running for this plugin",
+      }),
+      PLUGIN_ORIGIN,
+    );
+
+    resolveFirst({ query: "first", results: [] });
+    await flushPromises();
+    await flushPromises();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "oracle-third-request", kind: "result" }),
+      PLUGIN_ORIGIN,
+    );
+    expect(oracleSearch).toHaveBeenCalledTimes(2);
+    bridge.dispose();
+  });
+
+  it("does not inherit an in-flight search across a bridge rebuild", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    const firstSearch = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+    const first = testFrame();
+    const firstBridge = createPluginBridge({
+      iframe: first.iframe,
+      pluginId: "oracle-reload",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: firstSearch,
+    });
+    send(first.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-reload-first",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "first" },
+    });
+    await flushPromises();
+    firstBridge.dispose();
+
+    const second = testFrame();
+    const secondSearch = vi.fn().mockResolvedValue({
+      query: "second",
+      results: [{ path: "second.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }],
+    });
+    const secondBridge = createPluginBridge({
+      iframe: second.iframe,
+      pluginId: "oracle-reload",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: secondSearch,
+    });
+    send(second.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-reload-second",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "second" },
+    });
+    await flushPromises();
+
+    expect(secondSearch).toHaveBeenCalledWith("second");
+    expect(second.pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "oracle-reload-second", kind: "result" }),
+      PLUGIN_ORIGIN,
+    );
+    resolveFirst({ query: "first", results: [] });
+    secondBridge.dispose();
+  });
+
+  it("drops a pending oracle.search when the bridge is disposed", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    const oracleSearch = vi.fn().mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-dispose-pending",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch,
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-dispose-first",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "first" },
+    });
+    await flushPromises();
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-dispose-pending-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "pending" },
+    });
+    await flushPromises();
+
+    bridge.dispose();
+    resolveFirst({
+      query: "first",
+      results: [{ path: "first.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }],
+    });
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "oracle-dispose-pending-request" }),
+      PLUGIN_ORIGIN,
+    );
+  });
+
+  it("refuses malformed oracle.search immediately without consuming a pending query", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    const oracleSearch = vi
+      .fn()
+      .mockReturnValueOnce(new Promise((resolve) => (resolveFirst = resolve)))
+      .mockResolvedValueOnce({
+        query: "pending",
+        results: [{ path: "pending.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }],
+      });
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-malformed-in-flight",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch,
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-malformed-first",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "first" },
+    });
+    await flushPromises();
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-malformed-pending",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "pending" },
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-malformed-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: 42 },
+    });
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-malformed-request",
+        kind: "error",
+        code: "invalid_request",
+      }),
+      PLUGIN_ORIGIN,
+    );
+    expect(oracleSearch).toHaveBeenCalledTimes(1);
+    resolveFirst({ query: "first", results: [{ path: "first.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }] });
+    await flushPromises();
+    expect(oracleSearch).toHaveBeenCalledWith("pending");
+    bridge.dispose();
+  });
+
+  it("times out a hung oracle.search source after twenty seconds", async () => {
+    vi.useFakeTimers();
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-timeout",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn().mockImplementation(() => new Promise(() => {})),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-timeout-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "slow" },
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    await flushPromises();
+
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      {
+        v: 1,
+        id: "oracle-timeout-request",
+        kind: "error",
+        code: "timeout",
+        message: "oracle.search failed",
+      },
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("does not forward Oracle source errors containing workspace paths", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-private-error",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn().mockRejectedValue(new Error("C:\\Users\\secret\\workspace")),
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-private-error-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "private" },
+    });
+    await flushPromises();
+
+    const errorReply = vi
+      .mocked(pluginWindow.postMessage)
+      .mock.calls.map(([message]) => message)
+      .find((message) => isRecord(message) && message.kind === "error");
+    expect(errorReply).toEqual(
+      expect.objectContaining({
+        id: "oracle-private-error-request",
+        message: "oracle.search failed",
+      }),
+    );
+    expect(JSON.stringify(errorReply)).not.toContain("secret");
     bridge.dispose();
   });
 });
