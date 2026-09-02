@@ -159,6 +159,35 @@ fn spec(root: &std::path::Path) -> SpawnSpec {
 }
 
 #[test]
+fn inherited_hang_ms_does_not_sleep_when_spec_leaves_it_unset() {
+    let previous = std::env::var_os("DEVBOULE_PLUGIN_HANG_MS");
+    std::env::set_var("DEVBOULE_PLUGIN_HANG_MS", "8000");
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(value) => std::env::set_var("DEVBOULE_PLUGIN_HANG_MS", value),
+                None => std::env::remove_var("DEVBOULE_PLUGIN_HANG_MS"),
+            }
+        }
+    }
+    let _restore = Restore(previous);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
+    let started = std::time::Instant::now();
+    let value = session
+        .invoke(caps::WORKSPACE_ROOT, None)
+        .expect("workspace.root");
+    let elapsed = started.elapsed();
+    assert_eq!(value["status"], "ok");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "child inherited DEVBOULE_PLUGIN_HANG_MS=8000 and slept: {elapsed:?}"
+    );
+}
+
+#[test]
 fn workspace_root_round_trips_over_the_pipe() {
     let dir = tempfile::tempdir().expect("tempdir");
     let session = PluginSession::spawn(spec(dir.path())).expect("spawn");

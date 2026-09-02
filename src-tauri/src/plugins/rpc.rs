@@ -73,16 +73,18 @@ impl PluginRuntime {
                 // The backend is in a long dispatch (city.get / findings.get).
                 // A ping would sit unread on the serialized pipe and look like
                 // death; killing it mid-record_scan rolls back the ledger.
-                // Reuse the session, keep the current generation (this is not
-                // a re-acquire of a released lease), and let invoke() wait
-                // on the pipe lock honestly.
-                let inner = self.lock();
+                // This is still a re-acquire of the lease: bump so a delayed
+                // stop(G) from the previous surface cannot match.
+                let mut inner = self.lock();
                 if inner
                     .sessions
                     .get(&plugin_id)
                     .is_some_and(|current| Arc::ptr_eq(current, session))
                 {
-                    return Ok(inner.generation.get(&plugin_id).copied().unwrap_or(0));
+                    let generation =
+                        next_generation(inner.generation.get(&plugin_id).copied().unwrap_or(0));
+                    inner.generation.insert(plugin_id.clone(), generation);
+                    return Ok(generation);
                 }
             } else if session.ping().is_ok() {
                 // A successful re-acquire is a new lease generation even
@@ -415,6 +417,7 @@ pub async fn plugin_invoke(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use devboule_protocol::plugin_backend_capabilities;
 
     #[test]
     fn capability_errors_keep_their_code() {
@@ -430,5 +433,111 @@ mod tests {
         let error = command_error(PluginError::ProcessExited);
         assert_eq!(error.code, ErrorCode::Io);
         assert!(error.message.contains("exited"));
+    }
+
+    #[cfg(windows)]
+    fn polis_backend_binary() -> std::path::PathBuf {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.push("target");
+        path.push("debug");
+        path.push("polis-backend.exe");
+        path
+    }
+
+    #[cfg(windows)]
+    fn runtime_spec(root: &std::path::Path) -> SpawnSpec {
+        let mut grants = std::collections::BTreeMap::new();
+        grants.insert(
+            caps::WORKSPACE_ROOT.to_string(),
+            root.to_string_lossy().into_owned(),
+        );
+        SpawnSpec {
+            binary: polis_backend_binary(),
+            plugin_id: "polis-stale-stop".to_string(),
+            capabilities: plugin_backend_capabilities(),
+            grants,
+            owner: host_owner().expect("owner"),
+            hang_ms: Some(6_000),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inflight_reensure_bumps_generation_so_stale_stop_is_a_noop() {
+        let binary = polis_backend_binary();
+        assert!(
+            binary.is_file(),
+            "need a built polis-backend at {}",
+            binary.display()
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("src.rs"), "pub fn x() {}\n").expect("source");
+        let spec = runtime_spec(dir.path());
+        let plugin_id = spec.plugin_id.clone();
+        let runtime = PluginRuntime::default();
+
+        let worker_runtime = runtime.clone();
+        let worker_spec = spec.clone();
+        let worker_id = plugin_id.clone();
+        let worker = std::thread::spawn(move || {
+            worker_runtime.invoke(&worker_id, worker_spec, caps::FINDINGS_GET, None)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(400));
+
+        let g = runtime
+            .lock()
+            .generation
+            .get(&plugin_id)
+            .copied()
+            .expect("worker ensure must have registered a generation");
+        let pid = runtime
+            .lock()
+            .sessions
+            .get(&plugin_id)
+            .expect("session")
+            .pid();
+        assert!(
+            runtime
+                .lock()
+                .sessions
+                .get(&plugin_id)
+                .is_some_and(|session| session.invoke_in_flight()),
+            "slow invoke must be in flight before the remount ensure"
+        );
+
+        let g2 = runtime.ensure_session(spec).expect("inflight re-ensure");
+        assert!(
+            g2 > g,
+            "inflight re-ensure must bump the lease (got {g2}, had {g})"
+        );
+
+        runtime.stop(&plugin_id, Some(g));
+        assert_eq!(
+            runtime
+                .lock()
+                .sessions
+                .get(&plugin_id)
+                .map(|session| session.pid()),
+            Some(pid),
+            "stop(G) after a bumped re-ensure must not kill the busy backend"
+        );
+        assert!(
+            runtime.lock().sessions.contains_key(&plugin_id),
+            "session must stay registered"
+        );
+
+        worker
+            .join()
+            .expect("worker")
+            .expect("slow invoke must complete after a stale stop");
+        assert_eq!(
+            runtime
+                .lock()
+                .sessions
+                .get(&plugin_id)
+                .map(|session| session.pid()),
+            Some(pid)
+        );
     }
 }

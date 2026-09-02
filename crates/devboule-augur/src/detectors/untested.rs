@@ -52,7 +52,7 @@ impl Detector for Untested {
             if !item.is_test {
                 continue;
             }
-            let Some(stem) = covered_stem(&item.name).or_else(|| source_stem(&item.name)) else {
+            let Some(stem) = covered_stem(&item.name) else {
                 continue;
             };
             covered.insert(coverage_key(&item.parent, &stem));
@@ -322,6 +322,34 @@ mod tests {
         assert!(
             findings.is_empty(),
             "a test file is not an untested source: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_plain_source_in_a_tests_directory_does_not_cover_the_parent_stem() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source = write_source(temp.path(), "src/helpers.ts", "export const n = 1;\n");
+        let util = write_source(
+            temp.path(),
+            "src/__tests__/helpers.ts",
+            "export const n = 1;\n",
+        );
+        let files = [source, util];
+        let findings = Untested::default()
+            .scan(&Context::new(temp.path(), &files))
+            .expect("scan");
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.file() == Path::new("src/helpers.ts")
+                    && finding.rule() == "test.missing"),
+            "a test util must not silence src/helpers.ts: {findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.file() != Path::new("src/__tests__/helpers.ts")),
+            "plain files in test dirs stay is_test and are not themselves reported: {findings:?}"
         );
     }
 

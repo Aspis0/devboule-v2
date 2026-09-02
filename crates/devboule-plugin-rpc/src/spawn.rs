@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 pub const PIPE_ENV: &str = "DEVBOULE_PLUGIN_PIPE";
 pub const PLUGIN_ID_ENV: &str = "DEVBOULE_PLUGIN_ID";
 pub const HOST_PID_ENV: &str = "DEVBOULE_PLUGIN_HOST_PID";
+pub const HANG_MS_ENV: &str = "DEVBOULE_PLUGIN_HANG_MS";
 
 /// Store/path and embedder overrides are host-process configuration. A
 /// plugin backend must derive all workspace data from its granted root.
@@ -197,10 +198,10 @@ pub fn spawn_backend(
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        if let Some(hang_ms) = hang_ms {
-            command.env("DEVBOULE_PLUGIN_HANG_MS", hang_ms.to_string());
-        }
         sanitize_backend_environment(&mut command);
+        if let Some(hang_ms) = hang_ms {
+            command.env(HANG_MS_ENV, hang_ms.to_string());
+        }
         command.spawn().map(|child| SpawnedBackend { child })
     }
 }
@@ -230,10 +231,7 @@ fn spawn_backend_windows(
         std::process::id().to_string().into(),
     );
     if let Some(hang_ms) = hang_ms {
-        environment.insert(
-            OsString::from("DEVBOULE_PLUGIN_HANG_MS"),
-            hang_ms.to_string().into(),
-        );
+        environment.insert(OsString::from(HANG_MS_ENV), hang_ms.to_string().into());
     }
 
     let mut environment_block = Vec::new();
@@ -286,6 +284,7 @@ fn sanitize_backend_environment(command: &mut std::process::Command) {
     for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
         command.env_remove(key);
     }
+    command.env_remove(HANG_MS_ENV);
 }
 
 fn sanitize_backend_environment_map(
@@ -294,6 +293,7 @@ fn sanitize_backend_environment_map(
     for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
         environment.remove(std::ffi::OsStr::new(key));
     }
+    environment.remove(std::ffi::OsStr::new(HANG_MS_ENV));
 }
 
 #[cfg(windows)]
@@ -440,6 +440,20 @@ mod tests {
         assert!(ORACLE_CHILD_OVERRIDE_ENV_VARS
             .iter()
             .all(|key| !environment.contains_key(std::ffi::OsStr::new(key))));
+    }
+
+    #[test]
+    fn hang_ms_is_stripped_from_inherited_environment() {
+        let mut environment = std::collections::BTreeMap::new();
+        environment.insert(
+            std::ffi::OsString::from(HANG_MS_ENV),
+            std::ffi::OsString::from("8000"),
+        );
+        sanitize_backend_environment_map(&mut environment);
+        assert!(
+            !environment.contains_key(std::ffi::OsStr::new(HANG_MS_ENV)),
+            "inherited hang_ms must not reach the child unless SpawnSpec set it"
+        );
     }
 
     #[test]
