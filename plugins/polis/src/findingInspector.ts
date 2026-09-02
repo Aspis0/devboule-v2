@@ -27,6 +27,19 @@ export interface FindingInspector {
   isOpen(): boolean;
 }
 
+/** Keep the inspector's building lookup identical to the renderer's current findings input. */
+export function indexFindingsByFile(
+  index: Map<string, CityFinding[]>,
+  findings: readonly CityFinding[],
+): void {
+  index.clear();
+  for (const finding of findings) {
+    const fileFindings = index.get(finding.fileId);
+    if (fileFindings === undefined) index.set(finding.fileId, [finding]);
+    else fileFindings.push(finding);
+  }
+}
+
 export function createFindingInspector(
   container: HTMLElement,
   invoke: HostInvoker,
@@ -64,6 +77,8 @@ export function createFindingInspector(
 
   function refreshFindings(findings: readonly CityFinding[]): void {
     if (activeFile === null) return;
+    requestGeneration += 1;
+    selectedFindingId = null;
     activeFindings = findingsForFile(activeFile.id, findings);
     renderPanel();
   }

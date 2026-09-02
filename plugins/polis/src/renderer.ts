@@ -134,7 +134,6 @@ export class CityRenderer {
   private pointerId: number | null = null;
   private pointerDownAt: { x: number; y: number } | null = null;
   private suppressTapForPointer = false;
-  private buildingTapHandled = false;
   private lastPointer = { x: 0, y: 0 };
   private animTime = 0;
 
@@ -573,7 +572,6 @@ export class CityRenderer {
     art.display.hitArea = hitArea;
     art.display.on("pointerover", () => this.details.setDetails(layout.file));
     art.display.on("pointerout", () => this.details.clearDetails());
-    art.display.on("pointertap", () => this.handleBuildingTap(layout.file));
     this.buildings.addChild(art.display);
     this.buildingTargets.push({ display: art.display, file: layout.file, hitArea });
     art.shadow.position.set(layout.worldX, layout.worldY);
@@ -617,7 +615,6 @@ export class CityRenderer {
       this.pointerId = event.pointerId;
       this.pointerDownAt = { x: event.clientX, y: event.clientY };
       this.suppressTapForPointer = false;
-      this.buildingTapHandled = false;
       this.lastPointer = { x: event.clientX, y: event.clientY };
       this.canvas.setPointerCapture(event.pointerId);
     });
@@ -661,6 +658,8 @@ export class CityRenderer {
       if (this.canvas.hasPointerCapture(event.pointerId))
         this.canvas.releasePointerCapture(event.pointerId);
     };
+    // Selection has one deterministic canvas hit-test; building pointertap
+    // listeners would disagree with it when porter targets intercept events.
     this.canvas.addEventListener("pointerup", endPointer);
     this.canvas.addEventListener("pointercancel", (event) => {
       this.suppressTapForPointer = true;
@@ -671,8 +670,7 @@ export class CityRenderer {
   }
 
   private handleBuildingTap(file: CityFile | null): void {
-    if (file === null || this.suppressTapForPointer || this.buildingTapHandled) return;
-    this.buildingTapHandled = true;
+    if (file === null || this.suppressTapForPointer) return;
     this.details.selectBuilding?.(file);
   }
 

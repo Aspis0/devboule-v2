@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { describe, expect, it, vi } from "vitest";
-import { createFindingInspector } from "./findingInspector";
+import { createFindingInspector, indexFindingsByFile } from "./findingInspector";
 
 const ID = "a".repeat(64);
 const file = {
@@ -19,6 +19,20 @@ const finding = {
 };
 
 describe("finding inspector", () => {
+  it("indexes fixture findings so a burning fixture building is inspectable", () => {
+    const container = document.createElement("section");
+    const index = new Map<string, typeof finding[]>();
+    indexFindingsByFile(index, [finding]);
+    const inspector = createFindingInspector(container, vi.fn());
+
+    inspector.open(file, index.get(file.id) ?? []);
+
+    expect(container.querySelector(".polis-finding-row")?.textContent).toContain(
+      "<secret title>",
+    );
+    inspector.destroy();
+  });
+
   it("renders file findings, fetches selected details, and withholds secret evidence", async () => {
     const container = document.createElement("section");
     const invoke = vi.fn().mockResolvedValue({
@@ -127,6 +141,40 @@ describe("finding inspector", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(container.textContent).toContain("Finding details: loading…");
+    inspector.destroy();
+  });
+
+  it("invalidates an inspection when refreshed findings rebuild the live panel", async () => {
+    const container = document.createElement("section");
+    const invoke = vi.fn();
+    let resolveInspection!: (value: unknown) => void;
+    invoke.mockReturnValue(
+      new Promise((resolve) => {
+        resolveInspection = resolve;
+      }),
+    );
+    const inspector = createFindingInspector(container, invoke);
+    inspector.open(file, [finding]);
+    (container.querySelector(".polis-finding-row") as HTMLButtonElement).click();
+    const detachedDetail = container.querySelector(".polis-finding-detail") as HTMLElement;
+
+    inspector.refreshFindings([finding]);
+    const liveDetail = container.querySelector(".polis-finding-detail") as HTMLElement;
+    resolveInspection({
+      id: ID,
+      rule: finding.rule,
+      severity: finding.severity,
+      title: finding.title,
+      source: "untested",
+      startLine: 3,
+      endLine: 3,
+      locations: [{ startLine: 3, endLine: 3 }],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(liveDetail.textContent).toBe("Select a finding for line details.");
+    expect(detachedDetail.textContent).toBe("Finding details: loading…");
     inspector.destroy();
   });
 });

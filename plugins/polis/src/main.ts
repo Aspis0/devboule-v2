@@ -26,7 +26,7 @@ import {
   renderFindingsInCityStats,
   startFindingsScan,
 } from "./findings";
-import { createFindingInspector } from "./findingInspector";
+import { createFindingInspector, indexFindingsByFile } from "./findingInspector";
 import { createHostRosterReadout } from "./roster";
 import type { City, CityFile, CityFinding } from "./model";
 
@@ -140,6 +140,7 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
   }
 
   const cityForRenderer = { ...loadedCity.city, agents: currentAgents };
+  indexFindingsByFile(findingsByFile, cityForRenderer.findings);
   renderCityStats(cityForRenderer);
 
   try {
@@ -168,12 +169,7 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
       knownFileIds,
       hostFindingsReadout,
       (findings) => {
-        findingsByFile.clear();
-        for (const finding of findings) {
-          const fileFindings = findingsByFile.get(finding.fileId);
-          if (fileFindings === undefined) findingsByFile.set(finding.fileId, [finding]);
-          else fileFindings.push(finding);
-        }
+        indexFindingsByFile(findingsByFile, findings);
         findingInspector.refreshFindings(findings);
         renderer?.refreshFindings(findings);
       },
