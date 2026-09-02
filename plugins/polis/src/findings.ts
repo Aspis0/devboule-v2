@@ -1,5 +1,5 @@
 import { Container, Graphics } from "pixi.js";
-import type { CityFinding, CityFindingSeverity } from "./model";
+import type { City, CityFinding, CityFindingSeverity } from "./model";
 import { formatFindingsReadout, pendingFindingsState, type FindingsLoadState } from "./hostBridge";
 import { Flame, Smoke, type AnimInstance } from "./kitcd/anims";
 import { darken, lighten, PALETTE } from "./palette";
@@ -23,21 +23,61 @@ interface FireView {
 const STEP_MS = 180;
 
 export interface HostFindingsReadout {
-  setState(state: FindingsLoadState): void;
+  setState(state: FindingsLoadState, knownFileIds?: ReadonlySet<string>): void;
   render(knownFileIds: ReadonlySet<string>): void;
 }
 
 /** Keep a findings failure or pending state authoritative across city renders. */
 export function createHostFindingsReadout(container: HTMLElement): HostFindingsReadout {
   let state = pendingFindingsState();
+  let knownFileIds: ReadonlySet<string> = new Set();
   return {
-    setState(nextState) {
+    setState(nextState, nextKnownFileIds) {
       state = nextState;
+      if (nextKnownFileIds !== undefined) knownFileIds = nextKnownFileIds;
+      container.textContent = formatFindingsReadout(state, knownFileIds);
     },
-    render(knownFileIds) {
+    render(nextKnownFileIds) {
+      knownFileIds = nextKnownFileIds;
       container.textContent = formatFindingsReadout(state, knownFileIds);
     },
   };
+}
+
+/** The host branch of renderCityStats keeps the findings state authoritative. */
+export function renderFindingsInCityStats(readout: HostFindingsReadout, city: City): void {
+  if (city.dataSource !== "host") return;
+  readout.render(new Set(city.files.map((file) => file.id)));
+}
+
+/** Renderer failures are distinct from a scan refusal: no findings request was started. */
+export function rendererFailedFindingsState(): FindingsLoadState {
+  return { status: "failed", failure: "renderer", error: new Error("scan not started") };
+}
+
+/**
+ * Apply one findings result only while this document is still live. A remount
+ * can still leave the old backend scan running because cancellation is not
+ * available at this seam; the guard prevents that stale result touching UI.
+ */
+export function startFindingsScan(
+  load: () => Promise<Exclude<FindingsLoadState, { status: "pending" }>>,
+  knownFileIds: ReadonlySet<string>,
+  readout: HostFindingsReadout,
+  onHostFindings: (findings: CityFinding[]) => void,
+): void {
+  let pageHidden = false;
+  const onPageHide = (): void => {
+    pageHidden = true;
+  };
+  window.addEventListener("pagehide", onPageHide, { once: true });
+
+  void load().then((state) => {
+    window.removeEventListener("pagehide", onPageHide);
+    if (pageHidden) return;
+    readout.setState(state, knownFileIds);
+    if (state.status === "host") onHostFindings(state.findings);
+  });
 }
 
 const SEVERITY_RANK: Record<CityFindingSeverity, number> = {

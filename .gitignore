@@ -18,3 +18,6 @@ ARCHITETTURA.md
 PORTING-*.md
 *-REPORT.md
 recon/
+
+# Workspace-local Oracle/Augur runtime data (CKG, findings ledger).
+oracle-data/

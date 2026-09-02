@@ -20,7 +20,12 @@ import {
   subscribeSessions,
 } from "./hostBridge";
 import { CityRenderer } from "./renderer";
-import { createHostFindingsReadout } from "./findings";
+import {
+  createHostFindingsReadout,
+  rendererFailedFindingsState,
+  renderFindingsInCityStats,
+  startFindingsScan,
+} from "./findings";
 import { createHostRosterReadout } from "./roster";
 import type { City, CityFile } from "./model";
 
@@ -63,6 +68,15 @@ type WindowWithTauriInternals = Window & {
 };
 
 async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promise<void> {
+  const loadedCity = await cityLoadResult;
+  const knownFileIds = new Set(
+    loadedCity.status === "host" ? loadedCity.city.files.map((file) => file.id) : [],
+  );
+  if (loadedCity.status === "host") {
+    // Install and paint this before the session snapshot so a slow watch cannot delay scan status.
+    hostFindingsReadout.setState(pendingFindingsState(), knownFileIds);
+  }
+
   const probe = document.createElement("canvas");
   const gl = probe.getContext("webgl2", { antialias: true });
   if (gl === null) {
@@ -88,18 +102,22 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
     });
   } catch (error) {
     webglReadout.textContent = `WebGL2: renderer failed to start — ${errorMessage(error)}`;
+    renderRendererFailure(loadedCity, knownFileIds);
     return;
   }
 
-  const bank = await loadPolisArt();
-  const loadedCity = await cityLoadResult;
+  let bank: Awaited<ReturnType<typeof loadPolisArt>>;
+  try {
+    bank = await loadPolisArt();
+  } catch (error) {
+    webglReadout.textContent = `WebGL2: renderer failed to load art — ${errorMessage(error)}`;
+    renderRendererFailure(loadedCity, knownFileIds);
+    return;
+  }
+
   let currentAgents = loadedCity.city.agents;
   let renderer: CityRenderer | null = null;
   let subscription: Awaited<ReturnType<typeof subscribeSessions>> | null = null;
-
-  if (loadedCity.status === "host") {
-    hostFindingsReadout.setState(pendingFindingsState());
-  }
 
   if (loadedCity.status === "host") {
     try {
@@ -121,28 +139,46 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
   const cityForRenderer = { ...loadedCity.city, agents: currentAgents };
   renderCityStats(cityForRenderer);
 
-  renderer = new CityRenderer({
-    app,
-    canvas,
-    city: cityForRenderer,
-    details: {
-      setDetails: (file) => showFileDetails(file),
-      clearDetails: () => clearFileDetails(),
-    },
-    bank,
-  });
+  try {
+    renderer = new CityRenderer({
+      app,
+      canvas,
+      city: cityForRenderer,
+      details: {
+        setDetails: (file) => showFileDetails(file),
+        clearDetails: () => clearFileDetails(),
+      },
+      bank,
+    });
+  } catch (error) {
+    webglReadout.textContent = `WebGL2: renderer failed to construct — ${errorMessage(error)}`;
+    renderRendererFailure(loadedCity, knownFileIds);
+    return;
+  }
 
   if (loadedCity.status === "host") {
-    const knownFileIds = new Set(loadedCity.city.files.map((file) => file.id));
-    void loadFindings(invokeHost, FINDINGS_FETCH_TIMEOUT_MS).then((state) => {
-      hostFindingsReadout.setState(state);
-      hostFindingsReadout.render(knownFileIds);
-      if (state.status === "host") renderer?.refreshFindings(state.findings);
-    });
+    // Cancellation is not available here, so a dying/remounting surface can still pay for one duplicate backend scan.
+    startFindingsScan(
+      () => loadFindings(invokeHost, FINDINGS_FETCH_TIMEOUT_MS),
+      knownFileIds,
+      hostFindingsReadout,
+      (findings) => renderer?.refreshFindings(findings),
+    );
   }
 
   if (subscription !== null) {
     window.addEventListener("pagehide", () => subscription?.close(), { once: true });
+  }
+}
+
+function renderRendererFailure(
+  loadedCity: Awaited<ReturnType<typeof loadCity>>,
+  knownFileIds: ReadonlySet<string>,
+): void {
+  if (loadedCity.status === "host") {
+    hostFindingsReadout.setState(rendererFailedFindingsState(), knownFileIds);
+  } else {
+    findingReadout.textContent = "Findings: renderer failed — scan not started";
   }
 }
 
@@ -271,7 +307,7 @@ function renderCityStats(value: City): void {
   agentReadout.textContent = `${value.dataSource === "host" ? "Agents host" : "Agents fixture"} · ${placedAgents} on buildings · ${rosterAgents} roster-only`;
   if (value.dataSource === "host") {
     hostRosterReadout.render(value.agents, knownFileIds);
-    hostFindingsReadout.render(knownFileIds);
+    renderFindingsInCityStats(hostFindingsReadout, value);
   } else {
     rosterReadout.textContent =
       rosterAgents === 0

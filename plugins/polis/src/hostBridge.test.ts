@@ -35,6 +35,8 @@ describe("backend overlay readout", () => {
     expect(isFindingsReport({ ...report, findings: [{ ...report.findings[0], id: "bad" }] })).toBe(
       false,
     );
+    expect(isFindingsReport({ ...report, scanned: false })).toBe(false);
+    expect(isFindingsReport({ ...report, scanMs: -1 })).toBe(false);
 
     const invoke = vi.fn().mockResolvedValue(report);
     await expect(loadFindings(invoke)).resolves.toEqual({ status: "host", ...report });
@@ -45,7 +47,7 @@ describe("backend overlay readout", () => {
     expect(pendingFindingsState()).toEqual({ status: "pending", findings: null });
 
     const timeout = Object.assign(new Error("timed out: waiting for a plugin reply"), {
-      code: "timeout",
+      code: "io",
     });
     const timedOut = await loadFindings(vi.fn().mockRejectedValue(timeout));
     expect(timedOut).toMatchObject({ status: "failed", failure: "timeout" });
@@ -76,10 +78,11 @@ describe("backend overlay readout", () => {
       truncatedFindings: 2,
       droppedFindings: 3,
       skippedFiles: 4,
+      truncatedFiles: 1,
       failed: ["detector-b"],
     };
     expect(formatFindingsReadout(state, new Set(["src/a.ts"]))).toBe(
-      "Findings host · 3 open · 1 inferno / 1 fire / 1 smoke (2 more beyond the frame cap, 3 unplaced by the scanner, 4 skipped, 1 without a building, detector-b failed)",
+      "Findings host · 3 open · 1 inferno / 1 fire / 1 smoke (2 more beyond the frame cap, 3 unplaced by the scanner, 1 without a building, detector-b failed, at least 1 beyond the file cap, 4 skipped)",
     );
   });
 

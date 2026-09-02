@@ -152,7 +152,7 @@ export type FindingsLoadState =
   | ({ status: "host" } & FindingsReport)
   | {
       status: "failed";
-      failure: "timeout" | "refusal" | "malformed";
+      failure: "timeout" | "refusal" | "malformed" | "renderer";
       error: unknown;
     };
 
@@ -185,6 +185,9 @@ export function formatFindingsReadout(
 ): string {
   if (state.status === "pending") return "Findings: scanning the workspace…";
   if (state.status === "failed") {
+    if (state.failure === "renderer") {
+      return `Findings: renderer failed — ${errorMessage(state.error)}`;
+    }
     return `Findings: scan ${state.failure} — ${errorMessage(state.error)}`;
   }
 
@@ -202,9 +205,6 @@ export function formatFindingsReadout(
   if (state.droppedFindings > 0) {
     notices.push(`${state.droppedFindings} unplaced by the scanner`);
   }
-  if (state.skippedFiles !== undefined && state.skippedFiles > 0) {
-    notices.push(`${state.skippedFiles} skipped`);
-  }
   if (unmatchedFileIds.size > 0) {
     notices.push(`${unmatchedFileIds.size} without a building`);
   }
@@ -213,6 +213,9 @@ export function formatFindingsReadout(
   }
   if (state.truncatedFiles !== undefined && state.truncatedFiles > 0) {
     notices.push(`at least ${state.truncatedFiles} beyond the file cap`);
+  }
+  if (state.skippedFiles !== undefined && state.skippedFiles > 0) {
+    notices.push(`${state.skippedFiles} skipped`);
   }
 
   const suffix = notices.length === 0 ? "" : ` (${notices.join(", ")})`;
