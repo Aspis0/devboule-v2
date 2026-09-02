@@ -376,7 +376,10 @@ interface OraclePluginResult {
 interface OraclePluginSearchResponse {
   query: string;
   results: OraclePluginResult[];
-  indexState?: OraclePluginIndexState;
+  index?: {
+    state: OraclePluginIndexState;
+    indexedFiles: number;
+  };
 }
 
 function oracleSearchQuery(payload: unknown): string | null {
@@ -535,7 +538,16 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
             ORACLE_INDEX_STATE_TIMEOUT_MS,
             "oracle.search index status",
           );
-          if (isOracleIndexState(status.state)) value.indexState = status.state;
+          if (
+            isRecord(status) &&
+            isOracleIndexState(status.state) &&
+            isNonNegativeInteger(status.indexed_files)
+          ) {
+            value.index = {
+              state: status.state,
+              indexedFiles: status.indexed_files,
+            };
+          }
         } catch {
           // Index status is explanatory only; a status outage must not hide a valid empty search.
         }

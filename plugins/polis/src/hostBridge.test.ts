@@ -466,6 +466,23 @@ describe("oracle.search citations", () => {
     };
     expect(isOracleCitations({ query, results: [oneFocus] }, query)).toBe(false);
     expect(isOracleCitations({ ...ok, query: "other.ts" }, query)).toBe(false);
+    const empty = { query, results: [] };
+    expect(isOracleCitations({ ...empty, index: { state: "ready", indexedFiles: 3 } }, query)).toBe(
+      true,
+    );
+    expect(
+      isOracleCitations(
+        { ...empty, index: { state: "ready", indexedFiles: 3, extra: true } },
+        query,
+      ),
+    ).toBe(false);
+    expect(isOracleCitations({ ...empty, index: null }, query)).toBe(false);
+    expect(
+      isOracleCitations({ ...empty, index: { state: "ready", indexedFiles: -1 } }, query),
+    ).toBe(false);
+    expect(
+      isOracleCitations({ ...empty, index: { state: "unknown", indexedFiles: 3 } }, query),
+    ).toBe(false);
     expect(isOracleCitations({ query, results: [{ ...ok.results[0], snippet: "no" }] }, query)).toBe(
       false,
     );

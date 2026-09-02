@@ -8,6 +8,7 @@ import {
   type FindingInspectionLoadState,
   type HostInvoker,
   type OracleCitation,
+  type OracleIndex,
   type OracleCitationsFailure,
   type OracleCitationsLoadState,
 } from "./hostBridge";
@@ -276,7 +277,7 @@ function renderOracleCitations(
   }
 
   if (state.citations.results.length === 0) {
-    container.textContent = oracleEmptyStateCopy(state.citations.indexState);
+    container.textContent = oracleEmptyStateCopy(state.citations.index);
     return;
   }
 
@@ -323,17 +324,17 @@ function formatLineRange(startLine: number, endLine: number): string {
   return startLine === endLine ? String(startLine) : `${startLine}–${endLine}`;
 }
 
-function oracleEmptyStateCopy(indexState: string | undefined): string {
-  switch (indexState) {
-    case "idle":
-      return "No Oracle index for this workspace yet — build it in Settings › Oracle.";
-    case "indexing":
+function oracleEmptyStateCopy(index: OracleIndex | undefined): string {
+  if (index?.state === "indexing") {
       return "Oracle is still indexing this workspace.";
-    case "error":
-      return "Oracle's index is in an error state.";
-    default:
-      return "No spans matched this file.";
   }
+  if (index?.state === "error") {
+      return "Oracle's index is in an error state.";
+  }
+  if (index?.indexedFiles === 0) {
+    return "No Oracle index for this workspace yet — build it in Settings › Oracle.";
+  }
+  return "No spans matched this file.";
 }
 
 function oracleCitationsFailureCopy(failure: OracleCitationsFailure): string {

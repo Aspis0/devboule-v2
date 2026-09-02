@@ -1070,7 +1070,7 @@ describe("createPluginBridge", () => {
     bridge.dispose();
   });
 
-  it("adds indexState only for empty results and ignores status failures", async () => {
+  it("adds index only for empty results and ignores unusable status", async () => {
     const first = testFrame();
     const firstBridge = createPluginBridge({
       iframe: first.iframe,
@@ -1078,7 +1078,7 @@ describe("createPluginBridge", () => {
       pluginOrigin: PLUGIN_ORIGIN,
       capabilities: ["oracle.search"],
       oracleSearch: vi.fn().mockResolvedValue({ query: "none", results: [] }),
-      oracleIndexState: vi.fn().mockResolvedValue({ state: "ready" }),
+      oracleIndexState: vi.fn().mockResolvedValue({ state: "ready", indexed_files: 4 }),
     });
     send(first.pluginWindow, PLUGIN_ORIGIN, {
       v: 1,
@@ -1090,7 +1090,11 @@ describe("createPluginBridge", () => {
     await flushPromises();
     const firstReply = vi.mocked(first.pluginWindow.postMessage).mock.calls[0]?.[0];
     if (!isRecord(firstReply) || !isRecord(firstReply.value)) throw new Error("missing Oracle reply");
-    expect(firstReply.value).toEqual({ query: "none", results: [], indexState: "ready" });
+    expect(firstReply.value).toEqual({
+      query: "none",
+      results: [],
+      index: { state: "ready", indexedFiles: 4 },
+    });
     firstBridge.dispose();
 
     const second = testFrame();
@@ -1114,6 +1118,28 @@ describe("createPluginBridge", () => {
     if (!isRecord(secondReply) || !isRecord(secondReply.value)) throw new Error("missing Oracle reply");
     expect(secondReply.value).toEqual({ query: "none", results: [] });
     secondBridge.dispose();
+
+    const third = testFrame();
+    const thirdBridge = createPluginBridge({
+      iframe: third.iframe,
+      pluginId: "oracle-empty-status-malformed",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch: vi.fn().mockResolvedValue({ query: "none", results: [] }),
+      oracleIndexState: vi.fn().mockResolvedValue({ state: "ready" }),
+    });
+    send(third.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-empty-status-malformed-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "none" },
+    });
+    await flushPromises();
+    const thirdReply = vi.mocked(third.pluginWindow.postMessage).mock.calls[0]?.[0];
+    if (!isRecord(thirdReply) || !isRecord(thirdReply.value)) throw new Error("missing Oracle reply");
+    expect(thirdReply.value).toEqual({ query: "none", results: [] });
+    thirdBridge.dispose();
   });
 
   it("coalesces concurrent oracle.search calls to the latest query", async () => {

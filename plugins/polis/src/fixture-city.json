@@ -723,13 +723,13 @@
     {
       "id": "src/features/plugins/pluginBridge.test.ts",
       "path": "src/features/plugins/pluginBridge.test.ts",
-      "lines": 788,
+      "lines": 1442,
       "district": "src"
     },
     {
       "id": "src/features/plugins/pluginBridge.ts",
       "path": "src/features/plugins/pluginBridge.ts",
-      "lines": 558,
+      "lines": 846,
       "district": "src"
     },
     {

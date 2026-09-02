@@ -254,19 +254,23 @@ describe("finding inspector", () => {
     inspector.destroy();
   });
 
-  it("uses indexState to distinguish empty Oracle results", async () => {
-    const cases: Array<[string | undefined, string]> = [
-      ["idle", "No Oracle index for this workspace yet — build it in Settings › Oracle."],
-      ["indexing", "Oracle is still indexing this workspace."],
-      ["error", "Oracle's index is in an error state."],
-      ["ready", "No spans matched this file."],
+  it("uses index state and indexed-file count to distinguish empty Oracle results", async () => {
+    const cases = [
+      [
+        { state: "incomplete", indexedFiles: 0 },
+        "No Oracle index for this workspace yet — build it in Settings › Oracle.",
+      ],
+      [{ state: "indexing", indexedFiles: 0 }, "Oracle is still indexing this workspace."],
+      [{ state: "error", indexedFiles: 0 }, "Oracle's index is in an error state."],
+      [{ state: "ready", indexedFiles: 4 }, "No spans matched this file."],
+      [{ state: "incomplete", indexedFiles: 4 }, "No spans matched this file."],
       [undefined, "No spans matched this file."],
-    ];
-    for (const [indexState, copy] of cases) {
+    ] as const;
+    for (const [index, copy] of cases) {
       const invoke = vi.fn().mockResolvedValue({
         query: file.path,
         results: [],
-        ...(indexState === undefined ? {} : { indexState }),
+        ...(index === undefined ? {} : { index }),
       });
       const container = document.createElement("section");
       const inspector = createFindingInspector(container, invoke);

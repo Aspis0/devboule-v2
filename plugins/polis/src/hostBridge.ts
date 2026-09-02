@@ -240,6 +240,11 @@ export const ORACLE_INDEX_STATES = [
 ] as const;
 export type OracleIndexState = (typeof ORACLE_INDEX_STATES)[number];
 
+export interface OracleIndex {
+  state: OracleIndexState;
+  indexedFiles: number;
+}
+
 export interface OracleCitation {
   path: string;
   startLine: number;
@@ -253,7 +258,7 @@ export interface OracleCitation {
 export interface OracleCitations {
   query: string;
   results: OracleCitation[];
-  indexState?: OracleIndexState;
+  index?: OracleIndex;
 }
 
 export type OracleCitationsFailure = "timeout" | "busy" | "invalid" | "refusal" | "malformed";
@@ -289,14 +294,14 @@ export async function loadOracleCitations(
 export function isOracleCitations(value: unknown, expectedQuery: string): value is OracleCitations {
   if (!isRecord(value)) return false;
   const keys = Object.keys(value);
-  const allowed = new Set(["query", "results", "indexState"]);
+  const allowed = new Set(["query", "results", "index"]);
   if (keys.some((key) => !allowed.has(key))) return false;
   if (!keys.includes("query") || !keys.includes("results")) return false;
   if (typeof value.query !== "string" || value.query !== expectedQuery) return false;
   if (!Array.isArray(value.results)) return false;
-  if ("indexState" in value) {
+  if ("index" in value) {
     if (value.results.length > 0) return false;
-    if (!isOracleIndexState(value.indexState)) return false;
+    if (!isOracleIndex(value.index)) return false;
   }
   return value.results.every(isOracleCitation);
 }
@@ -752,6 +757,19 @@ function isOracleCitation(value: unknown): value is OracleCitation {
 
 function isOracleIndexState(value: unknown): value is OracleIndexState {
   return typeof value === "string" && (ORACLE_INDEX_STATES as readonly string[]).includes(value);
+}
+
+function isOracleIndex(value: unknown): value is OracleIndex {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes("state") || !keys.includes("indexedFiles")) {
+    return false;
+  }
+  return isOracleIndexState(value.state) && isNonNegativeInteger(value.indexedFiles);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function findingsFetchFailure(error: unknown): "timeout" | "refusal" | "malformed" {
