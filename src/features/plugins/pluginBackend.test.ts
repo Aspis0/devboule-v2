@@ -25,13 +25,12 @@ describe("plugin backend lifecycle", () => {
   it("deduplicates parallel ensures for one plugin into one live backend", async () => {
     const invoke = vi.mocked(invokeTyped);
     let resolveEnsure: ((value: PluginBackendStatus) => void) | undefined;
-    invoke.mockImplementation(
-      (command) =>
-        command === "plugin_backend_ensure"
-          ? new Promise<PluginBackendStatus>((resolve) => {
-              resolveEnsure = resolve;
-            })
-          : Promise.reject(new Error(`unexpected command ${String(command)}`)),
+    invoke.mockImplementation((command) =>
+      command === "plugin_backend_ensure"
+        ? new Promise<PluginBackendStatus>((resolve) => {
+            resolveEnsure = resolve;
+          })
+        : Promise.reject(new Error(`unexpected command ${String(command)}`)),
     );
 
     const first = ensurePluginBackend("polis");

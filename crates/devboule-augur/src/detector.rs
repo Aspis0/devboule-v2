@@ -61,7 +61,7 @@ impl Registry {
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(crate::detectors::secrets::Secrets::default()));
-        registry.register(Box::new(crate::detectors::untested::Untested::default()));
+        registry.register(Box::new(crate::detectors::untested::Untested));
         registry.register(Box::new(crate::detectors::clippy::Clippy::default()));
         registry
     }
@@ -228,7 +228,10 @@ mod tests {
             review.completed
         );
         assert!(
-            review.failed.iter().all(|failed| failed.detector != "clippy"),
+            review
+                .failed
+                .iter()
+                .all(|failed| failed.detector != "clippy"),
             "clippy must not even start: {:?}",
             review.failed
         );

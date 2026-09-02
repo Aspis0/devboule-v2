@@ -36,8 +36,7 @@ impl PluginBackend {
 
     /// Testable form of [`Self::listen`] for an in-process host/client pair.
     pub fn listen_for_host(pipe_name: &str, expected_host_pid: u32) -> Result<Self, PluginError> {
-        let file =
-            bind_and_accept(pipe_name, ACCEPT_TIMEOUT).map_err(|error| PluginError::Io(error))?;
+        let file = bind_and_accept(pipe_name, ACCEPT_TIMEOUT).map_err(PluginError::Io)?;
         verify_pipe_client_pid(&file, expected_host_pid).map_err(PluginError::from)?;
         let framed = Framed::new(file);
         let first: ClientMessage = framed.recv_timeout(HANDSHAKE_TIMEOUT)?;

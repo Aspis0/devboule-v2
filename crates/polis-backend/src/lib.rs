@@ -52,9 +52,11 @@ pub fn dispatch(
             id,
             ts_ms: unix_millis(),
         },
-        ClientMessage::Invoke { id, method, payload } => {
-            dispatch_invoke(grants, granted, id, &method, payload)
-        }
+        ClientMessage::Invoke {
+            id,
+            method,
+            payload,
+        } => dispatch_invoke(grants, granted, id, &method, payload),
         other => {
             let id = other.request_id();
             let mut error = WireError::new(
@@ -155,12 +157,18 @@ fn dispatch_invoke(
             Ok(value) if !city_response_within_frame(&value) => city_response_too_large_error(id),
             Ok(value) => DaemonMessage::InvokeResult { id, value },
             Err(InspectError::InvalidId) => DaemonMessage::Error(
-                WireError::new(ErrorCode::InvalidRequest, InspectError::InvalidId.to_string())
-                    .with_id(id),
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    InspectError::InvalidId.to_string(),
+                )
+                .with_id(id),
             ),
             Err(InspectError::NotFound) => DaemonMessage::Error(
-                WireError::new(ErrorCode::InvalidRequest, InspectError::NotFound.to_string())
-                    .with_id(id),
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    InspectError::NotFound.to_string(),
+                )
+                .with_id(id),
             ),
             Err(error) => {
                 DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()).with_id(id))

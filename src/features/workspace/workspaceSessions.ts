@@ -69,7 +69,10 @@ export function sessionStateLabel(state: unknown, elapsedMs?: number | null): st
   if (type === "ended" || type === "recovered") {
     if ("integrity" in state && typeof state.integrity === "object" && state.integrity !== null) {
       const integrity = state.integrity;
-      if ("kind" in integrity && (integrity.kind === "truncated" || integrity.kind === "unverifiable")) {
+      if (
+        "kind" in integrity &&
+        (integrity.kind === "truncated" || integrity.kind === "unverifiable")
+      ) {
         return `${type} · ${integrity.kind}`;
       }
     }

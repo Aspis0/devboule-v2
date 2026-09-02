@@ -96,7 +96,7 @@ fn build_city_from_paths(
         ..CityBuildStats::default()
     };
     for path in paths {
-        let metadata = match fs::metadata(&path) {
+        let metadata = match fs::metadata(path) {
             Ok(metadata) => metadata,
             Err(_) => {
                 stats.skipped_files += 1;
@@ -109,7 +109,7 @@ fn build_city_from_paths(
             stats.skipped_files += 1;
             continue;
         }
-        let bytes = match fs::read(&path) {
+        let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(_) => {
                 stats.skipped_files += 1;
@@ -135,7 +135,7 @@ fn build_city_from_paths(
     sources.sort_by(|left, right| left.id.cmp(&right.id));
 
     let known_files: HashSet<&str> = sources.iter().map(|source| source.id.as_str()).collect();
-    let imports = match ckg_imports(&root, &sources, &known_files)? {
+    let imports = match ckg_imports(root, &sources, &known_files)? {
         Some(imports) => imports,
         None => regex_imports(&sources, &known_files),
     };

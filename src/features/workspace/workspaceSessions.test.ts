@@ -68,9 +68,7 @@ describe("workspace session controller", () => {
     expect(sessionStateLabel({ type: "silent", generation: 1 }, 40 * 60 * 1000)).toBe(
       "silent · 40 minutes",
     );
-    expect(sessionStateLabel({ type: "silent", generation: 1 })).toBe(
-      "silent · duration unknown",
-    );
+    expect(sessionStateLabel({ type: "silent", generation: 1 })).toBe("silent · duration unknown");
   });
 
   it("labels a finished session with an uncertified transcript", () => {

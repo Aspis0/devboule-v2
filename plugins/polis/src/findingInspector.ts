@@ -197,7 +197,9 @@ export function createFindingInspector(
     const detail = document.createElement("div");
     detail.className = "polis-finding-detail";
     detail.textContent =
-      findings.length === 0 ? "Select a finding to inspect its lines." : "Select a finding for line details.";
+      findings.length === 0
+        ? "Select a finding to inspect its lines."
+        : "Select a finding for line details.";
     container.appendChild(detail);
 
     const oracle = document.createElement("section");
@@ -218,10 +220,7 @@ export function createFindingInspector(
     container.appendChild(oracle);
   }
 
-  async function loadOracleCitationsForFile(
-    query: string,
-    token: number,
-  ): Promise<void> {
+  async function loadOracleCitationsForFile(query: string, token: number): Promise<void> {
     const state = await loadOracleCitations(invoke, query, ORACLE_SEARCH_TIMEOUT_MS);
     if (pageHidden || token !== citationGeneration || activeFile === null) return;
     cachedOracleCitations = state;
@@ -263,7 +262,9 @@ export function renderInspectionState(
 
   const lines = document.createElement("div");
   lines.className = "polis-finding-lines";
-  const spans = state.inspection.locations.map((location) => formatLineSpan(location.startLine, location.endLine));
+  const spans = state.inspection.locations.map((location) =>
+    formatLineSpan(location.startLine, location.endLine),
+  );
   const spanReadout = spans.length > 1 ? ` · spans: ${spans.join(", ")}` : "";
   lines.textContent = `Lines: ${formatLineSpan(state.inspection.startLine, state.inspection.endLine)}${spanReadout}`;
   const detector = document.createElement("div");
@@ -325,7 +326,9 @@ function formatOracleCitation(
   isCurrentFile: boolean,
 ): string {
   const lineReadout =
-    citation.startLine === 0 ? "lines unknown" : formatLineSpan(citation.startLine, citation.endLine);
+    citation.startLine === 0
+      ? "lines unknown"
+      : formatLineSpan(citation.startLine, citation.endLine);
   const parts = [`#${String(index + 1).padStart(2, "0")}`, citation.path, lineReadout];
   if (isCurrentFile) parts.push("this file");
   if (citation.focusStartLine !== undefined && citation.focusEndLine !== undefined) {
@@ -373,17 +376,17 @@ function findingsForFile(fileId: string, findings: readonly CityFinding[]): City
 }
 
 function compareFindings(left: CityFinding, right: CityFinding): number {
-  return SEVERITY_RANK[right.severity] - SEVERITY_RANK[left.severity] ||
-    (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  return (
+    SEVERITY_RANK[right.severity] - SEVERITY_RANK[left.severity] ||
+    (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+  );
 }
 
 function formatLineSpan(startLine: number, endLine: number): string {
   return startLine === endLine ? `line ${startLine}` : `lines ${startLine}–${endLine}`;
 }
 
-function inspectionFailureCopy(
-  failure: FindingInspectionFailure,
-): string {
+function inspectionFailureCopy(failure: FindingInspectionFailure): string {
   switch (failure) {
     case "timeout":
       return "Finding details timed out.";

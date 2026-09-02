@@ -3,7 +3,7 @@
     {
       "id": "crates/devboule-augur/src/detector.rs",
       "path": "crates/devboule-augur/src/detector.rs",
-      "lines": 238,
+      "lines": 241,
       "district": "crates"
     },
     {
@@ -27,7 +27,7 @@
     {
       "id": "crates/devboule-augur/src/detectors/untested.rs",
       "path": "crates/devboule-augur/src/detectors/untested.rs",
-      "lines": 390,
+      "lines": 399,
       "district": "crates"
     },
     {
@@ -81,7 +81,7 @@
     {
       "id": "crates/devboule-daemon/src/client.rs",
       "path": "crates/devboule-daemon/src/client.rs",
-      "lines": 496,
+      "lines": 569,
       "district": "crates"
     },
     {
@@ -105,13 +105,13 @@
     {
       "id": "crates/devboule-daemon/src/journal.rs",
       "path": "crates/devboule-daemon/src/journal.rs",
-      "lines": 2180,
+      "lines": 2619,
       "district": "crates"
     },
     {
       "id": "crates/devboule-daemon/src/lib.rs",
       "path": "crates/devboule-daemon/src/lib.rs",
-      "lines": 69,
+      "lines": 72,
       "district": "crates"
     },
     {
@@ -159,13 +159,13 @@
     {
       "id": "crates/devboule-daemon/src/server.rs",
       "path": "crates/devboule-daemon/src/server.rs",
-      "lines": 1051,
+      "lines": 1180,
       "district": "crates"
     },
     {
       "id": "crates/devboule-daemon/src/session.rs",
       "path": "crates/devboule-daemon/src/session.rs",
-      "lines": 3296,
+      "lines": 3876,
       "district": "crates"
     },
     {
@@ -195,31 +195,31 @@
     {
       "id": "crates/devboule-plugin-rpc/src/lib.rs",
       "path": "crates/devboule-plugin-rpc/src/lib.rs",
-      "lines": 372,
+      "lines": 378,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/pipe.rs",
       "path": "crates/devboule-plugin-rpc/src/pipe.rs",
-      "lines": 293,
+      "lines": 290,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/server.rs",
       "path": "crates/devboule-plugin-rpc/src/server.rs",
-      "lines": 194,
+      "lines": 193,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/session.rs",
       "path": "crates/devboule-plugin-rpc/src/session.rs",
-      "lines": 492,
+      "lines": 501,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/spawn.rs",
       "path": "crates/devboule-plugin-rpc/src/spawn.rs",
-      "lines": 491,
+      "lines": 494,
       "district": "crates"
     },
     {
@@ -249,13 +249,13 @@
     {
       "id": "crates/devboule-protocol/src/lib.rs",
       "path": "crates/devboule-protocol/src/lib.rs",
-      "lines": 244,
+      "lines": 255,
       "district": "crates"
     },
     {
       "id": "crates/devboule-protocol/src/messages.rs",
       "path": "crates/devboule-protocol/src/messages.rs",
-      "lines": 470,
+      "lines": 503,
       "district": "crates"
     },
     {
@@ -267,7 +267,7 @@
     {
       "id": "crates/devboule-protocol/src/session.rs",
       "path": "crates/devboule-protocol/src/session.rs",
-      "lines": 575,
+      "lines": 712,
       "district": "crates"
     },
     {
@@ -357,7 +357,7 @@
     {
       "id": "crates/oracle-core/src/ingest/chunking.rs",
       "path": "crates/oracle-core/src/ingest/chunking.rs",
-      "lines": 547,
+      "lines": 550,
       "district": "crates"
     },
     {
@@ -369,7 +369,7 @@
     {
       "id": "crates/oracle-core/src/ingest/collect.rs",
       "path": "crates/oracle-core/src/ingest/collect.rs",
-      "lines": 983,
+      "lines": 980,
       "district": "crates"
     },
     {
@@ -399,7 +399,7 @@
     {
       "id": "crates/oracle-core/src/lib.rs",
       "path": "crates/oracle-core/src/lib.rs",
-      "lines": 186,
+      "lines": 184,
       "district": "crates"
     },
     {
@@ -489,19 +489,19 @@
     {
       "id": "crates/polis-backend/src/findings.rs",
       "path": "crates/polis-backend/src/findings.rs",
-      "lines": 783,
+      "lines": 767,
       "district": "crates"
     },
     {
       "id": "crates/polis-backend/src/lib.rs",
       "path": "crates/polis-backend/src/lib.rs",
-      "lines": 394,
+      "lines": 402,
       "district": "crates"
     },
     {
       "id": "crates/polis-backend/src/main.rs",
       "path": "crates/polis-backend/src/main.rs",
-      "lines": 49,
+      "lines": 50,
       "district": "crates"
     },
     {
@@ -519,7 +519,7 @@
     {
       "id": "src-tauri/src/backend/session.rs",
       "path": "src-tauri/src/backend/session.rs",
-      "lines": 166,
+      "lines": 184,
       "district": "src-tauri"
     },
     {
@@ -531,7 +531,7 @@
     {
       "id": "src-tauri/src/lib.rs",
       "path": "src-tauri/src/lib.rs",
-      "lines": 89,
+      "lines": 91,
       "district": "src-tauri"
     },
     {
@@ -711,7 +711,7 @@
     {
       "id": "src/features/plugins/pluginBackend.test.ts",
       "path": "src/features/plugins/pluginBackend.test.ts",
-      "lines": 140,
+      "lines": 139,
       "district": "src"
     },
     {
@@ -723,13 +723,13 @@
     {
       "id": "src/features/plugins/pluginBridge.test.ts",
       "path": "src/features/plugins/pluginBridge.test.ts",
-      "lines": 1580,
+      "lines": 1600,
       "district": "src"
     },
     {
       "id": "src/features/plugins/pluginBridge.ts",
       "path": "src/features/plugins/pluginBridge.ts",
-      "lines": 876,
+      "lines": 869,
       "district": "src"
     },
     {
@@ -843,19 +843,25 @@
     {
       "id": "src/features/terminal/terminalSession.test.ts",
       "path": "src/features/terminal/terminalSession.test.ts",
-      "lines": 677,
+      "lines": 736,
       "district": "src"
     },
     {
       "id": "src/features/terminal/terminalSession.ts",
       "path": "src/features/terminal/terminalSession.ts",
-      "lines": 569,
+      "lines": 605,
+      "district": "src"
+    },
+    {
+      "id": "src/features/terminal/TerminalSurface.test.tsx",
+      "path": "src/features/terminal/TerminalSurface.test.tsx",
+      "lines": 58,
       "district": "src"
     },
     {
       "id": "src/features/terminal/TerminalSurface.tsx",
       "path": "src/features/terminal/TerminalSurface.tsx",
-      "lines": 138,
+      "lines": 176,
       "district": "src"
     },
     {
@@ -867,7 +873,7 @@
     {
       "id": "src/features/workspace/mockData.ts",
       "path": "src/features/workspace/mockData.ts",
-      "lines": 235,
+      "lines": 202,
       "district": "src"
     },
     {
@@ -895,21 +901,21 @@
       "district": "src"
     },
     {
+      "id": "src/features/workspace/Workspace.test.tsx",
+      "path": "src/features/workspace/Workspace.test.tsx",
+      "lines": 81,
+      "district": "src"
+    },
+    {
       "id": "src/features/workspace/Workspace.tsx",
       "path": "src/features/workspace/Workspace.tsx",
-      "lines": 479,
+      "lines": 442,
       "district": "src"
     },
     {
       "id": "src/features/workspace/WorkspaceComposer.tsx",
       "path": "src/features/workspace/WorkspaceComposer.tsx",
       "lines": 298,
-      "district": "src"
-    },
-    {
-      "id": "src/features/workspace/workspaceConversation.ts",
-      "path": "src/features/workspace/workspaceConversation.ts",
-      "lines": 69,
       "district": "src"
     },
     {
@@ -928,6 +934,18 @@
       "id": "src/features/workspace/workspaceResize.ts",
       "path": "src/features/workspace/workspaceResize.ts",
       "lines": 104,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/workspaceSessions.test.ts",
+      "path": "src/features/workspace/workspaceSessions.test.ts",
+      "lines": 120,
+      "district": "src"
+    },
+    {
+      "id": "src/features/workspace/workspaceSessions.ts",
+      "path": "src/features/workspace/workspaceSessions.ts",
+      "lines": 281,
       "district": "src"
     },
     {
@@ -963,7 +981,7 @@
     {
       "id": "src/lib/tauri.ts",
       "path": "src/lib/tauri.ts",
-      "lines": 204,
+      "lines": 218,
       "district": "src"
     },
     {
@@ -1011,7 +1029,7 @@
     {
       "id": "src/types/ipc.ts",
       "path": "src/types/ipc.ts",
-      "lines": 303,
+      "lines": 329,
       "district": "src"
     },
     {
@@ -1953,8 +1971,8 @@
       "weight": 1
     },
     {
-      "from": "src/features/terminal/terminalSession.ts",
-      "to": "src/types/ipc.ts",
+      "from": "src/features/terminal/TerminalSurface.test.tsx",
+      "to": "src/features/terminal/TerminalSurface.tsx",
       "weight": 1
     },
     {
@@ -1983,6 +2001,21 @@
       "weight": 1
     },
     {
+      "from": "src/features/workspace/Workspace.test.tsx",
+      "to": "src/features/workspace/Workspace.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.test.tsx",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/Workspace.test.tsx",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
       "from": "src/features/workspace/Workspace.tsx",
       "to": "src/features/terminal/TerminalSurface.tsx",
       "weight": 1
@@ -1995,16 +2028,6 @@
     {
       "from": "src/features/workspace/Workspace.tsx",
       "to": "src/features/workspace/NewProjectDialog.tsx",
-      "weight": 1
-    },
-    {
-      "from": "src/features/workspace/Workspace.tsx",
-      "to": "src/features/workspace/WorkspaceComposer.tsx",
-      "weight": 1
-    },
-    {
-      "from": "src/features/workspace/Workspace.tsx",
-      "to": "src/features/workspace/workspaceConversation.ts",
       "weight": 1
     },
     {
@@ -2028,11 +2051,6 @@
       "weight": 1
     },
     {
-      "from": "src/features/workspace/workspaceConversation.ts",
-      "to": "src/features/workspace/mockData.ts",
-      "weight": 1
-    },
-    {
       "from": "src/features/workspace/workspaceDaemon.ts",
       "to": "src/lib/tauri.ts",
       "weight": 1
@@ -2050,6 +2068,21 @@
     {
       "from": "src/features/workspace/workspaceProjects.ts",
       "to": "src/features/workspace/NewProjectDialog.tsx",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/workspaceSessions.test.ts",
+      "to": "src/features/workspace/workspaceSessions.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/workspaceSessions.test.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/workspace/workspaceSessions.ts",
+      "to": "src/types/ipc.ts",
       "weight": 1
     },
     {

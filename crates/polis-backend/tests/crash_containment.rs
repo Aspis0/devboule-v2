@@ -6,13 +6,13 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use devboule_augur::{shipped_rule_matches, FindingId, Ledger};
 use devboule_daemon::{connect_pipe, Framed};
 use devboule_plugin_rpc::{host_owner, PluginError, PluginSession, SpawnSpec, HOST_PID_ENV};
-use devboule_augur::{shipped_rule_matches, FindingId, Ledger};
-use oracle_core::OracleDataPaths;
 use devboule_protocol::{
     caps, plugin_backend_capabilities, ClientHello, ClientMessage, DaemonMessage, ErrorCode,
 };
+use oracle_core::OracleDataPaths;
 use std::sync::Arc;
 
 #[test]
@@ -95,7 +95,9 @@ fn copied_backend_starts_from_an_empty_directory_without_sidecar_dlls() {
                     let mut stderr = child.stderr.take().expect("copied stderr");
                     let mut text = String::new();
                     std::io::Read::read_to_string(&mut stderr, &mut text).expect("read stderr");
-                    panic!("copied backend exited before handshake: {last_error:?}; stderr={text:?}");
+                    panic!(
+                        "copied backend exited before handshake: {last_error:?}; stderr={text:?}"
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(50));
                 None
@@ -210,9 +212,7 @@ fn city_get_round_trips_over_the_backend_pipe() {
     std::fs::write(dir.path().join("src/main.ts"), "export const main = 1;\n")
         .expect("main source");
     let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
-    let city = session
-        .invoke(caps::CITY_GET, None)
-        .expect("city.get");
+    let city = session.invoke(caps::CITY_GET, None).expect("city.get");
     assert_eq!(city["dataSource"], "host");
     assert_eq!(city["files"][0]["id"], "src/main.ts");
     assert_eq!(city["agents"], serde_json::json!([]));
@@ -249,7 +249,10 @@ fn findings_get_round_trips_over_the_backend_pipe() {
     assert_eq!(secret["fileId"], "src/auth.rs");
     assert_eq!(secret["severity"], "inferno");
     assert!(secret["id"].as_str().expect("id").len() == 64);
-    assert!(secret.get("evidence").is_none(), "inspector fields must stay off the wire");
+    assert!(
+        secret.get("evidence").is_none(),
+        "inspector fields must stay off the wire"
+    );
     assert!(secret.get("startLine").is_none());
     let completed = value["completed"].as_array().expect("completed");
     assert!(completed.iter().any(|id| id == "secrets"));
@@ -306,10 +309,7 @@ fn finding_inspect_round_trips_over_the_backend_pipe() {
     let id = secret["id"].as_str().expect("id").to_string();
 
     let inspected = session
-        .invoke(
-            caps::FINDING_INSPECT,
-            Some(serde_json::json!({ "id": id })),
-        )
+        .invoke(caps::FINDING_INSPECT, Some(serde_json::json!({ "id": id })))
         .expect("finding.inspect");
     assert_eq!(inspected["id"], id);
     assert_eq!(inspected["rule"], "aws-access-token");
@@ -317,7 +317,7 @@ fn finding_inspect_round_trips_over_the_backend_pipe() {
     assert_eq!(inspected["source"], "secrets");
     assert_eq!(inspected["startLine"], 1);
     assert_eq!(inspected["endLine"], 1);
-    assert!(inspected["title"].as_str().expect("title").len() > 0);
+    assert!(!inspected["title"].as_str().expect("title").is_empty());
     let locations = inspected["locations"].as_array().expect("locations");
     assert!(!locations.is_empty());
     assert_eq!(locations[0]["startLine"], 1);
@@ -332,13 +332,22 @@ fn finding_inspect_round_trips_over_the_backend_pipe() {
         assert!(
             matches!(
                 *key,
-                "id" | "rule" | "severity" | "title" | "source" | "startLine" | "endLine" | "locations"
+                "id" | "rule"
+                    | "severity"
+                    | "title"
+                    | "source"
+                    | "startLine"
+                    | "endLine"
+                    | "locations"
             ),
             "inspector must not ship extra fields, found {key}"
         );
     }
     assert_eq!(keys.len(), 8, "exactly the eight contract keys: {keys:?}");
-    assert!(inspected.get("evidence").is_none(), "inspector fields must stay off the wire");
+    assert!(
+        inspected.get("evidence").is_none(),
+        "inspector fields must stay off the wire"
+    );
     assert!(inspected.get("snippet").is_none());
     assert!(inspected.get("file").is_none());
     assert!(inspected.get("fileId").is_none());
@@ -348,7 +357,9 @@ fn finding_inspect_round_trips_over_the_backend_pipe() {
 fn finding_inspect_unknown_and_invalid_ids_are_invalid_request() {
     let dir = tempfile::tempdir().expect("tempdir");
     let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
-    session.invoke(caps::FINDINGS_GET, None).expect("scan to open the ledger");
+    session
+        .invoke(caps::FINDINGS_GET, None)
+        .expect("scan to open the ledger");
 
     assert_invalid_request(
         inspect_error(&session, Some(serde_json::json!({"id": "a".repeat(64)}))),
@@ -456,18 +467,30 @@ fn concurrent_ensure_does_not_kill_a_healthy_busy_backend() {
         session.invoke_in_flight(),
         "host must see the long dispatch as in-flight"
     );
-    assert_eq!(session.pid(), pid_before, "ping-kill raced the in-flight scan");
+    assert_eq!(
+        session.pid(),
+        pid_before,
+        "ping-kill raced the in-flight scan"
+    );
     session
         .ping()
         .expect("a busy backend is not dead; ping must not fail the session");
-    assert_eq!(session.pid(), pid_before, "ping must not replace the process");
+    assert_eq!(
+        session.pid(),
+        pid_before,
+        "ping must not replace the process"
+    );
     let second = session
         .invoke(caps::FINDINGS_GET, None)
         .expect("the serialized pipe must wait on the 60s budget, not kill");
     assert_eq!(second["scanned"], true);
     let first_result = worker.join().expect("first invoke thread");
     first_result.expect("in-flight findings.get must complete");
-    assert_eq!(session.pid(), pid_before, "backend PID must survive the retry");
+    assert_eq!(
+        session.pid(),
+        pid_before,
+        "backend PID must survive the retry"
+    );
 }
 
 #[test]

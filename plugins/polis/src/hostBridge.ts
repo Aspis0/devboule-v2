@@ -319,7 +319,10 @@ export function oracleCitationsFetchFailure(error: unknown): OracleCitationsFail
   return "refusal";
 }
 
-export function isFindingInspection(value: unknown, expectedId: string): value is FindingInspection {
+export function isFindingInspection(
+  value: unknown,
+  expectedId: string,
+): value is FindingInspection {
   if (!isRecord(value)) return false;
   const keys = Object.keys(value);
   const allowed = new Set([
@@ -708,7 +711,9 @@ function isCityFindingSeverity(value: unknown): value is CityFindingSeverity {
 }
 
 function isValidLine(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 1;
+  return (
+    typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 1
+  );
 }
 
 function isFindingInspectionLocation(value: unknown): value is FindingInspectionLocation {
@@ -725,7 +730,9 @@ function isFindingInspectionLocation(value: unknown): value is FindingInspection
 
 /** Unlike isValidLine, 0 is legal here: Oracle uses it for "lines unknown" on prose chunks. */
 function isOracleLine(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 0;
+  return (
+    typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 0
+  );
 }
 
 function isOracleCitation(value: unknown): value is OracleCitation {
@@ -763,7 +770,8 @@ function isOracleCitation(value: unknown): value is OracleCitation {
     }
   }
   if ("symbol" in value && (typeof value.symbol !== "string" || value.symbol === "")) return false;
-  if ("match" in value && !ORACLE_MATCH_TYPES.includes(value.match as OracleMatchType)) return false;
+  if ("match" in value && !ORACLE_MATCH_TYPES.includes(value.match as OracleMatchType))
+    return false;
   return true;
 }
 

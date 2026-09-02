@@ -360,11 +360,7 @@ function messageValueWithinLimit(value: unknown): boolean {
   }
 }
 
-type OraclePluginMatchType =
-  | "lexical"
-  | "dense"
-  | "dense+lexical"
-  | "dense+reranked";
+type OraclePluginMatchType = "lexical" | "dense" | "dense+lexical" | "dense+reranked";
 type OraclePluginIndexState = "idle" | "indexing" | "ready" | "incomplete" | "stale" | "error";
 
 interface OraclePluginResult {
@@ -393,10 +389,7 @@ function oracleSearchQuery(payload: unknown): string | null {
   return query === "" ? null : query;
 }
 
-function projectOracleSearchResponse(
-  response: unknown,
-  query: string,
-): OraclePluginSearchResponse {
+function projectOracleSearchResponse(response: unknown, query: string): OraclePluginSearchResponse {
   if (!isOracleSearchResponse(response) || response.query !== query) {
     throw invalidOracleResponseError();
   }

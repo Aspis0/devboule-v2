@@ -9,8 +9,8 @@ pub mod chunking;
 #[cfg(feature = "full")]
 pub mod ckg_build;
 pub mod collect;
-pub mod text_extensions;
 #[cfg(feature = "full")]
 pub mod indexer;
 #[cfg(feature = "full")]
 pub mod retrieval_text;
+pub mod text_extensions;

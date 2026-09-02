@@ -223,15 +223,25 @@ mod tests {
             "workspace.root belongs to the plugin tenant, not the daemon"
         );
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::PING));
-        assert!(plugin.iter().any(|cap| cap.as_str() == caps::WORKSPACE_ROOT));
+        assert!(plugin
+            .iter()
+            .any(|cap| cap.as_str() == caps::WORKSPACE_ROOT));
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::CITY_GET));
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::FINDINGS_GET));
-        assert!(plugin.iter().any(|cap| cap.as_str() == caps::FINDING_INSPECT));
+        assert!(plugin
+            .iter()
+            .any(|cap| cap.as_str() == caps::FINDING_INSPECT));
         assert!(!plugin.iter().any(|cap| cap.as_str() == caps::STATUS));
         assert!(!plugin.iter().any(|cap| cap.as_str() == caps::SESSIONS));
-        assert_eq!(invoke_method_capability("workspace.root"), caps::WORKSPACE_ROOT);
+        assert_eq!(
+            invoke_method_capability("workspace.root"),
+            caps::WORKSPACE_ROOT
+        );
         assert_eq!(invoke_method_capability("findings.get"), caps::FINDINGS_GET);
-        assert_eq!(invoke_method_capability("finding.inspect"), caps::FINDING_INSPECT);
+        assert_eq!(
+            invoke_method_capability("finding.inspect"),
+            caps::FINDING_INSPECT
+        );
     }
 
     #[test]

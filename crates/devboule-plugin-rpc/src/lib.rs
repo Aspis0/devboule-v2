@@ -330,7 +330,10 @@ mod tests {
             Some(r"C:\repo"),
         );
         assert!(caps.iter().any(|cap| cap.as_str() == "city.get"));
-        assert_eq!(grants.get("workspace.root").map(String::as_str), Some(r"C:\repo"));
+        assert_eq!(
+            grants.get("workspace.root").map(String::as_str),
+            Some(r"C:\repo")
+        );
 
         let (caps, grants) = granted_capabilities(
             &[
@@ -341,7 +344,10 @@ mod tests {
             Some(r"C:\repo"),
         );
         assert!(caps.iter().any(|cap| cap.as_str() == "findings.get"));
-        assert_eq!(grants.get("workspace.root").map(String::as_str), Some(r"C:\repo"));
+        assert_eq!(
+            grants.get("workspace.root").map(String::as_str),
+            Some(r"C:\repo")
+        );
 
         let (caps, grants) = granted_capabilities(&["city.get".into()], Some(r"C:\repo"));
         assert!(!caps.iter().any(|cap| cap.as_str() == "city.get"));
@@ -352,14 +358,14 @@ mod tests {
         assert!(grants.is_empty());
 
         let (caps, grants) = granted_capabilities(
-            &[
-                "workspace.root".into(),
-                "finding.inspect".into(),
-            ],
+            &["workspace.root".into(), "finding.inspect".into()],
             Some(r"C:\repo"),
         );
         assert!(caps.iter().any(|cap| cap.as_str() == "finding.inspect"));
-        assert_eq!(grants.get("workspace.root").map(String::as_str), Some(r"C:\repo"));
+        assert_eq!(
+            grants.get("workspace.root").map(String::as_str),
+            Some(r"C:\repo")
+        );
 
         let (caps, grants) = granted_capabilities(&["finding.inspect".into()], Some(r"C:\repo"));
         assert!(!caps.iter().any(|cap| cap.as_str() == "finding.inspect"));

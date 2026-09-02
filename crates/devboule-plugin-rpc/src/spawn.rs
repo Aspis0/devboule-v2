@@ -183,7 +183,7 @@ pub fn spawn_backend(
 ) -> std::io::Result<SpawnedBackend> {
     #[cfg(windows)]
     {
-        return spawn_backend_windows(binary, plugin_id, pipe_name, hang_ms);
+        spawn_backend_windows(binary, plugin_id, pipe_name, hang_ms)
     }
 
     #[cfg(not(windows))]
@@ -434,7 +434,10 @@ mod tests {
 
         let mut environment = std::collections::BTreeMap::new();
         for key in ORACLE_CHILD_OVERRIDE_ENV_VARS {
-            environment.insert(std::ffi::OsString::from(key), std::ffi::OsString::from("foreign"));
+            environment.insert(
+                std::ffi::OsString::from(key),
+                std::ffi::OsString::from("foreign"),
+            );
         }
         sanitize_backend_environment_map(&mut environment);
         assert!(ORACLE_CHILD_OVERRIDE_ENV_VARS

@@ -257,7 +257,13 @@ console.error(`attached to ${target.url}`);
 try {
   if (task.kind === "input") {
     const replies = await replay(target.webSocketDebuggerUrl, task.steps);
-    console.log(JSON.stringify(replies.filter((reply) => Object.keys(reply).length > 0), null, 2));
+    console.log(
+      JSON.stringify(
+        replies.filter((reply) => Object.keys(reply).length > 0),
+        null,
+        2,
+      ),
+    );
   } else if (task.kind === "screenshot") {
     const png = await screenshot(target.webSocketDebuggerUrl);
     writeFileSync(task.path, png);

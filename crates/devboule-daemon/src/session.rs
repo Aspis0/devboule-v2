@@ -784,8 +784,10 @@ impl SessionRuntime {
     fn mark_journal_degraded(&self) {
         if let Some(journal) = &self.journal {
             let (frames, bytes) = journal.session_drop_counters(&self.session_id);
-            self.journal_dropped_frames.fetch_max(frames, Ordering::AcqRel);
-            self.journal_dropped_bytes.fetch_max(bytes, Ordering::AcqRel);
+            self.journal_dropped_frames
+                .fetch_max(frames, Ordering::AcqRel);
+            self.journal_dropped_bytes
+                .fetch_max(bytes, Ordering::AcqRel);
         }
         if !self.journal_degraded.swap(true, Ordering::AcqRel) {
             if let Some(journal) = &self.journal {
@@ -802,15 +804,11 @@ impl SessionRuntime {
     fn mark_silent_if_due(&self, now: Instant) -> Option<u64> {
         let elapsed_ms;
         {
-            let Ok(mut stream) = self.lock_stream() else {
-                return None;
-            };
+            let mut stream = self.lock_stream().ok()?;
             if stream.process_exited || !matches!(stream.disposition, Disposition::Running) {
                 return None;
             }
-            let Some(last_publish) = stream.last_publish else {
-                return None;
-            };
+            let last_publish = stream.last_publish?;
             let elapsed = now.saturating_duration_since(last_publish);
             if elapsed <= SESSION_SILENCE_THRESHOLD {
                 return None;
@@ -1433,9 +1431,7 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         if !pull.exit_sent && stream.pending.is_empty() && SessionRuntime::ready_for_exit(&stream) {
             exit_event = Some(match stream.disposition {
                 Disposition::Recovered { integrity } => SessionEvent::Recovered { integrity },
-                Disposition::Running
-                | Disposition::Silent
-                | Disposition::Exited { .. } => {
+                Disposition::Running | Disposition::Silent | Disposition::Exited { .. } => {
                     SessionEvent::Exit {
                         code: stream.exit_code,
                     }
@@ -1584,9 +1580,7 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
         if SessionRuntime::ready_for_exit(&stream) {
             let event = match stream.disposition {
                 Disposition::Recovered { integrity } => SessionEvent::Recovered { integrity },
-                Disposition::Running
-                | Disposition::Silent
-                | Disposition::Exited { .. } => {
+                Disposition::Running | Disposition::Silent | Disposition::Exited { .. } => {
                     SessionEvent::Exit {
                         code: stream.exit_code,
                     }
@@ -1768,12 +1762,14 @@ fn check_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> 
     }
 }
 
+type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct SessionRegistry {
     inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
     paths: RuntimePaths,
     journal: Option<Arc<Journal>>,
-    transition_sink: Arc<Mutex<Option<Arc<dyn Fn(OwnerId) + Send + Sync>>>>,
+    transition_sink: Arc<Mutex<Option<TransitionSink>>>,
 }
 
 impl SessionRegistry {
@@ -1786,7 +1782,7 @@ impl SessionRegistry {
         }
     }
 
-    pub(crate) fn set_transition_sink(&self, sink: Arc<dyn Fn(OwnerId) + Send + Sync>) {
+    pub(crate) fn set_transition_sink(&self, sink: TransitionSink) {
         if let Ok(mut current) = self.transition_sink.lock() {
             *current = Some(sink);
         }

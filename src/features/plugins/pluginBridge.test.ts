@@ -616,9 +616,9 @@ describe("createPluginBridge", () => {
           id: "session-1",
           workspaceId: null,
           kind: "terminal",
-        title: "Claude shell",
-        state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
-        elapsedMs: null,
+          title: "Claude shell",
+          state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
+          elapsedMs: null,
         } satisfies Session,
       ]);
     const firstBridge = createPluginBridge({
@@ -641,9 +641,9 @@ describe("createPluginBridge", () => {
         id: "session-1",
         workspaceId: null,
         kind: "terminal",
-          title: "Claude shell",
-          state: { type: "live", generation: 1 },
-          elapsedMs: 0,
+        title: "Claude shell",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 0,
       },
     ]);
     await Promise.resolve();
@@ -1096,9 +1096,7 @@ describe("createPluginBridge", () => {
       capabilities: ["oracle.search"],
       oracleSearch: vi.fn().mockResolvedValue({
         query: "prose",
-        results: [
-          { path: "README.md", line_start: 0, line_end: 0, snippet: "private", score: 1 },
-        ],
+        results: [{ path: "README.md", line_start: 0, line_end: 0, snippet: "private", score: 1 }],
       }),
     });
 
@@ -1136,7 +1134,8 @@ describe("createPluginBridge", () => {
     });
     await flushPromises();
     const firstReply = vi.mocked(first.pluginWindow.postMessage).mock.calls[0]?.[0];
-    if (!isRecord(firstReply) || !isRecord(firstReply.value)) throw new Error("missing Oracle reply");
+    if (!isRecord(firstReply) || !isRecord(firstReply.value))
+      throw new Error("missing Oracle reply");
     expect(firstReply.value).toEqual({
       query: "none",
       results: [],
@@ -1162,7 +1161,8 @@ describe("createPluginBridge", () => {
     });
     await flushPromises();
     const secondReply = vi.mocked(second.pluginWindow.postMessage).mock.calls[0]?.[0];
-    if (!isRecord(secondReply) || !isRecord(secondReply.value)) throw new Error("missing Oracle reply");
+    if (!isRecord(secondReply) || !isRecord(secondReply.value))
+      throw new Error("missing Oracle reply");
     expect(secondReply.value).toEqual({ query: "none", results: [] });
     secondBridge.dispose();
 
@@ -1184,7 +1184,8 @@ describe("createPluginBridge", () => {
     });
     await flushPromises();
     const thirdReply = vi.mocked(third.pluginWindow.postMessage).mock.calls[0]?.[0];
-    if (!isRecord(thirdReply) || !isRecord(thirdReply.value)) throw new Error("missing Oracle reply");
+    if (!isRecord(thirdReply) || !isRecord(thirdReply.value))
+      throw new Error("missing Oracle reply");
     expect(thirdReply.value).toEqual({ query: "none", results: [] });
     thirdBridge.dispose();
   });
@@ -1411,7 +1412,10 @@ describe("createPluginBridge", () => {
       PLUGIN_ORIGIN,
     );
     expect(oracleSearch).toHaveBeenCalledTimes(1);
-    resolveFirst({ query: "first", results: [{ path: "first.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }] });
+    resolveFirst({
+      query: "first",
+      results: [{ path: "first.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }],
+    });
     await flushPromises();
     expect(oracleSearch).toHaveBeenCalledWith("pending");
     bridge.dispose();

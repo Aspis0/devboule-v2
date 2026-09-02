@@ -12,11 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use devboule_augur::{Context, Cost, Finding, FindingId, Ledger, Registry};
-use oracle_core::{
-    collect_text_files_with_cancel_limits_report, CancelFlag, OracleDataPaths,
-};
+use oracle_core::{collect_text_files_with_cancel_limits_report, CancelFlag, OracleDataPaths};
 
-use crate::city::{MAX_CITY_FILE_BYTES, MAX_CITY_FILES};
+use crate::city::{MAX_CITY_FILES, MAX_CITY_FILE_BYTES};
 
 #[derive(Debug)]
 pub enum FindingsError {
@@ -173,8 +171,8 @@ pub(crate) fn scan_collected_files(
     let review = Registry::builtin().review(&ctx, Cost::Cheap);
 
     let ledger_path = OracleDataPaths::from_root_without_env(&collected.root).augur_ledger();
-    let ledger = Ledger::open(&ledger_path)
-        .map_err(|error| FindingsError::Ledger(error.to_string()))?;
+    let ledger =
+        Ledger::open(&ledger_path).map_err(|error| FindingsError::Ledger(error.to_string()))?;
     ledger
         .record_scan(&review.findings, &review.completed, &review.registered)
         .map_err(|error| FindingsError::Ledger(error.to_string()))?;
@@ -183,11 +181,7 @@ pub(crate) fn scan_collected_files(
         .map_err(|error| FindingsError::Ledger(error.to_string()))?;
 
     let (findings, dropped_findings) = attach_findings(&active, &index);
-    let failed: Vec<&str> = review
-        .failed
-        .iter()
-        .map(|failed| failed.detector)
-        .collect();
+    let failed: Vec<&str> = review.failed.iter().map(|failed| failed.detector).collect();
     let scan_ms = started.elapsed().as_millis() as u64;
     Ok(pack_findings_response(
         findings,
@@ -306,10 +300,7 @@ fn fold_file_id(id: &str) -> String {
     }
 }
 
-fn attach_findings(
-    findings: &[Finding],
-    index: &FileIdIndex,
-) -> (Vec<serde_json::Value>, usize) {
+fn attach_findings(findings: &[Finding], index: &FileIdIndex) -> (Vec<serde_json::Value>, usize) {
     let mut mapped = Vec::new();
     let mut dropped = 0usize;
     for finding in findings {
@@ -366,22 +357,21 @@ fn pack_findings_response(
                     .cmp(right["id"].as_str().unwrap_or(""))
             })
     });
+    let context = FindingsBodyContext {
+        dropped_findings,
+        completed,
+        failed,
+        scan_ms,
+        skipped_files,
+        walk_truncated,
+    };
     let original = findings.len();
     let mut lo = 0usize;
     let mut hi = original;
     let mut best = 0usize;
     while lo <= hi {
         let mid = lo + (hi - lo) / 2;
-        let body = findings_body(
-            &findings[..mid],
-            original - mid,
-            dropped_findings,
-            completed,
-            failed,
-            scan_ms,
-            skipped_files,
-            walk_truncated,
-        );
+        let body = findings_body(&findings[..mid], original - mid, &context);
         if crate::city_response_within_frame(&body) {
             best = mid;
             if mid == original {
@@ -397,44 +387,39 @@ fn pack_findings_response(
             hi = mid - 1;
         }
     }
-    findings_body(
-        &findings[..best],
-        original - best,
-        dropped_findings,
-        completed,
-        failed,
-        scan_ms,
-        skipped_files,
-        walk_truncated,
-    )
+    findings_body(&findings[..best], original - best, &context)
+}
+
+struct FindingsBodyContext<'a> {
+    dropped_findings: usize,
+    completed: &'a [&'a str],
+    failed: &'a [&'a str],
+    scan_ms: u64,
+    skipped_files: usize,
+    walk_truncated: bool,
 }
 
 fn findings_body(
     findings: &[serde_json::Value],
     truncated_findings: usize,
-    dropped_findings: usize,
-    completed: &[&str],
-    failed: &[&str],
-    scan_ms: u64,
-    skipped_files: usize,
-    walk_truncated: bool,
+    context: &FindingsBodyContext<'_>,
 ) -> serde_json::Value {
     // scanMs is walk+survive+scan+ledger — the wait the host budget spends.
     let mut body = serde_json::json!({
         "findings": findings,
         "scanned": true,
-        "completed": completed,
-        "failed": failed,
-        "scanMs": scan_ms,
-        "droppedFindings": dropped_findings,
+        "completed": context.completed,
+        "failed": context.failed,
+        "scanMs": context.scan_ms,
+        "droppedFindings": context.dropped_findings,
     });
     if truncated_findings != 0 {
         body["truncatedFindings"] = serde_json::json!(truncated_findings);
     }
-    if skipped_files != 0 {
-        body["skippedFiles"] = serde_json::json!(skipped_files);
+    if context.skipped_files != 0 {
+        body["skippedFiles"] = serde_json::json!(context.skipped_files);
     }
-    if walk_truncated {
+    if context.walk_truncated {
         // Lower bound (0/1), not a repository-wide omitted count.
         body["truncatedFiles"] = serde_json::json!(1);
     }
@@ -684,10 +669,7 @@ mod tests {
 
     #[test]
     fn an_ambiguous_folded_file_id_is_dropped_not_guessed() {
-        let index = FileIdIndex::from_ids(&[
-            "Src/Auth.rs".to_string(),
-            "src/auth.rs".to_string(),
-        ]);
+        let index = FileIdIndex::from_ids(&["Src/Auth.rs".to_string(), "src/auth.rs".to_string()]);
         assert_eq!(
             index.reconcile(Path::new("src/auth.rs")).as_deref(),
             Some("src/auth.rs"),
@@ -725,26 +707,28 @@ mod tests {
                 })
             })
             .collect();
-        let body = pack_findings_response(
-            findings,
-            0,
-            &["secrets", "untested"],
-            &[],
-            12,
-            0,
-            false,
-        );
+        let body = pack_findings_response(findings, 0, &["secrets", "untested"], &[], 12, 0, false);
         assert!(
             crate::city_response_within_frame(&body),
             "capped findings.get must fit the frame: {} bytes",
-            serde_json::to_vec(&body).map(|bytes| bytes.len()).unwrap_or(0)
+            serde_json::to_vec(&body)
+                .map(|bytes| bytes.len())
+                .unwrap_or(0)
         );
         let kept = body["findings"].as_array().expect("findings").len();
-        assert!(kept < 8_000, "the cap must omit some of the flood: kept={kept}");
-        let omitted = body["truncatedFindings"].as_u64().expect("truncatedFindings");
+        assert!(
+            kept < 8_000,
+            "the cap must omit some of the flood: kept={kept}"
+        );
+        let omitted = body["truncatedFindings"]
+            .as_u64()
+            .expect("truncatedFindings");
         assert_eq!(omitted, 8_000 - kept as u64);
         let first = body["findings"][0]["severity"].as_str().unwrap();
-        assert_eq!(first, "inferno", "severity desc: inferno first, got {first}");
+        assert_eq!(
+            first, "inferno",
+            "severity desc: inferno first, got {first}"
+        );
     }
 
     fn inspect_err(root: &Path, payload: Option<serde_json::Value>) -> InspectError {

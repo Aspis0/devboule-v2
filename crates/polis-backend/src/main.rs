@@ -30,13 +30,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         if matches!(request, ClientMessage::Shutdown { .. }) {
             let id = request.request_id().unwrap_or(0);
-            backend.send(&DaemonMessage::Shutdown {
-                id,
-                accepted: true,
-            })?;
+            backend.send(&DaemonMessage::Shutdown { id, accepted: true })?;
             return Ok(());
         }
-        let reply = dispatch(backend.grants(), &backend.negotiation().capabilities, request);
+        let reply = dispatch(
+            backend.grants(),
+            &backend.negotiation().capabilities,
+            request,
+        );
         backend.send(&reply)?;
         if let DaemonMessage::Error(WireError {
             code: ErrorCode::ShuttingDown,

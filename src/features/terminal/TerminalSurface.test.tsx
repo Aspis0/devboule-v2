@@ -8,7 +8,9 @@ describe("terminal integrity banner copy", () => {
         kind: "recovered",
         integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0 },
       }),
-    ).toBe("The previous terminal process is gone. The end of the saved transcript could not be verified.");
+    ).toBe(
+      "The previous terminal process is gone. The end of the saved transcript could not be verified.",
+    );
   });
 
   it("renders the measured recovered warning verbatim", () => {
@@ -49,8 +51,8 @@ describe("terminal integrity banner copy", () => {
   });
 
   it("keeps the exited copy shape when no exit code was observed", () => {
-    expect(
-      bannerText({ kind: "exited", code: null, lost: { frames: 2, bytes: 12 * 1024 } }),
-    ).toBe("The terminal process exited. At least 12 KB of output was not saved.");
+    expect(bannerText({ kind: "exited", code: null, lost: { frames: 2, bytes: 12 * 1024 } })).toBe(
+      "The terminal process exited. At least 12 KB of output was not saved.",
+    );
   });
 });

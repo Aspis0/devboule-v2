@@ -60,7 +60,11 @@ pub struct SessionStateSnapshot {
 /// The counters are what happened to get recorded before the death; zero
 /// means "nothing was written down", never "nothing was lost".
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum TranscriptIntegrity {
     /// The writer committed a terminator and recorded no loss.
     Complete,
@@ -181,7 +185,9 @@ pub enum SessionEvent {
     /// journal of a process that died was not closed orderly, so whatever
     /// was still uncommitted in its writer queue is gone without a trace:
     /// the tail is unverifiable. The counters preserve any measured loss.
-    Recovered { integrity: TranscriptIntegrity },
+    Recovered {
+        integrity: TranscriptIntegrity,
+    },
     /// The journal has started dropping output for this live session. The
     /// counters measure what was noticed, never everything that was lost.
     JournalDegraded {
@@ -361,10 +367,7 @@ mod tests {
     #[test]
     fn transcript_integrity_variants_round_trip_with_exact_wire_shape() {
         let cases = [
-            (
-                TranscriptIntegrity::Complete,
-                r#"{"kind":"complete"}"#,
-            ),
+            (TranscriptIntegrity::Complete, r#"{"kind":"complete"}"#),
             (
                 TranscriptIntegrity::Truncated {
                     dropped_frames: 3,

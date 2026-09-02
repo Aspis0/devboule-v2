@@ -21,15 +21,13 @@ const finding = {
 describe("finding inspector", () => {
   it("indexes fixture findings so a burning fixture building is inspectable", () => {
     const container = document.createElement("section");
-    const index = new Map<string, typeof finding[]>();
+    const index = new Map<string, (typeof finding)[]>();
     indexFindingsByFile(index, [finding]);
     const inspector = createFindingInspector(container, vi.fn());
 
     inspector.open(file, index.get(file.id) ?? []);
 
-    expect(container.querySelector(".polis-finding-row")?.textContent).toContain(
-      "<secret title>",
-    );
+    expect(container.querySelector(".polis-finding-row")?.textContent).toContain("<secret title>");
     inspector.destroy();
   });
 
@@ -55,9 +53,7 @@ describe("finding inspector", () => {
     expect(container.querySelector(".polis-inspector-file")?.textContent).toContain(
       "src/secrets.ts",
     );
-    expect(container.querySelector(".polis-finding-row")?.textContent).toContain(
-      "<secret title>",
-    );
+    expect(container.querySelector(".polis-finding-row")?.textContent).toContain("<secret title>");
     (container.querySelector(".polis-finding-row") as HTMLButtonElement).click();
     await Promise.resolve();
     await Promise.resolve();
@@ -75,9 +71,11 @@ describe("finding inspector", () => {
   it("uses distinct copy for an expired finding and restores the hover readout on close", async () => {
     const container = document.createElement("section");
     const onClose = vi.fn();
-    const invoke = vi.fn().mockRejectedValue(
-      Object.assign(new Error("finding not found"), { code: "invalid_request" }),
-    );
+    const invoke = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error("finding not found"), { code: "invalid_request" }),
+      );
     const inspector = createFindingInspector(container, invoke, onClose);
     inspector.open(file, [finding]);
     (container.querySelector(".polis-finding-row") as HTMLButtonElement).click();

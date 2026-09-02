@@ -149,9 +149,9 @@ fn version_mismatch(client: &ClientHello, daemon: &DaemonHello) -> WireError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use crate::capability::Capability;
     use crate::ids::OwnerId;
+    use std::collections::BTreeMap;
 
     fn owner() -> OwnerId {
         OwnerId::new("S-1-5-21-1-2-3-1001", "app-1").expect("owner")

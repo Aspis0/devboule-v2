@@ -154,10 +154,7 @@ fn untested_finding(root: &Path, item: &Classified) -> Option<Finding> {
 
 fn last_segment_is_test_dir(parent: &str) -> bool {
     let name = parent.rsplit('/').next().unwrap_or(parent);
-    matches!(
-        name.to_lowercase().as_str(),
-        "test" | "tests" | "__tests__"
-    )
+    matches!(name.to_lowercase().as_str(), "test" | "tests" | "__tests__")
 }
 
 fn parent_of(parent: &str) -> Option<&str> {
@@ -190,7 +187,9 @@ fn is_source_extension(ext: &str) -> bool {
 
 fn path_looks_like_test(posix: &str) -> bool {
     let lower = posix.to_ascii_lowercase();
-    lower.split('/').any(|part| matches!(part, "test" | "tests" | "__tests__"))
+    lower
+        .split('/')
+        .any(|part| matches!(part, "test" | "tests" | "__tests__"))
         || name_looks_like_test(posix.rsplit('/').next().unwrap_or(posix))
 }
 
@@ -263,9 +262,13 @@ mod tests {
     #[test]
     fn a_source_file_with_no_sibling_test_is_smoke() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let file = write_source(temp.path(), "src/lib.rs", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
+        let file = write_source(
+            temp.path(),
+            "src/lib.rs",
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        );
         let files = [file];
-        let findings = Untested::default()
+        let findings = Untested
             .scan(&Context::new(temp.path(), &files))
             .expect("scan");
         let hit = findings
@@ -280,18 +283,24 @@ mod tests {
     #[test]
     fn a_rust_sibling_test_silences_the_source() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let source = write_source(temp.path(), "src/lib.rs", "pub fn add(a: i32, b: i32) -> i32 { a + b }\n");
+        let source = write_source(
+            temp.path(),
+            "src/lib.rs",
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        );
         let test = write_source(
             temp.path(),
             "src/lib_test.rs",
             "#[test] fn add_works() { assert_eq!(2, 2); }\n",
         );
         let files = [source, test];
-        let findings = Untested::default()
+        let findings = Untested
             .scan(&Context::new(temp.path(), &files))
             .expect("scan");
         assert!(
-            findings.iter().all(|finding| finding.rule() != "test.missing"),
+            findings
+                .iter()
+                .all(|finding| finding.rule() != "test.missing"),
             "sibling test was ignored: {findings:?}"
         );
     }
@@ -302,7 +311,7 @@ mod tests {
         let source = write_source(temp.path(), "src/foo.ts", "export const n = 1;\n");
         let test = write_source(temp.path(), "src/foo.test.ts", "export const n = 1;\n");
         let files = [source, test];
-        let findings = Untested::default()
+        let findings = Untested
             .scan(&Context::new(temp.path(), &files))
             .expect("scan");
         assert!(
@@ -316,7 +325,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let test = write_source(temp.path(), "src/foo.test.ts", "export const n = 1;\n");
         let files = [test];
-        let findings = Untested::default()
+        let findings = Untested
             .scan(&Context::new(temp.path(), &files))
             .expect("scan");
         assert!(
@@ -335,7 +344,7 @@ mod tests {
             "export const n = 1;\n",
         );
         let files = [source, util];
-        let findings = Untested::default()
+        let findings = Untested
             .scan(&Context::new(temp.path(), &files))
             .expect("scan");
         assert!(
@@ -363,7 +372,7 @@ mod tests {
             "export const n = 1;\n",
         );
         let files = [source, test];
-        let findings = Untested::default()
+        let findings = Untested
             .scan(&Context::new(temp.path(), &files))
             .expect("scan");
         assert!(
@@ -377,7 +386,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let kept = write_source(temp.path(), "src/kept.rs", "pub fn k() {}\n");
         let files = [kept, PathBuf::from("src/gone.rs")];
-        let findings = Untested::default()
+        let findings = Untested
             .scan(&Context::new(temp.path(), &files))
             .expect("vanished file must not fail the detector");
         assert!(

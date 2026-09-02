@@ -517,7 +517,10 @@ mod split_text_tests {
     fn prose_formats_are_collected_and_read_as_documents() {
         for name in ["paper.tex", "guide.rst", "notes.org", "manual.adoc"] {
             assert!(
-                super::super::ingest::text_extensions::is_text_extension(&format!(".{}", name.rsplit('.').next().unwrap())),
+                crate::ingest::text_extensions::is_text_extension(&format!(
+                    ".{}",
+                    name.rsplit('.').next().unwrap()
+                )),
                 "{name} would be skipped by the collector"
             );
             assert_eq!(

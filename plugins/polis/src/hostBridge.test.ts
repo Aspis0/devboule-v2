@@ -48,10 +48,7 @@ describe("backend overlay readout", () => {
     expect(isFindingInspection({ ...inspection, extra: true }, id)).toBe(false);
     expect(isFindingInspection({ ...inspection, id: "e".repeat(64) }, id)).toBe(false);
     expect(
-      isFindingInspection(
-        { ...inspection, locations: [{ startLine: 9, endLine: 8 }] },
-        id,
-      ),
+      isFindingInspection({ ...inspection, locations: [{ startLine: 9, endLine: 8 }] }, id),
     ).toBe(false);
     expect(isFindingInspection({ ...inspection, severity: "unknown" }, id)).toBe(false);
     expect(isFindingInspection({ ...inspection, locations: [{ startLine: 1 }] }, id)).toBe(false);
@@ -61,16 +58,14 @@ describe("backend overlay readout", () => {
       status: "host",
       inspection,
     });
-    expect(invoke).toHaveBeenCalledWith(
-      "finding.inspect",
-      { id },
-      INSPECT_FETCH_TIMEOUT_MS,
-    );
+    expect(invoke).toHaveBeenCalledWith("finding.inspect", { id }, INSPECT_FETCH_TIMEOUT_MS);
   });
 
   it("distinguishes finding-not-found and malformed inspection failures", async () => {
     const notFound = Object.assign(new Error("finding not found"), { code: "invalid_request" });
-    await expect(loadFindingInspection(vi.fn().mockRejectedValue(notFound), "f".repeat(64))).resolves.toMatchObject({
+    await expect(
+      loadFindingInspection(vi.fn().mockRejectedValue(notFound), "f".repeat(64)),
+    ).resolves.toMatchObject({
       status: "failed",
       failure: "not_found",
     });
@@ -429,7 +424,11 @@ describe("oracle.search citations", () => {
       citations: payload,
     });
     expect(ORACLE_SEARCH_TIMEOUT_MS).toBe(30_000);
-    expect(invoke).toHaveBeenCalledWith("oracle.search", { query: "src/lib.ts" }, ORACLE_SEARCH_TIMEOUT_MS);
+    expect(invoke).toHaveBeenCalledWith(
+      "oracle.search",
+      { query: "src/lib.ts" },
+      ORACLE_SEARCH_TIMEOUT_MS,
+    );
   });
 
   it("rejects extra keys, null optionals, bad rows, and a mismatched echoed query", () => {
@@ -523,9 +522,9 @@ describe("oracle.search citations", () => {
         query,
       ),
     ).toBe(false);
-    expect(isOracleCitations({ query, results: [{ ...ok.results[0], snippet: "no" }] }, query)).toBe(
-      false,
-    );
+    expect(
+      isOracleCitations({ query, results: [{ ...ok.results[0], snippet: "no" }] }, query),
+    ).toBe(false);
     expect(isOracleCitations({ query, results: [{ ...ok.results[0], score: 0.1 }] }, query)).toBe(
       false,
     );
@@ -545,12 +544,16 @@ describe("oracle.search citations", () => {
   });
 
   it("maps each oracle.search failure code before falling back to message text", async () => {
-    expect(oracleCitationsFetchFailure(Object.assign(new Error("oracle.search failed"), { code: "timeout" }))).toBe(
-      "timeout",
-    );
     expect(
       oracleCitationsFetchFailure(
-        Object.assign(new Error("oracle.search is already running for this plugin"), { code: "busy" }),
+        Object.assign(new Error("oracle.search failed"), { code: "timeout" }),
+      ),
+    ).toBe("timeout");
+    expect(
+      oracleCitationsFetchFailure(
+        Object.assign(new Error("oracle.search is already running for this plugin"), {
+          code: "busy",
+        }),
       ),
     ).toBe("busy");
     expect(
@@ -562,13 +565,15 @@ describe("oracle.search citations", () => {
     ).toBe("invalid");
     expect(
       oracleCitationsFetchFailure(
-        Object.assign(new Error("The host does not serve plugin capability \"oracle.search\""), {
+        Object.assign(new Error('The host does not serve plugin capability "oracle.search"'), {
           code: "capability_not_supported",
         }),
       ),
     ).toBe("refusal");
     expect(
-      oracleCitationsFetchFailure(Object.assign(new Error("plugin response is too large"), { code: "response_too_large" })),
+      oracleCitationsFetchFailure(
+        Object.assign(new Error("plugin response is too large"), { code: "response_too_large" }),
+      ),
     ).toBe("refusal");
     expect(
       oracleCitationsFetchFailure(
@@ -576,7 +581,10 @@ describe("oracle.search citations", () => {
       ),
     ).toBe("refusal");
 
-    const malformed = await loadOracleCitations(vi.fn().mockResolvedValue({ query: "q", extra: true }), "q");
+    const malformed = await loadOracleCitations(
+      vi.fn().mockResolvedValue({ query: "q", extra: true }),
+      "q",
+    );
     expect(malformed).toMatchObject({ status: "failed", failure: "malformed" });
 
     const timedOut = await loadOracleCitations(

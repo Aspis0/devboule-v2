@@ -28,7 +28,12 @@ function humanSize(bytes: number): string {
     value /= 1000;
     unit += 1;
   }
-  const rounded = unit === 0 ? Math.round(value).toString() : value >= 10 ? Math.round(value).toString() : value.toFixed(1);
+  const rounded =
+    unit === 0
+      ? Math.round(value).toString()
+      : value >= 10
+        ? Math.round(value).toString()
+        : value.toFixed(1);
   return `${rounded} ${units[unit]}`;
 }
 
@@ -55,7 +60,9 @@ export function bannerText(banner: TerminalBanner): string | null {
       : "Scrollback history is incomplete because some output could not be saved.";
   }
   const prefix =
-    banner.code === null ? "The terminal process exited." : `The terminal process exited with code ${banner.code}.`;
+    banner.code === null
+      ? "The terminal process exited."
+      : `The terminal process exited with code ${banner.code}.`;
   if (banner.lost === null) return prefix;
   return banner.lost.bytes > 0
     ? `${prefix} At least ${humanSize(banner.lost.bytes)} of output was not saved.`

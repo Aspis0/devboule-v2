@@ -194,10 +194,7 @@ fn bind_and_accept_windows(pipe_name: &str, timeout: Duration) -> io::Result<Fil
     };
     if handle == INVALID_HANDLE_VALUE {
         let step = format!("CreateNamedPipeW({pipe_name})");
-        return Err(startup_context(
-            &step,
-            io::Error::last_os_error(),
-        ));
+        return Err(startup_context(&step, io::Error::last_os_error()));
     }
     if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
         let error = startup_context("SetHandleInformation", io::Error::last_os_error());

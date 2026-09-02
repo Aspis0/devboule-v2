@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(paths.ckg, paths.root.join(CKG_SQLITE));
         assert_eq!(paths.augur_ledger(), paths.root.join(AUGUR_SQLITE));
         assert_eq!(
-            paths.augur_ledger().parent().as_deref(),
+            paths.augur_ledger().parent(),
             paths.ckg.parent(),
             "augur ledger must sit beside the CKG so path drift is impossible"
         );

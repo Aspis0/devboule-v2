@@ -11,12 +11,6 @@ mod cli;
 mod cluster;
 #[cfg(any(feature = "city", feature = "full"))]
 mod config;
-/// Redaction must be available to Augur without the full Oracle runtime
-/// (ort/onnx). Under `full` it lives at `query::redact`; under `city` alone
-/// the same file is compiled as this module.
-#[cfg(all(feature = "city", not(feature = "full")))]
-#[path = "query/redact.rs"]
-mod redact;
 #[cfg(feature = "full")]
 mod doctor;
 #[cfg(feature = "embedder")]
@@ -27,6 +21,12 @@ mod ingest;
 mod model_download;
 #[cfg(feature = "full")]
 mod query;
+/// Redaction must be available to Augur without the full Oracle runtime
+/// (ort/onnx). Under `full` it lives at `query::redact`; under `city` alone
+/// the same file is compiled as this module.
+#[cfg(all(feature = "city", not(feature = "full")))]
+#[path = "query/redact.rs"]
+mod redact;
 #[cfg(any(feature = "city", feature = "full"))]
 mod store;
 
@@ -41,6 +41,7 @@ pub enum BackendArg {
     Onnx,
 }
 
+pub use cancel::CancelFlag;
 #[cfg(feature = "full")]
 pub use cluster::refresh_clusters;
 #[cfg(any(feature = "city", feature = "full"))]
@@ -48,10 +49,7 @@ pub use config::{OracleDataPaths, MAX_BOUNDED_LIMIT};
 #[cfg(feature = "full")]
 pub use doctor::{build_report, DoctorCheck, DoctorReport};
 #[cfg(feature = "full")]
-pub use embed::{
-    configured_model_present, default_backend, BackendChoice, EmbedderPool, EpArg,
-};
-pub use cancel::CancelFlag;
+pub use embed::{configured_model_present, default_backend, BackendChoice, EmbedderPool, EpArg};
 #[cfg(feature = "full")]
 pub use ingest::collect::collect_text_files;
 #[cfg(any(feature = "city", feature = "full"))]
@@ -84,12 +82,12 @@ pub use query::focus::FocusSpan;
 pub use query::pool_embedder::PoolQueryEmbedder;
 #[cfg(feature = "full")]
 pub use query::redact::redact_secret_tokens;
-#[cfg(all(feature = "city", not(feature = "full")))]
-pub use redact::redact_secret_tokens;
 #[cfg(feature = "full")]
 pub use query::reranker::{
     configured_reranker_present, default_model_dir, RerankerHandle, SharedReranker,
 };
+#[cfg(all(feature = "city", not(feature = "full")))]
+pub use redact::redact_secret_tokens;
 pub use store::ckg::{CkgEdgeRow, CkgNodeRow, CkgStore};
 #[cfg(feature = "full")]
 pub use store::lance::{LanceHit, LanceRow, LanceStore};

@@ -403,8 +403,8 @@ pub async fn plugin_invoke(
     let value = tauri::async_runtime::spawn_blocking(move || {
         runtime.invoke(&plugin_id, spec, &method, payload)
     })
-        .await
-        .map_err(|error| CommandError::new(ErrorCode::Internal, error.to_string()))??;
+    .await
+    .map_err(|error| CommandError::new(ErrorCode::Internal, error.to_string()))??;
     if !plugin_payload_within_limit(Some(&value)) {
         return Err(CommandError::new(
             ErrorCode::InvalidRequest,

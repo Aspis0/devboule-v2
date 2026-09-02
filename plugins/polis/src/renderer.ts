@@ -563,12 +563,7 @@ export class CityRenderer {
     art.display.zIndex = buildingDepth(layout.gridX, layout.gridY, layout.footprint);
     art.display.eventMode = "static";
     art.display.cursor = "pointer";
-    const hitArea = new Rectangle(
-      art.frame.x,
-      art.frame.y,
-      art.frame.width,
-      art.frame.height,
-    );
+    const hitArea = new Rectangle(art.frame.x, art.frame.y, art.frame.width, art.frame.height);
     art.display.hitArea = hitArea;
     art.display.on("pointerover", () => this.details.setDetails(layout.file));
     art.display.on("pointerout", () => this.details.clearDetails());

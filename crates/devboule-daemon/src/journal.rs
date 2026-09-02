@@ -206,7 +206,11 @@ impl SessionRecord {
             }
         } else {
             TranscriptIntegrity::Unverifiable {
-                dropped_frames: if self.degraded { self.dropped_frames } else { 0 },
+                dropped_frames: if self.degraded {
+                    self.dropped_frames
+                } else {
+                    0
+                },
                 dropped_bytes: if self.degraded { self.dropped_bytes } else { 0 },
             }
         }
@@ -702,31 +706,23 @@ impl Journal {
     }
 
     fn note_dropped_frame(&self, session_id: &str, bytes: u64) -> bool {
-        self.note_degraded(
-            session_id,
-            DropCounters {
-                frames: 1,
-                bytes,
-            },
-        )
+        self.note_degraded(session_id, DropCounters { frames: 1, bytes })
     }
 
     fn note_degraded(&self, session_id: &str, dropped: DropCounters) -> bool {
         let first = match self.degraded_sessions.lock() {
-            Ok(mut sessions) => {
-                match sessions.entry(session_id.to_string()) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(dropped);
-                        true
-                    }
-                    Entry::Occupied(mut entry) => {
-                        let counters = entry.get_mut();
-                        counters.frames = counters.frames.saturating_add(dropped.frames);
-                        counters.bytes = counters.bytes.saturating_add(dropped.bytes);
-                        false
-                    }
+            Ok(mut sessions) => match sessions.entry(session_id.to_string()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(dropped);
+                    true
                 }
-            }
+                Entry::Occupied(mut entry) => {
+                    let counters = entry.get_mut();
+                    counters.frames = counters.frames.saturating_add(dropped.frames);
+                    counters.bytes = counters.bytes.saturating_add(dropped.bytes);
+                    false
+                }
+            },
             Err(_) => {
                 eprintln!(
                     "journal degradation set is poisoned; treating session {session_id} as degraded"
@@ -957,7 +953,8 @@ fn journal_loop(
                         );
                     }
                     on_write_error(&error);
-                    let (degraded, dropped) = degradation_state(&degraded_sessions, &record.session_id);
+                    let (degraded, dropped) =
+                        degradation_state(&degraded_sessions, &record.session_id);
                     let _ = mark_degraded(&conn, &record.session_id, degraded, dropped);
                 } else if is_output {
                     stats.committed_frames.fetch_add(1, Ordering::Relaxed);
@@ -1808,9 +1805,7 @@ mod tests {
         let mut candidates = Vec::new();
         let mut created = Vec::new();
         for counter in 1..=256 {
-            let dir = std::env::temp_dir().join(format!(
-                "devboule journal {process_id}-{counter}"
-            ));
+            let dir = std::env::temp_dir().join(format!("devboule journal {process_id}-{counter}"));
             candidates.push(dir.clone());
             if std::fs::create_dir(&dir).is_ok() {
                 created.push(dir);
@@ -1826,7 +1821,10 @@ mod tests {
         for dir in created {
             let _ = std::fs::remove_dir_all(dir);
         }
-        assert!(!reused, "reused legacy journal test directory: {selected_display}");
+        assert!(
+            !reused,
+            "reused legacy journal test directory: {selected_display}"
+        );
     }
 
     fn snapshot_limits() -> JournalLimits {
@@ -2085,8 +2083,13 @@ mod tests {
             .expect("b");
         let replay = journal.replay("s.a.1", 0).expect("replay");
         match &replay.events[..] {
-            [SessionEvent::Output { seq: 1, data: a }, SessionEvent::Output { seq: 2, data: b }, SessionEvent::Recovered { integrity: TranscriptIntegrity::Unverifiable { dropped_frames: 0, dropped_bytes: 0 } }] =>
-            {
+            [SessionEvent::Output { seq: 1, data: a }, SessionEvent::Output { seq: 2, data: b }, SessionEvent::Recovered {
+                integrity:
+                    TranscriptIntegrity::Unverifiable {
+                        dropped_frames: 0,
+                        dropped_bytes: 0,
+                    },
+            }] => {
                 assert_eq!(a, "one");
                 assert_eq!(b, "two");
             }

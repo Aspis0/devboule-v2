@@ -685,17 +685,15 @@ pub fn collect_text_files_with_cancel_limits_report(
     let ignore_policy = load_workspace_ignore_policy(&root);
     let mut files = Vec::new();
     let mut truncated = false;
-
-    if walk_recursive_with_cancel(
-        &root,
-        &root,
-        &ignore_policy,
-        &mut files,
-        Some(cancel),
+    let config = WalkConfig {
+        root: &root,
+        ignore_policy: &ignore_policy,
+        cancel: Some(cancel),
         max_files,
         max_file_bytes,
-        &mut truncated,
-    ) {
+    };
+
+    if walk_recursive_with_cancel(&root, &mut files, &config, &mut truncated) {
         return None;
     }
 
@@ -711,21 +709,26 @@ pub fn collect_text_files_with_cancel_limits_report(
     })
 }
 
+/// Immutable configuration shared by every recursive walk frame.
+struct WalkConfig<'a> {
+    root: &'a Path,
+    ignore_policy: &'a IgnorePolicy,
+    cancel: Option<&'a CancelFlag>,
+    max_files: Option<usize>,
+    max_file_bytes: Option<u64>,
+}
+
 /// Return `true` when the walk was cancelled.
 fn walk_recursive_with_cancel(
     current: &Path,
-    root: &Path,
-    ignore_policy: &IgnorePolicy,
     files: &mut Vec<PathBuf>,
-    cancel: Option<&CancelFlag>,
-    max_files: Option<usize>,
-    max_file_bytes: Option<u64>,
+    config: &WalkConfig<'_>,
     truncated: &mut bool,
 ) -> bool {
-    if cancel.is_some_and(CancelFlag::is_cancelled) {
+    if config.cancel.is_some_and(CancelFlag::is_cancelled) {
         return true;
     }
-    if max_files.is_some_and(|limit| files.len() >= limit) {
+    if config.max_files.is_some_and(|limit| files.len() >= limit) {
         *truncated = true;
         return false;
     }
@@ -735,7 +738,7 @@ fn walk_recursive_with_cancel(
         Ok(rd) => {
             let mut entries = Vec::new();
             for entry in rd {
-                if cancel.is_some_and(CancelFlag::is_cancelled) {
+                if config.cancel.is_some_and(CancelFlag::is_cancelled) {
                     return true;
                 }
                 if let Ok(entry) = entry {
@@ -756,7 +759,7 @@ fn walk_recursive_with_cancel(
     let mut filenames: Vec<String> = Vec::new();
 
     for entry in &entries {
-        if cancel.is_some_and(CancelFlag::is_cancelled) {
+        if config.cancel.is_some_and(CancelFlag::is_cancelled) {
             return true;
         }
         let name = entry.file_name().to_string_lossy().to_string();
@@ -771,7 +774,7 @@ fn walk_recursive_with_cancel(
                     no_descend.insert(name.clone());
                     dirnames.push(name);
                 }
-                Ok(m) if m.is_file() && resolved_file_under_root(&entry.path(), root) => {
+                Ok(m) if m.is_file() && resolved_file_under_root(&entry.path(), config.root) => {
                     filenames.push(name);
                 }
                 _ => {}
@@ -784,23 +787,23 @@ fn walk_recursive_with_cancel(
     }
 
     // Installed-package / vendored env pruning
-    if current != root && dir_is_install_root(&dirnames, &filenames) {
+    if current != config.root && dir_is_install_root(&dirnames, &filenames) {
         return false;
     }
 
     // Filter directories
     dirnames.retain(|dirname| {
         let child_path = current.join(dirname);
-        directory_path_allowed(&child_path, root, ignore_policy)
+        directory_path_allowed(&child_path, config.root, config.ignore_policy)
     });
 
     // Check files
     filenames.sort();
     for filename in &filenames {
-        if cancel.is_some_and(CancelFlag::is_cancelled) {
+        if config.cancel.is_some_and(CancelFlag::is_cancelled) {
             return true;
         }
-        if max_files.is_some_and(|limit| files.len() >= limit) {
+        if config.max_files.is_some_and(|limit| files.len() >= limit) {
             *truncated = true;
             break;
         }
@@ -814,16 +817,19 @@ fn walk_recursive_with_cancel(
         if !is_text_extension(&ext) {
             continue;
         }
-        if !chunk_path_allowed(&path, root, ignore_policy) {
+        if !chunk_path_allowed(&path, config.root, config.ignore_policy) {
             continue;
         }
         // Canonicalize: refuse non-regular files and anything whose target
         // escapes the workspace root (symlink index poisoning).
-        if !resolved_file_under_root(&path, root) {
+        if !resolved_file_under_root(&path, config.root) {
             continue;
         }
         if let Ok(metadata) = path.metadata() {
-            if max_file_bytes.is_some_and(|limit| metadata.len() > limit) {
+            if config
+                .max_file_bytes
+                .is_some_and(|limit| metadata.len() > limit)
+            {
                 continue;
             }
         } else {
@@ -835,26 +841,17 @@ fn walk_recursive_with_cancel(
     // Sort dirnames for deterministic walk order
     dirnames.sort();
     for dirname in &dirnames {
-        if cancel.is_some_and(CancelFlag::is_cancelled) {
+        if config.cancel.is_some_and(CancelFlag::is_cancelled) {
             return true;
         }
-        if max_files.is_some_and(|limit| files.len() >= limit) {
+        if config.max_files.is_some_and(|limit| files.len() >= limit) {
             *truncated = true;
             break;
         }
         if no_descend.contains(dirname) {
             continue; // symlink-to-dir: listed, never walked (os.walk parity)
         }
-        if walk_recursive_with_cancel(
-            &current.join(dirname),
-            root,
-            ignore_policy,
-            files,
-            cancel,
-            max_files,
-            max_file_bytes,
-            truncated,
-        ) {
+        if walk_recursive_with_cancel(&current.join(dirname), files, config, truncated) {
             return true;
         }
     }

@@ -483,10 +483,19 @@ mod tests {
 
     #[test]
     fn production_invoke_budgets_are_per_method() {
-        assert_eq!(invoke_timeout_for(caps::FINDINGS_GET), Duration::from_secs(60));
+        assert_eq!(
+            invoke_timeout_for(caps::FINDINGS_GET),
+            Duration::from_secs(60)
+        );
         assert_eq!(invoke_timeout_for(caps::CITY_GET), Duration::from_secs(30));
-        assert_eq!(invoke_timeout_for(caps::FINDING_INSPECT), Duration::from_secs(10));
-        assert_eq!(invoke_timeout_for(caps::WORKSPACE_ROOT), Duration::from_secs(5));
+        assert_eq!(
+            invoke_timeout_for(caps::FINDING_INSPECT),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            invoke_timeout_for(caps::WORKSPACE_ROOT),
+            Duration::from_secs(5)
+        );
         assert_eq!(invoke_timeout_for(caps::PING), Duration::from_secs(5));
     }
 }
