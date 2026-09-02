@@ -1607,14 +1607,57 @@ mod tests {
 
     fn tmp_journal() -> (PathBuf, PathBuf) {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
-        let dir = std::env::temp_dir().join(format!(
-            "devboule journal {}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("dir");
+        let process_id = std::process::id();
+        let stamp = now_ms();
+        let counter = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let dir = create_unique_directory(|attempt| {
+            std::env::temp_dir().join(format!(
+                "devboule journal {process_id}-{stamp}-{counter}-{attempt}"
+            ))
+        });
         let path = dir.join("journal.db");
         (dir, path)
+    }
+
+    // A failed test leaves its directory behind. Use create_dir, rather than
+    // create_dir_all, so a reused PID can never reopen another run's database.
+    fn create_unique_directory(mut candidate: impl FnMut(u64) -> PathBuf) -> PathBuf {
+        for attempt in 0..1000 {
+            let dir = candidate(attempt);
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("could not create test directory: {error}"),
+            }
+        }
+        panic!("could not find an unused test directory");
+    }
+
+    #[test]
+    fn journal_test_directory_does_not_reuse_pid_counter_candidate() {
+        let process_id = std::process::id();
+        let mut candidates = Vec::new();
+        let mut created = Vec::new();
+        for counter in 1..=256 {
+            let dir = std::env::temp_dir().join(format!(
+                "devboule journal {process_id}-{counter}"
+            ));
+            candidates.push(dir.clone());
+            if std::fs::create_dir(&dir).is_ok() {
+                created.push(dir);
+            }
+        }
+
+        let (selected, _) = tmp_journal();
+        let reused = candidates.iter().any(|dir| dir == &selected);
+        let selected_display = selected.display().to_string();
+        if !reused {
+            let _ = std::fs::remove_dir_all(&selected);
+        }
+        for dir in created {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        assert!(!reused, "reused legacy journal test directory: {selected_display}");
     }
 
     fn snapshot_limits() -> JournalLimits {
