@@ -118,6 +118,7 @@ pub mod caps {
     /// ignored, not a handshake failure. Same open-set rule as the daemon.
     pub const WORKSPACE_ROOT: &str = "workspace.root";
     pub const CITY_GET: &str = "city.get";
+    pub const FINDINGS_GET: &str = "findings.get";
     pub const ORACLE_SEARCH: &str = "oracle.search";
     pub const GRAPH_IMPORTS: &str = "graph.imports";
     pub const SESSIONS_WATCH: &str = "sessions.watch";
@@ -177,6 +178,7 @@ pub fn plugin_backend_capabilities() -> Vec<Capability> {
         Capability::new(caps::PING),
         Capability::new(caps::WORKSPACE_ROOT),
         Capability::new(caps::CITY_GET),
+        Capability::new(caps::FINDINGS_GET),
     ]
 }
 
@@ -220,9 +222,11 @@ mod tests {
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::PING));
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::WORKSPACE_ROOT));
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::CITY_GET));
+        assert!(plugin.iter().any(|cap| cap.as_str() == caps::FINDINGS_GET));
         assert!(!plugin.iter().any(|cap| cap.as_str() == caps::STATUS));
         assert!(!plugin.iter().any(|cap| cap.as_str() == caps::SESSIONS));
         assert_eq!(invoke_method_capability("workspace.root"), caps::WORKSPACE_ROOT);
+        assert_eq!(invoke_method_capability("findings.get"), caps::FINDINGS_GET);
     }
 
     #[test]

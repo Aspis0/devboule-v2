@@ -508,4 +508,26 @@ severity = "smoke"
             .expect("scan");
         assert!(findings.is_empty(), "clean code produced {findings:?}");
     }
+
+    #[test]
+    fn a_file_that_vanishes_mid_scan_is_skipped_not_a_failed_review() {
+        let aws = tokens::aws_access_token();
+        assert_assembled_matches_rule("aws-access-token", &aws);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let kept = write(
+            temp.path(),
+            "src/auth.rs",
+            &format!("const KEY: &str = \"{aws}\";\n"),
+        );
+        let files = [kept, PathBuf::from("src/gone.rs")];
+        let findings = Secrets::default()
+            .scan(&Context::new(temp.path(), &files))
+            .expect("a vanished neighbour must not fail the detector");
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.rule() == "aws-access-token"),
+            "kept secret was lost because a neighbour vanished: {findings:?}"
+        );
+    }
 }

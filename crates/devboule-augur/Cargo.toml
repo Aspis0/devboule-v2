@@ -8,7 +8,9 @@ publish = false
 
 [dependencies]
 # Evidence redaction only. Secret *detection* uses vendored gitleaks TOML.
-oracle-core = { path = "../oracle-core" }
+# `city` — not default/`full` — so linking Augur into polis-backend cannot
+# pull ort/onnx into a plugin process that never embeds.
+oracle-core = { path = "../oracle-core", default-features = false, features = ["city"] }
 # Workspace pin. 0.32 was the old source crate; the lockfile unifies on 0.40.2
 # because Cargo allows only one `links = "sqlite3"`.
 rusqlite = { version = "=0.40.2", features = ["bundled"] }

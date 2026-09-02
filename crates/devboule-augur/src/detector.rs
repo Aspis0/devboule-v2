@@ -61,6 +61,7 @@ impl Registry {
     pub fn builtin() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(crate::detectors::secrets::Secrets::default()));
+        registry.register(Box::new(crate::detectors::untested::Untested::default()));
         registry.register(Box::new(crate::detectors::clippy::Clippy::default()));
         registry
     }
@@ -208,5 +209,30 @@ mod tests {
         );
         assert!(review.completed.contains(&"secrets"));
         assert!(!review.completed.contains(&"clippy"));
+    }
+
+    #[test]
+    fn builtin_cheap_review_runs_the_third_detector_and_skips_clippy() {
+        let files: [PathBuf; 0] = [];
+        let review = Registry::builtin().review(&Context::new(Path::new("."), &files), Cost::Cheap);
+        assert!(
+            review.completed.contains(&"untested"),
+            "one register() line must put untested on the cheap path: completed={:?} registered={:?}",
+            review.completed,
+            review.registered
+        );
+        assert!(review.completed.contains(&"secrets"));
+        assert!(
+            !review.completed.contains(&"clippy"),
+            "clippy is Cost::Tool and must stay off the request path: {:?}",
+            review.completed
+        );
+        assert!(
+            review.failed.iter().all(|failed| failed.detector != "clippy"),
+            "clippy must not even start: {:?}",
+            review.failed
+        );
+        assert!(review.registered.contains(&"untested"));
+        assert!(review.registered.contains(&"clippy"));
     }
 }

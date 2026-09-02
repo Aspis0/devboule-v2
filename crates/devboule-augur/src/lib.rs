@@ -19,5 +19,6 @@ mod tokens;
 pub use detector::{Context, Cost, Detector, FailedDetector, Registry, Review};
 pub use error::Error;
 pub use exchange::to_sarif;
-pub use finding::{Finding, FindingId, Location, Severity};
+pub use finding::{Draft, Finding, FindingId, Location, Severity};
 pub use ledger::Ledger;
+pub use ruleset::shipped_rule_matches;

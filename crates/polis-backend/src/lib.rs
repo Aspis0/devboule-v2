@@ -34,7 +34,9 @@ fn city_response_too_large_error(id: u64) -> DaemonMessage {
     )
 }
 mod city;
+mod findings;
 pub use city::{build_city, CityBuildError, MAX_CITY_FILES, MAX_CITY_FILE_BYTES};
+pub use findings::{get_findings, FindingsError};
 
 pub fn dispatch(
     grants: &BTreeMap<String, String>,
@@ -119,6 +121,23 @@ fn dispatch_invoke(
                 DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()).with_id(id))
             }
         }
+    } else if method == caps::FINDINGS_GET {
+        let Some(root) = grants.get(caps::WORKSPACE_ROOT) else {
+            return DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    "findings.get requires the host-granted workspace.root",
+                )
+                .with_id(id),
+            );
+        };
+        match get_findings(std::path::Path::new(root)) {
+            Ok(value) if !city_response_within_frame(&value) => city_response_too_large_error(id),
+            Ok(value) => DaemonMessage::InvokeResult { id, value },
+            Err(error) => {
+                DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()).with_id(id))
+            }
+        }
     } else {
         DaemonMessage::Error(
             WireError::new(
@@ -187,6 +206,55 @@ mod tests {
                 assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
             }
             other => panic!("expected capability error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn findings_get_returns_mapped_findings_when_workspace_is_granted() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/lib.rs"), "pub fn x() {}\n").unwrap();
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            caps::WORKSPACE_ROOT.to_string(),
+            root.path().to_string_lossy().into_owned(),
+        );
+        let granted = vec![
+            Capability::new(caps::PING),
+            Capability::new(caps::WORKSPACE_ROOT),
+            Capability::new(caps::FINDINGS_GET),
+        ];
+        let reply = dispatch(
+            &grants,
+            &granted,
+            ClientMessage::Invoke {
+                id: 8,
+                method: caps::FINDINGS_GET.to_string(),
+                payload: None,
+            },
+        );
+        match reply {
+            DaemonMessage::InvokeResult { id, value } => {
+                assert_eq!(id, 8);
+                assert_eq!(value["scanned"], true);
+                assert!(value["completed"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item == "secrets"));
+                assert!(value["completed"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item == "untested"));
+                assert!(!value["completed"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item == "clippy"));
+                assert!(value["findings"].as_array().is_some());
+            }
+            other => panic!("expected findings result, got {other:?}"),
         }
     }
 

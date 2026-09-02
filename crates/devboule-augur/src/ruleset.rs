@@ -15,6 +15,18 @@ const LOCATIONS_TOML: &str = include_str!("../rules/locations.toml");
 
 static GITLEAKS_IDS: OnceLock<HashSet<String>> = OnceLock::new();
 
+/// True when a shipped gitleaks rule still matches `sample`. Callers that
+/// assemble fixtures at runtime must check this *before* asserting a scan
+/// found the value, so a stale pattern cannot masquerade as a detector miss.
+pub fn shipped_rule_matches(rule_id: &str, sample: &str) -> bool {
+    let Ok(set) = Ruleset::builtin() else {
+        return false;
+    };
+    set.rules
+        .iter()
+        .any(|rule| rule.id == rule_id && rule.pattern.is_match(sample))
+}
+
 pub fn is_gitleaks_rule(rule: &str) -> bool {
     GITLEAKS_IDS
         .get_or_init(|| {

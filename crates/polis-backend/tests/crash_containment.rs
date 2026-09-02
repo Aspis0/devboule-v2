@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use devboule_daemon::{connect_pipe, Framed};
 use devboule_plugin_rpc::{host_owner, PluginSession, SpawnSpec, HOST_PID_ENV};
+use devboule_augur::shipped_rule_matches;
 use devboule_protocol::{
     caps, plugin_backend_capabilities, ClientHello, ClientMessage, DaemonMessage,
 };
@@ -186,6 +187,51 @@ fn city_get_round_trips_over_the_backend_pipe() {
     assert_eq!(city["files"][0]["id"], "src/main.ts");
     assert_eq!(city["agents"], serde_json::json!([]));
     assert_eq!(city["findings"], serde_json::json!([]));
+}
+
+#[test]
+fn findings_get_round_trips_over_the_backend_pipe() {
+    let prefix = "AKIA";
+    let body = "BHCEFGHIJKLMNOPQ";
+    let aws = format!("{prefix}{body}");
+    assert!(
+        shipped_rule_matches("aws-access-token", &aws),
+        "assembled fixture no longer matches gitleaks aws-access-token"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(dir.path().join("src")).expect("src directory");
+    std::fs::write(
+        dir.path().join("src/auth.rs"),
+        format!("const KEY: &str = \"{aws}\";\n"),
+    )
+    .expect("auth source");
+    let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
+    let value = session
+        .invoke_timeout(
+            caps::FINDINGS_GET,
+            None,
+            Duration::from_secs(30),
+        )
+        .expect("findings.get");
+    assert_eq!(value["scanned"], true);
+    let findings = value["findings"].as_array().expect("findings array");
+    let secret = findings
+        .iter()
+        .find(|finding| finding["rule"] == "aws-access-token")
+        .expect("scan should report the assembled AWS token");
+    assert_eq!(secret["fileId"], "src/auth.rs");
+    assert_eq!(secret["severity"], "inferno");
+    assert!(secret["id"].as_str().expect("id").len() == 64);
+    assert!(secret.get("evidence").is_none(), "inspector fields must stay off the wire");
+    assert!(secret.get("startLine").is_none());
+    let completed = value["completed"].as_array().expect("completed");
+    assert!(completed.iter().any(|id| id == "secrets"));
+    assert!(completed.iter().any(|id| id == "untested"));
+    assert!(
+        !completed.iter().any(|id| id == "clippy"),
+        "clippy ran on the request path: {completed:?}"
+    );
 }
 
 #[test]

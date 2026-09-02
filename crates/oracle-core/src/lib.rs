@@ -11,6 +11,12 @@ mod cli;
 mod cluster;
 #[cfg(any(feature = "city", feature = "full"))]
 mod config;
+/// Redaction must be available to Augur without the full Oracle runtime
+/// (ort/onnx). Under `full` it lives at `query::redact`; under `city` alone
+/// the same file is compiled as this module.
+#[cfg(all(feature = "city", not(feature = "full")))]
+#[path = "query/redact.rs"]
+mod redact;
 #[cfg(feature = "full")]
 mod doctor;
 #[cfg(feature = "embedder")]
@@ -78,6 +84,8 @@ pub use query::focus::FocusSpan;
 pub use query::pool_embedder::PoolQueryEmbedder;
 #[cfg(feature = "full")]
 pub use query::redact::redact_secret_tokens;
+#[cfg(all(feature = "city", not(feature = "full")))]
+pub use redact::redact_secret_tokens;
 #[cfg(feature = "full")]
 pub use query::reranker::{
     configured_reranker_present, default_model_dir, RerankerHandle, SharedReranker,

@@ -139,6 +139,7 @@ default = ["full"]
 city = [
     "dep:anyhow",
     "dep:rusqlite",
+    "dep:regex",
 ]
 embedder = [
     "dep:anyhow",

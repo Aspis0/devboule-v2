@@ -2,3 +2,4 @@
 
 pub mod clippy;
 pub mod secrets;
+pub mod untested;

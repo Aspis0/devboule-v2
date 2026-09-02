@@ -23,6 +23,9 @@ pub const CHUNK_MANIFEST: &str = "chunk-index-manifest.json";
 /// Code-knowledge-graph database. Name and `CKG_DB_PATH` override are v1's,
 /// so an existing graph is found rather than silently rebuilt beside itself.
 pub const CKG_SQLITE: &str = "ckg.sqlite";
+/// Augur findings ledger. Lives next to the CKG so a workspace has one data
+/// dir; the plugin install dir is never used.
+pub const AUGUR_SQLITE: &str = "augur.sqlite";
 
 /// Env var selecting the real (Qwen) query embedder vs. the hash fallback.
 /// Mirrors `ORACLE_QUERY_EMBEDDER` usage in `oracle/store/lance_store.py`.
@@ -214,6 +217,12 @@ impl OracleDataPaths {
             root: data_dir,
         }
     }
+
+    /// Findings ledger path. Always `<oracle-data>/augur.sqlite` — no env
+    /// override, same confinement as the CKG under `from_root_without_env`.
+    pub fn augur_ledger(&self) -> PathBuf {
+        self.root.join(AUGUR_SQLITE)
+    }
 }
 
 /// Resolve the Oracle data directory under a workspace root once, to an
@@ -390,5 +399,11 @@ mod tests {
         }
         assert_eq!(paths.root, temp.path().join(DEFAULT_ORACLE_DIR));
         assert_eq!(paths.ckg, paths.root.join(CKG_SQLITE));
+        assert_eq!(paths.augur_ledger(), paths.root.join(AUGUR_SQLITE));
+        assert_eq!(
+            paths.augur_ledger().parent().as_deref(),
+            paths.ckg.parent(),
+            "augur ledger must sit beside the CKG so path drift is impossible"
+        );
     }
 }

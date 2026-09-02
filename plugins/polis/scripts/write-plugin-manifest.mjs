@@ -46,6 +46,12 @@ try {
     "workspace.root",
     "--capability",
     "city.get",
+    "--capability",
+    "findings.get",
+    // Requested this round so the host-side sessions.watch work can land
+    // without colliding on this file. Granting it is not this change.
+    "--capability",
+    "sessions.watch",
   ];
   if (backendCopied) {
     producerArgs.push("--entry-backend", backendName);

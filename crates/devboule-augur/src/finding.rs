@@ -471,6 +471,10 @@ pub(crate) fn coalesce(findings: Vec<Finding>) -> Vec<Finding> {
 const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 
 pub(crate) fn read_source(path: &Path) -> Option<String> {
+    // metadata-then-read is a TOCTOU window (declared not-done). A file that
+    // changes or vanishes between the two must skip, never panic, never fail
+    // the whole review. Skip counting lives at the polis-backend walk, because
+    // two cheap detectors would otherwise double-count the same vanished file.
     let meta = std::fs::metadata(path).ok()?;
     if meta.len() > MAX_SOURCE_BYTES {
         return None;
