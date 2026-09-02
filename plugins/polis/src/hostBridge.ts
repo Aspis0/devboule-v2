@@ -9,6 +9,7 @@ const DEFAULT_TIMEOUT_MS = 4000;
 export const MAX_HOST_RESPONSE_BYTES = 1024 * 1024;
 export const CITY_FETCH_TIMEOUT_MS = 30_000;
 export const FINDINGS_FETCH_TIMEOUT_MS = 65_000;
+export const INSPECT_FETCH_TIMEOUT_MS = 10_000;
 export const SESSIONS_WATCH_TIMEOUT_MS = 10_000;
 
 export type CityLoadState =
@@ -177,6 +178,85 @@ export async function loadFindings(
   } catch (error) {
     return { status: "failed", failure: findingsFetchFailure(error), error };
   }
+}
+
+export interface FindingInspectionLocation {
+  startLine: number;
+  endLine: number;
+}
+
+export interface FindingInspection {
+  id: string;
+  rule: string;
+  severity: CityFindingSeverity;
+  title: string;
+  source: string;
+  startLine: number;
+  endLine: number;
+  locations: FindingInspectionLocation[];
+}
+
+export type FindingInspectionFailure = "timeout" | "refusal" | "malformed" | "not_found";
+
+export type FindingInspectionLoadState =
+  | { status: "host"; inspection: FindingInspection }
+  | {
+      status: "failed";
+      failure: FindingInspectionFailure;
+      error: unknown;
+    };
+
+export async function loadFindingInspection(
+  invoke: HostInvoker,
+  id: string,
+  timeoutMs = INSPECT_FETCH_TIMEOUT_MS,
+): Promise<FindingInspectionLoadState> {
+  try {
+    const value = await invoke("finding.inspect", { id }, timeoutMs);
+    if (!isFindingInspection(value, id)) {
+      const error = new Error("finding.inspect returned an invalid inspection payload") as Error & {
+        code?: string;
+      };
+      error.code = "malformed_finding_inspection";
+      throw error;
+    }
+    return { status: "host", inspection: value };
+  } catch (error) {
+    return { status: "failed", failure: findingInspectionFetchFailure(error), error };
+  }
+}
+
+export function isFindingInspection(value: unknown, expectedId: string): value is FindingInspection {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  const allowed = new Set([
+    "id",
+    "rule",
+    "severity",
+    "title",
+    "source",
+    "startLine",
+    "endLine",
+    "locations",
+  ]);
+  if (keys.length !== 8 || keys.some((key) => !allowed.has(key))) return false;
+  if (
+    value.id !== expectedId ||
+    typeof value.id !== "string" ||
+    !/^[0-9a-fA-F]{64}$/.test(value.id) ||
+    typeof value.rule !== "string" ||
+    typeof value.title !== "string" ||
+    typeof value.source !== "string" ||
+    value.source === "" ||
+    !isCityFindingSeverity(value.severity) ||
+    !isValidLine(value.startLine) ||
+    !isValidLine(value.endLine) ||
+    value.startLine > value.endLine ||
+    !Array.isArray(value.locations)
+  ) {
+    return false;
+  }
+  return value.locations.every(isFindingInspectionLocation);
 }
 
 export function formatFindingsReadout(
@@ -534,12 +614,39 @@ function isCityFindingSeverity(value: unknown): value is CityFindingSeverity {
   return value === "smoke" || value === "fire" || value === "inferno";
 }
 
+function isValidLine(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 1;
+}
+
+function isFindingInspectionLocation(value: unknown): value is FindingInspectionLocation {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length === 2 &&
+    keys.every((key) => key === "startLine" || key === "endLine") &&
+    isValidLine(value.startLine) &&
+    isValidLine(value.endLine) &&
+    value.startLine <= value.endLine
+  );
+}
+
 function findingsFetchFailure(error: unknown): "timeout" | "refusal" | "malformed" {
   const code = errorCode(error);
   if (code === "timeout") return "timeout";
   if (code === "malformed_findings") return "malformed";
   const message = errorMessage(error).toLowerCase();
   if (message.includes("timed out") || message.includes("timeout")) return "timeout";
+  return "refusal";
+}
+
+function findingInspectionFetchFailure(error: unknown): FindingInspectionFailure {
+  const code = errorCode(error);
+  const message = errorMessage(error).toLowerCase();
+  if (code === "invalid_request" && message.includes("finding not found")) return "not_found";
+  if (code === "timeout" || message.includes("timed out") || message.includes("timeout")) {
+    return "timeout";
+  }
+  if (code === "malformed_finding_inspection") return "malformed";
   return "refusal";
 }
 

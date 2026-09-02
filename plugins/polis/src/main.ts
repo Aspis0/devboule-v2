@@ -26,8 +26,9 @@ import {
   renderFindingsInCityStats,
   startFindingsScan,
 } from "./findings";
+import { createFindingInspector } from "./findingInspector";
 import { createHostRosterReadout } from "./roster";
-import type { City, CityFile } from "./model";
+import type { City, CityFile, CityFinding } from "./model";
 
 const canvas = getElement<HTMLCanvasElement>("scene");
 const webglReadout = getElement<HTMLElement>("webgl");
@@ -41,6 +42,8 @@ const hostRosterReadout = createHostRosterReadout(rosterReadout);
 const findingReadout = getElement<HTMLElement>("findings");
 const hostFindingsReadout = createHostFindingsReadout(findingReadout);
 const detailsReadout = getElement<HTMLElement>("details");
+const findingsByFile = new Map<string, CityFinding[]>();
+const findingInspector = createFindingInspector(detailsReadout, invokeHost, showFileDetails);
 const hudToggle = getElement<HTMLButtonElement>("hud-toggle");
 const hudDetails = getElement<HTMLDivElement>("hud-details");
 const fixture = fixtureCity as City;
@@ -147,6 +150,8 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
       details: {
         setDetails: (file) => showFileDetails(file),
         clearDetails: () => clearFileDetails(),
+        selectBuilding: (file) =>
+          findingInspector.open(file, findingsByFile.get(file.id) ?? []),
       },
       bank,
     });
@@ -162,7 +167,16 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
       () => loadFindings(invokeHost, FINDINGS_FETCH_TIMEOUT_MS),
       knownFileIds,
       hostFindingsReadout,
-      (findings) => renderer?.refreshFindings(findings),
+      (findings) => {
+        findingsByFile.clear();
+        for (const finding of findings) {
+          const fileFindings = findingsByFile.get(finding.fileId);
+          if (fileFindings === undefined) findingsByFile.set(finding.fileId, [finding]);
+          else fileFindings.push(finding);
+        }
+        findingInspector.refreshFindings(findings);
+        renderer?.refreshFindings(findings);
+      },
     );
   }
 
@@ -334,10 +348,12 @@ function renderPendingCity(): void {
 }
 
 function showFileDetails(file: CityFile): void {
+  if (findingInspector.isOpen()) return;
   detailsReadout.textContent = `${file.path} · ${file.lines.toLocaleString()} lines · district ${file.district}`;
 }
 
 function clearFileDetails(): void {
+  if (findingInspector.isOpen()) return;
   detailsReadout.textContent = "Hover a building to inspect its file";
 }
 

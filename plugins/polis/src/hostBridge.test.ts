@@ -15,13 +15,90 @@ import {
   formatHandshakeReadout,
   formatWorkspaceRootReadout,
   hostResponseWithinLimit,
+  INSPECT_FETCH_TIMEOUT_MS,
+  isFindingInspection,
   isSessionFeed,
+  loadFindingInspection,
   sessionFeedToAgents,
   type SessionFeed,
   subscribeSessions,
 } from "./hostBridge";
 
 describe("backend overlay readout", () => {
+  it("validates and loads finding inspection with the exact request tuple", async () => {
+    const id = "d".repeat(64);
+    const inspection = {
+      id,
+      rule: "secret-token",
+      severity: "inferno" as const,
+      title: "Secret detected",
+      source: "secrets",
+      startLine: 4,
+      endLine: 8,
+      locations: [
+        { startLine: 4, endLine: 4 },
+        { startLine: 8, endLine: 8 },
+      ],
+    };
+    expect(isFindingInspection(inspection, id)).toBe(true);
+    expect(isFindingInspection({ ...inspection, extra: true }, id)).toBe(false);
+    expect(isFindingInspection({ ...inspection, id: "e".repeat(64) }, id)).toBe(false);
+    expect(
+      isFindingInspection(
+        { ...inspection, locations: [{ startLine: 9, endLine: 8 }] },
+        id,
+      ),
+    ).toBe(false);
+    expect(isFindingInspection({ ...inspection, severity: "unknown" }, id)).toBe(false);
+    expect(isFindingInspection({ ...inspection, locations: [{ startLine: 1 }] }, id)).toBe(false);
+
+    const invoke = vi.fn().mockResolvedValue(inspection);
+    await expect(loadFindingInspection(invoke, id)).resolves.toEqual({
+      status: "host",
+      inspection,
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      "finding.inspect",
+      { id },
+      INSPECT_FETCH_TIMEOUT_MS,
+    );
+  });
+
+  it("distinguishes finding-not-found and malformed inspection failures", async () => {
+    const notFound = Object.assign(new Error("finding not found"), { code: "invalid_request" });
+    await expect(loadFindingInspection(vi.fn().mockRejectedValue(notFound), "f".repeat(64))).resolves.toMatchObject({
+      status: "failed",
+      failure: "not_found",
+    });
+
+    const malformed = await loadFindingInspection(
+      vi.fn().mockResolvedValue({
+        id: "f".repeat(64),
+        rule: "r",
+        severity: "fire",
+        title: "T",
+        source: "untested",
+        startLine: 0,
+        endLine: 1,
+        locations: [],
+      }),
+      "f".repeat(64),
+    );
+    expect(malformed).toMatchObject({ status: "failed", failure: "malformed" });
+
+    const malformedLocation = {
+      id: "f".repeat(64),
+      rule: "r",
+      severity: "fire",
+      title: "T",
+      source: "untested",
+      startLine: 1,
+      endLine: 1,
+      locations: [{ startLine: 1, endLine: 1, line: 1 }],
+    };
+    expect(isFindingInspection(malformedLocation, "f".repeat(64))).toBe(false);
+  });
+
   it("validates and loads the findings contract with the long scan timeout", async () => {
     const report = findingsReport();
     expect(isFindingsReport(report)).toBe(true);

@@ -1,4 +1,4 @@
-import { Application, Container, Graphics, Matrix, Rectangle, type Texture } from "pixi.js";
+import { Application, Container, Graphics, Matrix, Point, Rectangle, type Texture } from "pixi.js";
 import { AmbientLayer, AMBIENT_LOD_ZOOM, desiredAmbientCount } from "./ambient";
 import { BuildingTextureAtlas } from "./buildingAtlas";
 import { AgentLayer } from "./agents";
@@ -36,12 +36,28 @@ import type { SpriteBank } from "./spriteAssets";
 import { DERIVED } from "./terrainPalette";
 
 const INITIAL_CAMERA_MARGIN = 32;
+export const BUILDING_TAP_DRAG_THRESHOLD_PX = 6;
+
+export function isBuildingTapMovement(
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+): boolean {
+  return Math.hypot(endX - startX, endY - startY) <= BUILDING_TAP_DRAG_THRESHOLD_PX;
+}
 
 interface ViewEntry {
   display: Container;
   worldX: number;
   worldY: number;
   radius: number;
+}
+
+interface BuildingTarget {
+  display: Container;
+  file: CityFile;
+  hitArea: Rectangle;
 }
 
 interface AnimatedDisplay {
@@ -52,6 +68,7 @@ interface AnimatedDisplay {
 export interface RendererDetails {
   setDetails(file: CityFile): void;
   clearDetails(): void;
+  selectBuilding?(file: CityFile): void;
 }
 
 export interface WorldLayerSet {
@@ -103,6 +120,7 @@ export class CityRenderer {
   private readonly tradeRouteLayer: TradeRouteLayer;
   private readonly ambientLayer: AmbientLayer;
   private readonly buildingViews: ViewEntry[] = [];
+  private readonly buildingTargets: BuildingTarget[] = [];
   private readonly roadViews: ViewEntry[] = [];
   private readonly monumentViews: ViewEntry[] = [];
   private readonly animated: AnimatedDisplay[] = [];
@@ -114,6 +132,9 @@ export class CityRenderer {
   private panX = 0;
   private panY = 32;
   private pointerId: number | null = null;
+  private pointerDownAt: { x: number; y: number } | null = null;
+  private suppressTapForPointer = false;
+  private buildingTapHandled = false;
   private lastPointer = { x: 0, y: 0 };
   private animTime = 0;
 
@@ -543,15 +564,18 @@ export class CityRenderer {
     art.display.zIndex = buildingDepth(layout.gridX, layout.gridY, layout.footprint);
     art.display.eventMode = "static";
     art.display.cursor = "pointer";
-    art.display.hitArea = new Rectangle(
+    const hitArea = new Rectangle(
       art.frame.x,
       art.frame.y,
       art.frame.width,
       art.frame.height,
     );
+    art.display.hitArea = hitArea;
     art.display.on("pointerover", () => this.details.setDetails(layout.file));
     art.display.on("pointerout", () => this.details.clearDetails());
+    art.display.on("pointertap", () => this.handleBuildingTap(layout.file));
     this.buildings.addChild(art.display);
+    this.buildingTargets.push({ display: art.display, file: layout.file, hitArea });
     art.shadow.position.set(layout.worldX, layout.worldY);
     art.shadow.zIndex = buildingDepth(layout.gridX, layout.gridY, layout.footprint);
     this.shadows.addChild(art.shadow);
@@ -591,11 +615,25 @@ export class CityRenderer {
     this.canvas.style.touchAction = "none";
     this.canvas.addEventListener("pointerdown", (event) => {
       this.pointerId = event.pointerId;
+      this.pointerDownAt = { x: event.clientX, y: event.clientY };
+      this.suppressTapForPointer = false;
+      this.buildingTapHandled = false;
       this.lastPointer = { x: event.clientX, y: event.clientY };
       this.canvas.setPointerCapture(event.pointerId);
     });
     this.canvas.addEventListener("pointermove", (event) => {
       if (this.pointerId !== event.pointerId) return;
+      if (
+        this.pointerDownAt !== null &&
+        !isBuildingTapMovement(
+          this.pointerDownAt.x,
+          this.pointerDownAt.y,
+          event.clientX,
+          event.clientY,
+        )
+      ) {
+        this.suppressTapForPointer = true;
+      }
       this.panX += event.clientX - this.lastPointer.x;
       this.panY += event.clientY - this.lastPointer.y;
       this.lastPointer = { x: event.clientX, y: event.clientY };
@@ -603,14 +641,57 @@ export class CityRenderer {
     });
     const endPointer = (event: PointerEvent) => {
       if (this.pointerId !== event.pointerId) return;
+      if (
+        event.type === "pointerup" &&
+        this.pointerDownAt !== null &&
+        !isBuildingTapMovement(
+          this.pointerDownAt.x,
+          this.pointerDownAt.y,
+          event.clientX,
+          event.clientY,
+        )
+      ) {
+        this.suppressTapForPointer = true;
+      }
+      if (event.type === "pointerup" && event.button === 0 && !this.suppressTapForPointer) {
+        this.handleBuildingTap(this.buildingAtClientPoint(event));
+      }
       this.pointerId = null;
+      this.pointerDownAt = null;
       if (this.canvas.hasPointerCapture(event.pointerId))
         this.canvas.releasePointerCapture(event.pointerId);
     };
     this.canvas.addEventListener("pointerup", endPointer);
-    this.canvas.addEventListener("pointercancel", endPointer);
+    this.canvas.addEventListener("pointercancel", (event) => {
+      this.suppressTapForPointer = true;
+      endPointer(event);
+    });
     this.canvas.addEventListener("wheel", (event) => this.zoomAt(event), { passive: false });
     window.addEventListener("resize", () => this.updateCamera());
+  }
+
+  private handleBuildingTap(file: CityFile | null): void {
+    if (file === null || this.suppressTapForPointer || this.buildingTapHandled) return;
+    this.buildingTapHandled = true;
+    this.details.selectBuilding?.(file);
+  }
+
+  private buildingAtClientPoint(event: PointerEvent): CityFile | null {
+    const bounds = this.canvas.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return null;
+    const point = new Point(
+      ((event.clientX - bounds.left) / bounds.width) * this.app.screen.width,
+      ((event.clientY - bounds.top) / bounds.height) * this.app.screen.height,
+    );
+    let selected: BuildingTarget | null = null;
+    for (const target of this.buildingTargets) {
+      const local = target.display.toLocal(point);
+      if (!target.hitArea.contains(local.x, local.y)) continue;
+      if (selected === null || target.display.zIndex >= selected.display.zIndex) {
+        selected = target;
+      }
+    }
+    return selected?.file ?? null;
   }
 
   private zoomAt(event: WheelEvent): void {
