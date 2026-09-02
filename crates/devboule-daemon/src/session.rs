@@ -71,7 +71,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -131,6 +131,11 @@ pub const COALESCE_EAGER_BYTES: usize = 1;
 /// before emitting `exit`. `Child::wait` returns before the last bytes
 /// have been read; dropping them would truncate the live stream.
 const EXIT_DRAIN: Duration = Duration::from_millis(200);
+
+/// Five minutes separates a real thinking pause from a session that deserves
+/// a liveness warning. A shorter threshold would turn normal terminal pauses
+/// into noise and make the signal less trustworthy.
+pub const SESSION_SILENCE_THRESHOLD: Duration = Duration::from_secs(300);
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -259,6 +264,7 @@ enum PendingItem {
 #[derive(Clone, Copy, Debug)]
 enum Disposition {
     Running,
+    Silent,
     Exited,
     Recovered { truncated: bool },
 }
@@ -296,6 +302,7 @@ struct StreamState {
     exit_code: Option<u32>,
     last_publish: Option<Instant>,
     exit_at: Option<Instant>,
+    pending_silences: VecDeque<u64>,
     disposition: Disposition,
 }
 
@@ -336,6 +343,9 @@ struct SessionRuntime {
     /// Kept outside `stream` so a poisoned stream can still wake its viewer
     /// and deliver the degraded + exit terminal markers.
     attachment_notify: Mutex<Option<Arc<ConnOut>>>,
+    /// Output that resumes a silent stream, exit, and teardown wake the
+    /// deadline sleeper without turning it back into a one-second poller.
+    liveness_wake: Arc<(Mutex<bool>, Condvar)>,
     /// The last generation is also needed if the stream lock is poisoned
     /// before the EOF path can read its generation.
     generation: AtomicU64,
@@ -372,14 +382,18 @@ impl SessionRuntime {
                 output_closed: false,
                 process_exited: false,
                 exit_code: None,
-                last_publish: None,
+                // A session with no first output yet is still observable as
+                // alive; its age starts when the runtime is created.
+                last_publish: Some(Instant::now()),
                 exit_at: None,
+                pending_silences: VecDeque::new(),
                 disposition: Disposition::Running,
             }),
             pty_writer: OnceLock::new(),
             journal_degraded: AtomicBool::new(false),
             terminal_dead: AtomicBool::new(false),
             attachment_notify: Mutex::new(None),
+            liveness_wake: Arc::new((Mutex::new(false), Condvar::new())),
             generation: AtomicU64::new(1),
             peak_pending_bytes: AtomicUsize::new(0),
             coalesced_bytes: AtomicU64::new(0),
@@ -406,6 +420,9 @@ impl SessionRuntime {
         stream.last_applied_seq = replay.last_seq;
         stream.output_closed = true;
         stream.process_exited = true;
+        stream.last_publish = None;
+        stream.exit_at = None;
+        stream.pending_silences.clear();
         stream.disposition = Disposition::Recovered {
             truncated: replay.truncated,
         };
@@ -425,6 +442,7 @@ impl SessionRuntime {
                 SessionEvent::Recovered { truncated } => {
                     stream.disposition = Disposition::Recovered { truncated };
                 }
+                SessionEvent::Silent { .. } => {}
                 SessionEvent::JournalDegraded => {
                     runtime.journal_degraded.store(true, Ordering::Release);
                 }
@@ -488,6 +506,62 @@ impl SessionRuntime {
         }
     }
 
+    fn notify_liveness(&self) {
+        let (wake_lock, wake) = &*self.liveness_wake;
+        if let Ok(mut notified) = wake_lock.lock() {
+            *notified = true;
+            wake.notify_one();
+        }
+    }
+
+    /// Return `None` when the monitor should stop, `Some(None)` when it should
+    /// wait for output or exit, and `Some(Some(deadline))` for a timed wait.
+    fn next_liveness_deadline(&self) -> Option<Option<Instant>> {
+        let stream = self.lock_stream().ok()?;
+        if stream.process_exited || stream.output_closed {
+            return None;
+        }
+        if !matches!(stream.disposition, Disposition::Running) {
+            return Some(None);
+        }
+        let Some(last_publish) = stream.last_publish else {
+            return Some(None);
+        };
+        Some(last_publish.checked_add(SESSION_SILENCE_THRESHOLD))
+    }
+
+    fn wait_for_liveness(&self, deadline: Option<Instant>) {
+        let (wake_lock, wake) = &*self.liveness_wake;
+        let Ok(mut notified) = wake_lock.lock() else {
+            return;
+        };
+        if *notified {
+            *notified = false;
+            return;
+        }
+        match deadline {
+            Some(deadline) => {
+                let wait = deadline.saturating_duration_since(Instant::now());
+                if wait.is_zero() {
+                    drop(notified);
+                    // `mark_silent_if_due` intentionally uses a strict
+                    // greater-than threshold; avoid a hot loop at the exact
+                    // deadline while preserving that boundary.
+                    std::thread::sleep(Duration::from_millis(1));
+                    return;
+                }
+                if let Ok((mut notified, _)) = wake.wait_timeout(notified, wait) {
+                    *notified = false;
+                }
+            }
+            None => {
+                if let Ok(mut notified) = wake.wait(notified) {
+                    *notified = false;
+                }
+            }
+        }
+    }
+
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
@@ -496,6 +570,7 @@ impl SessionRuntime {
         let pty_replies;
         let seq;
         let generation;
+        let was_silent;
         {
             let Ok(mut stream) = self.lock_stream() else {
                 return;
@@ -537,6 +612,13 @@ impl SessionRuntime {
             };
             stream.last_applied_seq = seq;
             stream.last_publish = Some(Instant::now());
+            was_silent = matches!(stream.disposition, Disposition::Silent);
+            // Output is an observed sign of life while the process is still
+            // running. Bytes drained after Child::wait are not a revival and
+            // must not turn an observed exit back into Live.
+            if !stream.process_exited {
+                stream.disposition = Disposition::Running;
+            }
             generation = stream.generation;
             let (coalesced_bytes, coalesced_frames) = enqueue_output(&mut stream, seq, data);
             self.peak_pending_bytes
@@ -548,6 +630,9 @@ impl SessionRuntime {
             if let Some(attached) = &stream.attached {
                 attached.outbound.notify();
             }
+        }
+        if was_silent {
+            self.notify_liveness();
         }
         // Terminal query replies (DSR/CPR) go straight back to the PTY:
         // ConPTY stalls its render pipeline until they are answered, so they
@@ -637,6 +722,39 @@ impl SessionRuntime {
         self.notify_attachment();
     }
 
+    /// Mark the running stream silent at an injected observation time. The
+    /// monitor uses `Instant::now`; the parameter keeps the transition
+    /// boundary deterministic in unit tests.
+    fn mark_silent_if_due(&self, now: Instant) -> Option<u64> {
+        let elapsed_ms;
+        {
+            let Ok(mut stream) = self.lock_stream() else {
+                return None;
+            };
+            if stream.process_exited || !matches!(stream.disposition, Disposition::Running) {
+                return None;
+            }
+            let Some(last_publish) = stream.last_publish else {
+                return None;
+            };
+            let elapsed = now.saturating_duration_since(last_publish);
+            if elapsed <= SESSION_SILENCE_THRESHOLD {
+                return None;
+            }
+            elapsed_ms = elapsed.as_millis().try_into().unwrap_or(u64::MAX);
+            stream.disposition = Disposition::Silent;
+            stream.pending_silences.push_back(elapsed_ms);
+        }
+        self.notify_attachment();
+        Some(elapsed_ms)
+    }
+
+    fn liveness_monitor_should_stop(&self) -> bool {
+        self.lock_stream()
+            .map(|stream| stream.process_exited || stream.output_closed)
+            .unwrap_or(true)
+    }
+
     fn refresh_journal_degradation(&self) {
         if self
             .journal
@@ -685,6 +803,7 @@ impl SessionRuntime {
                 SessionEvent::Output { seq, data } => Some((seq, data)),
                 SessionEvent::Exit { .. }
                 | SessionEvent::Recovered { .. }
+                | SessionEvent::Silent { .. }
                 | SessionEvent::JournalDegraded
                 // Snapshots are not output chunks and are not sourced from
                 // the historical journal replay path.
@@ -743,6 +862,7 @@ impl SessionRuntime {
         stream.pending.clear();
         stream.pending_bytes = 0;
         stream.pending_frames = 0;
+        stream.pending_silences.clear();
         if let Some(screen) = screen {
             stream
                 .pending
@@ -768,6 +888,7 @@ impl SessionRuntime {
             stream.pending.clear();
             stream.pending_bytes = 0;
             stream.pending_frames = 0;
+            stream.pending_silences.clear();
         }
     }
 
@@ -782,10 +903,12 @@ impl SessionRuntime {
         stream.exit_code = code;
         stream.exit_at = Some(Instant::now());
         stream.disposition = Disposition::Exited;
+        stream.pending_silences.clear();
         if let Some(attached) = &stream.attached {
             attached.outbound.notify();
         }
         drop(stream);
+        self.notify_liveness();
         // Child::wait returns before ConPTY EOFs (ARCHITETTURA §1.7). Record
         // that the process was observed, but do not freeze last_seq: drain
         // frames still need seqs. Ended (exit row) is written at EOF.
@@ -808,6 +931,8 @@ impl SessionRuntime {
         if let Some(attached) = &stream.attached {
             attached.outbound.notify();
         }
+        drop(stream);
+        self.notify_liveness();
     }
 
     fn finish(&self, code: Option<u32>) {
@@ -846,6 +971,7 @@ impl SessionRuntime {
         stream.exit_code = None;
         stream.last_publish = None;
         stream.exit_at = None;
+        stream.pending_silences.clear();
         stream.disposition = Disposition::Running;
         stream.generation
     }
@@ -1103,7 +1229,9 @@ impl ConnHandle {
                     false
                 }
                 SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
-                SessionEvent::JournalDegraded | SessionEvent::Snapshot { .. } => false,
+                SessionEvent::Silent { .. }
+                | SessionEvent::JournalDegraded
+                | SessionEvent::Snapshot { .. } => false,
             }
         };
         if remove {
@@ -1140,6 +1268,7 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
     }
     let mut drained = Vec::with_capacity(PULL_BATCH);
     let degraded;
+    let silent_event;
     let mut exit_event = None;
     {
         let Ok(mut stream) = pull.runtime.lock_stream() else {
@@ -1163,12 +1292,18 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         if degraded {
             pull.journal_degraded_sent = true;
         }
+        silent_event = stream
+            .pending_silences
+            .pop_front()
+            .map(|elapsed_ms| SessionEvent::Silent { elapsed_ms });
         if !pull.exit_sent && stream.pending.is_empty() && SessionRuntime::ready_for_exit(&stream) {
             exit_event = Some(match stream.disposition {
                 Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
-                Disposition::Running | Disposition::Exited => SessionEvent::Exit {
-                    code: stream.exit_code,
-                },
+                Disposition::Running | Disposition::Silent | Disposition::Exited => {
+                    SessionEvent::Exit {
+                        code: stream.exit_code,
+                    }
+                }
             });
             pull.exit_sent = true;
         }
@@ -1196,6 +1331,17 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
                 session_id: session_id.to_string(),
                 generation: pull.generation,
                 event: SessionEvent::JournalDegraded,
+            },
+        });
+    }
+    if let Some(event) = silent_event {
+        events.push(PendingEvent {
+            session_id: session_id.to_string(),
+            attachment_generation: pull.attachment_generation,
+            envelope: SessionEventEnvelope {
+                session_id: session_id.to_string(),
+                generation: pull.generation,
+                event,
             },
         });
     }
@@ -1302,9 +1448,11 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
         if SessionRuntime::ready_for_exit(&stream) {
             let event = match stream.disposition {
                 Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
-                Disposition::Running | Disposition::Exited => SessionEvent::Exit {
-                    code: stream.exit_code,
-                },
+                Disposition::Running | Disposition::Silent | Disposition::Exited => {
+                    SessionEvent::Exit {
+                        code: stream.exit_code,
+                    }
+                }
             };
             events.push(PendingEvent {
                 session_id: session_id.to_string(),
@@ -1332,6 +1480,7 @@ struct PtySession {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     reader_handle: Option<JoinHandle<()>>,
     coalesce_handle: Option<JoinHandle<()>>,
+    liveness_handle: Option<JoinHandle<()>>,
     runtime: Arc<SessionRuntime>,
     exited: Arc<AtomicBool>,
     /// Set by `stop`: the process dies but the session object stays. The
@@ -1387,6 +1536,25 @@ impl RegistryEntry {
     }
 }
 
+fn elapsed_ms_since_last_life(
+    last_publish: Option<Instant>,
+    exit_at: Option<Instant>,
+    process_exited: bool,
+    now: Instant,
+) -> Option<u64> {
+    let origin = if process_exited {
+        exit_at
+    } else {
+        last_publish
+    }?;
+    Some(
+        now.saturating_duration_since(origin)
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+    )
+}
+
 fn live_session_view(session: &PtySession) -> Session {
     let mut metadata = session.metadata.clone();
     if session.runtime.terminal_dead.load(Ordering::Acquire) {
@@ -1407,6 +1575,9 @@ fn live_session_view(session: &PtySession) -> Session {
         Disposition::Running => SessionState::Live {
             generation: stream.generation,
         },
+        Disposition::Silent => SessionState::Silent {
+            generation: stream.generation,
+        },
         Disposition::Exited => SessionState::Ended {
             generation: stream.generation,
             code: stream.exit_code,
@@ -1416,6 +1587,12 @@ fn live_session_view(session: &PtySession) -> Session {
             truncated,
         },
     };
+    metadata.elapsed_ms = elapsed_ms_since_last_life(
+        stream.last_publish,
+        stream.exit_at,
+        stream.process_exited,
+        Instant::now(),
+    );
     metadata
 }
 
@@ -1532,6 +1709,7 @@ impl SessionRegistry {
             kind,
             title: "Terminal".to_string(),
             state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
         };
         let command = match command {
             Some(command) => command,
@@ -2052,6 +2230,27 @@ pub fn spawn_session(
             code
         })
         .ok();
+    let monitor_runtime = Arc::clone(&runtime);
+    let liveness_handle = std::thread::Builder::new()
+        .name(format!("session-liveness-{id}"))
+        .spawn(move || {
+            // This remains one sleeping thread per live session for now. If
+            // session counts grow large, replace it with one shared sweeper.
+            loop {
+                if monitor_runtime.liveness_monitor_should_stop() {
+                    return;
+                }
+                let Some(deadline) = monitor_runtime.next_liveness_deadline() else {
+                    return;
+                };
+                monitor_runtime.wait_for_liveness(deadline);
+                if monitor_runtime.liveness_monitor_should_stop() {
+                    return;
+                }
+                monitor_runtime.mark_silent_if_due(Instant::now());
+            }
+        })
+        .ok();
     let session = PtySession {
         metadata,
         owner: owner.clone(),
@@ -2062,6 +2261,7 @@ pub fn spawn_session(
         writer,
         reader_handle: None,
         coalesce_handle: None,
+        liveness_handle,
         runtime: Arc::clone(&runtime),
         exited: Arc::clone(&exited),
         preserve_on_exit: Arc::new(AtomicBool::new(false)),
@@ -2248,6 +2448,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     session.reader_handle = None;
     let coalesce = session.coalesce_handle.take();
     let child_wait = session.child_wait.take();
+    let liveness = session.liveness_handle.take();
     let PtySession {
         master,
         writer,
@@ -2261,6 +2462,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     drop(writer);
     drop(master);
     bounded_join(child_wait);
+    bounded_join(liveness);
     join_coalesce(coalesce, runtime);
     let _ = session_runtime;
     journal_mark_ended(registry, runtime);
@@ -2313,6 +2515,7 @@ fn teardown_session(session: PtySession) {
         writer,
         reader_handle,
         coalesce_handle,
+        liveness_handle,
         runtime,
         exited: _,
         owner: _,
@@ -2339,6 +2542,7 @@ fn teardown_session(session: PtySession) {
     //    owns Child::wait so we join it here instead of calling wait()
     //    ourselves.
     bounded_join(child_wait);
+    bounded_join(liveness_handle);
     // 4) Best-effort bounded join. JoinHandle has no timed join; the
     //    endpoint close above makes the reader finish promptly, while this
     //    small budget prevents shutdown from accumulating a hang across
@@ -2648,6 +2852,119 @@ mod tests {
             ]
         ));
         assert_eq!(runtime.try_attach(None, &conn), Err(process_gone()));
+    }
+
+    #[test]
+    fn silence_transition_is_emitted_once_after_the_threshold() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        attach_tracked(&runtime, &conn);
+        let _ = drain(&conn);
+        let last_publish = runtime
+            .stream
+            .lock()
+            .expect("stream lock")
+            .last_publish
+            .expect("new sessions have an observed start time");
+
+        assert_eq!(
+            runtime.mark_silent_if_due(
+                last_publish + SESSION_SILENCE_THRESHOLD + Duration::from_millis(42)
+            ),
+            Some(SESSION_SILENCE_THRESHOLD.as_millis() as u64 + 42)
+        );
+        assert_eq!(
+            drain(&conn),
+            vec![SessionEvent::Silent {
+                elapsed_ms: SESSION_SILENCE_THRESHOLD.as_millis() as u64 + 42,
+            }]
+        );
+        assert_eq!(
+            runtime.mark_silent_if_due(
+                last_publish + SESSION_SILENCE_THRESHOLD + Duration::from_secs(1)
+            ),
+            None
+        );
+        assert!(
+            drain(&conn).is_empty(),
+            "silence is a transition, not a tick"
+        );
+    }
+
+    #[test]
+    fn queued_silence_is_dropped_when_output_precedes_a_reattach() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let first = Arc::new(ConnHandle::new(1));
+        attach_tracked(&runtime, &first);
+        let _ = drain(&first);
+        let last_publish = runtime
+            .stream
+            .lock()
+            .expect("stream lock")
+            .last_publish
+            .expect("new sessions have an observed start time");
+
+        runtime.mark_silent_if_due(
+            last_publish + SESSION_SILENCE_THRESHOLD + Duration::from_millis(1),
+        );
+        runtime.publish_output("resumed");
+        runtime.detach_if_conn(first.id);
+
+        let second = Arc::new(ConnHandle::new(2));
+        attach_tracked(&runtime, &second);
+        let events = drain(&second);
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, SessionEvent::Silent { .. })),
+            "a reattached client must not receive stale silence: {events:?}"
+        );
+    }
+
+    #[test]
+    fn silence_is_dropped_when_the_session_exits() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = Arc::new(ConnHandle::new(1));
+        attach_tracked(&runtime, &conn);
+        let _ = drain(&conn);
+        let last_publish = runtime
+            .stream
+            .lock()
+            .expect("stream lock")
+            .last_publish
+            .expect("new sessions have an observed start time");
+
+        runtime.mark_silent_if_due(
+            last_publish + SESSION_SILENCE_THRESHOLD + Duration::from_millis(1),
+        );
+        runtime.finish(Some(7));
+
+        assert_eq!(
+            drain(&conn),
+            vec![SessionEvent::Exit { code: Some(7) }],
+            "exit must be the only terminal transition delivered after silence"
+        );
+    }
+
+    #[test]
+    fn elapsed_time_uses_exit_for_ended_and_stays_unknown_for_recovered() {
+        let now = Instant::now();
+        let last_publish = Some(now - Duration::from_secs(3600));
+        let exit_at = Some(now - Duration::from_secs(7));
+
+        assert_eq!(
+            elapsed_ms_since_last_life(last_publish, exit_at, true, now),
+            Some(7_000)
+        );
+        assert_eq!(
+            elapsed_ms_since_last_life(last_publish, None, false, now),
+            Some(3_600_000)
+        );
+        assert_eq!(
+            elapsed_ms_since_last_life(None, None, true, now),
+            None,
+            "journal-only recovered sessions have no monotonic timestamp"
+        );
     }
 
     #[test]
@@ -3047,6 +3364,7 @@ mod tests {
                 SessionEvent::Output { .. } => "output",
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
+                SessionEvent::Silent { .. } => "silent",
                 SessionEvent::JournalDegraded => "journal_degraded",
             })
             .collect();
@@ -3262,6 +3580,7 @@ mod tests {
                 SessionEvent::Output { .. } => "output",
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
+                SessionEvent::Silent { .. } => "silent",
                 SessionEvent::JournalDegraded => "journal_degraded",
                 SessionEvent::Snapshot { .. } => "snapshot",
             })

@@ -35,7 +35,6 @@ pub use atomic::atomic_write;
 pub use client::{connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler};
 pub use error::DaemonError;
 pub use framing::Framed;
-pub use process_tree::JobObject;
 #[cfg(feature = "server")]
 pub use journal::{
     Journal, JournalError, JournalLimits, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_BYTES,
@@ -43,6 +42,7 @@ pub use journal::{
     SNAPSHOT_EVERY_BYTES,
 };
 pub use paths::RuntimePaths;
+pub use process_tree::JobObject;
 #[cfg(feature = "server")]
 pub use screen::{
     render_ansi, Screen, ScreenSnapshot, SnapshotCursor, SnapshotCursorShape, MAX_TITLE_CHARS,
@@ -52,7 +52,7 @@ pub use server::run;
 #[cfg(feature = "server")]
 pub use session::{
     write_test_pty_command, PtyCommand, COALESCE_FLUSH, COALESCE_MAX_BYTES,
-    PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES,
+    PENDING_OUTPUT_BUDGET_BYTES, PENDING_OUTPUT_BUDGET_FRAMES, SESSION_SILENCE_THRESHOLD,
 };
 pub use spawn::{daemon_file_name, resolve_daemon_binary, spawn_daemon};
 

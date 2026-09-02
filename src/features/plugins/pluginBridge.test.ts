@@ -281,6 +281,7 @@ describe("createPluginBridge", () => {
       kind: "terminal",
       title: "Pi shell",
       state: { type: "live", generation: 4 },
+      elapsedMs: 0,
     };
 
     const mapped = sessionToPluginSession(session);
@@ -350,6 +351,7 @@ describe("createPluginBridge", () => {
           kind: "terminal",
           title: "Claude shell",
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         } satisfies Session,
       ])
       .mockResolvedValueOnce([
@@ -359,6 +361,7 @@ describe("createPluginBridge", () => {
           kind: "terminal",
           title: "Claude shell",
           state: { type: "ended", generation: 1, code: 0 },
+          elapsedMs: null,
         } satisfies Session,
       ]);
     const firstBridge = createPluginBridge({
@@ -444,6 +447,7 @@ describe("createPluginBridge", () => {
         kind: "terminal",
         title: "Claude shell",
         state: { type: "live", generation: 1 },
+        elapsedMs: 0,
       } satisfies Session,
     ]);
     const firstBridge = createPluginBridge({
@@ -488,6 +492,7 @@ describe("createPluginBridge", () => {
           kind: "terminal",
           title: "small",
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         } satisfies Session,
       ])
       .mockResolvedValueOnce([
@@ -497,6 +502,7 @@ describe("createPluginBridge", () => {
           kind: "terminal",
           title: "x".repeat(1024 * 1024),
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         } satisfies Session,
       ])
       .mockResolvedValueOnce([
@@ -506,6 +512,7 @@ describe("createPluginBridge", () => {
           kind: "terminal",
           title: "small-recovered",
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         } satisfies Session,
       ]);
     const bridge = createPluginBridge({
@@ -552,6 +559,7 @@ describe("createPluginBridge", () => {
         kind: "terminal",
         title: "Claude shell",
         state: { type: "live", generation: 1 },
+        elapsedMs: 0,
       } satisfies Session,
     ]);
     const bridge = createPluginBridge({
@@ -604,8 +612,9 @@ describe("createPluginBridge", () => {
           id: "session-1",
           workspaceId: null,
           kind: "terminal",
-          title: "Claude shell",
-          state: { type: "ended", generation: 1, code: 0 },
+        title: "Claude shell",
+        state: { type: "ended", generation: 1, code: 0 },
+        elapsedMs: null,
         } satisfies Session,
       ]);
     const firstBridge = createPluginBridge({
@@ -628,8 +637,9 @@ describe("createPluginBridge", () => {
         id: "session-1",
         workspaceId: null,
         kind: "terminal",
-        title: "Claude shell",
-        state: { type: "live", generation: 1 },
+          title: "Claude shell",
+          state: { type: "live", generation: 1 },
+          elapsedMs: 0,
       },
     ]);
     await Promise.resolve();
@@ -703,6 +713,7 @@ describe("createPluginBridge", () => {
           kind: "terminal",
           title: "initial",
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         } satisfies Session,
       ])
       .mockImplementationOnce(() => new Promise<Session[]>(() => {}))
@@ -713,6 +724,7 @@ describe("createPluginBridge", () => {
           kind: "terminal",
           title: "after-timeout",
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         } satisfies Session,
       ]);
     const bridge = createPluginBridge({

@@ -23,6 +23,12 @@ function createTerminalChannel(onEvent: (event: SessionEvent) => void): Channel<
 function bannerText(banner: TerminalBanner): string | null {
   if (banner === null) return null;
   if (banner.kind === "error") return banner.message;
+  if (banner.kind === "silent") {
+    const minutes = Math.floor(banner.elapsedMs / 60_000);
+    return minutes > 0
+      ? `The terminal process is still running but has been silent for ${minutes} minute${minutes === 1 ? "" : "s"}.`
+      : `The terminal process is still running but has been silent for ${Math.floor(banner.elapsedMs / 1_000)} seconds.`;
+  }
   if (banner.kind === "closed") return "The terminal session was closed.";
   if (banner.kind === "recovered") {
     // Two different statements, never merged. `truncated` is an OBSERVED

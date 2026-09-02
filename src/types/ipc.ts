@@ -24,6 +24,7 @@ export type PermissionOutcome = "allow_once" | "deny";
 
 export type SessionState =
   | { type: "live"; generation: number }
+  | { type: "silent"; generation: number }
   | { type: "ended"; generation: number; code: number | null }
   | { type: "recovered"; generation: number; truncated: boolean };
 
@@ -33,6 +34,8 @@ export interface Session {
   kind: SessionKind;
   title: string;
   state: SessionState;
+  /** Milliseconds since the last observed output; null for recovered records. */
+  elapsedMs: number | null;
 }
 
 export type CursorShape = "block" | "underline" | "bar";
@@ -61,6 +64,7 @@ export interface SessionSnapshot {
 export type SessionEvent =
   | { type: "output"; seq: number; data: string }
   | { type: "exit"; code: number | null }
+  | { type: "silent"; elapsedMs: number }
   /**
    * Reopened from a journal nobody closed orderly: the transcript tail is
    * unverifiable. `truncated` marks only losses the previous daemon

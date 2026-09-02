@@ -30,8 +30,8 @@ use devboule_protocol::{
 use portable_pty::{CommandBuilder, PtySize};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
-    GetProcessHandleCount, OpenProcess, WaitForSingleObject, PROCESS_QUERY_INFORMATION,
-    PROCESS_SYNCHRONIZE,
+    GetProcessHandleCount, OpenProcess, TerminateProcess, WaitForSingleObject,
+    PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
 /// The historical 256 KiB live ring. Journal tests still use its size as
@@ -186,6 +186,13 @@ fn cmd_keep() -> PtyCommand {
     )
 }
 
+fn cmd_keep_with_pid_file(pid_file: &Path) -> PtyCommand {
+    let pid_file = pid_file.display().to_string().replace('\'', "''");
+    powershell_command(format!(
+        "Set-Content -LiteralPath '{pid_file}' -Value $PID; while ($true) {{ Start-Sleep -Milliseconds 25 }}"
+    ))
+}
+
 fn cmd_gated_exit(ready_file: &Path) -> PtyCommand {
     let ready_file = ready_file.display().to_string().replace('\'', "''");
     powershell_command(format!(
@@ -244,6 +251,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         }
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
+        | SessionEvent::Silent { .. }
         | SessionEvent::JournalDegraded => false,
     }
 }
@@ -369,6 +377,19 @@ fn process_is_alive(pid: u32) -> bool {
     let state = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
     unsafe { CloseHandle(handle) };
     state
+}
+
+fn terminate_process_from_outside(pid: u32) {
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+    assert!(!handle.is_null(), "could not open session process {pid}");
+    let terminated = unsafe { TerminateProcess(handle, 137) };
+    assert_ne!(terminated, 0, "could not terminate session process {pid}");
+    let wait = unsafe { WaitForSingleObject(handle, 5_000) };
+    unsafe { CloseHandle(handle) };
+    assert_ne!(
+        wait, WAIT_TIMEOUT,
+        "session process {pid} did not terminate"
+    );
 }
 
 fn wait_for_process_exit(pid: u32, timeout: Duration) {
@@ -591,6 +612,7 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             SessionEvent::Output { seq, .. } => Some(*seq),
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
+            | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded
             | SessionEvent::Snapshot { .. } => None,
         })
@@ -917,6 +939,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             SessionEvent::Output { seq, .. } => Some(*seq),
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
+            | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded
             | SessionEvent::Snapshot { .. } => None,
         })
@@ -1033,6 +1056,42 @@ fn session_process_exit_reports_through_the_envelope() {
     assert!(listed.iter().any(|listed| {
         listed.id == session.id && matches!(listed.state, SessionState::Ended { code: Some(0), .. })
     }));
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY and terminates its shell from outside the daemon"]
+fn external_shell_kill_reaches_the_attached_client() {
+    let harness = Harness::spawn();
+    let pid_file = harness.dir.join("external-kill.pid");
+    queue_command(&harness.paths, cmd_keep_with_pid_file(&pid_file));
+    let client = harness.client("external-kill");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .session_attach(&session.id, None, collect_handler(Arc::clone(&received)))
+        .expect("attach");
+
+    let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
+    terminate_process_from_outside(pid);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, SessionEvent::Exit { .. }))
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "attached client did not observe externally killed shell: {:?}",
+        received.lock().unwrap()
+    );
 }
 
 #[test]
@@ -1296,6 +1355,7 @@ fn real_pty_channel_flood_correctness() {
         }
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
+        | SessionEvent::Silent { .. }
         | SessionEvent::JournalDegraded => {}
     });
     client
@@ -1680,6 +1740,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
             diagnostics_for_handler.lock().unwrap().record_exit(code);
         }
         SessionEvent::Recovered { .. }
+        | SessionEvent::Silent { .. }
         | SessionEvent::JournalDegraded
         | SessionEvent::Snapshot { .. } => {}
     });
@@ -2039,6 +2100,7 @@ fn journal_outlives_the_256kib_ring() {
             }
             SessionEvent::Recovered { .. }
             | SessionEvent::Exit { .. }
+            | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded
             | SessionEvent::Snapshot { .. } => {}
         }
@@ -2297,6 +2359,7 @@ fn journal_growth_after_13mb_flood() {
                 replayed.truncated = truncated;
             }
             SessionEvent::Exit { .. } => replayed.exited = true,
+            SessionEvent::Silent { .. } => {}
             SessionEvent::JournalDegraded => {}
             SessionEvent::Snapshot { .. } => {}
         }
@@ -2551,7 +2614,9 @@ fn attach_during_flood_delivers_every_sequence_once() {
                     .process(data.as_bytes());
             }
             SessionEvent::Exit { .. } => {}
-            SessionEvent::Recovered { .. } | SessionEvent::JournalDegraded => {}
+            SessionEvent::Recovered { .. }
+            | SessionEvent::Silent { .. }
+            | SessionEvent::JournalDegraded => {}
         }
     }
 

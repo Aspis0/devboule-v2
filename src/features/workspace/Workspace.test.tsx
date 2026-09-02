@@ -33,6 +33,7 @@ const terminal = (id: string, title: string): Session => ({
   kind: "terminal",
   title,
   state: { type: "live", generation: 1 },
+  elapsedMs: 0,
 });
 
 describe("Workspace terminal sessions", () => {

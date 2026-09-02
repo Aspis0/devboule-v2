@@ -33,6 +33,11 @@ pub struct Session {
     pub kind: SessionKind,
     pub title: String,
     pub state: SessionState,
+    /// Monotonic age of the last observed sign of life. It is unavailable
+    /// for journal-only transcripts because their monotonic clock died with
+    /// the previous daemon.
+    #[serde(default)]
+    pub elapsed_ms: Option<u64>,
 }
 
 /// How this session currently exists. Live and recovered are different
@@ -47,6 +52,10 @@ pub struct Session {
 pub enum SessionState {
     /// A process is running. Output is live.
     Live { generation: u64 },
+    /// A process is still running, but has produced no output for the
+    /// configured silence threshold. This is never an exit or an idle
+    /// transcript.
+    Silent { generation: u64 },
     /// The process exited while this daemon was alive. `code` is the
     /// observed exit status (`None` if the child did not report one).
     Ended { generation: u64, code: Option<u32> },
@@ -72,13 +81,14 @@ impl SessionState {
     pub fn generation(&self) -> u64 {
         match *self {
             Self::Live { generation }
+            | Self::Silent { generation }
             | Self::Ended { generation, .. }
             | Self::Recovered { generation, .. } => generation,
         }
     }
 
     pub fn is_live(&self) -> bool {
-        matches!(self, Self::Live { .. })
+        matches!(self, Self::Live { .. } | Self::Silent { .. })
     }
 }
 
@@ -110,6 +120,12 @@ pub enum SessionEvent {
     /// Process was observed to exit while the daemon was alive.
     Exit {
         code: Option<u32>,
+    },
+    /// The process remains alive but has crossed the observed silence
+    /// threshold. The event is emitted once per silent transition.
+    Silent {
+        #[serde(rename = "elapsedMs")]
+        elapsed_ms: u64,
     },
     /// Journal replay of a session whose process died with the daemon.
     /// Distinct from [`SessionEvent::Exit`]: Exit means the process was
@@ -316,6 +332,7 @@ mod tests {
             kind: SessionKind::Terminal,
             title: "Terminal".to_string(),
             state: SessionState::Live { generation: 1 },
+            elapsed_ms: None,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["workspaceId"], "ws-1");
@@ -323,6 +340,28 @@ mod tests {
         assert!(value.get("generation").is_none());
         assert_eq!(value["state"]["type"], "live");
         assert_eq!(value["state"]["generation"], 1);
+    }
+
+    #[test]
+    fn silent_session_carries_elapsed_age_and_event_is_distinct() {
+        let session = Session {
+            id: "session-1-1".to_string(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            title: "Terminal".to_string(),
+            state: SessionState::Silent { generation: 1 },
+            elapsed_ms: Some(300_042),
+        };
+        let encoded = serde_json::to_value(&session).expect("session json");
+        assert_eq!(encoded["state"]["type"], "silent");
+        assert_eq!(encoded["elapsedMs"], 300_042);
+
+        let event = serde_json::to_value(SessionEvent::Silent {
+            elapsed_ms: 300_042,
+        })
+        .expect("event json");
+        assert_eq!(event["type"], "silent");
+        assert_eq!(event["elapsedMs"], 300_042);
     }
 
     #[test]

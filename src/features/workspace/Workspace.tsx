@@ -240,7 +240,9 @@ export function Workspace() {
                 className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
               />
               <span className="workspace-tab-label">{sessionTitle(session)}</span>
-              <span className="workspace-tab-meta">{sessionStateLabel(session.state)}</span>
+              <span className="workspace-tab-meta">
+                {sessionStateLabel(session.state, session.elapsedMs)}
+              </span>
             </button>
           ))}
           <button

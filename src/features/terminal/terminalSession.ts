@@ -9,6 +9,7 @@ export type TerminalChannel = Channel<TerminalEvent>;
 
 export type TerminalBanner =
   | { kind: "exited"; code: number | null }
+  | { kind: "silent"; elapsedMs: number }
   /**
    * The session was reopened from a journal nobody closed orderly.
    * The banner kind itself means the transcript tail is unverifiable;
@@ -21,6 +22,8 @@ export type TerminalBanner =
   | { kind: "closed" }
   | { kind: "error"; message: string }
   | null;
+
+type PersistentTerminalBanner = Exclude<TerminalBanner, { kind: "silent" } | null>;
 
 export interface TerminalSessionDeps {
   workspaceId: string | null;
@@ -98,6 +101,8 @@ export class TerminalSession {
   private ctrlCTimer: number | null = null;
   private resizeTimer: number | null = null;
   private writeFailCount = 0;
+  private silenceBannerVisible = false;
+  private persistentBanner: PersistentTerminalBanner | null = null;
 
   constructor(private readonly deps: TerminalSessionDeps) {
     this.setTimer =
@@ -353,6 +358,10 @@ export class TerminalSession {
       case "recovered":
         this.markRecovered(event.truncated);
         break;
+      case "silent":
+        this.silenceBannerVisible = true;
+        this.deps.onBanner({ kind: "silent", elapsedMs: event.elapsedMs });
+        break;
       case "journal_degraded":
         this.markJournalDegraded();
         break;
@@ -375,6 +384,10 @@ export class TerminalSession {
     }
     if (this.lastSeenSeq !== null && event.seq <= this.lastSeenSeq) return;
     this.lastSeenSeq = event.seq;
+    if (this.silenceBannerVisible) {
+      this.silenceBannerVisible = false;
+      this.deps.onBanner(this.persistentBanner);
+    }
     if (this.sessionId !== null) {
       this.deps.registry.updateCursor(this.deps.workspaceId, this.sessionId, event.seq);
     }
@@ -466,26 +479,32 @@ export class TerminalSession {
   private markExited(code: number | null): void {
     if (this.exited) return;
     this.exited = true;
+    this.silenceBannerVisible = false;
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
-    this.deps.onBanner({ kind: "exited", code });
+    this.persistentBanner = { kind: "exited", code };
+    this.deps.onBanner(this.persistentBanner);
     this.deps.onExited?.(code);
   }
 
   private markRecovered(truncated: boolean): void {
     if (this.exited) return;
     this.exited = true;
+    this.silenceBannerVisible = false;
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
-    this.deps.onBanner({ kind: "recovered", truncated });
+    this.persistentBanner = { kind: "recovered", truncated };
+    this.deps.onBanner(this.persistentBanner);
     this.deps.onExited?.(null);
   }
 
   private markJournalDegraded(): void {
     if (this.exited) return;
-    this.deps.onBanner({ kind: "journal_degraded" });
+    this.silenceBannerVisible = false;
+    this.persistentBanner = { kind: "journal_degraded" };
+    this.deps.onBanner(this.persistentBanner);
   }
 
   private disarmCtrlC(): void {
@@ -530,7 +549,11 @@ export class TerminalSession {
   }
 
   private showError(message: string): void {
-    if (!this.disposed) this.deps.onBanner({ kind: "error", message });
+    if (!this.disposed) {
+      this.silenceBannerVisible = false;
+      this.persistentBanner = { kind: "error", message };
+      this.deps.onBanner(this.persistentBanner);
+    }
   }
 
   private requestBackendTeardown(): void {

@@ -214,6 +214,7 @@ impl SessionRecord {
             kind: self.kind.clone(),
             title: self.title.clone(),
             state,
+            elapsed_ms: None,
         }
     }
 }

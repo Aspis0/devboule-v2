@@ -35,15 +35,28 @@ export function terminalSessions(sessions: readonly Session[]): Session[] {
   return sessions.filter((session) => session.kind === "terminal");
 }
 
-export function sessionStateLabel(state: unknown): string {
+function formatElapsed(elapsedMs: number): string {
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes > 0) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const seconds = Math.floor(elapsedMs / 1_000);
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
+export function sessionStateLabel(state: unknown, elapsedMs?: number | null): string {
   if (typeof state !== "object" || state === null || !("type" in state)) return "unknown";
   const type = state.type;
+  if (type === "silent") {
+    return typeof elapsedMs === "number"
+      ? `silent · ${formatElapsed(elapsedMs)}`
+      : "silent · duration unknown";
+  }
   return type === "live" || type === "ended" || type === "recovered" ? type : "unknown";
 }
 
 export function sessionDotTone(state: unknown): "green" | "terracotta" | "border" {
   const label = sessionStateLabel(state);
   if (label === "live") return "green";
+  if (label.startsWith("silent")) return "border";
   if (label === "recovered") return "border";
   return "terracotta";
 }

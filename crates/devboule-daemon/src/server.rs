@@ -555,6 +555,7 @@ fn send_pending_event(
             SessionEvent::Output { seq, .. } => format!(" seq={seq}"),
             SessionEvent::Exit { .. } => " exit".to_string(),
             SessionEvent::Recovered { .. } => " recovered".to_string(),
+            SessionEvent::Silent { .. } => " silent".to_string(),
             SessionEvent::JournalDegraded => " journal_degraded".to_string(),
             // A snapshot is screen state and has no replay sequence.
             SessionEvent::Snapshot { .. } => " snapshot".to_string(),

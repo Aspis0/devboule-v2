@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../types/ipc";
-import { createWorkspaceSessionController } from "./workspaceSessions";
+import { createWorkspaceSessionController, sessionStateLabel } from "./workspaceSessions";
 
 const liveSession = (id: string, title = id): Session => ({
   id,
@@ -8,6 +8,7 @@ const liveSession = (id: string, title = id): Session => ({
   kind: "terminal",
   title,
   state: { type: "live", generation: 1 },
+  elapsedMs: 0,
 });
 
 describe("workspace session controller", () => {
@@ -61,5 +62,14 @@ describe("workspace session controller", () => {
       selectedSessionId: null,
       error: "Could not load terminal sessions. The daemon is unreachable.",
     });
+  });
+
+  it("shows observed silence with its elapsed age instead of calling it idle", () => {
+    expect(sessionStateLabel({ type: "silent", generation: 1 }, 40 * 60 * 1000)).toBe(
+      "silent · 40 minutes",
+    );
+    expect(sessionStateLabel({ type: "silent", generation: 1 })).toBe(
+      "silent · duration unknown",
+    );
   });
 });

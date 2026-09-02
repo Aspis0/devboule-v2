@@ -128,6 +128,7 @@ function makeHarness(options?: {
         kind: "terminal",
         title: "Terminal",
         state: { type: "live", generation: 1 },
+        elapsedMs: 0,
       };
     }
     if (command === "session_attach" && options?.deferAttach) {
@@ -292,6 +293,7 @@ describe("TerminalSession startup and channel ordering", () => {
             kind: "terminal",
             title: "Terminal",
             state: { type: "recovered", generation: 1, truncated: false },
+            elapsedMs: null,
           },
         ];
       }
@@ -319,6 +321,18 @@ describe("TerminalSession startup and channel ordering", () => {
 
     harness.flushFrame();
     expect(harness.view.written).toEqual(["one\ntwo\nthree\n"]);
+  });
+
+  it("clears a transient silence banner when fresh output arrives", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "silent", elapsedMs: 300_001 });
+    harness.emit(outputEvent(1, "resumed"));
+    harness.flushFrame();
+
+    expect(harness.banners).toEqual([{ kind: "silent", elapsedMs: 300_001 }, null]);
+    expect(harness.view.written).toEqual(["resumed"]);
   });
 
   it("ignores a duplicate or stale sequence number", async () => {
@@ -374,6 +388,7 @@ describe("TerminalSession lifecycle and errors", () => {
           kind: "terminal",
           title: "Terminal",
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         };
       }
       if (command === "session_attach") throw "No session with that id.";
@@ -400,6 +415,7 @@ describe("TerminalSession lifecycle and errors", () => {
           kind: "terminal",
           title: "Terminal",
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         };
       }
       if (command === "session_attach") {
@@ -672,6 +688,7 @@ describe("TerminalSession write failures", () => {
           kind: "terminal",
           title: "Terminal",
           state: { type: "live", generation: 1 },
+          elapsedMs: 0,
         };
       }
       if (command === "session_send") throw new Error("dead pipe");
