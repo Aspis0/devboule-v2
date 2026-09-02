@@ -51,7 +51,7 @@
     {
       "id": "crates/devboule-augur/src/ledger.rs",
       "path": "crates/devboule-augur/src/ledger.rs",
-      "lines": 316,
+      "lines": 383,
       "district": "crates"
     },
     {
@@ -195,7 +195,7 @@
     {
       "id": "crates/devboule-plugin-rpc/src/lib.rs",
       "path": "crates/devboule-plugin-rpc/src/lib.rs",
-      "lines": 355,
+      "lines": 372,
       "district": "crates"
     },
     {
@@ -249,7 +249,7 @@
     {
       "id": "crates/devboule-protocol/src/lib.rs",
       "path": "crates/devboule-protocol/src/lib.rs",
-      "lines": 240,
+      "lines": 244,
       "district": "crates"
     },
     {
@@ -489,13 +489,13 @@
     {
       "id": "crates/polis-backend/src/findings.rs",
       "path": "crates/polis-backend/src/findings.rs",
-      "lines": 668,
+      "lines": 783,
       "district": "crates"
     },
     {
       "id": "crates/polis-backend/src/lib.rs",
       "path": "crates/polis-backend/src/lib.rs",
-      "lines": 310,
+      "lines": 394,
       "district": "crates"
     },
     {
