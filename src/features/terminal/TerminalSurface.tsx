@@ -20,7 +20,19 @@ function createTerminalChannel(onEvent: (event: SessionEvent) => void): Channel<
   return new Channel<SessionEvent>(onEvent);
 }
 
-function bannerText(banner: TerminalBanner): string | null {
+function humanSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  const rounded = unit === 0 ? Math.round(value).toString() : value >= 10 ? Math.round(value).toString() : value.toFixed(1);
+  return `${rounded} ${units[unit]}`;
+}
+
+export function bannerText(banner: TerminalBanner): string | null {
   if (banner === null) return null;
   if (banner.kind === "error") return banner.message;
   if (banner.kind === "silent") {
@@ -31,21 +43,23 @@ function bannerText(banner: TerminalBanner): string | null {
   }
   if (banner.kind === "closed") return "The terminal session was closed.";
   if (banner.kind === "recovered") {
-    // Two different statements, never merged. `truncated` is an OBSERVED
-    // loss the previous daemon recorded. Without it the transcript is not
-    // certified complete either: the dying process's uncommitted output
-    // left no trace, so the end of the transcript simply cannot be
-    // verified — say that instead of implying nothing is missing.
-    return banner.truncated
-      ? "The previous terminal process is gone. Some output was not saved."
+    // Zero means the amount is unknown, never that nothing was lost. Branch
+    // on bytes so the warning remains honest for both measured and unknown loss.
+    return banner.integrity.droppedBytes > 0
+      ? `The previous terminal process is gone. At least ${humanSize(banner.integrity.droppedBytes)} of output was not saved, and the end of the transcript could not be verified either.`
       : "The previous terminal process is gone. The end of the saved transcript could not be verified.";
   }
   if (banner.kind === "journal_degraded") {
-    return "Scrollback history is incomplete because some output could not be saved.";
+    return banner.lost.bytes > 0
+      ? `Scrollback history is incomplete: at least ${humanSize(banner.lost.bytes)} of output could not be saved.`
+      : "Scrollback history is incomplete because some output could not be saved.";
   }
-  return banner.code === null
-    ? "The terminal process exited."
-    : `The terminal process exited with code ${banner.code}.`;
+  const prefix =
+    banner.code === null ? "The terminal process exited." : `The terminal process exited with code ${banner.code}.`;
+  if (banner.lost === null) return prefix;
+  return banner.lost.bytes > 0
+    ? `${prefix} At least ${humanSize(banner.lost.bytes)} of output was not saved.`
+    : `${prefix} Some output was not saved.`;
 }
 
 export const TerminalSurface = memo(function TerminalSurface({

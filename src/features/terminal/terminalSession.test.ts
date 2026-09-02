@@ -282,7 +282,7 @@ describe("TerminalSession startup and channel ordering", () => {
     expect(harness.registry.register).not.toHaveBeenCalled();
   });
 
-  it("attaches a recovered transcript instead of creating a new shell", async () => {
+  it("attaches an unverified recovered transcript instead of creating a new shell", async () => {
     const harness = makeHarness();
     harness.invoke.mockImplementation(async (command: string) => {
       if (command === "sessions_list") {
@@ -292,7 +292,11 @@ describe("TerminalSession startup and channel ordering", () => {
             workspaceId: "rust-core",
             kind: "terminal",
             title: "Terminal",
-            state: { type: "recovered", generation: 1, truncated: false },
+            state: {
+              type: "recovered",
+              generation: 1,
+              integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0 },
+            },
             elapsedMs: null,
           },
         ];
@@ -484,19 +488,25 @@ describe("TerminalSession lifecycle and errors", () => {
     harness.invoke.mockClear();
     await harness.session.writeToPty("ignored");
 
-    expect(harness.banners).toContainEqual({ kind: "exited", code: 7 });
+    expect(harness.banners).toContainEqual({ kind: "exited", code: 7, lost: null });
     expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
     expect(harness.invoke).not.toHaveBeenCalled();
   });
 
-  it("marks a recovered transcript without treating it as a live exit", async () => {
+  it("marks an unverified recovered transcript without treating it as a live exit", async () => {
     const harness = makeHarness();
     await harness.session.start();
     harness.emit(outputEvent(1, "scrollback"));
     harness.flushFrame();
-    harness.emit({ type: "recovered", truncated: false });
+    harness.emit({
+      type: "recovered",
+      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0 },
+    });
     expect(harness.view.written).toEqual(["scrollback"]);
-    expect(harness.banners).toContainEqual({ kind: "recovered", truncated: false });
+    expect(harness.banners).toContainEqual({
+      kind: "recovered",
+      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0 },
+    });
     harness.invoke.mockClear();
     await harness.session.writeToPty("ignored");
     expect(harness.invoke).not.toHaveBeenCalled();
@@ -506,13 +516,30 @@ describe("TerminalSession lifecycle and errors", () => {
     const harness = makeHarness();
     await harness.session.start();
 
-    harness.emit({ type: "journal_degraded" });
+    harness.emit({ type: "journal_degraded", droppedFrames: 0, droppedBytes: 0 });
     harness.emit(outputEvent(1, "output after degradation"));
     harness.flushFrame();
 
-    expect(harness.banners).toContainEqual({ kind: "journal_degraded" });
+    expect(harness.banners).toContainEqual({
+      kind: "journal_degraded",
+      lost: { frames: 0, bytes: 0 },
+    });
     expect(harness.view.written).toEqual(["output after degradation"]);
     expect(harness.registry.remove).not.toHaveBeenCalled();
+  });
+
+  it("carries observed journal loss into the later exit banner", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "journal_degraded", droppedFrames: 2, droppedBytes: 12 * 1024 });
+    harness.emit(exitEvent(7));
+
+    expect(harness.banners).toContainEqual({
+      kind: "exited",
+      code: 7,
+      lost: { frames: 2, bytes: 12 * 1024 },
+    });
   });
 
   it("surfaces unknown event types instead of treating them as output", async () => {

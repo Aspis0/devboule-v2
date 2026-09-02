@@ -65,14 +65,24 @@ export function sessionStateLabel(state: unknown, elapsedMs?: number | null): st
       ? `silent · ${formatElapsed(elapsedMs)}`
       : "silent · duration unknown";
   }
-  return type === "live" || type === "ended" || type === "recovered" ? type : "unknown";
+  if (type === "live") return "live";
+  if (type === "ended" || type === "recovered") {
+    if ("integrity" in state && typeof state.integrity === "object" && state.integrity !== null) {
+      const integrity = state.integrity;
+      if ("kind" in integrity && (integrity.kind === "truncated" || integrity.kind === "unverifiable")) {
+        return `${type} · ${integrity.kind}`;
+      }
+    }
+    return type;
+  }
+  return "unknown";
 }
 
 export function sessionDotTone(state: unknown): "green" | "terracotta" | "border" {
   const label = sessionStateLabel(state);
   if (label === "live") return "green";
   if (label.startsWith("silent")) return "border";
-  if (label === "recovered") return "border";
+  if (label.startsWith("recovered") || label.startsWith("ended ·")) return "border";
   return "terracotta";
 }
 

@@ -17,7 +17,7 @@
 //! empty `turns` / `permissions` tables mean agent history does not require
 //! a migration that rewrites terminal rows.
 
-use std::collections::HashSet;
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,11 +28,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use devboule_protocol::{ErrorCode, Session, SessionEvent, SessionKind, SessionState, WireError};
+use devboule_protocol::{
+    ErrorCode, Session, SessionEvent, SessionKind, SessionState, TranscriptIntegrity, WireError,
+};
 
 /// Stored in `PRAGMA user_version`. Bump only when existing tables change
 /// shape. Additive tables and columns keep this number.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 1;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 2;
 
 /// Bounded journal queue. Each slot is one coalesced frame (typically
 /// ≤ 8 KiB). A full queue never blocks the PTY path.
@@ -184,28 +186,51 @@ pub struct SessionRecord {
     pub closed: bool,
     pub last_seq: u64,
     pub degraded: bool,
+    pub dropped_frames: u64,
+    pub dropped_bytes: u64,
     pub payload_bytes: u64,
     /// Child::wait returned. Output may still be arriving (ConPTY drain).
     pub reaped: bool,
 }
 
 impl SessionRecord {
+    fn integrity(&self, terminated: bool) -> TranscriptIntegrity {
+        if terminated {
+            if self.degraded {
+                TranscriptIntegrity::Truncated {
+                    dropped_frames: self.dropped_frames,
+                    dropped_bytes: self.dropped_bytes,
+                }
+            } else {
+                TranscriptIntegrity::Complete
+            }
+        } else {
+            TranscriptIntegrity::Unverifiable {
+                dropped_frames: if self.degraded { self.dropped_frames } else { 0 },
+                dropped_bytes: if self.degraded { self.dropped_bytes } else { 0 },
+            }
+        }
+    }
+
     pub fn to_session(&self) -> Session {
         let state = match self.status {
             PersistStatus::Live if self.reaped => SessionState::Ended {
                 generation: self.generation,
                 code: self.exit_code,
+                integrity: self.integrity(true),
             },
-            PersistStatus::Live => SessionState::Live {
+            PersistStatus::Live => SessionState::Recovered {
                 generation: self.generation,
+                integrity: self.integrity(false),
             },
             PersistStatus::Ended => SessionState::Ended {
                 generation: self.generation,
                 code: self.exit_code,
+                integrity: self.integrity(true),
             },
             PersistStatus::Interrupted => SessionState::Recovered {
                 generation: self.generation,
-                truncated: self.degraded,
+                integrity: self.integrity(false),
             },
         };
         Session {
@@ -257,7 +282,13 @@ pub struct Replay {
     pub generation: u64,
     pub events: Vec<SessionEvent>,
     pub last_seq: u64,
-    pub truncated: bool,
+    pub integrity: TranscriptIntegrity,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DropCounters {
+    frames: u64,
+    bytes: u64,
 }
 
 /// Live counters of the journal writer, process-wide.
@@ -345,7 +376,7 @@ pub struct Journal {
     tx: SyncSender<JournalCmd>,
     join: Mutex<Option<JoinHandle<()>>>,
     queued: Arc<AtomicU64>,
-    degraded_sessions: Arc<Mutex<HashSet<String>>>,
+    degraded_sessions: Arc<Mutex<HashMap<String, DropCounters>>>,
     stats: Arc<JournalStats>,
     path: PathBuf,
 }
@@ -365,7 +396,7 @@ impl Journal {
         let (tx, rx) = mpsc::sync_channel(JOURNAL_QUEUE_CAP);
         let queued = Arc::new(AtomicU64::new(0));
         let queued_thread = Arc::clone(&queued);
-        let degraded_sessions = Arc::new(Mutex::new(HashSet::new()));
+        let degraded_sessions = Arc::new(Mutex::new(HashMap::new()));
         let degraded_sessions_thread = Arc::clone(&degraded_sessions);
         let stats = Arc::new(JournalStats::default());
         let stats_thread = Arc::clone(&stats);
@@ -402,8 +433,17 @@ impl Journal {
     pub fn is_session_degraded(&self, session_id: &str) -> bool {
         self.degraded_sessions
             .lock()
-            .map(|sessions| sessions.contains(session_id))
+            .map(|sessions| sessions.contains_key(session_id))
             .unwrap_or(true)
+    }
+
+    pub(crate) fn session_drop_counters(&self, session_id: &str) -> (u64, u64) {
+        self.degraded_sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.get(session_id).copied())
+            .map(|counters| (counters.frames, counters.bytes))
+            .unwrap_or_default()
     }
 
     /// Point-in-time read of the writer's counters. Cheap: atomic loads,
@@ -422,12 +462,12 @@ impl Journal {
     }
 
     /// Returns false if the queue was full or the writer is dead. The PTY
-    /// path never waits; a false return is a truncated journal.
+    /// path never waits; a false return marks the journal as degraded.
     pub fn try_append(&self, record: EventRecord) -> bool {
         let payload_len = record.payload.len() as u64;
         let session_id = record.session_id.clone();
         if !self.reserve_output_slot() {
-            self.note_session_degraded(&record.session_id);
+            self.note_dropped_frame(&record.session_id, payload_len);
             self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
             return false;
         }
@@ -441,7 +481,7 @@ impl Journal {
             }
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 self.release_slot();
-                self.note_session_degraded(&session_id);
+                self.note_dropped_frame(&session_id, payload_len);
                 self.stats.failed_frames.fetch_add(1, Ordering::Relaxed);
                 false
             }
@@ -658,8 +698,35 @@ impl Journal {
     }
 
     pub(crate) fn note_session_degraded(&self, session_id: &str) -> bool {
+        self.note_degraded(session_id, DropCounters::default())
+    }
+
+    fn note_dropped_frame(&self, session_id: &str, bytes: u64) -> bool {
+        self.note_degraded(
+            session_id,
+            DropCounters {
+                frames: 1,
+                bytes,
+            },
+        )
+    }
+
+    fn note_degraded(&self, session_id: &str, dropped: DropCounters) -> bool {
         let first = match self.degraded_sessions.lock() {
-            Ok(mut sessions) => sessions.insert(session_id.to_string()),
+            Ok(mut sessions) => {
+                match sessions.entry(session_id.to_string()) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(dropped);
+                        true
+                    }
+                    Entry::Occupied(mut entry) => {
+                        let counters = entry.get_mut();
+                        counters.frames = counters.frames.saturating_add(dropped.frames);
+                        counters.bytes = counters.bytes.saturating_add(dropped.bytes);
+                        false
+                    }
+                }
+            }
             Err(_) => {
                 eprintln!(
                     "journal degradation set is poisoned; treating session {session_id} as degraded"
@@ -731,8 +798,24 @@ fn open_connection(path: &Path) -> Result<Connection, JournalError> {
         }
     }
     if version < JOURNAL_SCHEMA_VERSION {
-        conn.execute_batch(SCHEMA_SQL)?;
-        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(SCHEMA_SQL)?;
+        if version < 2 {
+            if !session_has_column(&tx, "dropped_frames")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN dropped_frames INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+            if !session_has_column(&tx, "dropped_bytes")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN dropped_bytes INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+        }
+        tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
+        tx.commit()?;
     }
     let _ = conn.execute(
         "ALTER TABLE sessions ADD COLUMN reaped INTEGER NOT NULL DEFAULT 0",
@@ -752,6 +835,17 @@ fn open_connection(path: &Path) -> Result<Connection, JournalError> {
     Ok(conn)
 }
 
+fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalError> {
+    let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -767,6 +861,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     closed INTEGER NOT NULL DEFAULT 0,
     last_seq INTEGER NOT NULL DEFAULT 0,
     degraded INTEGER NOT NULL DEFAULT 0,
+    -- M6 adds dropped_frames and dropped_bytes in the versioned migration
+    -- above so this SQL remains the previous schema for migration tests.
     payload_bytes INTEGER NOT NULL DEFAULT 0,
     unsnapshotted_bytes INTEGER NOT NULL DEFAULT 0,
     reaped INTEGER NOT NULL DEFAULT 0
@@ -820,7 +916,7 @@ fn journal_loop(
     conn: Connection,
     rx: mpsc::Receiver<JournalCmd>,
     queued: Arc<AtomicU64>,
-    degraded_sessions: Arc<Mutex<HashSet<String>>>,
+    degraded_sessions: Arc<Mutex<HashMap<String, DropCounters>>>,
     stats: Arc<JournalStats>,
     limits: JournalLimits,
     path: PathBuf,
@@ -835,7 +931,7 @@ fn journal_loop(
         match cmd {
             JournalCmd::Upsert(record) => {
                 if let Err(error) = upsert_session(&conn, &record) {
-                    note_degraded(&degraded_sessions, &record.id);
+                    note_degraded(&degraded_sessions, &record.id, DropCounters::default());
                     on_write_error(&error);
                 }
             }
@@ -845,10 +941,24 @@ fn journal_loop(
                 if let Err(error) = append_event(&conn, &record, &pins, limits) {
                     if is_output {
                         stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+                        note_degraded(
+                            &degraded_sessions,
+                            &record.session_id,
+                            DropCounters {
+                                frames: 1,
+                                bytes: payload_len,
+                            },
+                        );
+                    } else {
+                        note_degraded(
+                            &degraded_sessions,
+                            &record.session_id,
+                            DropCounters::default(),
+                        );
                     }
-                    note_degraded(&degraded_sessions, &record.session_id);
                     on_write_error(&error);
-                    let _ = mark_degraded(&conn, &record.session_id);
+                    let (degraded, dropped) = degradation_state(&degraded_sessions, &record.session_id);
+                    let _ = mark_degraded(&conn, &record.session_id, degraded, dropped);
                 } else if is_output {
                     stats.committed_frames.fetch_add(1, Ordering::Relaxed);
                     stats
@@ -857,9 +967,9 @@ fn journal_loop(
                 }
             }
             JournalCmd::MarkReaped { session_id, code } => {
-                let degraded = is_degraded(&degraded_sessions, &session_id);
-                if let Err(error) = mark_reaped(&conn, &session_id, code, degraded) {
-                    note_degraded(&degraded_sessions, &session_id);
+                let (degraded, dropped) = degradation_state(&degraded_sessions, &session_id);
+                if let Err(error) = mark_reaped(&conn, &session_id, code, degraded, dropped) {
+                    note_degraded(&degraded_sessions, &session_id, DropCounters::default());
                     on_write_error(&error);
                 }
             }
@@ -868,20 +978,23 @@ fn journal_loop(
                 generation,
                 code,
             } => {
-                let degraded = is_degraded(&degraded_sessions, &session_id);
-                if let Err(error) = mark_ended(&conn, &session_id, generation, code, degraded) {
-                    note_degraded(&degraded_sessions, &session_id);
+                let (degraded, dropped) = degradation_state(&degraded_sessions, &session_id);
+                if let Err(error) =
+                    mark_ended(&conn, &session_id, generation, code, degraded, dropped)
+                {
+                    note_degraded(&degraded_sessions, &session_id, DropCounters::default());
                     on_write_error(&error);
                 }
             }
             JournalCmd::MarkClosed { session_id } => {
                 if let Err(error) = mark_closed(&conn, &session_id) {
-                    note_degraded(&degraded_sessions, &session_id);
+                    note_degraded(&degraded_sessions, &session_id, DropCounters::default());
                     on_write_error(&error);
                 }
             }
             JournalCmd::MarkDegraded { session_id } => {
-                if let Err(error) = mark_degraded(&conn, &session_id) {
+                let (degraded, dropped) = degradation_state(&degraded_sessions, &session_id);
+                if let Err(error) = mark_degraded(&conn, &session_id, degraded, dropped) {
                     on_write_error(&error);
                 }
             }
@@ -920,26 +1033,35 @@ fn journal_loop(
     }
 }
 
-fn note_degraded(degraded_sessions: &Mutex<HashSet<String>>, session_id: &str) {
-    if degraded_sessions
-        .lock()
-        .map(|mut sessions| {
-            sessions.insert(session_id.to_string());
-        })
-        .is_err()
-    {
+fn note_degraded(
+    degraded_sessions: &Mutex<HashMap<String, DropCounters>>,
+    session_id: &str,
+    dropped: DropCounters,
+) {
+    if let Ok(mut sessions) = degraded_sessions.lock() {
+        let counters = sessions.entry(session_id.to_string()).or_default();
+        counters.frames = counters.frames.saturating_add(dropped.frames);
+        counters.bytes = counters.bytes.saturating_add(dropped.bytes);
+    } else {
         eprintln!("journal degradation set is poisoned; treating session {session_id} as degraded");
     }
 }
 
-fn is_degraded(degraded_sessions: &Mutex<HashSet<String>>, session_id: &str) -> bool {
+fn degradation_state(
+    degraded_sessions: &Mutex<HashMap<String, DropCounters>>,
+    session_id: &str,
+) -> (bool, DropCounters) {
     match degraded_sessions.lock() {
-        Ok(sessions) => sessions.contains(session_id),
+        Ok(sessions) => sessions
+            .get(session_id)
+            .copied()
+            .map(|counters| (true, counters))
+            .unwrap_or_default(),
         Err(_) => {
             eprintln!(
                 "journal degradation set is poisoned; treating session {session_id} as degraded"
             );
-            true
+            (true, DropCounters::default())
         }
     }
 }
@@ -952,9 +1074,9 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
     conn.execute(
         "INSERT INTO sessions (
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
-            generation, status, exit_code, closed, last_seq, degraded, payload_bytes,
-            unsnapshotted_bytes, reaped
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, ?15)
+            generation, status, exit_code, closed, last_seq, degraded,
+            dropped_frames, dropped_bytes, payload_bytes, unsnapshotted_bytes, reaped
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 0, ?17)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -964,6 +1086,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             closed = excluded.closed,
             last_seq = excluded.last_seq,
             degraded = MAX(sessions.degraded, excluded.degraded),
+            dropped_frames = MAX(sessions.dropped_frames, excluded.dropped_frames),
+            dropped_bytes = MAX(sessions.dropped_bytes, excluded.dropped_bytes),
             reaped = MAX(sessions.reaped, excluded.reaped)",
         params![
             record.id,
@@ -979,6 +1103,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             if record.closed { 1 } else { 0 },
             record.last_seq as i64,
             if record.degraded { 1 } else { 0 },
+            record.dropped_frames as i64,
+            record.dropped_bytes as i64,
             record.payload_bytes as i64,
             if record.reaped { 1 } else { 0 },
         ],
@@ -1237,14 +1363,24 @@ fn mark_reaped(
     session_id: &str,
     code: Option<u32>,
     degraded: bool,
+    dropped: DropCounters,
 ) -> Result<(), JournalError> {
     let n = conn.execute(
-        "UPDATE sessions SET reaped = 1, exit_code = COALESCE(?1, exit_code), degraded = MAX(degraded, ?2), updated_at_ms = ?3 WHERE id = ?4",
+        "UPDATE sessions SET
+            reaped = 1,
+            exit_code = COALESCE(?1, exit_code),
+            degraded = MAX(degraded, ?2),
+            dropped_frames = MAX(dropped_frames, ?3),
+            dropped_bytes = MAX(dropped_bytes, ?4),
+            updated_at_ms = ?5
+         WHERE id = ?6",
         params![
             code.map(|value| value as i64),
             if degraded { 1 } else { 0 },
+            dropped.frames as i64,
+            dropped.bytes as i64,
             now_ms() as i64,
-            session_id
+            session_id,
         ],
     )?;
     if n == 0 {
@@ -1260,6 +1396,7 @@ fn mark_ended(
     generation: u64,
     code: Option<u32>,
     degraded: bool,
+    dropped: DropCounters,
 ) -> Result<(), JournalError> {
     let ts = now_ms();
     let (last_seq, status): (i64, String) = conn
@@ -1293,13 +1430,23 @@ fn mark_ended(
         ],
     )?;
     tx.execute(
-        "UPDATE sessions SET status = 'ended', exit_code = ?1, last_seq = ?2, degraded = MAX(degraded, ?3), updated_at_ms = ?4 WHERE id = ?5",
+        "UPDATE sessions SET
+            status = 'ended',
+            exit_code = ?1,
+            last_seq = ?2,
+            degraded = MAX(degraded, ?3),
+            dropped_frames = MAX(dropped_frames, ?4),
+            dropped_bytes = MAX(dropped_bytes, ?5),
+            updated_at_ms = ?6
+         WHERE id = ?7",
         params![
             code.map(|value| value as i64),
             seq as i64,
             if degraded { 1 } else { 0 },
+            dropped.frames as i64,
+            dropped.bytes as i64,
             ts as i64,
-            session_id
+            session_id,
         ],
     )?;
     tx.commit()?;
@@ -1319,10 +1466,26 @@ fn mark_closed(conn: &Connection, session_id: &str) -> Result<(), JournalError> 
     }
 }
 
-fn mark_degraded(conn: &Connection, session_id: &str) -> Result<(), JournalError> {
+fn mark_degraded(
+    conn: &Connection,
+    session_id: &str,
+    degraded: bool,
+    dropped: DropCounters,
+) -> Result<(), JournalError> {
     conn.execute(
-        "UPDATE sessions SET degraded = 1, updated_at_ms = ?1 WHERE id = ?2",
-        params![now_ms() as i64, session_id],
+        "UPDATE sessions SET
+            degraded = MAX(degraded, ?1),
+            dropped_frames = MAX(dropped_frames, ?2),
+            dropped_bytes = MAX(dropped_bytes, ?3),
+            updated_at_ms = ?4
+         WHERE id = ?5",
+        params![
+            if degraded { 1 } else { 0 },
+            dropped.frames as i64,
+            dropped.bytes as i64,
+            now_ms() as i64,
+            session_id,
+        ],
     )?;
     Ok(())
 }
@@ -1330,7 +1493,8 @@ fn mark_degraded(conn: &Connection, session_id: &str) -> Result<(), JournalError
 fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
     let mut stmt = conn.prepare(
         "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
-                generation, status, exit_code, closed, last_seq, degraded, payload_bytes, reaped
+                generation, status, exit_code, closed, last_seq, degraded,
+                dropped_frames, dropped_bytes, payload_bytes, reaped
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -1353,8 +1517,10 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         closed: row.get::<_, i64>(10)? != 0,
         last_seq: row.get::<_, i64>(11)? as u64,
         degraded: row.get::<_, i64>(12)? != 0,
-        payload_bytes: row.get::<_, i64>(13)? as u64,
-        reaped: row.get::<_, i64>(14)? != 0,
+        dropped_frames: row.get::<_, i64>(13)? as u64,
+        dropped_bytes: row.get::<_, i64>(14)? as u64,
+        payload_bytes: row.get::<_, i64>(15)? as u64,
+        reaped: row.get::<_, i64>(16)? != 0,
     })
 }
 
@@ -1366,7 +1532,8 @@ fn replay_session(
     let record = conn
         .query_row(
             "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
-                    generation, status, exit_code, closed, last_seq, degraded, payload_bytes, reaped
+                    generation, status, exit_code, closed, last_seq, degraded,
+                    dropped_frames, dropped_bytes, payload_bytes, reaped
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,
@@ -1462,28 +1629,27 @@ fn replay_session(
         }
     }
 
-    match record.status {
-        PersistStatus::Ended => {
-            events.push(exit_event.unwrap_or(SessionEvent::Exit {
-                code: record.exit_code,
-            }));
-        }
-        PersistStatus::Live if record.reaped => {
-            events.push(exit_event.unwrap_or(SessionEvent::Exit {
-                code: record.exit_code,
-            }));
-        }
-        PersistStatus::Interrupted | PersistStatus::Live => {
-            events.push(SessionEvent::Recovered {
-                truncated: record.degraded,
+    let terminated = matches!(record.status, PersistStatus::Ended)
+        || matches!(record.status, PersistStatus::Live) && record.reaped;
+    let integrity = record.integrity(terminated);
+    if terminated {
+        if record.degraded {
+            events.push(SessionEvent::JournalDegraded {
+                dropped_frames: record.dropped_frames,
+                dropped_bytes: record.dropped_bytes,
             });
         }
+        events.push(exit_event.unwrap_or(SessionEvent::Exit {
+            code: record.exit_code,
+        }));
+    } else {
+        events.push(SessionEvent::Recovered { integrity });
     }
 
     Ok(Replay {
         generation,
         last_seq: record.last_seq,
-        truncated: record.degraded,
+        integrity,
         events,
     })
 }
@@ -1578,6 +1744,8 @@ pub fn new_session_record(
         closed: false,
         last_seq: 0,
         degraded: false,
+        dropped_frames: 0,
+        dropped_bytes: 0,
         payload_bytes: 0,
         reaped: false,
     }
@@ -1602,6 +1770,7 @@ pub fn output_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use devboule_protocol::TranscriptIntegrity;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -1685,6 +1854,201 @@ mod tests {
     }
 
     #[test]
+    fn records_without_terminators_are_always_unverifiable() {
+        for status in [PersistStatus::Interrupted, PersistStatus::Live] {
+            let mut record = sample_session("s.unverifiable");
+            record.status = status;
+
+            assert_eq!(
+                record.to_session().state,
+                SessionState::Recovered {
+                    generation: 1,
+                    integrity: TranscriptIntegrity::Unverifiable {
+                        dropped_frames: 0,
+                        dropped_bytes: 0,
+                    },
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_loss_keeps_counters_but_not_certification() {
+        let mut record = sample_session("s.unverifiable.loss");
+        record.status = PersistStatus::Interrupted;
+        record.degraded = true;
+        record.dropped_frames = 7;
+        record.dropped_bytes = 4096;
+
+        assert_eq!(
+            record.to_session().state,
+            SessionState::Recovered {
+                generation: 1,
+                integrity: TranscriptIntegrity::Unverifiable {
+                    dropped_frames: 7,
+                    dropped_bytes: 4096,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn ended_loss_replays_degraded_before_exit_and_reports_truncated() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut record = sample_session("s.ended.loss");
+        record.status = PersistStatus::Ended;
+        record.degraded = true;
+        record.dropped_frames = 3;
+        record.dropped_bytes = 4096;
+        journal.upsert_blocking(record).expect("upsert");
+
+        let replay = journal.replay("s.ended.loss", 0).expect("replay");
+        assert_eq!(
+            replay.events,
+            vec![
+                SessionEvent::JournalDegraded {
+                    dropped_frames: 3,
+                    dropped_bytes: 4096,
+                },
+                SessionEvent::Exit { code: None },
+            ]
+        );
+        assert_eq!(
+            replay.integrity,
+            TranscriptIntegrity::Truncated {
+                dropped_frames: 3,
+                dropped_bytes: 4096,
+            }
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ended_clean_replays_exit_only_and_reports_complete() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut record = sample_session("s.ended.clean");
+        record.status = PersistStatus::Ended;
+        journal.upsert_blocking(record).expect("upsert");
+
+        let replay = journal.replay("s.ended.clean", 0).expect("replay");
+        assert_eq!(replay.events, vec![SessionEvent::Exit { code: None }]);
+        assert_eq!(replay.integrity, TranscriptIntegrity::Complete);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enqueue_drops_count_the_exact_payload_sizes() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.drop").clone())
+            .expect("upsert");
+        let blocker = Connection::open(&path).expect("blocker");
+        blocker
+            .execute_batch("BEGIN EXCLUSIVE")
+            .expect("hold sqlite writer lock");
+
+        while journal.queued.load(Ordering::Acquire)
+            < JOURNAL_QUEUE_CAP.saturating_sub(CONTROL_RESERVE) as u64
+        {
+            assert!(journal.try_append(output_record("s.drop", 1, 1, b"fill")));
+        }
+        assert!(!journal.try_append(output_record("s.drop", 1, 2, b"abc")));
+        assert!(!journal.try_append(output_record("s.drop", 1, 3, b"12345678")));
+
+        let counters = journal
+            .degraded_sessions
+            .lock()
+            .expect("degradation counters")
+            .get("s.drop")
+            .copied()
+            .expect("dropped session");
+        assert_eq!(counters.frames, 2);
+        assert_eq!(counters.bytes, 3 + 8);
+
+        drop(blocker);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn previous_schema_migrates_and_preserves_zero_loss_amount() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("old journal");
+        conn.execute_batch(SCHEMA_SQL).expect("old schema");
+        conn.execute(
+            "INSERT INTO sessions (
+                id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                generation, status, exit_code, closed, last_seq, degraded, payload_bytes,
+                unsnapshotted_bytes, reaped
+             ) VALUES ('s.old', 'owner', NULL, 'terminal', 'Terminal', 1, 1,
+                       1, 'ended', NULL, 0, 0, 1, 0, 0, 0)",
+            [],
+        )
+        .expect("old row");
+        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 1)
+            .expect("old version");
+        drop(conn);
+
+        let journal = Journal::open(&path).expect("migrate");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.old")
+            .expect("migrated row");
+        assert_eq!(row.dropped_frames, 0);
+        assert_eq!(row.dropped_bytes, 0);
+        assert_eq!(
+            row.to_session().state,
+            SessionState::Ended {
+                generation: 1,
+                code: None,
+                integrity: TranscriptIntegrity::Truncated {
+                    dropped_frames: 0,
+                    dropped_bytes: 0,
+                },
+            }
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migration_recovers_if_first_counter_column_was_committed() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("old journal");
+        conn.execute_batch(SCHEMA_SQL).expect("old schema");
+        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 1)
+            .expect("old version");
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN dropped_frames INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .expect("simulate the first committed ALTER");
+        drop(conn);
+
+        let journal = match Journal::open(&path) {
+            Ok(journal) => journal,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                panic!("crash-atomic migration should reopen: {error}");
+            }
+        };
+        journal
+            .upsert_blocking(sample_session("s.atomic"))
+            .expect("write after migration");
+        assert!(journal
+            .list()
+            .expect("read after migration")
+            .iter()
+            .any(|record| record.id == "s.atomic"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn open_creates_schema_and_agent_tables() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open(&path).expect("open");
@@ -1721,7 +2085,7 @@ mod tests {
             .expect("b");
         let replay = journal.replay("s.a.1", 0).expect("replay");
         match &replay.events[..] {
-            [SessionEvent::Output { seq: 1, data: a }, SessionEvent::Output { seq: 2, data: b }, SessionEvent::Recovered { truncated: false }] =>
+            [SessionEvent::Output { seq: 1, data: a }, SessionEvent::Output { seq: 2, data: b }, SessionEvent::Recovered { integrity: TranscriptIntegrity::Unverifiable { dropped_frames: 0, dropped_bytes: 0 } }] =>
             {
                 assert_eq!(a, "one");
                 assert_eq!(b, "two");
@@ -2034,7 +2398,12 @@ mod tests {
         ));
         assert!(matches!(
             killed.events.last(),
-            Some(SessionEvent::Recovered { truncated: false })
+            Some(SessionEvent::Recovered {
+                integrity: TranscriptIntegrity::Unverifiable {
+                    dropped_frames: 0,
+                    dropped_bytes: 0,
+                },
+            })
         ));
         let listed = journal.list().expect("list");
         assert!(listed.iter().any(|row| {
@@ -2056,11 +2425,9 @@ mod tests {
         // - a session whose journal was not closed orderly is ALWAYS
         //   Recovered, whatever the degraded column says: Recovered means
         //   "tail unverifiable";
-        // - `truncated` equals the recorded degradation exactly: observed
-        //   losses are declared, and with no observed loss the flag stays
-        //   down (no wolf). Bytes that died uncommitted in the queue are
-        //   then missing WITHOUT a truncation flag — the "we do not know"
-        //   case, honest only because Recovered itself carries the doubt.
+        // - no terminator is always Unverifiable, with any measured loss
+        //   carried as counters. A terminator is required before Truncated
+        //   can certify the remaining tail.
         let (dir, path) = tmp_journal();
 
         // Silent queue death: five frames committed, five more produced
@@ -2091,7 +2458,10 @@ mod tests {
             assert!(matches!(
                 row.to_session().state,
                 SessionState::Recovered {
-                    truncated: false,
+                    integrity: TranscriptIntegrity::Unverifiable {
+                        dropped_frames: 0,
+                        dropped_bytes: 0,
+                    },
                     ..
                 }
             ));
@@ -2107,17 +2477,28 @@ mod tests {
             assert_eq!(replay_bytes, 20, "committed frames must replay intact");
             assert!(matches!(
                 replay.events.last(),
-                Some(SessionEvent::Recovered { truncated: false })
+                Some(SessionEvent::Recovered {
+                    integrity: TranscriptIntegrity::Unverifiable {
+                        dropped_frames: 0,
+                        dropped_bytes: 0,
+                    },
+                })
             ));
             assert!(
-                !replay.truncated,
-                "no loss was observed but truncation was claimed: crying wolf"
+                matches!(
+                    replay.integrity,
+                    TranscriptIntegrity::Unverifiable {
+                        dropped_frames: 0,
+                        dropped_bytes: 0,
+                    }
+                ),
+                "an unclosed journal must stay unverifiable"
             );
         }
 
         // Observed loss: the same five committed frames, but the previous
-        // daemon recorded degradation (queue pressure). The missing bytes
-        // MUST now be declared.
+        // daemon recorded degradation (queue pressure). The tail is still
+        // unverifiable because no terminator committed.
         {
             let journal = Journal::open(&path).expect("open");
             journal
@@ -2142,18 +2523,29 @@ mod tests {
             assert!(matches!(
                 row.to_session().state,
                 SessionState::Recovered {
-                    truncated: true,
+                    integrity: TranscriptIntegrity::Unverifiable {
+                        dropped_frames: 0,
+                        dropped_bytes: 0,
+                    },
                     ..
                 }
             ));
             let replay = journal.replay("s.cross.declared", 0).expect("replay");
-            assert!(
-                replay.truncated,
-                "an observed loss must be declared as truncation"
+            assert_eq!(
+                replay.integrity,
+                TranscriptIntegrity::Unverifiable {
+                    dropped_frames: 0,
+                    dropped_bytes: 0,
+                }
             );
             assert!(matches!(
                 replay.events.last(),
-                Some(SessionEvent::Recovered { truncated: true })
+                Some(SessionEvent::Recovered {
+                    integrity: TranscriptIntegrity::Unverifiable {
+                        dropped_frames: 0,
+                        dropped_bytes: 0,
+                    },
+                })
             ));
         }
         let _ = std::fs::remove_dir_all(&dir);

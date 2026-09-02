@@ -1,6 +1,11 @@
 import type { Channel } from "@tauri-apps/api/core";
 import { isCommandError } from "../../lib/tauri";
-import type { Session, SessionEvent, SessionSnapshot } from "../../types/ipc";
+import type {
+  Session,
+  SessionEvent,
+  SessionSnapshot,
+  UnverifiableTranscriptIntegrity,
+} from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
 import type { TerminalSessionRegistry } from "./terminalRegistry";
 
@@ -8,17 +13,14 @@ export type TerminalEvent = SessionEvent;
 export type TerminalChannel = Channel<TerminalEvent>;
 
 export type TerminalBanner =
-  | { kind: "exited"; code: number | null }
+  | { kind: "exited"; code: number | null; lost: { frames: number; bytes: number } | null }
   | { kind: "silent"; elapsedMs: number }
   /**
-   * The session was reopened from a journal nobody closed orderly.
-   * The banner kind itself means the transcript tail is unverifiable;
-   * `truncated` adds the narrower fact that an output loss was observed
-   * and recorded while the previous daemon was alive. `truncated: false`
-   * never means "the transcript is complete".
+   * The session was reopened from a journal nobody closed orderly. The
+   * counters preserve any loss measured before the daemon died.
    */
-  | { kind: "recovered"; truncated: boolean }
-  | { kind: "journal_degraded" }
+  | { kind: "recovered"; integrity: UnverifiableTranscriptIntegrity }
+  | { kind: "journal_degraded"; lost: { frames: number; bytes: number } }
   | { kind: "closed" }
   | { kind: "error"; message: string }
   | null;
@@ -103,6 +105,7 @@ export class TerminalSession {
   private writeFailCount = 0;
   private silenceBannerVisible = false;
   private persistentBanner: PersistentTerminalBanner | null = null;
+  private journalLoss: { frames: number; bytes: number } | null = null;
 
   constructor(private readonly deps: TerminalSessionDeps) {
     this.setTimer =
@@ -356,14 +359,14 @@ export class TerminalSession {
         this.markExited(event.code);
         break;
       case "recovered":
-        this.markRecovered(event.truncated);
+        this.markRecovered(event.integrity);
         break;
       case "silent":
         this.silenceBannerVisible = true;
         this.deps.onBanner({ kind: "silent", elapsedMs: event.elapsedMs });
         break;
       case "journal_degraded":
-        this.markJournalDegraded();
+        this.markJournalDegraded(event.droppedFrames, event.droppedBytes);
         break;
       case "output":
         this.processOutput(event);
@@ -460,6 +463,7 @@ export class TerminalSession {
   private resetSessionIdentity(): void {
     this.lastSeenSeq = null;
     this.clearSnapshotState();
+    this.journalLoss = null;
   }
 
   private scheduleOutputFlush(): void {
@@ -483,27 +487,32 @@ export class TerminalSession {
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
-    this.persistentBanner = { kind: "exited", code };
+    this.persistentBanner = { kind: "exited", code, lost: this.journalLoss };
     this.deps.onBanner(this.persistentBanner);
     this.deps.onExited?.(code);
   }
 
-  private markRecovered(truncated: boolean): void {
+  private markRecovered(integrity: UnverifiableTranscriptIntegrity): void {
     if (this.exited) return;
     this.exited = true;
     this.silenceBannerVisible = false;
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
-    this.persistentBanner = { kind: "recovered", truncated };
+    this.persistentBanner = { kind: "recovered", integrity };
     this.deps.onBanner(this.persistentBanner);
     this.deps.onExited?.(null);
   }
 
-  private markJournalDegraded(): void {
+  private markJournalDegraded(frames: number, bytes: number): void {
     if (this.exited) return;
     this.silenceBannerVisible = false;
-    this.persistentBanner = { kind: "journal_degraded" };
+    const previous = this.journalLoss;
+    this.journalLoss = {
+      frames: Math.max(previous?.frames ?? 0, frames),
+      bytes: Math.max(previous?.bytes ?? 0, bytes),
+    };
+    this.persistentBanner = { kind: "journal_degraded", lost: this.journalLoss };
     this.deps.onBanner(this.persistentBanner);
   }
 

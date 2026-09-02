@@ -221,7 +221,7 @@ pub enum DaemonMessage {
 /// - `failedFrames > 0`: the daemon REJECTED output while it was alive
 ///   (journal queue full or a write error). It dropped those frames
 ///   knowing it, recorded the per-session degradation, and a recovered
-///   transcript reports that loss as `truncated`.
+///   transcript preserves that loss in its integrity counters.
 /// - `committedFrames < acceptedFrames` with `failedFrames == 0`: frames
 ///   were accepted into the bounded queue but not committed yet. If the
 ///   process dies in this state the queue dies with it and no record of
@@ -281,7 +281,7 @@ pub struct DaemonStatusBody {
     pub ring_dropped_frames: u64,
     /// Present when the conversation journal could not be opened or a live
     /// session has lost journal writes. Live sessions continue; recovery
-    /// reports observed losses through the per-session `truncated` state.
+    /// reports observed losses through the per-session integrity counters.
     /// Losses that were never observed (the uncommitted writer queue dying
     /// with the process) leave no flag anywhere — the recovered state
     /// itself is what carries that doubt.

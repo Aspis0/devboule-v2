@@ -52,6 +52,32 @@ pub struct SessionStateSnapshot {
     pub elapsed_ms: Option<u64>,
 }
 
+/// What the journal can honestly say about a finished transcript.
+///
+/// Three values, because there are three states of knowledge, not two.
+/// `Unverifiable` is not a softer `Truncated`: it means the record cannot be
+/// trusted to be complete because the daemon died before closing the journal.
+/// The counters are what happened to get recorded before the death; zero
+/// means "nothing was written down", never "nothing was lost".
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum TranscriptIntegrity {
+    /// The writer committed a terminator and recorded no loss.
+    Complete,
+    /// The writer committed a terminator, so the tail is certified, and a
+    /// loss was observed and measured before it.
+    Truncated {
+        dropped_frames: u64,
+        dropped_bytes: u64,
+    },
+    /// The daemon died without closing the journal, so the tail cannot be
+    /// checked. The counters preserve any measured loss that was recorded.
+    Unverifiable {
+        dropped_frames: u64,
+        dropped_bytes: u64,
+    },
+}
+
 /// How this session currently exists. Live and recovered are different
 /// kinds of thing: one has a process, the other is a transcript of a
 /// process the daemon can no longer see.
@@ -70,23 +96,22 @@ pub enum SessionState {
     Silent { generation: u64 },
     /// The process exited while this daemon was alive. `code` is the
     /// observed exit status (`None` if the child did not report one).
-    Ended { generation: u64, code: Option<u32> },
+    Ended {
+        generation: u64,
+        code: Option<u32>,
+        integrity: TranscriptIntegrity,
+    },
     /// The daemon that owned the process is gone (kill, crash, update).
     /// Replay only.
     ///
-    /// The variant itself is the doubt statement: the journal was not
-    /// closed orderly, so whatever was still uncommitted in the dying
-    /// process's writer queue left no record anywhere. The transcript tail
-    /// is UNVERIFIABLE — absence of `truncated` never certifies that
-    /// nothing is missing. Only an orderly close (`Ended`) certifies
-    /// completeness.
-    ///
-    /// `truncated` is a different, narrower fact: the previous daemon
-    /// observed and recorded a loss while it was alive (journal queue
-    /// pressure or a write error). Recovered with `truncated == false`
-    /// means "no loss was observed, and the tail cannot be checked" —
-    /// not "nothing is missing".
-    Recovered { generation: u64, truncated: bool },
+    /// The journal was not closed orderly, so whatever was still
+    /// uncommitted in the dying process's writer queue left no record
+    /// anywhere. The transcript tail is always unverifiable; the counters
+    /// preserve any measured loss that was recorded before the death.
+    Recovered {
+        generation: u64,
+        integrity: TranscriptIntegrity,
+    },
 }
 
 impl SessionState {
@@ -128,7 +153,11 @@ impl SessionState {
 /// left. Putting generation on every output chunk would change the Channel
 /// payload the frontend already parses.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum SessionEvent {
     Output {
         seq: u64,
@@ -151,17 +180,14 @@ pub enum SessionEvent {
     /// A `Recovered` marker never certifies a complete transcript. The
     /// journal of a process that died was not closed orderly, so whatever
     /// was still uncommitted in its writer queue is gone without a trace:
-    /// the tail is unverifiable. `truncated` records the narrower fact
-    /// that the previous daemon observed and noted a loss while it was
-    /// alive (journal queue pressure or a write error). Recovered with
-    /// `truncated == false` says "nothing was observed missing and the
-    /// tail cannot be checked" — not "nothing is missing". Clients must
-    /// surface that doubt, not silently present the transcript as whole.
-    Recovered {
-        truncated: bool,
+    /// the tail is unverifiable. The counters preserve any measured loss.
+    Recovered { integrity: TranscriptIntegrity },
+    /// The journal has started dropping output for this live session. The
+    /// counters measure what was noticed, never everything that was lost.
+    JournalDegraded {
+        dropped_frames: u64,
+        dropped_bytes: u64,
     },
-    /// The journal has started dropping output for this live session.
-    JournalDegraded,
     /// Connection-scoped session roster update. Unlike the attachment events
     /// above, this event is not tied to a session attachment or generation.
     SessionsSnapshot {
@@ -333,6 +359,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn transcript_integrity_variants_round_trip_with_exact_wire_shape() {
+        let cases = [
+            (
+                TranscriptIntegrity::Complete,
+                r#"{"kind":"complete"}"#,
+            ),
+            (
+                TranscriptIntegrity::Truncated {
+                    dropped_frames: 3,
+                    dropped_bytes: 4096,
+                },
+                r#"{"kind":"truncated","droppedFrames":3,"droppedBytes":4096}"#,
+            ),
+            (
+                TranscriptIntegrity::Unverifiable {
+                    dropped_frames: 3,
+                    dropped_bytes: 4096,
+                },
+                r#"{"kind":"unverifiable","droppedFrames":3,"droppedBytes":4096}"#,
+            ),
+        ];
+
+        for (value, expected_json) in cases {
+            let encoded = serde_json::to_string(&value).expect("json");
+            assert_eq!(encoded, expected_json);
+            let decoded: TranscriptIntegrity = serde_json::from_str(&encoded).expect("round trip");
+            assert_eq!(decoded, value);
+        }
+    }
+
+    #[test]
     fn session_event_uses_a_type_tag() {
         let output = serde_json::to_value(SessionEvent::Output {
             seq: 7,
@@ -392,36 +449,52 @@ mod tests {
         let ended = serde_json::to_value(SessionState::Ended {
             generation: 1,
             code: Some(0),
+            integrity: TranscriptIntegrity::Complete,
         })
         .expect("json");
         let recovered = serde_json::to_value(SessionState::Recovered {
             generation: 1,
-            truncated: false,
+            integrity: TranscriptIntegrity::Unverifiable {
+                dropped_frames: 0,
+                dropped_bytes: 0,
+            },
         })
         .expect("json");
         assert_eq!(live["type"], "live");
         assert_eq!(ended["type"], "ended");
         assert_eq!(recovered["type"], "recovered");
+        assert_eq!(recovered["integrity"]["kind"], "unverifiable");
         assert_ne!(live["type"], recovered["type"]);
         assert_ne!(ended["type"], recovered["type"]);
     }
 
     #[test]
     fn recovered_event_is_distinct_from_exit() {
-        let recovered =
-            serde_json::to_value(SessionEvent::Recovered { truncated: true }).expect("json");
+        let recovered = serde_json::to_value(SessionEvent::Recovered {
+            integrity: TranscriptIntegrity::Unverifiable {
+                dropped_frames: 2,
+                dropped_bytes: 12,
+            },
+        })
+        .expect("json");
         let exit = serde_json::to_value(SessionEvent::Exit { code: None }).expect("json");
         assert_eq!(recovered["type"], "recovered");
-        assert_eq!(recovered["truncated"], true);
+        assert_eq!(recovered["integrity"]["kind"], "unverifiable");
+        assert_eq!(recovered["integrity"]["droppedBytes"], 12);
         assert_eq!(exit["type"], "exit");
         assert_ne!(recovered["type"], exit["type"]);
     }
 
     #[test]
     fn journal_degraded_event_round_trips() {
-        let event = SessionEvent::JournalDegraded;
+        let event = SessionEvent::JournalDegraded {
+            dropped_frames: 3,
+            dropped_bytes: 4096,
+        };
         let encoded = serde_json::to_value(&event).expect("json");
         assert_eq!(encoded["type"], "journal_degraded");
+        assert_eq!(encoded["droppedFrames"], 3);
+        assert_eq!(encoded["droppedBytes"], 4096);
         let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
         assert_eq!(decoded, event);
     }

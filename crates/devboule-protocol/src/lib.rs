@@ -93,7 +93,7 @@ pub use plugin::WorkspaceRootBody;
 pub use session::{
     cursor_replay_ok, Cursor, CursorShape, PermissionOutcome, Persistence, PersistenceKind,
     ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionState,
-    SessionStateSnapshot,
+    SessionStateSnapshot, TranscriptIntegrity,
 };
 
 /// Current protocol dialect spoken by this crate.

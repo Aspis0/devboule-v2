@@ -80,7 +80,7 @@ use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, CursorShape, ErrorCode,
     JournalStats, OwnerId, ScreenCursor, Session, SessionEvent, SessionEventEnvelope, SessionKind,
-    SessionState, SessionStateSnapshot, WireError,
+    SessionState, SessionStateSnapshot, TranscriptIntegrity, WireError,
 };
 
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
@@ -106,6 +106,20 @@ pub const PENDING_OUTPUT_BUDGET_FRAMES: u64 = 64;
 /// pending queue where slow-client coalescing can still replace them, and a
 /// pull never moves an unbounded batch into connection-local state.
 const PULL_BATCH: usize = 16;
+
+fn integrity_counters(integrity: TranscriptIntegrity) -> (u64, u64) {
+    match integrity {
+        TranscriptIntegrity::Complete => (0, 0),
+        TranscriptIntegrity::Truncated {
+            dropped_frames,
+            dropped_bytes,
+        }
+        | TranscriptIntegrity::Unverifiable {
+            dropped_frames,
+            dropped_bytes,
+        } => (dropped_frames, dropped_bytes),
+    }
+}
 
 const READ_CHUNK: usize = 16 * 1024;
 const INITIAL_COLS: u16 = 120;
@@ -265,8 +279,8 @@ enum PendingItem {
 enum Disposition {
     Running,
     Silent,
-    Exited,
-    Recovered { truncated: bool },
+    Exited { integrity: TranscriptIntegrity },
+    Recovered { integrity: TranscriptIntegrity },
 }
 
 struct StreamState {
@@ -343,6 +357,8 @@ struct SessionRuntime {
     /// Kept outside `stream` so a poisoned stream can still wake its viewer
     /// and deliver the degraded + exit terminal markers.
     attachment_notify: Mutex<Option<Arc<ConnOut>>>,
+    journal_dropped_frames: AtomicU64,
+    journal_dropped_bytes: AtomicU64,
     /// Output that resumes a silent stream, exit, and teardown wake the
     /// deadline sleeper without turning it back into a one-second poller.
     liveness_wake: Arc<(Mutex<bool>, Condvar)>,
@@ -398,6 +414,8 @@ impl SessionRuntime {
             }),
             pty_writer: OnceLock::new(),
             journal_degraded: AtomicBool::new(false),
+            journal_dropped_frames: AtomicU64::new(0),
+            journal_dropped_bytes: AtomicU64::new(0),
             terminal_dead: AtomicBool::new(false),
             attachment_notify: Mutex::new(None),
             liveness_wake: Arc::new((Mutex::new(false), Condvar::new())),
@@ -432,9 +450,20 @@ impl SessionRuntime {
         stream.last_publish = None;
         stream.exit_at = None;
         stream.pending_silences.clear();
-        stream.disposition = Disposition::Recovered {
-            truncated: replay.truncated,
+        let integrity = replay.integrity;
+        stream.disposition = match integrity {
+            TranscriptIntegrity::Unverifiable { .. } => Disposition::Recovered { integrity },
+            TranscriptIntegrity::Complete | TranscriptIntegrity::Truncated { .. } => {
+                Disposition::Exited { integrity }
+            }
         };
+        let (dropped_frames, dropped_bytes) = integrity_counters(integrity);
+        runtime
+            .journal_dropped_frames
+            .store(dropped_frames, Ordering::Release);
+        runtime
+            .journal_dropped_bytes
+            .store(dropped_bytes, Ordering::Release);
         // A recovered session is a transcript, not a live process: no
         // emulator, no snapshot, no live queue. Cursor-based journal
         // replay below serves its attaches.
@@ -446,14 +475,23 @@ impl SessionRuntime {
                 }
                 SessionEvent::Exit { code } => {
                     stream.exit_code = code;
-                    stream.disposition = Disposition::Exited;
+                    stream.disposition = Disposition::Exited { integrity };
                 }
-                SessionEvent::Recovered { truncated } => {
-                    stream.disposition = Disposition::Recovered { truncated };
+                SessionEvent::Recovered { integrity } => {
+                    stream.disposition = Disposition::Recovered { integrity };
                 }
                 SessionEvent::Silent { .. } => {}
-                SessionEvent::JournalDegraded => {
+                SessionEvent::JournalDegraded {
+                    dropped_frames,
+                    dropped_bytes,
+                } => {
                     runtime.journal_degraded.store(true, Ordering::Release);
+                    runtime
+                        .journal_dropped_frames
+                        .fetch_max(dropped_frames, Ordering::AcqRel);
+                    runtime
+                        .journal_dropped_bytes
+                        .fetch_max(dropped_bytes, Ordering::AcqRel);
                 }
                 SessionEvent::SessionsSnapshot { .. } => {}
                 // Snapshots are screen state, never journal records; a
@@ -477,7 +515,12 @@ impl SessionRuntime {
     fn lock_stream(&self) -> Result<MutexGuard<'_, StreamState>, ()> {
         match self.stream.lock() {
             Ok(stream) => Ok(stream),
-            Err(_) => {
+            Err(error) => {
+                // PoisonError owns the guard that was acquired before the
+                // panic. Release it before the dead-session path takes any
+                // other action, otherwise refreshing the disposition would
+                // wait forever on the same poisoned mutex.
+                drop(error);
                 self.mark_terminal_dead("session stream lock poisoned");
                 Err(())
             }
@@ -739,11 +782,17 @@ impl SessionRuntime {
     }
 
     fn mark_journal_degraded(&self) {
+        if let Some(journal) = &self.journal {
+            let (frames, bytes) = journal.session_drop_counters(&self.session_id);
+            self.journal_dropped_frames.fetch_max(frames, Ordering::AcqRel);
+            self.journal_dropped_bytes.fetch_max(bytes, Ordering::AcqRel);
+        }
         if !self.journal_degraded.swap(true, Ordering::AcqRel) {
             if let Some(journal) = &self.journal {
                 journal.note_session_degraded(&self.session_id);
             }
         }
+        self.refresh_exit_integrity();
         self.notify_attachment();
     }
 
@@ -794,6 +843,13 @@ impl SessionRuntime {
         self.journal_degraded.load(Ordering::Acquire)
     }
 
+    fn journal_degraded_event(&self) -> SessionEvent {
+        SessionEvent::JournalDegraded {
+            dropped_frames: self.journal_dropped_frames.load(Ordering::Acquire),
+            dropped_bytes: self.journal_dropped_bytes.load(Ordering::Acquire),
+        }
+    }
+
     fn replay_journal_outputs(&self, from_seq: u64, generation: u64) -> Vec<(u64, String)> {
         let Some(journal) = &self.journal else {
             return Vec::new();
@@ -817,9 +873,6 @@ impl SessionRuntime {
             );
             return Vec::new();
         }
-        if replay.truncated {
-            self.mark_journal_degraded();
-        }
         self.journal_replays.fetch_add(1, Ordering::Relaxed);
         replay
             .events
@@ -829,7 +882,7 @@ impl SessionRuntime {
                 SessionEvent::Exit { .. }
                 | SessionEvent::Recovered { .. }
                 | SessionEvent::Silent { .. }
-                | SessionEvent::JournalDegraded
+                | SessionEvent::JournalDegraded { .. }
                 | SessionEvent::SessionsSnapshot { .. }
                 // Snapshots are not output chunks and are not sourced from
                 // the historical journal replay path.
@@ -928,7 +981,9 @@ impl SessionRuntime {
         stream.process_exited = true;
         stream.exit_code = code;
         stream.exit_at = Some(Instant::now());
-        stream.disposition = Disposition::Exited;
+        stream.disposition = Disposition::Exited {
+            integrity: self.terminated_integrity(),
+        };
         stream.pending_silences.clear();
         if let Some(attached) = &stream.attached {
             attached.outbound.notify();
@@ -946,6 +1001,29 @@ impl SessionRuntime {
                     self.session_id
                 );
             }
+        }
+        self.refresh_exit_integrity();
+    }
+
+    fn terminated_integrity(&self) -> TranscriptIntegrity {
+        if self.journal_degraded() {
+            TranscriptIntegrity::Truncated {
+                dropped_frames: self.journal_dropped_frames.load(Ordering::Acquire),
+                dropped_bytes: self.journal_dropped_bytes.load(Ordering::Acquire),
+            }
+        } else {
+            TranscriptIntegrity::Complete
+        }
+    }
+
+    fn refresh_exit_integrity(&self) {
+        // A poisoned stream is already handled by the caller's terminal-dead
+        // path; do not re-enter that path while refreshing the disposition.
+        let Ok(mut stream) = self.stream.lock() else {
+            return;
+        };
+        if let Disposition::Exited { integrity } = &mut stream.disposition {
+            *integrity = self.terminated_integrity();
         }
     }
 
@@ -1285,7 +1363,7 @@ impl ConnHandle {
                 }
                 SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
                 SessionEvent::Silent { .. }
-                | SessionEvent::JournalDegraded
+                | SessionEvent::JournalDegraded { .. }
                 | SessionEvent::SessionsSnapshot { .. }
                 | SessionEvent::Snapshot { .. } => false,
             }
@@ -1354,8 +1432,10 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
             .map(|elapsed_ms| SessionEvent::Silent { elapsed_ms });
         if !pull.exit_sent && stream.pending.is_empty() && SessionRuntime::ready_for_exit(&stream) {
             exit_event = Some(match stream.disposition {
-                Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
-                Disposition::Running | Disposition::Silent | Disposition::Exited => {
+                Disposition::Recovered { integrity } => SessionEvent::Recovered { integrity },
+                Disposition::Running
+                | Disposition::Silent
+                | Disposition::Exited { .. } => {
                     SessionEvent::Exit {
                         code: stream.exit_code,
                     }
@@ -1386,7 +1466,7 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
             envelope: SessionEventEnvelope {
                 session_id: session_id.to_string(),
                 generation: pull.generation,
-                event: SessionEvent::JournalDegraded,
+                event: pull.runtime.journal_degraded_event(),
             },
         });
     }
@@ -1422,7 +1502,7 @@ fn push_dead_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
             envelope: SessionEventEnvelope {
                 session_id: session_id.to_string(),
                 generation: pull.generation,
-                event: SessionEvent::JournalDegraded,
+                event: pull.runtime.journal_degraded_event(),
             },
         });
         pull.journal_degraded_sent = true;
@@ -1491,7 +1571,7 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
             envelope: SessionEventEnvelope {
                 session_id: session_id.to_string(),
                 generation: pull.generation,
-                event: SessionEvent::JournalDegraded,
+                event: pull.runtime.journal_degraded_event(),
             },
         });
         pull.journal_degraded_sent = true;
@@ -1503,8 +1583,10 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
         };
         if SessionRuntime::ready_for_exit(&stream) {
             let event = match stream.disposition {
-                Disposition::Recovered { truncated } => SessionEvent::Recovered { truncated },
-                Disposition::Running | Disposition::Silent | Disposition::Exited => {
+                Disposition::Recovered { integrity } => SessionEvent::Recovered { integrity },
+                Disposition::Running
+                | Disposition::Silent
+                | Disposition::Exited { .. } => {
                     SessionEvent::Exit {
                         code: stream.exit_code,
                     }
@@ -1617,6 +1699,7 @@ fn live_session_view(session: &PtySession) -> Session {
         metadata.state = SessionState::Ended {
             generation: session.runtime.generation(),
             code: None,
+            integrity: session.runtime.terminated_integrity(),
         };
         return metadata;
     }
@@ -1624,6 +1707,7 @@ fn live_session_view(session: &PtySession) -> Session {
         metadata.state = SessionState::Ended {
             generation: session.runtime.generation(),
             code: None,
+            integrity: session.runtime.terminated_integrity(),
         };
         return metadata;
     };
@@ -1634,13 +1718,14 @@ fn live_session_view(session: &PtySession) -> Session {
         Disposition::Silent => SessionState::Silent {
             generation: stream.generation,
         },
-        Disposition::Exited => SessionState::Ended {
+        Disposition::Exited { integrity } => SessionState::Ended {
             generation: stream.generation,
             code: stream.exit_code,
+            integrity,
         },
-        Disposition::Recovered { truncated } => SessionState::Recovered {
+        Disposition::Recovered { integrity } => SessionState::Recovered {
             generation: stream.generation,
-            truncated,
+            integrity,
         },
     };
     metadata.elapsed_ms = elapsed_ms_since_last_life(
@@ -3014,7 +3099,10 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                SessionEvent::JournalDegraded,
+                SessionEvent::JournalDegraded {
+                    dropped_frames: 0,
+                    dropped_bytes: 0,
+                },
                 SessionEvent::Exit { code: None }
             ]
         ));
@@ -3532,7 +3620,7 @@ mod tests {
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::Silent { .. } => "silent",
-                SessionEvent::JournalDegraded => "journal_degraded",
+                SessionEvent::JournalDegraded { .. } => "journal_degraded",
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
             })
             .collect();
@@ -3713,7 +3801,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .filter(|event| matches!(event, SessionEvent::JournalDegraded))
+                .filter(|event| matches!(event, SessionEvent::JournalDegraded { .. }))
                 .count(),
             1,
             "degradation must be delivered exactly once: {events:?}"
@@ -3729,13 +3817,21 @@ mod tests {
         let replay = crate::journal::Replay {
             generation: 1,
             last_seq: 1,
-            truncated: false,
+            integrity: TranscriptIntegrity::Unverifiable {
+                dropped_frames: 0,
+                dropped_bytes: 0,
+            },
             events: vec![
                 SessionEvent::Output {
                     seq: 1,
                     data: "hello".to_string(),
                 },
-                SessionEvent::Recovered { truncated: false },
+                SessionEvent::Recovered {
+                    integrity: TranscriptIntegrity::Unverifiable {
+                        dropped_frames: 0,
+                        dropped_bytes: 0,
+                    },
+                },
             ],
         };
         let runtime = SessionRuntime::from_replay("s.a.1".to_string(), None, replay);
@@ -3749,7 +3845,7 @@ mod tests {
                 SessionEvent::Exit { .. } => "exit",
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::Silent { .. } => "silent",
-                SessionEvent::JournalDegraded => "journal_degraded",
+                SessionEvent::JournalDegraded { .. } => "journal_degraded",
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
                 SessionEvent::Snapshot { .. } => "snapshot",
             })

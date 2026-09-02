@@ -26,6 +26,7 @@ use devboule_daemon::{
 use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, CursorShape, ErrorCode, OwnerId, Persistence,
     PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionState, SessionStateSnapshot,
+    TranscriptIntegrity,
 };
 use portable_pty::{CommandBuilder, PtySize};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
@@ -260,7 +261,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
         | SessionEvent::Silent { .. }
-        | SessionEvent::JournalDegraded
+        | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. } => false,
     }
 }
@@ -622,7 +623,7 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::Silent { .. }
-            | SessionEvent::JournalDegraded
+            | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. } => None,
         })
@@ -950,7 +951,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             SessionEvent::Exit { .. }
             | SessionEvent::Recovered { .. }
             | SessionEvent::Silent { .. }
-            | SessionEvent::JournalDegraded
+            | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. } => None,
         })
@@ -1465,7 +1466,7 @@ fn real_pty_channel_flood_correctness() {
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
         | SessionEvent::Silent { .. }
-        | SessionEvent::JournalDegraded
+        | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. } => {}
     });
     client
@@ -1851,7 +1852,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         }
         SessionEvent::Recovered { .. }
         | SessionEvent::Silent { .. }
-        | SessionEvent::JournalDegraded
+        | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::Snapshot { .. } => {}
     });
@@ -2212,7 +2213,7 @@ fn journal_outlives_the_256kib_ring() {
             SessionEvent::Recovered { .. }
             | SessionEvent::Exit { .. }
             | SessionEvent::Silent { .. }
-            | SessionEvent::JournalDegraded
+            | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. } => {}
         }
@@ -2448,13 +2449,13 @@ fn journal_growth_after_13mb_flood() {
         events: Vec<(u64, String)>,
         recovered: bool,
         exited: bool,
-        truncated: bool,
+        integrity: Option<TranscriptIntegrity>,
     }
     let replayed = Arc::new(Mutex::new(ReplayCapture {
         events: Vec::new(),
         recovered: false,
         exited: false,
-        truncated: false,
+        integrity: None,
     }));
     let replayed_for_handler = Arc::clone(&replayed);
     let handler: EventHandler = Arc::new(move |envelope| {
@@ -2463,16 +2464,13 @@ fn journal_growth_after_13mb_flood() {
             SessionEvent::Output { seq, data } => {
                 replayed.events.push((seq, data));
             }
-            // The truncation flag IS part of the recovered contract: it is
-            // the only declared-loss signal the transcript carries, so the
-            // handler must capture it, not just the fact of recovery.
-            SessionEvent::Recovered { truncated } => {
+            SessionEvent::Recovered { integrity } => {
                 replayed.recovered = true;
-                replayed.truncated = truncated;
+                replayed.integrity = Some(integrity);
             }
             SessionEvent::Exit { .. } => replayed.exited = true,
             SessionEvent::Silent { .. } => {}
-            SessionEvent::JournalDegraded => {}
+            SessionEvent::JournalDegraded { .. } => {}
             SessionEvent::SessionsSnapshot { .. } => {}
             SessionEvent::Snapshot { .. } => {}
         }
@@ -2496,13 +2494,13 @@ fn journal_growth_after_13mb_flood() {
         replay_complete,
         "replay did not complete within {REPLAY_TIMEOUT_SECONDS}s"
     );
-    let (replay_events, recovered, exited, replay_truncated) = {
+    let (replay_events, recovered, exited, replay_integrity) = {
         let snap = replayed.lock().unwrap();
         (
             snap.events.clone(),
             snap.recovered,
             snap.exited,
-            snap.truncated,
+            snap.integrity,
         )
     };
     let replay_bytes: usize = replay_events.iter().map(|(_, data)| data.len()).sum();
@@ -2513,7 +2511,7 @@ fn journal_growth_after_13mb_flood() {
         .collect();
     let replay_payload = normalize_journal_growth_output(&replay_raw);
     println!(
-        "JOURNAL_GROWTH replay_bytes={replay_bytes} frames={} recovered={recovered} exited={exited} truncated={replay_truncated} failed_before_kill={failed_before_kill} live_bytes={live_bytes}",
+        "JOURNAL_GROWTH replay_bytes={replay_bytes} frames={} recovered={recovered} exited={exited} integrity={replay_integrity:?} failed_before_kill={failed_before_kill} live_bytes={live_bytes}",
         replay_events.len()
     );
     // THE CROSS nothing verified before: measured missing bytes against the
@@ -2522,23 +2520,36 @@ fn journal_growth_after_13mb_flood() {
     // failed_frames == 0 at kill time: the journal never dropped a frame
     // knowingly, and the sync proved everything accepted was committed, so
     // the replay must cover the whole flood and match the live capture
-    // sequence for sequence — and truncated must stay DOWN, because
-    // claiming a loss nobody observed is the wolf that teaches people to
-    // ignore the flag.
+    // sequence for sequence. The unclosed journal is still unverifiable.
     //
     // failed_frames > 0: the journal dropped frames knowing it, so the
-    // reopened transcript MUST declare truncation. Short coverage is then
-    // a declared loss, which is the honest product, not a test failure.
+    // reopened transcript MUST preserve the measured counters while still
+    // reporting an unverifiable tail.
     if failed_before_kill == 0 {
         assert!(
             replay_bytes >= expected_file_bytes,
             "journal replay lost payload bytes with no observed failure: replay={replay_bytes} expected={expected_file_bytes} missing={}",
             expected_file_bytes.saturating_sub(replay_bytes)
         );
-        assert!(
-            !replay_truncated,
-            "no loss was observed before the kill but the reopened transcript claims truncation"
-        );
+        // HEAD's bool assertion was vacuous when there was no Recovered event;
+        // this exhaustive match makes that case explicit so it cannot silently
+        // become vacuous again.
+        match (recovered, replay_integrity) {
+            (
+                true,
+                Some(TranscriptIntegrity::Unverifiable {
+                    dropped_frames: 0,
+                    dropped_bytes: 0,
+                }),
+            ) => {}
+            (false, None) => assert!(
+                exited,
+                "no Recovered event and no Exit event means the replay produced no terminal event"
+            ),
+            (actual_recovered, actual_integrity) => panic!(
+                "unexpected clean journal-growth replay: recovered={actual_recovered} exited={exited} integrity={actual_integrity:?}"
+            ),
+        }
         if snapshot_count.load(Ordering::Acquire) == 0 {
             assert_eq!(
                 live_payload,
@@ -2603,10 +2614,22 @@ fn journal_growth_after_13mb_flood() {
         println!(
             "JOURNAL_GROWTH declared_loss observed_failures={failed_before_kill} replay_bytes={replay_bytes} expected={expected_file_bytes}"
         );
-        assert!(
-            replay_truncated,
-            "{failed_before_kill} journal frames were dropped knowing it but the reopened transcript does not declare truncation"
-        );
+        match (recovered, replay_integrity) {
+            (
+                true,
+                Some(TranscriptIntegrity::Unverifiable {
+                    dropped_frames,
+                    dropped_bytes,
+                }),
+            ) if dropped_frames > 0 || dropped_bytes > 0 => {}
+            (false, None) => assert!(
+                exited,
+                "loss was observed but no Recovered or Exit event was replayed"
+            ),
+            (actual_recovered, actual_integrity) => panic!(
+                "{failed_before_kill} journal frames were dropped knowing it but the reopened transcript had recovered={actual_recovered} exited={exited} integrity={actual_integrity:?}"
+            ),
+        }
     }
     assert!(
         recovered || exited,
@@ -2729,7 +2752,7 @@ fn attach_during_flood_delivers_every_sequence_once() {
             SessionEvent::Exit { .. } => {}
             SessionEvent::Recovered { .. }
             | SessionEvent::Silent { .. }
-            | SessionEvent::JournalDegraded
+            | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. } => {}
         }
     }

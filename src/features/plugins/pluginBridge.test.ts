@@ -274,7 +274,7 @@ describe("createPluginBridge", () => {
     expect(deriveSessionProvider("Claude Code")).toBe("claude");
   });
 
-  it("maps sessions to the privacy-safe feed without workspace or process fields", () => {
+  it("maps an unverified recovered transcript to the privacy-safe finished feed", () => {
     const session: Session = {
       id: "session-1",
       workspaceId: "workspace-secret",
@@ -299,7 +299,11 @@ describe("createPluginBridge", () => {
       sessionToPluginSession({
         ...session,
         title: "recovered session",
-        state: { type: "recovered", generation: 4, truncated: true },
+        state: {
+          type: "recovered",
+          generation: 4,
+          integrity: { kind: "unverifiable", droppedFrames: 4, droppedBytes: 12 * 1024 },
+        },
       }),
     ).toEqual({
       id: "session-1",
@@ -360,7 +364,7 @@ describe("createPluginBridge", () => {
           workspaceId: null,
           kind: "terminal",
           title: "Claude shell",
-          state: { type: "ended", generation: 1, code: 0 },
+          state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
           elapsedMs: null,
         } satisfies Session,
       ]);
@@ -613,7 +617,7 @@ describe("createPluginBridge", () => {
           workspaceId: null,
           kind: "terminal",
         title: "Claude shell",
-        state: { type: "ended", generation: 1, code: 0 },
+        state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
         elapsedMs: null,
         } satisfies Session,
       ]);

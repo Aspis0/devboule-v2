@@ -22,11 +22,30 @@ export type SessionKind = "terminal" | "acp";
 export type SendIntent = "interrupt" | "steer" | "queue";
 export type PermissionOutcome = "allow_once" | "deny";
 
+export type TranscriptIntegrity =
+  | { kind: "complete" }
+  | { kind: "truncated"; droppedFrames: number; droppedBytes: number }
+  | { kind: "unverifiable"; droppedFrames: number; droppedBytes: number };
+
+export type UnverifiableTranscriptIntegrity = Extract<
+  TranscriptIntegrity,
+  { kind: "unverifiable" }
+>;
+
 export type SessionState =
   | { type: "live"; generation: number }
   | { type: "silent"; generation: number }
-  | { type: "ended"; generation: number; code: number | null }
-  | { type: "recovered"; generation: number; truncated: boolean };
+  | {
+      type: "ended";
+      generation: number;
+      code: number | null;
+      integrity: TranscriptIntegrity;
+    }
+  | {
+      type: "recovered";
+      generation: number;
+      integrity: UnverifiableTranscriptIntegrity;
+    };
 
 export interface Session {
   id: Id;
@@ -73,13 +92,8 @@ export type SessionEvent =
   | { type: "output"; seq: number; data: string }
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }
-  /**
-   * Reopened from a journal nobody closed orderly: the transcript tail is
-   * unverifiable. `truncated` marks only losses the previous daemon
-   * observed and recorded; it is never a completeness certificate.
-   */
-  | { type: "recovered"; truncated: boolean }
-  | { type: "journal_degraded" }
+  | { type: "recovered"; integrity: UnverifiableTranscriptIntegrity }
+  | { type: "journal_degraded"; droppedFrames: number; droppedBytes: number }
   | SessionSnapshot;
 
 export type DaemonConnectionState = "connected" | "connecting" | "disconnected" | "error";

@@ -73,6 +73,16 @@ describe("workspace session controller", () => {
     );
   });
 
+  it("labels a finished session with an uncertified transcript", () => {
+    const state = {
+      type: "ended" as const,
+      generation: 1,
+      code: 1,
+      integrity: { kind: "truncated" as const, droppedFrames: 2, droppedBytes: 12 * 1024 },
+    };
+    expect(sessionStateLabel(state)).toBe("ended · truncated");
+  });
+
   it("updates the tab roster from a pushed session snapshot", async () => {
     const watched: {
       listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
@@ -94,7 +104,7 @@ describe("workspace session controller", () => {
       {
         id: "terminal-1",
         title: "killed shell",
-        state: { type: "ended", generation: 1, code: 137 },
+        state: { type: "ended", generation: 1, code: 137, integrity: { kind: "complete" } },
         elapsedMs: 42,
       },
     ]);
@@ -103,7 +113,7 @@ describe("workspace session controller", () => {
       {
         ...liveSession("terminal-1", "old title"),
         title: "killed shell",
-        state: { type: "ended", generation: 1, code: 137 },
+        state: { type: "ended", generation: 1, code: 137, integrity: { kind: "complete" } },
         elapsedMs: 42,
       },
     ]);
