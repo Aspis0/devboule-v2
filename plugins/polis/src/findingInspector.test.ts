@@ -300,7 +300,7 @@ describe("finding inspector", () => {
     }
   });
 
-  it("invalidates citations when refreshed findings rebuild the live panel", async () => {
+  it("keeps an in-flight citation result live when findings refresh", async () => {
     const container = document.createElement("section");
     const invoke = vi.fn();
     let resolveCitations!: (value: unknown) => void;
@@ -326,8 +326,27 @@ describe("finding inspector", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(live.textContent).toBe("Oracle pointers: searching…");
+    expect(live.textContent).toContain("#01");
+    expect(live.textContent).toContain("line 9");
     expect(detached.textContent).toBe("Oracle pointers: searching…");
+    inspector.destroy();
+  });
+
+  it("repaints cached citations after findings refresh without a second search", async () => {
+    const container = document.createElement("section");
+    const invoke = vi.fn().mockResolvedValue({
+      query: file.path,
+      results: [{ path: file.path, startLine: 12, endLine: 14 }],
+    });
+    const inspector = createFindingInspector(container, invoke);
+    inspector.open(file, [finding]);
+    await Promise.resolve();
+    await Promise.resolve();
+    inspector.refreshFindings([finding]);
+
+    expect(container.textContent).toContain("#01");
+    expect(container.textContent).toContain("lines 12–14");
+    expect(invoke).toHaveBeenCalledTimes(1);
     inspector.destroy();
   });
 });

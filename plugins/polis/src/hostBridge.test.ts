@@ -483,6 +483,46 @@ describe("oracle.search citations", () => {
     expect(
       isOracleCitations({ ...empty, index: { state: "unknown", indexedFiles: 3 } }, query),
     ).toBe(false);
+    expect(
+      isOracleCitations(
+        { query, results: [{ ...ok.results[0], startLine: 0, endLine: 5 }] },
+        query,
+      ),
+    ).toBe(false);
+    expect(
+      isOracleCitations(
+        {
+          query,
+          results: [
+            {
+              ...ok.results[0],
+              startLine: 1,
+              endLine: 2,
+              focusStartLine: 3,
+              focusEndLine: 4,
+            },
+          ],
+        },
+        query,
+      ),
+    ).toBe(false);
+    expect(
+      isOracleCitations(
+        {
+          query,
+          results: [
+            {
+              ...ok.results[0],
+              startLine: 0,
+              endLine: 0,
+              focusStartLine: 0,
+              focusEndLine: 0,
+            },
+          ],
+        },
+        query,
+      ),
+    ).toBe(false);
     expect(isOracleCitations({ query, results: [{ ...ok.results[0], snippet: "no" }] }, query)).toBe(
       false,
     );

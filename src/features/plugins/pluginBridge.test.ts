@@ -964,6 +964,37 @@ describe("createPluginBridge", () => {
     bridge.dispose();
   });
 
+  it("counts astral Oracle query characters as code points", async () => {
+    const query = "🧭".repeat(4096);
+    const { iframe, pluginWindow } = testFrame();
+    const oracleSearch = vi.fn().mockResolvedValue({
+      query,
+      results: [{ path: "unicode.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }],
+    });
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-code-points",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch,
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-code-points-request",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query },
+    });
+    await flushPromises();
+
+    expect(oracleSearch).toHaveBeenCalledWith(query);
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "oracle-code-points-request", kind: "result" }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
   it("projects Oracle results without content or scores, preserves order, and caps at ten", async () => {
     const { iframe, pluginWindow } = testFrame();
     const results = [
@@ -1264,7 +1295,7 @@ describe("createPluginBridge", () => {
     secondBridge.dispose();
   });
 
-  it("drops a pending oracle.search when the bridge is disposed", async () => {
+  it("answers a pending oracle.search as busy when the bridge is disposed", async () => {
     let resolveFirst!: (value: unknown) => void;
     const oracleSearch = vi.fn().mockReturnValueOnce(
       new Promise((resolve) => {
@@ -1303,8 +1334,13 @@ describe("createPluginBridge", () => {
     });
     await flushPromises();
 
-    expect(pluginWindow.postMessage).not.toHaveBeenCalledWith(
-      expect.objectContaining({ id: "oracle-dispose-pending-request" }),
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-dispose-pending-request",
+        kind: "error",
+        code: "busy",
+        message: "oracle.search is already running for this plugin",
+      }),
       PLUGIN_ORIGIN,
     );
   });
@@ -1362,6 +1398,108 @@ describe("createPluginBridge", () => {
     resolveFirst({ query: "first", results: [{ path: "first.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }] });
     await flushPromises();
     expect(oracleSearch).toHaveBeenCalledWith("pending");
+    bridge.dispose();
+  });
+
+  it("does not start a queued oracle.search after the six-second response margin", async () => {
+    vi.useFakeTimers();
+    let resolveFirst!: (value: unknown) => void;
+    const oracleSearch = vi.fn().mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+    const { iframe, pluginWindow } = testFrame();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-queue-budget",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch,
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-queue-first",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "first" },
+    });
+    await flushPromises();
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oracle-queue-pending",
+      kind: "invoke",
+      method: "oracle.search",
+      payload: { query: "pending" },
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(6001);
+    resolveFirst({
+      query: "first",
+      results: [{ path: "first.ts", line_start: 1, line_end: 1, snippet: "", score: 1 }],
+    });
+    await flushPromises();
+
+    expect(oracleSearch).toHaveBeenCalledTimes(1);
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "oracle-queue-pending",
+        kind: "error",
+        code: "busy",
+        message: "oracle.search is already running for this plugin",
+      }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("rejects impossible Oracle line and focus ranges from the source", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const oracleSearch = vi.fn();
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "oracle-line-invariants",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["oracle.search"],
+      oracleSearch,
+    });
+    const invalidResults = [
+      { path: "zero-to-five.ts", line_start: 0, line_end: 5, snippet: "", score: 1 },
+      {
+        path: "focus-outside.ts",
+        line_start: 1,
+        line_end: 2,
+        focus_line_start: 3,
+        focus_line_end: 4,
+        snippet: "",
+        score: 1,
+      },
+      {
+        path: "focus-without-lines.ts",
+        line_start: 0,
+        line_end: 0,
+        focus_line_start: 0,
+        focus_line_end: 0,
+        snippet: "",
+        score: 1,
+      },
+    ];
+    for (const [index, result] of invalidResults.entries()) {
+      oracleSearch.mockResolvedValueOnce({ query: "invalid", results: [result] });
+      const id = `oracle-line-invalid-${index}`;
+      send(pluginWindow, PLUGIN_ORIGIN, {
+        v: 1,
+        id,
+        kind: "invoke",
+        method: "oracle.search",
+        payload: { query: "invalid" },
+      });
+      await flushPromises();
+      expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ id, kind: "error", code: "invalid_response" }),
+        PLUGIN_ORIGIN,
+      );
+    }
     bridge.dispose();
   });
 

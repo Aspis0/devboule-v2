@@ -67,6 +67,9 @@ const MAX_PLUGIN_MESSAGE_BYTES = 1024 * 1024;
 export const ORACLE_SOURCE_TIMEOUT_MS = 20_000;
 const ORACLE_INDEX_STATE_TIMEOUT_MS = 3000;
 const ORACLE_MAX_QUERY_CHARS = 4096;
+// The 30s frame budget minus the 20s source + 3s status worst case leaves 7s;
+// 6s leaves 1s for posting and timer jitter.
+const ORACLE_QUEUE_START_MARGIN_MS = 6000;
 
 /**
  * Provisional provider inference. Session truth has no provider field yet, so
@@ -115,6 +118,7 @@ interface PendingRequest {
 interface PendingOracleSearch {
   id: string;
   query: string;
+  enqueuedAt: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -439,17 +443,24 @@ function isOracleResult(value: unknown): value is OracleSearchResponse["results"
   ) {
     return false;
   }
+  if ((value.line_start === 0) !== (value.line_end === 0)) return false;
 
   const hasFocusStart = Object.prototype.hasOwnProperty.call(value, "focus_line_start");
   const hasFocusEnd = Object.prototype.hasOwnProperty.call(value, "focus_line_end");
   if (hasFocusStart !== hasFocusEnd) return false;
-  if (
-    hasFocusStart &&
-    (!isNonNegativeInteger(value.focus_line_start) ||
-      !isNonNegativeInteger(value.focus_line_end) ||
-      value.focus_line_end < value.focus_line_start)
-  ) {
-    return false;
+  if (hasFocusStart) {
+    const focusStart = value.focus_line_start;
+    const focusEnd = value.focus_line_end;
+    if (
+      !isNonNegativeInteger(focusStart) ||
+      !isNonNegativeInteger(focusEnd) ||
+      focusEnd < focusStart ||
+      value.line_start === 0 ||
+      focusStart < value.line_start ||
+      focusEnd > value.line_end
+    ) {
+      return false;
+    }
   }
 
   if (
@@ -578,8 +589,18 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
       const pending = pendingOracleSearch;
       pendingOracleSearch = null;
       if (pending !== null) {
-        oracleSearchInFlight = true;
-        void runOracleSearch(pending);
+        if (Date.now() - pending.enqueuedAt > ORACLE_QUEUE_START_MARGIN_MS) {
+          post({
+            v: 1,
+            id: pending.id,
+            kind: "error",
+            code: "busy",
+            message: "oracle.search is already running for this plugin",
+          });
+        } else {
+          oracleSearchInFlight = true;
+          void runOracleSearch(pending);
+        }
       }
     }
   }
@@ -686,7 +707,7 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
           });
           return;
         }
-        if (query.length > ORACLE_MAX_QUERY_CHARS) {
+        if ([...query].length > ORACLE_MAX_QUERY_CHARS) {
           post({
             v: 1,
             id: message.id,
@@ -706,12 +727,12 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
               message: "oracle.search is already running for this plugin",
             });
           }
-          pendingOracleSearch = { id: message.id, query };
+          pendingOracleSearch = { id: message.id, query, enqueuedAt: Date.now() };
           return;
         }
 
         oracleSearchInFlight = true;
-        void runOracleSearch({ id: message.id, query });
+        void runOracleSearch({ id: message.id, query, enqueuedAt: Date.now() });
         return;
       }
 
@@ -792,6 +813,15 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
         request.reject(new Error(`Plugin request "${id}" was cancelled`));
       }
       pending.clear();
+      if (pendingOracleSearch !== null) {
+        post({
+          v: 1,
+          id: pendingOracleSearch.id,
+          kind: "error",
+          code: "busy",
+          message: "oracle.search is already running for this plugin",
+        });
+      }
       pendingOracleSearch = null;
       detachSessionWatch(options.pluginId, postSessionMessage);
     },

@@ -63,6 +63,8 @@ export function createFindingInspector(
   let activeFindings: CityFinding[] = [];
   let selectedFindingId: string | null = null;
   let requestGeneration = 0;
+  let citationGeneration = 0;
+  let cachedOracleCitations: OracleCitationsLoadState | null = null;
   let pageHidden = false;
 
   container.classList.add("polis-finding-inspector");
@@ -75,6 +77,7 @@ export function createFindingInspector(
   const onPageHide = (): void => {
     pageHidden = true;
     requestGeneration += 1;
+    invalidateCitations();
     document.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("pagehide", onPageHide);
   };
@@ -86,11 +89,11 @@ export function createFindingInspector(
     activeFindings = findingsForFile(file.id, findings);
     selectedFindingId = null;
     requestGeneration += 1;
+    invalidateCitations();
     renderPanel();
-    const token = requestGeneration;
-    const citations = container.querySelector<HTMLElement>(".polis-oracle-citations-body");
-    if (citations !== null && !pageHidden) {
-      void loadOracleCitationsForFile(file.path, token, citations);
+    const token = citationGeneration;
+    if (!pageHidden) {
+      void loadOracleCitationsForFile(file.path, token).catch(() => undefined);
     }
   }
 
@@ -109,12 +112,14 @@ export function createFindingInspector(
     activeFindings = [];
     selectedFindingId = null;
     requestGeneration += 1;
+    invalidateCitations();
     container.replaceChildren();
     onClose(file);
   }
 
   function destroy(): void {
     requestGeneration += 1;
+    invalidateCitations();
     activeFile = null;
     activeFindings = [];
     selectedFindingId = null;
@@ -125,6 +130,11 @@ export function createFindingInspector(
 
   function isOpen(): boolean {
     return activeFile !== null;
+  }
+
+  function invalidateCitations(): void {
+    citationGeneration += 1;
+    cachedOracleCitations = null;
   }
 
   function renderPanel(): void {
@@ -177,7 +187,7 @@ export function createFindingInspector(
         rule.textContent = finding.rule;
         row.append(chip, title, rule);
         row.addEventListener("click", () => {
-          void inspectFinding(finding);
+          void inspectFinding(finding).catch(() => undefined);
         });
         list.appendChild(row);
       }
@@ -199,7 +209,11 @@ export function createFindingInspector(
       "Ranked by similarity to this file's path. Oracle points, it does not answer.";
     const oracleBody = document.createElement("div");
     oracleBody.className = "polis-oracle-citations-body";
-    oracleBody.textContent = "Oracle pointers: searching…";
+    if (cachedOracleCitations === null) {
+      oracleBody.textContent = "Oracle pointers: searching…";
+    } else {
+      renderOracleCitations(oracleBody, cachedOracleCitations, navigation, file.path);
+    }
     oracle.append(oracleHeading, oracleSubtitle, oracleBody);
     container.appendChild(oracle);
   }
@@ -207,10 +221,12 @@ export function createFindingInspector(
   async function loadOracleCitationsForFile(
     query: string,
     token: number,
-    target: HTMLElement,
   ): Promise<void> {
     const state = await loadOracleCitations(invoke, query, ORACLE_SEARCH_TIMEOUT_MS);
-    if (pageHidden || token !== requestGeneration || activeFile === null) return;
+    if (pageHidden || token !== citationGeneration || activeFile === null) return;
+    cachedOracleCitations = state;
+    const target = container.querySelector<HTMLElement>(".polis-oracle-citations-body");
+    if (target === null) return;
     renderOracleCitations(target, state, navigation, activeFile.path);
   }
 
@@ -326,10 +342,10 @@ function formatLineRange(startLine: number, endLine: number): string {
 
 function oracleEmptyStateCopy(index: OracleIndex | undefined): string {
   if (index?.state === "indexing") {
-      return "Oracle is still indexing this workspace.";
+    return "Oracle is still indexing this workspace.";
   }
   if (index?.state === "error") {
-      return "Oracle's index is in an error state.";
+    return "Oracle's index is in an error state.";
   }
   if (index?.indexedFiles === 0) {
     return "No Oracle index for this workspace yet — build it in Settings › Oracle.";

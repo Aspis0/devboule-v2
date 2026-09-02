@@ -744,11 +744,23 @@ function isOracleCitation(value: unknown): value is OracleCitation {
   if (typeof value.path !== "string" || value.path === "") return false;
   if (!isOracleLine(value.startLine) || !isOracleLine(value.endLine)) return false;
   if (value.endLine < value.startLine) return false;
+  if ((value.startLine === 0) !== (value.endLine === 0)) return false;
   const hasFocusStart = "focusStartLine" in value;
   const hasFocusEnd = "focusEndLine" in value;
   if (hasFocusStart !== hasFocusEnd) return false;
-  if (hasFocusStart && (!isOracleLine(value.focusStartLine) || !isOracleLine(value.focusEndLine))) {
-    return false;
+  if (hasFocusStart) {
+    const focusStart = value.focusStartLine;
+    const focusEnd = value.focusEndLine;
+    if (
+      !isOracleLine(focusStart) ||
+      !isOracleLine(focusEnd) ||
+      focusEnd < focusStart ||
+      value.startLine === 0 ||
+      focusStart < value.startLine ||
+      focusEnd > value.endLine
+    ) {
+      return false;
+    }
   }
   if ("symbol" in value && (typeof value.symbol !== "string" || value.symbol === "")) return false;
   if ("match" in value && !ORACLE_MATCH_TYPES.includes(value.match as OracleMatchType)) return false;
