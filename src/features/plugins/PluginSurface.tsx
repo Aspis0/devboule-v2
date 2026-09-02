@@ -119,7 +119,13 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
        */}
       <iframe
         ref={iframeRef}
-        key={reloadToken}
+        // The document and its bridge share a lifetime. The bridge effect
+        // below re-runs on these same inputs and disposes the old bridge,
+        // which drops any host-side sessions.watch subscriber; a document
+        // that survived that rebuild would keep a subscription the host no
+        // longer knows about and never learn to resubscribe. Remounting the
+        // frame makes every bridge rebuild a document reload.
+        key={`${pluginId}:${origin}:${capabilitiesKey}:${reloadToken}`}
         className="plugin-surface-frame"
         title={`${pluginId} plugin`}
         src={`${origin}/${pluginId}/${entry}`}
