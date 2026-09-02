@@ -93,7 +93,13 @@ describe("finding inspector", () => {
 
   it("keeps an empty building honest and distinguishes inspection failures", async () => {
     const container = document.createElement("section");
-    const invoke = vi.fn();
+    const inspectionFailures: unknown[] = [];
+    const invoke = vi.fn((method: string) => {
+      if (method === "oracle.search") {
+        return Promise.resolve({ query: file.path, results: [] });
+      }
+      return Promise.reject(inspectionFailures.shift());
+    });
     const inspector = createFindingInspector(container, invoke);
     inspector.open(file, []);
     expect(container.textContent).toContain("No findings for this building.");
@@ -105,7 +111,7 @@ describe("finding inspector", () => {
       ["malformed_finding_inspection", "Finding details were malformed."],
     ] as const;
     for (const [failure, copy] of failures) {
-      invoke.mockRejectedValueOnce(Object.assign(new Error(failure), { code: failure }));
+      inspectionFailures.push(Object.assign(new Error(failure), { code: failure }));
       inspector.open(file, [finding]);
       (container.querySelector(".polis-finding-row") as HTMLButtonElement).click();
       await Promise.resolve();
@@ -175,6 +181,149 @@ describe("finding inspector", () => {
 
     expect(liveDetail.textContent).toBe("Select a finding for line details.");
     expect(detachedDetail.textContent).toBe("Finding details: loading…");
+    inspector.destroy();
+  });
+
+  it("renders citation rows, tags this file, and only resolved paths are buttons", async () => {
+    const other = {
+      id: "crates/oracle-core/src/lib.rs",
+      path: "crates/oracle-core/src/lib.rs",
+      lines: 80,
+      district: "crates",
+    };
+    const invoke = vi.fn().mockImplementation((method: string) => {
+      if (method === "oracle.search") {
+        return Promise.resolve({
+          query: file.path,
+          results: [
+            {
+              path: file.path,
+              startLine: 43,
+              endLine: 88,
+              focusStartLine: 51,
+              focusEndLine: 57,
+              symbol: "OraclePanel",
+              match: "dense+reranked",
+            },
+            {
+              path: other.path,
+              startLine: 1,
+              endLine: 4,
+            },
+            {
+              path: "docs/missing.md",
+              startLine: 0,
+              endLine: 0,
+            },
+          ],
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const openFile = vi.fn();
+    const container = document.createElement("section");
+    const inspector = createFindingInspector(container, invoke, () => undefined, {
+      resolveFile: (path) => (path === file.path ? file : path === other.path ? other : null),
+      openFile,
+    });
+    inspector.open(file, [finding]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(container.textContent).toContain("Oracle pointers");
+    expect(container.textContent).toContain(
+      "Ranked by similarity to this file's path. Oracle points, it does not answer.",
+    );
+    expect(container.textContent).toContain("#01");
+    expect(container.textContent).toContain("this file");
+    expect(container.textContent).toContain("lines 43–88");
+    expect(container.textContent).toContain("start at 51–57");
+    expect(container.textContent).toContain("symbol OraclePanel");
+    expect(container.textContent).toContain("match dense+reranked");
+    expect(container.textContent).toContain("lines unknown");
+    expect(container.textContent).not.toContain("score");
+
+    const buttons = [...container.querySelectorAll(".polis-oracle-citations button")];
+    expect(buttons).toHaveLength(2);
+    const missing = [...container.querySelectorAll(".polis-oracle-citation-plain")];
+    expect(missing.some((node) => node.textContent?.includes("docs/missing.md"))).toBe(true);
+    expect(missing.some((node) => node.tagName === "BUTTON")).toBe(false);
+
+    buttons[1].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(openFile).toHaveBeenCalledWith(other);
+    inspector.destroy();
+  });
+
+  it("uses indexState to distinguish empty Oracle results", async () => {
+    const cases: Array<[string | undefined, string]> = [
+      ["idle", "No Oracle index for this workspace yet — build it in Settings › Oracle."],
+      ["indexing", "Oracle is still indexing this workspace."],
+      ["error", "Oracle's index is in an error state."],
+      ["ready", "No spans matched this file."],
+      [undefined, "No spans matched this file."],
+    ];
+    for (const [indexState, copy] of cases) {
+      const invoke = vi.fn().mockResolvedValue({
+        query: file.path,
+        results: [],
+        ...(indexState === undefined ? {} : { indexState }),
+      });
+      const container = document.createElement("section");
+      const inspector = createFindingInspector(container, invoke);
+      inspector.open(file, []);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(container.textContent).toContain(copy);
+      inspector.destroy();
+    }
+
+    const failures = [
+      ["timeout", "Oracle pointers unavailable: the search timed out."],
+      ["busy", "Oracle pointers unavailable: another search is still running."],
+      ["invalid_request", "Oracle pointers unavailable: the host rejected the query."],
+      ["capability_not_supported", "Oracle pointers unavailable: the host refused the request."],
+      ["invalid_response", "Oracle pointers unavailable: the host returned an invalid response."],
+    ] as const;
+    for (const [code, copy] of failures) {
+      const invoke = vi.fn().mockRejectedValue(Object.assign(new Error(code), { code }));
+      const container = document.createElement("section");
+      const inspector = createFindingInspector(container, invoke);
+      inspector.open(file, []);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(container.textContent).toContain(copy);
+      inspector.destroy();
+    }
+  });
+
+  it("invalidates citations when refreshed findings rebuild the live panel", async () => {
+    const container = document.createElement("section");
+    const invoke = vi.fn();
+    let resolveCitations!: (value: unknown) => void;
+    invoke.mockImplementation((method: string) => {
+      if (method === "oracle.search") {
+        return new Promise((resolve) => {
+          resolveCitations = resolve;
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const inspector = createFindingInspector(container, invoke);
+    inspector.open(file, [finding]);
+    await Promise.resolve();
+    const detached = container.querySelector(".polis-oracle-citations-body") as HTMLElement;
+
+    inspector.refreshFindings([finding]);
+    const live = container.querySelector(".polis-oracle-citations-body") as HTMLElement;
+    resolveCitations({
+      query: file.path,
+      results: [{ path: file.path, startLine: 9, endLine: 9 }],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(live.textContent).toBe("Oracle pointers: searching…");
+    expect(detached.textContent).toBe("Oracle pointers: searching…");
     inspector.destroy();
   });
 });

@@ -16,9 +16,13 @@ import {
   formatWorkspaceRootReadout,
   hostResponseWithinLimit,
   INSPECT_FETCH_TIMEOUT_MS,
+  ORACLE_SEARCH_TIMEOUT_MS,
   isFindingInspection,
+  isOracleCitations,
   isSessionFeed,
   loadFindingInspection,
+  loadOracleCitations,
+  oracleCitationsFetchFailure,
   sessionFeedToAgents,
   type SessionFeed,
   subscribeSessions,
@@ -415,6 +419,141 @@ describe("backend overlay readout", () => {
     await expect(pending).rejects.toThrow();
   });
 });
+
+describe("oracle.search citations", () => {
+  it("invokes oracle.search with the query and the 30s plugin budget", async () => {
+    const payload = oracleCitations("src/lib.ts");
+    const invoke = vi.fn().mockResolvedValue(payload);
+    await expect(loadOracleCitations(invoke, "src/lib.ts")).resolves.toEqual({
+      status: "host",
+      citations: payload,
+    });
+    expect(ORACLE_SEARCH_TIMEOUT_MS).toBe(30_000);
+    expect(invoke).toHaveBeenCalledWith("oracle.search", { query: "src/lib.ts" }, ORACLE_SEARCH_TIMEOUT_MS);
+  });
+
+  it("rejects extra keys, null optionals, bad rows, and a mismatched echoed query", () => {
+    const query = "src/lib.ts";
+    const ok = oracleCitations(query);
+    expect(isOracleCitations(ok, query)).toBe(true);
+    expect(isOracleCitations({ ...ok, extra: true }, query)).toBe(false);
+    expect(isOracleCitations({ ...ok, indexState: null }, query)).toBe(false);
+    expect(isOracleCitations({ ...ok, results: null }, query)).toBe(false);
+    expect(isOracleCitations({ query, results: { path: "src/lib.ts" } }, query)).toBe(false);
+    expect(
+      isOracleCitations(
+        { query, results: [{ ...ok.results[0], endLine: 1, startLine: 8 }] },
+        query,
+      ),
+    ).toBe(false);
+    expect(
+      isOracleCitations({ query, results: [{ ...ok.results[0], startLine: 1.5 }] }, query),
+    ).toBe(false);
+    expect(
+      isOracleCitations({ query, results: [{ ...ok.results[0], match: "semantic" }] }, query),
+    ).toBe(false);
+    expect(
+      isOracleCitations(
+        { query, results: [{ ...ok.results[0], focusStartLine: 51, focusEndLine: undefined }] },
+        query,
+      ),
+    ).toBe(false);
+    const oneFocus = {
+      path: "src/lib.ts",
+      startLine: 1,
+      endLine: 2,
+      focusStartLine: 1,
+    };
+    expect(isOracleCitations({ query, results: [oneFocus] }, query)).toBe(false);
+    expect(isOracleCitations({ ...ok, query: "other.ts" }, query)).toBe(false);
+    expect(isOracleCitations({ query, results: [{ ...ok.results[0], snippet: "no" }] }, query)).toBe(
+      false,
+    );
+    expect(isOracleCitations({ query, results: [{ ...ok.results[0], score: 0.1 }] }, query)).toBe(
+      false,
+    );
+  });
+
+  it("accepts startLine 0 as lines-unknown, not as a validator error", () => {
+    const query = "docs/readme.md";
+    expect(
+      isOracleCitations(
+        {
+          query,
+          results: [{ path: "docs/readme.md", startLine: 0, endLine: 0 }],
+        },
+        query,
+      ),
+    ).toBe(true);
+  });
+
+  it("maps each oracle.search failure code before falling back to message text", async () => {
+    expect(oracleCitationsFetchFailure(Object.assign(new Error("oracle.search failed"), { code: "timeout" }))).toBe(
+      "timeout",
+    );
+    expect(
+      oracleCitationsFetchFailure(
+        Object.assign(new Error("oracle.search is already running for this plugin"), { code: "busy" }),
+      ),
+    ).toBe("busy");
+    expect(
+      oracleCitationsFetchFailure(
+        Object.assign(new Error("oracle.search requires a non-empty query string"), {
+          code: "invalid_request",
+        }),
+      ),
+    ).toBe("invalid");
+    expect(
+      oracleCitationsFetchFailure(
+        Object.assign(new Error("The host does not serve plugin capability \"oracle.search\""), {
+          code: "capability_not_supported",
+        }),
+      ),
+    ).toBe("refusal");
+    expect(
+      oracleCitationsFetchFailure(Object.assign(new Error("plugin response is too large"), { code: "response_too_large" })),
+    ).toBe("refusal");
+    expect(
+      oracleCitationsFetchFailure(
+        new Error('Plugin capability "oracle.search" was not requested in the manifest'),
+      ),
+    ).toBe("refusal");
+
+    const malformed = await loadOracleCitations(vi.fn().mockResolvedValue({ query: "q", extra: true }), "q");
+    expect(malformed).toMatchObject({ status: "failed", failure: "malformed" });
+
+    const timedOut = await loadOracleCitations(
+      vi.fn().mockRejectedValue(Object.assign(new Error("Host request timed out"), { code: "io" })),
+      "q",
+    );
+    expect(timedOut).toMatchObject({ status: "failed", failure: "timeout" });
+  });
+
+  it("classifies the host invalid_response code as malformed", () => {
+    expect(
+      oracleCitationsFetchFailure(
+        Object.assign(new Error("oracle.search failed"), { code: "invalid_response" }),
+      ),
+    ).toBe("malformed");
+  });
+});
+
+function oracleCitations(query: string) {
+  return {
+    query,
+    results: [
+      {
+        path: query,
+        startLine: 43,
+        endLine: 88,
+        focusStartLine: 51,
+        focusEndLine: 57,
+        symbol: "OraclePanel",
+        match: "dense+reranked" as const,
+      },
+    ],
+  };
+}
 
 function findingsReport() {
   return {

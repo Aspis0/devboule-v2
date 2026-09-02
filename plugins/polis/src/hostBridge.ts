@@ -11,6 +11,7 @@ export const CITY_FETCH_TIMEOUT_MS = 30_000;
 export const FINDINGS_FETCH_TIMEOUT_MS = 65_000;
 export const INSPECT_FETCH_TIMEOUT_MS = 10_000;
 export const SESSIONS_WATCH_TIMEOUT_MS = 10_000;
+export const ORACLE_SEARCH_TIMEOUT_MS = 30_000;
 
 export type CityLoadState =
   | { status: "pending"; city: null }
@@ -224,6 +225,93 @@ export async function loadFindingInspection(
   } catch (error) {
     return { status: "failed", failure: findingInspectionFetchFailure(error), error };
   }
+}
+
+export const ORACLE_MATCH_TYPES = ["lexical", "dense", "dense+lexical", "dense+reranked"] as const;
+export type OracleMatchType = (typeof ORACLE_MATCH_TYPES)[number];
+
+export const ORACLE_INDEX_STATES = [
+  "idle",
+  "indexing",
+  "ready",
+  "incomplete",
+  "stale",
+  "error",
+] as const;
+export type OracleIndexState = (typeof ORACLE_INDEX_STATES)[number];
+
+export interface OracleCitation {
+  path: string;
+  startLine: number;
+  endLine: number;
+  focusStartLine?: number;
+  focusEndLine?: number;
+  symbol?: string;
+  match?: OracleMatchType;
+}
+
+export interface OracleCitations {
+  query: string;
+  results: OracleCitation[];
+  indexState?: OracleIndexState;
+}
+
+export type OracleCitationsFailure = "timeout" | "busy" | "invalid" | "refusal" | "malformed";
+
+export type OracleCitationsLoadState =
+  | { status: "host"; citations: OracleCitations }
+  | {
+      status: "failed";
+      failure: OracleCitationsFailure;
+      error: unknown;
+    };
+
+export async function loadOracleCitations(
+  invoke: HostInvoker,
+  query: string,
+  timeoutMs = ORACLE_SEARCH_TIMEOUT_MS,
+): Promise<OracleCitationsLoadState> {
+  try {
+    const value = await invoke("oracle.search", { query }, timeoutMs);
+    if (!isOracleCitations(value, query)) {
+      const error = new Error("oracle.search returned an invalid citations payload") as Error & {
+        code?: string;
+      };
+      error.code = "malformed_oracle_citations";
+      throw error;
+    }
+    return { status: "host", citations: value };
+  } catch (error) {
+    return { status: "failed", failure: oracleCitationsFetchFailure(error), error };
+  }
+}
+
+export function isOracleCitations(value: unknown, expectedQuery: string): value is OracleCitations {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  const allowed = new Set(["query", "results", "indexState"]);
+  if (keys.some((key) => !allowed.has(key))) return false;
+  if (!keys.includes("query") || !keys.includes("results")) return false;
+  if (typeof value.query !== "string" || value.query !== expectedQuery) return false;
+  if (!Array.isArray(value.results)) return false;
+  if ("indexState" in value) {
+    if (value.results.length > 0) return false;
+    if (!isOracleIndexState(value.indexState)) return false;
+  }
+  return value.results.every(isOracleCitation);
+}
+
+export function oracleCitationsFetchFailure(error: unknown): OracleCitationsFailure {
+  const code = errorCode(error);
+  const message = errorMessage(error).toLowerCase();
+  if (code === "timeout") return "timeout";
+  if (code === "busy") return "busy";
+  if (code === "invalid_request") return "invalid";
+  if (code === "invalid_response") return "malformed";
+  if (code === "malformed_oracle_citations") return "malformed";
+  if (message.includes("timed out") || message.includes("timeout")) return "timeout";
+  if (message.includes("already running") || message.includes("busy")) return "busy";
+  return "refusal";
 }
 
 export function isFindingInspection(value: unknown, expectedId: string): value is FindingInspection {
@@ -628,6 +716,42 @@ function isFindingInspectionLocation(value: unknown): value is FindingInspection
     isValidLine(value.endLine) &&
     value.startLine <= value.endLine
   );
+}
+
+/** Unlike isValidLine, 0 is legal here: Oracle uses it for "lines unknown" on prose chunks. */
+function isOracleLine(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 0;
+}
+
+function isOracleCitation(value: unknown): value is OracleCitation {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  const allowed = new Set([
+    "path",
+    "startLine",
+    "endLine",
+    "focusStartLine",
+    "focusEndLine",
+    "symbol",
+    "match",
+  ]);
+  if (keys.some((key) => !allowed.has(key))) return false;
+  if (typeof value.path !== "string" || value.path === "") return false;
+  if (!isOracleLine(value.startLine) || !isOracleLine(value.endLine)) return false;
+  if (value.endLine < value.startLine) return false;
+  const hasFocusStart = "focusStartLine" in value;
+  const hasFocusEnd = "focusEndLine" in value;
+  if (hasFocusStart !== hasFocusEnd) return false;
+  if (hasFocusStart && (!isOracleLine(value.focusStartLine) || !isOracleLine(value.focusEndLine))) {
+    return false;
+  }
+  if ("symbol" in value && (typeof value.symbol !== "string" || value.symbol === "")) return false;
+  if ("match" in value && !ORACLE_MATCH_TYPES.includes(value.match as OracleMatchType)) return false;
+  return true;
+}
+
+function isOracleIndexState(value: unknown): value is OracleIndexState {
+  return typeof value === "string" && (ORACLE_INDEX_STATES as readonly string[]).includes(value);
 }
 
 function findingsFetchFailure(error: unknown): "timeout" | "refusal" | "malformed" {

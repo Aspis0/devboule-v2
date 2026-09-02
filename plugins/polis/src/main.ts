@@ -43,7 +43,11 @@ const findingReadout = getElement<HTMLElement>("findings");
 const hostFindingsReadout = createHostFindingsReadout(findingReadout);
 const detailsReadout = getElement<HTMLElement>("details");
 const findingsByFile = new Map<string, CityFinding[]>();
-const findingInspector = createFindingInspector(detailsReadout, invokeHost, showFileDetails);
+const cityFilesByPath = new Map<string, CityFile>();
+const findingInspector = createFindingInspector(detailsReadout, invokeHost, showFileDetails, {
+  resolveFile: (path) => cityFilesByPath.get(path) ?? null,
+  openFile: (file) => openFindingFile(file),
+});
 const hudToggle = getElement<HTMLButtonElement>("hud-toggle");
 const hudDetails = getElement<HTMLDivElement>("hud-details");
 const fixture = fixtureCity as City;
@@ -52,8 +56,7 @@ const TAURI_PROBE_TIMEOUT_MS = 4000;
 const cityPending = pendingCityState();
 if (cityPending.status === "pending") renderPendingCity();
 bindHudToggle();
-const isolationMeasurement = measureTauriIsolation();
-void isolationMeasurement.then((isolation) => reportIsolationOutcome(isolation));
+void measureTauriIsolation();
 const cityLoad = loadCity(invokeHost, fixture, CITY_FETCH_TIMEOUT_MS);
 void reportBackend(cityLoad);
 void startRenderer(cityLoad);
@@ -140,6 +143,8 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
   }
 
   const cityForRenderer = { ...loadedCity.city, agents: currentAgents };
+  cityFilesByPath.clear();
+  for (const file of cityForRenderer.files) cityFilesByPath.set(file.path, file);
   indexFindingsByFile(findingsByFile, cityForRenderer.findings);
   renderCityStats(cityForRenderer);
 
@@ -151,8 +156,7 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
       details: {
         setDetails: (file) => showFileDetails(file),
         clearDetails: () => clearFileDetails(),
-        selectBuilding: (file) =>
-          findingInspector.open(file, findingsByFile.get(file.id) ?? []),
+        selectBuilding: (file) => openFindingFile(file),
       },
       bank,
     });
@@ -289,20 +293,6 @@ async function reportBackend(cityLoadResult: ReturnType<typeof loadCity>): Promi
   }
 }
 
-function reportIsolationOutcome(isolation: IsolationOutcome): void {
-  const requestId = `polis-isolation-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
-  window.parent.postMessage(
-    {
-      v: 1,
-      id: requestId,
-      kind: "invoke",
-      method: "oracle.search",
-      payload: { isolation },
-    },
-    "*",
-  );
-}
-
 function renderCityStats(value: City): void {
   const knownFileIds = new Set(value.files.map((file) => file.id));
   const placedAgents = value.agents.filter(
@@ -351,6 +341,10 @@ function showFileDetails(file: CityFile): void {
 function clearFileDetails(): void {
   if (findingInspector.isOpen()) return;
   detailsReadout.textContent = "Hover a building to inspect its file";
+}
+
+function openFindingFile(file: CityFile): void {
+  findingInspector.open(file, findingsByFile.get(file.id) ?? []);
 }
 
 function bindHudToggle(): void {

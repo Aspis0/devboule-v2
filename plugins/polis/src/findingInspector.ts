@@ -1,10 +1,15 @@
 import type { CityFile, CityFinding, CityFindingSeverity } from "./model";
 import {
   INSPECT_FETCH_TIMEOUT_MS,
+  ORACLE_SEARCH_TIMEOUT_MS,
   loadFindingInspection,
+  loadOracleCitations,
   type FindingInspectionFailure,
   type FindingInspectionLoadState,
   type HostInvoker,
+  type OracleCitation,
+  type OracleCitationsFailure,
+  type OracleCitationsLoadState,
 } from "./hostBridge";
 
 const SEVERITY_RANK: Record<CityFindingSeverity, number> = {
@@ -27,6 +32,13 @@ export interface FindingInspector {
   isOpen(): boolean;
 }
 
+export interface FindingInspectorNavigation {
+  /** The city file for a citation path, or null when no building matches. */
+  resolveFile: (path: string) => CityFile | null;
+  /** Re-open the inspector on that building; main.ts supplies its findings. */
+  openFile: (file: CityFile) => void;
+}
+
 /** Keep the inspector's building lookup identical to the renderer's current findings input. */
 export function indexFindingsByFile(
   index: Map<string, CityFinding[]>,
@@ -44,6 +56,7 @@ export function createFindingInspector(
   container: HTMLElement,
   invoke: HostInvoker,
   onClose: (file: CityFile) => void = () => undefined,
+  navigation?: FindingInspectorNavigation,
 ): FindingInspector {
   let activeFile: CityFile | null = null;
   let activeFindings: CityFinding[] = [];
@@ -73,6 +86,11 @@ export function createFindingInspector(
     selectedFindingId = null;
     requestGeneration += 1;
     renderPanel();
+    const token = requestGeneration;
+    const citations = container.querySelector<HTMLElement>(".polis-oracle-citations-body");
+    if (citations !== null && !pageHidden) {
+      void loadOracleCitationsForFile(file.path, token, citations);
+    }
   }
 
   function refreshFindings(findings: readonly CityFinding[]): void {
@@ -170,6 +188,29 @@ export function createFindingInspector(
     detail.textContent =
       findings.length === 0 ? "Select a finding to inspect its lines." : "Select a finding for line details.";
     container.appendChild(detail);
+
+    const oracle = document.createElement("section");
+    oracle.className = "polis-oracle-citations";
+    const oracleHeading = document.createElement("strong");
+    oracleHeading.textContent = "Oracle pointers";
+    const oracleSubtitle = document.createElement("div");
+    oracleSubtitle.textContent =
+      "Ranked by similarity to this file's path. Oracle points, it does not answer.";
+    const oracleBody = document.createElement("div");
+    oracleBody.className = "polis-oracle-citations-body";
+    oracleBody.textContent = "Oracle pointers: searching…";
+    oracle.append(oracleHeading, oracleSubtitle, oracleBody);
+    container.appendChild(oracle);
+  }
+
+  async function loadOracleCitationsForFile(
+    query: string,
+    token: number,
+    target: HTMLElement,
+  ): Promise<void> {
+    const state = await loadOracleCitations(invoke, query, ORACLE_SEARCH_TIMEOUT_MS);
+    if (pageHidden || token !== requestGeneration || activeFile === null) return;
+    renderOracleCitations(target, state, navigation, activeFile.path);
   }
 
   async function inspectFinding(finding: CityFinding): Promise<void> {
@@ -219,6 +260,94 @@ export function renderInspectionState(
     evidence.textContent =
       "Evidence is withheld for secret findings; secret values never leave the scanner.";
     container.appendChild(evidence);
+  }
+}
+
+function renderOracleCitations(
+  container: HTMLElement,
+  state: OracleCitationsLoadState,
+  navigation: FindingInspectorNavigation | undefined,
+  activePath: string,
+): void {
+  container.replaceChildren();
+  if (state.status === "failed") {
+    container.textContent = oracleCitationsFailureCopy(state.failure);
+    return;
+  }
+
+  if (state.citations.results.length === 0) {
+    container.textContent = oracleEmptyStateCopy(state.citations.indexState);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "polis-oracle-citation-list";
+  state.citations.results.forEach((citation, index) => {
+    const file = navigation?.resolveFile(citation.path) ?? null;
+    if (navigation === undefined || file === null) {
+      const row = document.createElement("div");
+      row.className = "polis-oracle-citation-plain";
+      row.textContent = formatOracleCitation(index, citation, citation.path === activePath);
+      list.appendChild(row);
+      return;
+    }
+
+    const row = document.createElement("button");
+    row.className = "polis-oracle-citation-button";
+    row.type = "button";
+    row.addEventListener("click", () => navigation.openFile(file));
+    row.textContent = formatOracleCitation(index, citation, citation.path === activePath);
+    list.appendChild(row);
+  });
+  container.appendChild(list);
+}
+
+function formatOracleCitation(
+  index: number,
+  citation: OracleCitation,
+  isCurrentFile: boolean,
+): string {
+  const lineReadout =
+    citation.startLine === 0 ? "lines unknown" : formatLineSpan(citation.startLine, citation.endLine);
+  const parts = [`#${String(index + 1).padStart(2, "0")}`, citation.path, lineReadout];
+  if (isCurrentFile) parts.push("this file");
+  if (citation.focusStartLine !== undefined && citation.focusEndLine !== undefined) {
+    parts.push(`start at ${formatLineRange(citation.focusStartLine, citation.focusEndLine)}`);
+  }
+  if (citation.symbol !== undefined) parts.push(`symbol ${citation.symbol}`);
+  if (citation.match !== undefined) parts.push(`match ${citation.match}`);
+  return parts.join(" · ");
+}
+
+function formatLineRange(startLine: number, endLine: number): string {
+  return startLine === endLine ? String(startLine) : `${startLine}–${endLine}`;
+}
+
+function oracleEmptyStateCopy(indexState: string | undefined): string {
+  switch (indexState) {
+    case "idle":
+      return "No Oracle index for this workspace yet — build it in Settings › Oracle.";
+    case "indexing":
+      return "Oracle is still indexing this workspace.";
+    case "error":
+      return "Oracle's index is in an error state.";
+    default:
+      return "No spans matched this file.";
+  }
+}
+
+function oracleCitationsFailureCopy(failure: OracleCitationsFailure): string {
+  switch (failure) {
+    case "timeout":
+      return "Oracle pointers unavailable: the search timed out.";
+    case "busy":
+      return "Oracle pointers unavailable: another search is still running.";
+    case "invalid":
+      return "Oracle pointers unavailable: the host rejected the query.";
+    case "refusal":
+      return "Oracle pointers unavailable: the host refused the request.";
+    case "malformed":
+      return "Oracle pointers unavailable: the host returned an invalid response.";
   }
 }
 

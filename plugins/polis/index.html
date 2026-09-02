@@ -207,6 +207,45 @@
           monospace;
       }
 
+      .polis-oracle-citations {
+        display: grid;
+        gap: 0.4rem;
+        margin-top: 0.7rem;
+        padding-top: 0.6rem;
+        border-top: 1px solid rgb(207 235 239 / 18%);
+      }
+
+      .polis-oracle-citations-body {
+        display: grid;
+        gap: 0.35rem;
+      }
+
+      .polis-oracle-citation-button,
+      .polis-oracle-citation-plain {
+        width: 100%;
+        padding: 0.4rem 0.5rem;
+        border: 1px solid rgb(207 235 239 / 14%);
+        border-radius: 0.35rem;
+        color: #c9d6dc;
+        background: rgb(20 45 58 / 48%);
+        font: inherit;
+        font-size: 0.72rem;
+        line-height: 1.35;
+        text-align: left;
+        overflow-wrap: anywhere;
+      }
+
+      .polis-oracle-citation-button {
+        cursor: pointer;
+      }
+
+      .polis-oracle-citation-button:hover,
+      .polis-oracle-citation-button:focus-visible {
+        border-color: rgb(143 228 218 / 60%);
+        outline: 2px solid #f0c979;
+        outline-offset: 1px;
+      }
+
       code {
         font-family: "JetBrains Mono", ui-monospace, monospace;
       }
