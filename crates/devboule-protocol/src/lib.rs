@@ -119,6 +119,7 @@ pub mod caps {
     pub const WORKSPACE_ROOT: &str = "workspace.root";
     pub const CITY_GET: &str = "city.get";
     pub const FINDINGS_GET: &str = "findings.get";
+    pub const FINDING_INSPECT: &str = "finding.inspect";
     pub const ORACLE_SEARCH: &str = "oracle.search";
     pub const GRAPH_IMPORTS: &str = "graph.imports";
     pub const SESSIONS_WATCH: &str = "sessions.watch";
@@ -179,6 +180,7 @@ pub fn plugin_backend_capabilities() -> Vec<Capability> {
         Capability::new(caps::WORKSPACE_ROOT),
         Capability::new(caps::CITY_GET),
         Capability::new(caps::FINDINGS_GET),
+        Capability::new(caps::FINDING_INSPECT),
     ]
 }
 
@@ -223,10 +225,12 @@ mod tests {
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::WORKSPACE_ROOT));
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::CITY_GET));
         assert!(plugin.iter().any(|cap| cap.as_str() == caps::FINDINGS_GET));
+        assert!(plugin.iter().any(|cap| cap.as_str() == caps::FINDING_INSPECT));
         assert!(!plugin.iter().any(|cap| cap.as_str() == caps::STATUS));
         assert!(!plugin.iter().any(|cap| cap.as_str() == caps::SESSIONS));
         assert_eq!(invoke_method_capability("workspace.root"), caps::WORKSPACE_ROOT);
         assert_eq!(invoke_method_capability("findings.get"), caps::FINDINGS_GET);
+        assert_eq!(invoke_method_capability("finding.inspect"), caps::FINDING_INSPECT);
     }
 
     #[test]

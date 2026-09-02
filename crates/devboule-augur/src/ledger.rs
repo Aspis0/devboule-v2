@@ -92,6 +92,22 @@ impl Ledger {
         Ok(())
     }
 
+    /// One finding by id, or `None` if it is absent or dismissed.
+    /// Dismissed is indistinguishable from missing so inspect cannot leak
+    /// that a secret was once recorded and then hidden.
+    pub fn get(&self, id: &FindingId) -> Result<Option<Finding>, Error> {
+        let mut statement = self.conn.prepare(
+            "SELECT payload FROM findings
+             WHERE id = ?1 AND id NOT IN (SELECT id FROM dismissed)",
+        )?;
+        let mut rows = statement.query([id.as_str()])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let payload: String = row.get(0)?;
+        Ok(crate::exchange::decode_ledger(&payload))
+    }
+
     pub fn active(&self) -> Result<Vec<Finding>, Error> {
         let mut statement = self
             .conn
@@ -312,5 +328,56 @@ mod tests {
             })
             .expect("schema_version");
         assert_eq!(version, "2");
+    }
+
+    #[test]
+    fn get_returns_a_recorded_finding() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
+        let finding = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
+        record(&ledger, std::slice::from_ref(&finding));
+        let got = ledger.get(finding.id()).expect("get").expect("present");
+        assert_eq!(got.id(), finding.id());
+        assert_eq!(got.rule(), finding.rule());
+        assert_eq!(got.start_line(), finding.start_line());
+    }
+
+    #[test]
+    fn get_returns_none_for_an_unknown_id() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
+        let finding = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
+        assert!(
+            ledger.get(finding.id()).expect("get").is_none(),
+            "an unrecorded id must be absent"
+        );
+    }
+
+    #[test]
+    fn get_hides_a_dismissed_finding() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
+        let finding = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
+        record(&ledger, std::slice::from_ref(&finding));
+        ledger.dismiss(finding.id()).expect("dismiss");
+        assert!(
+            ledger.get(finding.id()).expect("get").is_none(),
+            "dismissed must be indistinguishable from absent"
+        );
+    }
+
+    #[test]
+    fn get_returns_none_after_a_clean_rescan_expires_the_row() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ledger = Ledger::open(&temp.path().join("augur.sqlite")).expect("open");
+        let finding = a_finding(temp.path(), "src/auth.rs", &tokens::aws_example(), 1);
+        record(&ledger, std::slice::from_ref(&finding));
+        ledger
+            .record_scan(&[], &["secrets"], &["secrets"])
+            .expect("clean secrets");
+        assert!(
+            ledger.get(finding.id()).expect("get").is_none(),
+            "an expired row must not be inspectable: still present"
+        );
     }
 }

@@ -140,6 +140,9 @@ pub fn granted_capabilities(
             if requested.iter().any(|name| name == caps::FINDINGS_GET) {
                 capabilities.push(Capability::new(caps::FINDINGS_GET));
             }
+            if requested.iter().any(|name| name == caps::FINDING_INSPECT) {
+                capabilities.push(Capability::new(caps::FINDING_INSPECT));
+            }
         }
     }
     (capabilities, grants)
@@ -346,6 +349,20 @@ mod tests {
 
         let (caps, grants) = granted_capabilities(&["findings.get".into()], Some(r"C:\repo"));
         assert!(!caps.iter().any(|cap| cap.as_str() == "findings.get"));
+        assert!(grants.is_empty());
+
+        let (caps, grants) = granted_capabilities(
+            &[
+                "workspace.root".into(),
+                "finding.inspect".into(),
+            ],
+            Some(r"C:\repo"),
+        );
+        assert!(caps.iter().any(|cap| cap.as_str() == "finding.inspect"));
+        assert_eq!(grants.get("workspace.root").map(String::as_str), Some(r"C:\repo"));
+
+        let (caps, grants) = granted_capabilities(&["finding.inspect".into()], Some(r"C:\repo"));
+        assert!(!caps.iter().any(|cap| cap.as_str() == "finding.inspect"));
         assert!(grants.is_empty());
 
         let (caps, grants) = granted_capabilities(&["oracle.search".into()], Some(r"C:\repo"));

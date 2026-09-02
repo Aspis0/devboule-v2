@@ -7,10 +7,11 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use devboule_daemon::{connect_pipe, Framed};
-use devboule_plugin_rpc::{host_owner, PluginSession, SpawnSpec, HOST_PID_ENV};
-use devboule_augur::shipped_rule_matches;
+use devboule_plugin_rpc::{host_owner, PluginError, PluginSession, SpawnSpec, HOST_PID_ENV};
+use devboule_augur::{shipped_rule_matches, FindingId, Ledger};
+use oracle_core::OracleDataPaths;
 use devboule_protocol::{
-    caps, plugin_backend_capabilities, ClientHello, ClientMessage, DaemonMessage,
+    caps, plugin_backend_capabilities, ClientHello, ClientMessage, DaemonMessage, ErrorCode,
 };
 use std::sync::Arc;
 
@@ -256,6 +257,168 @@ fn findings_get_round_trips_over_the_backend_pipe() {
     assert!(
         !completed.iter().any(|id| id == "clippy"),
         "clippy ran on the request path: {completed:?}"
+    );
+}
+
+fn inspect_error(session: &PluginSession, payload: Option<serde_json::Value>) -> PluginError {
+    session
+        .invoke(caps::FINDING_INSPECT, payload)
+        .expect_err("finding.inspect must refuse")
+}
+
+fn assert_invalid_request(error: PluginError, message: &str) {
+    match error {
+        PluginError::Handshake(wire) => {
+            assert_eq!(wire.code, ErrorCode::InvalidRequest);
+            assert_eq!(wire.message, message);
+        }
+        other => panic!("expected InvalidRequest handshake, got {other:?}"),
+    }
+}
+
+#[test]
+fn finding_inspect_round_trips_over_the_backend_pipe() {
+    let prefix = "AKIA";
+    let body = "BHCEFGHIJKLMNOPQ";
+    let aws = format!("{prefix}{body}");
+    assert!(
+        shipped_rule_matches("aws-access-token", &aws),
+        "assembled fixture no longer matches gitleaks aws-access-token"
+    );
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(dir.path().join("src")).expect("src directory");
+    std::fs::write(
+        dir.path().join("src/auth.rs"),
+        format!("const KEY: &str = \"{aws}\";\n"),
+    )
+    .expect("auth source");
+    let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
+    let list = session
+        .invoke(caps::FINDINGS_GET, None)
+        .expect("findings.get");
+    let secret = list["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .find(|finding| finding["rule"] == "aws-access-token")
+        .expect("secret finding");
+    let id = secret["id"].as_str().expect("id").to_string();
+
+    let inspected = session
+        .invoke(
+            caps::FINDING_INSPECT,
+            Some(serde_json::json!({ "id": id })),
+        )
+        .expect("finding.inspect");
+    assert_eq!(inspected["id"], id);
+    assert_eq!(inspected["rule"], "aws-access-token");
+    assert_eq!(inspected["severity"], "inferno");
+    assert_eq!(inspected["source"], "secrets");
+    assert_eq!(inspected["startLine"], 1);
+    assert_eq!(inspected["endLine"], 1);
+    assert!(inspected["title"].as_str().expect("title").len() > 0);
+    let locations = inspected["locations"].as_array().expect("locations");
+    assert!(!locations.is_empty());
+    assert_eq!(locations[0]["startLine"], 1);
+    assert_eq!(locations[0]["endLine"], 1);
+    let keys: Vec<&str> = inspected
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    for key in &keys {
+        assert!(
+            matches!(
+                *key,
+                "id" | "rule" | "severity" | "title" | "source" | "startLine" | "endLine" | "locations"
+            ),
+            "inspector must not ship extra fields, found {key}"
+        );
+    }
+    assert_eq!(keys.len(), 8, "exactly the eight contract keys: {keys:?}");
+    assert!(inspected.get("evidence").is_none(), "inspector fields must stay off the wire");
+    assert!(inspected.get("snippet").is_none());
+    assert!(inspected.get("file").is_none());
+    assert!(inspected.get("fileId").is_none());
+}
+
+#[test]
+fn finding_inspect_unknown_and_invalid_ids_are_invalid_request() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
+    session.invoke(caps::FINDINGS_GET, None).expect("scan to open the ledger");
+
+    assert_invalid_request(
+        inspect_error(&session, Some(serde_json::json!({"id": "a".repeat(64)}))),
+        "finding not found",
+    );
+    assert_invalid_request(
+        inspect_error(&session, None),
+        "finding.inspect requires a 64-hex id",
+    );
+    assert_invalid_request(
+        inspect_error(&session, Some(serde_json::json!({}))),
+        "finding.inspect requires a 64-hex id",
+    );
+    assert_invalid_request(
+        inspect_error(&session, Some(serde_json::json!({"id": ""}))),
+        "finding.inspect requires a 64-hex id",
+    );
+    assert_invalid_request(
+        inspect_error(&session, Some(serde_json::json!({"id": "short"}))),
+        "finding.inspect requires a 64-hex id",
+    );
+    assert_invalid_request(
+        inspect_error(&session, Some(serde_json::json!({"id": "g".repeat(64)}))),
+        "finding.inspect requires a 64-hex id",
+    );
+    assert_invalid_request(
+        inspect_error(&session, Some(serde_json::json!({"id": 1}))),
+        "finding.inspect requires a 64-hex id",
+    );
+}
+
+#[test]
+fn finding_inspect_dismissed_id_is_indistinguishable_from_absent() {
+    let prefix = "AKIA";
+    let body = "BHCEFGHIJKLMNOPQ";
+    let aws = format!("{prefix}{body}");
+    assert!(
+        shipped_rule_matches("aws-access-token", &aws),
+        "assembled fixture no longer matches gitleaks aws-access-token"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(dir.path().join("src")).expect("src directory");
+    std::fs::write(
+        dir.path().join("src/auth.rs"),
+        format!("const KEY: &str = \"{aws}\";\n"),
+    )
+    .expect("auth source");
+    let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
+    let list = session
+        .invoke(caps::FINDINGS_GET, None)
+        .expect("findings.get");
+    let id = list["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .find(|finding| finding["rule"] == "aws-access-token")
+        .expect("secret")["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let canonical = std::fs::canonicalize(dir.path()).expect("canonical");
+    let ledger = Ledger::open(&OracleDataPaths::from_root_without_env(&canonical).augur_ledger())
+        .expect("ledger");
+    let finding_id = FindingId::from_stored(id.clone()).expect("id");
+    ledger.dismiss(&finding_id).expect("dismiss");
+
+    assert_invalid_request(
+        inspect_error(&session, Some(serde_json::json!({"id": id}))),
+        "finding not found",
     );
 }
 

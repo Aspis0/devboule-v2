@@ -48,6 +48,8 @@ try {
     "city.get",
     "--capability",
     "findings.get",
+    "--capability",
+    "finding.inspect",
     // Requested this round so the host-side sessions.watch work can land
     // without colliding on this file. Granting it is not this change.
     "--capability",

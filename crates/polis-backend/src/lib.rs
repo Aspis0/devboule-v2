@@ -36,7 +36,7 @@ fn city_response_too_large_error(id: u64) -> DaemonMessage {
 mod city;
 mod findings;
 pub use city::{build_city, CityBuildError, MAX_CITY_FILES, MAX_CITY_FILE_BYTES};
-pub use findings::{get_findings, FindingsError};
+pub use findings::{get_findings, inspect_finding, FindingsError, InspectError};
 
 pub fn dispatch(
     grants: &BTreeMap<String, String>,
@@ -52,7 +52,9 @@ pub fn dispatch(
             id,
             ts_ms: unix_millis(),
         },
-        ClientMessage::Invoke { id, method, .. } => dispatch_invoke(grants, granted, id, &method),
+        ClientMessage::Invoke { id, method, payload } => {
+            dispatch_invoke(grants, granted, id, &method, payload)
+        }
         other => {
             let id = other.request_id();
             let mut error = WireError::new(
@@ -80,6 +82,7 @@ fn dispatch_invoke(
     granted: &[Capability],
     id: u64,
     method: &str,
+    payload: Option<serde_json::Value>,
 ) -> DaemonMessage {
     let capability = invoke_method_capability(method);
     if !granted.iter().any(|item| item.as_str() == capability) {
@@ -134,6 +137,31 @@ fn dispatch_invoke(
         match get_findings(std::path::Path::new(root)) {
             Ok(value) if !city_response_within_frame(&value) => city_response_too_large_error(id),
             Ok(value) => DaemonMessage::InvokeResult { id, value },
+            Err(error) => {
+                DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()).with_id(id))
+            }
+        }
+    } else if method == caps::FINDING_INSPECT {
+        let Some(root) = grants.get(caps::WORKSPACE_ROOT) else {
+            return DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    "finding.inspect requires the host-granted workspace.root",
+                )
+                .with_id(id),
+            );
+        };
+        match inspect_finding(std::path::Path::new(root), payload.as_ref()) {
+            Ok(value) if !city_response_within_frame(&value) => city_response_too_large_error(id),
+            Ok(value) => DaemonMessage::InvokeResult { id, value },
+            Err(InspectError::InvalidId) => DaemonMessage::Error(
+                WireError::new(ErrorCode::InvalidRequest, InspectError::InvalidId.to_string())
+                    .with_id(id),
+            ),
+            Err(InspectError::NotFound) => DaemonMessage::Error(
+                WireError::new(ErrorCode::InvalidRequest, InspectError::NotFound.to_string())
+                    .with_id(id),
+            ),
             Err(error) => {
                 DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()).with_id(id))
             }
@@ -255,6 +283,62 @@ mod tests {
                 assert!(value["findings"].as_array().is_some());
             }
             other => panic!("expected findings result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finding_inspect_requires_workspace_root() {
+        let grants = BTreeMap::new();
+        let granted = vec![
+            Capability::new(caps::PING),
+            Capability::new(caps::FINDING_INSPECT),
+        ];
+        let reply = dispatch(
+            &grants,
+            &granted,
+            ClientMessage::Invoke {
+                id: 9,
+                method: caps::FINDING_INSPECT.to_string(),
+                payload: Some(serde_json::json!({"id": "a".repeat(64)})),
+            },
+        );
+        match reply {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.id, Some(9));
+                assert_eq!(error.code, ErrorCode::WorkspaceUnavailable);
+            }
+            other => panic!("expected workspace error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn finding_inspect_refuses_a_malformed_id() {
+        let root = tempfile::tempdir().unwrap();
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            caps::WORKSPACE_ROOT.to_string(),
+            root.path().to_string_lossy().into_owned(),
+        );
+        let granted = vec![
+            Capability::new(caps::PING),
+            Capability::new(caps::WORKSPACE_ROOT),
+            Capability::new(caps::FINDING_INSPECT),
+        ];
+        let reply = dispatch(
+            &grants,
+            &granted,
+            ClientMessage::Invoke {
+                id: 10,
+                method: caps::FINDING_INSPECT.to_string(),
+                payload: Some(serde_json::json!({"id": "nope"})),
+            },
+        );
+        match reply {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.code, ErrorCode::InvalidRequest);
+                assert_eq!(error.message, "finding.inspect requires a 64-hex id");
+            }
+            other => panic!("expected invalid id, got {other:?}"),
         }
     }
 

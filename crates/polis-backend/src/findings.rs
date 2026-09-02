@@ -1,8 +1,9 @@
 //! Cheap Augur scan, invoked because the surface opened.
 //!
-//! Evidence and line numbers are deliberately NOT in the wire shape yet —
-//! the inspector comes later. The fire bands only need id, file, severity,
-//! rule, and title.
+//! `findings.get` ships id/file/severity/rule/title. `finding.inspect` ships
+//! metadata and line ranges only — never file content, never a snippet.
+//! The ledger stores "[redacted-secret]" for secrets; re-reading the file
+//! to mask a line would trust a smaller redaction set than the detector.
 
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -10,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use devboule_augur::{Context, Cost, Finding, Ledger, Registry};
+use devboule_augur::{Context, Cost, Finding, FindingId, Ledger, Registry};
 use oracle_core::{
     collect_text_files_with_cancel_limits_report, CancelFlag, OracleDataPaths,
 };
@@ -40,6 +41,86 @@ impl Display for FindingsError {
 }
 
 impl std::error::Error for FindingsError {}
+
+#[derive(Debug)]
+pub enum InspectError {
+    InvalidId,
+    NotFound,
+    Ledger(String),
+}
+
+impl Display for InspectError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidId => f.write_str("finding.inspect requires a 64-hex id"),
+            Self::NotFound => f.write_str("finding not found"),
+            Self::Ledger(message) => write!(f, "findings ledger: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for InspectError {}
+
+const INSPECT_ID_LEN: usize = 64;
+
+fn is_64_hex(value: &str) -> bool {
+    value.len() == INSPECT_ID_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn inspect_id_from_payload(payload: Option<&serde_json::Value>) -> Result<FindingId, InspectError> {
+    let Some(id) = payload
+        .and_then(|value| value.get("id"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Err(InspectError::InvalidId);
+    };
+    if !is_64_hex(id) {
+        return Err(InspectError::InvalidId);
+    }
+    FindingId::from_stored(id.to_string()).ok_or(InspectError::InvalidId)
+}
+
+/// Indexed lookup. No walk, no scan, no file bytes.
+pub fn inspect_finding(
+    root: &Path,
+    payload: Option<&serde_json::Value>,
+) -> Result<serde_json::Value, InspectError> {
+    let id = inspect_id_from_payload(payload)?;
+    let root = fs::canonicalize(root).map_err(|error| InspectError::Ledger(error.to_string()))?;
+    let ledger_path = OracleDataPaths::from_root_without_env(&root).augur_ledger();
+    let ledger =
+        Ledger::open(&ledger_path).map_err(|error| InspectError::Ledger(error.to_string()))?;
+    let Some(finding) = ledger
+        .get(&id)
+        .map_err(|error| InspectError::Ledger(error.to_string()))?
+    else {
+        return Err(InspectError::NotFound);
+    };
+    Ok(inspect_body(&finding))
+}
+
+fn inspect_body(finding: &Finding) -> serde_json::Value {
+    let locations: Vec<serde_json::Value> = finding
+        .locations()
+        .iter()
+        .map(|location| {
+            serde_json::json!({
+                "startLine": location.start_line(),
+                "endLine": location.end_line(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "id": finding.id().as_str(),
+        "rule": finding.rule(),
+        "severity": finding.severity().as_str(),
+        "title": finding.title(),
+        "source": finding.source(),
+        "startLine": finding.start_line(),
+        "endLine": finding.end_line(),
+        "locations": locations,
+    })
+}
 
 pub(crate) struct CollectedFiles {
     pub root: PathBuf,
@@ -664,5 +745,39 @@ mod tests {
         assert_eq!(omitted, 8_000 - kept as u64);
         let first = body["findings"][0]["severity"].as_str().unwrap();
         assert_eq!(first, "inferno", "severity desc: inferno first, got {first}");
+    }
+
+    fn inspect_err(root: &Path, payload: Option<serde_json::Value>) -> InspectError {
+        inspect_finding(root, payload.as_ref()).expect_err("must refuse")
+    }
+
+    #[test]
+    fn inspect_rejects_missing_and_malformed_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        let cases: Vec<Option<serde_json::Value>> = vec![
+            None,
+            Some(serde_json::json!({})),
+            Some(serde_json::json!({"id": ""})),
+            Some(serde_json::json!({"id": "short"})),
+            Some(serde_json::json!({"id": "g".repeat(64)})),
+            Some(serde_json::json!({"id": 12})),
+            Some(serde_json::json!({"id": null})),
+        ];
+        for payload in cases {
+            match inspect_err(temp.path(), payload.clone()) {
+                InspectError::InvalidId => {}
+                other => panic!("expected InvalidId for {payload:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn inspect_unknown_id_is_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = "a".repeat(64);
+        match inspect_err(temp.path(), Some(serde_json::json!({"id": id}))) {
+            InspectError::NotFound => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 }
