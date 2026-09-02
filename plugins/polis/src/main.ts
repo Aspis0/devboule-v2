@@ -13,8 +13,11 @@ import {
   invokeHost,
   loadCity,
   pendingCityState,
+  SESSIONS_WATCH_TIMEOUT_MS,
+  subscribeSessions,
 } from "./hostBridge";
 import { CityRenderer } from "./renderer";
+import { renderAgentRoster } from "./roster";
 import type { City, CityFile } from "./model";
 
 const canvas = getElement<HTMLCanvasElement>("scene");
@@ -84,18 +87,44 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
 
   const bank = await loadPolisArt();
   const loadedCity = await cityLoadResult;
-  renderCityStats(loadedCity.city);
+  let currentAgents = loadedCity.city.agents;
+  let renderer: CityRenderer | null = null;
+  let subscription: Awaited<ReturnType<typeof subscribeSessions>> | null = null;
 
-  new CityRenderer({
+  if (loadedCity.status === "host") {
+    try {
+      subscription = await subscribeSessions(
+        invokeHost,
+        (agents) => {
+          currentAgents = agents;
+          const nextCity = { ...loadedCity.city, agents };
+          renderCityStats(nextCity);
+          renderer?.refreshAgents(agents);
+        },
+        SESSIONS_WATCH_TIMEOUT_MS,
+      );
+    } catch (error) {
+      renderSessionWatchFailure(error);
+    }
+  }
+
+  const cityForRenderer = { ...loadedCity.city, agents: currentAgents };
+  renderCityStats(cityForRenderer);
+
+  renderer = new CityRenderer({
     app,
     canvas,
-    city: loadedCity.city,
+    city: cityForRenderer,
     details: {
       setDetails: (file) => showFileDetails(file),
       clearDetails: () => clearFileDetails(),
     },
     bank,
   });
+
+  if (subscription !== null) {
+    window.addEventListener("pagehide", () => subscription?.close(), { once: true });
+  }
 }
 
 async function measureTauriIsolation(): Promise<IsolationOutcome> {
@@ -220,12 +249,23 @@ function renderCityStats(value: City): void {
   ).length;
   const source = cityHudLabel(value);
   cityReadout.textContent = `${source} · ${value.files.length} files${cityDegradationSuffix(value)} · ${value.imports.length} directed roads`;
-  agentReadout.textContent = `Agents fixture · ${placedAgents} on buildings · ${rosterAgents} roster-only`;
-  rosterReadout.textContent =
-    rosterAgents === 0
-      ? "Roster: empty"
-      : `Roster: ${rosterAgents} session${rosterAgents === 1 ? "" : "s"} without a touched file (not drawn)`;
+  agentReadout.textContent = `${value.dataSource === "host" ? "Agents host" : "Agents fixture"} · ${placedAgents} on buildings · ${rosterAgents} roster-only`;
+  if (value.dataSource === "host") {
+    renderAgentRoster(rosterReadout, value.agents, knownFileIds);
+  } else {
+    rosterReadout.textContent =
+      rosterAgents === 0
+        ? "Roster: empty"
+        : `Roster: ${rosterAgents} session${rosterAgents === 1 ? "" : "s"} without a touched file (not drawn)`;
+  }
   findingReadout.textContent = `Findings fixture · ${placedFindings} open · smoke / fire / inferno`;
+}
+
+function renderSessionWatchFailure(error: unknown): void {
+  const code = errorCode(error);
+  const state =
+    code === "timeout" ? "timed out" : code === "malformed_sessions" ? "malformed" : "refused";
+  rosterReadout.textContent = `Roster: live session feed ${state} — ${errorMessage(error)}`;
 }
 
 function renderPendingCity(): void {
@@ -262,6 +302,12 @@ function getElement<T extends HTMLElement>(id: string): T {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "unknown error";
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
 }
 
 function serializableValue(value: unknown): unknown {

@@ -35,10 +35,12 @@ export type CityAgentState = "working" | "silent" | "finished" | "idle";
 /** A provider-backed CLI session observed by the host. */
 export interface CityAgent {
   id: string;
-  provider: string;
+  provider: string | null;
   state: CityAgentState;
   /** Null means the session belongs in the roster, not at an invented map point. */
   fileId: string | null;
+  /** Host sessions carry their safe display title; fixture agents may omit it. */
+  title?: string;
 }
 
 export type CityFindingSeverity = "smoke" | "fire" | "inferno";

@@ -1,4 +1,4 @@
-import type { City } from "./model";
+import type { City, CityAgent } from "./model";
 
 /**
  * The only way this document talks to the host. A raw Tauri invoke from
@@ -8,6 +8,7 @@ import type { City } from "./model";
 const DEFAULT_TIMEOUT_MS = 4000;
 export const MAX_HOST_RESPONSE_BYTES = 1024 * 1024;
 export const CITY_FETCH_TIMEOUT_MS = 30_000;
+export const SESSIONS_WATCH_TIMEOUT_MS = 10_000;
 
 export type CityLoadState =
   | { status: "pending"; city: null }
@@ -19,7 +20,26 @@ export type CityLoadState =
       failure: "timeout" | "refusal" | "malformed";
     };
 
-type HostInvoker = (method: string, payload?: unknown, timeoutMs?: number) => Promise<unknown>;
+export type HostInvoker = (
+  method: string,
+  payload?: unknown,
+  timeoutMs?: number,
+) => Promise<unknown>;
+
+export interface PluginSession {
+  id: string;
+  provider: string | null;
+  state: "working" | "finished";
+  title: string;
+}
+
+export interface SessionFeed {
+  sessions: PluginSession[];
+}
+
+export interface SessionSubscription {
+  close(): void;
+}
 
 export function invokeHost(
   method: string,
@@ -107,10 +127,82 @@ export async function loadCity(
     }
     return {
       status: "host",
-      city: { ...value, agents: [], findings: [], dataSource: "host" },
+      city: { ...value, findings: [], dataSource: "host" },
     };
   } catch (error) {
     return { status: "fixture", city: fallback, error, failure: cityFetchFailure(error) };
+  }
+}
+
+/** Validate the event value before it becomes a renderer-facing agent list. */
+export function isSessionFeed(value: unknown): value is SessionFeed {
+  if (!isRecord(value) || !Array.isArray(value.sessions)) return false;
+  if (Object.keys(value).some((key) => key !== "sessions")) return false;
+  return value.sessions.every((session) => {
+    if (!isRecord(session)) return false;
+    const keys = Object.keys(session);
+    if (keys.some((key) => !["id", "provider", "state", "title"].includes(key))) return false;
+    return (
+      typeof session.id === "string" &&
+      session.id !== "" &&
+      (typeof session.provider === "string" || session.provider === null) &&
+      (session.state === "working" || session.state === "finished") &&
+      typeof session.title === "string"
+    );
+  });
+}
+
+export function sessionFeedToAgents(feed: SessionFeed): CityAgent[] {
+  return feed.sessions.map((session) => ({
+    id: session.id,
+    provider: session.provider,
+    state: session.state,
+    fileId: null,
+    title: session.title,
+  }));
+}
+
+/**
+ * Session events use the same v1 source check as replies, but are kept on one
+ * persistent listener so a subscription survives ordinary request settlement.
+ */
+export async function subscribeSessions(
+  invoke: HostInvoker,
+  onUpdate: (agents: CityAgent[]) => void,
+  timeoutMs = SESSIONS_WATCH_TIMEOUT_MS,
+): Promise<SessionSubscription> {
+  const subscriptionId = `polis-sessions-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
+  let closed = false;
+
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    window.removeEventListener("message", onMessage);
+  };
+
+  function onMessage(event: MessageEvent<unknown>): void {
+    if (closed || event.source !== window.parent) return;
+    const message = event.data;
+    if (!isSessionEvent(message) || message.id !== subscriptionId) return;
+    if (!hostResponseWithinLimit(message.value) || !isSessionFeed(message.value)) return;
+    onUpdate(sessionFeedToAgents(message.value));
+  }
+
+  window.addEventListener("message", onMessage);
+  try {
+    const value = await invoke("sessions.watch", { subscriptionId }, timeoutMs);
+    if (!isSessionFeed(value)) {
+      const error = new Error("sessions.watch returned an invalid session feed") as Error & {
+        code?: string;
+      };
+      error.code = "malformed_sessions";
+      throw error;
+    }
+    onUpdate(sessionFeedToAgents(value));
+    return { close };
+  } catch (error) {
+    close();
+    throw error;
   }
 }
 
@@ -212,6 +304,20 @@ function isReply(
     return true;
   }
   return false;
+}
+
+function isSessionEvent(
+  value: unknown,
+): value is { v: 1; id: string; kind: "event"; event: "sessions.update"; value: unknown } {
+  return (
+    isRecord(value) &&
+    value.v === 1 &&
+    typeof value.id === "string" &&
+    value.id !== "" &&
+    value.kind === "event" &&
+    value.event === "sessions.update" &&
+    "value" in value
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

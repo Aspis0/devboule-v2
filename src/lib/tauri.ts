@@ -37,6 +37,7 @@ type CommandArgs = {
   session_resize: { id: Id; cols: number; rows: number };
   session_detach: { id: Id };
   session_close: { id: Id };
+  sessions_list: undefined;
   providers_list: undefined;
   provider_models: { provider: string };
   oracle_status: undefined;
@@ -75,6 +76,7 @@ type CommandResults = {
   session_resize: void;
   session_detach: void;
   session_close: void;
+  sessions_list: Session[];
   providers_list: ProviderInfo[];
   provider_models: ModelInfo[];
   oracle_status: OracleIndexStatus;
@@ -162,6 +164,7 @@ export const sessionResize = (id: Id, cols: number, rows: number) =>
   invokeTyped("session_resize", { id, cols, rows });
 export const sessionDetach = (id: Id) => invokeTyped("session_detach", { id });
 export const sessionClose = (id: Id) => invokeTyped("session_close", { id });
+export const sessionsList = () => invokeTyped("sessions_list");
 export const providersList = () => invokeTyped("providers_list");
 export const providerModels = (provider: string) => invokeTyped("provider_models", { provider });
 export const oracleStatus = () => invokeTyped("oracle_status");

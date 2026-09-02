@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createPluginBridge } from "./pluginBridge";
+import { createPluginBridge, HOST_SERVED_CAPABILITIES } from "./pluginBridge";
 import { acquirePluginBackend, invokePlugin } from "./pluginBackend";
 import { useAppStore } from "../../store/appStore";
 
@@ -71,6 +71,7 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
       pluginId,
       pluginOrigin: origin,
       capabilities: capabilitiesRef.current,
+      servedCapabilities: HOST_SERVED_CAPABILITIES,
       route: (method, payload) => invokePlugin(pluginId, method, payload),
     });
     const lease = acquirePluginBackend(pluginId);

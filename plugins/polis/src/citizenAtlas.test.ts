@@ -11,11 +11,12 @@ import { BuildingTextureAtlas } from "./buildingAtlas";
 
 describe("procedural citizen atlas", () => {
   it("maps the five providers to five structural citizen silhouettes", () => {
-    const providers = ["claude", "codex", "grok", "pi", "copilot"];
+    const providers = ["claude", "codex", "opencode", "grok", "pi", "copilot"];
     const types = providers.map(citizenTypeForProvider);
 
-    expect(types).toEqual(["noble", "builder", "foreigner", "watercarrier", "priest"]);
+    expect(types).toEqual(["noble", "builder", "citizen", "foreigner", "watercarrier", "priest"]);
     expect(new Set(types).size).toBe(providers.length);
+    expect(citizenTypeForProvider(null)).toBe("citizen");
     expect(citizenTypeForProvider("unlisted-provider")).toBe("citizen");
   });
 

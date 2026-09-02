@@ -28,12 +28,14 @@ const WALK_PHASE_INCREMENT = 0.6;
 const ACTION_PHASE_INCREMENT = 0.5;
 
 /** Provider identity is structural: the tunic is the source type's own colour. */
-export function citizenTypeForProvider(provider: string): CitizenType {
-  switch (provider.trim().toLowerCase()) {
+export function citizenTypeForProvider(provider: string | null): CitizenType {
+  switch (provider?.trim().toLowerCase()) {
     case "claude":
       return "noble";
     case "codex":
       return "builder";
+    case "opencode":
+      return "citizen";
     case "grok":
       return "foreigner";
     case "pi":
@@ -73,10 +75,11 @@ export function citizenVariantKey(
   state: CityAgentState,
   step: CitizenPhaseStep,
   carrying?: CitizenDrawOpts["carrying"],
+  tunic?: number,
 ): string {
-  return carrying === undefined
-    ? `citizen:${type}:${state}:s${step}`
-    : `citizen:${type}:${state}:carry-${carrying}:s${step}`;
+  const carryingKey = carrying === undefined ? "" : `:carry-${carrying}`;
+  const tunicKey = tunic === undefined ? "" : `:tunic-${tunic.toString(16)}`;
+  return `citizen:${type}:${state}${carryingKey}:s${step}${tunicKey}`;
 }
 
 export interface CitizenVariant {
@@ -109,8 +112,9 @@ export class CitizenTextureAtlas {
     state: CityAgentState,
     step: CitizenPhaseStep,
     carrying?: CitizenDrawOpts["carrying"],
+    tunic?: number,
   ): boolean {
-    return this.atlas.hasSprite(citizenVariantKey(type, state, step, carrying));
+    return this.atlas.hasSprite(citizenVariantKey(type, state, step, carrying, tunic));
   }
 
   get(
@@ -119,8 +123,9 @@ export class CitizenTextureAtlas {
     state: CityAgentState,
     step: CitizenPhaseStep,
     carrying?: CitizenDrawOpts["carrying"],
+    tunic?: number,
   ): CitizenVariant {
-    const key = citizenVariantKey(type, state, step, carrying);
+    const key = citizenVariantKey(type, state, step, carrying, tunic);
     const hit = this.variants.get(key);
     if (hit !== undefined) return hit;
 
@@ -133,7 +138,7 @@ export class CitizenTextureAtlas {
         const params = drawParamsForCitizen(state, step);
         drawCitizen(graphic, type, {
           ...params,
-          tunic: defaultTunic(type),
+          tunic: tunic ?? defaultTunic(type),
           carrying,
         });
         body.addChild(graphic);

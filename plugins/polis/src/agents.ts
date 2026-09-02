@@ -1,6 +1,6 @@
 import { Container, Graphics, Sprite } from "pixi.js";
 import type { CityAgent, CityAgentState, CityImport } from "./model";
-import { PALETTE, providerColor } from "./palette";
+import { PALETTE, providerLiveryColor } from "./palette";
 import {
   CITIZEN_PHASE_STEPS,
   CitizenTextureAtlas,
@@ -36,7 +36,7 @@ export function badgeMetrics(frame: { y: number; width: number }): BadgeMetrics 
 
 interface AgentView {
   id: string;
-  provider: string;
+  provider: string | null;
   fileId: string;
   display: Container;
   near: Container;
@@ -164,7 +164,14 @@ export class AgentLayer {
 
     const figure = new Container();
     const type = citizenTypeForProvider(agent.provider);
-    const variant = this.citizenAtlas.get(this.renderer, type, agent.state, 0);
+    const variant = this.citizenAtlas.get(
+      this.renderer,
+      type,
+      agent.state,
+      0,
+      undefined,
+      providerLiveryColor(agent.provider, agent.id),
+    );
     const body = new Sprite(variant.texture);
     body.position.set(variant.frame.x, variant.frame.y);
 
@@ -180,8 +187,8 @@ export class AgentLayer {
 
     const farA = new Graphics();
     const farB = new Graphics();
-    drawFarMarker(farA, agent.provider, agent.state, 0);
-    drawFarMarker(farB, agent.provider, agent.state, 1);
+    drawFarMarker(farA, agent.provider, agent.id, agent.state, 0);
+    drawFarMarker(farB, agent.provider, agent.id, agent.state, 1);
     farB.visible = false;
     far.addChild(farA, farB);
     far.alpha = 0;
@@ -236,8 +243,8 @@ export class AgentLayer {
       this.setBody(view, citizenTypeForProvider(agent.provider), agent.state, 0);
       drawBadge(view.badgeA, agent.state, 0);
       drawBadge(view.badgeB, agent.state, 1);
-      drawFarMarker(view.farA, agent.provider, agent.state, 0);
-      drawFarMarker(view.farB, agent.provider, agent.state, 1);
+      drawFarMarker(view.farA, agent.provider, agent.id, agent.state, 0);
+      drawFarMarker(view.farB, agent.provider, agent.id, agent.state, 1);
       view.provider = agent.provider;
       view.state = agent.state;
     }
@@ -265,7 +272,14 @@ export class AgentLayer {
     state: CityAgentState,
     step: CitizenPhaseStep,
   ): void {
-    const variant = this.citizenAtlas.get(this.renderer, type, state, step);
+    const variant = this.citizenAtlas.get(
+      this.renderer,
+      type,
+      state,
+      step,
+      undefined,
+      providerLiveryColor(view.provider, view.id),
+    );
     view.body.texture = variant.texture;
     view.body.position.set(variant.frame.x, variant.frame.y);
     view.radius = variant.radius;
@@ -427,11 +441,12 @@ function setBadgeLayout(graphic: Graphics, frame: { y: number; width: number }):
  */
 function drawFarMarker(
   graphic: Graphics,
-  provider: string,
+  provider: string | null,
+  agentId: string,
   state: CityAgentState,
   variant: number,
 ): void {
-  const livery = providerColor(provider);
+  const livery = providerLiveryColor(provider, agentId);
   const stateTone = stateColor(state);
   const outline = PALETTE.outline;
   if (state === "working") {

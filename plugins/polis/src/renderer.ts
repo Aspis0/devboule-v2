@@ -187,6 +187,11 @@ export class CityRenderer {
     this.app.ticker.start();
   }
 
+  /** Apply a later host session snapshot without rebuilding the city. */
+  refreshAgents(agents: City["agents"]): void {
+    this.agentLayer.setAgents(agents);
+  }
+
   private build(city: City): void {
     const layouts = createLayout(city.files, city.imports);
     for (const layout of layouts) this.layoutById.set(layout.file.id, layout);

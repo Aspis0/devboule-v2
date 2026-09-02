@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { describe, expect, it, vi } from "vitest";
 import {
   cityHudLabel,
@@ -8,6 +10,10 @@ import {
   formatHandshakeReadout,
   formatWorkspaceRootReadout,
   hostResponseWithinLimit,
+  isSessionFeed,
+  sessionFeedToAgents,
+  type SessionFeed,
+  subscribeSessions,
 } from "./hostBridge";
 
 describe("backend overlay readout", () => {
@@ -110,7 +116,7 @@ describe("backend overlay readout", () => {
     const host = await loadCity(invoke, fallback);
     expect(host.status).toBe("host");
     expect(host.city.dataSource).toBe("host");
-    expect(host.city.agents).toEqual([]);
+    expect(host.city.agents).toEqual([{ fabricated: true }]);
     expect(host.city.findings).toEqual([]);
     expect(invoke).toHaveBeenCalledWith("city.get", undefined, expect.any(Number));
     expect(cityHudLabel(host.city)).toBe("Host city");
@@ -136,5 +142,99 @@ describe("backend overlay readout", () => {
     const timeout = Object.assign(new Error("request timed out"), { code: "timeout" });
     const timedOut = await loadCity(vi.fn().mockRejectedValue(timeout), fallback);
     expect(formatCityFetchReadout(timedOut)).toContain("host city timeout");
+  });
+
+  it("validates the privacy-safe session feed and turns every session into a roster agent", () => {
+    const feed = {
+      sessions: [
+        { id: "one", provider: null, state: "working", title: "Unknown shell" },
+        { id: "two", provider: "opencode", state: "finished", title: "OpenCode task" },
+      ],
+    } satisfies SessionFeed;
+    expect(isSessionFeed(feed)).toBe(true);
+    expect(sessionFeedToAgents(feed)).toEqual([
+      { id: "one", provider: null, state: "working", fileId: null, title: "Unknown shell" },
+      { id: "two", provider: "opencode", state: "finished", fileId: null, title: "OpenCode task" },
+    ]);
+    expect(isSessionFeed({ sessions: [{ ...feed.sessions[0], workspaceId: "secret" }] })).toBe(
+      false,
+    );
+    expect(isSessionFeed({ ...feed, workspaceRoot: "secret" })).toBe(false);
+  });
+
+  it("subscribes to source-checked session events and removes its listener on close", async () => {
+    const invoke = vi.fn().mockResolvedValue({
+      sessions: [{ id: "one", provider: null, state: "working", title: "Unknown shell" }],
+    });
+    const updates: unknown[] = [];
+    const subscription = await subscribeSessions(invoke, (agents) => updates.push(agents));
+
+    expect(updates).toEqual([
+      [{ id: "one", provider: null, state: "working", fileId: null, title: "Unknown shell" }],
+    ]);
+    const request = invoke.mock.calls[0];
+    const payload = request?.[1] as { subscriptionId: string };
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: window.parent,
+        data: {
+          v: 1,
+          id: payload.subscriptionId,
+          kind: "event",
+          event: "sessions.update",
+          value: {
+            sessions: [{ id: "two", provider: "codex", state: "working", title: "Codex" }],
+          },
+        },
+      }),
+    );
+    expect(updates).toHaveLength(2);
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: window.parent,
+        data: {
+          v: 1,
+          id: payload.subscriptionId,
+          kind: "event",
+          event: "sessions.update",
+          value: {
+            sessions: [
+              { id: "large", provider: null, state: "working", title: "x".repeat(1024 * 1024) },
+            ],
+          },
+        },
+      }),
+    );
+    expect(updates).toHaveLength(2);
+
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: {} as Window,
+        data: {
+          v: 1,
+          id: payload.subscriptionId,
+          kind: "event",
+          event: "sessions.update",
+          value: { sessions: [{ id: "evil", provider: null, state: "working", title: "Evil" }] },
+        },
+      }),
+    );
+    expect(updates).toHaveLength(2);
+
+    subscription.close();
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: window.parent,
+        data: {
+          v: 1,
+          id: payload.subscriptionId,
+          kind: "event",
+          event: "sessions.update",
+          value: { sessions: [{ id: "three", provider: null, state: "finished", title: "Three" }] },
+        },
+      }),
+    );
+    expect(updates).toHaveLength(2);
   });
 });

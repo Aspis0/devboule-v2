@@ -2,6 +2,8 @@
 // share a tint. Faces and ground tones are derived from these named colors so
 // the renderer does not accumulate unrelated one-off hex values.
 
+import { hashString } from "./rng";
+
 export const PALETTE = {
   background: 0x07101c,
   ground: 0x172536,
@@ -19,6 +21,7 @@ export const PALETTE = {
   districtGreen: 0x9bd27d,
   providerClaude: 0xe3a46f,
   providerCodex: 0x63d5b9,
+  providerOpenCode: 0xb39cff,
   providerGrok: 0x9aa8ff,
   providerPi: 0xd98bd4,
   providerCopilot: 0x9bd27d,
@@ -78,12 +81,14 @@ export function districtColor(district: string): number {
 }
 
 /** Provider is the agent's livery channel; unknown providers stay legible. */
-export function providerColor(provider: string): number {
-  switch (provider.toLowerCase()) {
+export function providerColor(provider: string | null): number {
+  switch (provider?.trim().toLowerCase()) {
     case "claude":
       return PALETTE.providerClaude;
     case "codex":
       return PALETTE.providerCodex;
+    case "opencode":
+      return PALETTE.providerOpenCode;
     case "grok":
       return PALETTE.providerGrok;
     case "pi":
@@ -93,6 +98,23 @@ export function providerColor(provider: string): number {
     default:
       return PALETTE.providerUnknown;
   }
+}
+
+/** Known providers keep their exact livery; unknown sessions get a stable
+ * hash-seeded shade within ten percent so a common null provider still reads
+ * as a set of distinct people rather than one collapsed grey. */
+export function providerLiveryColor(provider: string | null, agentId: string): number {
+  const normalized = provider?.trim().toLowerCase();
+  if (
+    normalized !== undefined &&
+    ["claude", "codex", "opencode", "grok", "pi", "copilot"].includes(normalized)
+  ) {
+    return providerColor(normalized);
+  }
+  const shade = (hashString(agentId) % 21) - 10;
+  return shade >= 0
+    ? lighten(PALETTE.providerUnknown, shade / 100)
+    : darken(PALETTE.providerUnknown, -shade / 100);
 }
 
 function channel(color: number, shift: number): number {
