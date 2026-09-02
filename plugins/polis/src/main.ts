@@ -12,11 +12,15 @@ import {
   formatWorkspaceRootReadout,
   invokeHost,
   loadCity,
+  loadFindings,
   pendingCityState,
+  pendingFindingsState,
+  FINDINGS_FETCH_TIMEOUT_MS,
   SESSIONS_WATCH_TIMEOUT_MS,
   subscribeSessions,
 } from "./hostBridge";
 import { CityRenderer } from "./renderer";
+import { createHostFindingsReadout } from "./findings";
 import { createHostRosterReadout } from "./roster";
 import type { City, CityFile } from "./model";
 
@@ -30,6 +34,7 @@ const agentReadout = getElement<HTMLElement>("agents");
 const rosterReadout = getElement<HTMLElement>("roster");
 const hostRosterReadout = createHostRosterReadout(rosterReadout);
 const findingReadout = getElement<HTMLElement>("findings");
+const hostFindingsReadout = createHostFindingsReadout(findingReadout);
 const detailsReadout = getElement<HTMLElement>("details");
 const hudToggle = getElement<HTMLButtonElement>("hud-toggle");
 const hudDetails = getElement<HTMLDivElement>("hud-details");
@@ -93,6 +98,10 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
   let subscription: Awaited<ReturnType<typeof subscribeSessions>> | null = null;
 
   if (loadedCity.status === "host") {
+    hostFindingsReadout.setState(pendingFindingsState());
+  }
+
+  if (loadedCity.status === "host") {
     try {
       subscription = await subscribeSessions(
         invokeHost,
@@ -122,6 +131,15 @@ async function startRenderer(cityLoadResult: ReturnType<typeof loadCity>): Promi
     },
     bank,
   });
+
+  if (loadedCity.status === "host") {
+    const knownFileIds = new Set(loadedCity.city.files.map((file) => file.id));
+    void loadFindings(invokeHost, FINDINGS_FETCH_TIMEOUT_MS).then((state) => {
+      hostFindingsReadout.setState(state);
+      hostFindingsReadout.render(knownFileIds);
+      if (state.status === "host") renderer?.refreshFindings(state.findings);
+    });
+  }
 
   if (subscription !== null) {
     window.addEventListener("pagehide", () => subscription?.close(), { once: true });
@@ -253,13 +271,16 @@ function renderCityStats(value: City): void {
   agentReadout.textContent = `${value.dataSource === "host" ? "Agents host" : "Agents fixture"} · ${placedAgents} on buildings · ${rosterAgents} roster-only`;
   if (value.dataSource === "host") {
     hostRosterReadout.render(value.agents, knownFileIds);
+    hostFindingsReadout.render(knownFileIds);
   } else {
     rosterReadout.textContent =
       rosterAgents === 0
         ? "Roster: empty"
         : `Roster: ${rosterAgents} session${rosterAgents === 1 ? "" : "s"} without a touched file (not drawn)`;
   }
-  findingReadout.textContent = `Findings fixture · ${placedFindings} open · smoke / fire / inferno`;
+  if (value.dataSource !== "host") {
+    findingReadout.textContent = `Findings fixture · ${placedFindings} open · smoke / fire / inferno`;
+  }
 }
 
 function renderSessionWatchFailure(error: unknown): void {

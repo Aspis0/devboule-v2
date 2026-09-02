@@ -4,8 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
   cityHudLabel,
   formatCityFetchReadout,
+  formatFindingsReadout,
+  FINDINGS_FETCH_TIMEOUT_MS,
+  isFindingsReport,
+  loadFindings,
   loadCity,
   pendingCityState,
+  pendingFindingsState,
   formatBackendFailureReadout,
   formatHandshakeReadout,
   formatWorkspaceRootReadout,
@@ -17,6 +22,67 @@ import {
 } from "./hostBridge";
 
 describe("backend overlay readout", () => {
+  it("validates and loads the findings contract with the long scan timeout", async () => {
+    const report = findingsReport();
+    expect(isFindingsReport(report)).toBe(true);
+    expect(isFindingsReport({ ...report, extra: true })).toBe(false);
+    expect(
+      isFindingsReport({
+        ...report,
+        findings: [{ ...report.findings[0], line: 4 }],
+      }),
+    ).toBe(false);
+    expect(isFindingsReport({ ...report, findings: [{ ...report.findings[0], id: "bad" }] })).toBe(
+      false,
+    );
+
+    const invoke = vi.fn().mockResolvedValue(report);
+    await expect(loadFindings(invoke)).resolves.toEqual({ status: "host", ...report });
+    expect(invoke).toHaveBeenCalledWith("findings.get", undefined, FINDINGS_FETCH_TIMEOUT_MS);
+  });
+
+  it("keeps findings pending, then distinguishes timeout and malformed failures", async () => {
+    expect(pendingFindingsState()).toEqual({ status: "pending", findings: null });
+
+    const timeout = Object.assign(new Error("timed out: waiting for a plugin reply"), {
+      code: "timeout",
+    });
+    const timedOut = await loadFindings(vi.fn().mockRejectedValue(timeout));
+    expect(timedOut).toMatchObject({ status: "failed", failure: "timeout" });
+    expect(formatFindingsReadout(timedOut, new Set())).toBe(
+      "Findings: scan timeout — timed out: waiting for a plugin reply",
+    );
+
+    const malformed = await loadFindings(vi.fn().mockResolvedValue({ findings: [] }));
+    expect(malformed).toMatchObject({ status: "failed", failure: "malformed" });
+    expect(formatFindingsReadout(malformed, new Set())).toContain("Findings: scan malformed");
+
+    const refused = await loadFindings(
+      vi.fn().mockRejectedValue({
+        code: "io",
+        message: "findings root unreadable (C:/repo): access denied",
+      }),
+    );
+    expect(refused).toMatchObject({ status: "failed", failure: "refusal" });
+    expect(formatFindingsReadout(refused, new Set())).toBe(
+      "Findings: scan refusal — findings root unreadable (C:/repo): access denied",
+    );
+  });
+
+  it("formats host finding counts and every degradation notice", () => {
+    const state = {
+      status: "host" as const,
+      ...findingsReport(),
+      truncatedFindings: 2,
+      droppedFindings: 3,
+      skippedFiles: 4,
+      failed: ["detector-b"],
+    };
+    expect(formatFindingsReadout(state, new Set(["src/a.ts"]))).toBe(
+      "Findings host · 3 open · 1 inferno / 1 fire / 1 smoke (2 more beyond the frame cap, 3 unplaced by the scanner, 4 skipped, 1 without a building, detector-b failed)",
+    );
+  });
+
   it("prints the granted workspace root and handshake", () => {
     const value = {
       root: "C:/repo",
@@ -269,3 +335,36 @@ describe("backend overlay readout", () => {
     await expect(pending).rejects.toThrow();
   });
 });
+
+function findingsReport() {
+  return {
+    findings: [
+      {
+        id: "a".repeat(64),
+        fileId: "src/a.ts",
+        severity: "inferno" as const,
+        rule: "rule-a",
+        title: "Critical finding",
+      },
+      {
+        id: "b".repeat(64),
+        fileId: "src/a.ts",
+        severity: "fire" as const,
+        rule: "rule-b",
+        title: "Fire finding",
+      },
+      {
+        id: "c".repeat(64),
+        fileId: "src/missing.ts",
+        severity: "smoke" as const,
+        rule: "rule-c",
+        title: "Smoke finding",
+      },
+    ],
+    scanned: true as const,
+    completed: ["detector-a"],
+    failed: [],
+    scanMs: 321,
+    droppedFindings: 0,
+  };
+}

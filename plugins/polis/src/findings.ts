@@ -1,5 +1,6 @@
 import { Container, Graphics } from "pixi.js";
 import type { CityFinding, CityFindingSeverity } from "./model";
+import { formatFindingsReadout, pendingFindingsState, type FindingsLoadState } from "./hostBridge";
 import { Flame, Smoke, type AnimInstance } from "./kitcd/anims";
 import { darken, lighten, PALETTE } from "./palette";
 import type { AgentLayout } from "./agents";
@@ -20,6 +21,24 @@ interface FireView {
 }
 
 const STEP_MS = 180;
+
+export interface HostFindingsReadout {
+  setState(state: FindingsLoadState): void;
+  render(knownFileIds: ReadonlySet<string>): void;
+}
+
+/** Keep a findings failure or pending state authoritative across city renders. */
+export function createHostFindingsReadout(container: HTMLElement): HostFindingsReadout {
+  let state = pendingFindingsState();
+  return {
+    setState(nextState) {
+      state = nextState;
+    },
+    render(knownFileIds) {
+      container.textContent = formatFindingsReadout(state, knownFileIds);
+    },
+  };
+}
 
 const SEVERITY_RANK: Record<CityFindingSeverity, number> = {
   smoke: 1,

@@ -192,6 +192,11 @@ export class CityRenderer {
     this.agentLayer.setAgents(agents);
   }
 
+  /** Apply the one-shot host findings scan without rebuilding the city. */
+  refreshFindings(findings: City["findings"]): void {
+    this.findingLayer.setFindings(findings);
+  }
+
   private build(city: City): void {
     const layouts = createLayout(city.files, city.imports);
     for (const layout of layouts) this.layoutById.set(layout.file.id, layout);

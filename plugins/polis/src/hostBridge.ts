@@ -1,4 +1,4 @@
-import type { City, CityAgent } from "./model";
+import type { City, CityAgent, CityFinding, CityFindingSeverity } from "./model";
 
 /**
  * The only way this document talks to the host. A raw Tauri invoke from
@@ -8,6 +8,7 @@ import type { City, CityAgent } from "./model";
 const DEFAULT_TIMEOUT_MS = 4000;
 export const MAX_HOST_RESPONSE_BYTES = 1024 * 1024;
 export const CITY_FETCH_TIMEOUT_MS = 30_000;
+export const FINDINGS_FETCH_TIMEOUT_MS = 65_000;
 export const SESSIONS_WATCH_TIMEOUT_MS = 10_000;
 
 export type CityLoadState =
@@ -132,6 +133,133 @@ export async function loadCity(
   } catch (error) {
     return { status: "fixture", city: fallback, error, failure: cityFetchFailure(error) };
   }
+}
+
+export interface FindingsReport {
+  findings: CityFinding[];
+  scanned: true;
+  completed: string[];
+  failed: string[];
+  scanMs: number;
+  droppedFindings: number;
+  truncatedFindings?: number;
+  skippedFiles?: number;
+  truncatedFiles?: number;
+}
+
+export type FindingsLoadState =
+  | { status: "pending"; findings: null }
+  | ({ status: "host" } & FindingsReport)
+  | {
+      status: "failed";
+      failure: "timeout" | "refusal" | "malformed";
+      error: unknown;
+    };
+
+export function pendingFindingsState(): FindingsLoadState {
+  return { status: "pending", findings: null };
+}
+
+export async function loadFindings(
+  invoke: HostInvoker,
+  timeoutMs = FINDINGS_FETCH_TIMEOUT_MS,
+): Promise<Exclude<FindingsLoadState, { status: "pending" }>> {
+  try {
+    const value = await invoke("findings.get", undefined, timeoutMs);
+    if (!isFindingsReport(value)) {
+      const error = new Error("findings.get returned an invalid findings payload") as Error & {
+        code?: string;
+      };
+      error.code = "malformed_findings";
+      throw error;
+    }
+    return { status: "host", ...value };
+  } catch (error) {
+    return { status: "failed", failure: findingsFetchFailure(error), error };
+  }
+}
+
+export function formatFindingsReadout(
+  state: FindingsLoadState,
+  knownFileIds: ReadonlySet<string>,
+): string {
+  if (state.status === "pending") return "Findings: scanning the workspace…";
+  if (state.status === "failed") {
+    return `Findings: scan ${state.failure} — ${errorMessage(state.error)}`;
+  }
+
+  const counts: Record<CityFindingSeverity, number> = { smoke: 0, fire: 0, inferno: 0 };
+  const unmatchedFileIds = new Set<string>();
+  for (const finding of state.findings) {
+    counts[finding.severity] += 1;
+    if (!knownFileIds.has(finding.fileId)) unmatchedFileIds.add(finding.fileId);
+  }
+
+  const notices: string[] = [];
+  if (state.truncatedFindings !== undefined && state.truncatedFindings > 0) {
+    notices.push(`${state.truncatedFindings} more beyond the frame cap`);
+  }
+  if (state.droppedFindings > 0) {
+    notices.push(`${state.droppedFindings} unplaced by the scanner`);
+  }
+  if (state.skippedFiles !== undefined && state.skippedFiles > 0) {
+    notices.push(`${state.skippedFiles} skipped`);
+  }
+  if (unmatchedFileIds.size > 0) {
+    notices.push(`${unmatchedFileIds.size} without a building`);
+  }
+  if (state.failed.length > 0) {
+    notices.push(`${state.failed.join(", ")} failed`);
+  }
+  if (state.truncatedFiles !== undefined && state.truncatedFiles > 0) {
+    notices.push(`at least ${state.truncatedFiles} beyond the file cap`);
+  }
+
+  const suffix = notices.length === 0 ? "" : ` (${notices.join(", ")})`;
+  return `Findings host · ${state.findings.length} open · ${counts.inferno} inferno / ${counts.fire} fire / ${counts.smoke} smoke${suffix}`;
+}
+
+export function isFindingsReport(value: unknown): value is FindingsReport {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  const allowed = new Set([
+    "findings",
+    "scanned",
+    "completed",
+    "failed",
+    "scanMs",
+    "droppedFindings",
+    "truncatedFindings",
+    "skippedFiles",
+    "truncatedFiles",
+  ]);
+  if (keys.some((key) => !allowed.has(key))) return false;
+  if (
+    !keys.includes("findings") ||
+    !keys.includes("scanned") ||
+    !keys.includes("completed") ||
+    !keys.includes("failed") ||
+    !keys.includes("scanMs") ||
+    !keys.includes("droppedFindings")
+  ) {
+    return false;
+  }
+  if (
+    value.scanned !== true ||
+    !Array.isArray(value.completed) ||
+    !Array.isArray(value.failed) ||
+    !value.completed.every((item) => typeof item === "string") ||
+    !value.failed.every((item) => typeof item === "string") ||
+    !nonNegativeFiniteNumber(value.scanMs) ||
+    !optionalCounterIsValid(value.droppedFindings) ||
+    !optionalCounterIsValid(value.truncatedFindings) ||
+    !optionalCounterIsValid(value.skippedFiles) ||
+    !optionalCounterIsValid(value.truncatedFiles) ||
+    !Array.isArray(value.findings)
+  ) {
+    return false;
+  }
+  return value.findings.every(isCityFinding);
 }
 
 /** Validate the event value before it becomes a renderer-facing agent list. */
@@ -373,6 +501,43 @@ function optionalCounterIsValid(value: unknown): value is number | undefined {
     value === undefined ||
     (typeof value === "number" && Number.isInteger(value) && Number.isFinite(value) && value >= 0)
   );
+}
+
+function nonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isCityFinding(value: unknown): value is CityFinding {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 5 ||
+    keys.some((key) => !["id", "fileId", "severity", "rule", "title"].includes(key))
+  ) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    /^[0-9a-fA-F]{64}$/.test(value.id) &&
+    typeof value.fileId === "string" &&
+    value.fileId !== "" &&
+    isCityFindingSeverity(value.severity) &&
+    typeof value.rule === "string" &&
+    typeof value.title === "string"
+  );
+}
+
+function isCityFindingSeverity(value: unknown): value is CityFindingSeverity {
+  return value === "smoke" || value === "fire" || value === "inferno";
+}
+
+function findingsFetchFailure(error: unknown): "timeout" | "refusal" | "malformed" {
+  const code = errorCode(error);
+  if (code === "timeout") return "timeout";
+  if (code === "malformed_findings") return "malformed";
+  const message = errorMessage(error).toLowerCase();
+  if (message.includes("timed out") || message.includes("timeout")) return "timeout";
+  return "refusal";
 }
 
 function cityFetchFailure(error: unknown): "timeout" | "refusal" | "malformed" {
