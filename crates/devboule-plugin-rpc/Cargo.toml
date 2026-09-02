@@ -13,7 +13,7 @@ devboule-protocol = { path = "../devboule-protocol" }
 devboule-daemon = { path = "../devboule-daemon", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
-sha2 = "=0.10.9"
+sha2 = "=0.11.0"
 
 [target.'cfg(windows)'.dependencies]
 # Same pin as devboule-daemon. Pipe DACL, Job Object, process spawn flags.

@@ -2392,7 +2392,7 @@ dependencies = [
  "serde",
  "serde-sarif",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "toml 0.8.2",
 ]
@@ -2418,7 +2418,7 @@ dependencies = [
  "devboule-protocol",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tempfile",
  "windows-sys 0.61.2",
 ]
@@ -6369,7 +6369,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "sysinfo",
  "tempfile",
  "tokenizers 0.21.4",
