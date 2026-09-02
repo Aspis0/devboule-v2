@@ -36,7 +36,7 @@
     "@types/react-dom": "19.2.5",
     "@vitejs/plugin-react": "6.1.0",
     "@xterm/addon-serialize": "0.14.0",
-    "happy-dom": "20.8.3",
+    "happy-dom": "20.13.2",
     "oxfmt": "0.66.0",
     "oxlint": "1.80.0",
     "typescript": "7.0.2",
