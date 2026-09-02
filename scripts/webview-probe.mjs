@@ -77,7 +77,10 @@ async function waitForTarget() {
       const targets = await response.json();
       const page = targets.find(
         (target) =>
-          target.type === "page" &&
+          // Cross-origin plugin frames surface as their own targets; depending
+          // on the WebView2 build they are typed "page" or "iframe". The URL
+          // match below is what actually picks the document.
+          (target.type === "page" || target.type === "iframe") &&
           target.webSocketDebuggerUrl &&
           String(target.url).includes(TARGET_URL_MATCH),
       );
