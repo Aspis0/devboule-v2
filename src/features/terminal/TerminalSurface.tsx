@@ -6,7 +6,10 @@ import { terminalSessionRegistry } from "./terminalRegistry";
 
 interface TerminalSurfaceProps {
   workspaceId: string | null;
+  sessionId: string;
   id?: string;
+  onClosed?: () => void;
+  onExited?: () => void;
 }
 
 function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -41,7 +44,10 @@ function bannerText(banner: TerminalBanner): string | null {
 
 export const TerminalSurface = memo(function TerminalSurface({
   workspaceId,
+  sessionId,
   id,
+  onClosed,
+  onExited,
 }: TerminalSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
@@ -58,6 +64,7 @@ export const TerminalSurface = memo(function TerminalSurface({
 
     const session = new TerminalSession({
       workspaceId,
+      sessionId,
       host,
       createView: async (viewHost, options) => {
         const { createTerminalView } = await import("./createTerminalView");
@@ -72,6 +79,9 @@ export const TerminalSurface = memo(function TerminalSurface({
       onCtrlCArmed: (armed) => {
         if (mounted) setCtrlCArmed(armed);
       },
+      onExited: () => {
+        if (mounted) onExited?.();
+      },
     });
     sessionRef.current = session;
 
@@ -84,7 +94,7 @@ export const TerminalSurface = memo(function TerminalSurface({
       if (sessionRef.current === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [workspaceId]);
+  }, [workspaceId, sessionId, onExited]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -94,7 +104,7 @@ export const TerminalSurface = memo(function TerminalSurface({
     const observer = new ResizeObserver(() => session.requestResize());
     observer.observe(host);
     return () => observer.disconnect();
-  }, [workspaceId]);
+  }, [workspaceId, sessionId]);
 
   const message = bannerText(banner);
 
@@ -121,6 +131,7 @@ export const TerminalSurface = memo(function TerminalSurface({
           onClick={() => {
             sessionRef.current?.close();
             setBanner({ kind: "closed" });
+            onClosed?.();
           }}
           disabled={banner?.kind === "exited" || banner?.kind === "closed"}
         >

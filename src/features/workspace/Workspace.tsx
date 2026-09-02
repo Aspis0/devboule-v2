@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { MOCK_SURFACES, type MockSurface } from "./mockData";
-import { getProviderManifest, WorkspaceComposer } from "./WorkspaceComposer";
 import { NewProjectDialog } from "./NewProjectDialog";
 import {
   AppSurface,
@@ -11,19 +10,20 @@ import {
   type DiffState,
 } from "./sidePanels";
 import { TerminalSurface } from "../terminal/TerminalSurface";
-import { useWorkspaceConversation } from "./workspaceConversation";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
+import {
+  sessionDotTone,
+  sessionStateLabel,
+  sessionTitle,
+  useWorkspaceSessions,
+} from "./workspaceSessions";
 import type { DaemonStatus } from "../../types/ipc";
 import "./Workspace.css";
 
-type ActiveTab = "agent" | "terminal";
 type ActiveSidePanel = MockSurface["id"];
 type PermissionState = "waiting" | "allowed" | "denied";
-const WORKSPACE_AGENT_TAB_ID = "workspace-tab-agent";
-const WORKSPACE_TERMINAL_TAB_ID = "workspace-tab-terminal";
-const WORKSPACE_AGENT_PANEL_ID = "workspace-panel-agent";
 const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
 
 function daemonDotTone(state: DaemonStatus["state"]): string {
@@ -72,35 +72,37 @@ export function Workspace() {
     startDrag,
     handleResizeKey,
   } = useWorkspacePanelResize();
-  const [activeTab, setActiveTab] = useState<ActiveTab>("agent");
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
   const [surfaceMenuOpen, setSurfaceMenuOpen] = useState(false);
-  const [permission, setPermission] = useState<PermissionState>("waiting");
   const [diffState, setDiffState] = useState<DiffState>("unstaged");
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
-  const [agentProviderId, setAgentProviderId] = useState("claude");
-  const conversationRef = useRef<HTMLDivElement>(null);
-  const resetPermission = useCallback(() => setPermission("waiting"), []);
-  const { messages, streaming, handleSend } = useWorkspaceConversation(resetPermission);
   const daemon = useWorkspaceDaemon();
-
-  useEffect(() => {
-    if (conversationRef.current) {
-      conversationRef.current.scrollTop = conversationRef.current.scrollHeight;
-    }
-  }, [messages, streaming]);
-
-  const agentProvider = useMemo(() => getProviderManifest(agentProviderId), [agentProviderId]);
-  const agentModelLabel = useMemo(
-    () => agentProvider.models[0]?.label ?? "No model",
-    [agentProvider],
-  );
+  const {
+    sessions,
+    selectedSessionId,
+    loading: sessionsLoading,
+    creating: sessionCreating,
+    error: sessionsError,
+    refresh: refreshSessions,
+    create: createSession,
+    select: selectSession,
+  } = useWorkspaceSessions();
   const selectedSurface =
     MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
   const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
+  const handleSessionClosed = useCallback(() => {
+    void refreshSessions();
+  }, [refreshSessions]);
+  const sessionStatusText = sessionsError
+    ? sessionsError
+    : sessionCreating
+      ? "Creating terminal session…"
+      : sessionsLoading && sessions.length === 0
+        ? "Loading terminal sessions…"
+        : `${sessions.length} terminal session${sessions.length === 1 ? "" : "s"}`;
 
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
@@ -222,142 +224,62 @@ export function Workspace() {
       />
 
       <main className="workspace-center-panel">
-        <div className="workspace-session-tabs" role="tablist" aria-label="Sessions">
-          <button
-            type="button"
-            role="tab"
-            id={WORKSPACE_AGENT_TAB_ID}
-            aria-selected={activeTab === "agent"}
-            aria-controls={WORKSPACE_AGENT_PANEL_ID}
-            className={`workspace-session-tab${activeTab === "agent" ? " workspace-session-tab-selected" : ""}`}
-            onClick={() => setActiveTab("agent")}
-          >
-            <span className="workspace-status-dot workspace-dot-agent" />
-            <span className="workspace-tab-label">{agentProvider.name}</span>
-            <span className="workspace-tab-meta">{agentModelLabel}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            id={WORKSPACE_TERMINAL_TAB_ID}
-            aria-selected={activeTab === "terminal"}
-            aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
-            className={`workspace-session-tab${activeTab === "terminal" ? " workspace-session-tab-selected" : ""}`}
-            onClick={() => setActiveTab("terminal")}
-          >
-            <span className="workspace-status-dot workspace-dot-green" />
-            <span className="workspace-tab-label">terminal</span>
-            <span className="workspace-tab-meta">cargo</span>
-          </button>
+        <div className="workspace-session-tabs" role="tablist" aria-label="Terminal sessions">
+          {sessions.map((session) => (
+            <button
+              type="button"
+              role="tab"
+              id={`workspace-session-tab-${session.id}`}
+              aria-selected={selectedSessionId === session.id}
+              aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
+              className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}`}
+              key={session.id}
+              onClick={() => selectSession(session.id)}
+            >
+              <span
+                className={`workspace-status-dot workspace-dot-${sessionDotTone(session.state)}`}
+              />
+              <span className="workspace-tab-label">{sessionTitle(session)}</span>
+              <span className="workspace-tab-meta">{sessionStateLabel(session.state)}</span>
+            </button>
+          ))}
           <button
             type="button"
             className="workspace-session-add"
-            onClick={() => setActiveTab("terminal")}
-            title="New session in this workspace"
-            aria-label="New session in this workspace"
+            onClick={() => void createSession()}
+            title="New terminal session"
+            aria-label="New terminal session"
+            disabled={sessionCreating}
           >
             +
           </button>
           <span className="workspace-tabs-spacer" />
-          <span className="workspace-rate">{streaming ? "streaming · 48 tok/s" : "turn idle"}</span>
+          <span className="workspace-rate">{sessionStatusText}</span>
         </div>
 
-        {activeTab === "terminal" ? (
-          <TerminalSurface id={WORKSPACE_TERMINAL_PANEL_ID} workspaceId={selectedWorkspace} />
+        {selectedSessionId !== null ? (
+          <TerminalSurface
+            key={selectedSessionId}
+            id={WORKSPACE_TERMINAL_PANEL_ID}
+            workspaceId={null}
+            sessionId={selectedSessionId}
+            onClosed={handleSessionClosed}
+            onExited={handleSessionClosed}
+          />
         ) : (
-          <>
-            <div
-              id={WORKSPACE_AGENT_PANEL_ID}
-              className="workspace-conversation workspace-scroll"
-              role="tabpanel"
-              aria-label="Agent conversation"
-              ref={conversationRef}
-            >
-              {messages.map((message, index) => {
-                const isStreamingMessage =
-                  message.role === "agent" && streaming && index === messages.length - 1;
-                if (message.role === "user") {
-                  return (
-                    <div className="workspace-message" key={message.id}>
-                      <div className="workspace-user-message-wrap">
-                        <div className="workspace-user-message">{message.text}</div>
-                      </div>
-                    </div>
-                  );
-                }
-
-                if (message.role === "tool") {
-                  return (
-                    <div className="workspace-message" key={message.id}>
-                      <div className="workspace-tool-message">
-                        <span className="workspace-tool-name">{message.tool}</span>
-                        <span className="workspace-tool-copy">{message.text}</span>
-                        <span className="workspace-tool-check" aria-label="Complete">
-                          ✓
-                        </span>
-                      </div>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div className="workspace-message" key={message.id}>
-                    <div className="workspace-agent-message">
-                      <div className="workspace-agent-heading">
-                        <span className="workspace-agent-mark">c</span>
-                        <span className="workspace-agent-meta">
-                          {agentProvider.name} · {agentModelLabel}
-                        </span>
-                      </div>
-                      <div className="workspace-agent-copy">
-                        {message.text}
-                        {isStreamingMessage ? <span className="workspace-stream-caret" /> : null}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              <div className="workspace-permission-card" aria-live="polite">
-                <div className="workspace-permission-heading">
-                  <span className={`workspace-permission-dot workspace-permission-${permission}`} />
-                  <span>Permission — run a command</span>
-                  <span className="workspace-permission-context">worktree · rust-core</span>
-                </div>
-                <div className="workspace-permission-command">
-                  cargo test -p oracle-core --all-features
-                </div>
-                <div className="workspace-permission-actions">
-                  <span className="workspace-permission-label">
-                    {PERMISSION_LABELS[permission]}
-                  </span>
-                  <button
-                    type="button"
-                    className="workspace-secondary-action workspace-deny-action"
-                    onClick={() => setPermission("denied")}
-                    disabled={permission !== "waiting"}
-                  >
-                    Deny
-                  </button>
-                  <button
-                    type="button"
-                    className="workspace-primary-action"
-                    onClick={() => setPermission("allowed")}
-                    disabled={permission !== "waiting"}
-                  >
-                    Allow once
-                  </button>
-                </div>
-              </div>
+          <div
+            id={WORKSPACE_TERMINAL_PANEL_ID}
+            className="workspace-conversation workspace-scroll workspace-session-empty"
+            role="tabpanel"
+            aria-label="Terminal output"
+          >
+            <div role="status">
+              {sessionsError ??
+                (sessionsLoading
+                  ? "Loading terminal sessions…"
+                  : "No terminal sessions. Use + to create a terminal session.")}
             </div>
-
-            <WorkspaceComposer
-              streaming={streaming}
-              providerId={agentProvider.id}
-              onProviderChange={setAgentProviderId}
-              onSend={handleSend}
-            />
-          </>
+          </div>
         )}
       </main>
 
@@ -475,5 +397,44 @@ export function Workspace() {
         onCreate={handleCreateProject}
       />
     </section>
+  );
+}
+
+/**
+ * Reserved for the typed-permission slice. It is intentionally not mounted:
+ * session_permission_respond is not a live command yet, so this control must
+ * not imply that a local click grants a real operation.
+ */
+export function WorkspacePermissionCard() {
+  const [permission, setPermission] = useState<PermissionState>("waiting");
+
+  return (
+    <div className="workspace-permission-card" aria-live="polite">
+      <div className="workspace-permission-heading">
+        <span className={`workspace-permission-dot workspace-permission-${permission}`} />
+        <span>Permission — run a command</span>
+        <span className="workspace-permission-context">worktree · rust-core</span>
+      </div>
+      <div className="workspace-permission-command">cargo test -p oracle-core --all-features</div>
+      <div className="workspace-permission-actions">
+        <span className="workspace-permission-label">{PERMISSION_LABELS[permission]}</span>
+        <button
+          type="button"
+          className="workspace-secondary-action workspace-deny-action"
+          onClick={() => setPermission("denied")}
+          disabled={permission !== "waiting"}
+        >
+          Deny
+        </button>
+        <button
+          type="button"
+          className="workspace-primary-action"
+          onClick={() => setPermission("allowed")}
+          disabled={permission !== "waiting"}
+        >
+          Allow once
+        </button>
+      </div>
+    </div>
   );
 }

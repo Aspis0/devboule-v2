@@ -24,6 +24,8 @@ export type TerminalBanner =
 
 export interface TerminalSessionDeps {
   workspaceId: string | null;
+  /** A Workspace tab may select a listed session instead of adopting by workspace. */
+  sessionId?: string | null;
   host: HTMLElement;
   createView: (
     host: HTMLElement,
@@ -111,9 +113,11 @@ export class TerminalSession {
     if (this.disposed || this.started) return;
     this.started = true;
 
-    const existing = this.deps.registry.get(this.deps.workspaceId);
-    const adopted = existing !== null;
-    let sessionId = existing?.sessionId ?? null;
+    const requestedSessionId = this.deps.sessionId ?? null;
+    const existing =
+      requestedSessionId === null ? this.deps.registry.get(this.deps.workspaceId) : null;
+    const adopted = requestedSessionId === null && existing !== null;
+    let sessionId = requestedSessionId ?? existing?.sessionId ?? null;
 
     if (sessionId === null) {
       try {

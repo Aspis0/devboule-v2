@@ -38,6 +38,7 @@ function makeHarness(options?: {
   deferSnapshot?: boolean;
   snapshotAsOfSeq?: number;
   existingSessionId?: string;
+  explicitSessionId?: string;
   missingFirstAttach?: boolean;
   missingFirstAttachError?: unknown;
   rejectDetach?: boolean;
@@ -173,6 +174,7 @@ function makeHarness(options?: {
   } as unknown as TerminalChannel;
   const deps: TerminalSessionDeps = {
     workspaceId: "rust-core",
+    sessionId: options?.explicitSessionId,
     host: {} as HTMLElement,
     createView: async (_viewHost, options) => {
       inputHandler = options.onData;
@@ -229,6 +231,19 @@ const outputEvent = (seq: number, data: string): TerminalEvent => ({ type: "outp
 const exitEvent = (code: number | null): TerminalEvent => ({ type: "exit", code });
 
 describe("TerminalSession startup and channel ordering", () => {
+  it("attaches the explicitly selected session without listing or creating", async () => {
+    const harness = makeHarness({ explicitSessionId: "session-2" });
+
+    await harness.session.start();
+
+    expect(harness.invoke).not.toHaveBeenCalledWith("sessions_list");
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_create", expect.anything());
+    expect(harness.invoke).toHaveBeenCalledWith(
+      "session_attach",
+      expect.objectContaining({ id: "session-2", from_cursor: null }),
+    );
+  });
+
   it("creates a terminal and attaches with a fresh null cursor", async () => {
     const harness = makeHarness();
     await harness.session.start();
