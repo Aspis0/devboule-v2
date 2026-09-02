@@ -13,7 +13,7 @@ use devboule_protocol::{
 /// changes. The backend refuses before the pipe writer attempts a 1 MiB frame.
 pub const CITY_FRAME_ENVELOPE_MARGIN_BYTES: usize = 4096;
 
-fn city_response_within_frame(value: &serde_json::Value) -> bool {
+pub(crate) fn city_response_within_frame(value: &serde_json::Value) -> bool {
     let Ok(serialized) = serde_json::to_vec(value) else {
         return false;
     };
@@ -91,8 +91,8 @@ fn dispatch_invoke(
             .with_id(id),
         );
     }
+    maybe_hang_for_crash_test();
     if method == caps::WORKSPACE_ROOT {
-        maybe_hang_for_crash_test();
         let root = grants
             .get(caps::WORKSPACE_ROOT)
             .cloned()

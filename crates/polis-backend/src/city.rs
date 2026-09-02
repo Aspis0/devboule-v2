@@ -159,6 +159,7 @@ fn build_city_from_paths(
         "dataSource": "host",
     });
     if stats.truncated_files != 0 {
+        // Lower bound (0/1), not a repository-wide omitted count.
         city["truncatedFiles"] = serde_json::json!(stats.truncated_files);
     }
     if stats.skipped_files != 0 {

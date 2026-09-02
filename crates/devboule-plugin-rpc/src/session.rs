@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use devboule_daemon::connect_pipe;
 use devboule_daemon::{Framed, JobObject};
 use devboule_protocol::{
-    invoke_method_capability, negotiate, Capability, ClientHello, ClientMessage, DaemonHello,
+    caps, invoke_method_capability, negotiate, Capability, ClientHello, ClientMessage, DaemonHello,
     DaemonMessage, ErrorCode, OwnerId, WorkspaceRootBody,
 };
 use serde_json::Value;
@@ -21,6 +21,19 @@ const CONNECT_ATTEMPTS: u32 = 50;
 const CONNECT_SLEEP: Duration = Duration::from_millis(100);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+const FINDINGS_GET_RPC_TIMEOUT: Duration = Duration::from_secs(60);
+const CITY_GET_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Production `invoke()` budget. Cheap methods keep 5s; the city walk and
+/// the cheap Augur scan are host-perceived waits that routinely exceed that.
+/// Keep the map here so protocol stays a name set, not a timer set.
+pub fn invoke_timeout_for(method: &str) -> Duration {
+    match method {
+        name if name == caps::FINDINGS_GET => FINDINGS_GET_RPC_TIMEOUT,
+        name if name == caps::CITY_GET => CITY_GET_RPC_TIMEOUT,
+        _ => DEFAULT_RPC_TIMEOUT,
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SpawnSpec {
@@ -61,6 +74,20 @@ pub struct PluginSession {
     /// able to kill it while this lock is held by a slow IPC call.
     rpc_lock: Mutex<()>,
     next_id: AtomicU64,
+    /// Count of invoke() calls that have not yet returned. `ensure_session`
+    /// must not ping-kill while this is non-zero: the backend is busy, not
+    /// dead, and a ping would sit unread on the serialized pipe.
+    inflight: AtomicU32,
+}
+
+struct InflightGuard<'a> {
+    count: &'a AtomicU32,
+}
+
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl PluginSession {
@@ -73,6 +100,7 @@ impl PluginSession {
             transport: Mutex::new(connected.transport),
             rpc_lock: Mutex::new(()),
             next_id: AtomicU64::new(1),
+            inflight: AtomicU32::new(0),
         })
     }
 
@@ -101,6 +129,11 @@ impl PluginSession {
     }
 
     pub fn ping(&self) -> Result<u64, PluginError> {
+        if self.invoke_in_flight() {
+            // Honest liveness: the backend is working, not dead. Sending a
+            // ping would wait on rpc_lock (or sit unread) and look like death.
+            return Ok(crate::unix_millis());
+        }
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::Ping { id }, DEFAULT_RPC_TIMEOUT)? {
             DaemonMessage::Pong { ts_ms, .. } => Ok(ts_ms),
@@ -111,8 +144,14 @@ impl PluginSession {
         }
     }
 
+    /// True while a production invoke has not yet returned. Used by the host
+    /// to skip ping-kill of a healthy busy backend.
+    pub fn invoke_in_flight(&self) -> bool {
+        self.inflight.load(Ordering::SeqCst) > 0
+    }
+
     pub fn invoke(&self, method: &str, payload: Option<Value>) -> Result<Value, PluginError> {
-        self.invoke_timeout(method, payload, DEFAULT_RPC_TIMEOUT)
+        self.invoke_timeout(method, payload, invoke_timeout_for(method))
     }
 
     pub fn invoke_timeout(
@@ -125,15 +164,20 @@ impl PluginSession {
         if !method_is_granted(method, &granted) {
             return Err(PluginError::CapabilityNotSupported(method.to_string()));
         }
+        self.inflight.fetch_add(1, Ordering::SeqCst);
+        let _inflight = InflightGuard {
+            count: &self.inflight,
+        };
         let id = self.alloc_id();
-        match self.roundtrip(
+        let result = self.roundtrip(
             ClientMessage::Invoke {
                 id,
                 method: method.to_string(),
                 payload,
             },
             timeout,
-        )? {
+        );
+        match result? {
             DaemonMessage::InvokeResult { value, .. } => Ok(value),
             DaemonMessage::Error(error) => Err(PluginError::Handshake(error)),
             other => Err(PluginError::Protocol(format!(
@@ -433,5 +477,13 @@ mod tests {
         let granted = vec![Capability::new(devboule_protocol::caps::WORKSPACE_ROOT)];
         assert!(method_is_granted("workspace.root", &granted));
         assert!(!method_is_granted("oracle.search", &granted));
+    }
+
+    #[test]
+    fn production_invoke_budgets_are_per_method() {
+        assert_eq!(invoke_timeout_for(caps::FINDINGS_GET), Duration::from_secs(60));
+        assert_eq!(invoke_timeout_for(caps::CITY_GET), Duration::from_secs(30));
+        assert_eq!(invoke_timeout_for(caps::WORKSPACE_ROOT), Duration::from_secs(5));
+        assert_eq!(invoke_timeout_for(caps::PING), Duration::from_secs(5));
     }
 }

@@ -49,9 +49,19 @@ impl Detector for Untested {
 
         let mut covered = HashSet::new();
         for item in &classified {
-            if item.is_test {
-                if let Some(stem) = covered_stem(&item.name) {
-                    covered.insert(coverage_key(&item.parent, &stem));
+            if !item.is_test {
+                continue;
+            }
+            let Some(stem) = covered_stem(&item.name).or_else(|| source_stem(&item.name)) else {
+                continue;
+            };
+            covered.insert(coverage_key(&item.parent, &stem));
+            // One-level hop: src/__tests__/foo.test.ts covers src/foo.ts.
+            if last_segment_is_test_dir(&item.parent) {
+                if let Some(grandparent) = parent_of(&item.parent) {
+                    covered.insert(coverage_key(grandparent, &stem));
+                } else {
+                    covered.insert(coverage_key("", &stem));
                 }
             }
         }
@@ -67,21 +77,10 @@ impl Detector for Untested {
             if covered.contains(&coverage_key(&item.parent, &stem)) {
                 continue;
             }
-            let Some(finding) = Finding::grounded(
-                ctx.root,
-                Draft {
-                    file: item.original.clone(),
-                    start_line: 1,
-                    end_line: 1,
-                    rule: "test.missing",
-                    severity: Severity::Smoke,
-                    source: "untested",
-                    title: "No test file beside this one",
-                    raw_excerpt: &item.posix,
-                },
-            ) else {
-                // Vanished, empty, binary, or outside the root: skip, never
-                // fail the whole review.
+            // Line 1-1 is the whole finding. grounded() would slurp the file
+            // just to count lines; a non-empty file has line 1. Integrity of
+            // "inside root" still goes through grounded_on → canonical_file.
+            let Some(finding) = untested_finding(ctx.root, item) else {
                 continue;
             };
             findings.push(finding);
@@ -127,9 +126,48 @@ fn parent_and_name(posix: &str) -> (&str, &str) {
     }
 }
 
+fn untested_finding(root: &Path, item: &Classified) -> Option<Finding> {
+    let joined = if item.original.is_absolute() {
+        item.original.clone()
+    } else {
+        root.join(&item.original)
+    };
+    let len = std::fs::metadata(&joined).ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    Finding::grounded_on(
+        root,
+        Draft {
+            file: item.original.clone(),
+            start_line: 1,
+            end_line: 1,
+            rule: "test.missing",
+            severity: Severity::Smoke,
+            source: "untested",
+            title: "No test file beside this one",
+            raw_excerpt: &item.posix,
+        },
+        1,
+    )
+}
+
+fn last_segment_is_test_dir(parent: &str) -> bool {
+    let name = parent.rsplit('/').next().unwrap_or(parent);
+    matches!(
+        name.to_lowercase().as_str(),
+        "test" | "tests" | "__tests__"
+    )
+}
+
+fn parent_of(parent: &str) -> Option<&str> {
+    parent.rfind('/').map(|index| &parent[..index])
+}
+
 fn fold_dir(dir: &str) -> String {
     if cfg!(windows) {
-        dir.to_ascii_lowercase()
+        // Same fold as polis-backend FileIdIndex / augur path identity.
+        dir.to_lowercase()
     } else {
         dir.to_string()
     }
@@ -284,6 +322,25 @@ mod tests {
         assert!(
             findings.is_empty(),
             "a test file is not an untested source: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_test_in_a_tests_directory_covers_the_parent_stem() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source = write_source(temp.path(), "src/foo.ts", "export const n = 1;\n");
+        let test = write_source(
+            temp.path(),
+            "src/__tests__/foo.test.ts",
+            "export const n = 1;\n",
+        );
+        let files = [source, test];
+        let findings = Untested::default()
+            .scan(&Context::new(temp.path(), &files))
+            .expect("scan");
+        assert!(
+            findings.is_empty(),
+            "src/__tests__/foo.test.ts should cover src/foo.ts (one-level hop): {findings:?}"
         );
     }
 

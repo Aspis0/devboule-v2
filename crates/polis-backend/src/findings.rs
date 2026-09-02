@@ -55,8 +55,10 @@ struct SurvivedFile {
 /// Opening the surface is the ask. Walk the same files the city uses, run
 /// every cheap detector, persist, return the active mapped findings.
 pub fn get_findings(root: &Path) -> Result<serde_json::Value, FindingsError> {
+    // scanMs is the host-perceived wait: walk + survive + review + ledger.
+    let started = Instant::now();
     let collected = collect_workspace_files(root)?;
-    scan_collected_files(&collected)
+    scan_collected_files(&collected, started)
 }
 
 pub(crate) fn collect_workspace_files(root: &Path) -> Result<CollectedFiles, FindingsError> {
@@ -81,8 +83,8 @@ pub(crate) fn collect_workspace_files(root: &Path) -> Result<CollectedFiles, Fin
 
 pub(crate) fn scan_collected_files(
     collected: &CollectedFiles,
+    started: Instant,
 ) -> Result<serde_json::Value, FindingsError> {
-    let started = Instant::now();
     let (survived, skipped_files) = survive_city_files(&collected.root, &collected.paths);
     let index = FileIdIndex::from_survived(&survived);
     let files: Vec<PathBuf> = survived.iter().map(|file| file.absolute.clone()).collect();
@@ -100,22 +102,21 @@ pub(crate) fn scan_collected_files(
         .map_err(|error| FindingsError::Ledger(error.to_string()))?;
 
     let (findings, dropped_findings) = attach_findings(&active, &index);
+    let failed: Vec<&str> = review
+        .failed
+        .iter()
+        .map(|failed| failed.detector)
+        .collect();
     let scan_ms = started.elapsed().as_millis() as u64;
-    let mut body = serde_json::json!({
-        "findings": findings,
-        "scanned": true,
-        "completed": review.completed,
-        "failed": review.failed.iter().map(|failed| failed.detector).collect::<Vec<_>>(),
-        "scanMs": scan_ms,
-        "droppedFindings": dropped_findings,
-    });
-    if skipped_files != 0 {
-        body["skippedFiles"] = serde_json::json!(skipped_files);
-    }
-    if collected.truncated {
-        body["truncatedFiles"] = serde_json::json!(1);
-    }
-    Ok(body)
+    Ok(pack_findings_response(
+        findings,
+        dropped_findings,
+        &review.completed,
+        &failed,
+        scan_ms,
+        skipped_files,
+        collected.truncated,
+    ))
 }
 
 /// Mirror of `city.rs` per-file read: a file that vanishes or becomes
@@ -161,16 +162,30 @@ fn survive_city_files(root: &Path, paths: &[PathBuf]) -> (Vec<SurvivedFile>, usi
 
 struct FileIdIndex {
     by_exact: HashMap<String, String>,
-    by_folded: HashMap<String, String>,
+    by_folded: HashMap<String, FoldedTarget>,
+}
+
+enum FoldedTarget {
+    Unique(String),
+    Ambiguous,
 }
 
 impl FileIdIndex {
     fn from_survived(files: &[SurvivedFile]) -> Self {
         let mut by_exact = HashMap::new();
-        let mut by_folded = HashMap::new();
+        let mut by_folded: HashMap<String, FoldedTarget> = HashMap::new();
         for file in files {
             by_exact.insert(file.id.clone(), file.id.clone());
-            by_folded.insert(fold_file_id(&file.id), file.id.clone());
+            let folded = fold_file_id(&file.id);
+            match by_folded.get(&folded) {
+                None => {
+                    by_folded.insert(folded, FoldedTarget::Unique(file.id.clone()));
+                }
+                Some(FoldedTarget::Unique(existing)) if existing == &file.id => {}
+                Some(_) => {
+                    by_folded.insert(folded, FoldedTarget::Ambiguous);
+                }
+            }
         }
         Self {
             by_exact,
@@ -195,7 +210,10 @@ impl FileIdIndex {
         if let Some(id) = self.by_exact.get(&posix) {
             return Some(id.clone());
         }
-        self.by_folded.get(&fold_file_id(&posix)).cloned()
+        match self.by_folded.get(&fold_file_id(&posix)) {
+            Some(FoldedTarget::Unique(id)) => Some(id.clone()),
+            Some(FoldedTarget::Ambiguous) | None => None,
+        }
     }
 }
 
@@ -227,6 +245,119 @@ fn attach_findings(
         }));
     }
     (mapped, dropped)
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "inferno" => 0,
+        "fire" => 1,
+        "smoke" => 2,
+        _ => 3,
+    }
+}
+
+/// Keep the wire list inside the 1 MiB−4 KiB frame. Sort inferno > fire >
+/// smoke, then fileId, then id; omit the tail and say how many were cut.
+fn pack_findings_response(
+    mut findings: Vec<serde_json::Value>,
+    dropped_findings: usize,
+    completed: &[&str],
+    failed: &[&str],
+    scan_ms: u64,
+    skipped_files: usize,
+    walk_truncated: bool,
+) -> serde_json::Value {
+    findings.sort_by(|left, right| {
+        let left_rank = severity_rank(left["severity"].as_str().unwrap_or(""));
+        let right_rank = severity_rank(right["severity"].as_str().unwrap_or(""));
+        left_rank
+            .cmp(&right_rank)
+            .then_with(|| {
+                left["fileId"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(right["fileId"].as_str().unwrap_or(""))
+            })
+            .then_with(|| {
+                left["id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .cmp(right["id"].as_str().unwrap_or(""))
+            })
+    });
+    let original = findings.len();
+    let mut lo = 0usize;
+    let mut hi = original;
+    let mut best = 0usize;
+    while lo <= hi {
+        let mid = lo + (hi - lo) / 2;
+        let body = findings_body(
+            &findings[..mid],
+            original - mid,
+            dropped_findings,
+            completed,
+            failed,
+            scan_ms,
+            skipped_files,
+            walk_truncated,
+        );
+        if crate::city_response_within_frame(&body) {
+            best = mid;
+            if mid == original {
+                break;
+            }
+            lo = mid.saturating_add(1);
+            if lo > hi {
+                break;
+            }
+        } else if mid == 0 {
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    findings_body(
+        &findings[..best],
+        original - best,
+        dropped_findings,
+        completed,
+        failed,
+        scan_ms,
+        skipped_files,
+        walk_truncated,
+    )
+}
+
+fn findings_body(
+    findings: &[serde_json::Value],
+    truncated_findings: usize,
+    dropped_findings: usize,
+    completed: &[&str],
+    failed: &[&str],
+    scan_ms: u64,
+    skipped_files: usize,
+    walk_truncated: bool,
+) -> serde_json::Value {
+    // scanMs is walk+survive+scan+ledger — the wait the host budget spends.
+    let mut body = serde_json::json!({
+        "findings": findings,
+        "scanned": true,
+        "completed": completed,
+        "failed": failed,
+        "scanMs": scan_ms,
+        "droppedFindings": dropped_findings,
+    });
+    if truncated_findings != 0 {
+        body["truncatedFindings"] = serde_json::json!(truncated_findings);
+    }
+    if skipped_files != 0 {
+        body["skippedFiles"] = serde_json::json!(skipped_files);
+    }
+    if walk_truncated {
+        // Lower bound (0/1), not a repository-wide omitted count.
+        body["truncatedFiles"] = serde_json::json!(1);
+    }
+    body
 }
 
 #[cfg(test)]
@@ -318,7 +449,7 @@ mod tests {
             walked_id, "Src/Auth.rs",
             "city walk must keep the created casing: {walked_id}"
         );
-        let body = scan_collected_files(&collected).expect("scan");
+        let body = scan_collected_files(&collected, Instant::now()).expect("scan");
         let secret = body["findings"]
             .as_array()
             .expect("findings")
@@ -395,7 +526,7 @@ mod tests {
         fs::remove_file(&gone).expect("delete between walk and scan");
         collected.paths.retain(|path| path != &gone);
         collected.paths.push(gone);
-        let body = scan_collected_files(&collected).expect("review must complete");
+        let body = scan_collected_files(&collected, Instant::now()).expect("review must complete");
         assert_eq!(
             body["skippedFiles"], 1,
             "vanished file must be counted: {body}"
@@ -468,5 +599,70 @@ mod tests {
             !completed.iter().any(|id| id == "clippy"),
             "clippy ran on findings.get: {completed:?}"
         );
+    }
+
+    #[test]
+    fn an_ambiguous_folded_file_id_is_dropped_not_guessed() {
+        let index = FileIdIndex::from_ids(&[
+            "Src/Auth.rs".to_string(),
+            "src/auth.rs".to_string(),
+        ]);
+        assert_eq!(
+            index.reconcile(Path::new("src/auth.rs")).as_deref(),
+            Some("src/auth.rs"),
+            "exact match still wins"
+        );
+        assert_eq!(
+            index.reconcile(Path::new("Src/Auth.rs")).as_deref(),
+            Some("Src/Auth.rs"),
+            "exact match still wins"
+        );
+        #[cfg(windows)]
+        {
+            assert!(
+                index.reconcile(Path::new("SRC/AUTH.RS")).is_none(),
+                "a folded-only match that is ambiguous must not pick a building"
+            );
+        }
+    }
+
+    #[test]
+    fn a_synthetic_flood_is_capped_and_never_blows_the_frame() {
+        let findings: Vec<serde_json::Value> = (0..8_000)
+            .map(|index| {
+                let severity = match index % 3 {
+                    0 => "inferno",
+                    1 => "fire",
+                    _ => "smoke",
+                };
+                serde_json::json!({
+                    "id": format!("{index:064}"),
+                    "fileId": format!("src/f{index:04}.rs"),
+                    "severity": severity,
+                    "rule": "test.missing",
+                    "title": "No test file beside this one",
+                })
+            })
+            .collect();
+        let body = pack_findings_response(
+            findings,
+            0,
+            &["secrets", "untested"],
+            &[],
+            12,
+            0,
+            false,
+        );
+        assert!(
+            crate::city_response_within_frame(&body),
+            "capped findings.get must fit the frame: {} bytes",
+            serde_json::to_vec(&body).map(|bytes| bytes.len()).unwrap_or(0)
+        );
+        let kept = body["findings"].as_array().expect("findings").len();
+        assert!(kept < 8_000, "the cap must omit some of the flood: kept={kept}");
+        let omitted = body["truncatedFindings"].as_u64().expect("truncatedFindings");
+        assert_eq!(omitted, 8_000 - kept as u64);
+        let first = body["findings"][0]["severity"].as_str().unwrap();
+        assert_eq!(first, "inferno", "severity desc: inferno first, got {first}");
     }
 }

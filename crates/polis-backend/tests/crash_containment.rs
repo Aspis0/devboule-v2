@@ -208,11 +208,7 @@ fn findings_get_round_trips_over_the_backend_pipe() {
     .expect("auth source");
     let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
     let value = session
-        .invoke_timeout(
-            caps::FINDINGS_GET,
-            None,
-            Duration::from_secs(30),
-        )
+        .invoke(caps::FINDINGS_GET, None)
         .expect("findings.get");
     assert_eq!(value["scanned"], true);
     let findings = value["findings"].as_array().expect("findings array");
@@ -232,6 +228,54 @@ fn findings_get_round_trips_over_the_backend_pipe() {
         !completed.iter().any(|id| id == "clippy"),
         "clippy ran on the request path: {completed:?}"
     );
+}
+
+#[test]
+fn findings_get_production_invoke_survives_a_dispatch_slower_than_five_seconds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("src.rs"), "pub fn x() {}\n").expect("source");
+    let mut hung = spec(dir.path());
+    hung.hang_ms = Some(6_000);
+    let session = PluginSession::spawn(hung).expect("spawn");
+    let started = std::time::Instant::now();
+    let value = session
+        .invoke(caps::FINDINGS_GET, None)
+        .expect("production invoke() must wait out a findings.get longer than 5s");
+    assert!(
+        started.elapsed() >= Duration::from_secs(6),
+        "dispatch did not actually hang: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(value["scanned"], true);
+}
+
+#[test]
+fn concurrent_ensure_does_not_kill_a_healthy_busy_backend() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("src.rs"), "pub fn x() {}\n").expect("source");
+    let mut hung = spec(dir.path());
+    hung.hang_ms = Some(6_000);
+    let session = std::sync::Arc::new(PluginSession::spawn(hung).expect("spawn"));
+    let pid_before = session.pid();
+    let first = session.clone();
+    let worker = std::thread::spawn(move || first.invoke(caps::FINDINGS_GET, None));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        session.invoke_in_flight(),
+        "host must see the long dispatch as in-flight"
+    );
+    assert_eq!(session.pid(), pid_before, "ping-kill raced the in-flight scan");
+    session
+        .ping()
+        .expect("a busy backend is not dead; ping must not fail the session");
+    assert_eq!(session.pid(), pid_before, "ping must not replace the process");
+    let second = session
+        .invoke(caps::FINDINGS_GET, None)
+        .expect("the serialized pipe must wait on the 60s budget, not kill");
+    assert_eq!(second["scanned"], true);
+    let first_result = worker.join().expect("first invoke thread");
+    first_result.expect("in-flight findings.get must complete");
+    assert_eq!(session.pid(), pid_before, "backend PID must survive the retry");
 }
 
 #[test]

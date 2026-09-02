@@ -69,7 +69,22 @@ impl PluginRuntime {
 
         let existing = self.lock().sessions.get(&plugin_id).cloned();
         if let Some(session) = &existing {
-            if session.ping().is_ok() {
+            if session.invoke_in_flight() {
+                // The backend is in a long dispatch (city.get / findings.get).
+                // A ping would sit unread on the serialized pipe and look like
+                // death; killing it mid-record_scan rolls back the ledger.
+                // Reuse the session, keep the current generation (this is not
+                // a re-acquire of a released lease), and let invoke() wait
+                // on the pipe lock honestly.
+                let inner = self.lock();
+                if inner
+                    .sessions
+                    .get(&plugin_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, session))
+                {
+                    return Ok(inner.generation.get(&plugin_id).copied().unwrap_or(0));
+                }
+            } else if session.ping().is_ok() {
                 // A successful re-acquire is a new lease generation even
                 // when it reuses the same process. This invalidates any
                 // stop command issued for the previous, now-released lease.

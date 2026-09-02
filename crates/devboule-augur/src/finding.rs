@@ -468,18 +468,25 @@ pub(crate) fn coalesce(findings: Vec<Finding>) -> Vec<Finding> {
         .collect()
 }
 
-const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 
 pub(crate) fn read_source(path: &Path) -> Option<String> {
-    // metadata-then-read is a TOCTOU window (declared not-done). A file that
-    // changes or vanishes between the two must skip, never panic, never fail
-    // the whole review. Skip counting lives at the polis-backend walk, because
-    // two cheap detectors would otherwise double-count the same vanished file.
-    let meta = std::fs::metadata(path).ok()?;
-    if meta.len() > MAX_SOURCE_BYTES {
+    // Bound the read itself. A metadata-then-read TOCTOU could otherwise
+    // slurp a multi-GB blob swapped in between the two. Skip counting for
+    // vanish lives at the polis-backend walk (two cheap detectors would
+    // double-count the same vanished file).
+    let file = std::fs::File::open(path).ok()?;
+    read_source_from_reader(file)
+}
+
+pub(crate) fn read_source_from_reader(reader: impl std::io::Read) -> Option<String> {
+    use std::io::Read;
+    let mut limited = reader.take(MAX_SOURCE_BYTES.saturating_add(1));
+    let mut bytes = Vec::new();
+    limited.read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_SOURCE_BYTES {
         return None;
     }
-    let bytes = std::fs::read(path).ok()?;
     if bytes.contains(&0) {
         return None;
     }
@@ -800,6 +807,20 @@ mod tests {
         assert!(
             !back.evidence().contains(&secret) && !format!("{back:?}").contains(&secret),
             "from_snapshot reconstituted a raw secret"
+        );
+    }
+
+    #[test]
+    fn a_reader_past_the_cap_is_skipped_without_checking_metadata() {
+        let oversized = vec![b'a'; (MAX_SOURCE_BYTES as usize) + 1];
+        assert!(
+            read_source_from_reader(std::io::Cursor::new(oversized)).is_none(),
+            "the bounded read itself must refuse a payload past MAX_SOURCE_BYTES"
+        );
+        let fits = vec![b'b'; 16];
+        assert_eq!(
+            read_source_from_reader(std::io::Cursor::new(fits)).as_deref(),
+            Some("bbbbbbbbbbbbbbbb")
         );
     }
 }

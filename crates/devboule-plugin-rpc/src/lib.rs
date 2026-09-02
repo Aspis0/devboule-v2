@@ -13,7 +13,9 @@ mod spawn;
 
 pub use error::PluginError;
 pub use server::{unix_millis, PluginBackend};
-pub use session::{method_is_granted, workspace_root_from_value, PluginSession, SpawnSpec};
+pub use session::{
+    invoke_timeout_for, method_is_granted, workspace_root_from_value, PluginSession, SpawnSpec,
+};
 pub use spawn::{
     pipe_name_from_env_or_argv, sha256_file, unique_pipe_name, verify_file_digest, HOST_PID_ENV,
     PIPE_ENV, PLUGIN_ID_ENV,
