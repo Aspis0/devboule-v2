@@ -6,6 +6,36 @@ export interface RosterCounts {
   roster: number;
 }
 
+export interface SessionFeedFailure {
+  state: string;
+  message: string;
+}
+
+export interface HostRosterReadout {
+  fail(failure: SessionFeedFailure): void;
+  render(agents: readonly CityAgent[], knownFileIds: ReadonlySet<string>): RosterCounts;
+}
+
+/** Keep a host-feed failure authoritative across later city-stat renders. */
+export function createHostRosterReadout(container: HTMLElement): HostRosterReadout {
+  let failure: SessionFeedFailure | null = null;
+  return {
+    fail(nextFailure) {
+      failure = nextFailure;
+      container.textContent = formatSessionFeedFailure(nextFailure);
+    },
+    render(agents, knownFileIds) {
+      const counts = countRosterAgents(agents, knownFileIds);
+      if (failure !== null) {
+        container.textContent = formatSessionFeedFailure(failure);
+        return counts;
+      }
+      renderAgentRoster(container, agents, knownFileIds);
+      return counts;
+    },
+  };
+}
+
 /**
  * File-less host sessions are deliberately rendered as a DOM roster. Their
  * null fileId is a privacy and truth boundary: this function never invents a
@@ -16,9 +46,7 @@ export function renderAgentRoster(
   agents: readonly CityAgent[],
   knownFileIds: ReadonlySet<string>,
 ): RosterCounts {
-  const placed = agents.filter(
-    (agent) => agent.fileId !== null && knownFileIds.has(agent.fileId),
-  ).length;
+  const { placed, roster: rosterCount } = countRosterAgents(agents, knownFileIds);
   const roster = agents.filter((agent) => agent.fileId === null || !knownFileIds.has(agent.fileId));
   container.replaceChildren();
 
@@ -51,7 +79,21 @@ export function renderAgentRoster(
     list.appendChild(item);
   }
   container.appendChild(list);
-  return { placed, roster: roster.length };
+  return { placed, roster: rosterCount };
+}
+
+function countRosterAgents(
+  agents: readonly CityAgent[],
+  knownFileIds: ReadonlySet<string>,
+): RosterCounts {
+  const placed = agents.filter(
+    (agent) => agent.fileId !== null && knownFileIds.has(agent.fileId),
+  ).length;
+  return { placed, roster: agents.length - placed };
+}
+
+function formatSessionFeedFailure(failure: SessionFeedFailure): string {
+  return `Roster: live session feed ${failure.state} — ${failure.message}`;
 }
 
 function displayProvider(provider: string | null): string {

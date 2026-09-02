@@ -174,11 +174,23 @@ export async function subscribeSessions(
   const subscriptionId = `polis-sessions-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`;
   let closed = false;
 
+  const notifyUnwatch = (): void => {
+    void invoke("sessions.watch", { subscriptionId, action: "unsubscribe" }, timeoutMs).catch(
+      () => undefined,
+    );
+  };
+
   const close = (): void => {
     if (closed) return;
     closed = true;
     window.removeEventListener("message", onMessage);
+    window.removeEventListener("pagehide", onPageHide);
+    notifyUnwatch();
   };
+
+  function onPageHide(): void {
+    close();
+  }
 
   function onMessage(event: MessageEvent<unknown>): void {
     if (closed || event.source !== window.parent) return;
@@ -189,6 +201,7 @@ export async function subscribeSessions(
   }
 
   window.addEventListener("message", onMessage);
+  window.addEventListener("pagehide", onPageHide);
   try {
     const value = await invoke("sessions.watch", { subscriptionId }, timeoutMs);
     if (!isSessionFeed(value)) {

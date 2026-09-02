@@ -10,7 +10,7 @@ import {
 import { BuildingTextureAtlas } from "./buildingAtlas";
 
 describe("procedural citizen atlas", () => {
-  it("maps the five providers to five structural citizen silhouettes", () => {
+  it("maps the six providers to six structural citizen silhouettes", () => {
     const providers = ["claude", "codex", "opencode", "grok", "pi", "copilot"];
     const types = providers.map(citizenTypeForProvider);
 

@@ -4,7 +4,12 @@
 // has a non-opaque origin or can receive replies addressed to that origin.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createPluginBridge, deriveSessionProvider, sessionToPluginSession } from "./pluginBridge";
+import {
+  createPluginBridge,
+  deriveSessionProvider,
+  resetSessionWatchesForTests,
+  sessionToPluginSession,
+} from "./pluginBridge";
 import type { Session } from "../../types/ipc";
 
 const PLUGIN_ORIGIN = "http://plugin.localhost";
@@ -28,6 +33,7 @@ function send(
 }
 
 afterEach(() => {
+  resetSessionWatchesForTests();
   document.body.replaceChildren();
   vi.useRealTimers();
 });
@@ -262,6 +268,11 @@ describe("createPluginBridge", () => {
     expect(deriveSessionProvider("OpenCode task")).toBe("opencode");
     expect(deriveSessionProvider("Copilot fix")).toBe("copilot");
     expect(deriveSessionProvider("ordinary terminal session")).toBeNull();
+    expect(deriveSessionProvider("pipeline build")).toBeNull();
+    expect(deriveSessionProvider("capital works")).toBeNull();
+    expect(deriveSessionProvider("GitHub Copilot session")).toBe("copilot");
+    expect(deriveSessionProvider("pi repl")).toBe("pi");
+    expect(deriveSessionProvider("Claude Code")).toBe("claude");
   });
 
   it("maps sessions to the privacy-safe feed without workspace or process fields", () => {
@@ -366,10 +377,7 @@ describe("createPluginBridge", () => {
       method: "sessions.watch",
       payload: { subscriptionId: "watch-sub-1" },
     });
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(first.pluginWindow.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         id: "watch-1",
@@ -392,8 +400,16 @@ describe("createPluginBridge", () => {
       capabilities: ["sessions.watch"],
       sessionList: sessions,
     });
+    send(second.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "watch-2",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "watch-sub-1" },
+    });
+    await flushPromises();
     await vi.advanceTimersByTimeAsync(5000);
-    for (let index = 0; index < 5; index += 1) await Promise.resolve();
+    await flushPromises();
     expect(sessions).toHaveBeenCalledTimes(2);
     expect(first.pluginWindow.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ kind: "event" }),
@@ -419,6 +435,48 @@ describe("createPluginBridge", () => {
     expect(sessions).toHaveBeenCalledTimes(calls);
   });
 
+  it("does not restart polling during a bridge rebind before a new snapshot is delivered", async () => {
+    vi.useFakeTimers();
+    const first = testFrame();
+    const sessions = vi.fn().mockResolvedValue([
+      {
+        id: "session-1",
+        workspaceId: null,
+        kind: "terminal",
+        title: "Claude shell",
+        state: { type: "live", generation: 1 },
+      } satisfies Session,
+    ]);
+    const firstBridge = createPluginBridge({
+      iframe: first.iframe,
+      pluginId: "polis-rebind-poll",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["sessions.watch"],
+      sessionList: sessions,
+    });
+    send(first.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "rebind-watch-1",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "rebind-sub-1" },
+    });
+    await flushPromises();
+    firstBridge.dispose();
+
+    const second = testFrame();
+    const secondBridge = createPluginBridge({
+      iframe: second.iframe,
+      pluginId: "polis-rebind-poll",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["sessions.watch"],
+      sessionList: sessions,
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sessions).toHaveBeenCalledTimes(1);
+    secondBridge.dispose();
+  });
+
   it("does not emit a session event whose value exceeds the response cap", async () => {
     vi.useFakeTimers();
     const { iframe, pluginWindow } = testFrame();
@@ -441,6 +499,15 @@ describe("createPluginBridge", () => {
           title: "x".repeat(1024 * 1024),
           state: { type: "live", generation: 1 },
         } satisfies Session,
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: "session-1",
+          workspaceId: null,
+          kind: "terminal",
+          title: "small-recovered",
+          state: { type: "live", generation: 1 },
+        } satisfies Session,
       ]);
     const bridge = createPluginBridge({
       iframe,
@@ -456,16 +523,266 @@ describe("createPluginBridge", () => {
       method: "sessions.watch",
       payload: { subscriptionId: "cap-sub" },
     });
-    for (let index = 0; index < 5; index += 1) await Promise.resolve();
+    await flushPromises();
     await vi.advanceTimersByTimeAsync(5000);
+    await flushPromises();
     expect(pluginWindow.postMessage).not.toHaveBeenCalledWith(
       expect.objectContaining({ kind: "event" }),
       PLUGIN_ORIGIN,
     );
+    await vi.advanceTimersByTimeAsync(5000);
+    await flushPromises();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "cap-sub",
+        kind: "event",
+        value: { sessions: [expect.objectContaining({ title: "small-recovered" })] },
+      }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("unwatches a session feed and clears the host poll when the last subscriber closes", async () => {
+    vi.useFakeTimers();
+    const { iframe, pluginWindow } = testFrame();
+    const sessions = vi.fn().mockResolvedValue([
+      {
+        id: "session-1",
+        workspaceId: null,
+        kind: "terminal",
+        title: "Claude shell",
+        state: { type: "live", generation: 1 },
+      } satisfies Session,
+    ]);
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "polis-unwatch",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["sessions.watch"],
+      sessionList: sessions,
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "watch-subscribe",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "unwatch-1", action: "subscribe" },
+    });
+    await flushPromises();
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "watch-unsubscribe",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "unwatch-1", action: "unsubscribe" },
+    });
+    await flushPromises();
+    const callsAfterUnwatch = sessions.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(sessions).toHaveBeenCalledTimes(callsAfterUnwatch);
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "watch-unsubscribe", kind: "result" }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("does not leak a resolved initial promise across dispose, rebind, and resubscribe", async () => {
+    vi.useFakeTimers();
+    const first = testFrame();
+    let resolveFirst: ((value: Session[]) => void) | undefined;
+    const sessions = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Session[]>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([
+        {
+          id: "session-1",
+          workspaceId: null,
+          kind: "terminal",
+          title: "Claude shell",
+          state: { type: "ended", generation: 1, code: 0 },
+        } satisfies Session,
+      ]);
+    const firstBridge = createPluginBridge({
+      iframe: first.iframe,
+      pluginId: "polis-interleave",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["sessions.watch"],
+      sessionList: sessions,
+    });
+    send(first.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "first-watch",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "interleave-1", action: "subscribe" },
+    });
+    firstBridge.dispose();
+    resolveFirst?.([
+      {
+        id: "session-1",
+        workspaceId: null,
+        kind: "terminal",
+        title: "Claude shell",
+        state: { type: "live", generation: 1 },
+      },
+    ]);
+    await Promise.resolve();
+
+    const second = testFrame();
+    const secondBridge = createPluginBridge({
+      iframe: second.iframe,
+      pluginId: "polis-interleave",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["sessions.watch"],
+      sessionList: sessions,
+    });
+    send(second.pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "second-watch",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "interleave-2", action: "subscribe" },
+    });
+    await flushPromises();
+    expect(sessions).toHaveBeenCalledTimes(2);
+    expect(second.pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "result",
+        id: "second-watch",
+        value: {
+          sessions: [expect.objectContaining({ state: "finished" })],
+        },
+      }),
+      PLUGIN_ORIGIN,
+    );
+    secondBridge.dispose();
+  });
+
+  it("times out a hung initial or refresh source without wedging the watch", async () => {
+    vi.useFakeTimers();
+    const { iframe, pluginWindow } = testFrame();
+    const sessions = vi.fn().mockImplementationOnce(() => new Promise<Session[]>(() => {}));
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "polis-timeout",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["sessions.watch"],
+      sessionList: sessions,
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "timeout-watch",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "timeout-1", action: "subscribe" },
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flushPromises();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "timeout-watch", kind: "error", code: "timeout" }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("resets a hung refresh and retries on the next interval", async () => {
+    vi.useFakeTimers();
+    const { iframe, pluginWindow } = testFrame();
+    const sessions = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          id: "session-1",
+          workspaceId: null,
+          kind: "terminal",
+          title: "initial",
+          state: { type: "live", generation: 1 },
+        } satisfies Session,
+      ])
+      .mockImplementationOnce(() => new Promise<Session[]>(() => {}))
+      .mockResolvedValueOnce([
+        {
+          id: "session-1",
+          workspaceId: null,
+          kind: "terminal",
+          title: "after-timeout",
+          state: { type: "live", generation: 1 },
+        } satisfies Session,
+      ]);
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "polis-refresh-timeout",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["sessions.watch"],
+      sessionList: sessions,
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "refresh-timeout-watch",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "refresh-timeout-1", action: "subscribe" },
+    });
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(5000);
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(5000);
+    await flushPromises();
+    expect(sessions).toHaveBeenCalledTimes(3);
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "refresh-timeout-1",
+        kind: "event",
+        value: { sessions: [expect.objectContaining({ title: "after-timeout" })] },
+      }),
+      PLUGIN_ORIGIN,
+    );
+    bridge.dispose();
+  });
+
+  it("does not send raw session-watch source errors into the iframe", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const sessions = vi.fn().mockRejectedValue(new Error("C:\\Users\\secret\\workspace"));
+    const bridge = createPluginBridge({
+      iframe,
+      pluginId: "polis-private-error",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["sessions.watch"],
+      sessionList: sessions,
+    });
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "private-watch",
+      kind: "invoke",
+      method: "sessions.watch",
+      payload: { subscriptionId: "private-1", action: "subscribe" },
+    });
+    await flushPromises();
+    const errorReply = vi
+      .mocked(pluginWindow.postMessage)
+      .mock.calls.map(([message]) => message)
+      .find((message) => isRecord(message) && message.kind === "error");
+    expect(errorReply).toEqual(
+      expect.objectContaining({ id: "private-watch", message: "sessions.watch failed" }),
+    );
+    expect(JSON.stringify(errorReply)).not.toContain("workspace");
     bridge.dispose();
   });
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+async function flushPromises(): Promise<void> {
+  for (let index = 0; index < 12; index += 1) await Promise.resolve();
 }

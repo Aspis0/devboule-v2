@@ -237,4 +237,35 @@ describe("backend overlay readout", () => {
     );
     expect(updates).toHaveLength(2);
   });
+
+  it("notifies the host when a successful subscription closes", async () => {
+    const invoke = vi
+      .fn()
+      .mockResolvedValueOnce({
+        sessions: [{ id: "one", provider: null, state: "working", title: "Unknown shell" }],
+      })
+      .mockResolvedValueOnce({ unsubscribed: true });
+    const subscription = await subscribeSessions(invoke, () => undefined);
+    subscription.close();
+    await Promise.resolve();
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      "sessions.watch",
+      expect.objectContaining({ action: "unsubscribe" }),
+      expect.any(Number),
+    );
+  });
+
+  it("notifies the host on timeout and pagehide cleanup paths", async () => {
+    const timeout = Object.assign(new Error("timed out"), { code: "timeout" });
+    const invoke = vi.fn().mockRejectedValueOnce(timeout).mockResolvedValue({ unsubscribed: true });
+    const pending = subscribeSessions(invoke, () => undefined, 10);
+    window.dispatchEvent(new Event("pagehide"));
+    expect(invoke).toHaveBeenCalledWith(
+      "sessions.watch",
+      expect.objectContaining({ action: "unsubscribe" }),
+      expect.any(Number),
+    );
+    await expect(pending).rejects.toThrow();
+  });
 });

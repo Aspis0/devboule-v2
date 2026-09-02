@@ -17,7 +17,7 @@ import {
   subscribeSessions,
 } from "./hostBridge";
 import { CityRenderer } from "./renderer";
-import { renderAgentRoster } from "./roster";
+import { createHostRosterReadout } from "./roster";
 import type { City, CityFile } from "./model";
 
 const canvas = getElement<HTMLCanvasElement>("scene");
@@ -28,6 +28,7 @@ const backendReadout = getElement<HTMLElement>("backend");
 const cityReadout = getElement<HTMLElement>("city");
 const agentReadout = getElement<HTMLElement>("agents");
 const rosterReadout = getElement<HTMLElement>("roster");
+const hostRosterReadout = createHostRosterReadout(rosterReadout);
 const findingReadout = getElement<HTMLElement>("findings");
 const detailsReadout = getElement<HTMLElement>("details");
 const hudToggle = getElement<HTMLButtonElement>("hud-toggle");
@@ -251,7 +252,7 @@ function renderCityStats(value: City): void {
   cityReadout.textContent = `${source} · ${value.files.length} files${cityDegradationSuffix(value)} · ${value.imports.length} directed roads`;
   agentReadout.textContent = `${value.dataSource === "host" ? "Agents host" : "Agents fixture"} · ${placedAgents} on buildings · ${rosterAgents} roster-only`;
   if (value.dataSource === "host") {
-    renderAgentRoster(rosterReadout, value.agents, knownFileIds);
+    hostRosterReadout.render(value.agents, knownFileIds);
   } else {
     rosterReadout.textContent =
       rosterAgents === 0
@@ -265,7 +266,7 @@ function renderSessionWatchFailure(error: unknown): void {
   const code = errorCode(error);
   const state =
     code === "timeout" ? "timed out" : code === "malformed_sessions" ? "malformed" : "refused";
-  rosterReadout.textContent = `Roster: live session feed ${state} — ${errorMessage(error)}`;
+  hostRosterReadout.fail({ state, message: errorMessage(error) });
 }
 
 function renderPendingCity(): void {

@@ -66,11 +66,15 @@ const MAX_PLUGIN_MESSAGE_BYTES = 1024 * 1024;
  * title matching is deliberately small and explicit. Longer names win before
  * `pi`, whose short substring must not steal a Copilot title.
  */
-const PROVIDER_MATCH_ORDER = ["claude", "codex", "opencode", "copilot", "grok", "pi"] as const;
+const PROVIDER_MATCH_ORDER = ["opencode", "claude", "copilot", "codex", "grok", "pi"] as const;
 
 export function deriveSessionProvider(title: string): string | null {
   const normalized = title.toLowerCase();
-  return PROVIDER_MATCH_ORDER.find((provider) => normalized.includes(provider)) ?? null;
+  return (
+    PROVIDER_MATCH_ORDER.find((provider) =>
+      new RegExp(`(?:^|[^a-z0-9])${provider}(?=$|[^a-z0-9])`, "i").test(normalized),
+    ) ?? null
+  );
 }
 
 /**
@@ -102,42 +106,57 @@ interface PendingRequest {
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const SESSION_SOURCE_TIMEOUT_MS = 10_000;
+
+type SessionSubscriberPost = (message: ReplyMessage | SessionEventMessage) => void;
+
+interface SessionSubscriber {
+  post: SessionSubscriberPost;
+}
 
 interface SessionWatchState {
-  pluginId: string;
   source: () => Promise<Session[]>;
-  post: ((message: SessionEventMessage) => void) | null;
-  subscriptionId: string;
+  subscribers: Map<string, SessionSubscriber>;
   feed: SessionFeed | null;
   initial: Promise<SessionFeed> | null;
+  initialGeneration: number | null;
   timer: ReturnType<typeof setInterval> | null;
   detachTimer: ReturnType<typeof setTimeout> | null;
   refreshing: boolean;
   stopped: boolean;
+  generation: number;
 }
 
 const sessionWatches = new Map<string, SessionWatchState>();
 
-function rebindSessionWatch(pluginId: string, post: (message: SessionEventMessage) => void): void {
+function rebindSessionWatch(pluginId: string): void {
   const state = sessionWatches.get(pluginId);
   if (state === undefined) return;
   state.stopped = false;
-  state.post = post;
   if (state.detachTimer !== null) {
     clearTimeout(state.detachTimer);
     state.detachTimer = null;
   }
 }
 
-function detachSessionWatch(pluginId: string, post: (message: SessionEventMessage) => void): void {
+function detachSessionWatch(pluginId: string, post: SessionSubscriberPost): void {
   const state = sessionWatches.get(pluginId);
-  if (state === undefined || state.post !== post) return;
-  state.post = null;
+  if (state === undefined) return;
+  let detached = false;
+  for (const [subscriptionId, subscriber] of state.subscribers) {
+    if (subscriber.post !== post) continue;
+    state.subscribers.delete(subscriptionId);
+    detached = true;
+  }
+  if (!detached || state.subscribers.size > 0) return;
   state.stopped = true;
+  state.generation += 1;
+  state.initial = null;
+  state.initialGeneration = null;
+  if (state.timer !== null) clearInterval(state.timer);
+  state.timer = null;
   state.detachTimer = setTimeout(() => {
-    if (state.post !== null) return;
-    if (state.timer !== null) clearInterval(state.timer);
-    state.timer = null;
+    if (!state.stopped) return;
     sessionWatches.delete(pluginId);
   }, 0);
 }
@@ -146,14 +165,13 @@ function ensureSessionWatch(
   pluginId: string,
   source: () => Promise<Session[]>,
   subscriptionId: string,
-  post: (message: SessionEventMessage) => void,
+  post: SessionSubscriberPost,
 ): SessionWatchState {
   const existing = sessionWatches.get(pluginId);
   if (existing !== undefined) {
     existing.source = source;
     existing.stopped = false;
-    existing.subscriptionId = subscriptionId;
-    existing.post = post;
+    existing.subscribers.set(subscriptionId, { post });
     if (existing.detachTimer !== null) {
       clearTimeout(existing.detachTimer);
       existing.detachTimer = null;
@@ -162,42 +180,70 @@ function ensureSessionWatch(
   }
 
   const state: SessionWatchState = {
-    pluginId,
     source,
-    post,
-    subscriptionId,
+    subscribers: new Map([[subscriptionId, { post }]]),
     feed: null,
     initial: null,
+    initialGeneration: null,
     timer: null,
     detachTimer: null,
     refreshing: false,
     stopped: false,
+    generation: 0,
   };
   sessionWatches.set(pluginId, state);
   return state;
+}
+
+function startSessionWatch(state: SessionWatchState): void {
+  if (state.stopped || state.timer !== null || state.subscribers.size === 0) return;
+  if (state.feed === null) return;
+  state.timer = setInterval(() => {
+    void refreshSessionWatch(state);
+  }, SESSION_WATCH_INTERVAL_MS);
+}
+
+function stopSessionWatch(pluginId: string, state: SessionWatchState): void {
+  state.stopped = true;
+  state.generation += 1;
+  state.initial = null;
+  state.initialGeneration = null;
+  if (state.timer !== null) clearInterval(state.timer);
+  state.timer = null;
+  sessionWatches.delete(pluginId);
 }
 
 function sessionWatchInitial(state: SessionWatchState): Promise<SessionFeed> {
   if (state.feed !== null) return Promise.resolve(state.feed);
   if (state.initial !== null) return state.initial;
 
-  state.initial = state
-    .source()
+  const generation = state.generation;
+  const initial = withTimeout(
+    Promise.resolve().then(() => state.source()),
+    SESSION_SOURCE_TIMEOUT_MS,
+  )
     .then((sessions) => {
       const feed = sessionsToFeed(sessions);
-      if (state.stopped) return feed;
+      if (state.stopped || state.generation !== generation) {
+        if (state.initialGeneration === generation) {
+          state.initial = null;
+          state.initialGeneration = null;
+        }
+        return feed;
+      }
       if (!messageValueWithinLimit(feed)) throw oversizedMessageError();
-      state.feed = feed;
-      state.timer = setInterval(() => {
-        void refreshSessionWatch(state);
-      }, SESSION_WATCH_INTERVAL_MS);
       return feed;
     })
     .catch((error: unknown) => {
-      state.initial = null;
+      if (state.initialGeneration === generation) {
+        state.initial = null;
+        state.initialGeneration = null;
+      }
       throw error;
     });
-  return state.initial;
+  state.initial = initial;
+  state.initialGeneration = generation;
+  return initial;
 }
 
 function oversizedMessageError(): Error & { code: string } {
@@ -206,28 +252,68 @@ function oversizedMessageError(): Error & { code: string } {
   });
 }
 
+function sessionWatchFailureReply(
+  id: string,
+  error: unknown,
+): Extract<ReplyMessage, { kind: "error" }> {
+  const reply: Extract<ReplyMessage, { kind: "error" }> = {
+    v: 1,
+    id,
+    kind: "error",
+    message: "sessions.watch failed",
+  };
+  const code = routeErrorCode(error);
+  if (code !== undefined) reply.code = code;
+  return reply;
+}
+
 async function refreshSessionWatch(state: SessionWatchState): Promise<void> {
-  if (state.stopped || state.post === null || state.refreshing) return;
+  if (state.stopped || state.subscribers.size === 0 || state.refreshing) return;
   state.refreshing = true;
   try {
-    const next = sessionsToFeed(await state.source());
+    const next = sessionsToFeed(
+      await withTimeout(
+        Promise.resolve().then(() => state.source()),
+        SESSION_SOURCE_TIMEOUT_MS,
+      ),
+    );
     const serialized = JSON.stringify(next);
     if (serialized === JSON.stringify(state.feed)) return;
-    state.feed = next;
     if (!messageValueWithinLimit(next)) return;
-    state.post?.({
-      v: 1,
-      id: state.subscriptionId,
-      kind: "event",
-      event: "sessions.update",
-      value: next,
-    });
+    for (const [subscriptionId, subscriber] of state.subscribers) {
+      subscriber.post({
+        v: 1,
+        id: subscriptionId,
+        kind: "event",
+        event: "sessions.update",
+        value: next,
+      });
+    }
+    state.feed = next;
   } catch {
     // A transient list failure leaves the last truthful snapshot in place.
     // The next 5-second refresh retries while the subscribed bridge remains.
   } finally {
     state.refreshing = false;
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(Object.assign(new Error("sessions.watch timed out"), { code: "timeout" }));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function messageValueWithinLimit(value: unknown): boolean {
@@ -239,6 +325,14 @@ function messageValueWithinLimit(value: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+export function resetSessionWatchesForTests(): void {
+  for (const state of sessionWatches.values()) {
+    if (state.timer !== null) clearInterval(state.timer);
+    if (state.detachTimer !== null) clearTimeout(state.detachTimer);
+  }
+  sessionWatches.clear();
 }
 
 /** Attach the host side of the frame's versioned, capability-limited channel. */
@@ -255,8 +349,8 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
     options.iframe.contentWindow?.postMessage(reply, pluginOrigin);
   }
 
-  const postSessionEvent = (message: SessionEventMessage): void => post(message);
-  rebindSessionWatch(options.pluginId, postSessionEvent);
+  const postSessionMessage: SessionSubscriberPost = (message) => post(message);
+  rebindSessionWatch(options.pluginId);
 
   function handleMessage(event: MessageEvent<unknown>): void {
     // Both checks are required: an attacker can send from a trusted origin in
@@ -294,27 +388,41 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
           typeof payload?.subscriptionId === "string" && payload.subscriptionId !== ""
             ? payload.subscriptionId
             : `${options.pluginId}-sessions`;
+        if (payload?.action === "unsubscribe") {
+          const state = sessionWatches.get(options.pluginId);
+          state?.subscribers.delete(subscriptionId);
+          if (state !== undefined && state.subscribers.size === 0) {
+            stopSessionWatch(options.pluginId, state);
+          }
+          post({
+            v: 1,
+            id: message.id,
+            kind: "result",
+            value: { unsubscribed: true },
+          });
+          return;
+        }
         const state = ensureSessionWatch(
           options.pluginId,
           sessionList,
           subscriptionId,
-          postSessionEvent,
+          postSessionMessage,
         );
+        const generation = state.generation;
         void sessionWatchInitial(state).then(
           (value) => {
-            if (!disposed) post({ v: 1, id: message.id, kind: "result", value });
+            const subscriber = state.subscribers.get(subscriptionId);
+            if (state.stopped || state.generation !== generation || subscriber === undefined)
+              return;
+            subscriber.post({ v: 1, id: message.id, kind: "result", value });
+            state.feed = value;
+            startSessionWatch(state);
           },
           (error: unknown) => {
-            if (disposed) return;
-            const reply: Extract<ReplyMessage, { kind: "error" }> = {
-              v: 1,
-              id: message.id,
-              kind: "error",
-              message: routeErrorMessage(error),
-            };
-            const code = routeErrorCode(error);
-            if (code !== undefined) reply.code = code;
-            post(reply);
+            const subscriber = state.subscribers.get(subscriptionId);
+            if (state.stopped || subscriber === undefined) return;
+            console.error("sessions.watch failed", error);
+            subscriber.post(sessionWatchFailureReply(message.id, error));
           },
         );
         return;
@@ -397,7 +505,7 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
         request.reject(new Error(`Plugin request "${id}" was cancelled`));
       }
       pending.clear();
-      detachSessionWatch(options.pluginId, postSessionEvent);
+      detachSessionWatch(options.pluginId, postSessionMessage);
     },
   };
 }
