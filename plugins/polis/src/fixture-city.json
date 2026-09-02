@@ -3,7 +3,7 @@
     {
       "id": "crates/devboule-augur/src/detector.rs",
       "path": "crates/devboule-augur/src/detector.rs",
-      "lines": 212,
+      "lines": 238,
       "district": "crates"
     },
     {
@@ -15,13 +15,19 @@
     {
       "id": "crates/devboule-augur/src/detectors/mod.rs",
       "path": "crates/devboule-augur/src/detectors/mod.rs",
-      "lines": 4,
+      "lines": 5,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/detectors/secrets.rs",
       "path": "crates/devboule-augur/src/detectors/secrets.rs",
-      "lines": 511,
+      "lines": 533,
+      "district": "crates"
+    },
+    {
+      "id": "crates/devboule-augur/src/detectors/untested.rs",
+      "path": "crates/devboule-augur/src/detectors/untested.rs",
+      "lines": 390,
       "district": "crates"
     },
     {
@@ -39,7 +45,7 @@
     {
       "id": "crates/devboule-augur/src/finding.rs",
       "path": "crates/devboule-augur/src/finding.rs",
-      "lines": 801,
+      "lines": 826,
       "district": "crates"
     },
     {
@@ -51,13 +57,13 @@
     {
       "id": "crates/devboule-augur/src/lib.rs",
       "path": "crates/devboule-augur/src/lib.rs",
-      "lines": 23,
+      "lines": 24,
       "district": "crates"
     },
     {
       "id": "crates/devboule-augur/src/ruleset.rs",
       "path": "crates/devboule-augur/src/ruleset.rs",
-      "lines": 353,
+      "lines": 365,
       "district": "crates"
     },
     {
@@ -189,7 +195,7 @@
     {
       "id": "crates/devboule-plugin-rpc/src/lib.rs",
       "path": "crates/devboule-plugin-rpc/src/lib.rs",
-      "lines": 335,
+      "lines": 355,
       "district": "crates"
     },
     {
@@ -207,13 +213,13 @@
     {
       "id": "crates/devboule-plugin-rpc/src/session.rs",
       "path": "crates/devboule-plugin-rpc/src/session.rs",
-      "lines": 437,
+      "lines": 489,
       "district": "crates"
     },
     {
       "id": "crates/devboule-plugin-rpc/src/spawn.rs",
       "path": "crates/devboule-plugin-rpc/src/spawn.rs",
-      "lines": 477,
+      "lines": 491,
       "district": "crates"
     },
     {
@@ -243,7 +249,7 @@
     {
       "id": "crates/devboule-protocol/src/lib.rs",
       "path": "crates/devboule-protocol/src/lib.rs",
-      "lines": 236,
+      "lines": 240,
       "district": "crates"
     },
     {
@@ -297,7 +303,7 @@
     {
       "id": "crates/oracle-core/src/config.rs",
       "path": "crates/oracle-core/src/config.rs",
-      "lines": 394,
+      "lines": 409,
       "district": "crates"
     },
     {
@@ -393,7 +399,7 @@
     {
       "id": "crates/oracle-core/src/lib.rs",
       "path": "crates/oracle-core/src/lib.rs",
-      "lines": 178,
+      "lines": 186,
       "district": "crates"
     },
     {
@@ -477,13 +483,19 @@
     {
       "id": "crates/polis-backend/src/city.rs",
       "path": "crates/polis-backend/src/city.rs",
-      "lines": 368,
+      "lines": 369,
+      "district": "crates"
+    },
+    {
+      "id": "crates/polis-backend/src/findings.rs",
+      "path": "crates/polis-backend/src/findings.rs",
+      "lines": 668,
       "district": "crates"
     },
     {
       "id": "crates/polis-backend/src/lib.rs",
       "path": "crates/polis-backend/src/lib.rs",
-      "lines": 242,
+      "lines": 310,
       "district": "crates"
     },
     {
@@ -567,7 +579,7 @@
     {
       "id": "src-tauri/src/plugins/rpc.rs",
       "path": "src-tauri/src/plugins/rpc.rs",
-      "lines": 419,
+      "lines": 543,
       "district": "src-tauri"
     },
     {
@@ -711,25 +723,25 @@
     {
       "id": "src/features/plugins/pluginBridge.test.ts",
       "path": "src/features/plugins/pluginBridge.test.ts",
-      "lines": 261,
+      "lines": 788,
       "district": "src"
     },
     {
       "id": "src/features/plugins/pluginBridge.ts",
       "path": "src/features/plugins/pluginBridge.ts",
-      "lines": 200,
+      "lines": 558,
       "district": "src"
     },
     {
       "id": "src/features/plugins/PluginSurface.test.tsx",
       "path": "src/features/plugins/PluginSurface.test.tsx",
-      "lines": 33,
+      "lines": 111,
       "district": "src"
     },
     {
       "id": "src/features/plugins/PluginSurface.tsx",
       "path": "src/features/plugins/PluginSurface.tsx",
-      "lines": 151,
+      "lines": 158,
       "district": "src"
     },
     {
@@ -951,7 +963,7 @@
     {
       "id": "src/lib/tauri.ts",
       "path": "src/lib/tauri.ts",
-      "lines": 201,
+      "lines": 204,
       "district": "src"
     },
     {
@@ -1068,6 +1080,21 @@
     {
       "from": "crates/devboule-augur/src/detectors/secrets.rs",
       "to": "crates/devboule-augur/src/tokens.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/untested.rs",
+      "to": "crates/devboule-augur/src/detector.rs",
+      "weight": 2
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/untested.rs",
+      "to": "crates/devboule-augur/src/error.rs",
+      "weight": 1
+    },
+    {
+      "from": "crates/devboule-augur/src/detectors/untested.rs",
+      "to": "crates/devboule-augur/src/finding.rs",
       "weight": 1
     },
     {
@@ -1551,6 +1578,11 @@
       "weight": 1
     },
     {
+      "from": "crates/polis-backend/src/findings.rs",
+      "to": "crates/polis-backend/src/city.rs",
+      "weight": 1
+    },
+    {
       "from": "src-tauri/src/backend/session.rs",
       "to": "src-tauri/src/client/mod.rs",
       "weight": 1
@@ -1767,7 +1799,17 @@
     },
     {
       "from": "src/features/plugins/pluginBridge.test.ts",
-      "to": "src/features/plugins/pluginBridge.ts",
+      "to": "src/types/ipc.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/pluginBridge.ts",
+      "to": "src/lib/tauri.ts",
+      "weight": 1
+    },
+    {
+      "from": "src/features/plugins/pluginBridge.ts",
+      "to": "src/types/ipc.ts",
       "weight": 1
     },
     {
