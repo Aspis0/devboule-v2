@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
@@ -8,7 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use devboule_protocol::{
     caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, ClientMessage, DaemonHello,
     DaemonMessage, DaemonStatusBody, ErrorCode, OwnerId, PersistenceKind, ResumeResult,
-    SessionEvent, SessionKind, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    SessionEvent, SessionEventEnvelope, SessionKind, WireError, PROTOCOL_MIN_VERSION,
+    PROTOCOL_VERSION,
 };
 
 use crate::error::DaemonError;
@@ -47,6 +48,24 @@ pub struct ServerState {
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
+    session_watchers: Mutex<HashMap<u64, SessionWatch>>,
+}
+
+struct SessionWatch {
+    owner: OwnerId,
+    conn: Arc<ConnHandle>,
+}
+
+fn session_state_event(
+    sessions: Vec<devboule_protocol::SessionStateSnapshot>,
+) -> SessionEventEnvelope {
+    SessionEventEnvelope {
+        // Empty session id and generation zero identify the connection-scoped
+        // roster event; attachment events always carry both values.
+        session_id: String::new(),
+        generation: 0,
+        event: SessionEvent::SessionsSnapshot { sessions },
+    }
 }
 
 impl ServerState {
@@ -68,7 +87,7 @@ impl ServerState {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        Ok(Arc::new(Self {
+        let state = Arc::new(Self {
             instance_id,
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
@@ -80,11 +99,65 @@ impl ServerState {
             sessions: SessionRegistry::new(paths, journal),
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
-        }))
+            session_watchers: Mutex::new(HashMap::new()),
+        });
+        let state_for_transitions = Arc::downgrade(&state);
+        state.sessions.set_transition_sink(Arc::new(move |owner| {
+            if let Some(state) = state_for_transitions.upgrade() {
+                state.broadcast_session_state(&owner);
+            }
+        }));
+        Ok(state)
     }
 
     pub fn alloc_conn(&self) -> u64 {
         self.conn_ids.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn watch_sessions(&self, owner: &OwnerId, conn: &Arc<ConnHandle>) {
+        let mut watchers = self
+            .session_watchers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        conn.clear_state_events();
+        watchers.insert(
+            conn.id,
+            SessionWatch {
+                owner: owner.clone(),
+                conn: Arc::clone(conn),
+            },
+        );
+        // Registration and the initial snapshot share the watcher lock with
+        // transition broadcasts, so the first pushed change cannot overtake
+        // the state that established this subscription.
+        let snapshots = self.sessions.state_snapshots(owner);
+        conn.queue_state_event(session_state_event(snapshots));
+    }
+
+    fn unwatch_sessions(&self, conn_id: u64) {
+        self.session_watchers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&conn_id);
+    }
+
+    fn broadcast_session_state(&self, owner: &OwnerId) {
+        let watchers = self
+            .session_watchers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let connections = watchers
+            .values()
+            .filter(|watch| watch.owner == *owner)
+            .map(|watch| Arc::clone(&watch.conn))
+            .collect::<Vec<_>>();
+        if connections.is_empty() {
+            return;
+        }
+        let event = session_state_event(self.sessions.state_snapshots(owner));
+        for conn in connections {
+            conn.queue_state_event(event.clone());
+        }
     }
 
     pub fn request_shutdown(&self) {
@@ -408,6 +481,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .spawn(move || read_client_requests(reader_framed, request_tx, reader_wake))
         .map_err(DaemonError::from)?;
     let mut pending_events = VecDeque::new();
+    let mut pending_state_events = VecDeque::new();
     let loop_result = (|| -> Result<(), DaemonError> {
         loop {
             if state.stop.load(Ordering::SeqCst) {
@@ -439,8 +513,10 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     // coalescer and may publish its final output there.
                     if !close_request {
                         refill_pending_events(&conn, &mut pending_events);
+                        refill_pending_state_events(&conn, &mut pending_state_events);
                     }
                     drain_pending_events(&framed, &conn, &mut pending_events)?;
+                    drain_pending_state_events(&framed, &mut pending_state_events)?;
                 } else {
                     // Give the event stream one turn before every ordinary
                     // request. This is deliberately one frame, not a bulk
@@ -448,8 +524,11 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     // starve output, while a DSR/control request waits behind
                     // at most the single event write already in progress.
                     refill_pending_events(&conn, &mut pending_events);
+                    refill_pending_state_events(&conn, &mut pending_state_events);
                     if let Some(event) = pending_events.pop_front() {
                         send_pending_event(&framed, &conn, event)?;
+                    } else if let Some(event) = pending_state_events.pop_front() {
+                        send_state_event(&framed, event)?;
                     }
                 }
                 if let ClientMessage::Hello(_) = request {
@@ -467,7 +546,9 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     // SessionClose joins the coalescer and calls finish(),
                     // which can publish the teardown tail after the pre-drain.
                     refill_pending_events(&conn, &mut pending_events);
+                    refill_pending_state_events(&conn, &mut pending_state_events);
                     drain_pending_events(&framed, &conn, &mut pending_events)?;
+                    drain_pending_state_events(&framed, &mut pending_state_events)?;
                 }
                 let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
                 // Control/lifecycle replies retain the flush barrier. It makes
@@ -482,9 +563,10 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                 continue;
             }
 
-            if pending_events.is_empty() {
+            if pending_events.is_empty() && pending_state_events.is_empty() {
                 refill_pending_events(&conn, &mut pending_events);
-                if pending_events.is_empty() {
+                refill_pending_state_events(&conn, &mut pending_state_events);
+                if pending_events.is_empty() && pending_state_events.is_empty() {
                     if !conn
                         .outbound
                         .wait_for_notify_since(observed_generation, conn.next_exit_wake())
@@ -498,10 +580,14 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
             // Send at most one event before looking for control traffic again.
             // In particular, no bulk output batch can hold a DSR, resize, or
             // kill request behind a sequence of flushes.
-            let event = pending_events
-                .pop_front()
-                .expect("pending event queue was checked above");
-            send_pending_event(&framed, &conn, event)?;
+            if let Some(event) = pending_events.pop_front() {
+                send_pending_event(&framed, &conn, event)?;
+            } else {
+                let event = pending_state_events
+                    .pop_front()
+                    .expect("state event queue was checked above");
+                send_state_event(&framed, event)?;
+            }
         }
         Ok(())
     })();
@@ -513,8 +599,12 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     conn.outbound.close();
     bounded_join(reader, JOIN_BUDGET);
     refill_pending_events(&conn, &mut pending_events);
+    refill_pending_state_events(&conn, &mut pending_state_events);
     if let Err(error) = drain_pending_events(&framed, &conn, &mut pending_events) {
         eprintln!("daemon connection final event drain failed: {error}");
+    }
+    if let Err(error) = drain_pending_state_events(&framed, &mut pending_state_events) {
+        eprintln!("daemon connection final state event drain failed: {error}");
     }
     // This is the deliberate teardown-only pipe barrier: it makes every frame
     // accepted above client-readable before the server drops this connection.
@@ -522,6 +612,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     // for the client to consume the pipe.
     let _ = framed.flush_pipe();
     conn.detach_all(&state.sessions);
+    state.unwatch_sessions(conn.id);
     loop_result
 }
 
@@ -545,6 +636,29 @@ fn drain_pending_events(
     Ok(())
 }
 
+fn refill_pending_state_events(
+    conn: &ConnHandle,
+    pending_events: &mut VecDeque<SessionEventEnvelope>,
+) {
+    if pending_events.is_empty() {
+        pending_events.extend(conn.pull_state_events());
+    }
+}
+
+fn drain_pending_state_events(
+    framed: &Framed,
+    pending_events: &mut VecDeque<SessionEventEnvelope>,
+) -> Result<(), DaemonError> {
+    while let Some(event) = pending_events.pop_front() {
+        send_state_event(framed, event)?;
+    }
+    Ok(())
+}
+
+fn send_state_event(framed: &Framed, event: SessionEventEnvelope) -> Result<(), DaemonError> {
+    framed.send_unflushed(&DaemonMessage::Event(event))
+}
+
 fn send_pending_event(
     framed: &Framed,
     conn: &ConnHandle,
@@ -557,6 +671,7 @@ fn send_pending_event(
             SessionEvent::Recovered { .. } => " recovered".to_string(),
             SessionEvent::Silent { .. } => " silent".to_string(),
             SessionEvent::JournalDegraded => " journal_degraded".to_string(),
+            SessionEvent::SessionsSnapshot { .. } => " sessions_snapshot".to_string(),
             // A snapshot is screen state and has no replay sequence.
             SessionEvent::Snapshot { .. } => " snapshot".to_string(),
         };
@@ -606,7 +721,9 @@ fn connection_closed(error: &DaemonError) -> bool {
 fn drains_events_before_dispatch(request: &ClientMessage) -> bool {
     matches!(
         request,
-        ClientMessage::Shutdown { .. } | ClientMessage::SessionClose { .. }
+        ClientMessage::Shutdown { .. }
+            | ClientMessage::SessionClose { .. }
+            | ClientMessage::SessionsUnwatch { .. }
     )
 }
 
@@ -638,7 +755,7 @@ fn dispatch(
     state: &Arc<ServerState>,
     owner: &OwnerId,
     request: ClientMessage,
-    conn: &ConnHandle,
+    conn: &Arc<ConnHandle>,
     sessions_ok: bool,
 ) -> DaemonMessage {
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
@@ -677,6 +794,8 @@ fn dispatch(
         | ClientMessage::SessionInterrupt { .. }
         | ClientMessage::SessionPermissionRespond { .. }
         | ClientMessage::SessionsList { .. }
+        | ClientMessage::SessionsWatch { .. }
+        | ClientMessage::SessionsUnwatch { .. }
         | ClientMessage::SessionResume { .. } => {
             if !sessions_ok {
                 return capability_not_supported(request.request_id());
@@ -708,7 +827,7 @@ fn dispatch_session(
     state: &Arc<ServerState>,
     owner: &OwnerId,
     request: ClientMessage,
-    conn: &ConnHandle,
+    conn: &Arc<ConnHandle>,
 ) -> DaemonMessage {
     match request {
         ClientMessage::SessionCreate {
@@ -745,6 +864,15 @@ fn dispatch_session(
                 }
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
+        }
+        ClientMessage::SessionsWatch { id } => {
+            state.watch_sessions(owner, conn);
+            DaemonMessage::Ok { id }
+        }
+        ClientMessage::SessionsUnwatch { id } => {
+            state.unwatch_sessions(conn.id);
+            conn.clear_state_events();
+            DaemonMessage::Ok { id }
         }
         ClientMessage::SessionStop { id, session_id } => reply_result(
             id,

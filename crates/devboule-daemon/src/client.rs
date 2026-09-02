@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
     OwnerId, Persistence, ResumeResult, Session, SessionEvent, SessionEventEnvelope, SessionKind,
-    WireError,
+    SessionStateSnapshot, WireError,
 };
 
 use crate::error::DaemonError;
@@ -26,12 +26,14 @@ const SPAWN_SLEEP: Duration = Duration::from_millis(100);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
 
 pub type EventHandler = Arc<dyn Fn(SessionEventEnvelope) + Send + Sync>;
+pub type SessionStateHandler = Arc<dyn Fn(Vec<SessionStateSnapshot>) + Send + Sync>;
 
 struct ClientInner {
     framed: Framed,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, mpsc::Sender<DaemonMessage>>>,
     subscriptions: Mutex<HashMap<String, EventHandler>>,
+    session_state_subscription: Mutex<Option<SessionStateHandler>>,
     stop: AtomicBool,
     hello: DaemonHello,
 }
@@ -226,6 +228,47 @@ impl DaemonClient {
         }
     }
 
+    /// Subscribe this connection to owner-scoped roster transitions. The
+    /// handler is registered before the request so the initial snapshot and
+    /// a transition racing it cannot be lost by the reader.
+    pub fn sessions_watch(&self, handler: SessionStateHandler) -> Result<(), DaemonError> {
+        {
+            let mut subscription = self
+                .inner
+                .session_state_subscription
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            *subscription = Some(handler);
+        }
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionsWatch { id }) {
+            Ok(DaemonMessage::Ok { .. }) => Ok(()),
+            Ok(DaemonMessage::Error(error)) => {
+                self.unsubscribe_sessions_watch();
+                Err(DaemonError::Handshake(error))
+            }
+            Ok(other) => {
+                self.unsubscribe_sessions_watch();
+                unexpected(other)
+            }
+            Err(error) => {
+                self.unsubscribe_sessions_watch();
+                Err(error)
+            }
+        }
+    }
+
+    pub fn sessions_unwatch(&self) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        let result = self.roundtrip(ClientMessage::SessionsUnwatch { id });
+        self.unsubscribe_sessions_watch();
+        match result? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn roundtrip(&self, message: ClientMessage) -> Result<DaemonMessage, DaemonError> {
         let Some(id) = message.request_id() else {
             self.write_frame(&message)?;
@@ -294,6 +337,14 @@ impl DaemonClient {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .remove(session_id);
+    }
+
+    fn unsubscribe_sessions_watch(&self) {
+        self.inner
+            .session_state_subscription
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .take();
     }
 }
 
@@ -374,6 +425,7 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
                 next_id: AtomicU64::new(1),
                 pending: Mutex::new(HashMap::new()),
                 subscriptions: Mutex::new(HashMap::new()),
+                session_state_subscription: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 hello: daemon_hello,
             });
@@ -414,17 +466,33 @@ fn client_read_loop(inner: Arc<ClientInner>) {
             .framed
             .recv_timeout::<DaemonMessage>(Duration::from_millis(100))
         {
-            Ok(DaemonMessage::Event(envelope)) => {
-                let handler = inner
-                    .subscriptions
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .get(&envelope.session_id)
-                    .cloned();
-                if let Some(handler) = handler {
-                    handler(envelope);
+            Ok(DaemonMessage::Event(envelope)) => match envelope.event {
+                SessionEvent::SessionsSnapshot { sessions } => {
+                    let handler = inner
+                        .session_state_subscription
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .clone();
+                    if let Some(handler) = handler {
+                        handler(sessions);
+                    }
                 }
-            }
+                event => {
+                    let handler = inner
+                        .subscriptions
+                        .lock()
+                        .unwrap_or_else(|err| err.into_inner())
+                        .get(&envelope.session_id)
+                        .cloned();
+                    if let Some(handler) = handler {
+                        handler(SessionEventEnvelope {
+                            session_id: envelope.session_id,
+                            generation: envelope.generation,
+                            event,
+                        });
+                    }
+                }
+            },
             Ok(message) => {
                 if let Some(id) = daemon_message_id(&message) {
                     let tx = inner
@@ -448,6 +516,11 @@ fn client_read_loop(inner: Arc<ClientInner>) {
 
 fn fail_connection(inner: &ClientInner, message: &str) {
     inner.stop.store(true, Ordering::SeqCst);
+    inner
+        .session_state_subscription
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .take();
     let subscriptions: Vec<(String, EventHandler)> = inner
         .subscriptions
         .lock()

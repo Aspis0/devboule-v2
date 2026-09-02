@@ -99,6 +99,12 @@ pub enum ClientMessage {
     SessionsList {
         id: u64,
     },
+    SessionsWatch {
+        id: u64,
+    },
+    SessionsUnwatch {
+        id: u64,
+    },
     SessionResume {
         id: u64,
         persistence: Persistence,
@@ -133,6 +139,8 @@ impl ClientMessage {
             | Self::SessionInterrupt { id, .. }
             | Self::SessionPermissionRespond { id, .. }
             | Self::SessionsList { id }
+            | Self::SessionsWatch { id }
+            | Self::SessionsUnwatch { id }
             | Self::SessionResume { id, .. }
             | Self::Invoke { id, .. } => Some(*id),
         }
@@ -300,6 +308,7 @@ pub struct SessionEventEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{SessionState, SessionStateSnapshot};
 
     #[test]
     fn detach_close_stop_are_three_type_tags() {
@@ -324,6 +333,30 @@ mod tests {
         assert_ne!(detach["type"], close["type"]);
         assert_ne!(close["type"], stop["type"]);
         assert_ne!(detach["type"], stop["type"]);
+    }
+
+    #[test]
+    fn session_state_broadcast_is_a_compact_event_snapshot() {
+        let message = DaemonMessage::Event(SessionEventEnvelope {
+            session_id: String::new(),
+            generation: 0,
+            event: SessionEvent::SessionsSnapshot {
+                sessions: vec![SessionStateSnapshot {
+                    id: "s.client.1".to_string(),
+                    title: "Terminal".to_string(),
+                    state: SessionState::Silent { generation: 3 },
+                    elapsed_ms: Some(300_001),
+                }],
+            },
+        });
+        let value = serde_json::to_value(message).expect("json");
+        assert_eq!(value["event"]["type"], "sessions_snapshot");
+        assert_eq!(value["event"]["sessions"][0]["id"], "s.client.1");
+        assert_eq!(value["event"]["sessions"][0]["title"], "Terminal");
+        assert_eq!(value["event"]["sessions"][0]["state"]["type"], "silent");
+        assert_eq!(value["event"]["sessions"][0]["elapsedMs"], 300_001);
+        assert!(value["event"]["sessions"][0].get("workspaceId").is_none());
+        assert!(value["event"]["sessions"][0].get("kind").is_none());
     }
 
     #[test]

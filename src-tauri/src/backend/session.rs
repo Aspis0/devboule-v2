@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use devboule_daemon::{DaemonClient, EventHandler};
+use devboule_daemon::{DaemonClient, EventHandler, SessionStateHandler};
 use devboule_protocol::{Cursor, ErrorCode};
 
 use crate::client::DaemonBridge;
@@ -18,7 +18,9 @@ use super::error::CommandError;
 
 const MAX_WRITE_BYTES: usize = 64 * 1024;
 
-pub use devboule_protocol::{validate_session_id, Session, SessionEvent, SessionKind};
+pub use devboule_protocol::{
+    validate_session_id, Session, SessionEvent, SessionKind, SessionStateSnapshot,
+};
 
 #[tauri::command]
 pub fn session_create(
@@ -96,6 +98,22 @@ pub fn session_close(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), 
 #[tauri::command]
 pub fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Session>, CommandError> {
     Ok(require_client(&bridge)?.sessions_list()?)
+}
+
+#[tauri::command]
+pub fn sessions_watch(
+    bridge: State<'_, DaemonBridge>,
+    ch: Channel<Vec<SessionStateSnapshot>>,
+) -> Result<(), CommandError> {
+    let handler: SessionStateHandler = Arc::new(move |snapshots| {
+        let _ = ch.send(snapshots);
+    });
+    Ok(require_client(&bridge)?.sessions_watch(handler)?)
+}
+
+#[tauri::command]
+pub fn sessions_unwatch(bridge: State<'_, DaemonBridge>) -> Result<(), CommandError> {
+    Ok(require_client(&bridge)?.sessions_unwatch()?)
 }
 
 fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandError> {

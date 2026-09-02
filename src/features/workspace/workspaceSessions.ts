@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { sessionCreate, sessionsList } from "../../lib/tauri";
-import type { Session } from "../../types/ipc";
+import {
+  createSessionStateChannel,
+  sessionCreate,
+  sessionsList,
+  sessionsUnwatch,
+  sessionsWatch,
+} from "../../lib/tauri";
+import type { Session, SessionStateSnapshot } from "../../types/ipc";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
   create: () => Promise<Session>;
+  watch?: (listener: (snapshots: SessionStateSnapshot[]) => void) => Promise<() => void>;
 }
 
 export interface WorkspaceSessionState {
@@ -21,11 +28,19 @@ export interface WorkspaceSessionController {
   refresh: () => Promise<void>;
   create: () => Promise<Session | null>;
   select: (sessionId: string) => void;
+  watch: () => () => void;
 }
 
 const DEFAULT_SOURCE: WorkspaceSessionSource = {
   list: sessionsList,
   create: () => sessionCreate(null, "terminal"),
+  watch: async (listener) => {
+    const channel = createSessionStateChannel(listener);
+    await sessionsWatch(channel);
+    return () => {
+      void sessionsUnwatch();
+    };
+  },
 };
 
 const LIST_ERROR = "Could not load terminal sessions. The daemon is unreachable.";
@@ -78,6 +93,9 @@ export function createWorkspaceSessionController(
   };
   let refreshGeneration = 0;
   const listeners = new Set<() => void>();
+  let watchLeases = 0;
+  let watchPromise: Promise<() => void> | null = null;
+  let watchStop: (() => void) | null = null;
 
   const publish = (next: WorkspaceSessionState): void => {
     state = next;
@@ -108,6 +126,43 @@ export function createWorkspaceSessionController(
     }
   };
 
+  const applySnapshot = (snapshots: SessionStateSnapshot[]): void => {
+    // A pushed roster is authoritative. Cancel an older list response so a
+    // slow initial request cannot put the tab strip back behind the daemon.
+    ++refreshGeneration;
+    const known = new Map(state.sessions.map((session) => [session.id, session]));
+    const sessions = snapshots.map((snapshot): Session => {
+      const previous = known.get(snapshot.id);
+      return previous
+        ? {
+            ...previous,
+            title: snapshot.title,
+            state: snapshot.state,
+            elapsedMs: snapshot.elapsedMs,
+          }
+        : {
+            id: snapshot.id,
+            workspaceId: null,
+            kind: "terminal",
+            title: snapshot.title,
+            state: snapshot.state,
+            elapsedMs: snapshot.elapsedMs,
+          };
+    });
+    const selected =
+      state.selectedSessionId !== null &&
+      sessions.some((session) => session.id === state.selectedSessionId)
+        ? state.selectedSessionId
+        : (sessions[0]?.id ?? null);
+    publish({
+      ...state,
+      sessions,
+      selectedSessionId: selected,
+      loading: false,
+      error: null,
+    });
+  };
+
   const create = async (): Promise<Session | null> => {
     if (state.creating) return null;
     ++refreshGeneration;
@@ -133,6 +188,41 @@ export function createWorkspaceSessionController(
     }
   };
 
+  const watch = (): (() => void) => {
+    watchLeases += 1;
+    let released = false;
+    if (source.watch && watchPromise === null) {
+      watchPromise = source
+        .watch(applySnapshot)
+        .then((stop) => {
+          watchStop = stop;
+          if (watchLeases === 0) {
+            stop();
+            watchStop = null;
+            watchPromise = null;
+          }
+          return stop;
+        })
+        .catch(() => {
+          watchPromise = null;
+          if (watchLeases > 0) {
+            publish({ ...state, error: LIST_ERROR });
+          }
+          return () => undefined;
+        });
+    }
+    return () => {
+      if (released) return;
+      released = true;
+      watchLeases = Math.max(0, watchLeases - 1);
+      if (watchLeases === 0 && watchStop !== null) {
+        watchStop();
+        watchStop = null;
+        watchPromise = null;
+      }
+    };
+  };
+
   return {
     getState: () => state,
     subscribe: (listener) => {
@@ -141,6 +231,7 @@ export function createWorkspaceSessionController(
     },
     refresh,
     create,
+    watch,
     select: (sessionId) => {
       if (state.sessions.some((session) => session.id === sessionId)) {
         publish({ ...state, selectedSessionId: sessionId });
@@ -161,8 +252,12 @@ export function useWorkspaceSessions(): WorkspaceSessionState & {
 
   useEffect(() => {
     const unsubscribe = controller.subscribe(() => setState(controller.getState()));
+    const releaseWatch = controller.watch();
     void controller.refresh();
-    return unsubscribe;
+    return () => {
+      releaseWatch();
+      unsubscribe();
+    };
   }, [controller]);
 
   const refresh = useCallback(() => controller.refresh(), [controller]);

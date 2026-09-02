@@ -40,6 +40,18 @@ pub struct Session {
     pub elapsed_ms: Option<u64>,
 }
 
+/// The connection-scoped roster update. It deliberately carries only the
+/// fields needed to update session tabs; workspace and kind are not repeated
+/// on every spontaneous transition frame.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStateSnapshot {
+    pub id: String,
+    pub title: String,
+    pub state: SessionState,
+    pub elapsed_ms: Option<u64>,
+}
+
 /// How this session currently exists. Live and recovered are different
 /// kinds of thing: one has a process, the other is a transcript of a
 /// process the daemon can no longer see.
@@ -94,6 +106,10 @@ impl SessionState {
 
 /// Events sent over the Tauri Channel supplied to `session_attach`.
 ///
+/// [`SessionEvent::SessionsSnapshot`] is the exception: it is carried in the
+/// same daemon event envelope but consumed by the daemon client connection
+/// watcher before attachment events reach the Tauri channel.
+///
 /// `seq` starts at 1 and is contiguous for output chunks in one
 /// *generation* of a session. A slow client is resynchronized with a
 /// [`SessionEvent::Snapshot`], not with a declared missing range. A cursor
@@ -105,7 +121,8 @@ impl SessionState {
 /// types. M3.5 uses that freedom: [`SessionEvent::Snapshot`] delivers the
 /// current screen state on attach instead of a replay of past frames.
 ///
-/// This enum is the TypeScript `SessionEvent` contract. Generation is **not**
+/// Attachment variants in this enum are the TypeScript `SessionEvent`
+/// contract. Generation is **not**
 /// a field here: it lives on [`Cursor`] and on [`super::SessionEventEnvelope`]
 /// so a reconnecting client can tell a recreated process from the stream it
 /// left. Putting generation on every output chunk would change the Channel
@@ -145,6 +162,11 @@ pub enum SessionEvent {
     },
     /// The journal has started dropping output for this live session.
     JournalDegraded,
+    /// Connection-scoped session roster update. Unlike the attachment events
+    /// above, this event is not tied to a session attachment or generation.
+    SessionsSnapshot {
+        sessions: Vec<SessionStateSnapshot>,
+    },
     /// Current screen state, delivered on attach instead of a replay of
     /// past frames (M3.5). The daemon holds a headless terminal emulator,
     /// applies every output chunk to it in sequence order, and renders the

@@ -38,6 +38,14 @@ export interface Session {
   elapsedMs: number | null;
 }
 
+/** Compact daemon push used to update the workspace tab roster. */
+export interface SessionStateSnapshot {
+  id: Id;
+  title: string;
+  state: SessionState;
+  elapsedMs: number | null;
+}
+
 export type CursorShape = "block" | "underline" | "bar";
 
 export interface ScreenCursor {

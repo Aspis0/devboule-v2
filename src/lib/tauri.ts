@@ -19,6 +19,7 @@ import type {
   Session,
   SessionEvent,
   SessionKind,
+  SessionStateSnapshot,
   Workspace,
 } from "../types/ipc";
 
@@ -38,6 +39,8 @@ type CommandArgs = {
   session_detach: { id: Id };
   session_close: { id: Id };
   sessions_list: undefined;
+  sessions_watch: { ch: SessionStateChannel };
+  sessions_unwatch: undefined;
   providers_list: undefined;
   provider_models: { provider: string };
   oracle_status: undefined;
@@ -77,6 +80,8 @@ type CommandResults = {
   session_detach: void;
   session_close: void;
   sessions_list: Session[];
+  sessions_watch: void;
+  sessions_unwatch: void;
   providers_list: ProviderInfo[];
   provider_models: ModelInfo[];
   oracle_status: OracleIndexStatus;
@@ -103,9 +108,16 @@ type CommandResults = {
 type CommandName = keyof CommandArgs & keyof CommandResults;
 
 export type SessionChannel = Channel<SessionEvent>;
+export type SessionStateChannel = Channel<SessionStateSnapshot[]>;
 
 export function createSessionChannel(onEvent?: (event: SessionEvent) => void): SessionChannel {
   return new Channel<SessionEvent>(onEvent ?? (() => undefined));
+}
+
+export function createSessionStateChannel(
+  onSnapshot?: (snapshots: SessionStateSnapshot[]) => void,
+): SessionStateChannel {
+  return new Channel<SessionStateSnapshot[]>(onSnapshot ?? (() => undefined));
 }
 
 export function invokeTyped<K extends CommandName>(
@@ -165,6 +177,8 @@ export const sessionResize = (id: Id, cols: number, rows: number) =>
 export const sessionDetach = (id: Id) => invokeTyped("session_detach", { id });
 export const sessionClose = (id: Id) => invokeTyped("session_close", { id });
 export const sessionsList = () => invokeTyped("sessions_list");
+export const sessionsWatch = (ch: SessionStateChannel) => invokeTyped("sessions_watch", { ch });
+export const sessionsUnwatch = () => invokeTyped("sessions_unwatch");
 export const providersList = () => invokeTyped("providers_list");
 export const providerModels = (provider: string) => invokeTyped("provider_models", { provider });
 export const oracleStatus = () => invokeTyped("oracle_status");

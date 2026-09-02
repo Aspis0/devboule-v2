@@ -32,7 +32,10 @@ mod security;
 
 #[cfg(feature = "server")]
 pub use atomic::atomic_write;
-pub use client::{connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler};
+pub use client::{
+    connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler,
+    SessionStateHandler,
+};
 pub use error::DaemonError;
 pub use framing::Framed;
 #[cfg(feature = "server")]

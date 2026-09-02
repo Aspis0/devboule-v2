@@ -55,6 +55,8 @@ pub fn run() {
             backend::session::session_resize,
             backend::session::session_close,
             backend::session::sessions_list,
+            backend::session::sessions_watch,
+            backend::session::sessions_unwatch,
             oracle::oracle_workspace_get,
             oracle::oracle_workspace_set,
             oracle::oracle_model_download_start,

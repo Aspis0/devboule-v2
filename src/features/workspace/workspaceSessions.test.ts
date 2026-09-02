@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Session } from "../../types/ipc";
+import type { Session, SessionStateSnapshot } from "../../types/ipc";
 import { createWorkspaceSessionController, sessionStateLabel } from "./workspaceSessions";
 
 const liveSession = (id: string, title = id): Session => ({
@@ -71,5 +71,42 @@ describe("workspace session controller", () => {
     expect(sessionStateLabel({ type: "silent", generation: 1 })).toBe(
       "silent · duration unknown",
     );
+  });
+
+  it("updates the tab roster from a pushed session snapshot", async () => {
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("terminal-1", "old title")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+
+    const release = controller.watch();
+    await controller.refresh();
+    watched.listener?.([
+      {
+        id: "terminal-1",
+        title: "killed shell",
+        state: { type: "ended", generation: 1, code: 137 },
+        elapsedMs: 42,
+      },
+    ]);
+
+    expect(controller.getState().sessions).toEqual([
+      {
+        ...liveSession("terminal-1", "old title"),
+        title: "killed shell",
+        state: { type: "ended", generation: 1, code: 137 },
+        elapsedMs: 42,
+      },
+    ]);
+    release();
   });
 });

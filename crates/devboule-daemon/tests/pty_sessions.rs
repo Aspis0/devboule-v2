@@ -21,11 +21,11 @@ use devboule_daemon::current_user_sid;
 use devboule_daemon::Screen;
 use devboule_daemon::{
     connect, spawn_daemon, write_test_pty_command, DaemonClient, EventHandler, PtyCommand,
-    RuntimePaths, IDLE_SHUTDOWN_GRACE, PENDING_OUTPUT_BUDGET_BYTES,
+    RuntimePaths, SessionStateHandler, IDLE_SHUTDOWN_GRACE, PENDING_OUTPUT_BUDGET_BYTES,
 };
 use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, CursorShape, ErrorCode, OwnerId, Persistence,
-    PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionState,
+    PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionState, SessionStateSnapshot,
 };
 use portable_pty::{CommandBuilder, PtySize};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
@@ -164,6 +164,14 @@ fn collect_handler(received: Arc<Mutex<Vec<SessionEvent>>>) -> EventHandler {
     })
 }
 
+fn collect_state_handler(
+    received: Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
+) -> SessionStateHandler {
+    Arc::new(move |snapshots| {
+        received.lock().unwrap().push(snapshots);
+    })
+}
+
 fn queue_command(paths: &RuntimePaths, command: PtyCommand) {
     write_test_pty_command(paths, &command).expect("write test command");
 }
@@ -252,7 +260,8 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
         | SessionEvent::Silent { .. }
-        | SessionEvent::JournalDegraded => false,
+        | SessionEvent::JournalDegraded
+        | SessionEvent::SessionsSnapshot { .. } => false,
     }
 }
 
@@ -614,6 +623,7 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::Recovered { .. }
             | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded
+            | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. } => None,
         })
         .max()
@@ -941,6 +951,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::Recovered { .. }
             | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded
+            | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. } => None,
         })
         .collect();
@@ -1092,6 +1103,104 @@ fn external_shell_kill_reaches_the_attached_client() {
         "attached client did not observe externally killed shell: {:?}",
         received.lock().unwrap()
     );
+}
+
+#[test]
+#[ignore = "spawns two real Windows ConPTYs and kills one from outside the daemon"]
+fn state_broadcast_reaches_unattached_client_after_external_kill() {
+    let harness = Harness::spawn();
+    let first_pid_file = harness.dir.join("state-broadcast-first.pid");
+    let second_pid_file = harness.dir.join("state-broadcast-second.pid");
+    let client = harness.client("state-broadcast");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .sessions_watch(collect_state_handler(Arc::clone(&received)))
+        .expect("watch sessions");
+
+    queue_command(&harness.paths, cmd_keep_with_pid_file(&first_pid_file));
+    let first = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create first session");
+    queue_command(&harness.paths, cmd_keep_with_pid_file(&second_pid_file));
+    let second = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create second session");
+    let first_pid = wait_for_pid_file(&first_pid_file, Duration::from_secs(10));
+    let _second_pid = wait_for_pid_file(&second_pid_file, Duration::from_secs(10));
+
+    terminate_process_from_outside(first_pid);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let saw_ended = received.lock().unwrap().iter().any(|snapshots| {
+            snapshots.iter().any(|snapshot| {
+                snapshot.id == first.id && matches!(snapshot.state, SessionState::Ended { .. })
+            })
+        });
+        if saw_ended {
+            let latest = received.lock().unwrap().last().cloned().expect("snapshot");
+            assert!(latest.iter().any(|snapshot| snapshot.id == second.id));
+            client
+                .session_close(&second.id)
+                .expect("close second session");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "unattached client did not receive an ended snapshot: {:?}",
+        received.lock().unwrap()
+    );
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY and kills it from outside the daemon"]
+fn state_broadcast_fires_once_for_an_exit_transition() {
+    let harness = Harness::spawn();
+    let pid_file = harness.dir.join("state-broadcast-once.pid");
+    let client = harness.client("state-broadcast-once");
+    let received = Arc::new(Mutex::new(Vec::new()));
+    client
+        .sessions_watch(collect_state_handler(Arc::clone(&received)))
+        .expect("watch sessions");
+    queue_command(&harness.paths, cmd_keep_with_pid_file(&pid_file));
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create session");
+    let pid = wait_for_pid_file(&pid_file, Duration::from_secs(10));
+    terminate_process_from_outside(pid);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let ended = received
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|snapshots| {
+                snapshots.iter().any(|snapshot| {
+                    snapshot.id == session.id
+                        && matches!(snapshot.state, SessionState::Ended { .. })
+                })
+            })
+            .count();
+        if ended > 0 {
+            std::thread::sleep(Duration::from_millis(500));
+            let ended_after_quiet = received
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|snapshots| {
+                    snapshots.iter().any(|snapshot| {
+                        snapshot.id == session.id
+                            && matches!(snapshot.state, SessionState::Ended { .. })
+                    })
+                })
+                .count();
+            assert_eq!(ended_after_quiet, 1, "exit broadcast repeated");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("no ended state broadcast: {:?}", received.lock().unwrap());
 }
 
 #[test]
@@ -1356,7 +1465,8 @@ fn real_pty_channel_flood_correctness() {
         SessionEvent::Exit { .. }
         | SessionEvent::Recovered { .. }
         | SessionEvent::Silent { .. }
-        | SessionEvent::JournalDegraded => {}
+        | SessionEvent::JournalDegraded
+        | SessionEvent::SessionsSnapshot { .. } => {}
     });
     client
         .session_attach(&session.id, None, handler)
@@ -1742,6 +1852,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         SessionEvent::Recovered { .. }
         | SessionEvent::Silent { .. }
         | SessionEvent::JournalDegraded
+        | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::Snapshot { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
@@ -2102,6 +2213,7 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::Exit { .. }
             | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded
+            | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. } => {}
         }
     }
@@ -2361,6 +2473,7 @@ fn journal_growth_after_13mb_flood() {
             SessionEvent::Exit { .. } => replayed.exited = true,
             SessionEvent::Silent { .. } => {}
             SessionEvent::JournalDegraded => {}
+            SessionEvent::SessionsSnapshot { .. } => {}
             SessionEvent::Snapshot { .. } => {}
         }
     });
@@ -2616,7 +2729,8 @@ fn attach_during_flood_delivers_every_sequence_once() {
             SessionEvent::Exit { .. } => {}
             SessionEvent::Recovered { .. }
             | SessionEvent::Silent { .. }
-            | SessionEvent::JournalDegraded => {}
+            | SessionEvent::JournalDegraded
+            | SessionEvent::SessionsSnapshot { .. } => {}
         }
     }
 

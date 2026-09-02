@@ -16,6 +16,11 @@ vi.mock("../../lib/tauri", () => ({
   })),
   sessionsList: vi.fn(),
   sessionCreate: vi.fn(),
+  createSessionStateChannel: vi.fn((onSnapshot: (snapshots: unknown[]) => void) => ({
+    onSnapshot,
+  })),
+  sessionsWatch: vi.fn(async () => undefined),
+  sessionsUnwatch: vi.fn(async () => undefined),
 }));
 
 vi.mock("../terminal/TerminalSurface", () => ({

@@ -80,7 +80,7 @@ use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, CursorShape, ErrorCode,
     JournalStats, OwnerId, ScreenCursor, Session, SessionEvent, SessionEventEnvelope, SessionKind,
-    SessionState, WireError,
+    SessionState, SessionStateSnapshot, WireError,
 };
 
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
@@ -355,6 +355,13 @@ struct SessionRuntime {
     journal_replays: AtomicU64,
     reader_finished: AtomicBool,
     child_reaped: AtomicBool,
+    /// Transition notifications are suppressed until spawn has inserted all
+    /// runtime state, so an extremely short-lived child cannot publish an
+    /// exit before the corresponding create snapshot.
+    transition_ready: AtomicBool,
+    /// The wait thread and the post-create race check can observe the same
+    /// exit. Only one of them may publish the exit transition.
+    exit_transition_sent: AtomicBool,
     published_frames: AtomicU64,
     published_bytes: AtomicUsize,
 }
@@ -401,6 +408,8 @@ impl SessionRuntime {
             journal_replays: AtomicU64::new(0),
             reader_finished: AtomicBool::new(false),
             child_reaped: AtomicBool::new(false),
+            transition_ready: AtomicBool::new(false),
+            exit_transition_sent: AtomicBool::new(false),
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
         }
@@ -446,6 +455,7 @@ impl SessionRuntime {
                 SessionEvent::JournalDegraded => {
                     runtime.journal_degraded.store(true, Ordering::Release);
                 }
+                SessionEvent::SessionsSnapshot { .. } => {}
                 // Snapshots are screen state, never journal records; a
                 // recovered session replays transcript events only.
                 SessionEvent::Snapshot { .. } => {}
@@ -566,14 +576,28 @@ impl SessionRuntime {
         self.generation.load(Ordering::Acquire)
     }
 
-    fn publish_output(&self, data: &str) {
+    fn transition_ready(&self) -> bool {
+        self.transition_ready.load(Ordering::Acquire)
+    }
+
+    fn process_exited(&self) -> bool {
+        self.lock_stream()
+            .map(|stream| stream.process_exited)
+            .unwrap_or(true)
+    }
+
+    fn should_publish_exit_transition(&self) -> bool {
+        self.transition_ready() && !self.exit_transition_sent.swap(true, Ordering::AcqRel)
+    }
+
+    fn publish_output(&self, data: &str) -> bool {
         let pty_replies;
         let seq;
         let generation;
         let was_silent;
         {
             let Ok(mut stream) = self.lock_stream() else {
-                return;
+                return false;
             };
             if stream.output_closed {
                 // Bytes after EOF are neither applied nor journalled; no
@@ -586,7 +610,7 @@ impl SessionRuntime {
                     self.session_id,
                     data.len()
                 );
-                return;
+                return false;
             }
             // ONE critical section: allocate the sequence, apply the complete
             // chunk to the emulator, then — only after parsing completed —
@@ -602,7 +626,7 @@ impl SessionRuntime {
                         Err(_) => {
                             drop(stream);
                             self.mark_terminal_dead("terminal parser panicked");
-                            return;
+                            return false;
                         }
                     }
                 }
@@ -654,6 +678,7 @@ impl SessionRuntime {
                 self.mark_journal_degraded();
             }
         }
+        was_silent
     }
 
     /// Forward emulator-generated replies to the PTY input side. Best
@@ -805,6 +830,7 @@ impl SessionRuntime {
                 | SessionEvent::Recovered { .. }
                 | SessionEvent::Silent { .. }
                 | SessionEvent::JournalDegraded
+                | SessionEvent::SessionsSnapshot { .. }
                 // Snapshots are not output chunks and are not sourced from
                 // the historical journal replay path.
                 | SessionEvent::Snapshot { .. } => None,
@@ -1073,6 +1099,7 @@ pub struct ConnHandle {
     pub id: u64,
     pub outbound: Arc<ConnOut>,
     attached: Mutex<HashMap<String, PullState>>,
+    state_events: Mutex<VecDeque<SessionEventEnvelope>>,
     next_attachment_generation: AtomicU64,
 }
 
@@ -1104,6 +1131,7 @@ impl ConnHandle {
             id,
             outbound: ConnOut::new(),
             attached: Mutex::new(HashMap::new()),
+            state_events: Mutex::new(VecDeque::new()),
             next_attachment_generation: AtomicU64::new(1),
         })
     }
@@ -1179,6 +1207,33 @@ impl ConnHandle {
             .min()
     }
 
+    pub(crate) fn queue_state_event(&self, envelope: SessionEventEnvelope) {
+        let mut events = self
+            .state_events
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // These are full rosters, so a newer transition subsumes an older
+        // one. Keeping one pending snapshot prevents a slow client from
+        // turning sparse lifecycle changes into an unbounded queue.
+        events.clear();
+        events.push_back(envelope);
+        self.outbound.notify();
+    }
+
+    pub(crate) fn clear_state_events(&self) {
+        self.state_events
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+    }
+
+    pub(crate) fn pull_state_events(&self) -> Vec<SessionEventEnvelope> {
+        self.state_events
+            .lock()
+            .map(|mut events| events.drain(..).collect())
+            .unwrap_or_default()
+    }
+
     /// Drop every subscription this connection holds. The processes stay.
     pub fn detach_all(&self, registry: &SessionRegistry) {
         let ids = self
@@ -1231,6 +1286,7 @@ impl ConnHandle {
                 SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
                 SessionEvent::Silent { .. }
                 | SessionEvent::JournalDegraded
+                | SessionEvent::SessionsSnapshot { .. }
                 | SessionEvent::Snapshot { .. } => false,
             }
         };
@@ -1632,6 +1688,7 @@ pub struct SessionRegistry {
     inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
     paths: RuntimePaths,
     journal: Option<Arc<Journal>>,
+    transition_sink: Arc<Mutex<Option<Arc<dyn Fn(OwnerId) + Send + Sync>>>>,
 }
 
 impl SessionRegistry {
@@ -1640,7 +1697,65 @@ impl SessionRegistry {
             inner: Arc::new(Mutex::new(HashMap::new())),
             paths,
             journal,
+            transition_sink: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn set_transition_sink(&self, sink: Arc<dyn Fn(OwnerId) + Send + Sync>) {
+        if let Ok(mut current) = self.transition_sink.lock() {
+            *current = Some(sink);
+        }
+    }
+
+    fn notify_transition(&self, owner: &OwnerId) {
+        let sink = self
+            .transition_sink
+            .lock()
+            .ok()
+            .and_then(|current| current.clone());
+        if let Some(sink) = sink {
+            sink(owner.clone());
+        }
+    }
+
+    pub(crate) fn state_snapshots(&self, owner: &OwnerId) -> Vec<SessionStateSnapshot> {
+        let mut sessions = self
+            .inner
+            .lock()
+            .map(|map| {
+                map.values()
+                    .filter(|entry| entry.owner() == owner)
+                    .map(RegistryEntry::to_session)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let live_ids = sessions
+            .iter()
+            .map(|session| session.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let owner_token = owner.session_token();
+        if let Some(journal) = &self.journal {
+            if let Ok(rows) = journal.list() {
+                sessions.extend(rows.into_iter().filter_map(|row| {
+                    if live_ids.contains(&row.id) {
+                        return None;
+                    }
+                    let session_token = row.id.split('.').nth(1);
+                    (row.owner == owner.user && session_token == Some(owner_token.as_str()))
+                        .then(|| row.to_session())
+                }));
+            }
+        }
+        sessions.sort_by(|left, right| left.id.cmp(&right.id));
+        sessions
+            .into_iter()
+            .map(|session| SessionStateSnapshot {
+                id: session.id,
+                title: session.title,
+                state: session.state,
+                elapsed_ms: session.elapsed_ms,
+            })
+            .collect()
     }
 
     pub(crate) fn output_metrics(&self) -> OutputMetrics {
@@ -1882,6 +1997,12 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             if let Some(entry) = map.get(session_id) {
                 check_owner(entry, owner)?;
+                if let Some(session) = entry.as_live() {
+                    session
+                        .runtime
+                        .transition_ready
+                        .store(false, Ordering::Release);
+                }
             }
             map.remove(session_id)
         };
@@ -1892,6 +2013,7 @@ impl SessionRegistry {
                     journal.unpin(session_id);
                 }
                 teardown_session(session);
+                self.notify_transition(owner);
                 Ok(true)
             }
             Some(RegistryEntry::Transcript(_)) => {
@@ -1899,6 +2021,7 @@ impl SessionRegistry {
                     journal.try_mark_closed(session_id);
                     journal.unpin(session_id);
                 }
+                self.notify_transition(owner);
                 Ok(false)
             }
             None => {
@@ -1910,6 +2033,7 @@ impl SessionRegistry {
                             return Err(unauthorized());
                         }
                         journal.try_mark_closed(session_id);
+                        self.notify_transition(owner);
                         return Ok(false);
                     }
                 }
@@ -2219,6 +2343,8 @@ pub fn spawn_session(
         .expect("pty writer registered exactly once");
     let id = metadata.id.clone();
     let wait_runtime = Arc::clone(&runtime);
+    let wait_registry = registry.clone();
+    let wait_owner = owner.clone();
     let child_wait = std::thread::Builder::new()
         .name(format!("session-wait-{id}"))
         .spawn(move || {
@@ -2227,10 +2353,15 @@ pub fn spawn_session(
                 .child_reaped
                 .store(code.is_some(), Ordering::Release);
             wait_runtime.mark_exited(code);
+            if wait_runtime.should_publish_exit_transition() {
+                wait_registry.notify_transition(&wait_owner);
+            }
             code
         })
         .ok();
     let monitor_runtime = Arc::clone(&runtime);
+    let monitor_registry = registry.clone();
+    let monitor_owner = owner.clone();
     let liveness_handle = std::thread::Builder::new()
         .name(format!("session-liveness-{id}"))
         .spawn(move || {
@@ -2247,7 +2378,11 @@ pub fn spawn_session(
                 if monitor_runtime.liveness_monitor_should_stop() {
                     return;
                 }
-                monitor_runtime.mark_silent_if_due(Instant::now());
+                if monitor_runtime.mark_silent_if_due(Instant::now()).is_some()
+                    && monitor_runtime.transition_ready()
+                {
+                    monitor_registry.notify_transition(&monitor_owner);
+                }
             }
         })
         .ok();
@@ -2280,10 +2415,18 @@ pub fn spawn_session(
 
     let (coalesce_tx, coalesce_rx) = mpsc::channel::<Vec<u8>>();
     let coalesce_runtime = Arc::clone(&runtime);
+    let coalesce_registry = registry.clone();
+    let coalesce_owner = owner.clone();
     let coalesce_handle = match std::thread::Builder::new()
         .name(format!("session-coalesce-{id}"))
-        .spawn(move || coalesce_loop(coalesce_rx, coalesce_runtime))
-    {
+        .spawn(move || {
+            coalesce_loop(
+                coalesce_rx,
+                coalesce_runtime,
+                coalesce_registry,
+                coalesce_owner,
+            )
+        }) {
         Ok(handle) => Some(handle),
         Err(_) => {
             let _ = registry.close(&id, &owner);
@@ -2337,6 +2480,18 @@ pub fn spawn_session(
     if let Some(coalesce_handle) = orphaned_coalesce {
         let _ = coalesce_handle.join();
     }
+    // A child can die before the create transition is published. Mark that
+    // exit as covered by this first snapshot; the second check catches an
+    // exit racing the publication without allowing the wait thread to report
+    // the same transition twice.
+    if runtime.process_exited() {
+        runtime.exit_transition_sent.store(true, Ordering::Release);
+    }
+    registry.notify_transition(&owner);
+    runtime.transition_ready.store(true, Ordering::Release);
+    if runtime.process_exited() && runtime.should_publish_exit_transition() {
+        registry.notify_transition(&owner);
+    }
     Ok(())
 }
 
@@ -2381,7 +2536,12 @@ fn reader_loop(
     }
 }
 
-fn coalesce_loop(rx: mpsc::Receiver<Vec<u8>>, runtime: Arc<SessionRuntime>) {
+fn coalesce_loop(
+    rx: mpsc::Receiver<Vec<u8>>,
+    runtime: Arc<SessionRuntime>,
+    registry: SessionRegistry,
+    owner: OwnerId,
+) {
     let mut pending = Vec::new();
     loop {
         let received = if pending.is_empty() {
@@ -2390,7 +2550,7 @@ fn coalesce_loop(rx: mpsc::Receiver<Vec<u8>>, runtime: Arc<SessionRuntime>) {
             match rx.recv_timeout(COALESCE_FLUSH) {
                 Ok(bytes) => Some(bytes),
                 Err(RecvTimeoutError::Timeout) => {
-                    flush_coalesced(&mut pending, &runtime);
+                    flush_coalesced(&mut pending, &runtime, &registry, &owner);
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => None,
@@ -2400,24 +2560,31 @@ fn coalesce_loop(rx: mpsc::Receiver<Vec<u8>>, runtime: Arc<SessionRuntime>) {
             Some(bytes) => {
                 pending.extend_from_slice(&bytes);
                 if pending.len() >= COALESCE_MAX_BYTES || pending.len() == COALESCE_EAGER_BYTES {
-                    flush_coalesced(&mut pending, &runtime);
+                    flush_coalesced(&mut pending, &runtime, &registry, &owner);
                 }
             }
             None => {
-                flush_coalesced(&mut pending, &runtime);
+                flush_coalesced(&mut pending, &runtime, &registry, &owner);
                 break;
             }
         }
     }
 }
 
-fn flush_coalesced(pending: &mut Vec<u8>, runtime: &SessionRuntime) {
+fn flush_coalesced(
+    pending: &mut Vec<u8>,
+    runtime: &SessionRuntime,
+    registry: &SessionRegistry,
+    owner: &OwnerId,
+) {
     if pending.is_empty() {
         return;
     }
     let data = String::from_utf8_lossy(pending).into_owned();
     pending.clear();
-    runtime.publish_output(&data);
+    if runtime.publish_output(&data) && runtime.transition_ready() {
+        registry.notify_transition(owner);
+    }
 }
 
 /// Returns whether the registry entry was removed (so the caller can
@@ -3366,6 +3533,7 @@ mod tests {
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::Silent { .. } => "silent",
                 SessionEvent::JournalDegraded => "journal_degraded",
+                SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
             })
             .collect();
         assert_eq!(kinds, ["snapshot", "output", "exit"]);
@@ -3582,6 +3750,7 @@ mod tests {
                 SessionEvent::Recovered { .. } => "recovered",
                 SessionEvent::Silent { .. } => "silent",
                 SessionEvent::JournalDegraded => "journal_degraded",
+                SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
                 SessionEvent::Snapshot { .. } => "snapshot",
             })
             .collect();
