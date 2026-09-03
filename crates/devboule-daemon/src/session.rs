@@ -89,6 +89,8 @@ use crate::process_tree::JobObject;
 use crate::screen::Screen;
 use crate::server::ServerState;
 
+#[path = "acp_client.rs"]
+mod acp_client;
 #[path = "event_pull.rs"]
 mod event_pull;
 #[path = "session_types.rs"]
@@ -169,6 +171,26 @@ pub const SESSION_SILENCE_THRESHOLD: Duration = Duration::from_secs(300);
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+/// The transport-specific ACP module supplies these three small adapters;
+/// the registry, runtime, coalescer, journal and attachment code stay shared.
+pub(super) trait SessionKiller: Send + Sync {
+    fn kill(&mut self);
+    fn clone_killer(&self) -> Box<dyn SessionKiller>;
+}
+
+pub(super) trait WaitableChild: Send {
+    fn wait(self: Box<Self>) -> Option<u32>;
+}
+
+pub(super) trait ReaderDispatch: Send {
+    fn feed(&mut self, bytes: &[u8], runtime: &SessionRuntime) -> Result<(), String>;
+    fn finish(&mut self, runtime: &SessionRuntime);
+}
+
+pub(super) trait StderrSource: Send {
+    fn spawn(self: Box<Self>, runtime: Arc<SessionRuntime>) -> std::io::Result<JoinHandle<()>>;
+}
+
 /// Stream state is one mutex on purpose. Every step that must be atomic
 /// with respect to output application happens under this single hold:
 /// apply-to-emulator + boundary update + per-attachment enqueue, and screen
@@ -176,7 +198,7 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// makes attach ordering exact: the subscriber is registered with its
 /// snapshot already captured, and only then can the reader publish the next
 /// live chunk. Subscribe-with-state, subscribe-before-live.
-struct SessionRuntime {
+pub(super) struct SessionRuntime {
     session_id: String,
     journal: Option<Arc<Journal>>,
     stream: Mutex<StreamState>,
@@ -234,10 +256,14 @@ impl SessionRuntime {
                 last_applied_seq: 0,
                 generation: 1,
                 screen: Some(Screen::new(INITIAL_COLS, INITIAL_ROWS)),
+                transcript: false,
                 attached: None,
                 pending: VecDeque::new(),
                 pending_bytes: 0,
                 pending_frames: 0,
+                agent_backlog: VecDeque::new(),
+                agent_backlog_bytes: 0,
+                agent_backlog_frames: 0,
                 scrollback: Scrollback::default(),
                 output_closed: false,
                 process_exited: false,
@@ -305,6 +331,7 @@ impl SessionRuntime {
         // emulator, no snapshot, no live queue. Cursor-based journal
         // replay below serves its attaches.
         stream.screen = None;
+        stream.transcript = true;
         for event in replay.events {
             match event {
                 SessionEvent::Output { seq, data } => {
@@ -334,6 +361,12 @@ impl SessionRuntime {
                 // Snapshots are screen state, never journal records; a
                 // recovered session replays transcript events only.
                 SessionEvent::Snapshot { .. } => {}
+                SessionEvent::AgentMessage { .. }
+                | SessionEvent::AgentToolCall { .. }
+                | SessionEvent::AgentToolUpdate { .. }
+                | SessionEvent::AgentFinished { .. }
+                | SessionEvent::AgentError { .. }
+                | SessionEvent::AgentStderr { .. } => {}
             }
         }
         drop(stream);
@@ -345,8 +378,19 @@ impl SessionRuntime {
     /// synchronising a screen.
     pub(crate) fn is_transcript(&self) -> bool {
         self.lock_stream()
-            .map(|stream| stream.screen.is_none())
+            .map(|stream| stream.transcript)
             .unwrap_or(false)
+    }
+
+    fn for_acp(session_id: String, journal: Option<Arc<Journal>>) -> Arc<Self> {
+        let runtime = Arc::new(Self::with_journal(session_id, journal));
+        if let Ok(mut stream) = runtime.stream.lock() {
+            // ACP has structured messages rather than a terminal screen, but
+            // it is still a live session and must use the live attach path.
+            stream.screen = None;
+            stream.transcript = false;
+        }
+        runtime
     }
 
     pub(crate) fn lock_stream(&self) -> Result<MutexGuard<'_, StreamState>, ()> {
@@ -561,6 +605,59 @@ impl SessionRuntime {
         was_silent
     }
 
+    fn publish_agent_event(&self, event: SessionEvent, journal_text: Option<&str>) -> bool {
+        let was_silent;
+        let journal_output;
+        {
+            let Ok(mut stream) = self.lock_stream() else {
+                return false;
+            };
+            if stream.output_closed {
+                eprintln!(
+                    "session {} dropped ACP event after EOF: {:?}",
+                    self.session_id, event
+                );
+                return false;
+            }
+            was_silent = matches!(stream.disposition, Disposition::Silent);
+            if !stream.process_exited {
+                stream.disposition = Disposition::Running;
+            }
+            stream.last_publish = Some(Instant::now());
+            journal_output = journal_text.map(|text| {
+                let seq = stream.next_seq;
+                stream.next_seq = stream.next_seq.saturating_add(1);
+                (stream.generation, seq, text.to_string())
+            });
+            enqueue_agent(&mut stream, event.clone());
+            self.published_frames.fetch_add(1, Ordering::Relaxed);
+            self.published_bytes.fetch_add(
+                serde_json::to_vec(&event)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0),
+                Ordering::Relaxed,
+            );
+            if let Some(attached) = &stream.attached {
+                attached.outbound.notify();
+            }
+        }
+        if was_silent {
+            self.notify_liveness();
+        }
+        if let (Some(journal), Some((generation, seq, text))) = (&self.journal, journal_output) {
+            let accepted = journal.try_append(output_record(
+                self.session_id.clone(),
+                generation,
+                seq,
+                text.as_bytes(),
+            ));
+            if !accepted || journal.is_session_degraded(&self.session_id) {
+                self.mark_journal_degraded();
+            }
+        }
+        was_silent
+    }
+
     /// Forward emulator-generated replies to the PTY input side. Best
     /// effort: a dead PTY has a dead reader that ends the session anyway.
     fn write_pty_replies(&self, replies: &[String]) {
@@ -725,7 +822,13 @@ impl SessionRuntime {
                 | SessionEvent::SessionsSnapshot { .. }
                 // Snapshots are not output chunks and are not sourced from
                 // the historical journal replay path.
-                | SessionEvent::Snapshot { .. } => None,
+                | SessionEvent::Snapshot { .. }
+                | SessionEvent::AgentMessage { .. }
+                | SessionEvent::AgentToolCall { .. }
+                | SessionEvent::AgentToolUpdate { .. }
+                | SessionEvent::AgentFinished { .. }
+                | SessionEvent::AgentError { .. }
+                | SessionEvent::AgentStderr { .. } => None,
             })
             .collect()
     }
@@ -770,6 +873,15 @@ impl SessionRuntime {
         if let Some(cursor) = from_cursor {
             cursor_replay_ok(stream.generation, cursor)?;
         }
+        let preserve_agent_pending = stream
+            .attached
+            .as_ref()
+            .is_some_and(|attached| attached.conn_id == conn.id)
+            && !stream.transcript
+            && stream.screen.is_none();
+        if preserve_agent_pending {
+            move_agent_pending_to_backlog(&mut stream);
+        }
         let as_of_seq = stream.last_applied_seq;
         let screen = stream.screen.as_ref().map(Screen::snapshot);
         stream.attached = Some(Attachment {
@@ -785,6 +897,13 @@ impl SessionRuntime {
             stream
                 .pending
                 .push_back(PendingItem::Snapshot { as_of_seq, screen });
+        } else if !stream.transcript {
+            let agent_backlog = std::mem::take(&mut stream.agent_backlog);
+            stream.pending.extend(agent_backlog);
+            stream.pending_bytes = stream.agent_backlog_bytes;
+            stream.pending_frames = stream.agent_backlog_frames;
+            stream.agent_backlog_bytes = 0;
+            stream.agent_backlog_frames = 0;
         }
         Ok(stream.generation)
     }
@@ -803,9 +922,13 @@ impl SessionRuntime {
             // The unsent queue belonged to the departing viewer. A new
             // attach must start from a fresh snapshot, not from a stale
             // stream assembled for a client that is gone.
-            stream.pending.clear();
-            stream.pending_bytes = 0;
-            stream.pending_frames = 0;
+            if !stream.transcript && stream.screen.is_none() {
+                move_agent_pending_to_backlog(&mut stream);
+            } else {
+                stream.pending.clear();
+                stream.pending_bytes = 0;
+                stream.pending_frames = 0;
+            }
             stream.pending_silences.clear();
         }
     }
@@ -907,6 +1030,9 @@ impl SessionRuntime {
         // A new generation is a new process: a fresh emulator, not the old
         // grid carrying over.
         stream.screen = Some(Screen::new(INITIAL_COLS, INITIAL_ROWS));
+        stream.agent_backlog.clear();
+        stream.agent_backlog_bytes = 0;
+        stream.agent_backlog_frames = 0;
         stream.pending.clear();
         stream.pending_bytes = 0;
         stream.pending_frames = 0;
@@ -985,14 +1111,94 @@ fn enqueue_output(stream: &mut StreamState, seq: u64, data: &str) -> (u64, u64) 
     (discarded_bytes, discarded_frames)
 }
 
+fn enqueue_agent(stream: &mut StreamState, event: SessionEvent) {
+    if stream.attached.is_some() {
+        push_bounded_agent(
+            &mut stream.pending,
+            &mut stream.pending_bytes,
+            &mut stream.pending_frames,
+            event,
+        );
+    } else {
+        push_bounded_agent(
+            &mut stream.agent_backlog,
+            &mut stream.agent_backlog_bytes,
+            &mut stream.agent_backlog_frames,
+            event,
+        );
+    }
+}
+
+fn push_bounded_agent(
+    queue: &mut VecDeque<PendingItem>,
+    bytes_total: &mut usize,
+    frames_total: &mut u64,
+    event: SessionEvent,
+) {
+    let bytes = serde_json::to_vec(&event)
+        .map(|value| value.len())
+        .unwrap_or(0);
+    queue.push_back(PendingItem::Agent { event, bytes });
+    *bytes_total = bytes_total.saturating_add(bytes);
+    *frames_total = frames_total.saturating_add(1);
+    if *bytes_total <= PENDING_OUTPUT_BUDGET_BYTES && *frames_total <= PENDING_OUTPUT_BUDGET_FRAMES
+    {
+        return;
+    }
+    // ACP has no terminal screen to use as a replacement snapshot. Keep the
+    // newest structured event and bound both the attached queue and the
+    // detached backlog with the same limits.
+    let newest = queue.pop_back();
+    queue.clear();
+    *bytes_total = 0;
+    *frames_total = 0;
+    if let Some(item) = newest {
+        if let PendingItem::Agent { bytes, .. } = &item {
+            *bytes_total = *bytes;
+            *frames_total = 1;
+        }
+        queue.push_back(item);
+    }
+}
+
+fn move_agent_pending_to_backlog(stream: &mut StreamState) {
+    while let Some(item) = stream.pending.pop_front() {
+        if let PendingItem::Agent { bytes, .. } = &item {
+            stream.agent_backlog_bytes = stream.agent_backlog_bytes.saturating_add(*bytes);
+            stream.agent_backlog_frames = stream.agent_backlog_frames.saturating_add(1);
+            stream.agent_backlog.push_back(item);
+        }
+    }
+    stream.pending_bytes = 0;
+    stream.pending_frames = 0;
+    if stream.agent_backlog_bytes > PENDING_OUTPUT_BUDGET_BYTES
+        || stream.agent_backlog_frames > PENDING_OUTPUT_BUDGET_FRAMES
+    {
+        let newest = stream.agent_backlog.pop_back();
+        stream.agent_backlog.clear();
+        stream.agent_backlog_bytes = 0;
+        stream.agent_backlog_frames = 0;
+        if let Some(item) = newest {
+            if let PendingItem::Agent { bytes, .. } = &item {
+                stream.agent_backlog_bytes = *bytes;
+                stream.agent_backlog_frames = 1;
+            }
+            stream.agent_backlog.push_back(item);
+        }
+    }
+}
+
 /// The registry owns this value; the reader and command paths keep Arcs to
 /// the endpoints/runtime they need after releasing the map lock.
 struct PtySession {
     metadata: Session,
     owner: OwnerId,
     process_job: JobObject,
-    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
-    killer: Box<dyn ChildKiller + Send + Sync>,
+    master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
+    killer: Box<dyn SessionKiller>,
+    /// This is separate from the stdout reader: stderr must never be able to
+    /// fill its pipe and stop the ACP child from producing responses.
+    stderr_handle: Option<JoinHandle<()>>,
     child_wait: Option<JoinHandle<Option<u32>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     reader_handle: Option<JoinHandle<()>>,
@@ -1003,6 +1209,63 @@ struct PtySession {
     /// Set by `stop`: the process dies but the session object stays. The
     /// reader must not remove the registry entry or call session_finished.
     preserve_on_exit: Arc<AtomicBool>,
+}
+
+struct SpawnedSession {
+    process_job: JobObject,
+    master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
+    killer: Box<dyn SessionKiller>,
+    child: Box<dyn WaitableChild>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    reader: Box<dyn Read + Send>,
+    /// ACP supplies a structured decoder. Terminal sessions use the shared
+    /// byte coalescer, which is constructed by `start_spawned_session`.
+    reader_dispatch: Option<Box<dyn ReaderDispatch>>,
+    stderr: Option<Box<dyn StderrSource>>,
+}
+
+struct PtyKiller {
+    inner: Box<dyn ChildKiller + Send + Sync>,
+}
+
+impl SessionKiller for PtyKiller {
+    fn kill(&mut self) {
+        let _ = self.inner.kill();
+    }
+
+    fn clone_killer(&self) -> Box<dyn SessionKiller> {
+        Box::new(Self {
+            inner: self.inner.clone_killer(),
+        })
+    }
+}
+
+struct PtyWaitableChild {
+    child: Box<dyn Child + Send + Sync>,
+}
+
+impl WaitableChild for PtyWaitableChild {
+    fn wait(mut self: Box<Self>) -> Option<u32> {
+        self.child.wait().ok().map(|status| status.exit_code())
+    }
+}
+
+struct TerminalReaderDispatch {
+    tx: Option<mpsc::Sender<Vec<u8>>>,
+}
+
+impl ReaderDispatch for TerminalReaderDispatch {
+    fn feed(&mut self, bytes: &[u8], _runtime: &SessionRuntime) -> Result<(), String> {
+        self.tx
+            .as_ref()
+            .ok_or_else(|| "terminal coalescer is unavailable".to_string())?
+            .send(bytes.to_vec())
+            .map_err(|_| "terminal coalescer is unavailable".to_string())
+    }
+
+    fn finish(&mut self, _runtime: &SessionRuntime) {
+        self.tx.take();
+    }
 }
 
 fn elapsed_ms_since_last_life(
@@ -1302,25 +1565,24 @@ impl SessionRegistry {
         kind: SessionKind,
         command: Option<PtyCommand>,
     ) -> Result<Session, WireError> {
-        if kind != SessionKind::Terminal {
-            return Err(WireError::new(
-                ErrorCode::Unimplemented,
-                "Only terminal sessions are available.",
-            ));
-        }
         let unique = format!("{:08x}", SESSION_COUNTER.fetch_add(1, Ordering::Relaxed));
         let id = compose_session_id(&owner.session_token(), &unique)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let metadata = Session {
             id: id.clone(),
             workspace_id,
-            kind,
-            title: "Terminal".to_string(),
+            kind: kind.clone(),
+            title: match kind {
+                SessionKind::Terminal => "Terminal",
+                SessionKind::Acp => "Agent",
+            }
+            .to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
         };
         let command = match command {
             Some(command) => command,
+            None if metadata.kind == SessionKind::Acp => acp_client::resolve_command(&self.paths)?,
             None => resolve_pty_command(&self.paths)?,
         };
         // Journal the row BEFORE spawn. A short-lived command (cmd /c echo)
@@ -1558,7 +1820,7 @@ impl SessionRegistry {
             session.preserve_on_exit.store(true, Ordering::SeqCst);
             session.killer.clone_killer()
         };
-        let _ = killer.kill();
+        killer.kill();
         Ok(())
     }
 
@@ -1615,7 +1877,7 @@ impl SessionRegistry {
             let entry = map.get(session_id).ok_or_else(not_found)?;
             check_owner(entry, owner)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
-            (Arc::clone(&session.runtime), Arc::clone(&session.master))
+            (Arc::clone(&session.runtime), session.master.clone())
         };
         // Resize is serialized with emulator parsing under the SAME state
         // lock as publish_output, in one defined order: emulator dimensions
@@ -1627,10 +1889,16 @@ impl SessionRegistry {
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
         let Some(screen) = stream.screen.as_mut() else {
-            return Err(process_gone());
+            // ACP sessions are structured streams and deliberately have no
+            // terminal dimensions. Resize is already kind-agnostic at the
+            // RPC seam; it is simply a no-op for this transport.
+            return Ok(());
         };
         let (previous_cols, previous_rows) = screen.dimensions();
         screen.resize(cols.max(1), rows.max(1));
+        let Some(master) = master else {
+            return Ok(());
+        };
         let master = master
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
@@ -1730,6 +1998,16 @@ pub fn spawn_session(
     owner: OwnerId,
     command: PtyCommand,
 ) -> Result<(), WireError> {
+    if metadata.kind == SessionKind::Acp {
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            acp_client::spawn_process(state, command)?,
+        );
+    }
+
     // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
     // DSR query (`ESC[6n`) at startup and stalls its render pipeline until it
     // is answered. The DAEMON is the single responder: publish_output routes
@@ -1829,20 +2107,54 @@ pub fn spawn_session(
         }
     };
 
-    let runtime = Arc::new(SessionRuntime::with_journal(
-        metadata.id.clone(),
-        registry.journal.clone(),
-    ));
+    let spawned = SpawnedSession {
+        process_job,
+        master: Some(Arc::new(Mutex::new(pair.master))),
+        killer: Box::new(PtyKiller { inner: killer }),
+        child: Box::new(PtyWaitableChild { child }),
+        writer: Arc::new(Mutex::new(writer)),
+        reader,
+        reader_dispatch: None,
+        stderr: None,
+    };
+    start_spawned_session(state, registry, metadata, owner, spawned)
+}
+
+fn start_spawned_session(
+    state: &Arc<ServerState>,
+    registry: &SessionRegistry,
+    metadata: Session,
+    owner: OwnerId,
+    spawned: SpawnedSession,
+) -> Result<(), WireError> {
+    let SpawnedSession {
+        process_job,
+        master,
+        killer,
+        child,
+        writer,
+        reader,
+        reader_dispatch,
+        stderr,
+    } = spawned;
+    let runtime = if metadata.kind == SessionKind::Acp {
+        SessionRuntime::for_acp(metadata.id.clone(), registry.journal.clone())
+    } else {
+        Arc::new(SessionRuntime::with_journal(
+            metadata.id.clone(),
+            registry.journal.clone(),
+        ))
+    };
     let exited = Arc::new(AtomicBool::new(false));
-    let master = Arc::new(Mutex::new(pair.master));
-    let writer = Arc::new(Mutex::new(writer));
     // Register before the reader thread starts: ConPTY's startup DSR can be
     // read within milliseconds, and the reply path needs the writer.
-    runtime
-        .pty_writer
-        .set(Arc::clone(&writer))
-        .ok()
-        .expect("pty writer registered exactly once");
+    if metadata.kind == SessionKind::Terminal {
+        runtime
+            .pty_writer
+            .set(Arc::clone(&writer))
+            .ok()
+            .expect("pty writer registered exactly once");
+    }
     let id = metadata.id.clone();
     let wait_runtime = Arc::clone(&runtime);
     let wait_registry = registry.clone();
@@ -1850,7 +2162,7 @@ pub fn spawn_session(
     let child_wait = std::thread::Builder::new()
         .name(format!("session-wait-{id}"))
         .spawn(move || {
-            let code = wait_child(child);
+            let code = child.wait();
             wait_runtime
                 .child_reaped
                 .store(code.is_some(), Ordering::Release);
@@ -1899,6 +2211,7 @@ pub fn spawn_session(
         reader_handle: None,
         coalesce_handle: None,
         liveness_handle,
+        stderr_handle: None,
         runtime: Arc::clone(&runtime),
         exited: Arc::clone(&exited),
         preserve_on_exit: Arc::new(AtomicBool::new(false)),
@@ -1915,29 +2228,59 @@ pub fn spawn_session(
         map.insert(id.clone(), RegistryEntry::Live(session));
     }
 
-    let (coalesce_tx, coalesce_rx) = mpsc::channel::<Vec<u8>>();
-    let coalesce_runtime = Arc::clone(&runtime);
-    let coalesce_registry = registry.clone();
-    let coalesce_owner = owner.clone();
-    let coalesce_handle = match std::thread::Builder::new()
-        .name(format!("session-coalesce-{id}"))
-        .spawn(move || {
-            coalesce_loop(
-                coalesce_rx,
-                coalesce_runtime,
-                coalesce_registry,
-                coalesce_owner,
+    let (coalesce_handle, reader_dispatch) = match reader_dispatch {
+        Some(dispatch) => (None, dispatch),
+        None => {
+            let (coalesce_tx, coalesce_rx) = mpsc::channel::<Vec<u8>>();
+            let coalesce_runtime = Arc::clone(&runtime);
+            let coalesce_registry = registry.clone();
+            let coalesce_owner = owner.clone();
+            let coalesce_handle = match std::thread::Builder::new()
+                .name(format!("session-coalesce-{id}"))
+                .spawn(move || {
+                    coalesce_loop(
+                        coalesce_rx,
+                        coalesce_runtime,
+                        coalesce_registry,
+                        coalesce_owner,
+                    )
+                }) {
+                Ok(handle) => Some(handle),
+                Err(_) => {
+                    let _ = registry.close(&id, &owner);
+                    return Err(WireError::new(
+                        ErrorCode::Internal,
+                        "Could not start the terminal reader.",
+                    ));
+                }
+            };
+            (
+                coalesce_handle,
+                Box::new(TerminalReaderDispatch {
+                    tx: Some(coalesce_tx),
+                }) as Box<dyn ReaderDispatch>,
             )
-        }) {
-        Ok(handle) => Some(handle),
-        Err(_) => {
-            let _ = registry.close(&id, &owner);
-            return Err(WireError::new(
-                ErrorCode::Internal,
-                "Could not start the terminal reader.",
-            ));
         }
     };
+
+    let stderr_handle = stderr.and_then(|source| match source.spawn(Arc::clone(&runtime)) {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            runtime.publish_agent_event(
+                SessionEvent::AgentError {
+                    message: format!("Could not drain agent stderr: {error}"),
+                },
+                None,
+            );
+            None
+        }
+    });
+    if let Ok(mut map) = registry.inner.lock() {
+        if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_live_mut) {
+            session.coalesce_handle = coalesce_handle;
+            session.stderr_handle = stderr_handle;
+        }
+    }
 
     let reader_registry = registry.clone();
     let reader_id = id.clone();
@@ -1952,7 +2295,7 @@ pub fn spawn_session(
                 reader_id,
                 reader,
                 reader_runtime,
-                coalesce_tx,
+                reader_dispatch,
             );
         }) {
         Ok(handle) => handle,
@@ -1969,7 +2312,7 @@ pub fn spawn_session(
     // cleanup already removed the session; join the now-finished reader
     // here instead of leaking its handle.
     let mut orphaned_reader = Some(reader_handle);
-    let mut orphaned_coalesce = coalesce_handle;
+    let mut orphaned_coalesce = None;
     if let Ok(mut map) = registry.inner.lock() {
         if let Some(session) = map.get_mut(&id).and_then(RegistryEntry::as_live_mut) {
             session.reader_handle = orphaned_reader.take();
@@ -2003,16 +2346,16 @@ fn reader_loop(
     id: String,
     mut reader: Box<dyn Read + Send>,
     runtime: Arc<SessionRuntime>,
-    coalesce_tx: mpsc::Sender<Vec<u8>>,
+    mut reader_dispatch: Box<dyn ReaderDispatch>,
 ) {
     let mut buf = [0u8; READ_CHUNK];
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                if coalesce_tx.send(buf[..n].to_vec()).is_err() {
+                if let Err(error) = reader_dispatch.feed(&buf[..n], &runtime) {
                     runtime.record_output_loss();
-                    eprintln!("session {id} dropped {n} terminal bytes: coalescer unavailable");
+                    eprintln!("session {id} stopped reading child output: {error}");
                     break;
                 }
             }
@@ -2024,7 +2367,7 @@ fn reader_loop(
             }
         }
     }
-    drop(coalesce_tx);
+    reader_dispatch.finish(&runtime);
 
     // EOF means the child ended. `stop` keeps the session object; `close`
     // and a natural exit remove it. session_finished is only for a removal
@@ -2116,6 +2459,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     drop(map);
     session.reader_handle = None;
     let coalesce = session.coalesce_handle.take();
+    let stderr = session.stderr_handle.take();
     let child_wait = session.child_wait.take();
     let liveness = session.liveness_handle.take();
     let PtySession {
@@ -2130,6 +2474,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     drop(killer);
     drop(writer);
     drop(master);
+    bounded_join(stderr);
     bounded_join(child_wait);
     bounded_join(liveness);
     join_coalesce(coalesce, runtime);
@@ -2159,10 +2504,6 @@ fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
     }
 }
 
-fn wait_child(mut child: Box<dyn Child + Send + Sync>) -> Option<u32> {
-    child.wait().ok().map(|status| status.exit_code())
-}
-
 fn terminate_spawned_child(pair: portable_pty::PtyPair, mut child: Box<dyn Child + Send + Sync>) {
     let mut killer = child.clone_killer();
     let _ = killer.kill();
@@ -2185,6 +2526,7 @@ fn teardown_session(session: PtySession) {
         reader_handle,
         coalesce_handle,
         liveness_handle,
+        stderr_handle,
         runtime,
         exited: _,
         owner: _,
@@ -2192,8 +2534,8 @@ fn teardown_session(session: PtySession) {
         preserve_on_exit: _,
     } = session;
 
-    // 1) Kill first. ChildKiller is separate so this cannot race with wait().
-    let _ = killer.kill();
+    // 1) Kill first. The killer is separate so this cannot race with wait().
+    killer.kill();
     drop(killer);
     // 2) Drop writer and master BEFORE wait(). The writer owns another
     //    master-side handle, and ConPTY's host can remain alive while either
@@ -2212,6 +2554,7 @@ fn teardown_session(session: PtySession) {
     //    ourselves.
     bounded_join(child_wait);
     bounded_join(liveness_handle);
+    bounded_join(stderr_handle);
     // 4) Best-effort bounded join. JoinHandle has no timed join; the
     //    endpoint close above makes the reader finish promptly, while this
     //    small budget prevents shutdown from accumulating a hang across

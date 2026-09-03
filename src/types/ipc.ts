@@ -152,6 +152,23 @@ export interface SessionSnapshot {
 
 export type SessionEvent =
   | { type: "output"; seq: number; data: string }
+  /** Text emitted by an ACP agent message chunk. */
+  | { type: "agent_message"; messageId: string | null; text: string }
+  /** ACP tool call announced by the agent. */
+  | { type: "agent_tool_call"; toolCallId: string; title: string; status: string }
+  /** ACP update for an existing tool call. */
+  | {
+      type: "agent_tool_update";
+      toolCallId: string;
+      status: string | null;
+      text: string | null;
+    }
+  /** ACP prompt completion and its stop reason. */
+  | { type: "agent_finished"; stopReason: string }
+  /** ACP protocol or framing error surfaced by the daemon. */
+  | { type: "agent_error"; message: string }
+  /** One line drained from the ACP agent's stderr. */
+  | { type: "agent_stderr"; data: string }
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }
   | { type: "recovered"; integrity: UnverifiableTranscriptIntegrity }

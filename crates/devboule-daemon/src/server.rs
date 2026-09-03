@@ -679,6 +679,12 @@ fn send_pending_event(
             SessionEvent::SessionsSnapshot { .. } => " sessions_snapshot".to_string(),
             // A snapshot is screen state and has no replay sequence.
             SessionEvent::Snapshot { .. } => " snapshot".to_string(),
+            SessionEvent::AgentMessage { .. } => " agent_message".to_string(),
+            SessionEvent::AgentToolCall { .. } => " agent_tool_call".to_string(),
+            SessionEvent::AgentToolUpdate { .. } => " agent_tool_update".to_string(),
+            SessionEvent::AgentFinished { .. } => " agent_finished".to_string(),
+            SessionEvent::AgentError { .. } => " agent_error".to_string(),
+            SessionEvent::AgentStderr { .. } => " agent_stderr".to_string(),
         };
         eprintln!(
             "discarded stale pending event for session {} generation {}{}",

@@ -139,13 +139,9 @@ fn require_write_size(text: &str) -> Result<(), CommandError> {
 }
 
 fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
-    if kind != &SessionKind::Terminal {
-        return Err(CommandError::new(
-            ErrorCode::Unimplemented,
-            "Only terminal sessions are available.",
-        ));
+    match kind {
+        SessionKind::Terminal | SessionKind::Acp => Ok(()),
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -168,11 +164,9 @@ mod tests {
     }
 
     #[test]
-    fn non_terminal_kind_is_unimplemented() {
+    fn supported_session_kinds_are_accepted() {
         require_terminal_kind(&SessionKind::Terminal).expect("terminal");
-        let error = require_terminal_kind(&SessionKind::Acp).expect_err("rejected");
-        assert_eq!(error.code, ErrorCode::Unimplemented);
-        assert_eq!(error.message, "Only terminal sessions are available.");
+        require_terminal_kind(&SessionKind::Acp).expect("acp");
     }
 
     #[test]

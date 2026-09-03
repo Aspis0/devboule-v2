@@ -147,9 +147,9 @@ impl SessionState {
 /// means "the last output sequence received"; replay therefore sends chunks
 /// whose sequence is strictly greater than `from_cursor`.
 ///
-/// Permission and ACP variants are intentionally reserved for M6: adding
-/// new tagged variants is additive for consumers that ignore unknown event
-/// types. M3.5 uses that freedom: [`SessionEvent::Snapshot`] delivers the
+/// Permission variants remain reserved for the permissions slice: adding new
+/// tagged variants is additive for consumers that ignore unknown event types.
+/// M3.5 uses that freedom: [`SessionEvent::Snapshot`] delivers the
 /// current screen state on attach instead of a replay of past frames.
 ///
 /// Attachment variants in this enum are the TypeScript `SessionEvent`
@@ -167,6 +167,38 @@ impl SessionState {
 pub enum SessionEvent {
     Output {
         seq: u64,
+        data: String,
+    },
+    /// Text emitted by an ACP agent message chunk.
+    AgentMessage {
+        message_id: Option<String>,
+        text: String,
+    },
+    /// An ACP tool call announced by the agent. Permissions are deliberately
+    /// not represented here; typed permission handling is the next slice.
+    AgentToolCall {
+        tool_call_id: String,
+        title: String,
+        status: String,
+    },
+    /// An ACP tool-call status update. The optional text is the textual part
+    /// of any content the agent supplied with the update.
+    AgentToolUpdate {
+        tool_call_id: String,
+        status: Option<String>,
+        text: Option<String>,
+    },
+    /// The response to one `session/prompt` request.
+    AgentFinished {
+        stop_reason: String,
+    },
+    /// A valid ACP error response or a transport/decoding error surfaced to
+    /// the attached session instead of being turned into a silent hang.
+    AgentError {
+        message: String,
+    },
+    /// Agent stderr is a separate stream and remains visible to the caller.
+    AgentStderr {
         data: String,
     },
     /// Process was observed to exit while the daemon was alive.

@@ -376,6 +376,15 @@ export class TerminalSession {
       case "output":
         this.processOutput(event);
         break;
+      case "agent_message":
+      case "agent_tool_call":
+      case "agent_tool_update":
+      case "agent_finished":
+      case "agent_error":
+      case "agent_stderr":
+        // ACP sessions use these same daemon channels; the terminal view has
+        // no agent transcript renderer yet, so it safely ignores them.
+        break;
       default: {
         const unknownEvent: never = event;
         this.showError(

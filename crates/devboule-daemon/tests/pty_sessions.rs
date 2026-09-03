@@ -262,7 +262,13 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::Recovered { .. }
         | SessionEvent::Silent { .. }
         | SessionEvent::JournalDegraded { .. }
-        | SessionEvent::SessionsSnapshot { .. } => false,
+        | SessionEvent::SessionsSnapshot { .. }
+        | SessionEvent::AgentMessage { .. }
+        | SessionEvent::AgentToolCall { .. }
+        | SessionEvent::AgentToolUpdate { .. }
+        | SessionEvent::AgentFinished { .. }
+        | SessionEvent::AgentError { .. }
+        | SessionEvent::AgentStderr { .. } => false,
     }
 }
 
@@ -625,7 +631,13 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
-            | SessionEvent::Snapshot { .. } => None,
+            | SessionEvent::Snapshot { .. }
+            | SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentToolCall { .. }
+            | SessionEvent::AgentToolUpdate { .. }
+            | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentError { .. }
+            | SessionEvent::AgentStderr { .. } => None,
         })
         .max()
         .expect("seq");
@@ -953,7 +965,13 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
-            | SessionEvent::Snapshot { .. } => None,
+            | SessionEvent::Snapshot { .. }
+            | SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentToolCall { .. }
+            | SessionEvent::AgentToolUpdate { .. }
+            | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentError { .. }
+            | SessionEvent::AgentStderr { .. } => None,
         })
         .collect();
     let mut unique = output_seqs.clone();
@@ -1467,7 +1485,13 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::Recovered { .. }
         | SessionEvent::Silent { .. }
         | SessionEvent::JournalDegraded { .. }
-        | SessionEvent::SessionsSnapshot { .. } => {}
+        | SessionEvent::SessionsSnapshot { .. }
+        | SessionEvent::AgentMessage { .. }
+        | SessionEvent::AgentToolCall { .. }
+        | SessionEvent::AgentToolUpdate { .. }
+        | SessionEvent::AgentFinished { .. }
+        | SessionEvent::AgentError { .. }
+        | SessionEvent::AgentStderr { .. } => {}
     });
     client
         .session_attach(&session.id, None, handler)
@@ -1854,7 +1878,13 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::Silent { .. }
         | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. }
-        | SessionEvent::Snapshot { .. } => {}
+        | SessionEvent::Snapshot { .. }
+        | SessionEvent::AgentMessage { .. }
+        | SessionEvent::AgentToolCall { .. }
+        | SessionEvent::AgentToolUpdate { .. }
+        | SessionEvent::AgentFinished { .. }
+        | SessionEvent::AgentError { .. }
+        | SessionEvent::AgentStderr { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
         let mut diagnostics = diagnostics.lock().unwrap();
@@ -2215,7 +2245,13 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
-            | SessionEvent::Snapshot { .. } => {}
+            | SessionEvent::Snapshot { .. }
+            | SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentToolCall { .. }
+            | SessionEvent::AgentToolUpdate { .. }
+            | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentError { .. }
+            | SessionEvent::AgentStderr { .. } => {}
         }
     }
     assert!(
@@ -2473,6 +2509,12 @@ fn journal_growth_after_13mb_flood() {
             SessionEvent::JournalDegraded { .. } => {}
             SessionEvent::SessionsSnapshot { .. } => {}
             SessionEvent::Snapshot { .. } => {}
+            SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentToolCall { .. }
+            | SessionEvent::AgentToolUpdate { .. }
+            | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentError { .. }
+            | SessionEvent::AgentStderr { .. } => {}
         }
     });
     client
@@ -2755,7 +2797,13 @@ fn attach_during_flood_delivers_every_sequence_once() {
             SessionEvent::Recovered { .. }
             | SessionEvent::Silent { .. }
             | SessionEvent::JournalDegraded { .. }
-            | SessionEvent::SessionsSnapshot { .. } => {}
+            | SessionEvent::SessionsSnapshot { .. }
+            | SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentToolCall { .. }
+            | SessionEvent::AgentToolUpdate { .. }
+            | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentError { .. }
+            | SessionEvent::AgentStderr { .. } => {}
         }
     }
 

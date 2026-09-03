@@ -202,7 +202,13 @@ impl ConnHandle {
                 SessionEvent::Silent { .. }
                 | SessionEvent::JournalDegraded { .. }
                 | SessionEvent::SessionsSnapshot { .. }
-                | SessionEvent::Snapshot { .. } => false,
+                | SessionEvent::Snapshot { .. }
+                | SessionEvent::AgentMessage { .. }
+                | SessionEvent::AgentToolCall { .. }
+                | SessionEvent::AgentToolUpdate { .. }
+                | SessionEvent::AgentFinished { .. }
+                | SessionEvent::AgentError { .. }
+                | SessionEvent::AgentStderr { .. } => false,
             }
         };
         if remove {
@@ -256,6 +262,10 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
                     stream.pending_frames = stream.pending_frames.saturating_sub(1);
                 }
                 PendingItem::Snapshot { .. } => {}
+                PendingItem::Agent { bytes, .. } => {
+                    stream.pending_bytes = stream.pending_bytes.saturating_sub(*bytes);
+                    stream.pending_frames = stream.pending_frames.saturating_sub(1);
+                }
             }
             drained.push(item);
         }
@@ -283,6 +293,7 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         let event = match item {
             PendingItem::Snapshot { as_of_seq, screen } => snapshot_event(as_of_seq, screen),
             PendingItem::Output { seq, data } => SessionEvent::Output { seq, data },
+            PendingItem::Agent { event, .. } => event,
         };
         events.push(PendingEvent {
             session_id: session_id.to_string(),
@@ -550,6 +561,12 @@ mod tests {
                 SessionEvent::Silent { .. } => "silent",
                 SessionEvent::JournalDegraded { .. } => "journal_degraded",
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
+                SessionEvent::AgentMessage { .. } => "agent_message",
+                SessionEvent::AgentToolCall { .. } => "agent_tool_call",
+                SessionEvent::AgentToolUpdate { .. } => "agent_tool_update",
+                SessionEvent::AgentFinished { .. } => "agent_finished",
+                SessionEvent::AgentError { .. } => "agent_error",
+                SessionEvent::AgentStderr { .. } => "agent_stderr",
             })
             .collect();
         assert_eq!(kinds, ["snapshot", "output", "exit"]);
@@ -723,6 +740,12 @@ mod tests {
                 SessionEvent::JournalDegraded { .. } => "journal_degraded",
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
                 SessionEvent::Snapshot { .. } => "snapshot",
+                SessionEvent::AgentMessage { .. } => "agent_message",
+                SessionEvent::AgentToolCall { .. } => "agent_tool_call",
+                SessionEvent::AgentToolUpdate { .. } => "agent_tool_update",
+                SessionEvent::AgentFinished { .. } => "agent_finished",
+                SessionEvent::AgentError { .. } => "agent_error",
+                SessionEvent::AgentStderr { .. } => "agent_stderr",
             })
             .collect();
         assert_eq!(kinds, ["output", "recovered"]);

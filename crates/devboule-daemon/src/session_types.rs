@@ -132,6 +132,9 @@ pub(super) enum PendingItem {
     },
     /// An applied output chunk, forwarded verbatim.
     Output { seq: u64, data: String },
+    /// A structured ACP event. It travels through the same bounded live
+    /// attachment queue as terminal output, but has no screen representation.
+    Agent { event: SessionEvent, bytes: usize },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -142,7 +145,7 @@ pub(super) enum Disposition {
     Recovered { integrity: TranscriptIntegrity },
 }
 
-pub(super) struct StreamState {
+pub(crate) struct StreamState {
     /// Session-wide monotonic output counter. Labels journal records and
     /// live events; it is NOT a replay cursor and never advances because a
     /// frame was written to a pipe.
@@ -154,6 +157,9 @@ pub(super) struct StreamState {
     /// The headless emulator. `None` for a recovered transcript, which has
     /// no live process and serves cursor-based journal replays instead.
     pub(super) screen: Option<Screen>,
+    /// Recovered transcripts have no screen; live ACP sessions also have no
+    /// screen, so this explicit bit keeps those two contracts distinct.
+    pub(super) transcript: bool,
     /// The single attached viewer, if any.
     pub(super) attached: Option<Attachment>,
     /// Unsent items for the attachment, in wire order. Bounded: when the
@@ -165,6 +171,12 @@ pub(super) struct StreamState {
     pub(super) pending_bytes: usize,
     /// Frame count of `pending`'s Output items.
     pub(super) pending_frames: u64,
+    /// Structured ACP events observed before an attachment exists. Unlike a
+    /// terminal, a headless live session has no screen snapshot that can
+    /// represent these events for a later attach.
+    pub(super) agent_backlog: VecDeque<PendingItem>,
+    pub(super) agent_backlog_bytes: usize,
+    pub(super) agent_backlog_frames: u64,
     /// Transcript replay buffer. Unused by live sessions, which never
     /// replay bytes to synchronise a screen.
     pub(super) scrollback: Scrollback,

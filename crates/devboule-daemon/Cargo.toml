@@ -26,13 +26,20 @@ name = "devboule-daemon"
 path = "src/main.rs"
 required-features = ["server"]
 
+[[bin]]
+name = "devboule-acp-stub"
+path = "src/bin/devboule_acp_stub.rs"
+required-features = ["server"]
+
 [dependencies]
 devboule-protocol = { path = "../devboule-protocol" }
-# Direct because this crate serializes protocol frames to JSON. The exact
-# version is already in the workspace (src-tauri dev-dependency and a
-# transitive of serde). This does not add a new package.
+# Direct because this crate serializes protocol frames to JSON. The daemon
+# owns the ACP transport, so this is a new direct dependency of this crate.
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+# ACP wire/schema types. Pinned to the audited 2.0.0 release, whose schema
+# package is 1.7.0 and whose licence is Apache-2.0.
+agent-client-protocol = "=2.0.0"
 # Moved from src-tauri. Same pin. The daemon, not the GUI, now owns ConPTY.
 portable-pty = { version = "=0.9.0", optional = true }
 alacritty_terminal = { version = "=0.26.0", optional = true }
@@ -56,4 +63,5 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    "Win32_System_Console",
 ] }

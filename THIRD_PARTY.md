@@ -18,6 +18,10 @@ One third-party file is vendored as **data, not code**: `crates/devboule-augur/v
 
 Beyond that there is no third-party library source code checked into this repository: no Cargo patch/fork, no git submodule, and no third-party path dependency; the path dependencies are the local Devboule workspace crates.
 
+The daemon directly depends on `agent-client-protocol` 2.0.0 for the ACP
+schema/protocol definitions. It is Apache-2.0 licensed; no source from that
+crate is copied into this repository.
+
 Third-party **sprite art** is a separate matter and is inventoried under Non-code assets below. It is carried by the Polis plugin rather than by the application, so an installation without Polis distributes none of it.
 
 The esaxx-rs one-line CRT patch mentioned in the separate architecture document is not present here: this repository has no esaxx-rs reference, no oracle-core member, no fastembed dependency, and no corresponding build.rs patch. The oracle-core names in mock UI data are not source code.
