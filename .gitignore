@@ -17,6 +17,8 @@ src-tauri/gen/
 ARCHITETTURA.md
 PORTING-*.md
 *-REPORT.md
+audit-*.md
+review-*.md
 recon/
 
 # Workspace-local Oracle/Augur runtime data (CKG, findings ledger).
