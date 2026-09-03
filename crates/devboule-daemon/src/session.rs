@@ -63,33 +63,48 @@
 //! wrong (it stalls ConPTY's render pipeline), so back-pressure is expressed
 //! as state: the slow viewer is resynchronised, the process is never stalled.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-#[cfg(windows)]
-use std::path::Path;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 
+#[cfg(test)]
+use devboule_protocol::CursorShape;
 use devboule_protocol::{
-    compose_session_id, cursor_replay_ok, validate_session_id, Cursor, CursorShape, ErrorCode,
-    JournalRetention, JournalStats, OwnerId, RetentionPatch, ScreenCursor, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionState, SessionStateSnapshot, TranscriptIntegrity,
-    WireError,
+    compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, JournalRetention,
+    JournalStats, OwnerId, RetentionPatch, Session, SessionEvent, SessionKind, SessionState,
+    SessionStateSnapshot, TranscriptIntegrity, WireError,
 };
 
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
-use crate::screen::{Screen, ScreenSnapshot, SnapshotCursorShape};
+use crate::screen::Screen;
 use crate::server::ServerState;
+
+#[path = "event_pull.rs"]
+mod event_pull;
+#[path = "session_types.rs"]
+mod session_types;
+#[path = "shell_command.rs"]
+mod shell_command;
+
+pub use event_pull::ConnHandle;
+pub(crate) use session_types::PendingEvent;
+pub use session_types::PtyCommand;
+use session_types::{
+    Attachment, Disposition, OutputMetrics, PendingItem, PullState, RegistryEntry, Scrollback,
+    StreamState, TranscriptSession,
+};
+use shell_command::resolve_pty_command;
+pub use shell_command::write_test_pty_command;
 
 /// Unsent live output one attachment may hold before the unsent suffix is
 /// dropped and replaced by a fresh screen snapshot at the current sequence.
@@ -129,8 +144,6 @@ const INITIAL_COLS: u16 = 120;
 const INITIAL_ROWS: u16 = 32;
 pub const MAX_WRITE_BYTES: usize = 64 * 1024;
 const READER_JOIN_BUDGET: Duration = Duration::from_millis(150);
-const SHELL_OVERRIDE_ENV: &str = "DEVBOULE_SHELL";
-const TEST_PTY_COMMAND_FILE: &str = ".test-pty-command";
 
 /// Accumulate reader output until this many bytes, then assign one seq.
 /// 8 KiB is half a ConPTY read and far under the 1 MiB frame cap.
@@ -155,185 +168,6 @@ const EXIT_DRAIN: Duration = Duration::from_millis(200);
 pub const SESSION_SILENCE_THRESHOLD: Duration = Duration::from_secs(300);
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-/// Everything needed to spawn one PTY child, independent of the session kind.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PtyCommand {
-    pub program: String,
-    pub args: Vec<String>,
-    pub cwd: PathBuf,
-    pub env: Vec<(String, String)>,
-}
-
-impl PtyCommand {
-    pub fn new(
-        program: impl Into<String>,
-        args: Vec<String>,
-        cwd: PathBuf,
-        env: Vec<(String, String)>,
-    ) -> Self {
-        Self {
-            program: program.into(),
-            args,
-            cwd,
-            env,
-        }
-    }
-
-    fn to_command_builder(&self) -> CommandBuilder {
-        let mut command = CommandBuilder::new(&self.program);
-        command.args(&self.args);
-        command.cwd(&self.cwd);
-        for (key, value) in &self.env {
-            command.env(key, value);
-        }
-        command
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SequencedChunk {
-    seq: u64,
-    data: Vec<u8>,
-}
-
-/// Transcript replay buffer for a recovered session.
-///
-/// A recovered session loads its journal records here once at hydration and
-/// serves cursor-based replays from the union of these chunks and a fresh
-/// journal read. It is NOT the live screen mechanism: a live attach receives
-/// a screen snapshot, never this buffer.
-#[derive(Debug, Default)]
-struct Scrollback {
-    chunks: VecDeque<SequencedChunk>,
-}
-
-impl Scrollback {
-    fn push(&mut self, seq: u64, data: &[u8]) {
-        if data.is_empty() {
-            return;
-        }
-        self.chunks.push_back(SequencedChunk {
-            seq,
-            data: data.to_vec(),
-        });
-    }
-
-    fn needs_journal_replay(&self, from_cursor: Option<u64>, next_seq: u64) -> bool {
-        let cursor = from_cursor.unwrap_or(0);
-        self.chunks
-            .front()
-            .map(|chunk| chunk.seq > cursor.saturating_add(1))
-            .unwrap_or(next_seq > cursor.saturating_add(1))
-    }
-
-    #[cfg(test)]
-    fn replay_after(&self, from_cursor: Option<u64>) -> Vec<SessionEvent> {
-        self.replay_after_with_journal(from_cursor, &[])
-    }
-
-    fn replay_after_with_journal(
-        &self,
-        from_cursor: Option<u64>,
-        journal_outputs: &[(u64, String)],
-    ) -> Vec<SessionEvent> {
-        let cursor = from_cursor.unwrap_or(0);
-        let mut outputs = BTreeMap::<u64, String>::new();
-        for chunk in &self.chunks {
-            if chunk.seq > cursor {
-                outputs.insert(chunk.seq, String::from_utf8_lossy(&chunk.data).into_owned());
-            }
-        }
-        // Prefer the journal copy for a sequence present in both sources. It
-        // is the durable copy and makes the seam a set union, never two
-        // envelopes for one sequence.
-        for (seq, data) in journal_outputs {
-            if *seq > cursor {
-                outputs.insert(*seq, data.clone());
-            }
-        }
-        outputs
-            .into_iter()
-            .map(|(seq, data)| SessionEvent::Output { seq, data })
-            .collect()
-    }
-}
-
-struct Attachment {
-    conn_id: u64,
-    outbound: Arc<ConnOut>,
-}
-
-/// One item queued for the attached viewer, in wire order.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PendingItem {
-    /// Screen state at `as_of_seq`. Always the first item of an attachment;
-    /// also the replacement emitted when a slow viewer's queue exceeds the
-    /// budget. The owned grid is rendered to ANSI outside every lock.
-    Snapshot {
-        as_of_seq: u64,
-        screen: ScreenSnapshot,
-    },
-    /// An applied output chunk, forwarded verbatim.
-    Output { seq: u64, data: String },
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Disposition {
-    Running,
-    Silent,
-    Exited { integrity: TranscriptIntegrity },
-    Recovered { integrity: TranscriptIntegrity },
-}
-
-struct StreamState {
-    /// Session-wide monotonic output counter. Labels journal records and
-    /// live events; it is NOT a replay cursor and never advances because a
-    /// frame was written to a pipe.
-    next_seq: u64,
-    /// Greatest sequence whose complete chunk has been applied to the
-    /// emulator. This is the snapshot boundary (`as_of_seq`).
-    last_applied_seq: u64,
-    generation: u64,
-    /// The headless emulator. `None` for a recovered transcript, which has
-    /// no live process and serves cursor-based journal replays instead.
-    screen: Option<Screen>,
-    /// The single attached viewer, if any.
-    attached: Option<Attachment>,
-    /// Unsent items for the attachment, in wire order. Bounded: when the
-    /// Output extent exceeds the budget, the whole queue is replaced by one
-    /// fresh snapshot.
-    pending: VecDeque<PendingItem>,
-    /// Byte extent of `pending`'s Output items (snapshots are not counted;
-    /// a replacement resets this to zero).
-    pending_bytes: usize,
-    /// Frame count of `pending`'s Output items.
-    pending_frames: u64,
-    /// Transcript replay buffer. Unused by live sessions, which never
-    /// replay bytes to synchronise a screen.
-    scrollback: Scrollback,
-    /// Reader has seen EOF. Further publish_output is dropped.
-    output_closed: bool,
-    /// Child::wait returned. Output may still be in the ConPTY buffer.
-    process_exited: bool,
-    exit_code: Option<u32>,
-    last_publish: Option<Instant>,
-    exit_at: Option<Instant>,
-    pending_silences: VecDeque<u64>,
-    disposition: Disposition,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct OutputMetrics {
-    /// Peak byte extent of one session's unsent attachment queue.
-    pub(crate) peak_pending_bytes: u64,
-    /// Bytes discarded when a slow viewer's queue was replaced by a fresh
-    /// snapshot. Not lost screen state — subsumed by the snapshot — but
-    /// useful as pressure telemetry.
-    pub(crate) coalesced_bytes: u64,
-    /// Frames discarded by the same replacement.
-    pub(crate) coalesced_frames: u64,
-}
 
 /// Stream state is one mutex on purpose. Every step that must be atomic
 /// with respect to output application happens under this single hold:
@@ -509,13 +343,13 @@ impl SessionRuntime {
     /// True when this runtime is a recovered transcript (no emulator, no
     /// live process). Attaches to it replay the journal instead of
     /// synchronising a screen.
-    fn is_transcript(&self) -> bool {
+    pub(crate) fn is_transcript(&self) -> bool {
         self.lock_stream()
             .map(|stream| stream.screen.is_none())
             .unwrap_or(false)
     }
 
-    fn lock_stream(&self) -> Result<MutexGuard<'_, StreamState>, ()> {
+    pub(crate) fn lock_stream(&self) -> Result<MutexGuard<'_, StreamState>, ()> {
         match self.stream.lock() {
             Ok(stream) => Ok(stream),
             Err(error) => {
@@ -840,7 +674,7 @@ impl SessionRuntime {
         }
     }
 
-    fn journal_degraded(&self) -> bool {
+    pub(crate) fn journal_degraded(&self) -> bool {
         self.journal_degraded.load(Ordering::Acquire)
     }
 
@@ -851,7 +685,11 @@ impl SessionRuntime {
         }
     }
 
-    fn replay_journal_outputs(&self, from_seq: u64, generation: u64) -> Vec<(u64, String)> {
+    pub(crate) fn replay_journal_outputs(
+        &self,
+        from_seq: u64,
+        generation: u64,
+    ) -> Vec<(u64, String)> {
         let Some(journal) = &self.journal else {
             return Vec::new();
         };
@@ -1147,463 +985,6 @@ fn enqueue_output(stream: &mut StreamState, seq: u64, data: &str) -> (u64, u64) 
     (discarded_bytes, discarded_frames)
 }
 
-/// Render an owned captured screen into the wire snapshot event. Called with
-/// no locks held: the ANSI presenter is O(rows x cols) and must never run
-/// inside the state mutex.
-fn snapshot_event(as_of_seq: u64, screen: ScreenSnapshot) -> SessionEvent {
-    SessionEvent::Snapshot {
-        as_of_seq,
-        cols: screen.cols,
-        rows: screen.rows,
-        data: screen.render_ansi(),
-        cursor: ScreenCursor {
-            row: screen.cursor.row,
-            col: screen.cursor.col,
-            visible: screen.cursor.visible,
-            blinking: screen.cursor.blinking,
-            shape: match screen.cursor.shape {
-                SnapshotCursorShape::Block => CursorShape::Block,
-                SnapshotCursorShape::Underline => CursorShape::Underline,
-                SnapshotCursorShape::Bar => CursorShape::Bar,
-            },
-        },
-        alternate_screen: screen.alternate_screen,
-        bracketed_paste: screen.bracketed_paste,
-        line_wrap: screen.line_wrap,
-        title: screen.title,
-    }
-}
-
-/// Per-connection handle: RPC outbound plus the sessions this client pulls.
-pub struct ConnHandle {
-    pub id: u64,
-    pub outbound: Arc<ConnOut>,
-    attached: Mutex<HashMap<String, PullState>>,
-    state_events: Mutex<VecDeque<SessionEventEnvelope>>,
-    next_attachment_generation: AtomicU64,
-}
-
-struct PullState {
-    runtime: Arc<SessionRuntime>,
-    /// Whether this pull follows the transcript replay contract (recovered
-    /// session) or the live snapshot contract.
-    transcript: bool,
-    /// Transcript-only: last replay sequence the client accounted for.
-    /// Live sessions keep no replay cursor; their screen boundary is the
-    /// snapshot's `as_of_seq`.
-    transcript_cursor: Option<u64>,
-    exit_sent: bool,
-    journal_degraded_sent: bool,
-    generation: u64,
-    attachment_generation: u64,
-}
-
-#[derive(Debug)]
-pub(crate) struct PendingEvent {
-    pub(crate) session_id: String,
-    pub(crate) attachment_generation: u64,
-    pub(crate) envelope: SessionEventEnvelope,
-}
-
-impl ConnHandle {
-    pub fn new(id: u64) -> Arc<Self> {
-        Arc::new(Self {
-            id,
-            outbound: ConnOut::new(),
-            attached: Mutex::new(HashMap::new()),
-            state_events: Mutex::new(VecDeque::new()),
-            next_attachment_generation: AtomicU64::new(1),
-        })
-    }
-
-    fn track(
-        &self,
-        session_id: &str,
-        runtime: Arc<SessionRuntime>,
-        transcript: bool,
-        transcript_cursor: Option<u64>,
-        generation: u64,
-    ) {
-        let attachment_generation = self
-            .next_attachment_generation
-            .fetch_add(1, Ordering::Relaxed);
-        let mut map = self
-            .attached
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        map.insert(
-            session_id.to_string(),
-            PullState {
-                runtime,
-                transcript,
-                transcript_cursor,
-                exit_sent: false,
-                journal_degraded_sent: false,
-                generation,
-                attachment_generation,
-            },
-        );
-        self.outbound.notify();
-    }
-
-    fn untrack(&self, session_id: &str) {
-        self.attached
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(session_id);
-    }
-
-    /// Return the next one-shot wake needed to emit an exit after its drain
-    /// window. Ordinary live sessions return `None`, so the connection writer
-    /// remains asleep until a request or PTY notification arrives.
-    pub fn next_exit_wake(&self) -> Option<Duration> {
-        let map = self
-            .attached
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        map.values()
-            .filter_map(|pull| {
-                if pull.exit_sent {
-                    return None;
-                }
-                if pull.runtime.terminal_dead.load(Ordering::Acquire) {
-                    return Some(Duration::ZERO);
-                }
-                let Ok(stream) = pull.runtime.lock_stream() else {
-                    return Some(Duration::ZERO);
-                };
-                if SessionRuntime::ready_for_exit(&stream) {
-                    // Drain elapsed (or EOF) since the last pull. There is no
-                    // notify at that instant; a zero timeout makes the writer
-                    // loop instead of waiting forever.
-                    return Some(Duration::ZERO);
-                }
-                if !stream.process_exited {
-                    return None;
-                }
-                let origin = stream.last_publish.or(stream.exit_at)?;
-                Some(EXIT_DRAIN.saturating_sub(origin.elapsed()))
-            })
-            .min()
-    }
-
-    pub(crate) fn queue_state_event(&self, envelope: SessionEventEnvelope) {
-        let mut events = self
-            .state_events
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        // These are full rosters, so a newer transition subsumes an older
-        // one. Keeping one pending snapshot prevents a slow client from
-        // turning sparse lifecycle changes into an unbounded queue.
-        events.clear();
-        events.push_back(envelope);
-        self.outbound.notify();
-    }
-
-    pub(crate) fn clear_state_events(&self) {
-        self.state_events
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-    }
-
-    pub(crate) fn pull_state_events(&self) -> Vec<SessionEventEnvelope> {
-        self.state_events
-            .lock()
-            .map(|mut events| events.drain(..).collect())
-            .unwrap_or_default()
-    }
-
-    /// Drop every subscription this connection holds. The processes stay.
-    pub fn detach_all(&self, registry: &SessionRegistry) {
-        let ids = self
-            .attached
-            .lock()
-            .map(|mut map| map.drain().map(|(id, _)| id).collect::<Vec<_>>())
-            .unwrap_or_default();
-        for id in ids {
-            registry.detach_runtime(&id, self.id);
-            registry.drop_transcript_if_idle(&id);
-        }
-    }
-
-    /// Pull replay + live output + exit for every session this connection
-    /// is attached to. Called from the writer thread; does not send.
-    pub(crate) fn event_is_current(&self, session_id: &str, attachment_generation: u64) -> bool {
-        self.attached
-            .lock()
-            .map(|map| map.get(session_id).map(|pull| pull.attachment_generation))
-            .unwrap_or_else(|error| {
-                let map = error.into_inner();
-                map.get(session_id).map(|pull| pull.attachment_generation)
-            })
-            == Some(attachment_generation)
-    }
-
-    /// Record delivery only after the corresponding envelope was written to
-    /// the connection. Only the transcript replay cursor advances here: live
-    /// screen state is synchronised by snapshots, so an Output written to a
-    /// live stream must not look like a replay position.
-    pub(crate) fn event_sent(&self, event: &PendingEvent) {
-        let mut map = self
-            .attached
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let remove = {
-            let Some(pull) = map.get_mut(&event.session_id) else {
-                return;
-            };
-            if pull.attachment_generation != event.attachment_generation {
-                return;
-            }
-            match &event.envelope.event {
-                SessionEvent::Output { seq, .. } => {
-                    if let Some(cursor) = pull.transcript_cursor.as_mut() {
-                        *cursor = *seq;
-                    }
-                    false
-                }
-                SessionEvent::Exit { .. } | SessionEvent::Recovered { .. } => true,
-                SessionEvent::Silent { .. }
-                | SessionEvent::JournalDegraded { .. }
-                | SessionEvent::SessionsSnapshot { .. }
-                | SessionEvent::Snapshot { .. } => false,
-            }
-        };
-        if remove {
-            map.remove(&event.session_id);
-        }
-    }
-
-    pub(crate) fn pull_events(&self) -> Vec<PendingEvent> {
-        let mut map = self
-            .attached
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let mut events = Vec::new();
-        for (session_id, pull) in map.iter_mut() {
-            if pull.transcript {
-                pull_transcript_events(session_id, pull, &mut events);
-            } else {
-                pull_live_events(session_id, pull, &mut events);
-            }
-        }
-        events
-    }
-}
-
-/// Live pull: drain a bounded batch from the attachment's pending queue and
-/// convert it to wire events. Snapshot ANSI is rendered HERE, with no locks
-/// held — never inside the state mutex. Only when the queue is fully empty
-/// may JournalDegraded or the exit event be appended, so neither can
-/// overtake output that is still queued.
-fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
-    if pull.runtime.terminal_dead.load(Ordering::Acquire) {
-        push_dead_events(session_id, pull, events);
-        return;
-    }
-    let mut drained = Vec::with_capacity(PULL_BATCH);
-    let degraded;
-    let silent_event;
-    let mut exit_event = None;
-    {
-        let Ok(mut stream) = pull.runtime.lock_stream() else {
-            push_dead_events(session_id, pull, events);
-            return;
-        };
-        while drained.len() < PULL_BATCH {
-            let Some(item) = stream.pending.pop_front() else {
-                break;
-            };
-            match &item {
-                PendingItem::Output { data, .. } => {
-                    stream.pending_bytes = stream.pending_bytes.saturating_sub(data.len());
-                    stream.pending_frames = stream.pending_frames.saturating_sub(1);
-                }
-                PendingItem::Snapshot { .. } => {}
-            }
-            drained.push(item);
-        }
-        degraded = !pull.journal_degraded_sent && pull.runtime.journal_degraded();
-        if degraded {
-            pull.journal_degraded_sent = true;
-        }
-        silent_event = stream
-            .pending_silences
-            .pop_front()
-            .map(|elapsed_ms| SessionEvent::Silent { elapsed_ms });
-        if !pull.exit_sent && stream.pending.is_empty() && SessionRuntime::ready_for_exit(&stream) {
-            exit_event = Some(match stream.disposition {
-                Disposition::Recovered { integrity } => SessionEvent::Recovered { integrity },
-                Disposition::Running | Disposition::Silent | Disposition::Exited { .. } => {
-                    SessionEvent::Exit {
-                        code: stream.exit_code,
-                    }
-                }
-            });
-            pull.exit_sent = true;
-        }
-    }
-    for item in drained {
-        let event = match item {
-            PendingItem::Snapshot { as_of_seq, screen } => snapshot_event(as_of_seq, screen),
-            PendingItem::Output { seq, data } => SessionEvent::Output { seq, data },
-        };
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event,
-            },
-        });
-    }
-    if degraded {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event: pull.runtime.journal_degraded_event(),
-            },
-        });
-    }
-    if let Some(event) = silent_event {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event,
-            },
-        });
-    }
-    if let Some(event) = exit_event {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event,
-            },
-        });
-    }
-}
-
-fn push_dead_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
-    if !pull.journal_degraded_sent {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event: pull.runtime.journal_degraded_event(),
-            },
-        });
-        pull.journal_degraded_sent = true;
-    }
-    if !pull.exit_sent {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event: SessionEvent::Exit { code: None },
-            },
-        });
-        pull.exit_sent = true;
-    }
-}
-
-/// Transcript pull: cursor-based journal/scrollback replay for a recovered
-/// session. This is the M2/M3 replay contract, kept for transcripts only.
-fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
-    if pull.runtime.terminal_dead.load(Ordering::Acquire) {
-        push_dead_events(session_id, pull, events);
-        return;
-    }
-    let cursor = pull.transcript_cursor;
-    let needs_journal = {
-        let Ok(stream) = pull.runtime.lock_stream() else {
-            push_dead_events(session_id, pull, events);
-            return;
-        };
-        stream
-            .scrollback
-            .needs_journal_replay(cursor, stream.next_seq)
-    };
-    let journal_outputs = if needs_journal {
-        pull.runtime
-            .replay_journal_outputs(cursor.unwrap_or(0), pull.generation)
-    } else {
-        Vec::new()
-    };
-    let replay = {
-        let Ok(stream) = pull.runtime.lock_stream() else {
-            push_dead_events(session_id, pull, events);
-            return;
-        };
-        stream
-            .scrollback
-            .replay_after_with_journal(cursor, &journal_outputs)
-    };
-    for event in replay {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event,
-            },
-        });
-    }
-    if !pull.journal_degraded_sent && pull.runtime.journal_degraded() {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event: pull.runtime.journal_degraded_event(),
-            },
-        });
-        pull.journal_degraded_sent = true;
-    }
-    if !pull.exit_sent {
-        let Ok(stream) = pull.runtime.lock_stream() else {
-            push_dead_events(session_id, pull, events);
-            return;
-        };
-        if SessionRuntime::ready_for_exit(&stream) {
-            let event = match stream.disposition {
-                Disposition::Recovered { integrity } => SessionEvent::Recovered { integrity },
-                Disposition::Running | Disposition::Silent | Disposition::Exited { .. } => {
-                    SessionEvent::Exit {
-                        code: stream.exit_code,
-                    }
-                }
-            };
-            events.push(PendingEvent {
-                session_id: session_id.to_string(),
-                attachment_generation: pull.attachment_generation,
-                envelope: SessionEventEnvelope {
-                    session_id: session_id.to_string(),
-                    generation: pull.generation,
-                    event,
-                },
-            });
-            pull.exit_sent = true;
-        }
-    }
-}
-
 /// The registry owns this value; the reader and command paths keep Arcs to
 /// the endpoints/runtime they need after releasing the map lock.
 struct PtySession {
@@ -1622,54 +1003,6 @@ struct PtySession {
     /// Set by `stop`: the process dies but the session object stays. The
     /// reader must not remove the registry entry or call session_finished.
     preserve_on_exit: Arc<AtomicBool>,
-}
-
-struct TranscriptSession {
-    metadata: Session,
-    owner: OwnerId,
-    runtime: Arc<SessionRuntime>,
-}
-
-enum RegistryEntry {
-    Live(PtySession),
-    Transcript(TranscriptSession),
-}
-
-impl RegistryEntry {
-    fn owner(&self) -> &OwnerId {
-        match self {
-            Self::Live(session) => &session.owner,
-            Self::Transcript(session) => &session.owner,
-        }
-    }
-
-    fn runtime(&self) -> Arc<SessionRuntime> {
-        match self {
-            Self::Live(session) => Arc::clone(&session.runtime),
-            Self::Transcript(session) => Arc::clone(&session.runtime),
-        }
-    }
-
-    fn to_session(&self) -> Session {
-        match self {
-            Self::Live(session) => live_session_view(session),
-            Self::Transcript(session) => session.metadata.clone(),
-        }
-    }
-
-    fn as_live(&self) -> Option<&PtySession> {
-        match self {
-            Self::Live(session) => Some(session),
-            Self::Transcript(_) => None,
-        }
-    }
-
-    fn as_live_mut(&mut self) -> Option<&mut PtySession> {
-        match self {
-            Self::Live(session) => Some(session),
-            Self::Transcript(_) => None,
-        }
-    }
 }
 
 fn elapsed_ms_since_last_life(
@@ -2117,6 +1450,15 @@ impl SessionRegistry {
         conn.untrack(session_id);
         self.drop_transcript_if_idle(session_id);
         Ok(())
+    }
+
+    /// Drop every subscription this connection holds. The processes stay.
+    pub fn detach_conn(&self, conn: &ConnHandle) {
+        let ids = conn.take_attached_ids();
+        for id in ids {
+            self.detach_runtime(&id, conn.id);
+            self.drop_transcript_if_idle(&id);
+        }
     }
 
     fn drop_transcript_if_idle(&self, session_id: &str) {
@@ -2909,102 +2251,6 @@ fn bounded_join<T>(handle: Option<JoinHandle<T>>) -> bool {
     true
 }
 
-fn resolve_pty_command(paths: &RuntimePaths) -> Result<PtyCommand, WireError> {
-    #[cfg(debug_assertions)]
-    {
-        if let Some(command) = load_test_pty_command(paths) {
-            return Ok(command);
-        }
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        let _ = paths;
-    }
-    shell_command()
-}
-
-#[cfg(debug_assertions)]
-fn load_test_pty_command(paths: &RuntimePaths) -> Option<PtyCommand> {
-    let path = paths.dir.join(TEST_PTY_COMMAND_FILE);
-    let bytes = std::fs::read(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    let program = value.get("program")?.as_str()?.to_string();
-    let args = value
-        .get("args")
-        .and_then(|args| args.as_array())
-        .map(|args| {
-            args.iter()
-                .filter_map(|value| value.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let cwd = value
-        .get("cwd")
-        .and_then(|cwd| cwd.as_str())
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())?;
-    Some(PtyCommand::new(program, args, cwd, Vec::new()))
-}
-
-fn shell_command() -> Result<PtyCommand, WireError> {
-    let cwd = std::env::current_dir().map_err(|error| {
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not determine terminal directory: {error}"),
-        )
-    })?;
-    let (program, args) = configured_shell();
-    Ok(PtyCommand::new(program, args, cwd, Vec::new()))
-}
-
-fn configured_shell() -> (String, Vec<String>) {
-    if let Ok(override_shell) = std::env::var(SHELL_OVERRIDE_ENV) {
-        if !override_shell.trim().is_empty() {
-            return (override_shell, shell_args());
-        }
-    }
-    #[cfg(windows)]
-    {
-        let program = if executable_on_path("pwsh.exe") {
-            "pwsh.exe"
-        } else {
-            "powershell.exe"
-        };
-        (
-            program.to_string(),
-            vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        let program = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        (program, shell_args())
-    }
-}
-
-fn shell_args() -> Vec<String> {
-    #[cfg(windows)]
-    {
-        vec!["-NoLogo".to_string(), "-NoProfile".to_string()]
-    }
-    #[cfg(not(windows))]
-    {
-        Vec::new()
-    }
-}
-
-#[cfg(windows)]
-fn executable_on_path(program: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|directory| {
-        let candidate = Path::new(&directory).join(program);
-        candidate.is_file()
-    })
-}
-
 fn not_found() -> WireError {
     WireError::new(ErrorCode::SessionNotFound, "No session with that id.")
 }
@@ -3049,18 +2295,6 @@ fn os_error_description(code: u32) -> &'static str {
         1450 => "no system resources",
         _ => "unknown error",
     }
-}
-
-/// Write a spawn override the next `session_create` will consume. Honored
-/// only in debug builds of the daemon (see [`load_test_pty_command`]).
-pub fn write_test_pty_command(paths: &RuntimePaths, command: &PtyCommand) -> std::io::Result<()> {
-    paths.ensure_dir()?;
-    let body = serde_json::json!({
-        "program": command.program,
-        "args": command.args,
-        "cwd": command.cwd,
-    });
-    std::fs::write(paths.dir.join(TEST_PTY_COMMAND_FILE), body.to_string())
 }
 
 #[cfg(test)]
@@ -3161,34 +2395,6 @@ mod tests {
             generation,
         );
         generation
-    }
-
-    #[test]
-    fn poisoned_stream_is_dead_and_not_reused() {
-        let runtime = Arc::new(SessionRuntime::new());
-        let conn = ConnHandle::new(1);
-        attach_tracked(&runtime, &conn);
-        let poisoned = Arc::clone(&runtime);
-        let panic = std::thread::spawn(move || {
-            let _stream = poisoned.stream.lock().expect("stream lock");
-            panic!("simulate a terminal-state panic");
-        });
-        assert!(panic.join().is_err());
-
-        runtime.publish_output("must not be applied");
-        let events = drain(&conn);
-        assert!(runtime.terminal_dead.load(Ordering::Acquire));
-        assert!(matches!(
-            events.as_slice(),
-            [
-                SessionEvent::JournalDegraded {
-                    dropped_frames: 0,
-                    dropped_bytes: 0,
-                },
-                SessionEvent::Exit { code: None }
-            ]
-        ));
-        assert_eq!(runtime.try_attach(None, &conn), Err(process_gone()));
     }
 
     #[test]
@@ -3302,28 +2508,6 @@ mod tests {
             None,
             "journal-only recovered sessions have no monotonic timestamp"
         );
-    }
-
-    #[test]
-    fn cursor_replay_is_strictly_after_last_seen_sequence() {
-        let mut scrollback = Scrollback::default();
-        scrollback.push(1, b"one");
-        scrollback.push(2, b"two");
-        scrollback.push(3, b"three");
-        assert_eq!(
-            scrollback.replay_after(Some(1)),
-            vec![
-                SessionEvent::Output {
-                    seq: 2,
-                    data: "two".to_string()
-                },
-                SessionEvent::Output {
-                    seq: 3,
-                    data: "three".to_string()
-                },
-            ]
-        );
-        assert_eq!(scrollback.replay_after(None).len(), 3);
     }
 
     #[test]
@@ -3601,36 +2785,6 @@ mod tests {
     }
 
     #[test]
-    fn transcript_cursor_replays_only_after() {
-        let runtime = Arc::new(SessionRuntime::new());
-        runtime.bump_generation();
-        let conn = ConnHandle::new(1);
-        let generation = runtime
-            .try_attach(
-                Some(Cursor {
-                    generation: 2,
-                    seq: 1,
-                }),
-                &conn,
-            )
-            .unwrap();
-        conn.track("s.a.1", Arc::clone(&runtime), true, Some(1), generation);
-        runtime.stream.lock().unwrap().scrollback.push(2, b"two");
-        runtime.finish(Some(0));
-        let events = drain(&conn);
-        assert_eq!(
-            events,
-            vec![
-                SessionEvent::Output {
-                    seq: 2,
-                    data: "two".to_string()
-                },
-                SessionEvent::Exit { code: Some(0) },
-            ]
-        );
-    }
-
-    #[test]
     fn attach_rejects_a_second_connection() {
         let runtime = SessionRuntime::new();
         let first = ConnHandle::new(1);
@@ -3686,111 +2840,6 @@ mod tests {
     }
 
     #[test]
-    fn live_attach_ends_with_snapshot_output_then_exit() {
-        let runtime = Arc::new(SessionRuntime::new());
-        runtime.publish_output("before");
-        let conn = ConnHandle::new(1);
-        attach_tracked(&runtime, &conn);
-        runtime.publish_output("after");
-        runtime.finish(Some(0));
-        let events = drain(&conn);
-        let kinds: Vec<&str> = events
-            .iter()
-            .map(|event| match event {
-                SessionEvent::Snapshot { .. } => "snapshot",
-                SessionEvent::Output { .. } => "output",
-                SessionEvent::Exit { .. } => "exit",
-                SessionEvent::Recovered { .. } => "recovered",
-                SessionEvent::Silent { .. } => "silent",
-                SessionEvent::JournalDegraded { .. } => "journal_degraded",
-                SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
-            })
-            .collect();
-        assert_eq!(kinds, ["snapshot", "output", "exit"]);
-        // Exit must not overtake queued output.
-        assert!(matches!(
-            events.last(),
-            Some(SessionEvent::Exit { code: Some(0) })
-        ));
-    }
-
-    #[test]
-    fn journal_keeps_every_frame_for_recovery() {
-        let dir = std::env::temp_dir().join(format!(
-            "devboule-recovery-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
-        journal
-            .upsert_blocking(new_session_record(
-                "s.recover.1",
-                "S-1-5-21-1",
-                None,
-                SessionKind::Terminal,
-                "Terminal",
-            ))
-            .unwrap();
-        let runtime = Arc::new(SessionRuntime::with_journal(
-            "s.recover.1".into(),
-            Some(Arc::clone(&journal)),
-        ));
-        let payload = "x".repeat(8192);
-        for _ in 1..=300 {
-            runtime.publish_output(&payload);
-        }
-        runtime.finish(Some(0));
-        journal.flush().unwrap();
-
-        let replay = journal.replay("s.recover.1", 0).unwrap();
-        let seqs: Vec<u64> = replay
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                SessionEvent::Output { seq, .. } => Some(*seq),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(seqs, (1..=300).collect::<Vec<_>>());
-
-        // The recovered runtime is a transcript: no emulator, journal replay
-        // instead of a snapshot. Hydrating at 150 leaves a prefix that only
-        // a journal read can fill, so the attach below exercises the seam.
-        let replay_late = journal.replay("s.recover.1", 150).unwrap();
-        let recovered = SessionRuntime::from_replay(
-            "s.recover.1".into(),
-            Some(Arc::clone(&journal)),
-            replay_late,
-        );
-        assert!(recovered.is_transcript());
-        assert_eq!(recovered.transcript_chunks().len(), 150);
-        let conn = ConnHandle::new(1);
-        attach_tracked(&recovered, &conn);
-        let events = drain(&conn);
-        let seqs: Vec<u64> = events
-            .iter()
-            .filter_map(|event| match event {
-                SessionEvent::Output { seq, .. } => Some(*seq),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(seqs, (1..=300).collect::<Vec<_>>());
-        assert_eq!(
-            recovered.journal_replay_count(),
-            1,
-            "one journal read filled the prefix, not one per pull"
-        );
-        drop(recovered);
-        drop(runtime);
-        drop(journal);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn journal_keeps_drain_bytes_after_reap() {
         let dir = std::env::temp_dir().join(format!(
             "devboule-drain-{}-{}",
@@ -3843,98 +2892,6 @@ mod tests {
         drop(runtime);
         drop(journal);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn next_exit_wake_is_zero_once_the_drain_has_elapsed() {
-        let runtime = Arc::new(SessionRuntime::new());
-        let conn = ConnHandle::new(1);
-        runtime.try_attach(None, &conn).unwrap();
-        conn.track("s.a.1", Arc::clone(&runtime), false, None, 1);
-        assert_eq!(conn.next_exit_wake(), None);
-        runtime.mark_exited(Some(0));
-        let wake = conn.next_exit_wake().expect("drain timer");
-        assert!(wake <= EXIT_DRAIN);
-        std::thread::sleep(EXIT_DRAIN + Duration::from_millis(10));
-        assert_eq!(conn.next_exit_wake(), Some(Duration::ZERO));
-        let events = conn.pull_events();
-        assert!(
-            events
-                .iter()
-                .any(|envelope| matches!(envelope.envelope.event, SessionEvent::Exit { .. })),
-            "zero wake must let the writer emit Exit, got {events:?}"
-        );
-        for event in &events {
-            conn.event_sent(event);
-        }
-    }
-
-    #[test]
-    fn live_journal_degradation_reaches_attached_client_once() {
-        let runtime = Arc::new(SessionRuntime::new());
-        let conn = ConnHandle::new(1);
-        attach_tracked(&runtime, &conn);
-
-        runtime.publish_output("still live");
-        runtime.mark_journal_degraded();
-        runtime.mark_journal_degraded();
-
-        let events = drain(&conn);
-        assert_eq!(
-            events
-                .iter()
-                .filter(|event| matches!(event, SessionEvent::JournalDegraded { .. }))
-                .count(),
-            1,
-            "degradation must be delivered exactly once: {events:?}"
-        );
-        assert!(events
-            .iter()
-            .all(|event| !matches!(event, SessionEvent::Exit { .. })));
-        assert!(!runtime.stream.lock().unwrap().process_exited);
-    }
-
-    #[test]
-    fn recovered_pull_ends_with_recovered_not_exit() {
-        let replay = crate::journal::Replay {
-            generation: 1,
-            last_seq: 1,
-            integrity: TranscriptIntegrity::Unverifiable {
-                dropped_frames: 0,
-                dropped_bytes: 0,
-                trimmed_bytes: 0,
-            },
-            events: vec![
-                SessionEvent::Output {
-                    seq: 1,
-                    data: "hello".to_string(),
-                },
-                SessionEvent::Recovered {
-                    integrity: TranscriptIntegrity::Unverifiable {
-                        dropped_frames: 0,
-                        dropped_bytes: 0,
-                        trimmed_bytes: 0,
-                    },
-                },
-            ],
-        };
-        let runtime = SessionRuntime::from_replay("s.a.1".to_string(), None, replay);
-        let conn = ConnHandle::new(1);
-        attach_tracked(&runtime, &conn);
-        let events = drain(&conn);
-        let kinds: Vec<&str> = events
-            .iter()
-            .map(|event| match event {
-                SessionEvent::Output { .. } => "output",
-                SessionEvent::Exit { .. } => "exit",
-                SessionEvent::Recovered { .. } => "recovered",
-                SessionEvent::Silent { .. } => "silent",
-                SessionEvent::JournalDegraded { .. } => "journal_degraded",
-                SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
-                SessionEvent::Snapshot { .. } => "snapshot",
-            })
-            .collect();
-        assert_eq!(kinds, ["output", "recovered"]);
     }
 
     #[test]

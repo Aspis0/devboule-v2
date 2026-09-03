@@ -616,7 +616,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     // FlushFileBuffers stays out of the per-frame event path because it waits
     // for the client to consume the pipe.
     let _ = framed.flush_pipe();
-    conn.detach_all(&state.sessions);
+    state.sessions.detach_conn(&conn);
     state.unwatch_sessions(conn.id);
     loop_result
 }
