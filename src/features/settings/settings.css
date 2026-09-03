@@ -141,6 +141,60 @@
   line-height: 1.6;
 }
 
+.retention-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.retention-summary,
+.retention-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.retention-blocked-copy,
+.retention-help {
+  margin: 0;
+  color: var(--terracotta-deep);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.retention-help {
+  color: var(--ink-soft);
+}
+
+.retention-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.retention-limit-input {
+  width: 160px;
+  margin-left: auto;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.settings-retention-alert {
+  padding: 9px 11px;
+  color: var(--terracotta-deep);
+  background: color-mix(in srgb, var(--terracotta) 10%, transparent);
+  border: 1px solid var(--terracotta);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
 .provider-list,
 .settings-stack {
   display: flex;

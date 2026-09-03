@@ -4,6 +4,8 @@ import type {
   DaemonStatus,
   FileTab,
   Id,
+  JournalRetention,
+  JournalUsage,
   IndexedFile,
   ModelInfo,
   OracleHealth,
@@ -20,6 +22,7 @@ import type {
   SessionEvent,
   SessionKind,
   SessionStateSnapshot,
+  RetentionPatch,
   Workspace,
 } from "../types/ipc";
 
@@ -38,6 +41,10 @@ type CommandArgs = {
   session_resize: { id: Id; cols: number; rows: number };
   session_detach: { id: Id };
   session_close: { id: Id };
+  journal_usage: undefined;
+  journal_retention_get: undefined;
+  journal_retention_set: RetentionPatch;
+  session_delete: { id: Id };
   sessions_list: undefined;
   sessions_watch: { ch: SessionStateChannel };
   sessions_unwatch: undefined;
@@ -79,6 +86,10 @@ type CommandResults = {
   session_resize: void;
   session_detach: void;
   session_close: void;
+  journal_usage: JournalUsage;
+  journal_retention_get: JournalRetention;
+  journal_retention_set: JournalRetention;
+  session_delete: void;
   sessions_list: Session[];
   sessions_watch: void;
   sessions_unwatch: void;
@@ -176,6 +187,11 @@ export const sessionResize = (id: Id, cols: number, rows: number) =>
   invokeTyped("session_resize", { id, cols, rows });
 export const sessionDetach = (id: Id) => invokeTyped("session_detach", { id });
 export const sessionClose = (id: Id) => invokeTyped("session_close", { id });
+export const journalUsage = () => invokeTyped("journal_usage");
+export const journalRetentionGet = () => invokeTyped("journal_retention_get");
+export const journalRetentionSet = (patch: RetentionPatch) =>
+  invokeTyped("journal_retention_set", patch);
+export const sessionDelete = (id: Id) => invokeTyped("session_delete", { id });
 export const sessionsList = () => invokeTyped("sessions_list");
 export const sessionsWatch = (ch: SessionStateChannel) => invokeTyped("sessions_watch", { ch });
 export const sessionsUnwatch = () => invokeTyped("sessions_unwatch");

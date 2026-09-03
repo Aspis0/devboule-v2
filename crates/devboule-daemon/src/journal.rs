@@ -29,7 +29,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use devboule_protocol::{
-    ErrorCode, Session, SessionEvent, SessionKind, SessionState, TranscriptIntegrity, WireError,
+    ErrorCode, JournalRetention, RetentionLimit, RetentionPatch, RetentionSource, Session,
+    SessionEvent, SessionKind, SessionState, TranscriptIntegrity, WireError,
 };
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
@@ -135,6 +136,7 @@ pub enum JournalError {
     Unavailable(String),
     SessionNotFound,
     LiveSession,
+    InvalidRequest(String),
     Checksum { session_id: String, seq: u64 },
     Stopped,
 }
@@ -150,6 +152,7 @@ impl fmt::Display for JournalError {
             Self::Unavailable(message) => write!(formatter, "journal is unavailable: {message}"),
             Self::SessionNotFound => write!(formatter, "No session with that id."),
             Self::LiveSession => write!(formatter, "Close the session before deleting it."),
+            Self::InvalidRequest(message) => write!(formatter, "{message}"),
             Self::Checksum { session_id, seq } => {
                 write!(
                     formatter,
@@ -168,6 +171,7 @@ impl From<JournalError> for WireError {
         let code = match error {
             JournalError::SessionNotFound => ErrorCode::SessionNotFound,
             JournalError::LiveSession => ErrorCode::InvalidRequest,
+            JournalError::InvalidRequest(_) => ErrorCode::InvalidRequest,
             _ => ErrorCode::Journal,
         };
         WireError::new(code, error.to_string())
@@ -449,6 +453,13 @@ enum JournalCmd {
     Usage {
         reply: mpsc::Sender<Result<JournalUsage, JournalError>>,
     },
+    RetentionGet {
+        reply: mpsc::Sender<Result<JournalRetention, JournalError>>,
+    },
+    RetentionSet {
+        patch: RetentionPatch,
+        reply: mpsc::Sender<Result<JournalRetention, JournalError>>,
+    },
     Pin {
         session_id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
@@ -653,6 +664,14 @@ impl Journal {
 
     pub fn usage(&self) -> Result<JournalUsage, JournalError> {
         self.rpc(|reply| JournalCmd::Usage { reply })
+    }
+
+    pub fn retention_get(&self) -> Result<JournalRetention, JournalError> {
+        self.rpc(|reply| JournalCmd::RetentionGet { reply })
+    }
+
+    pub fn retention_set(&self, patch: RetentionPatch) -> Result<JournalRetention, JournalError> {
+        self.rpc(|reply| JournalCmd::RetentionSet { patch, reply })
     }
 
     pub fn pin(&self, session_id: &str) -> Result<(), JournalError> {
@@ -998,6 +1017,96 @@ fn setting_usize(key: &str, value: i64) -> Result<usize, JournalError> {
         .map_err(|_| JournalError::Corrupt(format!("journal setting {key} is invalid")))
 }
 
+fn journal_retention(
+    conn: &Connection,
+    defaults: JournalLimits,
+) -> Result<JournalRetention, JournalError> {
+    let limits = effective_limits(conn, defaults)?;
+    let mut user_settings = HashSet::new();
+    let mut stmt = conn.prepare("SELECT key FROM journal_settings")?;
+    for row in stmt.query_map([], |row| row.get::<_, String>(0))? {
+        user_settings.insert(row?);
+    }
+    let setting = |key: &str, value| RetentionLimit {
+        value,
+        source: if user_settings.contains(key) {
+            RetentionSource::User
+        } else {
+            RetentionSource::Default
+        },
+    };
+    Ok(JournalRetention {
+        session_max_bytes: setting("session_max_bytes", limits.session_max_bytes),
+        max_bytes: setting("max_bytes", limits.max_bytes),
+        max_sessions: setting("max_sessions", limits.max_sessions as u64),
+        max_age_ms: setting("max_age_ms", limits.max_age_ms),
+    })
+}
+
+fn set_journal_retention(
+    conn: &Connection,
+    defaults: JournalLimits,
+    patch: RetentionPatch,
+) -> Result<JournalRetention, JournalError> {
+    if patch.max_age_ms.is_none()
+        && patch.max_bytes.is_none()
+        && patch.max_sessions.is_none()
+        && patch.session_max_bytes.is_none()
+    {
+        return Err(JournalError::InvalidRequest(
+            "Set at least one retention limit.".to_string(),
+        ));
+    }
+    for value in [
+        patch.max_age_ms,
+        patch.max_bytes,
+        patch.max_sessions,
+        patch.session_max_bytes,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if value < 0 {
+            return Err(JournalError::InvalidRequest(
+                "Retention limits cannot be negative.".to_string(),
+            ));
+        }
+    }
+    let current = effective_limits(conn, defaults)?;
+    let max_bytes = patch
+        .max_bytes
+        .map(|value| value as u64)
+        .unwrap_or(current.max_bytes);
+    let session_max_bytes = patch
+        .session_max_bytes
+        .map(|value| value as u64)
+        .unwrap_or(current.session_max_bytes);
+    // Zero disables either cap, so it is not a finite value that can make
+    // the per-session limit inconsistent with the global byte limit.
+    if max_bytes > 0 && session_max_bytes > 0 && session_max_bytes > max_bytes {
+        return Err(JournalError::InvalidRequest(
+            "session_max_bytes cannot be greater than max_bytes.".to_string(),
+        ));
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (key, value) in [
+        ("max_age_ms", patch.max_age_ms),
+        ("max_bytes", patch.max_bytes),
+        ("max_sessions", patch.max_sessions),
+        ("session_max_bytes", patch.session_max_bytes),
+    ] {
+        if let Some(value) = value {
+            tx.execute(
+                "INSERT INTO journal_settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
+    }
+    tx.commit()?;
+    journal_retention(conn, defaults)
+}
+
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -1181,6 +1290,14 @@ fn journal_loop(
                 let result = journal_usage(&conn, &pins, limits);
                 let _ = reply.send(result);
             }
+            JournalCmd::RetentionGet { reply } => {
+                let result = journal_retention(&conn, limits);
+                let _ = reply.send(result);
+            }
+            JournalCmd::RetentionSet { patch, reply } => {
+                let result = set_journal_retention(&conn, limits, patch);
+                let _ = reply.send(result);
+            }
             JournalCmd::Pin { session_id, reply } => {
                 pins.insert(session_id);
                 retention_state.session_set_changed();
@@ -1317,7 +1434,7 @@ fn append_event(
     } else {
         0
     };
-    tx.execute(
+    let updated = tx.execute(
         "UPDATE sessions SET
             last_seq = MAX(last_seq, ?1),
             updated_at_ms = ?2,
@@ -1331,6 +1448,9 @@ fn append_event(
             record.session_id
         ],
     )?;
+    if updated == 0 {
+        return Err(JournalError::SessionNotFound);
+    }
     maybe_snapshot(&tx, &record.session_id, record.generation, limits)?;
     let global_sweep = retention_state.global_sweep_due(add as u64);
     retain(
@@ -2360,6 +2480,168 @@ mod tests {
     }
 
     #[test]
+    fn retention_get_reports_default_and_user_sources() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(&path, snapshot_limits()).expect("open");
+        let defaults = journal.retention_get().expect("defaults");
+        assert_eq!(
+            defaults.max_age_ms.source,
+            devboule_protocol::RetentionSource::Default
+        );
+        assert_eq!(defaults.max_age_ms.value, 0);
+        journal
+            .retention_set(devboule_protocol::RetentionPatch {
+                max_age_ms: Some(0),
+                max_bytes: Some(0),
+                max_sessions: Some(0),
+                session_max_bytes: Some(0),
+            })
+            .expect("set");
+        let updated = journal.retention_get().expect("updated");
+        assert_eq!(
+            updated.max_age_ms.source,
+            devboule_protocol::RetentionSource::User
+        );
+        assert_eq!(updated.max_age_ms.value, 0);
+        assert_eq!(updated.max_bytes.value, 0);
+        assert_eq!(updated.max_sessions.value, 0);
+        assert_eq!(updated.session_max_bytes.value, 0);
+        assert_eq!(
+            updated.max_bytes.source,
+            devboule_protocol::RetentionSource::User
+        );
+        assert_eq!(
+            updated.max_sessions.source,
+            devboule_protocol::RetentionSource::User
+        );
+        assert_eq!(
+            updated.session_max_bytes.source,
+            devboule_protocol::RetentionSource::User
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_persists_nonzero_limits_and_enforces_session_cap() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let updated = journal
+            .retention_set(devboule_protocol::RetentionPatch {
+                max_age_ms: Some(9_000_000_000_000),
+                max_bytes: Some(20_000),
+                max_sessions: Some(7),
+                session_max_bytes: Some(100),
+            })
+            .expect("set nonzero limits");
+        assert_eq!(updated.max_age_ms.value, 9_000_000_000_000);
+        assert_eq!(updated.max_bytes.value, 20_000);
+        assert_eq!(updated.max_sessions.value, 7);
+        assert_eq!(updated.session_max_bytes.value, 100);
+        assert_eq!(
+            updated.max_age_ms.source,
+            devboule_protocol::RetentionSource::User
+        );
+        assert_eq!(
+            updated.max_bytes.source,
+            devboule_protocol::RetentionSource::User
+        );
+        assert_eq!(
+            updated.max_sessions.source,
+            devboule_protocol::RetentionSource::User
+        );
+        assert_eq!(
+            updated.session_max_bytes.source,
+            devboule_protocol::RetentionSource::User
+        );
+
+        journal
+            .retention_set(devboule_protocol::RetentionPatch {
+                max_age_ms: None,
+                max_bytes: None,
+                max_sessions: Some(1),
+                session_max_bytes: None,
+            })
+            .expect("set session cap");
+        let mut old = sample_session("s.limit.enforce.old");
+        old.status = PersistStatus::Ended;
+        old.updated_at_ms = 1;
+        let mut current = sample_session("s.limit.enforce.current");
+        current.status = PersistStatus::Ended;
+        current.updated_at_ms = 2;
+        journal.upsert_blocking(old).expect("old row");
+        journal.upsert_blocking(current).expect("current row");
+        journal
+            .append_blocking(output_record("s.limit.enforce.current", 1, 1, b"current"))
+            .expect("trigger retention");
+        let rows = journal.list().expect("list");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "s.limit.enforce.current");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_set_rejects_each_negative_limit() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        for patch in [
+            devboule_protocol::RetentionPatch {
+                max_age_ms: Some(-1),
+                max_bytes: None,
+                max_sessions: None,
+                session_max_bytes: None,
+            },
+            devboule_protocol::RetentionPatch {
+                max_age_ms: None,
+                max_bytes: Some(-1),
+                max_sessions: None,
+                session_max_bytes: None,
+            },
+            devboule_protocol::RetentionPatch {
+                max_age_ms: None,
+                max_bytes: None,
+                max_sessions: Some(-1),
+                session_max_bytes: None,
+            },
+            devboule_protocol::RetentionPatch {
+                max_age_ms: None,
+                max_bytes: None,
+                max_sessions: None,
+                session_max_bytes: Some(-1),
+            },
+            devboule_protocol::RetentionPatch {
+                max_age_ms: None,
+                max_bytes: None,
+                max_sessions: None,
+                session_max_bytes: None,
+            },
+        ] {
+            let error = journal.retention_set(patch).expect_err("negative rejected");
+            assert!(matches!(error, JournalError::InvalidRequest(_)));
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_set_rejects_session_limit_above_byte_limit() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let error = journal
+            .retention_set(devboule_protocol::RetentionPatch {
+                max_age_ms: None,
+                max_bytes: Some(10),
+                max_sessions: None,
+                session_max_bytes: Some(11),
+            })
+            .expect_err("inconsistent limits rejected");
+        assert!(matches!(error, JournalError::InvalidRequest(_)));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn acp_sessions_are_exempt_from_age_retention() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open_with_limits(
@@ -2667,6 +2949,46 @@ mod tests {
             .iter()
             .any(|row| row.id == "s.live.delete"));
         journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_to_deleted_session_leaves_no_orphan_rows() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut record = sample_session("s.deleted.append");
+        record.status = PersistStatus::Ended;
+        journal.upsert_blocking(record).expect("row");
+        journal
+            .delete_session("s.deleted.append")
+            .expect("delete session");
+        journal
+            .append_blocking(output_record("s.deleted.append", 1, 1, b"late"))
+            .expect("append command");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("inspect");
+        let mut retention_state = RetentionState::default();
+        let error = append_event(
+            &conn,
+            &output_record("s.deleted.append", 1, 1, b"late"),
+            &HashSet::new(),
+            JournalLimits::default(),
+            &mut retention_state,
+        )
+        .expect_err("deleted session must reject a late event");
+        assert!(matches!(error, JournalError::SessionNotFound));
+        for table in ["events", "snapshots", "sessions"] {
+            let query = if table == "sessions" {
+                "SELECT COUNT(*) FROM sessions WHERE id = ?1".to_string()
+            } else {
+                format!("SELECT COUNT(*) FROM {table} WHERE session_id = ?1")
+            };
+            let count: i64 = conn
+                .query_row(&query, ["s.deleted.append"], |row| row.get(0))
+                .expect("count rows");
+            assert_eq!(count, 0, "orphan rows survived in {table}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

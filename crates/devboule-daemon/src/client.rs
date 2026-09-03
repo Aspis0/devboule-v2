@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
-    OwnerId, Persistence, ResumeResult, Session, SessionEvent, SessionEventEnvelope, SessionKind,
-    SessionStateSnapshot, WireError,
+    JournalRetention, JournalUsage, OwnerId, Persistence, ResumeResult, RetentionPatch, Session,
+    SessionEvent, SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError,
 };
 
 use crate::error::DaemonError;
@@ -148,6 +148,7 @@ impl DaemonClient {
         let result = self.roundtrip(ClientMessage::SessionClose {
             id,
             session_id: session_id.to_string(),
+            idempotency_key: None,
         });
         self.unsubscribe(session_id);
         match result? {
@@ -223,6 +224,56 @@ impl DaemonClient {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionsList { id })? {
             DaemonMessage::Sessions { sessions, .. } => Ok(sessions),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn journal_usage(&self) -> Result<JournalUsage, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::JournalUsage { id })? {
+            DaemonMessage::JournalUsage { usage, .. } => Ok(usage),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn journal_retention_get(&self) -> Result<JournalRetention, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::JournalRetentionGet { id })? {
+            DaemonMessage::JournalRetention { retention, .. } => Ok(retention),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn journal_retention_set(
+        &self,
+        patch: RetentionPatch,
+    ) -> Result<JournalRetention, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::JournalRetentionSet {
+            id,
+            max_age_ms: patch.max_age_ms,
+            max_bytes: patch.max_bytes,
+            max_sessions: patch.max_sessions,
+            session_max_bytes: patch.session_max_bytes,
+            idempotency_key: None,
+        })? {
+            DaemonMessage::JournalRetention { retention, .. } => Ok(retention),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn session_delete(&self, session_id: &str) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionDelete {
+            id,
+            session_id: session_id.to_string(),
+            idempotency_key: None,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -556,6 +607,8 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Shutdown { id, .. }
         | DaemonMessage::Session { id, .. }
         | DaemonMessage::Sessions { id, .. }
+        | DaemonMessage::JournalUsage { id, .. }
+        | DaemonMessage::JournalRetention { id, .. }
         | DaemonMessage::Ok { id }
         | DaemonMessage::Resume { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),

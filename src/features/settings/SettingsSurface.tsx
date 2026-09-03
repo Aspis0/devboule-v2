@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { KeyboardEvent } from "react";
 import { OraclePanel } from "../oracle/OraclePanel";
+import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import {
   MOCK_DEFAULT_MODELS,
   MOCK_DEVICES,
@@ -266,7 +267,7 @@ function DevicesPanel() {
 function GeneralPanel() {
   return (
     <div id="settings-panel-general" role="tabpanel" aria-label="General">
-      <SettingsHeading title="General" />
+      <JournalRetentionPanel />
       <div className="settings-stack settings-stack-tight settings-general-list">
         {MOCK_GENERAL_SETTINGS.map((setting) => (
           <SettingValue

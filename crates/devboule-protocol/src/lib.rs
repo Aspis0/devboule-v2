@@ -87,7 +87,9 @@ pub use ids::{
     OwnerId,
 };
 pub use messages::{
-    ClientMessage, DaemonMessage, DaemonStatusBody, JournalStats, SessionEventEnvelope,
+    ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits, JournalRetention,
+    JournalSessionUsage, JournalStats, JournalUsage, RetentionLimit, RetentionPatch,
+    RetentionSource, SessionEventEnvelope, Unreclaimable,
 };
 pub use plugin::WorkspaceRootBody;
 pub use session::{

@@ -22,6 +22,58 @@ export type SessionKind = "terminal" | "acp";
 export type SendIntent = "interrupt" | "steer" | "queue";
 export type PermissionOutcome = "allow_once" | "deny";
 
+export type RetentionSource = "default" | "user";
+
+export interface RetentionLimit {
+  value: number;
+  source: RetentionSource;
+}
+
+export interface JournalRetention {
+  sessionMaxBytes: RetentionLimit;
+  maxBytes: RetentionLimit;
+  maxSessions: RetentionLimit;
+  maxAgeMs: RetentionLimit;
+}
+
+export interface RetentionPatch {
+  sessionMaxBytes?: number;
+  maxBytes?: number;
+  maxSessions?: number;
+  maxAgeMs?: number;
+}
+
+export interface JournalLimits {
+  snapshotEveryBytes: number;
+  sessionMaxBytes: number;
+  maxBytes: number;
+  maxSessions: number;
+  maxAgeMs: number;
+}
+
+export interface JournalSessionUsage {
+  id: Id;
+  title: string;
+  kind: SessionKind;
+  bytes: number;
+  updatedAtMs: number;
+}
+
+export interface Unreclaimable {
+  bytesOver: number;
+  sessionsOver: number;
+  agedOut: number;
+}
+
+export interface JournalUsage {
+  totalBytes: number;
+  sessionCount: number;
+  deletedCount: number;
+  unreclaimable: Unreclaimable;
+  limits: JournalLimits;
+  perSession: JournalSessionUsage[];
+}
+
 export type TranscriptIntegrity =
   | { kind: "complete" }
   | {

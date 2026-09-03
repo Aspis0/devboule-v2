@@ -7,9 +7,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, ClientMessage, DaemonHello,
-    DaemonMessage, DaemonStatusBody, ErrorCode, OwnerId, PersistenceKind, ResumeResult,
-    SessionEvent, SessionEventEnvelope, SessionKind, WireError, PROTOCOL_MIN_VERSION,
-    PROTOCOL_VERSION,
+    DaemonMessage, DaemonStatusBody, ErrorCode, JournalLimits as WireJournalLimits,
+    JournalSessionUsage as WireJournalSessionUsage, JournalUsage as WireJournalUsage, OwnerId,
+    PersistenceKind, ResumeResult, RetentionPatch, SessionEvent, SessionEventEnvelope, SessionKind,
+    Unreclaimable as WireUnreclaimable, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 use crate::error::DaemonError;
@@ -469,6 +470,10 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::SESSIONS);
+    let journal_ok = agreed
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == caps::JOURNAL);
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity derived from the connected pipe's peer process.
     let owner = true_owner;
@@ -541,7 +546,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     framed.send(&DaemonMessage::Error(error))?;
                     continue;
                 }
-                let reply = dispatch(&state, &owner, request, &conn, sessions_ok);
+                let reply = dispatch(&state, &owner, request, &conn, sessions_ok, journal_ok);
                 if close_request {
                     // SessionClose joins the coalescer and calls finish(),
                     // which can publish the teardown tail after the pre-drain.
@@ -757,6 +762,7 @@ fn dispatch(
     request: ClientMessage,
     conn: &Arc<ConnHandle>,
     sessions_ok: bool,
+    journal_ok: bool,
 ) -> DaemonMessage {
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
         return DaemonMessage::Error({
@@ -784,6 +790,15 @@ fn dispatch(
             state.sessions.flush_journal();
             DaemonMessage::Shutdown { id, accepted: true }
         }
+        ClientMessage::JournalUsage { .. }
+        | ClientMessage::JournalRetentionGet { .. }
+        | ClientMessage::JournalRetentionSet { .. }
+        | ClientMessage::SessionDelete { .. } => {
+            if !journal_ok {
+                return capability_not_supported(request.request_id(), caps::JOURNAL);
+            }
+            dispatch_journal(state, owner, request)
+        }
         ClientMessage::SessionCreate { .. }
         | ClientMessage::SessionAttach { .. }
         | ClientMessage::SessionDetach { .. }
@@ -798,7 +813,7 @@ fn dispatch(
         | ClientMessage::SessionsUnwatch { .. }
         | ClientMessage::SessionResume { .. } => {
             if !sessions_ok {
-                return capability_not_supported(request.request_id());
+                return capability_not_supported(request.request_id(), caps::SESSIONS);
             }
             dispatch_session(state, owner, request, conn)
         }
@@ -812,15 +827,132 @@ fn dispatch(
     }
 }
 
-fn capability_not_supported(id: Option<u64>) -> DaemonMessage {
+fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage {
     let mut error = WireError::new(
         ErrorCode::CapabilityNotSupported,
-        format!("capability '{}' was not negotiated", caps::SESSIONS),
+        format!("capability '{capability}' was not negotiated"),
     );
     if let Some(id) = id {
         error = error.with_id(id);
     }
     DaemonMessage::Error(error)
+}
+
+fn dispatch_journal(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    request: ClientMessage,
+) -> DaemonMessage {
+    match request {
+        ClientMessage::JournalUsage { id } => match state.sessions.journal_usage() {
+            Ok(usage) => DaemonMessage::JournalUsage {
+                id,
+                usage: wire_journal_usage(usage),
+            },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::JournalRetentionGet { id } => match state.sessions.journal_retention_get() {
+            Ok(retention) => DaemonMessage::JournalRetention { id, retention },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::JournalRetentionSet {
+            id,
+            max_age_ms,
+            max_bytes,
+            max_sessions,
+            session_max_bytes,
+            idempotency_key,
+        } => {
+            let fingerprint = format!(
+                "retention:{max_age_ms:?}:{max_bytes:?}:{max_sessions:?}:{session_max_bytes:?}"
+            );
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            match state.sessions.journal_retention_set(RetentionPatch {
+                max_age_ms,
+                max_bytes,
+                max_sessions,
+                session_max_bytes,
+            }) {
+                Ok(retention) => {
+                    let reply = DaemonMessage::JournalRetention { id, retention };
+                    remember(
+                        state,
+                        owner,
+                        idempotency_key.as_deref(),
+                        &fingerprint,
+                        &reply,
+                    );
+                    reply
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
+        ClientMessage::SessionDelete {
+            id,
+            session_id,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("delete:{session_id}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            match state.sessions.delete_session(&session_id, owner) {
+                Ok(()) => {
+                    let reply = DaemonMessage::Ok { id };
+                    remember(
+                        state,
+                        owner,
+                        idempotency_key.as_deref(),
+                        &fingerprint,
+                        &reply,
+                    );
+                    reply
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
+        other => DaemonMessage::Error(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("unexpected journal frame {other:?}"),
+        )),
+    }
+}
+
+fn wire_journal_usage(usage: crate::journal::JournalUsage) -> WireJournalUsage {
+    WireJournalUsage {
+        total_bytes: usage.total_bytes,
+        session_count: usage.session_count,
+        deleted_count: usage.deleted_count,
+        unreclaimable: WireUnreclaimable {
+            bytes_over: usage.unreclaimable.bytes_over,
+            sessions_over: usage.unreclaimable.sessions_over,
+            aged_out: usage.unreclaimable.aged_out,
+        },
+        limits: WireJournalLimits {
+            snapshot_every_bytes: usage.limits.snapshot_every_bytes,
+            session_max_bytes: usage.limits.session_max_bytes,
+            max_bytes: usage.limits.max_bytes,
+            max_sessions: usage.limits.max_sessions,
+            max_age_ms: usage.limits.max_age_ms,
+        },
+        per_session: usage
+            .per_session
+            .into_iter()
+            .map(|session| WireJournalSessionUsage {
+                id: session.id,
+                title: session.title,
+                kind: session.kind,
+                bytes: session.bytes,
+                updated_at_ms: session.updated_at_ms,
+            })
+            .collect(),
+    }
 }
 
 fn dispatch_session(
@@ -854,13 +986,31 @@ fn dispatch_session(
                 .detach(&session_id, conn, owner)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
-        ClientMessage::SessionClose { id, session_id } => {
+        ClientMessage::SessionClose {
+            id,
+            session_id,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("close:{session_id}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
             match state.sessions.close(&session_id, owner) {
                 Ok(removed) => {
                     if removed {
                         state.session_finished();
                     }
-                    DaemonMessage::Ok { id }
+                    let reply = DaemonMessage::Ok { id };
+                    remember(
+                        state,
+                        owner,
+                        idempotency_key.as_deref(),
+                        &fingerprint,
+                        &reply,
+                    );
+                    reply
                 }
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
@@ -1068,6 +1218,9 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
         DaemonMessage::Session { session, .. } => DaemonMessage::Session { id, session },
         DaemonMessage::Ok { .. } => DaemonMessage::Ok { id },
         DaemonMessage::Sessions { sessions, .. } => DaemonMessage::Sessions { id, sessions },
+        DaemonMessage::JournalRetention { retention, .. } => {
+            DaemonMessage::JournalRetention { id, retention }
+        }
         DaemonMessage::Error(error) => DaemonMessage::Error(error.with_id(id)),
         other => other,
     }
@@ -1100,7 +1253,7 @@ fn bounded_join(handle: JoinHandle<()>, budget: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devboule_protocol::{ClientMessage, OwnerId};
+    use devboule_protocol::{ClientMessage, OwnerId, RetentionPatch};
 
     fn state() -> Arc<ServerState> {
         ServerState::new("test-instance".to_string())
@@ -1167,6 +1320,7 @@ mod tests {
             ClientMessage::Ping { id: 7 },
             &conn,
             true,
+            true,
         );
         assert!(matches!(
             reply,
@@ -1176,5 +1330,264 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn journal_commands_dispatch_and_reject_invalid_retention_patches() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-command-test-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let state = ServerState::with_paths(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+        )
+        .expect("state");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(2);
+
+        let usage = dispatch(
+            &state,
+            &owner,
+            ClientMessage::JournalUsage { id: 1 },
+            &conn,
+            true,
+            true,
+        );
+        assert!(matches!(usage, DaemonMessage::JournalUsage { id: 1, .. }));
+        let retention = dispatch(
+            &state,
+            &owner,
+            ClientMessage::JournalRetentionGet { id: 2 },
+            &conn,
+            true,
+            true,
+        );
+        assert!(matches!(
+            retention,
+            DaemonMessage::JournalRetention { id: 2, .. }
+        ));
+
+        for patch in [
+            RetentionPatch {
+                max_age_ms: Some(-1),
+                max_bytes: None,
+                max_sessions: None,
+                session_max_bytes: None,
+            },
+            RetentionPatch {
+                max_age_ms: None,
+                max_bytes: Some(-1),
+                max_sessions: None,
+                session_max_bytes: None,
+            },
+            RetentionPatch {
+                max_age_ms: None,
+                max_bytes: None,
+                max_sessions: Some(-1),
+                session_max_bytes: None,
+            },
+            RetentionPatch {
+                max_age_ms: None,
+                max_bytes: None,
+                max_sessions: None,
+                session_max_bytes: Some(-1),
+            },
+            RetentionPatch {
+                max_age_ms: None,
+                max_bytes: Some(10),
+                max_sessions: None,
+                session_max_bytes: Some(11),
+            },
+        ] {
+            let RetentionPatch {
+                max_age_ms,
+                max_bytes,
+                max_sessions,
+                session_max_bytes,
+            } = patch;
+            let reply = dispatch(
+                &state,
+                &owner,
+                ClientMessage::JournalRetentionSet {
+                    id: 3,
+                    max_age_ms,
+                    max_bytes,
+                    max_sessions,
+                    session_max_bytes,
+                    idempotency_key: None,
+                },
+                &conn,
+                true,
+                true,
+            );
+            assert!(matches!(
+                reply,
+                DaemonMessage::Error(WireError {
+                    code: ErrorCode::InvalidRequest,
+                    id: Some(3),
+                    ..
+                })
+            ));
+        }
+        let db = rusqlite::Connection::open(RuntimePaths::from_dir(path.clone()).journal_file())
+            .expect("open journal for live row");
+        db.execute(
+            "INSERT INTO sessions (
+                id, owner, kind, title, created_at_ms, updated_at_ms, generation,
+                status, closed, last_seq, degraded, payload_bytes, unsnapshotted_bytes, reaped
+             ) VALUES (?1, ?2, 'terminal', 'Live', 1, 1, 1, 'live', 0, 0, 0, 0, 0, 0)",
+            ["s.test-client.live", "test-user"],
+        )
+        .expect("insert live row");
+        drop(db);
+        let delete = dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionDelete {
+                id: 4,
+                session_id: "s.test-client.live".to_string(),
+                idempotency_key: None,
+            },
+            &conn,
+            true,
+            true,
+        );
+        assert!(matches!(
+            delete,
+            DaemonMessage::Error(WireError {
+                code: ErrorCode::InvalidRequest,
+                id: Some(4),
+                message,
+                ..
+            }) if message == "Close the session before deleting it."
+        ));
+        assert!(state
+            .sessions
+            .list()
+            .expect("list after refused delete")
+            .iter()
+            .any(|session| session.id == "s.test-client.live"));
+        state.sessions.flush_journal();
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn journal_mutations_replay_idempotently() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-idempotency-test-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let state = ServerState::with_paths(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+        )
+        .expect("state");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(3);
+
+        let first_retention = dispatch(
+            &state,
+            &owner,
+            ClientMessage::JournalRetentionSet {
+                id: 1,
+                max_age_ms: None,
+                max_bytes: Some(20_000),
+                max_sessions: None,
+                session_max_bytes: Some(10_000),
+                idempotency_key: Some("retention-once".to_string()),
+            },
+            &conn,
+            true,
+            true,
+        );
+        assert!(matches!(
+            first_retention,
+            DaemonMessage::JournalRetention { id: 1, .. }
+        ));
+        let replayed_retention = dispatch(
+            &state,
+            &owner,
+            ClientMessage::JournalRetentionSet {
+                id: 2,
+                max_age_ms: None,
+                max_bytes: Some(20_000),
+                max_sessions: None,
+                session_max_bytes: Some(10_000),
+                idempotency_key: Some("retention-once".to_string()),
+            },
+            &conn,
+            true,
+            true,
+        );
+        assert!(matches!(
+            replayed_retention,
+            DaemonMessage::JournalRetention { id: 2, .. }
+        ));
+        let conflict = dispatch(
+            &state,
+            &owner,
+            ClientMessage::JournalRetentionSet {
+                id: 3,
+                max_age_ms: None,
+                max_bytes: Some(20_001),
+                max_sessions: None,
+                session_max_bytes: Some(10_000),
+                idempotency_key: Some("retention-once".to_string()),
+            },
+            &conn,
+            true,
+            true,
+        );
+        assert!(matches!(
+            conflict,
+            DaemonMessage::Error(WireError {
+                code: ErrorCode::IdempotencyConflict,
+                id: Some(3),
+                ..
+            })
+        ));
+
+        let db = rusqlite::Connection::open(RuntimePaths::from_dir(path.clone()).journal_file())
+            .expect("open journal for deleted row");
+        db.execute(
+            "INSERT INTO sessions (
+                id, owner, kind, title, created_at_ms, updated_at_ms, generation,
+                status, closed, last_seq, degraded, payload_bytes, unsnapshotted_bytes, reaped
+             ) VALUES (?1, ?2, 'terminal', 'Deleted', 1, 1, 1, 'ended', 0, 0, 0, 0, 0, 0)",
+            ["s.test-client.idempotent-delete", "test-user"],
+        )
+        .expect("insert deleted row");
+        drop(db);
+        let first_delete = dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionDelete {
+                id: 4,
+                session_id: "s.test-client.idempotent-delete".to_string(),
+                idempotency_key: Some("delete-once".to_string()),
+            },
+            &conn,
+            true,
+            true,
+        );
+        assert!(matches!(first_delete, DaemonMessage::Ok { id: 4 }));
+        let replayed_delete = dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionDelete {
+                id: 5,
+                session_id: "s.test-client.idempotent-delete".to_string(),
+                idempotency_key: Some("delete-once".to_string()),
+            },
+            &conn,
+            true,
+            true,
+        );
+        assert!(matches!(replayed_delete, DaemonMessage::Ok { id: 5 }));
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
     }
 }

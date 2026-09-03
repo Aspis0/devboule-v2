@@ -66,6 +66,8 @@ pub enum ClientMessage {
     SessionClose {
         id: u64,
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
     },
     SessionStop {
         id: u64,
@@ -111,6 +113,31 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    JournalUsage {
+        id: u64,
+    },
+    JournalRetentionGet {
+        id: u64,
+    },
+    JournalRetentionSet {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_age_ms: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_bytes: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_sessions: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_max_bytes: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
+    SessionDelete {
+        id: u64,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
+    },
     /// Plugin-backend tenant. `method` is a capability name (`workspace.root`
     /// today). The daemon returns [`ErrorCode::Unimplemented`]; it is not a
     /// plugin backend.
@@ -142,6 +169,10 @@ impl ClientMessage {
             | Self::SessionsWatch { id }
             | Self::SessionsUnwatch { id }
             | Self::SessionResume { id, .. }
+            | Self::JournalUsage { id }
+            | Self::JournalRetentionGet { id }
+            | Self::JournalRetentionSet { id, .. }
+            | Self::SessionDelete { id, .. }
             | Self::Invoke { id, .. } => Some(*id),
         }
     }
@@ -159,8 +190,31 @@ impl ClientMessage {
             }
             | Self::SessionResume {
                 idempotency_key, ..
+            }
+            | Self::SessionClose {
+                idempotency_key, ..
+            }
+            | Self::JournalRetentionSet {
+                idempotency_key, ..
+            }
+            | Self::SessionDelete {
+                idempotency_key, ..
             } => idempotency_key.as_deref(),
-            _ => None,
+            Self::Hello(_)
+            | Self::Ping { .. }
+            | Self::Status { .. }
+            | Self::Shutdown { .. }
+            | Self::SessionAttach { .. }
+            | Self::SessionDetach { .. }
+            | Self::SessionStop { .. }
+            | Self::SessionResize { .. }
+            | Self::SessionInterrupt { .. }
+            | Self::SessionsList { .. }
+            | Self::SessionsWatch { .. }
+            | Self::SessionsUnwatch { .. }
+            | Self::JournalUsage { .. }
+            | Self::JournalRetentionGet { .. }
+            | Self::Invoke { .. } => None,
         }
     }
 }
@@ -209,7 +263,90 @@ pub enum DaemonMessage {
         id: u64,
         value: serde_json::Value,
     },
+    JournalUsage {
+        id: u64,
+        usage: JournalUsage,
+    },
+    JournalRetention {
+        id: u64,
+        retention: JournalRetention,
+    },
     Event(SessionEventEnvelope),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalUsage {
+    pub total_bytes: u64,
+    pub session_count: usize,
+    pub deleted_count: usize,
+    pub unreclaimable: Unreclaimable,
+    pub limits: JournalLimits,
+    pub per_session: Vec<JournalSessionUsage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalLimits {
+    pub snapshot_every_bytes: u64,
+    pub session_max_bytes: u64,
+    pub max_bytes: u64,
+    pub max_sessions: usize,
+    pub max_age_ms: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalSessionUsage {
+    pub id: String,
+    pub title: String,
+    pub kind: SessionKind,
+    pub bytes: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Unreclaimable {
+    pub bytes_over: u64,
+    pub sessions_over: usize,
+    pub aged_out: usize,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RetentionSource {
+    Default,
+    User,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionLimit {
+    pub value: u64,
+    pub source: RetentionSource,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalRetention {
+    pub session_max_bytes: RetentionLimit,
+    pub max_bytes: RetentionLimit,
+    pub max_sessions: RetentionLimit,
+    pub max_age_ms: RetentionLimit,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RetentionPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_max_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_sessions: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_ms: Option<i64>,
 }
 
 /// Live counters of the conversation journal writer, from the `status`
@@ -320,6 +457,7 @@ mod tests {
         let close = serde_json::to_value(ClientMessage::SessionClose {
             id: 1,
             session_id: "s.a.1".to_string(),
+            idempotency_key: None,
         })
         .expect("json");
         let stop = serde_json::to_value(ClientMessage::SessionStop {
@@ -401,6 +539,43 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&perm).expect("json")["outcome"],
             "allow_once"
+        );
+    }
+
+    #[test]
+    fn retention_mutations_carry_idempotency_keys() {
+        let retention = ClientMessage::JournalRetentionSet {
+            id: 4,
+            max_age_ms: None,
+            max_bytes: Some(10),
+            max_sessions: None,
+            session_max_bytes: None,
+            idempotency_key: Some("retention-key".to_string()),
+        };
+        let delete = ClientMessage::SessionDelete {
+            id: 5,
+            session_id: "s.a.1".to_string(),
+            idempotency_key: Some("delete-key".to_string()),
+        };
+        let close = ClientMessage::SessionClose {
+            id: 6,
+            session_id: "s.a.1".to_string(),
+            idempotency_key: Some("close-key".to_string()),
+        };
+        assert_eq!(retention.idempotency_key(), Some("retention-key"));
+        assert_eq!(delete.idempotency_key(), Some("delete-key"));
+        assert_eq!(close.idempotency_key(), Some("close-key"));
+        assert_eq!(
+            serde_json::to_value(retention).expect("json")["idempotencyKey"],
+            "retention-key"
+        );
+        assert_eq!(
+            serde_json::to_value(delete).expect("json")["idempotencyKey"],
+            "delete-key"
+        );
+        assert_eq!(
+            serde_json::to_value(close).expect("json")["idempotencyKey"],
+            "close-key"
         );
     }
 
@@ -499,5 +674,59 @@ mod tests {
             "compact JSON must not contain a raw newline or NDJSON framing splits the event"
         );
         assert!(encoded.contains("\\n"));
+    }
+
+    #[test]
+    fn journal_commands_round_trip_the_amended_usage_shape() {
+        let set = ClientMessage::JournalRetentionSet {
+            id: 17,
+            session_max_bytes: Some(0),
+            max_bytes: Some(8_000),
+            max_sessions: None,
+            max_age_ms: Some(0),
+            idempotency_key: None,
+        };
+        let wire = serde_json::to_value(&set).expect("json");
+        assert_eq!(wire["type"], "journal_retention_set");
+        assert_eq!(wire["sessionMaxBytes"], 0);
+        assert_eq!(wire["maxBytes"], 8_000);
+        assert!(wire.get("maxSessions").is_none());
+
+        let usage = DaemonMessage::JournalUsage {
+            id: 17,
+            usage: JournalUsage {
+                total_bytes: 10,
+                session_count: 2,
+                deleted_count: 1,
+                unreclaimable: Unreclaimable {
+                    bytes_over: 3,
+                    sessions_over: 4,
+                    aged_out: 5,
+                },
+                limits: JournalLimits {
+                    snapshot_every_bytes: 1,
+                    session_max_bytes: 2,
+                    max_bytes: 3,
+                    max_sessions: 4,
+                    max_age_ms: 5,
+                },
+                per_session: vec![JournalSessionUsage {
+                    id: "s.1".to_string(),
+                    title: "Terminal".to_string(),
+                    kind: SessionKind::Terminal,
+                    bytes: 6,
+                    updated_at_ms: 7,
+                }],
+            },
+        };
+        let encoded = serde_json::to_string(&usage).expect("json");
+        assert!(encoded.contains("\"unreclaimable\":{"));
+        assert!(encoded.contains("\"bytesOver\":3"));
+        assert!(encoded.contains("\"sessionsOver\":4"));
+        assert!(encoded.contains("\"agedOut\":5"));
+        assert_eq!(
+            serde_json::from_str::<DaemonMessage>(&encoded).expect("round trip"),
+            usage
+        );
     }
 }

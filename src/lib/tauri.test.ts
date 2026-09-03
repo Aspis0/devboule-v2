@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { invokeTyped, isCommandError } from "./tauri";
+import {
+  invokeTyped,
+  isCommandError,
+  journalRetentionGet,
+  journalRetentionSet,
+  journalUsage,
+  sessionDelete,
+} from "./tauri";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -55,5 +62,23 @@ describe("invokeTyped rejected payload", () => {
       expect(error.code).toBe("session_not_found");
       expect(error.message).toBe("No session with that id.");
     }
+  });
+});
+
+describe("retention command wrappers", () => {
+  it("calls all four registered retention commands with typed payloads", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({} as never);
+    await journalUsage();
+    await journalRetentionGet();
+    await journalRetentionSet({ maxAgeMs: 0 });
+    await sessionDelete("s.owner.1");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "journal_usage", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(2, "journal_retention_get", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(3, "journal_retention_set", {
+      maxAgeMs: 0,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, "session_delete", { id: "s.owner.1" });
   });
 });

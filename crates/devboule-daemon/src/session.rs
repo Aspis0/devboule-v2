@@ -79,8 +79,9 @@ use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, CursorShape, ErrorCode,
-    JournalStats, OwnerId, ScreenCursor, Session, SessionEvent, SessionEventEnvelope, SessionKind,
-    SessionState, SessionStateSnapshot, TranscriptIntegrity, WireError,
+    JournalRetention, JournalStats, OwnerId, RetentionPatch, ScreenCursor, Session, SessionEvent,
+    SessionEventEnvelope, SessionKind, SessionState, SessionStateSnapshot, TranscriptIntegrity,
+    WireError,
 };
 
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
@@ -1885,6 +1886,81 @@ impl SessionRegistry {
         }
     }
 
+    pub fn journal_usage(&self) -> Result<crate::journal::JournalUsage, WireError> {
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .usage()
+            .map_err(Into::into)
+    }
+
+    pub fn journal_retention_get(&self) -> Result<JournalRetention, WireError> {
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .retention_get()
+            .map_err(Into::into)
+    }
+
+    pub fn journal_retention_set(
+        &self,
+        patch: RetentionPatch,
+    ) -> Result<JournalRetention, WireError> {
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .retention_set(patch)
+            .map_err(Into::into)
+    }
+
+    pub fn delete_session(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let transcript_in_registry = {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            match map.get(session_id) {
+                Some(entry) => {
+                    check_owner(entry, owner)?;
+                    if entry.as_live().is_some() {
+                        return Err(WireError::new(
+                            ErrorCode::InvalidRequest,
+                            "Close the session before deleting it.",
+                        ));
+                    }
+                    true
+                }
+                None => false,
+            }
+        };
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        if !transcript_in_registry {
+            let record = journal
+                .list()
+                .map_err(WireError::from)?
+                .into_iter()
+                .find(|record| record.id == session_id)
+                .ok_or_else(not_found)?;
+            let session_owner = owner_from_session_id(session_id, &record.owner)?;
+            if &session_owner != owner {
+                return Err(unauthorized());
+            }
+        }
+        journal
+            .delete_session(session_id)
+            .map_err(WireError::from)?;
+        if transcript_in_registry {
+            if let Ok(mut map) = self.inner.lock() {
+                map.remove(session_id);
+            }
+            journal.unpin(session_id);
+        }
+        self.notify_transition(owner);
+        Ok(())
+    }
+
     pub fn create(
         &self,
         state: &Arc<ServerState>,
@@ -2931,6 +3007,13 @@ fn executable_on_path(program: &str) -> bool {
 
 fn not_found() -> WireError {
     WireError::new(ErrorCode::SessionNotFound, "No session with that id.")
+}
+
+fn journal_unavailable() -> WireError {
+    WireError::new(
+        ErrorCode::Journal,
+        "The conversation journal is unavailable.",
+    )
 }
 
 fn internal(message: impl Into<String>) -> WireError {
