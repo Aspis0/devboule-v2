@@ -73,12 +73,14 @@ pub enum TranscriptIntegrity {
     Truncated {
         dropped_frames: u64,
         dropped_bytes: u64,
+        trimmed_bytes: u64,
     },
     /// The daemon died without closing the journal, so the tail cannot be
     /// checked. The counters preserve any measured loss that was recorded.
     Unverifiable {
         dropped_frames: u64,
         dropped_bytes: u64,
+        trimmed_bytes: u64,
     },
 }
 
@@ -372,15 +374,17 @@ mod tests {
                 TranscriptIntegrity::Truncated {
                     dropped_frames: 3,
                     dropped_bytes: 4096,
+                    trimmed_bytes: 2048,
                 },
-                r#"{"kind":"truncated","droppedFrames":3,"droppedBytes":4096}"#,
+                r#"{"kind":"truncated","droppedFrames":3,"droppedBytes":4096,"trimmedBytes":2048}"#,
             ),
             (
                 TranscriptIntegrity::Unverifiable {
                     dropped_frames: 3,
                     dropped_bytes: 4096,
+                    trimmed_bytes: 2048,
                 },
-                r#"{"kind":"unverifiable","droppedFrames":3,"droppedBytes":4096}"#,
+                r#"{"kind":"unverifiable","droppedFrames":3,"droppedBytes":4096,"trimmedBytes":2048}"#,
             ),
         ];
 
@@ -460,6 +464,7 @@ mod tests {
             integrity: TranscriptIntegrity::Unverifiable {
                 dropped_frames: 0,
                 dropped_bytes: 0,
+                trimmed_bytes: 0,
             },
         })
         .expect("json");
@@ -477,6 +482,7 @@ mod tests {
             integrity: TranscriptIntegrity::Unverifiable {
                 dropped_frames: 2,
                 dropped_bytes: 12,
+                trimmed_bytes: 0,
             },
         })
         .expect("json");

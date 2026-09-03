@@ -13,7 +13,12 @@ export type TerminalEvent = SessionEvent;
 export type TerminalChannel = Channel<TerminalEvent>;
 
 export type TerminalBanner =
-  | { kind: "exited"; code: number | null; lost: { frames: number; bytes: number } | null }
+  | {
+      kind: "exited";
+      code: number | null;
+      lost: { frames: number; bytes: number } | null;
+      trimmedBytes: number;
+    }
   | { kind: "silent"; elapsedMs: number }
   /**
    * The session was reopened from a journal nobody closed orderly. The
@@ -487,7 +492,12 @@ export class TerminalSession {
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
-    this.persistentBanner = { kind: "exited", code, lost: this.journalLoss };
+    this.persistentBanner = {
+      kind: "exited",
+      code,
+      lost: this.journalLoss,
+      trimmedBytes: 0,
+    };
     this.deps.onBanner(this.persistentBanner);
     this.deps.onExited?.(code);
   }

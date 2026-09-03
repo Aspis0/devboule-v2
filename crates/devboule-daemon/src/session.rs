@@ -113,10 +113,12 @@ fn integrity_counters(integrity: TranscriptIntegrity) -> (u64, u64) {
         TranscriptIntegrity::Truncated {
             dropped_frames,
             dropped_bytes,
+            ..
         }
         | TranscriptIntegrity::Unverifiable {
             dropped_frames,
             dropped_bytes,
+            ..
         } => (dropped_frames, dropped_bytes),
     }
 }
@@ -1008,6 +1010,7 @@ impl SessionRuntime {
             TranscriptIntegrity::Truncated {
                 dropped_frames: self.journal_dropped_frames.load(Ordering::Acquire),
                 dropped_bytes: self.journal_dropped_bytes.load(Ordering::Acquire),
+                trimmed_bytes: 0,
             }
         } else {
             TranscriptIntegrity::Complete
@@ -3816,6 +3819,7 @@ mod tests {
             integrity: TranscriptIntegrity::Unverifiable {
                 dropped_frames: 0,
                 dropped_bytes: 0,
+                trimmed_bytes: 0,
             },
             events: vec![
                 SessionEvent::Output {
@@ -3826,6 +3830,7 @@ mod tests {
                     integrity: TranscriptIntegrity::Unverifiable {
                         dropped_frames: 0,
                         dropped_bytes: 0,
+                        trimmed_bytes: 0,
                     },
                 },
             ],

@@ -48,8 +48,13 @@ export function bannerText(banner: TerminalBanner): string | null {
   }
   if (banner.kind === "closed") return "The terminal session was closed.";
   if (banner.kind === "recovered") {
-    // Zero means the amount is unknown, never that nothing was lost. Branch
-    // on bytes so the warning remains honest for both measured and unknown loss.
+    if (banner.integrity.trimmedBytes > 0) {
+      return banner.integrity.droppedBytes > 0
+        ? `The oldest ${humanSize(banner.integrity.trimmedBytes)} was removed by the history limit, and at least ${humanSize(banner.integrity.droppedBytes)} of output was not saved.`
+        : `The oldest ${humanSize(banner.integrity.trimmedBytes)} of this transcript was removed by the history limit.`;
+    }
+    // A zero counter means the amount is unknown, never that nothing was lost;
+    // every copy branch therefore tests bytes, not the integrity variant.
     return banner.integrity.droppedBytes > 0
       ? `The previous terminal process is gone. At least ${humanSize(banner.integrity.droppedBytes)} of output was not saved, and the end of the transcript could not be verified either.`
       : "The previous terminal process is gone. The end of the saved transcript could not be verified.";
@@ -63,6 +68,11 @@ export function bannerText(banner: TerminalBanner): string | null {
     banner.code === null
       ? "The terminal process exited."
       : `The terminal process exited with code ${banner.code}.`;
+  if (banner.trimmedBytes > 0) {
+    return banner.lost !== null && banner.lost.bytes > 0
+      ? `The oldest ${humanSize(banner.trimmedBytes)} was removed by the history limit, and at least ${humanSize(banner.lost.bytes)} of output was not saved.`
+      : `The oldest ${humanSize(banner.trimmedBytes)} of this transcript was removed by the history limit.`;
+  }
   if (banner.lost === null) return prefix;
   return banner.lost.bytes > 0
     ? `${prefix} At least ${humanSize(banner.lost.bytes)} of output was not saved.`

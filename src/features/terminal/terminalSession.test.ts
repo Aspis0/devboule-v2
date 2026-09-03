@@ -295,7 +295,12 @@ describe("TerminalSession startup and channel ordering", () => {
             state: {
               type: "recovered",
               generation: 1,
-              integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0 },
+              integrity: {
+                kind: "unverifiable",
+                droppedFrames: 0,
+                droppedBytes: 0,
+                trimmedBytes: 0,
+              },
             },
             elapsedMs: null,
           },
@@ -488,7 +493,12 @@ describe("TerminalSession lifecycle and errors", () => {
     harness.invoke.mockClear();
     await harness.session.writeToPty("ignored");
 
-    expect(harness.banners).toContainEqual({ kind: "exited", code: 7, lost: null });
+    expect(harness.banners).toContainEqual({
+      kind: "exited",
+      code: 7,
+      lost: null,
+      trimmedBytes: 0,
+    });
     expect(harness.registry.remove).toHaveBeenCalledWith("rust-core", "session-1");
     expect(harness.invoke).not.toHaveBeenCalled();
   });
@@ -500,12 +510,22 @@ describe("TerminalSession lifecycle and errors", () => {
     harness.flushFrame();
     harness.emit({
       type: "recovered",
-      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0 },
+      integrity: {
+        kind: "unverifiable",
+        droppedFrames: 0,
+        droppedBytes: 0,
+        trimmedBytes: 0,
+      },
     });
     expect(harness.view.written).toEqual(["scrollback"]);
     expect(harness.banners).toContainEqual({
       kind: "recovered",
-      integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0 },
+      integrity: {
+        kind: "unverifiable",
+        droppedFrames: 0,
+        droppedBytes: 0,
+        trimmedBytes: 0,
+      },
     });
     harness.invoke.mockClear();
     await harness.session.writeToPty("ignored");
@@ -539,6 +559,7 @@ describe("TerminalSession lifecycle and errors", () => {
       kind: "exited",
       code: 7,
       lost: { frames: 2, bytes: 12 * 1024 },
+      trimmedBytes: 0,
     });
   });
 

@@ -302,7 +302,12 @@ describe("createPluginBridge", () => {
         state: {
           type: "recovered",
           generation: 4,
-          integrity: { kind: "unverifiable", droppedFrames: 4, droppedBytes: 12 * 1024 },
+          integrity: {
+            kind: "unverifiable",
+            droppedFrames: 4,
+            droppedBytes: 12 * 1024,
+            trimmedBytes: 0,
+          },
         },
       }),
     ).toEqual({

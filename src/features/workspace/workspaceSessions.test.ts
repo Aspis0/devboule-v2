@@ -76,7 +76,12 @@ describe("workspace session controller", () => {
       type: "ended" as const,
       generation: 1,
       code: 1,
-      integrity: { kind: "truncated" as const, droppedFrames: 2, droppedBytes: 12 * 1024 },
+      integrity: {
+        kind: "truncated" as const,
+        droppedFrames: 2,
+        droppedBytes: 12 * 1024,
+        trimmedBytes: 0,
+      },
     };
     expect(sessionStateLabel(state)).toBe("ended · truncated");
   });

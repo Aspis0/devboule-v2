@@ -2540,6 +2540,7 @@ fn journal_growth_after_13mb_flood() {
                 Some(TranscriptIntegrity::Unverifiable {
                     dropped_frames: 0,
                     dropped_bytes: 0,
+                    ..
                 }),
             ) => {}
             (false, None) => assert!(
@@ -2620,6 +2621,7 @@ fn journal_growth_after_13mb_flood() {
                 Some(TranscriptIntegrity::Unverifiable {
                     dropped_frames,
                     dropped_bytes,
+                    ..
                 }),
             ) if dropped_frames > 0 || dropped_bytes > 0 => {}
             (false, None) => assert!(

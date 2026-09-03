@@ -32,9 +32,9 @@ use devboule_protocol::{
     ErrorCode, Session, SessionEvent, SessionKind, SessionState, TranscriptIntegrity, WireError,
 };
 
-/// Stored in `PRAGMA user_version`. Bump only when existing tables change
-/// shape. Additive tables and columns keep this number.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 2;
+/// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
+/// tables or columns that need migration.
+pub const JOURNAL_SCHEMA_VERSION: i32 = 3;
 
 /// Bounded journal queue. Each slot is one coalesced frame (typically
 /// ≤ 8 KiB). A full queue never blocks the PTY path.
@@ -45,20 +45,20 @@ pub const SNAPSHOT_EVERY_BYTES: u64 = 64 * 1024;
 
 /// Per-session cap on snapshot + event payload. Oldest windows go first.
 /// The user loses the start of that session's scrollback, never a hole in
-/// the middle of a replay already loaded into memory. 16 MiB keeps a
-/// measured 13 MB ConPTY flood intact and still bounds a runaway dump.
-pub const JOURNAL_SESSION_MAX_BYTES: u64 = 16 * 1024 * 1024;
+/// the middle of a replay already loaded into memory. 512 MiB is a safety
+/// net for a runaway dump, not a history policy.
+pub const JOURNAL_SESSION_MAX_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Drop the oldest unpinned non-live sessions when the logical payload
 /// exceeds this.
-pub const JOURNAL_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const JOURNAL_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// Maximum retained sessions, closed ones included. Oldest unpinned
 /// non-live go first.
-pub const JOURNAL_MAX_SESSIONS: usize = 50;
+pub const JOURNAL_MAX_SESSIONS: usize = 10_000;
 
 /// Age cap. The user loses recovered transcripts older than this.
-pub const JOURNAL_MAX_AGE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+pub const JOURNAL_MAX_AGE_MS: u64 = 0;
 
 const RPC_WAIT: Duration = Duration::from_secs(10);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
@@ -66,7 +66,48 @@ const JOIN_BUDGET: Duration = Duration::from_millis(500);
 /// while output is arriving faster than SQLite can commit it.
 const CONTROL_RESERVE: usize = 3;
 
-#[derive(Clone, Copy, Debug)]
+/// Global retention scans all sessions, so the writer runs that work once at
+/// startup or after the session set changes, then after each 1 MiB of output.
+/// The affected session's per-session cap remains checked on every append.
+const RETENTION_GLOBAL_SWEEP_BYTES: u64 = 1024 * 1024;
+
+struct RetentionState {
+    bytes_since_global_sweep: u64,
+    global_sweep_pending: bool,
+}
+
+impl Default for RetentionState {
+    fn default() -> Self {
+        Self {
+            bytes_since_global_sweep: 0,
+            global_sweep_pending: true,
+        }
+    }
+}
+
+impl RetentionState {
+    fn session_set_changed(&mut self) {
+        self.global_sweep_pending = true;
+    }
+
+    fn global_sweep_due(&self, appended_bytes: u64) -> bool {
+        self.global_sweep_pending
+            || self.bytes_since_global_sweep.saturating_add(appended_bytes)
+                >= RETENTION_GLOBAL_SWEEP_BYTES
+    }
+
+    fn append_committed(&mut self, appended_bytes: u64, global_sweep: bool) {
+        if global_sweep {
+            self.bytes_since_global_sweep = 0;
+            self.global_sweep_pending = false;
+        } else {
+            self.bytes_since_global_sweep =
+                self.bytes_since_global_sweep.saturating_add(appended_bytes);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JournalLimits {
     pub snapshot_every_bytes: u64,
     pub session_max_bytes: u64,
@@ -93,6 +134,7 @@ pub enum JournalError {
     Corrupt(String),
     Unavailable(String),
     SessionNotFound,
+    LiveSession,
     Checksum { session_id: String, seq: u64 },
     Stopped,
 }
@@ -107,6 +149,7 @@ impl fmt::Display for JournalError {
             Self::Corrupt(message) => write!(formatter, "journal is corrupt: {message}"),
             Self::Unavailable(message) => write!(formatter, "journal is unavailable: {message}"),
             Self::SessionNotFound => write!(formatter, "No session with that id."),
+            Self::LiveSession => write!(formatter, "Close the session before deleting it."),
             Self::Checksum { session_id, seq } => {
                 write!(
                     formatter,
@@ -124,6 +167,7 @@ impl From<JournalError> for WireError {
     fn from(error: JournalError) -> Self {
         let code = match error {
             JournalError::SessionNotFound => ErrorCode::SessionNotFound,
+            JournalError::LiveSession => ErrorCode::InvalidRequest,
             _ => ErrorCode::Journal,
         };
         WireError::new(code, error.to_string())
@@ -189,6 +233,7 @@ pub struct SessionRecord {
     pub dropped_frames: u64,
     pub dropped_bytes: u64,
     pub payload_bytes: u64,
+    pub trimmed_bytes: u64,
     /// Child::wait returned. Output may still be arriving (ConPTY drain).
     pub reaped: bool,
 }
@@ -200,6 +245,13 @@ impl SessionRecord {
                 TranscriptIntegrity::Truncated {
                     dropped_frames: self.dropped_frames,
                     dropped_bytes: self.dropped_bytes,
+                    trimmed_bytes: self.trimmed_bytes,
+                }
+            } else if self.trimmed_bytes > 0 {
+                TranscriptIntegrity::Truncated {
+                    dropped_frames: 0,
+                    dropped_bytes: 0,
+                    trimmed_bytes: self.trimmed_bytes,
                 }
             } else {
                 TranscriptIntegrity::Complete
@@ -212,6 +264,7 @@ impl SessionRecord {
                     0
                 },
                 dropped_bytes: if self.degraded { self.dropped_bytes } else { 0 },
+                trimmed_bytes: self.trimmed_bytes,
             }
         }
     }
@@ -313,6 +366,35 @@ pub struct JournalStatsSnapshot {
     pub failed_frames: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalSessionUsage {
+    pub id: String,
+    pub title: String,
+    pub kind: SessionKind,
+    pub bytes: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Unreclaimable {
+    /// Bytes over `max_bytes` that retention is not allowed to reclaim.
+    pub bytes_over: u64,
+    /// Sessions over `max_sessions` that retention is not allowed to reclaim.
+    pub sessions_over: usize,
+    /// Sessions past `max_age_ms` that retention is not allowed to delete.
+    pub aged_out: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalUsage {
+    pub total_bytes: u64,
+    pub session_count: usize,
+    pub deleted_count: usize,
+    pub unreclaimable: Unreclaimable,
+    pub limits: JournalLimits,
+    pub per_session: Vec<JournalSessionUsage>,
+}
+
 #[derive(Default)]
 struct JournalStats {
     accepted_frames: AtomicU64,
@@ -359,6 +441,13 @@ enum JournalCmd {
         session_id: String,
         from_seq: u64,
         reply: mpsc::Sender<Result<Replay, JournalError>>,
+    },
+    DeleteSession {
+        session_id: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
+    Usage {
+        reply: mpsc::Sender<Result<JournalUsage, JournalError>>,
     },
     Pin {
         session_id: String,
@@ -553,6 +642,17 @@ impl Journal {
             from_seq,
             reply,
         })
+    }
+
+    pub fn delete_session(&self, session_id: &str) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::DeleteSession {
+            session_id: session_id.to_string(),
+            reply,
+        })
+    }
+
+    pub fn usage(&self) -> Result<JournalUsage, JournalError> {
+        self.rpc(|reply| JournalCmd::Usage { reply })
     }
 
     pub fn pin(&self, session_id: &str) -> Result<(), JournalError> {
@@ -810,6 +910,30 @@ fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                 )?;
             }
         }
+        if version < 3 {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS journal_settings (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS deleted_sessions (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    deleted_at_ms INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    bytes_removed INTEGER NOT NULL
+                 );",
+            )?;
+            if !session_has_column(&tx, "trimmed_bytes")? {
+                tx.execute(
+                    "ALTER TABLE sessions ADD COLUMN trimmed_bytes INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -840,6 +964,38 @@ fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalEr
         }
     }
     Ok(false)
+}
+
+fn effective_limits(
+    conn: &Connection,
+    defaults: JournalLimits,
+) -> Result<JournalLimits, JournalError> {
+    let mut limits = defaults;
+    let mut stmt = conn.prepare("SELECT key, value FROM journal_settings")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (key, value) = row?;
+        match key.as_str() {
+            "max_age_ms" => limits.max_age_ms = setting_u64(&key, value)?,
+            "max_sessions" => limits.max_sessions = setting_usize(&key, value)?,
+            "max_bytes" => limits.max_bytes = setting_u64(&key, value)?,
+            "session_max_bytes" => limits.session_max_bytes = setting_u64(&key, value)?,
+            _ => {}
+        }
+    }
+    Ok(limits)
+}
+
+fn setting_u64(key: &str, value: i64) -> Result<u64, JournalError> {
+    u64::try_from(value)
+        .map_err(|_| JournalError::Corrupt(format!("journal setting {key} is negative")))
+}
+
+fn setting_usize(key: &str, value: i64) -> Result<usize, JournalError> {
+    usize::try_from(value)
+        .map_err(|_| JournalError::Corrupt(format!("journal setting {key} is invalid")))
 }
 
 const SCHEMA_SQL: &str = "
@@ -918,6 +1074,7 @@ fn journal_loop(
     path: PathBuf,
 ) {
     let mut pins: HashSet<String> = HashSet::new();
+    let mut retention_state = RetentionState::default();
     while let Ok(cmd) = rx.recv() {
         queued
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -929,12 +1086,16 @@ fn journal_loop(
                 if let Err(error) = upsert_session(&conn, &record) {
                     note_degraded(&degraded_sessions, &record.id, DropCounters::default());
                     on_write_error(&error);
+                } else {
+                    retention_state.session_set_changed();
                 }
             }
             JournalCmd::Append(record) => {
                 let is_output = record.kind == EventKind::Output;
                 let payload_len = record.payload.len() as u64;
-                if let Err(error) = append_event(&conn, &record, &pins, limits) {
+                if let Err(error) =
+                    append_event(&conn, &record, &pins, limits, &mut retention_state)
+                {
                     if is_output {
                         stats.failed_frames.fetch_add(1, Ordering::Relaxed);
                         note_degraded(
@@ -981,12 +1142,16 @@ fn journal_loop(
                 {
                     note_degraded(&degraded_sessions, &session_id, DropCounters::default());
                     on_write_error(&error);
+                } else {
+                    retention_state.session_set_changed();
                 }
             }
             JournalCmd::MarkClosed { session_id } => {
                 if let Err(error) = mark_closed(&conn, &session_id) {
                     note_degraded(&degraded_sessions, &session_id, DropCounters::default());
                     on_write_error(&error);
+                } else {
+                    retention_state.session_set_changed();
                 }
             }
             JournalCmd::MarkDegraded { session_id } => {
@@ -1005,12 +1170,25 @@ fn journal_loop(
             } => {
                 let _ = reply.send(replay_session(&conn, &session_id, from_seq));
             }
+            JournalCmd::DeleteSession { session_id, reply } => {
+                let result = delete_session_user(&conn, &session_id);
+                if result.is_ok() {
+                    retention_state.session_set_changed();
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::Usage { reply } => {
+                let result = journal_usage(&conn, &pins, limits);
+                let _ = reply.send(result);
+            }
             JournalCmd::Pin { session_id, reply } => {
                 pins.insert(session_id);
+                retention_state.session_set_changed();
                 let _ = reply.send(Ok(()));
             }
             JournalCmd::Unpin { session_id } => {
                 pins.remove(&session_id);
+                retention_state.session_set_changed();
             }
             JournalCmd::Flush { reply } => {
                 let result = conn
@@ -1072,8 +1250,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
         "INSERT INTO sessions (
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
             generation, status, exit_code, closed, last_seq, degraded,
-            dropped_frames, dropped_bytes, payload_bytes, unsnapshotted_bytes, reaped
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 0, ?17)
+            dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes, reaped
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -1085,6 +1263,7 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             degraded = MAX(sessions.degraded, excluded.degraded),
             dropped_frames = MAX(sessions.dropped_frames, excluded.dropped_frames),
             dropped_bytes = MAX(sessions.dropped_bytes, excluded.dropped_bytes),
+            trimmed_bytes = MAX(sessions.trimmed_bytes, excluded.trimmed_bytes),
             reaped = MAX(sessions.reaped, excluded.reaped)",
         params![
             record.id,
@@ -1102,6 +1281,7 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             if record.degraded { 1 } else { 0 },
             record.dropped_frames as i64,
             record.dropped_bytes as i64,
+            record.trimmed_bytes as i64,
             record.payload_bytes as i64,
             if record.reaped { 1 } else { 0 },
         ],
@@ -1114,9 +1294,11 @@ fn append_event(
     record: &EventRecord,
     pins: &HashSet<String>,
     limits: JournalLimits,
+    retention_state: &mut RetentionState,
 ) -> Result<(), JournalError> {
     let checksum = crc32(&record.payload) as i64;
     let tx = conn.unchecked_transaction()?;
+    let limits = effective_limits(&tx, limits)?;
     tx.execute(
         "INSERT INTO events (session_id, generation, seq, kind, ts_ms, payload, checksum)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1150,8 +1332,17 @@ fn append_event(
         ],
     )?;
     maybe_snapshot(&tx, &record.session_id, record.generation, limits)?;
-    retain(&tx, pins, now_ms(), limits)?;
+    let global_sweep = retention_state.global_sweep_due(add as u64);
+    retain(
+        &tx,
+        pins,
+        now_ms(),
+        limits,
+        &record.session_id,
+        global_sweep,
+    )?;
     tx.commit()?;
+    retention_state.append_committed(add as u64, global_sweep);
     Ok(())
 }
 
@@ -1228,15 +1419,102 @@ fn retain(
     pins: &HashSet<String>,
     now_ms: u64,
     limits: JournalLimits,
+    session_id: &str,
+    run_global_sweep: bool,
 ) -> Result<(), JournalError> {
-    let ids: Vec<(String, String, i64, i64, i64)> = {
+    trim_session(conn, session_id, limits)?;
+    if run_global_sweep {
+        retain_global(conn, pins, now_ms, limits)?;
+    }
+    Ok(())
+}
+
+fn trim_session(
+    conn: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    limits: JournalLimits,
+) -> Result<(), JournalError> {
+    if limits.session_max_bytes == 0 {
+        return Ok(());
+    }
+    let Some((kind, payload)) = conn
+        .query_row(
+            "SELECT kind, payload_bytes FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    if kind == "acp" {
+        return Ok(());
+    }
+    let mut remaining = payload.max(0) as u64;
+    while remaining > limits.session_max_bytes {
+        let oldest: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT up_to_seq, payload_bytes FROM snapshots WHERE session_id = ?1 ORDER BY up_to_seq ASC LIMIT 1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((up_to, snap_bytes)) = oldest {
+            conn.execute(
+                "DELETE FROM snapshots WHERE session_id = ?1 AND up_to_seq = ?2",
+                params![session_id, up_to],
+            )?;
+            conn.execute(
+                "UPDATE sessions SET
+                    payload_bytes = MAX(payload_bytes - ?1, 0),
+                    trimmed_bytes = trimmed_bytes + ?1
+                 WHERE id = ?2",
+                params![snap_bytes, session_id],
+            )?;
+            remaining = remaining.saturating_sub(snap_bytes.max(0) as u64);
+        } else {
+            let oldest_event: Option<(i64, i64)> = conn
+                .query_row(
+                    "SELECT seq, LENGTH(payload) FROM events WHERE session_id = ?1 AND kind = 'output' ORDER BY seq ASC LIMIT 1",
+                    [session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((seq, bytes)) = oldest_event {
+                conn.execute(
+                    "DELETE FROM events WHERE session_id = ?1 AND seq = ?2 AND kind = 'output'",
+                    params![session_id, seq],
+                )?;
+                conn.execute(
+                    "UPDATE sessions SET
+                        payload_bytes = MAX(payload_bytes - ?1, 0),
+                        trimmed_bytes = trimmed_bytes + ?1
+                     WHERE id = ?2",
+                    params![bytes, session_id],
+                )?;
+                remaining = remaining.saturating_sub(bytes.max(0) as u64);
+            } else {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn retain_global(
+    conn: &rusqlite::Transaction<'_>,
+    pins: &HashSet<String>,
+    now_ms: u64,
+    limits: JournalLimits,
+) -> Result<(), JournalError> {
+    let ids: Vec<(String, String, String, i64, i64)> = {
         let mut stmt =
-            conn.prepare("SELECT id, status, closed, updated_at_ms, payload_bytes FROM sessions")?;
+            conn.prepare("SELECT id, status, kind, updated_at_ms, payload_bytes FROM sessions")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
+                row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, i64>(4)?,
             ))
@@ -1244,73 +1522,38 @@ fn retain(
         rows.collect::<Result<Vec<_>, _>>()?
     };
 
-    for (id, _status, _closed, _updated, payload) in &ids {
-        if pins.contains(id) {
-            continue;
+    if limits.max_age_ms > 0 {
+        let cutoff = now_ms.saturating_sub(limits.max_age_ms) as i64;
+        let aged: Vec<String> = ids
+            .iter()
+            .filter(|(id, status, kind, updated, _payload)| {
+                !pins.contains(id) && kind != "acp" && *status != "live" && *updated < cutoff
+            })
+            .map(|(id, ..)| id.clone())
+            .collect();
+        for id in aged {
+            delete_session(conn, &id, DeleteReason::LimitAge)?;
         }
-        let mut remaining = *payload;
-        while remaining > limits.session_max_bytes as i64 {
-            let oldest: Option<(i64, i64)> = conn
-                .query_row(
-                    "SELECT up_to_seq, payload_bytes FROM snapshots WHERE session_id = ?1 ORDER BY up_to_seq ASC LIMIT 1",
-                    [id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            if let Some((up_to, snap_bytes)) = oldest {
-                conn.execute(
-                    "DELETE FROM snapshots WHERE session_id = ?1 AND up_to_seq = ?2",
-                    params![id, up_to],
-                )?;
-                conn.execute(
-                    "UPDATE sessions SET payload_bytes = MAX(payload_bytes - ?1, 0) WHERE id = ?2",
-                    params![snap_bytes, id],
-                )?;
-                remaining -= snap_bytes;
-            } else {
-                let oldest_event: Option<(i64, i64)> = conn
-                    .query_row(
-                        "SELECT seq, LENGTH(payload) FROM events WHERE session_id = ?1 AND kind = 'output' ORDER BY seq ASC LIMIT 1",
-                        [id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
-                if let Some((seq, bytes)) = oldest_event {
-                    conn.execute(
-                        "DELETE FROM events WHERE session_id = ?1 AND seq = ?2 AND kind = 'output'",
-                        params![id, seq],
-                    )?;
-                    conn.execute(
-                        "UPDATE sessions SET payload_bytes = MAX(payload_bytes - ?1, 0) WHERE id = ?2",
-                        params![bytes, id],
-                    )?;
-                    remaining -= bytes;
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    let cutoff = now_ms.saturating_sub(limits.max_age_ms) as i64;
-    let aged: Vec<String> = ids
-        .iter()
-        .filter(|(id, status, _closed, updated, _payload)| {
-            !pins.contains(id) && *status != "live" && *updated < cutoff
-        })
-        .map(|(id, ..)| id.clone())
-        .collect();
-    for id in aged {
-        delete_session(conn, &id)?;
     }
 
     loop {
         let (count, total) = session_totals(conn)?;
-        if count <= limits.max_sessions && total <= limits.max_bytes {
+        let over_sessions = limits.max_sessions > 0 && count > limits.max_sessions;
+        let over_bytes = limits.max_bytes > 0 && total > limits.max_bytes;
+        if !over_sessions && !over_bytes {
             break;
         }
         match pick_trim_victim(conn, pins)? {
-            Some(id) => delete_session(conn, &id)?,
+            Some(id) => {
+                // If both caps bind, bytes is the deliberate tie-break: it
+                // identifies the payload overage that caused the pressure.
+                let reason = if over_bytes {
+                    DeleteReason::LimitBytes
+                } else {
+                    DeleteReason::LimitSessions
+                };
+                delete_session(conn, &id, reason)?;
+            }
             None => break,
         }
     }
@@ -1333,7 +1576,7 @@ fn pick_trim_victim(
 ) -> Result<Option<String>, JournalError> {
     let mut stmt = conn.prepare(
         "SELECT id FROM sessions
-         WHERE status != 'live'
+         WHERE status != 'live' AND kind != 'acp'
          ORDER BY closed DESC, updated_at_ms ASC",
     )?;
     let mut rows = stmt.query([])?;
@@ -1346,13 +1589,194 @@ fn pick_trim_victim(
     Ok(None)
 }
 
-fn delete_session(conn: &rusqlite::Transaction<'_>, id: &str) -> Result<(), JournalError> {
+#[derive(Clone, Copy)]
+enum DeleteReason {
+    User,
+    LimitBytes,
+    LimitSessions,
+    LimitAge,
+}
+
+impl DeleteReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::LimitBytes => "limit_bytes",
+            Self::LimitSessions => "limit_sessions",
+            Self::LimitAge => "limit_age",
+        }
+    }
+}
+
+fn delete_session(
+    conn: &rusqlite::Transaction<'_>,
+    id: &str,
+    reason: DeleteReason,
+) -> Result<(), JournalError> {
+    let metadata: Option<(Option<String>, String, String, i64, String, i64)> = conn
+        .query_row(
+            "SELECT workspace_id, kind, title, created_at_ms, status, payload_bytes
+             FROM sessions WHERE id = ?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (workspace_id, kind, title, created_at_ms, status, payload_bytes) =
+        metadata.ok_or(JournalError::SessionNotFound)?;
+    if matches!(reason, DeleteReason::User) && status == "live" {
+        return Err(JournalError::LiveSession);
+    }
     conn.execute("DELETE FROM events WHERE session_id = ?1", [id])?;
     conn.execute("DELETE FROM snapshots WHERE session_id = ?1", [id])?;
     conn.execute("DELETE FROM turns WHERE session_id = ?1", [id])?;
     conn.execute("DELETE FROM permissions WHERE session_id = ?1", [id])?;
     conn.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
+    conn.execute(
+        "INSERT INTO deleted_sessions (
+            id, workspace_id, kind, title, created_at_ms, deleted_at_ms, reason, bytes_removed
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id,
+            workspace_id,
+            kind,
+            title,
+            created_at_ms,
+            now_ms() as i64,
+            reason.as_str(),
+            payload_bytes.max(0),
+        ],
+    )?;
+    // Tombstones are deliberately bounded: the oldest records are the one
+    // accepted loss of history, so retention cannot recurse forever.
+    conn.execute(
+        "DELETE FROM deleted_sessions WHERE id IN (
+             SELECT id FROM deleted_sessions
+             ORDER BY deleted_at_ms DESC, id DESC
+             LIMIT -1 OFFSET 10000
+         )",
+        [],
+    )?;
     Ok(())
+}
+
+fn delete_session_user(conn: &Connection, id: &str) -> Result<(), JournalError> {
+    let tx = conn.unchecked_transaction()?;
+    delete_session(&tx, id, DeleteReason::User)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn journal_usage(
+    conn: &Connection,
+    pins: &HashSet<String>,
+    defaults: JournalLimits,
+) -> Result<JournalUsage, JournalError> {
+    let limits = effective_limits(conn, defaults)?;
+    let deleted_count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM deleted_sessions", [], |row| {
+            row.get(0)
+        })?;
+    let cutoff = (limits.max_age_ms > 0).then(|| now_ms().saturating_sub(limits.max_age_ms));
+    let mut session_count = 0usize;
+    let mut total_bytes = 0u64;
+    let mut reclaimable_bytes = 0u64;
+    let mut reclaimable_sessions = 0usize;
+    let mut aged_out = 0usize;
+    let mut per_session = Vec::new();
+    let mut session_stmt = conn.prepare(
+        "SELECT id, title, kind, payload_bytes, updated_at_ms, status
+         FROM sessions ORDER BY updated_at_ms DESC, id",
+    )?;
+    let mut session_rows = session_stmt.query([])?;
+    while let Some(row) = session_rows.next()? {
+        let id: String = row.get(0)?;
+        let title: String = row.get(1)?;
+        let kind_name: String = row.get(2)?;
+        let bytes = row.get::<_, i64>(3)?.max(0) as u64;
+        let updated_at_ms = row.get::<_, i64>(4)?.max(0) as u64;
+        let status: String = row.get(5)?;
+        let reclaimable = status != "live" && kind_name != "acp" && !pins.contains(&id);
+
+        session_count += 1;
+        total_bytes = total_bytes.saturating_add(bytes);
+        if reclaimable {
+            reclaimable_bytes = reclaimable_bytes.saturating_add(bytes);
+            reclaimable_sessions += 1;
+        }
+        if cutoff.is_some_and(|value| updated_at_ms < value) && !reclaimable {
+            aged_out += 1;
+        }
+        per_session.push(JournalSessionUsage {
+            id,
+            title,
+            kind: parse_kind(&kind_name),
+            bytes,
+            updated_at_ms,
+        });
+    }
+
+    // The ordered probe only needs to see past every pinned candidate: the
+    // first non-pinned row must be within pins.len() + 1 rows. This keeps the
+    // reclaimability check bounded without approximating its result.
+    let has_reclaimable = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM sessions
+             WHERE status != 'live' AND kind != 'acp'
+             ORDER BY closed DESC, updated_at_ms ASC
+             LIMIT ?1",
+        )?;
+        let probe_limit = pins.len().saturating_add(1) as i64;
+        let mut rows = stmt.query([probe_limit])?;
+        let mut found = false;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            if !pins.contains(&id) {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    let unreclaimable = Unreclaimable {
+        bytes_over: if limits.max_bytes > 0 && total_bytes > limits.max_bytes {
+            let over = total_bytes - limits.max_bytes;
+            if has_reclaimable {
+                over.saturating_sub(reclaimable_bytes)
+            } else {
+                over
+            }
+        } else {
+            0
+        },
+        sessions_over: if limits.max_sessions > 0 && session_count > limits.max_sessions {
+            let over = session_count - limits.max_sessions;
+            if has_reclaimable {
+                over.saturating_sub(reclaimable_sessions)
+            } else {
+                over
+            }
+        } else {
+            0
+        },
+        aged_out,
+    };
+    Ok(JournalUsage {
+        total_bytes,
+        session_count,
+        deleted_count: deleted_count.max(0) as usize,
+        unreclaimable,
+        limits,
+        per_session,
+    })
 }
 
 fn mark_reaped(
@@ -1491,7 +1915,7 @@ fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> 
     let mut stmt = conn.prepare(
         "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
                 generation, status, exit_code, closed, last_seq, degraded,
-                dropped_frames, dropped_bytes, payload_bytes, reaped
+                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -1516,8 +1940,9 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         degraded: row.get::<_, i64>(12)? != 0,
         dropped_frames: row.get::<_, i64>(13)? as u64,
         dropped_bytes: row.get::<_, i64>(14)? as u64,
-        payload_bytes: row.get::<_, i64>(15)? as u64,
-        reaped: row.get::<_, i64>(16)? != 0,
+        trimmed_bytes: row.get::<_, i64>(15)? as u64,
+        payload_bytes: row.get::<_, i64>(16)? as u64,
+        reaped: row.get::<_, i64>(17)? != 0,
     })
 }
 
@@ -1530,7 +1955,7 @@ fn replay_session(
         .query_row(
             "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
                     generation, status, exit_code, closed, last_seq, degraded,
-                    dropped_frames, dropped_bytes, payload_bytes, reaped
+                    dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,
@@ -1744,6 +2169,7 @@ pub fn new_session_record(
         dropped_frames: 0,
         dropped_bytes: 0,
         payload_bytes: 0,
+        trimmed_bytes: 0,
         reaped: false,
     }
 }
@@ -1851,6 +2277,681 @@ mod tests {
         new_session_record(id, "S-1-5-21-1", None, SessionKind::Terminal, "Terminal")
     }
 
+    /// The per-session trim is intentionally cheap on every `append_event`.
+    /// Global retention scans all sessions only at startup, after a session
+    /// set change, or after the bounded output budget is consumed, so this
+    /// measures that design against journals of both sizes.
+    ///
+    /// Run: cargo test -p devboule-daemon --lib retain_append_cost -- --ignored --nocapture
+    #[test]
+    #[ignore = "measurement, not an assertion; run by hand with --nocapture"]
+    fn retain_append_cost_scales_with_session_count() {
+        for sessions in [50usize, 10_000usize] {
+            let (dir, path) = tmp_journal();
+            let journal = Journal::open_with_limits(
+                &path,
+                JournalLimits {
+                    max_sessions: 20_000,
+                    ..snapshot_limits()
+                },
+            )
+            .expect("open");
+            for index in 0..sessions {
+                let mut record = sample_session(&format!("s.bulk.{index}"));
+                record.status = PersistStatus::Ended;
+                journal.upsert_blocking(record).expect("upsert");
+            }
+            journal
+                .upsert_blocking(sample_session("s.hot"))
+                .expect("upsert hot");
+
+            const APPENDS: u64 = 200;
+            let started = std::time::Instant::now();
+            for seq in 1..=APPENDS {
+                journal
+                    .append_blocking(output_record("s.hot", 1, seq, b"payload"))
+                    .expect("append");
+            }
+            let elapsed = started.elapsed();
+            println!(
+                "RETAIN_APPEND_COST sessions={sessions} appends={APPENDS} elapsed_ms={} per_append_us={} appends_per_s={:.0}",
+                elapsed.as_millis(),
+                elapsed.as_micros() / u128::from(APPENDS),
+                f64::from(APPENDS as u32) / elapsed.as_secs_f64(),
+            );
+            journal.shutdown();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn zero_age_limit_never_expires_old_sessions() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_age_ms: 0,
+                ..snapshot_limits()
+            },
+        )
+        .expect("open");
+        let mut record = sample_session("s.age.never");
+        record.status = PersistStatus::Ended;
+        record.updated_at_ms = 1;
+        journal.upsert_blocking(record).expect("upsert");
+
+        for (seq, timestamp) in [(1, 10), (2, 20), (3, 30), (4, 40)] {
+            journal
+                .append_blocking(output_record(
+                    "s.age.never",
+                    1,
+                    seq,
+                    format!("still here {timestamp}"),
+                ))
+                .expect("append");
+            assert!(journal
+                .list()
+                .expect("list")
+                .iter()
+                .any(|session| session.id == "s.age.never"));
+        }
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acp_sessions_are_exempt_from_age_retention() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_age_ms: 1,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut acp = new_session_record("s.acp.age", "owner", None, SessionKind::Acp, "Agent");
+        acp.status = PersistStatus::Ended;
+        acp.updated_at_ms = 1;
+        journal.upsert_blocking(acp).expect("acp row");
+        journal
+            .upsert_blocking(sample_session("s.age.trigger"))
+            .expect("trigger row");
+        journal
+            .append_blocking(output_record("s.age.trigger", 1, 1, b"trigger"))
+            .expect("append");
+
+        assert!(journal
+            .list()
+            .expect("list")
+            .iter()
+            .any(|row| row.id == "s.acp.age"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acp_sessions_are_exempt_from_session_quota_victims() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_sessions: 1,
+                max_bytes: 0,
+                max_age_ms: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut acp = new_session_record("s.acp.quota", "owner", None, SessionKind::Acp, "Agent");
+        acp.status = PersistStatus::Ended;
+        acp.updated_at_ms = 1;
+        let mut terminal = sample_session("s.terminal.quota");
+        terminal.status = PersistStatus::Ended;
+        terminal.updated_at_ms = 2;
+        journal.upsert_blocking(acp).expect("acp row");
+        journal.upsert_blocking(terminal).expect("terminal row");
+        journal
+            .append_blocking(output_record("s.terminal.quota", 1, 1, b"terminal"))
+            .expect("append");
+
+        let rows = journal.list().expect("list");
+        assert!(rows.iter().any(|row| row.id == "s.acp.quota"));
+        assert!(!rows.iter().any(|row| row.id == "s.terminal.quota"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn all_exempt_sessions_report_unreclaimable_bytes() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_bytes: 4,
+                max_sessions: 0,
+                max_age_ms: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut acp = new_session_record("s.acp.bytes", "owner", None, SessionKind::Acp, "Agent");
+        acp.status = PersistStatus::Ended;
+        journal.upsert_blocking(acp).expect("acp row");
+        journal
+            .append_blocking(output_record("s.acp.bytes", 1, 1, b"1234567890"))
+            .expect("append");
+
+        let usage = journal.usage().expect("usage");
+        assert_eq!(usage.total_bytes, 10);
+        assert_eq!(usage.unreclaimable.bytes_over, 6);
+        assert_eq!(usage.unreclaimable.sessions_over, 0);
+        assert_eq!(usage.unreclaimable.aged_out, 0);
+        assert_eq!(usage.session_count, 1);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreclaimable_bytes_reports_only_exempt_byte_overage() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_bytes: 4,
+                max_sessions: 0,
+                max_age_ms: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut acp = new_session_record(
+            "s.unreclaimable.bytes",
+            "owner",
+            None,
+            SessionKind::Acp,
+            "Agent",
+        );
+        acp.status = PersistStatus::Ended;
+        journal.upsert_blocking(acp).expect("acp row");
+        journal
+            .append_blocking(output_record("s.unreclaimable.bytes", 1, 1, b"1234567890"))
+            .expect("append");
+
+        let unreclaimable = journal.usage().expect("usage").unreclaimable;
+        assert_eq!(unreclaimable.bytes_over, 6);
+        assert_eq!(unreclaimable.sessions_over, 0);
+        assert_eq!(unreclaimable.aged_out, 0);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreclaimable_sessions_reports_only_exempt_session_overage() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_bytes: 0,
+                max_sessions: 1,
+                max_age_ms: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        for id in ["s.unreclaimable.sessions.1", "s.unreclaimable.sessions.2"] {
+            let mut acp = new_session_record(id, "owner", None, SessionKind::Acp, "Agent");
+            acp.status = PersistStatus::Ended;
+            journal.upsert_blocking(acp).expect("acp row");
+        }
+        journal
+            .append_blocking(output_record("s.unreclaimable.sessions.1", 1, 1, b""))
+            .expect("append");
+
+        let unreclaimable = journal.usage().expect("usage").unreclaimable;
+        assert_eq!(unreclaimable.bytes_over, 0);
+        assert_eq!(unreclaimable.sessions_over, 1);
+        assert_eq!(unreclaimable.aged_out, 0);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreclaimable_age_reports_only_exempt_aged_sessions() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_bytes: 0,
+                max_sessions: 0,
+                max_age_ms: 60_000,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut old = new_session_record(
+            "s.unreclaimable.age.old",
+            "owner",
+            None,
+            SessionKind::Acp,
+            "Agent",
+        );
+        old.status = PersistStatus::Ended;
+        old.updated_at_ms = 1;
+        journal.upsert_blocking(old).expect("old acp row");
+        let now = now_ms();
+        let mut current = new_session_record(
+            "s.unreclaimable.age.current",
+            "owner",
+            None,
+            SessionKind::Acp,
+            "Agent",
+        );
+        current.status = PersistStatus::Ended;
+        current.updated_at_ms = now;
+        journal.upsert_blocking(current).expect("current acp row");
+        journal
+            .append_blocking(output_record("s.unreclaimable.age.current", 1, 1, b""))
+            .expect("append");
+
+        let unreclaimable = journal.usage().expect("usage").unreclaimable;
+        assert_eq!(unreclaimable.bytes_over, 0);
+        assert_eq!(unreclaimable.sessions_over, 0);
+        assert_eq!(unreclaimable.aged_out, 1);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quota_trim_writes_a_limit_tombstone_atomically() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_sessions: 1,
+                max_bytes: 0,
+                max_age_ms: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut victim = sample_session("s.tombstone.victim");
+        victim.status = PersistStatus::Ended;
+        victim.updated_at_ms = 1;
+        let mut survivor = sample_session("s.tombstone.survivor");
+        survivor.status = PersistStatus::Ended;
+        survivor.updated_at_ms = 2;
+        journal.upsert_blocking(victim).expect("victim row");
+        journal.upsert_blocking(survivor).expect("survivor row");
+        journal
+            .append_blocking(output_record("s.tombstone.survivor", 1, 1, b"survivor"))
+            .expect("append");
+        journal.flush().expect("flush");
+
+        let conn = Connection::open(&path).expect("inspect");
+        let reason: String = conn
+            .query_row(
+                "SELECT reason FROM deleted_sessions WHERE id = 's.tombstone.victim'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("limit tombstone");
+        assert_eq!(reason, "limit_sessions");
+        assert!(journal
+            .list()
+            .expect("list")
+            .iter()
+            .all(|row| row.id != "s.tombstone.victim"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn interrupted_delete_transaction_keeps_session_without_tombstone() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut record = sample_session("s.tombstone.rollback");
+        record.status = PersistStatus::Ended;
+        journal.upsert_blocking(record).expect("row");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("inspect");
+        conn.execute_batch(
+            "CREATE TRIGGER abort_tombstone BEFORE INSERT ON deleted_sessions
+             BEGIN SELECT RAISE(ABORT, 'simulated crash'); END;",
+        )
+        .expect("crash trigger");
+        drop(conn);
+
+        let journal = Journal::open(&path).expect("reopen");
+        assert!(journal.delete_session("s.tombstone.rollback").is_err());
+        assert!(journal
+            .list()
+            .expect("row after rollback")
+            .iter()
+            .any(|row| row.id == "s.tombstone.rollback"));
+        journal.shutdown();
+        let conn = Connection::open(&path).expect("inspect after rollback");
+        let tombstones: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM deleted_sessions WHERE id = 's.tombstone.rollback'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("tombstones after rollback");
+        assert_eq!(tombstones, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn user_delete_refuses_live_session_and_keeps_the_row() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.live.delete"))
+            .expect("live row");
+
+        assert!(matches!(
+            journal.delete_session("s.live.delete"),
+            Err(JournalError::LiveSession)
+        ));
+        assert!(journal
+            .list()
+            .expect("list")
+            .iter()
+            .any(|row| row.id == "s.live.delete"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn user_and_limit_deletions_keep_distinct_reasons() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_sessions: 1,
+                max_bytes: 0,
+                max_age_ms: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut victim = sample_session("s.reason.limit");
+        victim.status = PersistStatus::Ended;
+        victim.updated_at_ms = 1;
+        let mut user = sample_session("s.reason.user");
+        user.status = PersistStatus::Ended;
+        user.updated_at_ms = 2;
+        journal.upsert_blocking(victim).expect("limit row");
+        journal.upsert_blocking(user).expect("user row");
+        journal
+            .append_blocking(output_record("s.reason.user", 1, 1, b"user"))
+            .expect("quota append");
+        journal
+            .delete_session("s.reason.user")
+            .expect("user delete");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("inspect");
+        let mut stmt = conn
+            .prepare("SELECT id, reason FROM deleted_sessions ORDER BY id")
+            .expect("reasons");
+        let reasons: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("reason rows")
+            .collect::<Result<_, _>>()
+            .expect("reason values");
+        assert_eq!(
+            reasons,
+            vec![
+                ("s.reason.limit".into(), "limit_sessions".into()),
+                ("s.reason.user".into(), "user".into())
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn age_and_byte_limits_use_distinct_tombstone_reasons() {
+        let (age_dir, age_path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &age_path,
+            JournalLimits {
+                max_age_ms: 1,
+                max_bytes: 0,
+                max_sessions: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open age journal");
+        let mut old = sample_session("s.reason.age");
+        old.status = PersistStatus::Ended;
+        old.updated_at_ms = 1;
+        journal.upsert_blocking(old).expect("old row");
+        journal
+            .upsert_blocking(sample_session("s.reason.age.trigger"))
+            .expect("trigger");
+        journal
+            .append_blocking(output_record("s.reason.age.trigger", 1, 1, b"trigger"))
+            .expect("age append");
+        journal.shutdown();
+        let conn = Connection::open(&age_path).expect("age inspect");
+        let age_reason: String = conn
+            .query_row(
+                "SELECT reason FROM deleted_sessions WHERE id = 's.reason.age'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("age reason");
+        assert_eq!(age_reason, "limit_age");
+        drop(conn);
+
+        let (bytes_dir, bytes_path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &bytes_path,
+            JournalLimits {
+                max_bytes: 4,
+                max_age_ms: 0,
+                max_sessions: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open byte journal");
+        let mut old = sample_session("s.reason.bytes");
+        old.status = PersistStatus::Ended;
+        old.payload_bytes = 8;
+        journal.upsert_blocking(old).expect("byte row");
+        journal
+            .upsert_blocking(sample_session("s.reason.bytes.trigger"))
+            .expect("trigger");
+        journal
+            .append_blocking(output_record("s.reason.bytes.trigger", 1, 1, b"trigger"))
+            .expect("byte append");
+        journal.shutdown();
+        let conn = Connection::open(&bytes_path).expect("byte inspect");
+        let byte_reason: String = conn
+            .query_row(
+                "SELECT reason FROM deleted_sessions WHERE id = 's.reason.bytes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("byte reason");
+        assert_eq!(byte_reason, "limit_bytes");
+        let _ = std::fs::remove_dir_all(&age_dir);
+        let _ = std::fs::remove_dir_all(&bytes_dir);
+    }
+
+    #[test]
+    fn head_trim_counts_exact_removed_payload_bytes() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                session_max_bytes: 5,
+                max_bytes: 0,
+                max_sessions: 0,
+                max_age_ms: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        journal
+            .upsert_blocking(sample_session("s.trim.exact"))
+            .expect("row");
+        journal
+            .append_blocking(output_record("s.trim.exact", 1, 1, b"1234"))
+            .expect("first output");
+        journal
+            .append_blocking(output_record("s.trim.exact", 1, 2, b"5678"))
+            .expect("second output");
+
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.trim.exact")
+            .expect("session");
+        assert_eq!(row.payload_bytes, 4);
+        assert_eq!(row.trimmed_bytes, 4);
+        let replay = journal.replay("s.trim.exact", 0).expect("replay");
+        assert_eq!(
+            replay.integrity,
+            TranscriptIntegrity::Unverifiable {
+                dropped_frames: 0,
+                dropped_bytes: 0,
+                trimmed_bytes: 4,
+            }
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pinned_session_is_head_trimmed_but_not_deleted() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                session_max_bytes: 5,
+                max_bytes: 0,
+                max_sessions: 0,
+                max_age_ms: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        journal
+            .upsert_blocking(sample_session("s.trim.pinned"))
+            .expect("row");
+        journal.pin("s.trim.pinned").expect("pin");
+        journal
+            .append_blocking(output_record("s.trim.pinned", 1, 1, b"1234"))
+            .expect("first output");
+        journal
+            .append_blocking(output_record("s.trim.pinned", 1, 2, b"5678"))
+            .expect("second output");
+
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.trim.pinned")
+            .expect("session");
+        assert_eq!(row.payload_bytes, 4);
+        assert_eq!(row.trimmed_bytes, 4);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_ended_head_trim_is_truncated_not_complete() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                session_max_bytes: 5,
+                max_bytes: 0,
+                max_sessions: 0,
+                max_age_ms: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        journal
+            .upsert_blocking(sample_session("s.trim.ended"))
+            .expect("row");
+        journal
+            .append_blocking(output_record("s.trim.ended", 1, 1, b"1234"))
+            .expect("first output");
+        journal
+            .append_blocking(output_record("s.trim.ended", 1, 2, b"5678"))
+            .expect("second output");
+        journal
+            .mark_ended_blocking("s.trim.ended", 1, None)
+            .expect("end");
+
+        assert_eq!(
+            journal.replay("s.trim.ended", 0).expect("replay").integrity,
+            TranscriptIntegrity::Truncated {
+                dropped_frames: 0,
+                dropped_bytes: 0,
+                trimmed_bytes: 4,
+            }
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn byte_limit_wins_the_global_quota_tie_break() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                max_bytes: 4,
+                max_sessions: 1,
+                max_age_ms: 0,
+                session_max_bytes: 0,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut victim = sample_session("s.tie.victim");
+        victim.status = PersistStatus::Ended;
+        victim.updated_at_ms = 1;
+        victim.payload_bytes = 8;
+        let mut survivor = sample_session("s.tie.survivor");
+        survivor.status = PersistStatus::Ended;
+        survivor.updated_at_ms = 2;
+        journal.upsert_blocking(victim).expect("victim row");
+        journal.upsert_blocking(survivor).expect("survivor row");
+        journal
+            .append_blocking(output_record("s.tie.survivor", 1, 1, b""))
+            .expect("trigger append");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("inspect");
+        let reason: String = conn
+            .query_row(
+                "SELECT reason FROM deleted_sessions WHERE id = 's.tie.victim'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("tie tombstone");
+        assert_eq!(reason, "limit_bytes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn records_without_terminators_are_always_unverifiable() {
         for status in [PersistStatus::Interrupted, PersistStatus::Live] {
@@ -1864,6 +2965,7 @@ mod tests {
                     integrity: TranscriptIntegrity::Unverifiable {
                         dropped_frames: 0,
                         dropped_bytes: 0,
+                        trimmed_bytes: 0,
                     },
                 }
             );
@@ -1885,6 +2987,7 @@ mod tests {
                 integrity: TranscriptIntegrity::Unverifiable {
                     dropped_frames: 7,
                     dropped_bytes: 4096,
+                    trimmed_bytes: 0,
                 },
             }
         );
@@ -1917,6 +3020,7 @@ mod tests {
             TranscriptIntegrity::Truncated {
                 dropped_frames: 3,
                 dropped_bytes: 4096,
+                trimmed_bytes: 0,
             }
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -1953,6 +3057,13 @@ mod tests {
         {
             assert!(journal.try_append(output_record("s.drop", 1, 1, b"fill")));
         }
+        let baseline = journal
+            .degraded_sessions
+            .lock()
+            .expect("degradation baseline")
+            .get("s.drop")
+            .copied()
+            .unwrap_or_default();
         assert!(!journal.try_append(output_record("s.drop", 1, 2, b"abc")));
         assert!(!journal.try_append(output_record("s.drop", 1, 3, b"12345678")));
 
@@ -1963,8 +3074,8 @@ mod tests {
             .get("s.drop")
             .copied()
             .expect("dropped session");
-        assert_eq!(counters.frames, 2);
-        assert_eq!(counters.bytes, 3 + 8);
+        assert_eq!(counters.frames - baseline.frames, 2);
+        assert_eq!(counters.bytes - baseline.bytes, 3 + 8);
 
         drop(blocker);
         journal.shutdown();
@@ -1986,7 +3097,7 @@ mod tests {
             [],
         )
         .expect("old row");
-        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 1)
+        conn.pragma_update(None, "user_version", 1)
             .expect("old version");
         drop(conn);
 
@@ -1999,6 +3110,7 @@ mod tests {
             .expect("migrated row");
         assert_eq!(row.dropped_frames, 0);
         assert_eq!(row.dropped_bytes, 0);
+        assert_eq!(row.trimmed_bytes, 0);
         assert_eq!(
             row.to_session().state,
             SessionState::Ended {
@@ -2007,9 +3119,20 @@ mod tests {
                 integrity: TranscriptIntegrity::Truncated {
                     dropped_frames: 0,
                     dropped_bytes: 0,
+                    trimmed_bytes: 0,
                 },
             }
         );
+        let usage = journal.usage().expect("default limits");
+        assert_eq!(usage.limits.max_age_ms, JOURNAL_MAX_AGE_MS);
+        assert_eq!(usage.limits.max_sessions, JOURNAL_MAX_SESSIONS);
+        let check = Connection::open(&path).expect("check migrated schema");
+        let settings: i64 = check
+            .query_row("SELECT COUNT(*) FROM journal_settings", [], |row| {
+                row.get(0)
+            })
+            .expect("settings table");
+        assert_eq!(settings, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2018,7 +3141,7 @@ mod tests {
         let (dir, path) = tmp_journal();
         let conn = Connection::open(&path).expect("old journal");
         conn.execute_batch(SCHEMA_SQL).expect("old schema");
-        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 1)
+        conn.pragma_update(None, "user_version", 1)
             .expect("old version");
         conn.execute(
             "ALTER TABLE sessions ADD COLUMN dropped_frames INTEGER NOT NULL DEFAULT 0",
@@ -2088,6 +3211,7 @@ mod tests {
                     TranscriptIntegrity::Unverifiable {
                         dropped_frames: 0,
                         dropped_bytes: 0,
+                        ..
                     },
             }] => {
                 assert_eq!(a, "one");
@@ -2405,6 +3529,7 @@ mod tests {
                 integrity: TranscriptIntegrity::Unverifiable {
                     dropped_frames: 0,
                     dropped_bytes: 0,
+                    ..
                 },
             })
         ));
@@ -2464,6 +3589,7 @@ mod tests {
                     integrity: TranscriptIntegrity::Unverifiable {
                         dropped_frames: 0,
                         dropped_bytes: 0,
+                        ..
                     },
                     ..
                 }
@@ -2484,6 +3610,7 @@ mod tests {
                     integrity: TranscriptIntegrity::Unverifiable {
                         dropped_frames: 0,
                         dropped_bytes: 0,
+                        ..
                     },
                 })
             ));
@@ -2493,6 +3620,7 @@ mod tests {
                     TranscriptIntegrity::Unverifiable {
                         dropped_frames: 0,
                         dropped_bytes: 0,
+                        ..
                     }
                 ),
                 "an unclosed journal must stay unverifiable"
@@ -2529,6 +3657,7 @@ mod tests {
                     integrity: TranscriptIntegrity::Unverifiable {
                         dropped_frames: 0,
                         dropped_bytes: 0,
+                        ..
                     },
                     ..
                 }
@@ -2539,6 +3668,7 @@ mod tests {
                 TranscriptIntegrity::Unverifiable {
                     dropped_frames: 0,
                     dropped_bytes: 0,
+                    trimmed_bytes: 0,
                 }
             );
             assert!(matches!(
@@ -2547,6 +3677,7 @@ mod tests {
                     integrity: TranscriptIntegrity::Unverifiable {
                         dropped_frames: 0,
                         dropped_bytes: 0,
+                        ..
                     },
                 })
             ));

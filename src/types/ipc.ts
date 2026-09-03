@@ -24,8 +24,18 @@ export type PermissionOutcome = "allow_once" | "deny";
 
 export type TranscriptIntegrity =
   | { kind: "complete" }
-  | { kind: "truncated"; droppedFrames: number; droppedBytes: number }
-  | { kind: "unverifiable"; droppedFrames: number; droppedBytes: number };
+  | {
+      kind: "truncated";
+      droppedFrames: number;
+      droppedBytes: number;
+      trimmedBytes: number;
+    }
+  | {
+      kind: "unverifiable";
+      droppedFrames: number;
+      droppedBytes: number;
+      trimmedBytes: number;
+    };
 
 export type UnverifiableTranscriptIntegrity = Extract<
   TranscriptIntegrity,
