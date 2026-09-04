@@ -268,7 +268,8 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
         | SessionEvent::AgentError { .. }
-        | SessionEvent::AgentStderr { .. } => false,
+        | SessionEvent::AgentStderr { .. }
+        | SessionEvent::PermissionRequest { .. } => false,
     }
 }
 
@@ -637,7 +638,8 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
             | SessionEvent::AgentError { .. }
-            | SessionEvent::AgentStderr { .. } => None,
+            | SessionEvent::AgentStderr { .. }
+            | SessionEvent::PermissionRequest { .. } => None,
         })
         .max()
         .expect("seq");
@@ -971,7 +973,8 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
             | SessionEvent::AgentError { .. }
-            | SessionEvent::AgentStderr { .. } => None,
+            | SessionEvent::AgentStderr { .. }
+            | SessionEvent::PermissionRequest { .. } => None,
         })
         .collect();
     let mut unique = output_seqs.clone();
@@ -1491,7 +1494,8 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
         | SessionEvent::AgentError { .. }
-        | SessionEvent::AgentStderr { .. } => {}
+        | SessionEvent::AgentStderr { .. }
+        | SessionEvent::PermissionRequest { .. } => {}
     });
     client
         .session_attach(&session.id, None, handler)
@@ -1884,7 +1888,8 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
         | SessionEvent::AgentError { .. }
-        | SessionEvent::AgentStderr { .. } => {}
+        | SessionEvent::AgentStderr { .. }
+        | SessionEvent::PermissionRequest { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
         let mut diagnostics = diagnostics.lock().unwrap();
@@ -2251,7 +2256,8 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
             | SessionEvent::AgentError { .. }
-            | SessionEvent::AgentStderr { .. } => {}
+            | SessionEvent::AgentStderr { .. }
+            | SessionEvent::PermissionRequest { .. } => {}
         }
     }
     assert!(
@@ -2514,7 +2520,8 @@ fn journal_growth_after_13mb_flood() {
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
             | SessionEvent::AgentError { .. }
-            | SessionEvent::AgentStderr { .. } => {}
+            | SessionEvent::AgentStderr { .. }
+            | SessionEvent::PermissionRequest { .. } => {}
         }
     });
     client
@@ -2803,7 +2810,8 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
             | SessionEvent::AgentError { .. }
-            | SessionEvent::AgentStderr { .. } => {}
+            | SessionEvent::AgentStderr { .. }
+            | SessionEvent::PermissionRequest { .. } => {}
         }
     }
 

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { MOCK_SURFACES, type MockSurface } from "./mockData";
 import { NewProjectDialog } from "./NewProjectDialog";
 import {
@@ -20,10 +20,12 @@ import {
   useWorkspaceSessions,
 } from "./workspaceSessions";
 import type { DaemonStatus } from "../../types/ipc";
+import type { PermissionRequest } from "../../types/ipc";
+import { reasonFromCause, sessionPermissionRespond } from "../../lib/tauri";
 import "./Workspace.css";
 
 type ActiveSidePanel = MockSurface["id"];
-type PermissionState = "waiting" | "allowed" | "denied";
+type PermissionState = "waiting" | "submitting" | "allowed" | "denied";
 const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
 
 function daemonDotTone(state: DaemonStatus["state"]): string {
@@ -44,6 +46,7 @@ function daemonLabel(status: DaemonStatus): string {
 
 const PERMISSION_LABELS: Record<PermissionState, string> = {
   waiting: "Waiting on you",
+  submitting: "Sending decision…",
   allowed: "Allowed once · running",
   denied: "Denied — the turn continues without it",
 };
@@ -77,6 +80,10 @@ export function Workspace() {
   const [diffState, setDiffState] = useState<DiffState>("unstaged");
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
+  const [permissionRequest, setPermissionRequest] = useState<{
+    sessionId: string;
+    request: PermissionRequest;
+  } | null>(null);
   const daemon = useWorkspaceDaemon();
   const {
     sessions,
@@ -96,6 +103,17 @@ export function Workspace() {
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
+  const handlePermissionRequest = useCallback(
+    (request: PermissionRequest) => {
+      if (selectedSessionId !== null) {
+        setPermissionRequest({ sessionId: selectedSessionId, request });
+      }
+    },
+    [selectedSessionId],
+  );
+  const handlePermissionResolved = useCallback(() => setPermissionRequest(null), []);
+  const selectedPermission =
+    permissionRequest?.sessionId === selectedSessionId ? permissionRequest.request : null;
   const sessionStatusText = sessionsError
     ? sessionsError
     : sessionCreating
@@ -260,14 +278,25 @@ export function Workspace() {
         </div>
 
         {selectedSessionId !== null ? (
-          <TerminalSurface
-            key={selectedSessionId}
-            id={WORKSPACE_TERMINAL_PANEL_ID}
-            workspaceId={null}
-            sessionId={selectedSessionId}
-            onClosed={handleSessionClosed}
-            onExited={handleSessionClosed}
-          />
+          <>
+            {selectedPermission !== null ? (
+              <WorkspacePermissionCard
+                sessionId={selectedSessionId}
+                request={selectedPermission}
+                capabilities={daemon.capabilities}
+                onResolved={handlePermissionResolved}
+              />
+            ) : null}
+            <TerminalSurface
+              key={selectedSessionId}
+              id={WORKSPACE_TERMINAL_PANEL_ID}
+              workspaceId={null}
+              sessionId={selectedSessionId}
+              onClosed={handleSessionClosed}
+              onExited={handleSessionClosed}
+              onPermissionRequest={handlePermissionRequest}
+            />
+          </>
         ) : (
           <div
             id={WORKSPACE_TERMINAL_PANEL_ID}
@@ -402,28 +431,67 @@ export function Workspace() {
   );
 }
 
-/**
- * Reserved for the typed-permission slice. It is intentionally not mounted:
- * session_permission_respond is not a live command yet, so this control must
- * not imply that a local click grants a real operation.
- */
-export function WorkspacePermissionCard() {
+interface WorkspacePermissionCardProps {
+  sessionId: string;
+  request: PermissionRequest;
+  capabilities: readonly string[];
+  onResolved?: () => void;
+}
+
+/** A real ACP permission prompt; it is inert unless the handshake negotiated typed_permissions. */
+export function WorkspacePermissionCard({
+  sessionId,
+  request,
+  capabilities,
+  onResolved,
+}: WorkspacePermissionCardProps) {
   const [permission, setPermission] = useState<PermissionState>("waiting");
+  const [error, setError] = useState<string | null>(null);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    submittingRef.current = false;
+    setPermission("waiting");
+    setError(null);
+  }, [request.toolCallId]);
+
+  if (!capabilities.includes("typed_permissions")) return null;
+
+  const respond = async (outcome: "allow_once" | "deny") => {
+    if (submittingRef.current || permission !== "waiting") return;
+    submittingRef.current = true;
+    setPermission("submitting");
+    setError(null);
+    try {
+      await sessionPermissionRespond(sessionId, request.toolCallId, outcome);
+      setPermission(outcome === "allow_once" ? "allowed" : "denied");
+      onResolved?.();
+    } catch (cause) {
+      submittingRef.current = false;
+      setPermission("waiting");
+      setError(reasonFromCause(cause));
+    }
+  };
 
   return (
     <div className="workspace-permission-card" aria-live="polite">
       <div className="workspace-permission-heading">
         <span className={`workspace-permission-dot workspace-permission-${permission}`} />
-        <span>Permission — run a command</span>
-        <span className="workspace-permission-context">worktree · rust-core</span>
+        <span>Permission · {request.title}</span>
+        {request.cwd ? <span className="workspace-permission-context">{request.cwd}</span> : null}
       </div>
-      <div className="workspace-permission-command">cargo test -p oracle-core --all-features</div>
+      {request.description ? (
+        <div className="workspace-permission-description">{request.description}</div>
+      ) : null}
+      {request.command ? (
+        <div className="workspace-permission-command">{request.command}</div>
+      ) : null}
       <div className="workspace-permission-actions">
         <span className="workspace-permission-label">{PERMISSION_LABELS[permission]}</span>
         <button
           type="button"
           className="workspace-secondary-action workspace-deny-action"
-          onClick={() => setPermission("denied")}
+          onClick={() => void respond("deny")}
           disabled={permission !== "waiting"}
         >
           Deny
@@ -431,12 +499,13 @@ export function WorkspacePermissionCard() {
         <button
           type="button"
           className="workspace-primary-action"
-          onClick={() => setPermission("allowed")}
+          onClick={() => void respond("allow_once")}
           disabled={permission !== "waiting"}
         >
           Allow once
         </button>
       </div>
+      {error ? <div role="alert">{error}</div> : null}
     </div>
   );
 }

@@ -28,6 +28,7 @@ pub struct UiDaemonStatus {
     pub instance_id: Option<String>,
     pub protocol_version: Option<u32>,
     pub clients: Option<u32>,
+    pub capabilities: Vec<String>,
     pub message: Option<String>,
 }
 
@@ -39,6 +40,7 @@ impl UiDaemonStatus {
             instance_id: None,
             protocol_version: None,
             clients: None,
+            capabilities: Vec::new(),
             message: None,
         }
     }
@@ -50,6 +52,7 @@ impl UiDaemonStatus {
             instance_id: None,
             protocol_version: None,
             clients: None,
+            capabilities: Vec::new(),
             message: Some(message.into()),
         }
     }
@@ -61,6 +64,7 @@ impl UiDaemonStatus {
             instance_id: None,
             protocol_version: None,
             clients: None,
+            capabilities: Vec::new(),
             message: Some(message.into()),
         }
     }
@@ -214,6 +218,11 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                         instance_id: Some(hello.instance_id.clone()),
                         protocol_version: Some(hello.protocol_version),
                         clients: None,
+                        capabilities: hello
+                            .capabilities
+                            .iter()
+                            .map(|capability| capability.as_str().to_string())
+                            .collect(),
                         message: None,
                     },
                 );
@@ -237,6 +246,11 @@ fn supervisor(inner: Arc<BridgeInner>, stop: Arc<AtomicBool>) {
                                     instance_id: Some(body.instance_id),
                                     protocol_version: Some(body.protocol_version),
                                     clients: Some(body.clients),
+                                    capabilities: hello
+                                        .capabilities
+                                        .iter()
+                                        .map(|capability| capability.as_str().to_string())
+                                        .collect(),
                                     message: body.journal_error,
                                 },
                             );

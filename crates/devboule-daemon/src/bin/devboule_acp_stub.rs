@@ -18,6 +18,7 @@ fn main() -> io::Result<()> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
     let mut last_prompt_id = None;
+    let mut permission_request_id = None;
     let mut line = String::new();
     loop {
         line.clear();
@@ -31,6 +32,21 @@ fn main() -> io::Result<()> {
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if method.is_empty() && permission_request_id == request.get("id").and_then(Value::as_u64) {
+            permission_request_id = None;
+            let cancelled = request
+                .get("result")
+                .and_then(|result| result.get("outcome"))
+                .and_then(|outcome| outcome.get("outcome"))
+                .and_then(Value::as_str)
+                != Some("selected");
+            respond(
+                &mut stdout,
+                last_prompt_id.map(Value::from),
+                json!({"stopReason": if cancelled { "cancelled" } else { "end_turn" }}),
+            )?;
+            continue;
+        }
         match method {
             "initialize" => {
                 if fail_initialize {
@@ -63,6 +79,32 @@ fn main() -> io::Result<()> {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 if prompt_text.contains("block") {
+                    continue;
+                }
+                if prompt_text.contains("permission") {
+                    permission_request_id = Some(99);
+                    emit(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": 99,
+                            "method": "session/request_permission",
+                            "params": {
+                                "sessionId": "stub-session",
+                                "title": "Run command",
+                                "description": "The stub wants to run a command.",
+                                "toolCall": {
+                                    "toolCallId": "tool-perm",
+                                    "title": "Run command",
+                                    "status": "in_progress"
+                                },
+                                "options": [
+                                    {"optionId": "allow", "name": "Allow once", "kind": "allow_once"},
+                                    {"optionId": "deny", "name": "Deny", "kind": "reject_once"}
+                                ]
+                            }
+                        }),
+                    )?;
                     continue;
                 }
                 eprintln!("stub-agent stderr marker");

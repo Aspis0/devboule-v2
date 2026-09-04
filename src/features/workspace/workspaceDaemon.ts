@@ -8,6 +8,7 @@ const DISCONNECTED_DAEMON: DaemonStatus = {
   instanceId: null,
   protocolVersion: null,
   clients: null,
+  capabilities: [],
   message: "daemon unreachable",
 };
 

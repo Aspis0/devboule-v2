@@ -458,7 +458,11 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     let daemon_hello = daemon_hello(&state);
     let agreed = match negotiate(&client_hello, &daemon_hello) {
         Ok(agreed) => {
-            framed.send(&DaemonMessage::Hello(daemon_hello))?;
+            // The client learns the usable capability set from this hello;
+            // do not expose daemon-only capabilities as if they were agreed.
+            let mut agreed_hello = daemon_hello.clone();
+            agreed_hello.capabilities = agreed.capabilities.clone();
+            framed.send(&DaemonMessage::Hello(agreed_hello))?;
             agreed
         }
         Err(error) => {
@@ -474,6 +478,10 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::JOURNAL);
+    let typed_permissions_ok = agreed
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == caps::TYPED_PERMISSIONS);
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity derived from the connected pipe's peer process.
     let owner = true_owner;
@@ -546,7 +554,15 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     framed.send(&DaemonMessage::Error(error))?;
                     continue;
                 }
-                let reply = dispatch(&state, &owner, request, &conn, sessions_ok, journal_ok);
+                let reply = dispatch(
+                    &state,
+                    &owner,
+                    request,
+                    &conn,
+                    sessions_ok,
+                    journal_ok,
+                    typed_permissions_ok,
+                );
                 if close_request {
                     // SessionClose joins the coalescer and calls finish(),
                     // which can publish the teardown tail after the pre-drain.
@@ -685,6 +701,7 @@ fn send_pending_event(
             SessionEvent::AgentFinished { .. } => " agent_finished".to_string(),
             SessionEvent::AgentError { .. } => " agent_error".to_string(),
             SessionEvent::AgentStderr { .. } => " agent_stderr".to_string(),
+            SessionEvent::PermissionRequest { .. } => " permission_request".to_string(),
         };
         eprintln!(
             "discarded stale pending event for session {} generation {}{}",
@@ -769,6 +786,7 @@ fn dispatch(
     conn: &Arc<ConnHandle>,
     sessions_ok: bool,
     journal_ok: bool,
+    typed_permissions_ok: bool,
 ) -> DaemonMessage {
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
         return DaemonMessage::Error({
@@ -784,6 +802,9 @@ fn dispatch(
             ErrorCode::InvalidRequest,
             "hello already completed",
         )),
+        ClientMessage::SessionPermissionRespond { .. } if !typed_permissions_ok => {
+            capability_not_supported(request.request_id(), caps::TYPED_PERMISSIONS)
+        }
         ClientMessage::Ping { id } => DaemonMessage::Pong {
             id,
             ts_ms: unix_millis(),
@@ -821,7 +842,7 @@ fn dispatch(
             if !sessions_ok {
                 return capability_not_supported(request.request_id(), caps::SESSIONS);
             }
-            dispatch_session(state, owner, request, conn)
+            dispatch_session(state, owner, request, conn, typed_permissions_ok)
         }
         ClientMessage::Invoke { id, method, .. } => DaemonMessage::Error(
             WireError::new(
@@ -966,6 +987,7 @@ fn dispatch_session(
     owner: &OwnerId,
     request: ClientMessage,
     conn: &Arc<ConnHandle>,
+    typed_permissions_ok: bool,
 ) -> DaemonMessage {
     match request {
         ClientMessage::SessionCreate {
@@ -982,7 +1004,7 @@ fn dispatch_session(
             id,
             state
                 .sessions
-                .attach(&session_id, from_cursor, conn, owner)
+                .attach(&session_id, from_cursor, conn, owner, typed_permissions_ok)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionDetach { id, session_id } => reply_result(
@@ -1074,10 +1096,40 @@ fn dispatch_session(
                 .with_id(id),
             ),
         },
-        ClientMessage::SessionInterrupt { id, .. }
-        | ClientMessage::SessionPermissionRespond { id, .. } => DaemonMessage::Error(
+        ClientMessage::SessionInterrupt { id, .. } => DaemonMessage::Error(
             WireError::new(ErrorCode::Unimplemented, "not implemented in M3b").with_id(id),
         ),
+        ClientMessage::SessionPermissionRespond {
+            id,
+            session_id,
+            request_id,
+            outcome,
+            idempotency_key,
+        } => {
+            let fingerprint = format!("permission:{session_id}:{request_id}:{outcome:?}");
+            if let Some(reply) =
+                idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
+            {
+                return reply;
+            }
+            match state
+                .sessions
+                .permission_respond(&session_id, &request_id, outcome, conn, owner)
+            {
+                Ok(()) => {
+                    let reply = DaemonMessage::Ok { id };
+                    remember(
+                        state,
+                        owner,
+                        idempotency_key.as_deref(),
+                        &fingerprint,
+                        &reply,
+                    );
+                    reply
+                }
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("unexpected session frame {other:?}"),
@@ -1259,7 +1311,7 @@ fn bounded_join(handle: JoinHandle<()>, budget: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devboule_protocol::{ClientMessage, OwnerId, RetentionPatch};
+    use devboule_protocol::{ClientMessage, OwnerId, PermissionOutcome, RetentionPatch};
 
     fn state() -> Arc<ServerState> {
         ServerState::new("test-instance".to_string())
@@ -1327,12 +1379,43 @@ mod tests {
             &conn,
             true,
             true,
+            true,
         );
         assert!(matches!(
             reply,
             DaemonMessage::Error(WireError {
                 code: ErrorCode::ShuttingDown,
                 id: Some(7),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn permission_response_requires_the_negotiated_typed_capability() {
+        let state = state();
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(8);
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionPermissionRespond {
+                id: 9,
+                session_id: "s.test-client.missing".to_string(),
+                request_id: "tool-1".to_string(),
+                outcome: PermissionOutcome::AllowOnce,
+                idempotency_key: None,
+            },
+            &conn,
+            true,
+            true,
+            false,
+        );
+        assert!(matches!(
+            reply,
+            DaemonMessage::Error(WireError {
+                code: ErrorCode::CapabilityNotSupported,
+                id: Some(9),
                 ..
             })
         ));
@@ -1360,6 +1443,7 @@ mod tests {
             &conn,
             true,
             true,
+            true,
         );
         assert!(matches!(usage, DaemonMessage::JournalUsage { id: 1, .. }));
         let retention = dispatch(
@@ -1367,6 +1451,7 @@ mod tests {
             &owner,
             ClientMessage::JournalRetentionGet { id: 2 },
             &conn,
+            true,
             true,
             true,
         );
@@ -1427,6 +1512,7 @@ mod tests {
                 &conn,
                 true,
                 true,
+                true,
             );
             assert!(matches!(
                 reply,
@@ -1457,6 +1543,7 @@ mod tests {
                 idempotency_key: None,
             },
             &conn,
+            true,
             true,
             true,
         );
@@ -1508,6 +1595,7 @@ mod tests {
             &conn,
             true,
             true,
+            true,
         );
         assert!(matches!(
             first_retention,
@@ -1527,6 +1615,7 @@ mod tests {
             &conn,
             true,
             true,
+            true,
         );
         assert!(matches!(
             replayed_retention,
@@ -1544,6 +1633,7 @@ mod tests {
                 idempotency_key: Some("retention-once".to_string()),
             },
             &conn,
+            true,
             true,
             true,
         );
@@ -1578,6 +1668,7 @@ mod tests {
             &conn,
             true,
             true,
+            true,
         );
         assert!(matches!(first_delete, DaemonMessage::Ok { id: 4 }));
         let replayed_delete = dispatch(
@@ -1589,6 +1680,7 @@ mod tests {
                 idempotency_key: Some("delete-once".to_string()),
             },
             &conn,
+            true,
             true,
             true,
         );

@@ -147,8 +147,8 @@ impl SessionState {
 /// means "the last output sequence received"; replay therefore sends chunks
 /// whose sequence is strictly greater than `from_cursor`.
 ///
-/// Permission variants remain reserved for the permissions slice: adding new
-/// tagged variants is additive for consumers that ignore unknown event types.
+/// Permission variants are additive for consumers that ignore unknown event
+/// types, so older clients can continue to consume ordinary session events.
 /// M3.5 uses that freedom: [`SessionEvent::Snapshot`] delivers the
 /// current screen state on attach instead of a replay of past frames.
 ///
@@ -174,8 +174,8 @@ pub enum SessionEvent {
         message_id: Option<String>,
         text: String,
     },
-    /// An ACP tool call announced by the agent. Permissions are deliberately
-    /// not represented here; typed permission handling is the next slice.
+    /// An ACP tool call announced by the agent. A separate permission request
+    /// event carries the user-facing authorization conversation.
     AgentToolCall {
         tool_call_id: String,
         title: String,
@@ -200,6 +200,22 @@ pub enum SessionEvent {
     /// Agent stderr is a separate stream and remains visible to the caller.
     AgentStderr {
         data: String,
+    },
+    /// An ACP agent is waiting for the user to authorize a tool call.
+    ///
+    /// `tool_call_id` is the ACP tool-call correlation key. The daemon's
+    /// `session_permission_respond` request uses this same value; the ACP
+    /// JSON-RPC request id remains private to the daemon transport.
+    PermissionRequest {
+        tool_call_id: String,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        options: Vec<PermissionOption>,
     },
     /// Process was observed to exit while the daemon was alive.
     Exit {
@@ -336,13 +352,26 @@ pub struct Cursor {
     pub seq: u64,
 }
 
-/// Outcome of a typed permission prompt. Reserved for M6; the wire name is
-/// fixed so permission-response idempotency can be specified now.
+/// Outcome of a typed permission prompt. The wire name is fixed so
+/// permission-response idempotency remains stable across clients.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionOutcome {
     AllowOnce,
     Deny,
+}
+
+/// One ACP option displayed with a [`SessionEvent::PermissionRequest`].
+///
+/// `kind` stays a string because ACP deliberately has an open set of option
+/// kinds. The daemon only interprets the four standard names when translating
+/// the two Devboule outcomes back to ACP.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionOption {
+    pub option_id: String,
+    pub name: String,
+    pub kind: String,
 }
 
 /// ACP persistence handle. Terminal sessions always use [`PersistenceKind::None`].
@@ -536,6 +565,29 @@ mod tests {
         assert_eq!(encoded["type"], "journal_degraded");
         assert_eq!(encoded["droppedFrames"], 3);
         assert_eq!(encoded["droppedBytes"], 4096);
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn permission_request_round_trips_with_tool_call_correlation() {
+        let event = SessionEvent::PermissionRequest {
+            tool_call_id: "call-17".to_string(),
+            title: "Run command".to_string(),
+            description: Some("The agent wants to run a build.".to_string()),
+            command: Some("cargo test".to_string()),
+            cwd: Some("C:\\worktree".to_string()),
+            options: vec![PermissionOption {
+                option_id: "allow".to_string(),
+                name: "Allow once".to_string(),
+                kind: "allow_once".to_string(),
+            }],
+        };
+        let encoded = serde_json::to_value(&event).expect("json");
+        assert_eq!(encoded["type"], "permission_request");
+        assert_eq!(encoded["toolCallId"], "call-17");
+        assert_eq!(encoded["options"][0]["optionId"], "allow");
+        assert_eq!(encoded["options"][0]["kind"], "allow_once");
         let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
         assert_eq!(decoded, event);
     }

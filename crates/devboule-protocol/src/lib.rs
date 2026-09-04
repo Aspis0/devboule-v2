@@ -93,8 +93,8 @@ pub use messages::{
 };
 pub use plugin::WorkspaceRootBody;
 pub use session::{
-    cursor_replay_ok, Cursor, CursorShape, PermissionOutcome, Persistence, PersistenceKind,
-    ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionState,
+    cursor_replay_ok, Cursor, CursorShape, PermissionOption, PermissionOutcome, Persistence,
+    PersistenceKind, ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionState,
     SessionStateSnapshot, TranscriptIntegrity,
 };
 
@@ -127,6 +127,7 @@ pub mod caps {
     pub const GRAPH_IMPORTS: &str = "graph.imports";
     pub const SESSIONS_WATCH: &str = "sessions.watch";
     pub const AGENT_RUN: &str = "agent.run";
+    pub const TYPED_PERMISSIONS: &str = "typed_permissions";
 }
 
 /// How long the daemon remembers an idempotency key, in seconds.
@@ -160,18 +161,28 @@ pub fn plugin_payload_within_limit(payload: Option<&serde_json::Value>) -> bool 
 /// adds [`caps::SESSIONS`] without changing the helper names so a peer
 /// built against this crate still calls the same constructors.
 pub fn m3a_daemon_capabilities() -> Vec<Capability> {
-    vec![
+    let mut capabilities = vec![
         Capability::new(caps::PING),
         Capability::new(caps::STATUS),
         Capability::new(caps::SHUTDOWN),
         Capability::new(caps::SESSIONS),
         Capability::new(caps::JOURNAL),
-    ]
+    ];
+    capabilities.push(Capability::new(caps::TYPED_PERMISSIONS));
+    capabilities
 }
 
 /// Capabilities the M3a app client offers.
 pub fn m3a_client_capabilities() -> Vec<Capability> {
-    m3a_daemon_capabilities()
+    let mut capabilities = vec![
+        Capability::new(caps::PING),
+        Capability::new(caps::STATUS),
+        Capability::new(caps::SHUTDOWN),
+        Capability::new(caps::SESSIONS),
+        Capability::new(caps::JOURNAL),
+    ];
+    capabilities.push(Capability::new(caps::TYPED_PERMISSIONS));
+    capabilities
 }
 
 /// Capabilities a plugin backend advertises today. The host may grant a

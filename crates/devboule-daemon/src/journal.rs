@@ -338,6 +338,15 @@ pub struct EventRecord {
     pub payload: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
+struct PermissionRecord {
+    session_id: String,
+    request_id: String,
+    ts_ms: u64,
+    outcome: String,
+    payload: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub struct Replay {
     pub generation: u64,
@@ -423,6 +432,10 @@ impl JournalStats {
 enum JournalCmd {
     Upsert(SessionRecord),
     Append(EventRecord),
+    Permission {
+        record: PermissionRecord,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
     MarkReaped {
         session_id: String,
         code: Option<u32>,
@@ -590,6 +603,27 @@ impl Journal {
                 false
             }
         }
+    }
+
+    /// Record a permission decision and wait until SQLite has accepted it.
+    /// Permission rows are control traffic, and a caller must not send an ACP
+    /// grant before this returns: otherwise a crash can leave an invisible
+    /// authorization in the audit log.
+    pub fn record_permission(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        outcome: &str,
+        payload: &[u8],
+    ) -> Result<(), JournalError> {
+        let record = PermissionRecord {
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            ts_ms: now_ms(),
+            outcome: outcome.to_string(),
+            payload: payload.to_vec(),
+        };
+        self.rpc(|reply| JournalCmd::Permission { record, reply })
     }
 
     /// Child::wait returned. Does not freeze last_seq and does not write an
@@ -1232,6 +1266,18 @@ fn journal_loop(
                         .committed_bytes
                         .fetch_add(payload_len, Ordering::Relaxed);
                 }
+            }
+            JournalCmd::Permission { record, reply } => {
+                let result = append_permission(&conn, &record);
+                if let Err(error) = &result {
+                    note_degraded(
+                        &degraded_sessions,
+                        &record.session_id,
+                        DropCounters::default(),
+                    );
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
             }
             JournalCmd::MarkReaped { session_id, code } => {
                 let (degraded, dropped) = degradation_state(&degraded_sessions, &session_id);
@@ -1992,6 +2038,22 @@ fn mark_ended(
     )?;
     tx.commit()?;
     let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    Ok(())
+}
+
+fn append_permission(conn: &Connection, record: &PermissionRecord) -> Result<(), JournalError> {
+    conn.execute(
+        "INSERT INTO permissions (session_id, request_id, ts_ms, outcome, payload, checksum)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            &record.session_id,
+            &record.request_id,
+            record.ts_ms as i64,
+            &record.outcome,
+            &record.payload,
+            crc32(&record.payload) as i64,
+        ],
+    )?;
     Ok(())
 }
 
@@ -3510,6 +3572,84 @@ mod tests {
             .expect("permissions");
         assert_eq!(turns, 0);
         assert_eq!(perms, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn permission_decision_is_written_with_outcome_timestamp_and_payload() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.permission.audit"))
+            .expect("session row");
+        let payload = br#"{"type":"permission_request","toolCallId":"tool-1"}"#;
+        journal
+            .record_permission("s.permission.audit", "tool-1", "allow_once", payload)
+            .expect("permission row");
+        journal.flush().expect("permission flush");
+        let conn = Connection::open(&path).expect("inspect");
+        let row = conn
+            .query_row(
+                "SELECT ts_ms, outcome, payload, checksum FROM permissions
+                 WHERE session_id = ?1 AND request_id = ?2",
+                ["s.permission.audit", "tool-1"],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .expect("permission row");
+        assert!(row.0 > 0);
+        assert_eq!(row.1, "allow_once");
+        assert_eq!(row.2, payload);
+        assert_eq!(row.3, crc32(payload) as i64);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn permission_reuse_is_rejected_without_overwriting_the_audit_row() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.permission.reuse"))
+            .expect("session row");
+        journal
+            .record_permission(
+                "s.permission.reuse",
+                "tool-1",
+                "allow_once",
+                br#"{"decision":1}"#,
+            )
+            .expect("first permission row");
+        assert!(journal
+            .record_permission("s.permission.reuse", "tool-1", "deny", br#"{"decision":2}"#,)
+            .is_err());
+        journal.flush().expect("permission flush");
+        let conn = Connection::open(&path).expect("inspect");
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+                ["s.permission.reuse", "tool-1"],
+                |row| row.get(0),
+            )
+            .expect("permission rows");
+        assert_eq!(rows, 1);
+        let row: (String, Vec<u8>) = conn
+            .query_row(
+                "SELECT outcome, payload FROM permissions
+                 WHERE session_id = ?1 AND request_id = ?2",
+                ["s.permission.reuse", "tool-1"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("original permission row");
+        assert_eq!(row.0, "allow_once");
+        assert_eq!(row.1, br#"{"decision":1}"#);
+        journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

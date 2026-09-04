@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
-    JournalRetention, JournalUsage, OwnerId, Persistence, ResumeResult, RetentionPatch, Session,
-    SessionEvent, SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError,
+    JournalRetention, JournalUsage, OwnerId, PermissionOutcome, Persistence, ResumeResult,
+    RetentionPatch, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionStateSnapshot,
+    WireError,
 };
 
 use crate::error::DaemonError;
@@ -196,6 +197,26 @@ impl DaemonClient {
             session_id: session_id.to_string(),
             cols,
             rows,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn session_permission_respond(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        outcome: PermissionOutcome,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionPermissionRespond {
+            id,
+            session_id: session_id.to_string(),
+            request_id: request_id.to_string(),
+            outcome,
+            idempotency_key: None,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use devboule_daemon::{
     connect, current_user_sid, spawn_daemon, DaemonClient, EventHandler, RuntimePaths,
 };
-use devboule_protocol::{ClientHello, OwnerId, SessionEvent, SessionKind};
+use devboule_protocol::{ClientHello, OwnerId, PermissionOutcome, SessionEvent, SessionKind};
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Threading::{
@@ -241,6 +241,41 @@ fn acp_framing_handles_partial_crlf_and_skips_malformed_lines() {
         matches!(event, SessionEvent::AgentError { message } if message.contains("Malformed ACP output"))
     }));
     drop(events_snapshot);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id() {
+    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    test.client
+        .session_send(&session.id, "please request permission")
+        .expect("prompt");
+
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm")
+        })
+    });
+    test.client
+        .session_permission_respond(&session.id, "tool-perm", PermissionOutcome::AllowOnce)
+        .expect("allow once");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason } if stop_reason == "end_turn")
+        })
+    });
     test.client
         .session_close(&session.id)
         .expect("close ACP session");

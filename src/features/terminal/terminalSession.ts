@@ -4,6 +4,7 @@ import type {
   Session,
   SessionEvent,
   SessionSnapshot,
+  PermissionRequest,
   UnverifiableTranscriptIntegrity,
 } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
@@ -47,6 +48,7 @@ export interface TerminalSessionDeps {
   onBanner: (banner: TerminalBanner) => void;
   onCtrlCArmed: (armed: boolean) => void;
   onExited?: (code: number | null) => void;
+  onPermissionRequest?: (request: PermissionRequest) => void;
   setTimeout?: (callback: () => void, milliseconds: number) => number;
   clearTimeout?: (id: number) => void;
   scheduleFrame?: (callback: () => void) => number;
@@ -384,6 +386,9 @@ export class TerminalSession {
       case "agent_stderr":
         // ACP sessions use these same daemon channels; the terminal view has
         // no agent transcript renderer yet, so it safely ignores them.
+        break;
+      case "permission_request":
+        this.deps.onPermissionRequest?.(event);
         break;
       default: {
         const unknownEvent: never = event;

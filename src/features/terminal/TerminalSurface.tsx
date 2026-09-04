@@ -1,6 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { memo, useEffect, useRef, useState } from "react";
-import type { SessionEvent } from "../../types/ipc";
+import type { PermissionRequest, SessionEvent } from "../../types/ipc";
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
 import { terminalSessionRegistry } from "./terminalRegistry";
 
@@ -10,6 +10,7 @@ interface TerminalSurfaceProps {
   id?: string;
   onClosed?: () => void;
   onExited?: () => void;
+  onPermissionRequest?: (request: PermissionRequest) => void;
 }
 
 function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -85,6 +86,7 @@ export const TerminalSurface = memo(function TerminalSurface({
   id,
   onClosed,
   onExited,
+  onPermissionRequest,
 }: TerminalSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
@@ -119,6 +121,9 @@ export const TerminalSurface = memo(function TerminalSurface({
       onExited: () => {
         if (mounted) onExited?.();
       },
+      onPermissionRequest: (request) => {
+        if (mounted) onPermissionRequest?.(request);
+      },
     });
     sessionRef.current = session;
 
@@ -131,7 +136,7 @@ export const TerminalSurface = memo(function TerminalSurface({
       if (sessionRef.current === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [workspaceId, sessionId, onExited]);
+  }, [workspaceId, sessionId, onExited, onPermissionRequest]);
 
   useEffect(() => {
     const host = hostRef.current;

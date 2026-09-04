@@ -208,7 +208,8 @@ impl ConnHandle {
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
                 | SessionEvent::AgentError { .. }
-                | SessionEvent::AgentStderr { .. } => false,
+                | SessionEvent::AgentStderr { .. }
+                | SessionEvent::PermissionRequest { .. } => false,
             }
         };
         if remove {
@@ -472,7 +473,7 @@ mod tests {
     }
 
     fn attach_tracked(runtime: &Arc<SessionRuntime>, conn: &Arc<ConnHandle>) -> u64 {
-        let generation = runtime.try_attach(None, conn).expect("attach");
+        let generation = runtime.try_attach(None, conn, false).expect("attach");
         let transcript = runtime.is_transcript();
         conn.track(
             "s.a.1",
@@ -509,7 +510,7 @@ mod tests {
                 SessionEvent::Exit { code: None }
             ]
         ));
-        assert_eq!(runtime.try_attach(None, &conn), Err(process_gone()));
+        assert_eq!(runtime.try_attach(None, &conn, false), Err(process_gone()));
     }
 
     #[test]
@@ -524,6 +525,7 @@ mod tests {
                     seq: 1,
                 }),
                 &conn,
+                false,
             )
             .unwrap();
         conn.track("s.a.1", Arc::clone(&runtime), true, Some(1), generation);
@@ -567,6 +569,7 @@ mod tests {
                 SessionEvent::AgentFinished { .. } => "agent_finished",
                 SessionEvent::AgentError { .. } => "agent_error",
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
+                SessionEvent::PermissionRequest { .. } => "permission_request",
             })
             .collect();
         assert_eq!(kinds, ["snapshot", "output", "exit"]);
@@ -657,7 +660,7 @@ mod tests {
     fn next_exit_wake_is_zero_once_the_drain_has_elapsed() {
         let runtime = Arc::new(SessionRuntime::new());
         let conn = ConnHandle::new(1);
-        runtime.try_attach(None, &conn).unwrap();
+        runtime.try_attach(None, &conn, false).unwrap();
         conn.track("s.a.1", Arc::clone(&runtime), false, None, 1);
         assert_eq!(conn.next_exit_wake(), None);
         runtime.mark_exited(Some(0));
@@ -746,6 +749,7 @@ mod tests {
                 SessionEvent::AgentFinished { .. } => "agent_finished",
                 SessionEvent::AgentError { .. } => "agent_error",
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
+                SessionEvent::PermissionRequest { .. } => "permission_request",
             })
             .collect();
         assert_eq!(kinds, ["output", "recovered"]);

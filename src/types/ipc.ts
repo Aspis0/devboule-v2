@@ -22,6 +22,22 @@ export type SessionKind = "terminal" | "acp";
 export type SendIntent = "interrupt" | "steer" | "queue";
 export type PermissionOutcome = "allow_once" | "deny";
 
+export interface PermissionOption {
+  optionId: string;
+  name: string;
+  kind: string;
+}
+
+export interface PermissionRequest {
+  type: "permission_request";
+  toolCallId: Id;
+  title: string;
+  description?: string;
+  command?: string;
+  cwd?: string;
+  options: PermissionOption[];
+}
+
 export type RetentionSource = "default" | "user";
 
 export interface RetentionLimit {
@@ -169,6 +185,7 @@ export type SessionEvent =
   | { type: "agent_error"; message: string }
   /** One line drained from the ACP agent's stderr. */
   | { type: "agent_stderr"; data: string }
+  | PermissionRequest
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }
   | { type: "recovered"; integrity: UnverifiableTranscriptIntegrity }
@@ -183,6 +200,7 @@ export interface DaemonStatus {
   instanceId: string | null;
   protocolVersion: number | null;
   clients: number | null;
+  capabilities: string[];
   message: string | null;
 }
 

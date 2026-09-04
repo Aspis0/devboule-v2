@@ -177,6 +177,10 @@ pub(crate) struct StreamState {
     pub(super) agent_backlog: VecDeque<PendingItem>,
     pub(super) agent_backlog_bytes: usize,
     pub(super) agent_backlog_frames: u64,
+    /// Whether the attached client negotiated typed permission prompts.
+    /// Detached sessions keep permission requests in `agent_backlog` until a
+    /// capable client attaches.
+    pub(super) typed_permissions: bool,
     /// Transcript replay buffer. Unused by live sessions, which never
     /// replay bytes to synchronise a screen.
     pub(super) scrollback: Scrollback,

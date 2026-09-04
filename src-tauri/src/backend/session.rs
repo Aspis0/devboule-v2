@@ -10,7 +10,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use devboule_daemon::{DaemonClient, EventHandler, SessionStateHandler};
-use devboule_protocol::{Cursor, ErrorCode};
+use devboule_protocol::{Cursor, ErrorCode, PermissionOutcome};
 
 use crate::client::DaemonBridge;
 
@@ -75,6 +75,23 @@ pub fn session_send(
     require_session_id(&id)?;
     require_write_size(&text)?;
     Ok(require_client(&bridge)?.session_send(&id, &text)?)
+}
+
+#[tauri::command]
+pub fn session_permission_respond(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    request_id: String,
+    outcome: PermissionOutcome,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    if request_id.is_empty() {
+        return Err(CommandError::new(
+            ErrorCode::InvalidRequest,
+            "Permission request id is required.",
+        ));
+    }
+    Ok(require_client(&bridge)?.session_permission_respond(&id, &request_id, outcome)?)
 }
 
 #[tauri::command]

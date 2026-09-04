@@ -78,8 +78,8 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, JournalRetention,
-    JournalStats, OwnerId, RetentionPatch, Session, SessionEvent, SessionKind, SessionState,
-    SessionStateSnapshot, TranscriptIntegrity, WireError,
+    JournalStats, OwnerId, PermissionOutcome, RetentionPatch, Session, SessionEvent, SessionKind,
+    SessionState, SessionStateSnapshot, TranscriptIntegrity, WireError,
 };
 
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
@@ -183,8 +183,8 @@ pub(super) trait WaitableChild: Send {
 }
 
 pub(super) trait ReaderDispatch: Send {
-    fn feed(&mut self, bytes: &[u8], runtime: &SessionRuntime) -> Result<(), String>;
-    fn finish(&mut self, runtime: &SessionRuntime);
+    fn feed(&mut self, bytes: &[u8], runtime: &Arc<SessionRuntime>) -> Result<(), String>;
+    fn finish(&mut self, runtime: &Arc<SessionRuntime>);
 }
 
 pub(super) trait StderrSource: Send {
@@ -201,6 +201,7 @@ pub(super) trait StderrSource: Send {
 pub(super) struct SessionRuntime {
     session_id: String,
     journal: Option<Arc<Journal>>,
+    permission_broker: Option<Arc<acp_client::PermissionBroker>>,
     stream: Mutex<StreamState>,
     /// The PTY input side, for emulator-generated replies (DSR/CPR). Writes
     /// here are the fast path: never behind the journal, a snapshot, or a
@@ -251,6 +252,7 @@ impl SessionRuntime {
         Self {
             session_id,
             journal,
+            permission_broker: None,
             stream: Mutex::new(StreamState {
                 next_seq: 1,
                 last_applied_seq: 0,
@@ -264,6 +266,7 @@ impl SessionRuntime {
                 agent_backlog: VecDeque::new(),
                 agent_backlog_bytes: 0,
                 agent_backlog_frames: 0,
+                typed_permissions: false,
                 scrollback: Scrollback::default(),
                 output_closed: false,
                 process_exited: false,
@@ -366,7 +369,8 @@ impl SessionRuntime {
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
                 | SessionEvent::AgentError { .. }
-                | SessionEvent::AgentStderr { .. } => {}
+                | SessionEvent::AgentStderr { .. }
+                | SessionEvent::PermissionRequest { .. } => {}
             }
         }
         drop(stream);
@@ -382,8 +386,14 @@ impl SessionRuntime {
             .unwrap_or(false)
     }
 
-    fn for_acp(session_id: String, journal: Option<Arc<Journal>>) -> Arc<Self> {
-        let runtime = Arc::new(Self::with_journal(session_id, journal));
+    fn for_acp(
+        session_id: String,
+        journal: Option<Arc<Journal>>,
+        permission_broker: Arc<acp_client::PermissionBroker>,
+    ) -> Arc<Self> {
+        let mut state = Self::with_journal(session_id, journal);
+        state.permission_broker = Some(permission_broker);
+        let runtime = Arc::new(state);
         if let Ok(mut stream) = runtime.stream.lock() {
             // ACP has structured messages rather than a terminal screen, but
             // it is still a live session and must use the live attach path.
@@ -658,6 +668,73 @@ impl SessionRuntime {
         was_silent
     }
 
+    fn permission_broker(&self) -> Option<Arc<acp_client::PermissionBroker>> {
+        self.permission_broker.as_ref().map(Arc::clone)
+    }
+
+    /// `None` means no client is attached. A detached request is retained so
+    /// a later capable attach can display it; `Some(false)` means the current
+    /// client is attached but did not negotiate typed permissions.
+    pub(crate) fn permission_delivery_enabled(&self) -> Option<bool> {
+        self.lock_stream()
+            .ok()
+            .and_then(|stream| stream.attached.as_ref().map(|_| stream.typed_permissions))
+    }
+
+    pub(crate) fn remove_permission_request(&self, tool_call_id: &str) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        {
+            let StreamState {
+                pending,
+                pending_bytes,
+                pending_frames,
+                ..
+            } = &mut *stream;
+            remove_permission_from_queue(pending, pending_bytes, pending_frames, tool_call_id);
+        }
+        {
+            let StreamState {
+                agent_backlog,
+                agent_backlog_bytes,
+                agent_backlog_frames,
+                ..
+            } = &mut *stream;
+            remove_permission_from_queue(
+                agent_backlog,
+                agent_backlog_bytes,
+                agent_backlog_frames,
+                tool_call_id,
+            );
+        }
+        if let Some(attached) = &stream.attached {
+            attached.outbound.notify();
+        }
+    }
+
+    pub(crate) fn record_permission_decision(
+        &self,
+        tool_call_id: &str,
+        outcome: &str,
+        request: &SessionEvent,
+    ) -> bool {
+        let Some(journal) = &self.journal else {
+            return false;
+        };
+        let Ok(payload) = serde_json::to_vec(request) else {
+            self.mark_journal_degraded();
+            return false;
+        };
+        match journal.record_permission(&self.session_id, tool_call_id, outcome, &payload) {
+            Ok(()) => true,
+            Err(_) => {
+                self.mark_journal_degraded();
+                false
+            }
+        }
+    }
+
     /// Forward emulator-generated replies to the PTY input side. Best
     /// effort: a dead PTY has a dead reader that ends the session anyway.
     fn write_pty_replies(&self, replies: &[String]) {
@@ -828,7 +905,8 @@ impl SessionRuntime {
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
                 | SessionEvent::AgentError { .. }
-                | SessionEvent::AgentStderr { .. } => None,
+                | SessionEvent::AgentStderr { .. }
+                | SessionEvent::PermissionRequest { .. } => None,
             })
             .collect()
     }
@@ -851,7 +929,12 @@ impl SessionRuntime {
     /// shipped. After this function returns, the attachment's first outbound
     /// item is `Snapshot(as_of_seq)` and every subsequent publish enqueues an
     /// Output with a strictly greater sequence.
-    fn try_attach(&self, from_cursor: Option<Cursor>, conn: &ConnHandle) -> Result<u64, WireError> {
+    fn try_attach(
+        &self,
+        from_cursor: Option<Cursor>,
+        conn: &ConnHandle,
+        typed_permissions: bool,
+    ) -> Result<u64, WireError> {
         if self.terminal_dead.load(Ordering::Acquire) {
             return Err(process_gone());
         }
@@ -882,6 +965,7 @@ impl SessionRuntime {
         if preserve_agent_pending {
             move_agent_pending_to_backlog(&mut stream);
         }
+        stream.typed_permissions = typed_permissions;
         let as_of_seq = stream.last_applied_seq;
         let screen = stream.screen.as_ref().map(Screen::snapshot);
         stream.attached = Some(Attachment {
@@ -899,11 +983,41 @@ impl SessionRuntime {
                 .push_back(PendingItem::Snapshot { as_of_seq, screen });
         } else if !stream.transcript {
             let agent_backlog = std::mem::take(&mut stream.agent_backlog);
-            stream.pending.extend(agent_backlog);
-            stream.pending_bytes = stream.agent_backlog_bytes;
-            stream.pending_frames = stream.agent_backlog_frames;
             stream.agent_backlog_bytes = 0;
             stream.agent_backlog_frames = 0;
+            for item in agent_backlog {
+                let is_permission = matches!(
+                    &item,
+                    PendingItem::Agent {
+                        event: SessionEvent::PermissionRequest { .. },
+                        ..
+                    }
+                );
+                if is_permission && !typed_permissions {
+                    if let PendingItem::Agent { bytes, .. } = &item {
+                        stream.agent_backlog_bytes =
+                            stream.agent_backlog_bytes.saturating_add(*bytes);
+                        stream.agent_backlog_frames = stream.agent_backlog_frames.saturating_add(1);
+                    }
+                    stream.agent_backlog.push_back(item);
+                } else {
+                    stream.pending.push_back(item);
+                }
+            }
+            stream.pending_bytes = stream
+                .pending
+                .iter()
+                .filter_map(|item| match item {
+                    PendingItem::Agent { bytes, .. } => Some(*bytes),
+                    PendingItem::Output { data, .. } => Some(data.len()),
+                    PendingItem::Snapshot { .. } => None,
+                })
+                .sum();
+            stream.pending_frames = stream
+                .pending
+                .iter()
+                .filter(|item| !matches!(item, PendingItem::Snapshot { .. }))
+                .count() as u64;
         }
         Ok(stream.generation)
     }
@@ -918,6 +1032,7 @@ impl SessionRuntime {
             .is_some_and(|attached| attached.conn_id == conn_id)
         {
             stream.attached = None;
+            stream.typed_permissions = false;
             self.set_attachment_notify(None);
             // The unsent queue belonged to the departing viewer. A new
             // attach must start from a fresh snapshot, not from a stale
@@ -1062,7 +1177,6 @@ impl SessionRuntime {
         self.stream.lock().unwrap().last_applied_seq
     }
 
-    #[cfg(test)]
     fn attached_conn_id(&self) -> Option<u64> {
         self.stream
             .lock()
@@ -1112,7 +1226,8 @@ fn enqueue_output(stream: &mut StreamState, seq: u64, data: &str) -> (u64, u64) 
 }
 
 fn enqueue_agent(stream: &mut StreamState, event: SessionEvent) {
-    if stream.attached.is_some() {
+    let permission = matches!(&event, SessionEvent::PermissionRequest { .. });
+    if stream.attached.is_some() && (!permission || stream.typed_permissions) {
         push_bounded_agent(
             &mut stream.pending,
             &mut stream.pending_bytes,
@@ -1127,6 +1242,33 @@ fn enqueue_agent(stream: &mut StreamState, event: SessionEvent) {
             event,
         );
     }
+}
+
+fn remove_permission_from_queue(
+    queue: &mut VecDeque<PendingItem>,
+    bytes_total: &mut usize,
+    frames_total: &mut u64,
+    tool_call_id: &str,
+) {
+    let mut retained = VecDeque::with_capacity(queue.len());
+    while let Some(item) = queue.pop_front() {
+        let remove = matches!(
+            &item,
+            PendingItem::Agent {
+                event: SessionEvent::PermissionRequest { tool_call_id: current, .. },
+                ..
+            } if current == tool_call_id
+        );
+        if remove {
+            if let PendingItem::Agent { bytes, .. } = &item {
+                *bytes_total = bytes_total.saturating_sub(*bytes);
+                *frames_total = frames_total.saturating_sub(1);
+            }
+        } else {
+            retained.push_back(item);
+        }
+    }
+    *queue = retained;
 }
 
 fn push_bounded_agent(
@@ -1222,6 +1364,7 @@ struct SpawnedSession {
     /// byte coalescer, which is constructed by `start_spawned_session`.
     reader_dispatch: Option<Box<dyn ReaderDispatch>>,
     stderr: Option<Box<dyn StderrSource>>,
+    permission_broker: Option<Arc<acp_client::PermissionBroker>>,
 }
 
 struct PtyKiller {
@@ -1255,7 +1398,7 @@ struct TerminalReaderDispatch {
 }
 
 impl ReaderDispatch for TerminalReaderDispatch {
-    fn feed(&mut self, bytes: &[u8], _runtime: &SessionRuntime) -> Result<(), String> {
+    fn feed(&mut self, bytes: &[u8], _runtime: &Arc<SessionRuntime>) -> Result<(), String> {
         self.tx
             .as_ref()
             .ok_or_else(|| "terminal coalescer is unavailable".to_string())?
@@ -1263,7 +1406,7 @@ impl ReaderDispatch for TerminalReaderDispatch {
             .map_err(|_| "terminal coalescer is unavailable".to_string())
     }
 
-    fn finish(&mut self, _runtime: &SessionRuntime) {
+    fn finish(&mut self, _runtime: &Arc<SessionRuntime>) {
         self.tx.take();
     }
 }
@@ -1610,6 +1753,7 @@ impl SessionRegistry {
         from_cursor: Option<Cursor>,
         conn: &ConnHandle,
         owner: &OwnerId,
+        typed_permissions: bool,
     ) -> Result<(), WireError> {
         let runtime = match self.runtime_for_owner(session_id, owner) {
             Ok(runtime) => runtime,
@@ -1618,7 +1762,7 @@ impl SessionRegistry {
             }
             Err(error) => return Err(error),
         };
-        let generation = runtime.try_attach(from_cursor, conn)?;
+        let generation = runtime.try_attach(from_cursor, conn, typed_permissions)?;
         // A live attach synchronises the screen (snapshot first, live after)
         // and keeps no replay cursor. A transcript attach replays the journal
         // from the cursor. These are different products and must not share a
@@ -1712,6 +1856,45 @@ impl SessionRegistry {
         conn.untrack(session_id);
         self.drop_transcript_if_idle(session_id);
         Ok(())
+    }
+
+    pub fn permission_respond(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        outcome: PermissionOutcome,
+        conn: &ConnHandle,
+        owner: &OwnerId,
+    ) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        if request_id.is_empty() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Permission request id is required.",
+            ));
+        }
+        let runtime = self.runtime_for_owner(session_id, owner)?;
+        if runtime.attached_conn_id() != Some(conn.id) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session is not attached to this client.",
+            ));
+        }
+        let broker = runtime.permission_broker().ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session has no live ACP permission broker.",
+            )
+        })?;
+        broker.respond(request_id, outcome).map_err(|error| {
+            let code = match error {
+                acp_client::PermissionResponseError::NotFound => ErrorCode::InvalidRequest,
+                acp_client::PermissionResponseError::InvalidRequest(_) => ErrorCode::InvalidRequest,
+                acp_client::PermissionResponseError::Io(_) => ErrorCode::Io,
+            };
+            WireError::new(code, error.to_string())
+        })
     }
 
     /// Drop every subscription this connection holds. The processes stay.
@@ -2116,6 +2299,7 @@ pub fn spawn_session(
         reader,
         reader_dispatch: None,
         stderr: None,
+        permission_broker: None,
     };
     start_spawned_session(state, registry, metadata, owner, spawned)
 }
@@ -2136,9 +2320,14 @@ fn start_spawned_session(
         reader,
         reader_dispatch,
         stderr,
+        permission_broker,
     } = spawned;
     let runtime = if metadata.kind == SessionKind::Acp {
-        SessionRuntime::for_acp(metadata.id.clone(), registry.journal.clone())
+        SessionRuntime::for_acp(
+            metadata.id.clone(),
+            registry.journal.clone(),
+            permission_broker.expect("ACP sessions have a permission broker"),
+        )
     } else {
         Arc::new(SessionRuntime::with_journal(
             metadata.id.clone(),
@@ -2728,7 +2917,7 @@ mod tests {
     }
 
     fn attach_tracked(runtime: &Arc<SessionRuntime>, conn: &Arc<ConnHandle>) -> u64 {
-        let generation = runtime.try_attach(None, conn).expect("attach");
+        let generation = runtime.try_attach(None, conn, false).expect("attach");
         let transcript = runtime.is_transcript();
         conn.track(
             "s.a.1",
@@ -3110,7 +3299,9 @@ mod tests {
         for epoch in 0..200u64 {
             let started = Instant::now();
             let conn = ConnHandle::new(epoch + 1);
-            runtime.try_attach(None, &conn).expect("attach under flood");
+            runtime
+                .try_attach(None, &conn, false)
+                .expect("attach under flood");
             runtime.detach_if_conn(conn.id);
             worst = worst.max(started.elapsed());
         }
@@ -3132,8 +3323,8 @@ mod tests {
         let runtime = SessionRuntime::new();
         let first = ConnHandle::new(1);
         let second = ConnHandle::new(2);
-        runtime.try_attach(None, &first).expect("first");
-        let err = runtime.try_attach(None, &second).unwrap_err();
+        runtime.try_attach(None, &first, false).expect("first");
+        let err = runtime.try_attach(None, &second, false).unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidRequest);
         assert!(err.message.contains("already attached"));
         assert_eq!(runtime.attached_conn_id(), Some(1));
@@ -3143,7 +3334,7 @@ mod tests {
     fn same_connection_can_reattach() {
         let runtime = SessionRuntime::new();
         let conn = ConnHandle::new(7);
-        runtime.try_attach(None, &conn).expect("first");
+        runtime.try_attach(None, &conn, false).expect("first");
         runtime
             .try_attach(
                 Some(Cursor {
@@ -3151,6 +3342,7 @@ mod tests {
                     seq: 0,
                 }),
                 &conn,
+                false,
             )
             .expect("reattach");
         assert_eq!(runtime.attached_conn_id(), Some(7));
@@ -3168,6 +3360,7 @@ mod tests {
                     seq: 0,
                 }),
                 &conn,
+                false,
             )
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::SessionGenerationMismatch);
@@ -3177,7 +3370,7 @@ mod tests {
     fn detach_clears_only_this_connection() {
         let runtime = SessionRuntime::new();
         let conn = ConnHandle::new(3);
-        runtime.try_attach(None, &conn).expect("attach");
+        runtime.try_attach(None, &conn, false).expect("attach");
         runtime.detach_if_conn(3);
         assert_eq!(runtime.attached_conn_id(), None);
     }
