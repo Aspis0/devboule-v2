@@ -3,6 +3,9 @@
 The Workspace surface keeps the agent conversation and side panels mocked while
 the terminal tab uses the app-hosted PTY session contract.
 
+History lives in the left sidebar footer beside the daemon status. It is a
+separate journal log view, not terminal screen restore.
+
 ## M2 terminal lifecycle
 
 The terminal session is created when the terminal tab first becomes active. A
