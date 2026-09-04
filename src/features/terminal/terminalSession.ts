@@ -391,6 +391,11 @@ export class TerminalSession {
         // ACP sessions use these same daemon channels; the terminal view has
         // no agent transcript renderer yet, so it safely ignores them.
         break;
+      case "sessions_snapshot":
+        // Roster snapshots are consumed by the connection watcher before
+        // attach events reach this channel. Ignore a leak rather than
+        // treating a known protocol event as unknown.
+        break;
       case "permission_request":
         this.deps.onPermissionRequest?.(event);
         break;

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionSnapshot } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
@@ -230,6 +232,42 @@ function makeHarness(options?: {
 
 const outputEvent = (seq: number, data: string): TerminalEvent => ({ type: "output", seq, data });
 const exitEvent = (code: number | null): TerminalEvent => ({ type: "exit", code });
+
+const SESSION_EVENT_SAMPLES_PATH = fileURLToPath(
+  new URL(
+    "../../../crates/devboule-protocol/session-event-samples.generated.json",
+    import.meta.url,
+  ),
+);
+
+function loadProtocolSessionEventSamples(): Array<{ type: string }> {
+  const parsed: unknown = JSON.parse(readFileSync(SESSION_EVENT_SAMPLES_PATH, "utf8"));
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    throw new Error(
+      `SessionEvent snapshot at ${SESSION_EVENT_SAMPLES_PATH} must be a non-empty array`,
+    );
+  }
+  return parsed.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null || !("type" in entry)) {
+      throw new Error(`SessionEvent snapshot entry ${index} is not an object with a type`);
+    }
+    const type = entry.type;
+    if (typeof type !== "string" || type.length === 0) {
+      throw new Error(`SessionEvent snapshot entry ${index} has an empty type`);
+    }
+    return entry as { type: string };
+  });
+}
+
+const PROTOCOL_SESSION_EVENT_SAMPLES = loadProtocolSessionEventSamples();
+
+function unknownTypeBanners(banners: TerminalBanner[]): TerminalBanner[] {
+  return banners.filter(
+    (banner) =>
+      banner?.kind === "error" &&
+      banner.message.startsWith("The daemon sent an unknown terminal event type:"),
+  );
+}
 
 describe("TerminalSession startup and channel ordering", () => {
   it("attaches the explicitly selected session without listing or creating", async () => {
@@ -754,4 +792,23 @@ describe("TerminalSession write failures", () => {
       message: "Could not send input to the terminal.",
     });
   });
+});
+
+describe("TerminalSession protocol event coverage", () => {
+  it("reads a unique non-empty SessionEvent snapshot from the protocol crate", () => {
+    const types = PROTOCOL_SESSION_EVENT_SAMPLES.map((sample) => sample.type);
+    expect(types.length).toBeGreaterThan(0);
+    expect(new Set(types).size).toBe(types.length);
+  });
+
+  it.each(PROTOCOL_SESSION_EVENT_SAMPLES)(
+    "does not report $type as an unknown terminal event",
+    async (sample) => {
+      const harness = makeHarness();
+      await harness.session.start();
+      harness.emit(sample as unknown as TerminalEvent);
+      harness.flushFrame();
+      expect(unknownTypeBanners(harness.banners)).toEqual([]);
+    },
+  );
 });

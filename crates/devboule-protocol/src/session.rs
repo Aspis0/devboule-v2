@@ -164,7 +164,10 @@ impl SessionState {
 /// current screen state on attach instead of a replay of past frames.
 ///
 /// Attachment variants in this enum are the TypeScript `SessionEvent`
-/// contract. Generation is **not**
+/// contract. Alignment is enforced by the committed snapshot
+/// `session-event-samples.generated.json` and the tests in
+/// `session_event_guard.rs`; the TypeScript handler must accept every sample.
+/// Generation is **not**
 /// a field here: it lives on [`Cursor`] and on [`super::SessionEventEnvelope`]
 /// so a reconnecting client can tell a recreated process from the stream it
 /// left. Putting generation on every output chunk would change the Channel

@@ -78,6 +78,8 @@ mod ids;
 mod messages;
 mod plugin;
 mod session;
+#[cfg(test)]
+mod session_event_guard;
 
 pub use capability::{intersect_capabilities, Capability};
 pub use error::{ErrorCode, ErrorDetails, WireError};

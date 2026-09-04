@@ -166,6 +166,12 @@ export interface SessionSnapshot {
   title?: string;
 }
 
+/**
+ * Attachment events plus the connection-scoped roster snapshot.
+ * Alignment with `SessionEvent` in `crates/devboule-protocol` is enforced by
+ * `session_event_guard` (committed snapshot + union parse) and by the
+ * handler coverage test in `terminalSession.test.ts`.
+ */
 export type SessionEvent =
   | { type: "output"; seq: number; data: string }
   /** Text emitted by an ACP agent message chunk. */
@@ -224,6 +230,8 @@ export type SessionEvent =
   | { type: "silent"; elapsedMs: number }
   | { type: "recovered"; integrity: UnverifiableTranscriptIntegrity }
   | { type: "journal_degraded"; droppedFrames: number; droppedBytes: number }
+  /** Connection-scoped roster update; not an attach-channel event. */
+  | { type: "sessions_snapshot"; sessions: SessionStateSnapshot[] }
   | SessionSnapshot;
 
 export type DaemonConnectionState = "connected" | "connecting" | "disconnected" | "error";

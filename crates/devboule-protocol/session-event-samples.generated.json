@@ -1,0 +1,106 @@
+[
+  {
+    "message": "",
+    "type": "agent_error"
+  },
+  {
+    "stopReason": "",
+    "type": "agent_finished"
+  },
+  {
+    "messageId": null,
+    "text": "",
+    "type": "agent_message"
+  },
+  {
+    "agent": "",
+    "seq": 0,
+    "source": "",
+    "state": "idle",
+    "type": "agent_reported"
+  },
+  {
+    "data": "",
+    "type": "agent_stderr"
+  },
+  {
+    "messageId": null,
+    "text": "",
+    "type": "agent_thought"
+  },
+  {
+    "status": "",
+    "title": "",
+    "toolCallId": "",
+    "type": "agent_tool_call"
+  },
+  {
+    "status": null,
+    "text": null,
+    "toolCallId": "",
+    "type": "agent_tool_update"
+  },
+  {
+    "messageId": null,
+    "text": "",
+    "type": "agent_user_message"
+  },
+  {
+    "commands": [],
+    "type": "available_commands"
+  },
+  {
+    "code": null,
+    "type": "exit"
+  },
+  {
+    "droppedBytes": 0,
+    "droppedFrames": 0,
+    "type": "journal_degraded"
+  },
+  {
+    "data": "",
+    "seq": 0,
+    "type": "output"
+  },
+  {
+    "options": [],
+    "title": "",
+    "toolCallId": "",
+    "type": "permission_request"
+  },
+  {
+    "integrity": {
+      "droppedBytes": 0,
+      "droppedFrames": 0,
+      "kind": "unverifiable",
+      "trimmedBytes": 0
+    },
+    "type": "recovered"
+  },
+  {
+    "sessions": [],
+    "type": "sessions_snapshot"
+  },
+  {
+    "elapsedMs": 0,
+    "type": "silent"
+  },
+  {
+    "alternateScreen": false,
+    "asOfSeq": 0,
+    "bracketedPaste": false,
+    "cols": 0,
+    "cursor": {
+      "blinking": false,
+      "col": 0,
+      "row": 0,
+      "shape": "block",
+      "visible": false
+    },
+    "data": "",
+    "lineWrap": false,
+    "rows": 0,
+    "type": "snapshot"
+  }
+]
