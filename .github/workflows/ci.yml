@@ -62,7 +62,7 @@ jobs:
       # this is a build-time network dependency on a third-party CDN, not just a
       # slow step. Caching it removes the fetch and the outage.
       - name: Cache the ort runtime download
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~\AppData\Local\ort.pyke.io
           key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
@@ -215,7 +215,7 @@ jobs:
           cache-on-failure: true
 
       - name: Cache the ort runtime download
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~\AppData\Local\ort.pyke.io
           key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
