@@ -33,7 +33,7 @@ export interface WorkspaceSessionController {
 
 const DEFAULT_SOURCE: WorkspaceSessionSource = {
   list: sessionsList,
-  create: () => sessionCreate(null, "terminal"),
+  create: () => sessionCreate(null, "acp"),
   watch: async (listener) => {
     const channel = createSessionStateChannel(listener);
     await sessionsWatch(channel);
@@ -43,11 +43,11 @@ const DEFAULT_SOURCE: WorkspaceSessionSource = {
   },
 };
 
-const LIST_ERROR = "Could not load terminal sessions. The daemon is unreachable.";
-const CREATE_ERROR = "Could not create a terminal session. The daemon is unreachable.";
+const LIST_ERROR = "Could not load sessions. The daemon is unreachable.";
+const CREATE_ERROR = "Could not create an agent session. The daemon is unreachable.";
 
-export function terminalSessions(sessions: readonly Session[]): Session[] {
-  return sessions.filter((session) => session.kind === "terminal");
+export function workspaceSessions(sessions: readonly Session[]): Session[] {
+  return [...sessions];
 }
 
 function formatElapsed(elapsedMs: number): string {
@@ -89,9 +89,10 @@ export function sessionDotTone(state: unknown): "green" | "terracotta" | "border
   return "terracotta";
 }
 
-export function sessionTitle(session: Pick<Session, "id" | "title">): string {
+export function sessionTitle(session: Pick<Session, "id" | "title" | "kind">): string {
   const title = session.title.trim();
-  return title || `Terminal ${session.id.slice(0, 8)}`;
+  if (title) return title;
+  return `${session.kind === "acp" ? "Agent" : "Terminal"} ${session.id.slice(0, 8)}`;
 }
 
 export function createWorkspaceSessionController(
@@ -119,7 +120,7 @@ export function createWorkspaceSessionController(
     const generation = ++refreshGeneration;
     publish({ ...state, loading: true, error: null });
     try {
-      const listed = terminalSessions(await source.list());
+      const listed = workspaceSessions(await source.list());
       if (generation !== refreshGeneration) return;
       const selected =
         state.selectedSessionId !== null &&
@@ -182,10 +183,6 @@ export function createWorkspaceSessionController(
     publish({ ...state, creating: true, error: null });
     try {
       const session = await source.create();
-      if (session.kind !== "terminal") {
-        publish({ ...state, creating: false, error: CREATE_ERROR });
-        return null;
-      }
       const sessions = [...state.sessions.filter((current) => current.id !== session.id), session];
       publish({
         ...state,

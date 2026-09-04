@@ -623,6 +623,148 @@
   overflow-y: auto;
 }
 
+.workspace-agent-shell {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.workspace-agent-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 39px;
+  padding: 0 20px;
+}
+
+.workspace-agent-toolbar .workspace-status-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.workspace-agent-title {
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.workspace-agent-status,
+.workspace-chat-finish,
+.workspace-chat-empty,
+.workspace-composer-hint {
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
+.workspace-agent-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-chat-entry {
+  flex: none;
+  max-width: 86%;
+  color: var(--ink);
+  font-size: 12.5px;
+  line-height: 1.65;
+  text-wrap: pretty;
+  white-space: pre-wrap;
+}
+
+.workspace-chat-user {
+  align-self: flex-end;
+  color: var(--terracotta-deep);
+  text-align: right;
+}
+
+.workspace-chat-label {
+  margin-bottom: 3px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-chat-assistant .workspace-chat-label {
+  color: var(--purple-deep);
+}
+
+.workspace-chat-thought {
+  max-width: 80%;
+  color: var(--silence);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.workspace-chat-thought summary {
+  width: fit-content;
+  color: var(--silence);
+  cursor: pointer;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-chat-thought summary:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 3px;
+}
+
+.workspace-chat-thought .workspace-chat-copy {
+  margin-top: 4px;
+}
+
+.workspace-chat-tool {
+  max-width: 90%;
+  color: var(--purple-deep);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.workspace-chat-error {
+  color: var(--danger-deep);
+}
+
+.workspace-chat-typing {
+  flex: none;
+  color: var(--silence);
+  font-size: 11px;
+}
+
+.workspace-chat-finish {
+  flex: none;
+  margin-top: 2px;
+}
+
+.workspace-chat-empty {
+  padding-top: 10px;
+}
+
+.workspace-composer-footer {
+  flex-direction: row;
+  align-items: center;
+}
+
+.workspace-composer-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-composer:focus-within {
+  box-shadow: 0 0 0 2px rgba(var(--terracotta-rgb), 0.22);
+}
+
 .workspace-message {
   flex: none;
 }
@@ -832,8 +974,79 @@
 }
 
 .workspace-composer-wrap {
+  position: relative;
   flex: none;
   padding: 10px 18px 14px;
+}
+
+.workspace-command-menu {
+  position: absolute;
+  right: 18px;
+  bottom: calc(100% - 1px);
+  left: 18px;
+  z-index: 2;
+  display: flex;
+  max-height: min(320px, 45vh);
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  box-shadow: 0 12px 30px rgba(var(--ink-rgb), 0.16);
+}
+
+.workspace-command-menu-heading,
+.workspace-command-empty {
+  padding: 5px 9px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.workspace-command-menu-heading {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-command-option {
+  display: grid;
+  grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  text-align: left;
+}
+
+.workspace-command-option:hover {
+  background: var(--surface-muted);
+}
+
+.workspace-command-option:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+
+.workspace-command-name {
+  color: var(--terracotta-deep);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.workspace-command-description {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--silence);
+  font-size: 10.5px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace-composer {

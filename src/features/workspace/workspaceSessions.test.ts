@@ -12,7 +12,7 @@ const liveSession = (id: string, title = id): Session => ({
 });
 
 describe("workspace session controller", () => {
-  it("loads only terminal sessions and selects the first real session", async () => {
+  it("loads terminal and ACP sessions and selects the first real session", async () => {
     const list = vi.fn(async () => [
       liveSession("terminal-1", "shell one"),
       {
@@ -27,7 +27,11 @@ describe("workspace session controller", () => {
     await controller.refresh();
 
     expect(controller.getState()).toMatchObject({
-      sessions: [liveSession("terminal-1", "shell one"), liveSession("terminal-2", "shell two")],
+      sessions: [
+        liveSession("terminal-1", "shell one"),
+        { ...liveSession("agent-1", "agent"), kind: "acp" },
+        liveSession("terminal-2", "shell two"),
+      ],
       selectedSessionId: "terminal-1",
       error: null,
     });
@@ -60,7 +64,7 @@ describe("workspace session controller", () => {
     expect(controller.getState()).toMatchObject({
       sessions: [],
       selectedSessionId: null,
-      error: "Could not load terminal sessions. The daemon is unreachable.",
+      error: "Could not load sessions. The daemon is unreachable.",
     });
   });
 

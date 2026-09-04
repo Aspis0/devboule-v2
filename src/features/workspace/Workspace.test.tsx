@@ -31,6 +31,12 @@ vi.mock("../terminal/TerminalSurface", () => ({
   ),
 }));
 
+vi.mock("./AgentChatSurface", () => ({
+  AgentChatSurface: ({ sessionId }: { sessionId: string }) => (
+    <div data-testid="agent-chat-surface">{sessionId}</div>
+  ),
+}));
+
 import { sessionCreate, sessionPermissionRespond, sessionsList } from "../../lib/tauri";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
 
@@ -54,7 +60,7 @@ const permissionRequest: PermissionRequest = {
   ],
 };
 
-describe("Workspace terminal sessions", () => {
+describe("Workspace sessions", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
@@ -62,7 +68,10 @@ describe("Workspace terminal sessions", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one")]);
-    vi.mocked(sessionCreate).mockResolvedValue(terminal("session-2", "shell two"));
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...terminal("session-2", "agent two"),
+      kind: "acp",
+    });
   });
 
   afterEach(async () => {
@@ -71,7 +80,7 @@ describe("Workspace terminal sessions", () => {
     vi.clearAllMocks();
   });
 
-  it("renders real terminal tabs, creates through session_create, and never renders the permission card", async () => {
+  it("renders real session tabs, creates an ACP session, and never renders the permission card", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<Workspace />);
@@ -88,8 +97,26 @@ describe("Workspace terminal sessions", () => {
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
 
-    expect(sessionCreate).toHaveBeenCalledWith(null, "terminal");
-    expect(container.textContent).toContain("shell two");
+    expect(sessionCreate).toHaveBeenCalledWith(null, "acp");
+    expect(container.textContent).toContain("agent two");
+    expect(container.querySelector("[data-testid=agent-chat-surface]")?.textContent).toBe(
+      "session-2",
+    );
+  });
+
+  it("starts an ACP session when a new workspace is added", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+
+    expect(sessionCreate).toHaveBeenCalledWith(null, "acp");
+    expect(container.querySelector("[data-testid=agent-chat-surface]")).not.toBeNull();
   });
 
   it("does not render a permission card before typed_permissions is negotiated", async () => {

@@ -1,0 +1,186 @@
+import { memo, useEffect, useRef, useState } from "react";
+import {
+  createSessionChannel,
+  sessionAttach,
+  sessionDetach,
+  sessionSend,
+  type SessionChannel,
+} from "../../lib/tauri";
+import type { PermissionRequest } from "../../types/ipc";
+import { AgentSession, type AgentChatItem, type AgentSessionState } from "./agentSession";
+import { WorkspaceComposer } from "./WorkspaceComposer";
+
+interface AgentChatSurfaceProps {
+  sessionId: string;
+  title: string;
+  id?: string;
+  onPermissionRequest?: (request: PermissionRequest) => void;
+}
+
+function commandId(args: Record<string, unknown> | undefined): string {
+  const id = args?.id;
+  return typeof id === "string" ? id : "";
+}
+
+function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const id = commandId(args);
+  if (command === "session_attach") {
+    return sessionAttach(
+      id,
+      typeof args?.from_cursor === "number" ? args.from_cursor : null,
+      args?.ch as SessionChannel,
+    ) as Promise<T>;
+  }
+  if (command === "session_send") {
+    return sessionSend(id, typeof args?.text === "string" ? args.text : "") as Promise<T>;
+  }
+  if (command === "session_detach") return sessionDetach(id) as Promise<T>;
+  return Promise.reject(new Error(`Unsupported agent command: ${command}`));
+}
+
+function statusCopy(state: AgentSessionState): string {
+  if (state.status === "initializing") return "Connecting…";
+  if (state.status === "running") return "Working…";
+  if (state.status === "error") return "Needs attention";
+  if (state.status === "closed") return "Stopped";
+  return "Ready";
+}
+
+function statusTone(state: AgentSessionState): "green" | "terracotta" | "border" {
+  if (state.status === "idle" || state.status === "running") return "green";
+  if (state.status === "initializing") return "border";
+  return "terracotta";
+}
+
+function itemLabel(item: AgentChatItem): string {
+  if (item.role === "user") return "You";
+  if (item.role === "assistant") return "Agent";
+  if (item.role === "thought") return "Thought";
+  if (item.role === "tool") return `Tool · ${item.status}`;
+  return "Error";
+}
+
+function usageCopy(state: AgentSessionState): string | null {
+  const finished = state.lastFinished;
+  if (finished === null) return null;
+  const details = [
+    finished.modelId ? `model ${finished.modelId}` : null,
+    finished.stopReason ? `stopped: ${finished.stopReason}` : null,
+    finished.usage?.inputTokens === undefined
+      ? null
+      : `in ${finished.usage.inputTokens.toLocaleString()}`,
+    finished.usage?.outputTokens === undefined
+      ? null
+      : `out ${finished.usage.outputTokens.toLocaleString()}`,
+    finished.usage?.thoughtTokens === undefined
+      ? null
+      : `thought ${finished.usage.thoughtTokens.toLocaleString()}`,
+    finished.usage?.totalTokens === undefined
+      ? null
+      : `total ${finished.usage.totalTokens.toLocaleString()} tokens`,
+  ].filter((part): part is string => part !== null);
+  return details.length > 0 ? details.join(" · ") : null;
+}
+
+function renderItem(item: AgentChatItem) {
+  const className = `workspace-chat-entry workspace-chat-${item.role}`;
+  if (item.role === "thought") {
+    return (
+      <details className={className} key={item.id} open>
+        <summary>{itemLabel(item)}</summary>
+        <div className="workspace-chat-copy">{item.text}</div>
+      </details>
+    );
+  }
+
+  return (
+    <div className={className} key={item.id} role={item.role === "error" ? "alert" : undefined}>
+      <div className="workspace-chat-label">{itemLabel(item)}</div>
+      <div className="workspace-chat-copy">{item.text}</div>
+    </div>
+  );
+}
+
+export const AgentChatSurface = memo(function AgentChatSurface({
+  sessionId,
+  title,
+  id,
+  onPermissionRequest,
+}: AgentChatSurfaceProps) {
+  const sessionRef = useRef<AgentSession | null>(null);
+  const [state, setState] = useState<AgentSessionState>({
+    items: [],
+    status: "initializing",
+    streaming: false,
+    availableCommands: [],
+    permissionRequest: null,
+    lastFinished: null,
+  });
+  const conversationRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const session = new AgentSession({
+      sessionId,
+      invoke: invokeAgentCommand,
+      createChannel: createSessionChannel,
+      onPermissionRequest,
+      isSuperseded: () => {
+        const activeSession = sessionRef.current;
+        return activeSession !== null && activeSession !== session;
+      },
+    });
+    sessionRef.current = session;
+    const unsubscribe = session.subscribe(() => setState(session.getState()));
+    void session.start();
+    return () => {
+      unsubscribe();
+      if (sessionRef.current === session) sessionRef.current = null;
+      session.dispose();
+    };
+  }, [onPermissionRequest, sessionId]);
+
+  useEffect(() => {
+    const conversation = conversationRef.current;
+    if (conversation === null) return;
+    conversation.scrollTop = conversation.scrollHeight;
+  }, [state.items, state.streaming]);
+
+  const finishCopy = usageCopy(state);
+  const composerDisabled = state.status !== "idle" && state.status !== "running";
+  const disabledReason =
+    state.status === "initializing"
+      ? "Connecting to the agent…"
+      : "This session is no longer available.";
+
+  return (
+    <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
+      <div className="workspace-agent-toolbar">
+        <span className={`workspace-status-dot workspace-dot-${statusTone(state)}`} />
+        <span className="workspace-agent-title">{title || "Agent"}</span>
+        <span className="workspace-agent-status" role="status">
+          {statusCopy(state)}
+        </span>
+      </div>
+      <div ref={conversationRef} className="workspace-conversation workspace-scroll">
+        {state.items.length === 0 && state.status === "idle" ? (
+          <div className="workspace-chat-empty">Start a conversation with the agent.</div>
+        ) : null}
+        {state.items.map(renderItem)}
+        {state.streaming ? (
+          <div className="workspace-chat-typing" role="status">
+            Agent is working
+            <span className="workspace-stream-caret" aria-hidden="true" />
+          </div>
+        ) : null}
+        {finishCopy !== null ? <div className="workspace-chat-finish">{finishCopy}</div> : null}
+      </div>
+      <WorkspaceComposer
+        streaming={state.streaming}
+        disabled={composerDisabled}
+        disabledReason={disabledReason}
+        availableCommands={state.availableCommands}
+        onSend={(text) => void sessionRef.current?.send(text)}
+      />
+    </div>
+  );
+});

@@ -10,6 +10,7 @@ import {
   type DiffState,
 } from "./sidePanels";
 import { TerminalSurface } from "../terminal/TerminalSurface";
+import { AgentChatSurface } from "./AgentChatSurface";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
@@ -97,9 +98,17 @@ export function Workspace() {
   } = useWorkspaceSessions();
   const selectedSurface =
     MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
+  const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
   const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
+  const handleNewWorkspace = useCallback(
+    (projectId: string) => {
+      addWorkspace(projectId);
+      void createSession();
+    },
+    [addWorkspace, createSession],
+  );
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
@@ -117,10 +126,10 @@ export function Workspace() {
   const sessionStatusText = sessionsError
     ? sessionsError
     : sessionCreating
-      ? "Creating terminal session…"
+      ? "Starting agent session…"
       : sessionsLoading && sessions.length === 0
-        ? "Loading terminal sessions…"
-        : `${sessions.length} terminal session${sessions.length === 1 ? "" : "s"}`;
+        ? "Loading sessions…"
+        : `${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
 
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
@@ -176,7 +185,7 @@ export function Workspace() {
                     <button
                       type="button"
                       className="workspace-project-add"
-                      onClick={() => addWorkspace(project.id)}
+                      onClick={() => handleNewWorkspace(project.id)}
                       title="New workspace in this project"
                       aria-label={`New workspace in ${project.name}`}
                     >
@@ -205,7 +214,7 @@ export function Workspace() {
                     <button
                       type="button"
                       className="workspace-new-row"
-                      onClick={() => addWorkspace(project.id)}
+                      onClick={() => handleNewWorkspace(project.id)}
                     >
                       <span aria-hidden="true">+</span>New workspace
                     </button>
@@ -242,7 +251,7 @@ export function Workspace() {
       />
 
       <main className="workspace-center-panel">
-        <div className="workspace-session-tabs" role="tablist" aria-label="Terminal sessions">
+        <div className="workspace-session-tabs" role="tablist" aria-label="Sessions">
           {sessions.map((session) => (
             <button
               type="button"
@@ -267,8 +276,8 @@ export function Workspace() {
             type="button"
             className="workspace-session-add"
             onClick={() => void createSession()}
-            title="New terminal session"
-            aria-label="New terminal session"
+            title="New agent session"
+            aria-label="New agent session"
             disabled={sessionCreating}
           >
             +
@@ -279,7 +288,7 @@ export function Workspace() {
 
         {selectedSessionId !== null ? (
           <>
-            {selectedPermission !== null ? (
+            {selectedPermission !== null && selectedSession?.kind === "acp" ? (
               <WorkspacePermissionCard
                 sessionId={selectedSessionId}
                 request={selectedPermission}
@@ -287,15 +296,25 @@ export function Workspace() {
                 onResolved={handlePermissionResolved}
               />
             ) : null}
-            <TerminalSurface
-              key={selectedSessionId}
-              id={WORKSPACE_TERMINAL_PANEL_ID}
-              workspaceId={null}
-              sessionId={selectedSessionId}
-              onClosed={handleSessionClosed}
-              onExited={handleSessionClosed}
-              onPermissionRequest={handlePermissionRequest}
-            />
+            {selectedSession?.kind === "acp" ? (
+              <AgentChatSurface
+                key={selectedSessionId}
+                id={WORKSPACE_TERMINAL_PANEL_ID}
+                sessionId={selectedSessionId}
+                title={sessionTitle(selectedSession)}
+                onPermissionRequest={handlePermissionRequest}
+              />
+            ) : (
+              <TerminalSurface
+                key={selectedSessionId}
+                id={WORKSPACE_TERMINAL_PANEL_ID}
+                workspaceId={null}
+                sessionId={selectedSessionId}
+                onClosed={handleSessionClosed}
+                onExited={handleSessionClosed}
+                onPermissionRequest={handlePermissionRequest}
+              />
+            )}
           </>
         ) : (
           <div
@@ -307,8 +326,8 @@ export function Workspace() {
             <div role="status">
               {sessionsError ??
                 (sessionsLoading
-                  ? "Loading terminal sessions…"
-                  : "No terminal sessions. Use + to create a terminal session.")}
+                  ? "Loading sessions…"
+                  : "No sessions. Use + to start chatting with an agent.")}
             </div>
           </div>
         )}
