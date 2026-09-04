@@ -35,12 +35,19 @@ const LazyDesign = lazy(() =>
   })),
 );
 
+const LazyMarketplace = lazy(() =>
+  import("../features/marketplace/MarketplaceSurface").then(({ MarketplaceSurface }) => ({
+    default: () => <MarketplaceSurface />,
+  })),
+);
+
 const SURFACE_COMPONENTS: Record<SurfaceKey, SurfaceComponent> = {
   workspace: LazyWorkspace,
   polis: LazyPolis,
   pubvia: SurfacePlaceholder,
   design: LazyDesign,
   settings: LazySettings,
+  marketplace: LazyMarketplace,
 };
 
 function SurfaceLoading() {

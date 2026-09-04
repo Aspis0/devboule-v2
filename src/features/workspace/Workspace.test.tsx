@@ -106,7 +106,12 @@ vi.mock("./AgentChatSurface", () => ({
 }));
 
 import { sessionCreate, sessionPermissionRespond, sessionsList } from "../../lib/tauri";
+import { useAppStore } from "../../store/appStore";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
+
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const terminal = (id: string, title: string): Session => ({
   id,
@@ -151,6 +156,7 @@ describe("Workspace sessions", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    useAppStore.setState({ installedSkills: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(sessionsList).mockResolvedValue([terminal("session-1", "shell one")]);
@@ -203,6 +209,36 @@ describe("Workspace sessions", () => {
 
     expect(sessionCreate).toHaveBeenCalledWith(null, "acp");
     expect(container.querySelector("[data-testid=agent-chat-surface]")).not.toBeNull();
+  });
+
+  it("shows an empty Skills section when no skills are installed", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    expect(container.textContent).toContain("Skills");
+    expect(container.textContent).toContain("No skills yet.");
+  });
+
+  it("shows an installed skill in the Skills section", async () => {
+    useAppStore.setState({
+      installedSkills: [
+        {
+          id: "repo-rhythm",
+          name: "Repo Rhythm",
+          author: "@lena-code",
+          description: "Turn a repository snapshot into a clear working plan.",
+        },
+      ],
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    expect(container.textContent).toContain("Skills");
+    expect(container.textContent).toContain("Repo Rhythm");
   });
 
   it("does not render a permission card before typed_permissions is negotiated", async () => {

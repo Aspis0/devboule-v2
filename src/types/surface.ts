@@ -1,4 +1,4 @@
-export type SurfaceKey = "workspace" | "polis" | "pubvia" | "design" | "settings";
+export type SurfaceKey = "workspace" | "polis" | "pubvia" | "design" | "settings" | "marketplace";
 
 export type SurfaceTone = "terracotta" | "purple" | "green" | "ochre";
 
@@ -55,5 +55,12 @@ export const SURFACES = [
     eyebrow: "general · providers · devices",
     description: "Settings will contain the daemon, provider, Oracle, and device controls.",
     tone: "purple",
+  },
+  {
+    key: "marketplace",
+    label: "Marketplace",
+    eyebrow: "plugins · packs · skills",
+    description: "Browse plugins, packs, and free skills for Devboule.",
+    tone: "ochre",
   },
 ] as const satisfies readonly SurfaceDefinition[];

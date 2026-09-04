@@ -3,9 +3,15 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Shell } from "./Shell";
+
+vi.mock("../features/plugins/install", () => ({
+  chooseAndInstall: vi.fn(),
+}));
+
+import { chooseAndInstall } from "../features/plugins/install";
 import { useAppStore } from "../store/appStore";
 import type { PluginEntry, PluginInventory } from "../types/ipc";
+import { Shell } from "./Shell";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -50,17 +56,80 @@ async function renderShell(): Promise<{
 
 beforeEach(() => {
   useAppStore.setState({
+    installError: null,
     plugins: inventory([READY]),
     installing: null,
+    selectSurface: vi.fn(),
     refreshPlugins: vi.fn(async () => undefined),
   });
 });
 
 afterEach(() => {
   document.body.replaceChildren();
+  vi.clearAllMocks();
 });
 
 describe("Shell crescent", () => {
+  it("renders Marketplace as an accessible crescent point", async () => {
+    const { container, root } = await renderShell();
+
+    expect(container.innerHTML).toContain('aria-label="Open Marketplace"');
+    await act(async () => root.unmount());
+  });
+
+  it("does not render paging arrows when all six product surfaces fit", async () => {
+    const { container, root } = await renderShell();
+
+    expect(container.querySelector(".crescent-page-arrow-prev")).toBeNull();
+    expect(container.querySelector(".crescent-page-arrow-next")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("uses the crescent plus to choose a Polis folder without selecting the surface", async () => {
+    const selectSurface = vi.fn();
+    useAppStore.setState({
+      plugins: inventory([]),
+      selectSurface,
+    });
+    vi.mocked(chooseAndInstall).mockResolvedValue(true);
+    const { container, root } = await renderShell();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    if (sliver === null) throw new Error("crescent did not render");
+    await act(async () => sliver.focus());
+
+    const polis = container.querySelector<HTMLButtonElement>('[aria-label="Install Polis"]');
+    if (polis === null) throw new Error("Polis install point did not render");
+    await act(async () => polis.click());
+
+    expect(chooseAndInstall).toHaveBeenCalledWith("polis", "Polis");
+    expect(selectSurface).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("shows and dismisses a crescent install error while the nav is open", async () => {
+    useAppStore.setState({
+      installError: "the folder was refused",
+    });
+    const { container, root } = await renderShell();
+
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    const sliver = container.querySelector<HTMLButtonElement>(".crescent-sliver");
+    if (sliver === null) throw new Error("crescent did not render");
+    await act(async () => sliver.focus());
+
+    const alert = container.querySelector<HTMLElement>('[role="alert"]');
+    expect(alert?.textContent).toContain(
+      "The last install did not happen — the folder was refused",
+    );
+    const dismiss = alert?.querySelector<HTMLButtonElement>("button");
+    if (dismiss === undefined || dismiss === null) throw new Error("dismiss control missing");
+    await act(async () => dismiss.click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
   it.each([
     ["open", inventory([READY]), null, 'aria-label="Open Polis"'],
     ["add", inventory([]), null, 'aria-label="Install Polis"'],

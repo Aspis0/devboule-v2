@@ -362,6 +362,56 @@
   font-size: 11px;
 }
 
+.workspace-skills-section {
+  margin-top: 20px;
+  padding: 0 6px 4px;
+}
+
+.workspace-skills-section h2 {
+  margin: 0 0 7px;
+  color: var(--silence);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.workspace-skills-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workspace-skill-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 0;
+}
+
+.workspace-skill-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-skill-author {
+  flex: none;
+  margin-left: auto;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px;
+}
+
+.workspace-skills-empty {
+  color: var(--silence);
+  font-size: 10.5px;
+}
+
 .workspace-daemon-status {
   display: flex;
   flex: none;

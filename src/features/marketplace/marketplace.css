@@ -1,0 +1,243 @@
+.marketplace-surface {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.marketplace-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 54px;
+  padding: 0 18px;
+}
+
+.marketplace-header-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.marketplace-header h1 {
+  margin: 0;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.marketplace-header-divider {
+  width: 1px;
+  height: 17px;
+  background: var(--border);
+}
+
+.marketplace-eyebrow,
+.marketplace-header-note,
+.marketplace-demo-note,
+.marketplace-count,
+.marketplace-row-meta,
+.marketplace-price {
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
+.marketplace-eyebrow,
+.marketplace-header-note {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketplace-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 0 18px;
+  border-top: 1px solid var(--line-subtle);
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.marketplace-demo-note {
+  flex: none;
+  margin: -2px 18px 8px;
+}
+
+.marketplace-filters {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.marketplace-filter {
+  height: 27px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  background: transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.marketplace-filter:hover,
+.marketplace-filter:focus-visible {
+  color: var(--terracotta-deep);
+  background: var(--surface);
+}
+
+.marketplace-filter-active {
+  color: var(--terracotta-deep);
+  background: var(--selection);
+}
+
+.marketplace-filter-active:hover,
+.marketplace-filter-active:focus-visible {
+  background: var(--selection);
+}
+
+.marketplace-count {
+  flex: none;
+}
+
+.marketplace-notice {
+  flex: none;
+  padding: 10px 18px 0;
+  color: var(--danger-deep);
+  font-size: 11.5px;
+}
+
+.marketplace-list-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.marketplace-list {
+  margin: 0;
+  padding: 4px 18px 18px;
+  list-style: none;
+}
+
+.marketplace-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-width: 0;
+  padding: 15px 0;
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.marketplace-row-main {
+  min-width: 0;
+}
+
+.marketplace-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.marketplace-row-title h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.marketplace-price {
+  flex: none;
+  color: var(--ink-soft);
+}
+
+.marketplace-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.marketplace-row-main p {
+  max-width: 720px;
+  margin: 6px 0 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.marketplace-row-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.marketplace-action {
+  height: 27px;
+  padding: 0 11px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.marketplace-action-buy {
+  color: var(--surface);
+  background: var(--terracotta-deep);
+}
+
+.marketplace-action-buy:hover,
+.marketplace-action-buy:focus-visible {
+  background: var(--ink-soft);
+}
+
+.marketplace-action-install {
+  color: var(--terracotta-deep);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+}
+
+.marketplace-action-install:hover,
+.marketplace-action-install:focus-visible {
+  border-color: var(--terracotta);
+}
+
+.marketplace-action-disabled {
+  color: var(--silence);
+  background: transparent;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.marketplace-plugin-status {
+  max-width: 240px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.marketplace-plugin-status-ready {
+  color: var(--green-deep);
+}
+
+.marketplace-empty {
+  margin: 0;
+  padding: 24px 18px;
+  color: var(--silence);
+  font-size: 12px;
+}

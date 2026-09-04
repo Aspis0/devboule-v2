@@ -1,22 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
 import { chooseAndInstall } from "../features/plugins/install";
 import { pluginState } from "../lib/plugins";
 import { useAppStore } from "../store/appStore";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
+import { CRESCENT_LABEL_MAX_WIDTH, CRESCENT_VISIBLE_COUNT, layoutCrescent } from "./crescentLayout";
 
 interface ShellProps {
   activeSurface: SurfaceKey;
   children: ReactNode;
 }
 
-const NAV_POINTS = [
-  { key: "workspace", x: 277, y: 44 },
-  { key: "polis", x: 371, y: 80 },
-  { key: "pubvia", x: 470, y: 92 },
-  { key: "design", x: 569, y: 80 },
-  { key: "settings", x: 662, y: 44 },
-] as const satisfies readonly { key: SurfaceKey; x: number; y: number }[];
+const SURFACE_KEYS = SURFACES.map((surface) => surface.key) satisfies SurfaceKey[];
 
 /**
  * What a point in the crescent is offering.
@@ -58,12 +53,26 @@ export function Shell({ activeSurface, children }: ShellProps) {
   const selectSurface = useAppStore((state) => state.selectSurface);
   const plugins = useAppStore((state) => state.plugins);
   const installing = useAppStore((state) => state.installing);
+  const installError = useAppStore((state) => state.installError);
+  const dismissInstallError = useAppStore((state) => state.dismissInstallError);
   const refreshPlugins = useAppStore((state) => state.refreshPlugins);
   const [navOpen, setNavOpen] = useState(false);
+  const [surfaceOffset, setSurfaceOffset] = useState(0);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const navigationRef = useRef<HTMLDivElement>(null);
   const suppressTriggerFocusRef = useRef(false);
+  const pendingFocusRef = useRef<{
+    surfaceKey?: string;
+    delta: -1 | 1;
+    focusedArrow: boolean;
+  } | null>(null);
+  const navOpenRef = useRef(navOpen);
+  const visibleKeysRef = useRef<string[]>([]);
   const pageShift = navOpen ? "34px" : "0px";
   const pageDim = navOpen ? 0.34 : 1;
+  const crescentLayout = layoutCrescent(SURFACE_KEYS, CRESCENT_VISIBLE_COUNT, surfaceOffset);
+  navOpenRef.current = navOpen;
+  visibleKeysRef.current = crescentLayout.visibleKeys;
 
   // Asked once, on the way in: the crescent has to know whether Polis is
   // something to open or something to add before it is first drawn.
@@ -73,16 +82,86 @@ export function Shell({ activeSurface, children }: ShellProps) {
 
   function closeNav() {
     setNavOpen(false);
+    setSurfaceOffset(0);
+  }
+
+  function pageBy(delta: -1 | 1) {
+    const focusedElement = document.activeElement;
+    pendingFocusRef.current = {
+      surfaceKey:
+        focusedElement instanceof HTMLElement ? focusedElement.dataset.surfaceKey : undefined,
+      delta,
+      focusedArrow:
+        focusedElement instanceof HTMLElement &&
+        focusedElement.classList.contains("crescent-page-arrow") &&
+        focusedElement.dataset.surfaceKey === undefined,
+    };
+    setSurfaceOffset((offset) => offset + delta);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key === "Escape") {
+      if (!navOpen) return;
       event.preventDefault();
       closeNav();
-      suppressTriggerFocusRef.current = true;
-      triggerRef.current?.focus();
+      if (document.activeElement === triggerRef.current) {
+        suppressTriggerFocusRef.current = false;
+      } else {
+        suppressTriggerFocusRef.current = true;
+        triggerRef.current?.focus();
+      }
+      return;
+    }
+    if (!navOpen) return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest("input, textarea, select, [contenteditable]") !== null
+    ) {
+      return;
+    }
+    if (event.key === "ArrowLeft" && crescentLayout.canPrev) {
+      event.preventDefault();
+      pageBy(-1);
+    } else if (event.key === "ArrowRight" && crescentLayout.canNext) {
+      event.preventDefault();
+      pageBy(1);
     }
   }
+
+  useLayoutEffect(() => {
+    const pendingFocus = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+    if (!navOpenRef.current) return;
+    if (pendingFocus === null) return;
+
+    const visibleKeys = visibleKeysRef.current;
+
+    const keepsFocusedKey =
+      pendingFocus.surfaceKey !== undefined &&
+      visibleKeys.some((key) => key === pendingFocus.surfaceKey);
+    if (!keepsFocusedKey && pendingFocus.focusedArrow) {
+      const arrowLabel = pendingFocus.delta === 1 ? "Show next surfaces" : "Show previous surfaces";
+      const matchingArrow = navigationRef.current?.querySelector<HTMLButtonElement>(
+        `[aria-label="${arrowLabel}"]`,
+      );
+      if (matchingArrow !== null && matchingArrow !== undefined) {
+        matchingArrow.focus();
+        return;
+      }
+    }
+
+    const focusKey = keepsFocusedKey
+      ? pendingFocus.surfaceKey
+      : pendingFocus.delta === 1
+        ? visibleKeys.at(-1)
+        : visibleKeys[0];
+    if (focusKey === undefined) return;
+
+    const nextFocus = Array.from(
+      navigationRef.current?.querySelectorAll<HTMLButtonElement>(".nav-point") ?? [],
+    ).find((button) => button.dataset.surfaceKey === focusKey);
+    nextFocus?.focus();
+  }, [surfaceOffset]);
 
   // Pointer movement only ever CLOSES the crescent. Opening is reserved to the
   // 13px sliver and to keyboard focus: an open-on-move band across the top of
@@ -134,6 +213,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
 
         <div
           id="devboule-crescent-navigation"
+          ref={navigationRef}
           className={`crescent-nav${navOpen ? " crescent-nav-open" : ""}`}
           onPointerEnter={() => setNavOpen(true)}
           onPointerLeave={(event) => {
@@ -148,7 +228,37 @@ export function Shell({ activeSurface, children }: ShellProps) {
             <path className="crescent-arc-border" d="M 240.8 21.9 A 410 410 0 0 0 699.2 21.9" />
           </svg>
 
-          {NAV_POINTS.map((point) => {
+          {navOpen && installError ? (
+            <div className="crescent-install-error" role="alert">
+              <span>The last install did not happen — {installError}</span>
+              <button type="button" onClick={dismissInstallError}>
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+
+          {navOpen && crescentLayout.canPrev ? (
+            <button
+              type="button"
+              className="crescent-page-arrow crescent-page-arrow-prev"
+              aria-label="Show previous surfaces"
+              onClick={() => pageBy(-1)}
+            >
+              ‹
+            </button>
+          ) : null}
+          {navOpen && crescentLayout.canNext ? (
+            <button
+              type="button"
+              className="crescent-page-arrow crescent-page-arrow-next"
+              aria-label="Show next surfaces"
+              onClick={() => pageBy(1)}
+            >
+              ›
+            </button>
+          ) : null}
+
+          {crescentLayout.points.map((point) => {
             const surface = SURFACES.find((item) => item.key === point.key);
             if (!surface) return null;
             const isActive = surface.key === activeSurface;
@@ -160,6 +270,7 @@ export function Shell({ activeSurface, children }: ShellProps) {
                 key={surface.key}
                 className={`nav-point nav-point-${offer}${isActive ? " nav-point-active" : ""}`}
                 style={{ left: point.x, top: point.y }}
+                data-surface-key={surface.key}
                 aria-label={
                   offer === "open"
                     ? `Open ${surface.label}`
@@ -198,7 +309,9 @@ export function Shell({ activeSurface, children }: ShellProps) {
                     </span>
                   )}
                 </span>
-                <span className="nav-point-label">{surface.label}</span>
+                <span className="nav-point-label" style={{ maxWidth: CRESCENT_LABEL_MAX_WIDTH }}>
+                  {surface.label}
+                </span>
               </button>
             );
           })}
