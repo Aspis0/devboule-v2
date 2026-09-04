@@ -32,8 +32,76 @@ vi.mock("../terminal/TerminalSurface", () => ({
 }));
 
 vi.mock("./AgentChatSurface", () => ({
-  AgentChatSurface: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="agent-chat-surface">{sessionId}</div>
+  AgentChatSurface: ({
+    sessionId,
+    onPermissionRequest,
+    onPermissionResolved,
+  }: {
+    sessionId: string;
+    onPermissionRequest?: (sessionId: string, request: PermissionRequest) => void;
+    onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
+  }) => (
+    <div data-testid="agent-chat-surface">
+      {sessionId}
+      <button
+        type="button"
+        data-testid="emit-permission-a"
+        onClick={() =>
+          onPermissionRequest?.(sessionId, {
+            type: "permission_request",
+            toolCallId: "tool-a",
+            title: "Run command",
+            command: "cmd.exe",
+            args: ["/c", "echo", "alpha"],
+            cwd: "C:\\alpha",
+            options: [
+              { optionId: "allow", name: "Allow once", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          })
+        }
+      />
+      <button
+        type="button"
+        data-testid="emit-permission-b"
+        onClick={() =>
+          onPermissionRequest?.(sessionId, {
+            type: "permission_request",
+            toolCallId: "tool-b",
+            title: "Run command",
+            command: "ping.exe",
+            args: ["-n", "1", "127.0.0.1"],
+            cwd: "C:\\beta",
+            options: [
+              { optionId: "allow", name: "Allow once", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          })
+        }
+      />
+      <button
+        type="button"
+        data-testid="emit-permission-resolved"
+        onClick={() => onPermissionResolved?.(sessionId, "tool-a")}
+      />
+      <button
+        type="button"
+        data-testid="emit-permission-shared"
+        onClick={() =>
+          onPermissionRequest?.(sessionId, {
+            type: "permission_request",
+            toolCallId: "shared-tool",
+            title: "Run command",
+            command: `shared-${sessionId}`,
+            cwd: `C:\\${sessionId}`,
+            options: [
+              { optionId: "allow", name: "Allow once", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          })
+        }
+      />
+    </div>
   ),
 }));
 
@@ -49,11 +117,29 @@ const terminal = (id: string, title: string): Session => ({
   elapsedMs: 0,
 });
 
+const acpSession = (id: string, title: string): Session => ({
+  ...terminal(id, title),
+  kind: "acp",
+});
+
 const permissionRequest: PermissionRequest = {
   type: "permission_request",
   toolCallId: "tool-test",
   title: "Run command",
   command: "echo test",
+  options: [
+    { optionId: "allow", name: "Allow once", kind: "allow_once" },
+    { optionId: "deny", name: "Deny", kind: "reject_once" },
+  ],
+};
+
+const spawnPermissionRequest: PermissionRequest = {
+  type: "permission_request",
+  toolCallId: "tool-spawn",
+  title: "Run command",
+  command: "cmd.exe",
+  args: ["/c", "echo", "gated"],
+  cwd: "C:\\work\\tree",
   options: [
     { optionId: "allow", name: "Allow once", kind: "allow_once" },
     { optionId: "deny", name: "Deny", kind: "reject_once" },
@@ -156,5 +242,238 @@ describe("Workspace sessions", () => {
 
     expect(sessionPermissionRespond).toHaveBeenCalledTimes(1);
     expect(sessionPermissionRespond).toHaveBeenCalledWith("session-1", "tool-test", "allow_once");
+  });
+
+  it("shows the command, args, and cwd that will be spawned", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          sessionId="session-1"
+          request={spawnPermissionRequest}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("cmd.exe");
+    expect(text).toContain("/c");
+    expect(text).toContain("echo");
+    expect(text).toContain("gated");
+    expect(text).toContain("C:\\work\\tree");
+  });
+
+  it("shows permission requests FIFO and advances after a response", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    const emitB = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-b]");
+    if (emitA === null || emitB === null) throw new Error("permission emitters did not render");
+    await act(async () => emitA.click());
+    await act(async () => emitB.click());
+
+    const card = container.querySelector(".workspace-permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    expect(card.textContent).toContain("cmd.exe");
+    expect(card.textContent).toContain("alpha");
+    expect(card.textContent).not.toContain("ping.exe");
+
+    const allow = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    if (allow === null) throw new Error("permission allow control did not render");
+    await act(async () => allow.click());
+    await act(async () => undefined);
+
+    const next = container.querySelector(".workspace-permission-card");
+    if (next === null) throw new Error("second permission card did not render");
+    expect(next.textContent).toContain("ping.exe");
+    expect(next.textContent).toContain("C:\\beta");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", "tool-a", "allow_once");
+  });
+
+  it("quotes args that contain spaces so they are not split visually", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          sessionId="session-1"
+          request={{
+            ...spawnPermissionRequest,
+            args: ["hello world"],
+          }}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    const command = container.querySelector(".workspace-permission-command")?.textContent ?? "";
+    expect(command).toContain('"hello world"');
+    expect(command).not.toBe("cmd.exe hello world");
+  });
+
+  it("shows the selected session's permission when another session's request is at the head", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      acpSession("session-a", "agent a"),
+      acpSession("session-b", "agent b"),
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emitA === null) throw new Error("permission emitter A did not render");
+    await act(async () => emitA.click());
+    expect(container.querySelector(".workspace-permission-card")?.textContent).toContain("alpha");
+
+    const tabB = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
+      (tab) => tab.textContent?.includes("agent b"),
+    );
+    if (tabB === undefined) throw new Error("session B tab did not render");
+    await act(async () => tabB.click());
+    await act(async () => undefined);
+
+    const emitB = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-b]");
+    if (emitB === null) throw new Error("permission emitter B did not render");
+    await act(async () => emitB.click());
+
+    const card = container.querySelector(".workspace-permission-card");
+    if (card === null) throw new Error("selected session B's permission card did not render");
+    expect(card.textContent).toContain("ping.exe");
+    expect(card.textContent).not.toContain("alpha");
+  });
+
+  it("shows the full command including a long suffix the user must see before allowing", async () => {
+    const suffix = "& del secrets.txt";
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          sessionId="session-1"
+          request={{
+            ...spawnPermissionRequest,
+            command: `${"echo ".padEnd(2100, "x")}${suffix}`,
+            args: undefined,
+          }}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain(suffix);
+    expect(container.textContent).not.toContain("…");
+  });
+
+  it("lists env name=value on the permission card when present", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          sessionId="session-1"
+          request={{
+            ...spawnPermissionRequest,
+            env: [{ name: "DB_GATE", value: "SAFE & echo PWNED" }],
+          }}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    const env = container.querySelector(".workspace-permission-env")?.textContent ?? "";
+    expect(env).toContain("DB_GATE=SAFE & echo PWNED");
+  });
+
+  it("drops the card when the backend resolves the permission without a UI click", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    const resolved = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-resolved]",
+    );
+    if (emit === null || resolved === null) throw new Error("permission emitters did not render");
+    await act(async () => emit.click());
+    expect(container.querySelector(".workspace-permission-card")).not.toBeNull();
+
+    await act(async () => resolved.click());
+    expect(container.querySelector(".workspace-permission-card")).toBeNull();
+    expect(sessionPermissionRespond).not.toHaveBeenCalled();
+  });
+
+  it("keeps the other session's card when two sessions share a toolCallId", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      acpSession("session-a", "agent a"),
+      acpSession("session-b", "agent b"),
+    ]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const emitShared = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-shared]",
+    );
+    if (emitShared === null) throw new Error("shared permission emitter did not render");
+    await act(async () => emitShared.click());
+    expect(container.querySelector(".workspace-permission-card")?.textContent).toContain(
+      "shared-session-a",
+    );
+
+    const tabB = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
+      (tab) => tab.textContent?.includes("agent b"),
+    );
+    if (tabB === undefined) throw new Error("session B tab did not render");
+    await act(async () => tabB.click());
+    await act(async () => undefined);
+
+    const emitB = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-shared]",
+    );
+    if (emitB === null) throw new Error("session B shared emitter did not render");
+    await act(async () => emitB.click());
+    expect(container.querySelector(".workspace-permission-card")?.textContent).toContain(
+      "shared-session-b",
+    );
+
+    const tabA = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")].find(
+      (tab) => tab.textContent?.includes("agent a"),
+    );
+    if (tabA === undefined) throw new Error("session A tab did not render");
+    await act(async () => tabA.click());
+    await act(async () => undefined);
+
+    const allow = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    if (allow === null) throw new Error("permission allow control did not render");
+    await act(async () => allow.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector(".workspace-permission-card")).toBeNull();
+    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-a", "shared-tool", "allow_once");
+
+    await act(async () => tabB.click());
+    await act(async () => undefined);
+    const cardB = container.querySelector(".workspace-permission-card");
+    if (cardB === null) throw new Error("session B's card vanished after resolving A");
+    expect(cardB.textContent).toContain("shared-session-b");
+    expect(cardB.textContent).not.toContain("shared-session-a");
   });
 });

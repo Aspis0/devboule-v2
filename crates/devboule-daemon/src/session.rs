@@ -381,7 +381,8 @@ impl SessionRuntime {
                 | SessionEvent::AgentFinished { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
-                | SessionEvent::PermissionRequest { .. } => {
+                | SessionEvent::PermissionRequest { .. }
+                | SessionEvent::PermissionResolved { .. } => {
                     let Some(seq) = journal_seq else {
                         continue;
                     };
@@ -1002,6 +1003,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
+                | SessionEvent::PermissionResolved { .. }
                 | SessionEvent::AgentReported { .. } => None,
             })
             .collect()

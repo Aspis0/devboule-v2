@@ -37,7 +37,7 @@ type CommandArgs = {
   session_attach: { id: Id; from_cursor: number | null; ch: SessionChannel };
   session_send: { id: Id; text: string };
   session_interrupt: { id: Id };
-  session_permission_respond: { id: Id; request_id: Id; outcome: PermissionOutcome };
+  session_permission_respond: { id: Id; requestId: Id; outcome: PermissionOutcome };
   session_resize: { id: Id; cols: number; rows: number };
   session_detach: { id: Id };
   session_close: { id: Id };
@@ -182,7 +182,11 @@ export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChan
 export const sessionSend = (id: Id, text: string) => invokeTyped("session_send", { id, text });
 export const sessionInterrupt = (id: Id) => invokeTyped("session_interrupt", { id });
 export const sessionPermissionRespond = (id: Id, requestId: Id, outcome: PermissionOutcome) =>
-  invokeTyped("session_permission_respond", { id, request_id: requestId, outcome });
+  // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
+  // the key here must be `requestId`, not `request_id` (the command has no
+  // rename_all). Sending snake_case made the daemon reject the response with
+  // "invalid args `requestId`" and the permission card hung on "Waiting on you".
+  invokeTyped("session_permission_respond", { id, requestId, outcome });
 export const sessionResize = (id: Id, cols: number, rows: number) =>
   invokeTyped("session_resize", { id, cols, rows });
 export const sessionDetach = (id: Id) => invokeTyped("session_detach", { id });

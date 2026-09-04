@@ -14,7 +14,8 @@ interface AgentChatSurfaceProps {
   sessionId: string;
   title: string;
   id?: string;
-  onPermissionRequest?: (request: PermissionRequest) => void;
+  onPermissionRequest?: (sessionId: string, request: PermissionRequest) => void;
+  onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
 }
 
 function commandId(args: Record<string, unknown> | undefined): string {
@@ -106,6 +107,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   title,
   id,
   onPermissionRequest,
+  onPermissionResolved,
 }: AgentChatSurfaceProps) {
   const sessionRef = useRef<AgentSession | null>(null);
   const [state, setState] = useState<AgentSessionState>({
@@ -113,7 +115,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     status: "initializing",
     streaming: false,
     availableCommands: [],
-    permissionRequest: null,
     lastFinished: null,
   });
   const conversationRef = useRef<HTMLDivElement>(null);
@@ -123,7 +124,12 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       sessionId,
       invoke: invokeAgentCommand,
       createChannel: createSessionChannel,
-      onPermissionRequest,
+      onPermissionRequest: onPermissionRequest
+        ? (request) => onPermissionRequest(sessionId, request)
+        : undefined,
+      onPermissionResolved: onPermissionResolved
+        ? (toolCallId) => onPermissionResolved(sessionId, toolCallId)
+        : undefined,
       isSuperseded: () => {
         const activeSession = sessionRef.current;
         return activeSession !== null && activeSession !== session;
@@ -137,7 +143,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       if (sessionRef.current === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [onPermissionRequest, sessionId]);
+  }, [onPermissionRequest, onPermissionResolved, sessionId]);
 
   useEffect(() => {
     const conversation = conversationRef.current;

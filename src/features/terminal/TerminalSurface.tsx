@@ -10,7 +10,8 @@ interface TerminalSurfaceProps {
   id?: string;
   onClosed?: () => void;
   onExited?: () => void;
-  onPermissionRequest?: (request: PermissionRequest) => void;
+  onPermissionRequest?: (sessionId: string, request: PermissionRequest) => void;
+  onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
 }
 
 function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
@@ -87,6 +88,7 @@ export const TerminalSurface = memo(function TerminalSurface({
   onClosed,
   onExited,
   onPermissionRequest,
+  onPermissionResolved,
 }: TerminalSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef<TerminalSession | null>(null);
@@ -122,7 +124,10 @@ export const TerminalSurface = memo(function TerminalSurface({
         if (mounted) onExited?.();
       },
       onPermissionRequest: (request) => {
-        if (mounted) onPermissionRequest?.(request);
+        if (mounted) onPermissionRequest?.(sessionId, request);
+      },
+      onPermissionResolved: (toolCallId) => {
+        if (mounted) onPermissionResolved?.(sessionId, toolCallId);
       },
     });
     sessionRef.current = session;
@@ -136,7 +141,7 @@ export const TerminalSurface = memo(function TerminalSurface({
       if (sessionRef.current === session) sessionRef.current = null;
       session.dispose();
     };
-  }, [workspaceId, sessionId, onExited, onPermissionRequest]);
+  }, [workspaceId, sessionId, onExited, onPermissionRequest, onPermissionResolved]);
 
   useEffect(() => {
     const host = hostRef.current;

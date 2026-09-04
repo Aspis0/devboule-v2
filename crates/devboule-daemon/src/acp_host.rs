@@ -1,15 +1,21 @@
 //! ACP client methods the agent calls on us: filesystem and terminals.
 //!
-//! Terminals reuse the daemon's ConPTY + Job Object path. There is no scope
-//! guardian yet: any absolute path and any command the agent names is honored.
-//! That surface is declared, not papered over.
+//! Terminals reuse the daemon's ConPTY + Job Object path. `terminal/create`
+//! does not spawn until the user allows that exact command through the
+//! permission broker (`allow_once` / `reject_once`). If the agent omits
+//! `args`, the `command` string is a shell line: Windows writes it verbatim
+//! to a tempfile and runs `cmd.exe /d /c <file>`; elsewhere `/bin/sh -c`.
+//! The permission prompt shows the original line plus env. The guardian does not
+//! otherwise parse the command string: an approved process runs with the
+//! user's privileges. Existing path guards (`authorize_path`,
+//! `touches_runtime`) still apply and are not bypassed.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 
 use agent_client_protocol::schema::v1::{
@@ -18,8 +24,11 @@ use agent_client_protocol::schema::v1::{
     TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
+use devboule_protocol::{PermissionEnvVar, PermissionOption, SessionEvent};
 use portable_pty::{CommandBuilder, PtySize};
 
+use super::acp_client::{HostDecision, PermissionBroker};
+use super::SessionRuntime;
 use crate::process_tree::JobObject;
 
 const MAX_FS_BYTES: u64 = 8 * 1024 * 1024;
@@ -67,6 +76,19 @@ impl RpcError {
         }
     }
 
+    /// Server-defined JSON-RPC error for a user (or timeout/cancel) denial.
+    ///
+    /// Must not be `-32000`: ACP schema `ErrorCode::AuthRequired` is `-32000`
+    /// (`agent-client-protocol-schema` `src/v1/error.rs`). An agent that maps
+    /// that code would treat a denied command as a missing login. `-32002` is
+    /// already `ResourceNotFound`. The free server-defined slot is `-32001`.
+    fn denied(message: impl Into<String>) -> Self {
+        Self {
+            code: -32001,
+            message: message.into(),
+        }
+    }
+
     pub(super) fn to_json(&self) -> serde_json::Value {
         serde_json::json!({ "code": self.code, "message": self.message })
     }
@@ -80,10 +102,17 @@ pub(super) struct AcpHost {
     terminals: Mutex<HashMap<String, TerminalSlot>>,
     next_terminal: AtomicU64,
     max_terminals: usize,
+    gate: Mutex<Option<PermissionGate>>,
     #[cfg(test)]
     create_gap: Mutex<Option<Arc<std::sync::Barrier>>>,
     #[cfg(test)]
     spawned: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Clone)]
+struct PermissionGate {
+    broker: Weak<PermissionBroker>,
+    runtime: Weak<SessionRuntime>,
 }
 
 enum TerminalSlot {
@@ -102,6 +131,7 @@ struct AcpTerminal {
     waiter: Mutex<Option<JoinHandle<()>>>,
     rpc_waiters: Mutex<Vec<JoinHandle<()>>>,
     released: AtomicBool,
+    batch_file: Option<PathBuf>,
 }
 
 struct BoundedBuffer {
@@ -164,6 +194,7 @@ impl AcpHost {
             terminals: Mutex::new(HashMap::new()),
             next_terminal: AtomicU64::new(1),
             max_terminals,
+            gate: Mutex::new(None),
             #[cfg(test)]
             create_gap: Mutex::new(None),
             #[cfg(test)]
@@ -199,6 +230,40 @@ impl AcpHost {
     pub(super) fn set_session_id(&self, session_id: String) {
         if let Ok(mut current) = self.session_id.lock() {
             *current = session_id;
+        }
+    }
+
+    pub(super) fn bind_permission_gate(
+        &self,
+        broker: &Arc<PermissionBroker>,
+        runtime: &Arc<SessionRuntime>,
+    ) {
+        if let Ok(mut gate) = self.gate.lock() {
+            *gate = Some(PermissionGate {
+                broker: Arc::downgrade(broker),
+                runtime: Arc::downgrade(runtime),
+            });
+        }
+    }
+
+    fn await_user_permission(&self, event: SessionEvent) -> HostDecision {
+        let Some(gate) = self.gate.lock().ok().and_then(|guard| guard.clone()) else {
+            return HostDecision::Cancelled;
+        };
+        let Some(broker) = gate.broker.upgrade() else {
+            return HostDecision::Cancelled;
+        };
+        let Some(runtime) = gate.runtime.upgrade() else {
+            return HostDecision::Cancelled;
+        };
+        broker.request_host_permission(event, &runtime)
+    }
+
+    fn release_reserved_slot(&self, id: &str) {
+        if let Ok(mut terminals) = self.terminals.lock() {
+            if matches!(terminals.get(id), Some(TerminalSlot::Reserved)) {
+                terminals.remove(id);
+            }
         }
     }
 
@@ -363,6 +428,15 @@ impl AcpHost {
             terminals.insert(id.clone(), TerminalSlot::Reserved);
             id
         };
+        let plan = spawn_plan(&request.command, &request.args);
+        let event = terminal_permission_event(&plan, &cwd, &env);
+        match self.await_user_permission(event) {
+            HostDecision::Allow => {}
+            HostDecision::Deny | HostDecision::Timeout | HostDecision::Cancelled => {
+                self.release_reserved_slot(&id);
+                return Err(RpcError::denied("the user denied this command"));
+            }
+        }
         #[cfg(test)]
         {
             let gap = self.create_gap.lock().ok().and_then(|guard| guard.clone());
@@ -370,16 +444,29 @@ impl AcpHost {
                 barrier.wait();
             }
         }
+        let prepared = match prepare_spawn(&plan, &self.runtime_dir, &id) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.release_reserved_slot(&id);
+                return Err(error);
+            }
+        };
         #[cfg(test)]
         self.spawned.fetch_add(1, Ordering::SeqCst);
         let spawned = spawn_acp_terminal(
-            &request.command,
-            &request.args,
+            &prepared.program,
+            &prepared.args,
             &cwd,
             &env,
             Arc::clone(&self.daemon_job),
             limit,
+            prepared.batch_file.clone(),
         );
+        if spawned.is_err() {
+            if let Some(path) = &prepared.batch_file {
+                let _ = std::fs::remove_file(path);
+            }
+        }
         let mut terminals = match self.terminals.lock() {
             Ok(terminals) => terminals,
             Err(_) => {
@@ -582,6 +669,13 @@ impl AcpTerminal {
         if let Ok(mut job) = self.job.lock() {
             drop(job.take());
         }
+        self.drop_batch_file();
+    }
+
+    fn drop_batch_file(&self) {
+        if let Some(path) = &self.batch_file {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     fn push_rpc_waiter(&self, handle: JoinHandle<()>) {
@@ -620,7 +714,12 @@ impl AcpTerminal {
         for handle in waiters {
             let _ = handle.join();
         }
+        self.drop_batch_file();
     }
+}
+
+fn count_dsr_queries(bytes: &[u8]) -> usize {
+    bytes.windows(4).filter(|window| *window == b"\x1b[6n").count()
 }
 
 #[derive(Clone, Copy)]
@@ -819,6 +918,143 @@ fn slice_lines(contents: &str, line: Option<u32>, limit: Option<u32>) -> Result<
     Ok(lines[start..end].concat())
 }
 
+fn terminal_permission_id() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "terminal:{:x}-{:x}-{}",
+        std::process::id(),
+        nanos,
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+enum SpawnPlan {
+    Argv {
+        program: String,
+        args: Vec<String>,
+    },
+    ShellLine {
+        line: String,
+    },
+}
+
+struct PreparedSpawn {
+    program: String,
+    args: Vec<String>,
+    batch_file: Option<PathBuf>,
+}
+
+/// ACP agents often put a whole shell line in `command` and omit `args`.
+/// That is not an executable path. The permission prompt shows the original
+/// line; Windows spawn writes it verbatim to a tempfile so Win32 quoting
+/// cannot rewrite quotes inside the line.
+fn spawn_plan(command: &str, args: &[String]) -> SpawnPlan {
+    if args.is_empty() {
+        SpawnPlan::ShellLine {
+            line: command.to_string(),
+        }
+    } else {
+        SpawnPlan::Argv {
+            program: command.to_string(),
+            args: args.to_vec(),
+        }
+    }
+}
+
+fn prepare_spawn(plan: &SpawnPlan, runtime_dir: &Path, terminal_id: &str) -> Result<PreparedSpawn, RpcError> {
+    match plan {
+        SpawnPlan::Argv { program, args } => Ok(PreparedSpawn {
+            program: program.clone(),
+            args: args.clone(),
+            batch_file: None,
+        }),
+        SpawnPlan::ShellLine { line } => {
+            #[cfg(windows)]
+            {
+                let batch_file = write_shell_batch(runtime_dir, terminal_id, line)?;
+                Ok(PreparedSpawn {
+                    program: "cmd.exe".to_string(),
+                    args: vec![
+                        "/d".to_string(),
+                        "/c".to_string(),
+                        batch_file.to_string_lossy().into_owned(),
+                    ],
+                    batch_file: Some(batch_file),
+                })
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (runtime_dir, terminal_id);
+                Ok(PreparedSpawn {
+                    program: "/bin/sh".to_string(),
+                    args: vec!["-c".to_string(), line.clone()],
+                    batch_file: None,
+                })
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn write_shell_batch(runtime_dir: &Path, terminal_id: &str, line: &str) -> Result<PathBuf, RpcError> {
+    let path = runtime_dir.join(format!("acp-{terminal_id}.cmd"));
+    std::fs::write(&path, format!("{line}\r\n")).map_err(|error| {
+        RpcError::internal(format!("Could not write ACP shell batch: {error}"))
+    })?;
+    Ok(path)
+}
+
+fn permission_env(env: &[(String, String)]) -> Option<Vec<PermissionEnvVar>> {
+    if env.is_empty() {
+        None
+    } else {
+        Some(
+            env.iter()
+                .map(|(name, value)| PermissionEnvVar {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+        )
+    }
+}
+
+fn terminal_permission_event(
+    plan: &SpawnPlan,
+    cwd: &Path,
+    env: &[(String, String)],
+) -> SessionEvent {
+    let (command, args) = match plan {
+        SpawnPlan::Argv { program, args } => (program.clone(), Some(args.clone())),
+        SpawnPlan::ShellLine { line } => (line.clone(), None),
+    };
+    SessionEvent::PermissionRequest {
+        tool_call_id: terminal_permission_id(),
+        title: "Run command".to_string(),
+        description: None,
+        command: Some(command),
+        args,
+        cwd: Some(cwd.to_string_lossy().into_owned()),
+        env: permission_env(env),
+        options: vec![
+            PermissionOption {
+                option_id: "allow".to_string(),
+                name: "Allow once".to_string(),
+                kind: "allow_once".to_string(),
+            },
+            PermissionOption {
+                option_id: "deny".to_string(),
+                name: "Deny".to_string(),
+                kind: "reject_once".to_string(),
+            },
+        ],
+    }
+}
+
 fn spawn_acp_terminal(
     program: &str,
     args: &[String],
@@ -826,6 +1062,7 @@ fn spawn_acp_terminal(
     env: &[(String, String)],
     daemon_job: Arc<JobObject>,
     output_limit: u64,
+    batch_file: Option<PathBuf>,
 ) -> Result<Arc<AcpTerminal>, RpcError> {
     let pty_system = portable_pty::native_pty_system();
     let pair = pty_system
@@ -872,6 +1109,13 @@ fn spawn_acp_terminal(
         let _ = child.kill();
         RpcError::internal(format!("Could not read ACP terminal: {error}"))
     })?;
+    // ConPTY issues ESC[6n at startup and stalls until a CPR reply. Regular
+    // PTY sessions answer via the emulator; ACP terminals have no emulator,
+    // so the reader replies here. Clients must not answer a second time.
+    let writer = pair.master.take_writer().map_err(|error| {
+        let _ = child.kill();
+        RpcError::internal(format!("Could not write ACP terminal: {error}"))
+    })?;
     let terminal = Arc::new(AcpTerminal {
         output: Mutex::new(BoundedBuffer::new(output_limit)),
         exit: Mutex::new(None),
@@ -883,17 +1127,34 @@ fn spawn_acp_terminal(
         waiter: Mutex::new(None),
         rpc_waiters: Mutex::new(Vec::new()),
         released: AtomicBool::new(false),
+        batch_file,
     });
     let output_terminal = Arc::clone(&terminal);
     let reader_handle = std::thread::Builder::new()
         .name("acp-term-read".to_string())
         .spawn(move || {
             let mut reader = reader;
+            let mut writer = writer;
             let mut buf = [0u8; 8192];
+            let mut tail = Vec::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
-                    Ok(count) => output_terminal.push_output(&buf[..count]),
+                    Ok(count) => {
+                        let chunk = &buf[..count];
+                        output_terminal.push_output(chunk);
+                        tail.extend_from_slice(chunk);
+                        let queries = count_dsr_queries(&tail);
+                        for _ in 0..queries {
+                            let _ = writer.write_all(b"\x1b[1;1R");
+                        }
+                        if queries > 0 {
+                            let _ = writer.flush();
+                        }
+                        if tail.len() > 3 {
+                            tail.drain(..tail.len() - 3);
+                        }
+                    }
                     Err(_) => break,
                 }
             }
@@ -912,6 +1173,7 @@ fn spawn_acp_terminal(
                 }
             }
             wait_terminal.set_exit(exit);
+            wait_terminal.drop_batch_file();
         })
         .map_err(|error| RpcError::internal(format!("Could not wait ACP terminal: {error}")))?;
     if let Ok(mut reader) = terminal.reader.lock() {
@@ -925,10 +1187,14 @@ fn spawn_acp_terminal(
 
 #[cfg(test)]
 mod tests {
+    use super::super::acp_client::PermissionBroker;
+    use super::super::{ConnHandle, SessionRuntime};
     use super::{slice_lines, AcpHost, BoundedBuffer, MAX_FS_BYTES};
     use crate::process_tree::JobObject;
+    use devboule_protocol::{PermissionOutcome, SessionEvent};
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     struct TestDirs {
         host: Arc<AcpHost>,
@@ -1149,6 +1415,8 @@ mod tests {
     #[test]
     fn kill_terminates_a_process_that_would_not_exit_alone() {
         let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let _allow = AutoAllow::start(Arc::clone(&broker));
         let host = test.host;
         let created = host
             .create_terminal(serde_json::json!({
@@ -1215,6 +1483,8 @@ mod tests {
             2,
         );
         host.set_session_id("stub-session".to_string());
+        let (broker, _runtime) = bind_gate(&host);
+        let _allow = AutoAllow::start(Arc::clone(&broker));
         host.create_terminal(serde_json::json!({
             "sessionId": "stub-session",
             "command": "cmd.exe",
@@ -1260,5 +1530,730 @@ mod tests {
             spawned <= 2,
             "started {spawned} processes under a limit of 2 (map live={live})"
         );
+    }
+
+    struct AutoAllow {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl AutoAllow {
+        fn start(broker: Arc<PermissionBroker>) -> Self {
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop_thread = Arc::clone(&stop);
+            let handle = std::thread::spawn(move || {
+                while !stop_thread.load(std::sync::atomic::Ordering::SeqCst) {
+                    for id in broker.pending_ids() {
+                        let _ = broker.respond(&id, PermissionOutcome::AllowOnce);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            });
+            Self {
+                stop,
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for AutoAllow {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn discard_broker() -> Arc<PermissionBroker> {
+        PermissionBroker::for_test(Arc::new(|_, _| Ok(())))
+    }
+
+    fn bind_gate(host: &AcpHost) -> (Arc<PermissionBroker>, Arc<SessionRuntime>) {
+        let broker = discard_broker();
+        let runtime =
+            SessionRuntime::for_acp("stub-session".to_string(), None, Arc::clone(&broker));
+        host.bind_permission_gate(&broker, &runtime);
+        (broker, runtime)
+    }
+
+    fn wait_for_pending(broker: &PermissionBroker, timeout: Duration) -> String {
+        wait_for_pending_or_progress(broker, None, None, timeout).unwrap_or_else(|| {
+            panic!(
+                "timed out waiting for a pending terminal permission (pending={})",
+                broker.pending_len()
+            )
+        })
+    }
+
+    fn wait_for_pending_or_progress(
+        broker: &PermissionBroker,
+        host: Option<&AcpHost>,
+        thread: Option<&std::thread::JoinHandle<Result<serde_json::Value, super::RpcError>>>,
+        timeout: Duration,
+    ) -> Option<String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(id) = broker.pending_ids().into_iter().next() {
+                return Some(id);
+            }
+            if thread.is_some_and(std::thread::JoinHandle::is_finished)
+                || host.is_some_and(|host| host.spawned_count() > 0)
+            {
+                return None;
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn create_params(test: &TestDirs) -> serde_json::Value {
+        serde_json::json!({
+            "sessionId": "stub-session",
+            "command": "cmd.exe",
+            "args": ["/c", "echo", "gated"],
+            "cwd": test.cwd,
+        })
+    }
+
+    fn spawn_create(
+        host: Arc<AcpHost>,
+        params: serde_json::Value,
+    ) -> std::thread::JoinHandle<Result<serde_json::Value, super::RpcError>> {
+        std::thread::spawn(move || host.create_terminal(params))
+    }
+
+    #[test]
+    fn terminal_create_does_not_spawn_before_a_permission_decision() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let pending = wait_for_pending_or_progress(
+            &broker,
+            Some(&test.host),
+            Some(&thread),
+            Duration::from_secs(2),
+        );
+        let spawned = test.host.spawned_count();
+        if let Some(ref id) = pending {
+            let _ = broker.respond(id, PermissionOutcome::Deny);
+        }
+        let _ = thread.join();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert_eq!(
+            spawned, 0,
+            "terminal/create spawned before a permission decision (spawned={spawned})"
+        );
+        assert!(
+            pending.is_some(),
+            "terminal/create never registered a host permission request"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_create_allow_spawns_the_command() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let id = wait_for_pending(&broker, Duration::from_secs(2));
+        assert_eq!(test.host.spawned_count(), 0);
+        broker
+            .respond(&id, PermissionOutcome::AllowOnce)
+            .expect("allow");
+        let created = thread
+            .join()
+            .expect("create thread")
+            .expect("allowed create");
+        assert!(
+            created.get("terminalId").is_some(),
+            "missing terminalId: {created}"
+        );
+        assert_eq!(test.host.spawned_count(), 1);
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+    }
+
+    #[test]
+    fn terminal_create_deny_returns_server_error_and_releases_the_slot() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let id = wait_for_pending(&broker, Duration::from_secs(2));
+        broker.respond(&id, PermissionOutcome::Deny).expect("deny");
+        let error = thread
+            .join()
+            .expect("create thread")
+            .expect_err("deny must not create a terminal");
+        test.host.shutdown();
+        let spawned = test.host.spawned_count();
+        let live = test.host.live_terminal_count();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert_eq!(
+            error.code, -32001,
+            "deny must be JSON-RPC -32001: {error:?}"
+        );
+        assert_eq!(error.message, "the user denied this command");
+        assert_eq!(spawned, 0, "deny must not spawn (spawned={spawned})");
+        assert_eq!(live, 0, "deny must release the reserved slot (live={live})");
+    }
+
+    #[test]
+    fn terminal_create_timeout_denies_without_spawning() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        broker.set_timeout(Duration::from_millis(50));
+        let started = Instant::now();
+        let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let error = thread
+            .join()
+            .expect("create thread")
+            .expect_err("timeout must deny");
+        let elapsed = started.elapsed();
+        test.host.shutdown();
+        let spawned = test.host.spawned_count();
+        let live = test.host.live_terminal_count();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout waited {elapsed:?} instead of the short test deadline"
+        );
+        assert_eq!(error.code, -32001);
+        assert_eq!(error.message, "the user denied this command");
+        assert_eq!(spawned, 0);
+        assert_eq!(live, 0);
+    }
+
+    #[test]
+    fn cancel_all_unblocks_a_pending_terminal_create_with_deny() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let _id = wait_for_pending(&broker, Duration::from_secs(2));
+        let started = Instant::now();
+        broker.cancel_all();
+        let error = thread
+            .join()
+            .expect("create thread")
+            .expect_err("cancel_all must deny the gate");
+        let elapsed = started.elapsed();
+        test.host.shutdown();
+        let spawned = test.host.spawned_count();
+        let live = test.host.live_terminal_count();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "cancel_all left the create thread blocked for {elapsed:?}"
+        );
+        assert_eq!(error.code, -32001);
+        assert_eq!(error.message, "the user denied this command");
+        assert_eq!(spawned, 0);
+        assert_eq!(live, 0);
+    }
+
+    fn permission_rows(path: &Path) -> Vec<(String, String, serde_json::Value)> {
+        let conn = rusqlite::Connection::open(path).expect("inspect journal");
+        let mut stmt = conn
+            .prepare(
+                "SELECT request_id, outcome, payload FROM permissions ORDER BY ts_ms, request_id",
+            )
+            .expect("prepare");
+        stmt.query_map([], |row| {
+            let payload: Vec<u8> = row.get(2)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                serde_json::from_slice(&payload).expect("payload json"),
+            ))
+        })
+        .expect("query")
+        .map(|row| row.expect("row"))
+        .collect()
+    }
+
+    #[test]
+    fn terminal_create_decisions_are_journaled_with_spawn_payload() {
+        let test = host();
+        let path = test.runtime.join("journal.db");
+        let journal = Arc::new(crate::journal::Journal::open(&path).expect("journal"));
+        journal
+            .upsert_blocking(crate::journal::new_session_record(
+                "stub-session",
+                "owner",
+                None,
+                devboule_protocol::SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("upsert");
+        let broker = discard_broker();
+        let runtime = SessionRuntime::for_acp(
+            "stub-session".to_string(),
+            Some(Arc::clone(&journal)),
+            Arc::clone(&broker),
+        );
+        test.host.bind_permission_gate(&broker, &runtime);
+
+        let deny_thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let deny_id = wait_for_pending(&broker, Duration::from_secs(2));
+        broker
+            .respond(&deny_id, PermissionOutcome::Deny)
+            .expect("deny");
+        let _ = deny_thread.join();
+
+        broker.set_timeout(Duration::from_millis(50));
+        let timeout_thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let _ = timeout_thread.join();
+        broker.set_timeout(Duration::from_secs(120));
+
+        let cancel_thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let _ = wait_for_pending(&broker, Duration::from_secs(2));
+        broker.cancel_all();
+        let _ = cancel_thread.join();
+
+        journal.flush().expect("flush");
+        let rows = permission_rows(&path);
+        journal.shutdown();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+
+        let outcomes: Vec<&str> = rows
+            .iter()
+            .map(|(_, outcome, _)| outcome.as_str())
+            .collect();
+        assert!(outcomes.contains(&"deny"), "missing deny row: {outcomes:?}");
+        assert!(
+            outcomes.contains(&"timeout"),
+            "missing timeout row: {outcomes:?}"
+        );
+        assert!(
+            outcomes.contains(&"cancelled"),
+            "missing cancelled row: {outcomes:?}"
+        );
+        for (request_id, _, payload) in &rows {
+            assert!(
+                request_id.starts_with("terminal:"),
+                "host permission id should be synthetic: {request_id}"
+            );
+            assert_eq!(payload["command"], "cmd.exe");
+            assert_eq!(payload["args"][0], "/c");
+            assert_eq!(payload["args"][1], "echo");
+            assert_eq!(payload["args"][2], "gated");
+            let cwd = payload["cwd"].as_str().expect("cwd");
+            assert!(
+                cwd.contains("devboule-acp-cwd") || Path::new(cwd) == test.cwd.as_path(),
+                "journaled cwd {cwd} was not the spawn cwd"
+            );
+        }
+    }
+
+    fn wait_for_output_containing(
+        host: &AcpHost,
+        terminal_id: &serde_json::Value,
+        needle: &str,
+        timeout: Duration,
+    ) -> String {
+        let deadline = Instant::now() + timeout;
+        let mut last = String::new();
+        loop {
+            if let Ok(output) = host.terminal_output(serde_json::json!({
+                "sessionId": "stub-session",
+                "terminalId": terminal_id
+            })) {
+                last = output["output"].as_str().unwrap_or("").to_string();
+                if last.contains(needle) {
+                    return last;
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("terminal output never contained {needle:?}; last={last:?}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_for_exit_code(host: &AcpHost, terminal_id: serde_json::Value) -> u32 {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let respond: super::RpcRespond = Arc::new(move |_, result| {
+            let _ = tx.send(result);
+        });
+        host.wait_for_exit(
+            serde_json::json!(1),
+            serde_json::json!({
+                "sessionId": "stub-session",
+                "terminalId": terminal_id
+            }),
+            respond,
+        );
+        let exit = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("wait_for_exit")
+            .expect("exit status");
+        exit["exitCode"]
+            .as_u64()
+            .expect("exitCode")
+            .try_into()
+            .expect("exit code fits u32")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_create_shell_line_without_args_runs_through_cmd() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let _allow = AutoAllow::start(Arc::clone(&broker));
+        let created = test
+            .host
+            .create_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "command": "cmd /c echo devboule-gate-marker"
+            }))
+            .expect("create shell line");
+        let terminal_id = created["terminalId"].clone();
+        let output = wait_for_output_containing(
+            &test.host,
+            &terminal_id,
+            "devboule-gate-marker",
+            Duration::from_secs(5),
+        );
+        let code = wait_for_exit_code(&test.host, terminal_id.clone());
+        test.host
+            .release_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "terminalId": terminal_id
+            }))
+            .expect("release");
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(
+            output.contains("devboule-gate-marker"),
+            "shell-line output missed the marker: {output:?}"
+        );
+        assert_eq!(code, 0, "shell-line command must exit 0");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_create_with_args_keeps_argv_semantics() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let _allow = AutoAllow::start(Arc::clone(&broker));
+        let created = test
+            .host
+            .create_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "command": "cmd.exe",
+                "args": ["/c", "echo", "devboule-argv-marker"]
+            }))
+            .expect("create argv");
+        let terminal_id = created["terminalId"].clone();
+        let output = wait_for_output_containing(
+            &test.host,
+            &terminal_id,
+            "devboule-argv-marker",
+            Duration::from_secs(5),
+        );
+        let code = wait_for_exit_code(&test.host, terminal_id.clone());
+        test.host
+            .release_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "terminalId": terminal_id
+            }))
+            .expect("release");
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(
+            output.contains("devboule-argv-marker"),
+            "argv output missed the marker: {output:?}"
+        );
+        assert_eq!(code, 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_create_shell_line_permission_shows_the_real_spawn_argv() {
+        let test = host();
+        let (broker, runtime) = bind_gate(&test.host);
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn, true).expect("attach");
+        conn.track(
+            "stub-session",
+            Arc::clone(&runtime),
+            false,
+            None,
+            generation,
+        );
+        let line = "cmd /c echo devboule-gate-marker";
+        let thread = spawn_create(
+            Arc::clone(&test.host),
+            serde_json::json!({
+                "sessionId": "stub-session",
+                "command": line
+            }),
+        );
+        let id = wait_for_pending(&broker, Duration::from_secs(2));
+        let events = conn.pull_events();
+        broker
+            .respond(&id, PermissionOutcome::Deny)
+            .expect("deny after inspecting the prompt");
+        let _ = thread.join();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        let request = events.iter().find_map(|event| match &event.envelope.event {
+            SessionEvent::PermissionRequest { command, args, .. } => {
+                Some((command.clone(), args.clone()))
+            }
+            _ => None,
+        });
+        let (command, args) = request.expect("shell-line create must publish a PermissionRequest");
+        assert_eq!(command.as_deref(), Some(line));
+        assert_eq!(args, None, "shell-line prompt must show the original line, not the tempfile argv");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_create_shell_line_preserves_quoted_echo_text() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let _allow = AutoAllow::start(Arc::clone(&broker));
+        let created = test
+            .host
+            .create_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "command": "echo \"hello world\""
+            }))
+            .expect("create quoted echo");
+        let terminal_id = created["terminalId"].clone();
+        let output = wait_for_output_containing(
+            &test.host,
+            &terminal_id,
+            "hello world",
+            Duration::from_secs(5),
+        );
+        let code = wait_for_exit_code(&test.host, terminal_id.clone());
+        test.host
+            .release_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "terminalId": terminal_id
+            }))
+            .expect("release");
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(
+            !output.contains(r#"\""#),
+            "cmd.exe saw Win32-escaped quotes: {output:?}"
+        );
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn cancel_all_rejects_later_terminal_create_without_registering() {
+        let test = host();
+        let (broker, runtime) = bind_gate(&test.host);
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn, true).expect("attach");
+        conn.track(
+            "stub-session",
+            Arc::clone(&runtime),
+            false,
+            None,
+            generation,
+        );
+        broker.cancel_all();
+        let started = Instant::now();
+        let error = test
+            .host
+            .create_terminal(create_params(&test))
+            .expect_err("closed broker must deny create");
+        let elapsed = started.elapsed();
+        let events = conn.pull_events();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(elapsed < Duration::from_secs(1), "closed create blocked {elapsed:?}");
+        assert_eq!(error.code, -32001);
+        assert_eq!(test.host.spawned_count(), 0);
+        assert_eq!(broker.pending_len(), 0);
+        assert!(
+            !events.iter().any(|event| {
+                matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })
+            }),
+            "closed broker published a permission request: {events:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_create_denies_when_typed_permissions_are_absent() {
+        let test = host();
+        let (_broker, runtime) = bind_gate(&test.host);
+        let conn = ConnHandle::new(1);
+        let generation = runtime
+            .try_attach(None, &conn, false)
+            .expect("attach without typed_permissions");
+        conn.track(
+            "stub-session",
+            Arc::clone(&runtime),
+            false,
+            None,
+            generation,
+        );
+        let started = Instant::now();
+        let error = test
+            .host
+            .create_terminal(create_params(&test))
+            .expect_err("missing typed_permissions must deny");
+        let elapsed = started.elapsed();
+        let events = conn.pull_events();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(elapsed < Duration::from_secs(1), "capability deny blocked {elapsed:?}");
+        assert_eq!(error.code, -32001);
+        assert_eq!(test.host.spawned_count(), 0);
+        assert!(
+            !events.iter().any(|event| {
+                matches!(event.envelope.event, SessionEvent::PermissionRequest { .. })
+            }),
+            "incapable client was shown a permission prompt: {events:?}"
+        );
+    }
+
+    #[test]
+    fn terminal_create_permission_includes_env() {
+        let test = host();
+        let (broker, runtime) = bind_gate(&test.host);
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn, true).expect("attach");
+        conn.track(
+            "stub-session",
+            Arc::clone(&runtime),
+            false,
+            None,
+            generation,
+        );
+        let thread = spawn_create(
+            Arc::clone(&test.host),
+            serde_json::json!({
+                "sessionId": "stub-session",
+                "command": "cmd.exe",
+                "args": ["/c", "exit"],
+                "env": [{ "name": "DB_GATE", "value": "SAFE" }]
+            }),
+        );
+        let id = wait_for_pending(&broker, Duration::from_secs(2));
+        let events = conn.pull_events();
+        broker.respond(&id, PermissionOutcome::Deny).expect("deny");
+        let _ = thread.join();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        let env = events.iter().find_map(|event| match &event.envelope.event {
+            SessionEvent::PermissionRequest { env, .. } => env.clone(),
+            _ => None,
+        });
+        let env = env.expect("permission must include env");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].name, "DB_GATE");
+        assert_eq!(env[0].value, "SAFE");
+    }
+
+    #[test]
+    fn dsr_counter_counts_every_query_in_a_chunk() {
+        assert_eq!(super::count_dsr_queries(b"\x1b[6n\x1b[6n"), 2);
+        assert_eq!(super::count_dsr_queries(b"abc"), 0);
+        assert_eq!(super::count_dsr_queries(b"\x1b[6nX\x1b[6n"), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_kill_deletes_the_shell_batch_file() {
+        let test = host();
+        let (broker, _runtime) = bind_gate(&test.host);
+        let _allow = AutoAllow::start(Arc::clone(&broker));
+        let created = test
+            .host
+            .create_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "command": "echo hello"
+            }))
+            .expect("create");
+        let terminal_id = created["terminalId"].as_str().expect("id").to_string();
+        let batch = test.runtime.join(format!("acp-{terminal_id}.cmd"));
+        assert!(batch.is_file(), "spawn must write {batch:?}");
+        test.host
+            .kill_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "terminalId": terminal_id
+            }))
+            .expect("kill");
+        let exists_after_kill = batch.is_file();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(
+            !exists_after_kill,
+            "kill must delete the shell batch file before release"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn terminal_create_shell_line_runs_when_runtime_dir_has_a_space() {
+        let cwd = unique_dir("cwd");
+        let runtime = std::env::temp_dir().join(format!(
+            "acp gate space {}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&runtime).expect("spaced runtime");
+        assert!(
+            runtime.to_string_lossy().contains(' '),
+            "fixture runtime dir must contain a space: {runtime:?}"
+        );
+        let host = AcpHost::new(
+            cwd.clone(),
+            runtime.clone(),
+            Arc::new(JobObject::new().expect("job")),
+        );
+        host.set_session_id("stub-session".to_string());
+        let (broker, _session) = bind_gate(&host);
+        let _allow = AutoAllow::start(Arc::clone(&broker));
+        let created = host
+            .create_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "command": "echo SPACE_OK"
+            }))
+            .expect("create");
+        let terminal_id = created["terminalId"].clone();
+        let output = wait_for_output_containing(&host, &terminal_id, "SPACE_OK", Duration::from_secs(5));
+        let code = wait_for_exit_code(&host, terminal_id.clone());
+        host.release_terminal(serde_json::json!({
+            "sessionId": "stub-session",
+            "terminalId": terminal_id
+        }))
+        .expect("release");
+        host.shutdown();
+        let _ = std::fs::remove_dir_all(&cwd);
+        let _ = std::fs::remove_dir_all(&runtime);
+        assert!(
+            output.contains("SPACE_OK"),
+            "spaced runtime dir missed the marker: {output:?}"
+        );
+        assert_eq!(code, 0, "spaced runtime dir command must exit 0");
     }
 }

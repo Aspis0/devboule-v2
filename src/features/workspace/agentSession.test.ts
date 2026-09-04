@@ -73,6 +73,23 @@ describe("ACP agent session", () => {
     });
   });
 
+  it("forwards permission_resolved to the host callback", async () => {
+    let emit: (event: SessionEvent) => void = () => undefined;
+    const onPermissionResolved = vi.fn();
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke: vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"],
+      createChannel: (onEvent) => {
+        emit = onEvent;
+        return {} as AgentChannel;
+      },
+      onPermissionResolved,
+    });
+    await session.start();
+    emit({ type: "permission_resolved", toolCallId: "tool-timeout" });
+    expect(onPermissionResolved).toHaveBeenCalledWith("tool-timeout");
+  });
+
   it("keeps first-seen order while reassembling alternating thought and answer chunks", async () => {
     const harness = makeHarness();
     await harness.session.start();

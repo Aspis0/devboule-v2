@@ -719,6 +719,7 @@ fn send_pending_event(
             SessionEvent::AgentError { .. } => " agent_error".to_string(),
             SessionEvent::AgentStderr { .. } => " agent_stderr".to_string(),
             SessionEvent::PermissionRequest { .. } => " permission_request".to_string(),
+            SessionEvent::PermissionResolved { .. } => " permission_resolved".to_string(),
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
         };
         eprintln!(

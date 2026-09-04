@@ -20,7 +20,6 @@ export interface AgentSessionState {
   status: AgentStatus;
   streaming: boolean;
   availableCommands: Array<{ name: string; description: string; hint?: string }>;
-  permissionRequest: PermissionRequest | null;
   lastFinished: AgentFinished | null;
 }
 
@@ -29,6 +28,7 @@ export interface AgentSessionDeps {
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   createChannel: (onEvent: (event: SessionEvent) => void) => AgentChannel;
   onPermissionRequest?: (request: PermissionRequest) => void;
+  onPermissionResolved?: (toolCallId: string) => void;
   isSuperseded?: () => boolean;
 }
 
@@ -37,7 +37,6 @@ const INITIAL_STATE: AgentSessionState = {
   status: "initializing",
   streaming: false,
   availableCommands: [],
-  permissionRequest: null,
   lastFinished: null,
 };
 
@@ -152,8 +151,10 @@ export class AgentSession {
         this.update({ availableCommands: event.commands });
         return;
       case "permission_request":
-        this.update({ permissionRequest: event });
         this.deps.onPermissionRequest?.(event);
+        return;
+      case "permission_resolved":
+        this.deps.onPermissionResolved?.(event.toolCallId);
         return;
       case "agent_tool_call":
         this.ensureTurn();

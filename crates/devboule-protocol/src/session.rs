@@ -245,9 +245,21 @@ pub enum SessionEvent {
         description: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command: Option<String>,
+        /// Argument vector that will be spawned, when the host is asking
+        /// about a concrete `terminal/create`. Agent-initiated prompts omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        /// Environment applied to the spawn. Agent-initiated prompts omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<Vec<PermissionEnvVar>>,
         options: Vec<PermissionOption>,
+    },
+    /// The pending permission is no longer waiting (allow, deny, timeout, or
+    /// cancel). `tool_call_id` matches the request the UI is displaying.
+    PermissionResolved {
+        tool_call_id: String,
     },
     /// An external process (agent hook or our stub) announced itself on
     /// the daemon pipe. `seq` is the journal/stream sequence of this
@@ -424,6 +436,14 @@ pub struct PermissionOption {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+}
+
+/// One environment variable shown with a host-initiated permission prompt.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionEnvVar {
+    pub name: String,
+    pub value: String,
 }
 
 /// One slash command advertised by an ACP agent.
@@ -655,7 +675,12 @@ mod tests {
             title: "Run command".to_string(),
             description: Some("The agent wants to run a build.".to_string()),
             command: Some("cargo test".to_string()),
+            args: Some(vec!["--offline".to_string(), "gate".to_string()]),
             cwd: Some("C:\\worktree".to_string()),
+            env: Some(vec![PermissionEnvVar {
+                name: "DB_GATE".to_string(),
+                value: "SAFE".to_string(),
+            }]),
             options: vec![PermissionOption {
                 option_id: "allow".to_string(),
                 name: "Allow once".to_string(),
@@ -665,6 +690,10 @@ mod tests {
         let encoded = serde_json::to_value(&event).expect("json");
         assert_eq!(encoded["type"], "permission_request");
         assert_eq!(encoded["toolCallId"], "call-17");
+        assert_eq!(encoded["args"][0], "--offline");
+        assert_eq!(encoded["args"][1], "gate");
+        assert_eq!(encoded["env"][0]["name"], "DB_GATE");
+        assert_eq!(encoded["env"][0]["value"], "SAFE");
         assert_eq!(encoded["options"][0]["optionId"], "allow");
         assert_eq!(encoded["options"][0]["kind"], "allow_once");
         let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");

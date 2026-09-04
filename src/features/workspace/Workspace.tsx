@@ -52,6 +52,19 @@ const PERMISSION_LABELS: Record<PermissionState, string> = {
   denied: "Denied — the turn continues without it",
 };
 
+function quotePermissionArg(value: string): string {
+  if (value.length === 0 || /[\s"]/.test(value)) {
+    return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+  }
+  return value;
+}
+
+export function formatPermissionCommand(request: PermissionRequest): string | null {
+  if (!request.command) return null;
+  if (request.args === undefined || request.args.length === 0) return request.command;
+  return [request.command, ...request.args].map(quotePermissionArg).join(" ");
+}
+
 export function Workspace() {
   const {
     visibleProjects,
@@ -81,10 +94,9 @@ export function Workspace() {
   const [diffState, setDiffState] = useState<DiffState>("unstaged");
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
-  const [permissionRequest, setPermissionRequest] = useState<{
-    sessionId: string;
-    request: PermissionRequest;
-  } | null>(null);
+  const [permissionQueue, setPermissionQueue] = useState<
+    Array<{ sessionId: string; request: PermissionRequest }>
+  >([]);
   const daemon = useWorkspaceDaemon();
   const {
     sessions,
@@ -112,17 +124,27 @@ export function Workspace() {
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
-  const handlePermissionRequest = useCallback(
-    (request: PermissionRequest) => {
-      if (selectedSessionId !== null) {
-        setPermissionRequest({ sessionId: selectedSessionId, request });
+  const handlePermissionRequest = useCallback((sessionId: string, request: PermissionRequest) => {
+    setPermissionQueue((queue) => {
+      if (
+        queue.some(
+          (item) => item.sessionId === sessionId && item.request.toolCallId === request.toolCallId,
+        )
+      ) {
+        return queue;
       }
-    },
-    [selectedSessionId],
-  );
-  const handlePermissionResolved = useCallback(() => setPermissionRequest(null), []);
+      return [...queue, { sessionId, request }];
+    });
+  }, []);
+  const handlePermissionResolved = useCallback((sessionId: string, toolCallId: string) => {
+    setPermissionQueue((queue) =>
+      queue.filter(
+        (item) => !(item.sessionId === sessionId && item.request.toolCallId === toolCallId),
+      ),
+    );
+  }, []);
   const selectedPermission =
-    permissionRequest?.sessionId === selectedSessionId ? permissionRequest.request : null;
+    permissionQueue.find((item) => item.sessionId === selectedSessionId)?.request ?? null;
   const sessionStatusText = sessionsError
     ? sessionsError
     : sessionCreating
@@ -303,6 +325,7 @@ export function Workspace() {
                 sessionId={selectedSessionId}
                 title={sessionTitle(selectedSession)}
                 onPermissionRequest={handlePermissionRequest}
+                onPermissionResolved={handlePermissionResolved}
               />
             ) : (
               <TerminalSurface
@@ -313,6 +336,7 @@ export function Workspace() {
                 onClosed={handleSessionClosed}
                 onExited={handleSessionClosed}
                 onPermissionRequest={handlePermissionRequest}
+                onPermissionResolved={handlePermissionResolved}
               />
             )}
           </>
@@ -454,7 +478,7 @@ interface WorkspacePermissionCardProps {
   sessionId: string;
   request: PermissionRequest;
   capabilities: readonly string[];
-  onResolved?: () => void;
+  onResolved?: (sessionId: string, toolCallId: string) => void;
 }
 
 /** A real ACP permission prompt; it is inert unless the handshake negotiated typed_permissions. */
@@ -476,6 +500,8 @@ export function WorkspacePermissionCard({
 
   if (!capabilities.includes("typed_permissions")) return null;
 
+  const commandLine = formatPermissionCommand(request);
+
   const respond = async (outcome: "allow_once" | "deny") => {
     if (submittingRef.current || permission !== "waiting") return;
     submittingRef.current = true;
@@ -484,7 +510,7 @@ export function WorkspacePermissionCard({
     try {
       await sessionPermissionRespond(sessionId, request.toolCallId, outcome);
       setPermission(outcome === "allow_once" ? "allowed" : "denied");
-      onResolved?.();
+      onResolved?.(sessionId, request.toolCallId);
     } catch (cause) {
       submittingRef.current = false;
       setPermission("waiting");
@@ -502,8 +528,11 @@ export function WorkspacePermissionCard({
       {request.description ? (
         <div className="workspace-permission-description">{request.description}</div>
       ) : null}
-      {request.command ? (
-        <div className="workspace-permission-command">{request.command}</div>
+      {commandLine ? <div className="workspace-permission-command">{commandLine}</div> : null}
+      {request.env && request.env.length > 0 ? (
+        <div className="workspace-permission-env">
+          {request.env.map((variable) => `${variable.name}=${variable.value}`).join("\n")}
+        </div>
       ) : null}
       <div className="workspace-permission-actions">
         <span className="workspace-permission-label">{PERMISSION_LABELS[permission]}</span>

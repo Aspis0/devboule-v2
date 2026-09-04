@@ -64,10 +64,16 @@
     "type": "output"
   },
   {
+    "args": [],
+    "env": [],
     "options": [],
     "title": "",
     "toolCallId": "",
     "type": "permission_request"
+  },
+  {
+    "toolCallId": "",
+    "type": "permission_resolved"
   },
   {
     "integrity": {

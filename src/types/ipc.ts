@@ -28,14 +28,26 @@ export interface PermissionOption {
   kind: string;
 }
 
+export interface PermissionEnvVar {
+  name: string;
+  value: string;
+}
+
 export interface PermissionRequest {
   type: "permission_request";
   toolCallId: Id;
   title: string;
   description?: string;
   command?: string;
+  args?: string[];
   cwd?: string;
+  env?: PermissionEnvVar[];
   options: PermissionOption[];
+}
+
+export interface PermissionResolved {
+  type: "permission_resolved";
+  toolCallId: Id;
 }
 
 export type RetentionSource = "default" | "user";
@@ -226,6 +238,7 @@ export type SessionEvent =
       sessionStartSource?: string;
     }
   | PermissionRequest
+  | PermissionResolved
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }
   | { type: "recovered"; integrity: UnverifiableTranscriptIntegrity }

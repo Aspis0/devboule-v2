@@ -49,6 +49,7 @@ export interface TerminalSessionDeps {
   onCtrlCArmed: (armed: boolean) => void;
   onExited?: (code: number | null) => void;
   onPermissionRequest?: (request: PermissionRequest) => void;
+  onPermissionResolved?: (toolCallId: string) => void;
   setTimeout?: (callback: () => void, milliseconds: number) => number;
   clearTimeout?: (id: number) => void;
   scheduleFrame?: (callback: () => void) => number;
@@ -398,6 +399,9 @@ export class TerminalSession {
         break;
       case "permission_request":
         this.deps.onPermissionRequest?.(event);
+        break;
+      case "permission_resolved":
+        this.deps.onPermissionResolved?.(event.toolCallId);
         break;
       default: {
         const unknownEvent: never = event;

@@ -45,6 +45,8 @@ const MAX_PENDING_ACP_PERMISSIONS: usize = 32;
 const MAX_ACP_PERMISSION_FIELD_BYTES: usize = 8 * 1024;
 const MAX_ACP_PERMISSION_LINE_BYTES: usize = 256 * 1024;
 const MAX_ACP_PERMISSION_OPTIONS: usize = 32;
+const MAX_ACP_PERMISSION_ARGS: usize = 256;
+const MAX_ACP_PERMISSION_ENV: usize = 64;
 
 type PermissionSender = dyn Fn(u64, serde_json::Value) -> io::Result<()> + Send + Sync;
 
@@ -277,19 +279,48 @@ impl Drop for TurnWatch {
     }
 }
 
+/// How a pending permission is completed. Agent-initiated prompts write a
+/// JSON-RPC result to the agent's stdin. Host-initiated prompts (the
+/// `terminal/create` gate) wake the host RPC thread that is blocked on the
+/// decision instead — they must not invent an ACP permission response.
+enum PermissionResponder {
+    Agent { acp_id: u64 },
+    Host,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HostDecision {
+    Allow,
+    Deny,
+    Timeout,
+    Cancelled,
+}
+
+struct PermissionCompletion {
+    done: bool,
+    decision: Option<HostDecision>,
+}
+
 struct PendingPermission {
-    acp_id: u64,
+    responder: PermissionResponder,
     tool_call_id: String,
     session_id: String,
     request: SessionEvent,
     runtime: std::sync::Weak<SessionRuntime>,
-    done: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    done: Arc<(Mutex<PermissionCompletion>, std::sync::Condvar)>,
+}
+
+struct PermissionTable {
+    entries: HashMap<String, Arc<PendingPermission>>,
+    closed: bool,
 }
 
 pub(super) struct PermissionBroker {
     sender: Arc<PermissionSender>,
-    pending: Mutex<HashMap<String, Arc<PendingPermission>>>,
+    pending: Mutex<PermissionTable>,
     require_journal: bool,
+    #[cfg(test)]
+    timeout: Mutex<Duration>,
     #[cfg(test)]
     after_take_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
@@ -329,8 +360,13 @@ impl PermissionBroker {
                 bytes.push(b'\n');
                 write_agent_stdin(&stdin, &bytes)
             }),
-            pending: Mutex::new(HashMap::new()),
+            pending: Mutex::new(PermissionTable {
+                entries: HashMap::new(),
+                closed: false,
+            }),
             require_journal: true,
+            #[cfg(test)]
+            timeout: Mutex::new(ACP_PERMISSION_TIMEOUT),
             #[cfg(test)]
             after_take_hook: Mutex::new(None),
             #[cfg(test)]
@@ -339,11 +375,16 @@ impl PermissionBroker {
     }
 
     #[cfg(test)]
-    fn for_test(sender: Arc<PermissionSender>) -> Arc<Self> {
+    pub(super) fn for_test(sender: Arc<PermissionSender>) -> Arc<Self> {
         Arc::new(Self {
             sender,
-            pending: Mutex::new(HashMap::new()),
+            pending: Mutex::new(PermissionTable {
+                entries: HashMap::new(),
+                closed: false,
+            }),
             require_journal: false,
+            #[cfg(test)]
+            timeout: Mutex::new(ACP_PERMISSION_TIMEOUT),
             #[cfg(test)]
             after_take_hook: Mutex::new(None),
             #[cfg(test)]
@@ -357,6 +398,23 @@ impl PermissionBroker {
         request: SessionEvent,
         runtime: &Arc<SessionRuntime>,
     ) -> Result<Arc<PendingPermission>, PermissionResponseError> {
+        self.register_with(PermissionResponder::Agent { acp_id }, request, runtime)
+    }
+
+    fn register_host(
+        &self,
+        request: SessionEvent,
+        runtime: &Arc<SessionRuntime>,
+    ) -> Result<Arc<PendingPermission>, PermissionResponseError> {
+        self.register_with(PermissionResponder::Host, request, runtime)
+    }
+
+    fn register_with(
+        &self,
+        responder: PermissionResponder,
+        request: SessionEvent,
+        runtime: &Arc<SessionRuntime>,
+    ) -> Result<Arc<PendingPermission>, PermissionResponseError> {
         let tool_call_id = match &request {
             SessionEvent::PermissionRequest { tool_call_id, .. } => tool_call_id.clone(),
             _ => {
@@ -367,23 +425,35 @@ impl PermissionBroker {
         };
         validate_permission_request(&tool_call_id, &request)?;
         let pending = Arc::new(PendingPermission {
-            acp_id,
+            responder,
             tool_call_id: tool_call_id.clone(),
             session_id: runtime.session_id.clone(),
             request,
             runtime: Arc::downgrade(runtime),
-            done: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+            done: Arc::new((
+                Mutex::new(PermissionCompletion {
+                    done: false,
+                    decision: None,
+                }),
+                std::sync::Condvar::new(),
+            )),
         });
-        let mut entries = self
+        let mut table = self
             .pending
             .lock()
             .map_err(|_| io_error("permission broker lock poisoned"))?;
-        if entries.contains_key(&tool_call_id) {
+        if table.closed {
+            return Err(PermissionResponseError::InvalidRequest(
+                "permission broker is closed".to_string(),
+            ));
+        }
+        if table.entries.contains_key(&tool_call_id) {
             return Err(PermissionResponseError::InvalidRequest(format!(
                 "permission request {tool_call_id} is already pending"
             )));
         }
-        let session_pending = entries
+        let session_pending = table
+            .entries
             .values()
             .filter(|pending| pending.session_id == runtime.session_id)
             .count();
@@ -392,7 +462,7 @@ impl PermissionBroker {
                 "session has reached the maximum of {MAX_PENDING_ACP_PERMISSIONS} pending permission requests"
             )));
         }
-        entries.insert(tool_call_id, Arc::clone(&pending));
+        table.entries.insert(tool_call_id, Arc::clone(&pending));
         Ok(pending)
     }
 
@@ -456,11 +526,18 @@ impl PermissionBroker {
         .is_ok()
     }
 
-    fn cancel_all(&self) {
+    pub(super) fn cancel_all(&self) {
         let pending = self
             .pending
             .lock()
-            .map(|mut entries| entries.drain().map(|(_, pending)| pending).collect())
+            .map(|mut table| {
+                table.closed = true;
+                table
+                    .entries
+                    .drain()
+                    .map(|(_, pending)| pending)
+                    .collect()
+            })
             .unwrap_or_else(|_| Vec::new());
         for pending in pending {
             let _ = self.complete(
@@ -476,11 +553,11 @@ impl PermissionBroker {
         tool_call_id: &str,
         expected: Option<&Arc<PendingPermission>>,
     ) -> Result<Arc<PendingPermission>, PermissionResponseError> {
-        let mut entries = self
+        let mut table = self
             .pending
             .lock()
             .map_err(|_| io_error("permission broker lock poisoned"))?;
-        let Some(current) = entries.get(tool_call_id) else {
+        let Some(current) = table.entries.get(tool_call_id) else {
             return Err(PermissionResponseError::NotFound);
         };
         if let Some(expected) = expected {
@@ -488,7 +565,8 @@ impl PermissionBroker {
                 return Err(PermissionResponseError::NotFound);
             }
         }
-        entries
+        table
+            .entries
             .remove(tool_call_id)
             .ok_or(PermissionResponseError::NotFound)
     }
@@ -510,15 +588,26 @@ impl PermissionBroker {
                 ) || !self.require_journal
             })
             .unwrap_or(!self.require_journal);
+        let decision = if recorded {
+            decision_from_outcome(journal_outcome)
+        } else {
+            HostDecision::Cancelled
+        };
         if !recorded {
-            let send_result = (self.sender)(
-                pending.acp_id,
+            let send_result = self.dispatch_responder(
+                pending,
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
             );
             if let Some(runtime) = runtime {
                 runtime.remove_permission_request(&pending.tool_call_id);
+                let _ = runtime.publish_agent_event(
+                    SessionEvent::PermissionResolved {
+                        tool_call_id: pending.tool_call_id.clone(),
+                    },
+                    None,
+                );
             }
-            self.mark_done(pending);
+            self.mark_done(pending, decision);
             return match send_result {
                 Ok(()) => Err(PermissionResponseError::Io(io::Error::other(
                     "permission decision was not journaled; ACP request was cancelled",
@@ -526,27 +615,164 @@ impl PermissionBroker {
                 Err(error) => Err(PermissionResponseError::Io(error)),
             };
         }
-        let send_result = (self.sender)(pending.acp_id, result);
+        let send_result = self.dispatch_responder(pending, result);
         if let Some(runtime) = runtime {
             runtime.remove_permission_request(&pending.tool_call_id);
+            let _ = runtime.publish_agent_event(
+                SessionEvent::PermissionResolved {
+                    tool_call_id: pending.tool_call_id.clone(),
+                },
+                None,
+            );
         }
-        self.mark_done(pending);
+        self.mark_done(pending, decision);
         send_result.map_err(PermissionResponseError::Io)
     }
 
-    fn mark_done(&self, pending: &Arc<PendingPermission>) {
+    fn dispatch_responder(
+        &self,
+        pending: &PendingPermission,
+        result: serde_json::Value,
+    ) -> io::Result<()> {
+        match pending.responder {
+            PermissionResponder::Agent { acp_id } => (self.sender)(acp_id, result),
+            PermissionResponder::Host => Ok(()),
+        }
+    }
+
+    fn mark_done(&self, pending: &Arc<PendingPermission>, decision: HostDecision) {
         let (done, wake) = &*pending.done;
         if let Ok(mut completed) = done.lock() {
-            *completed = true;
+            if completed.done {
+                return;
+            }
+            completed.done = true;
+            completed.decision = Some(decision);
             wake.notify_all();
         }
     }
 
-    fn pending_len(&self) -> usize {
+    pub(super) fn pending_len(&self) -> usize {
         self.pending
             .lock()
-            .map(|entries| entries.len())
+            .map(|table| table.entries.len())
             .unwrap_or(0)
+    }
+
+    /// Register a host-initiated permission, publish it, and block until the
+    /// user (or timeout / cancel) decides. The ACP agent is not written to.
+    pub(super) fn request_host_permission(
+        self: &Arc<Self>,
+        request: SessionEvent,
+        runtime: &Arc<SessionRuntime>,
+    ) -> HostDecision {
+        let pending = match self.register_host(request.clone(), runtime) {
+            Ok(pending) => pending,
+            Err(_) => return HostDecision::Cancelled,
+        };
+        if runtime.permission_delivery_enabled() == Some(false) {
+            let _ = self.cancel(
+                &pending.tool_call_id,
+                &pending,
+                "capability_not_supported",
+            );
+            return HostDecision::Cancelled;
+        }
+        if self.arm_timeout(Arc::clone(&pending)).is_err() {
+            let _ = self.cancel(&pending.tool_call_id, &pending, "timeout_spawn_failed");
+            return HostDecision::Cancelled;
+        }
+        let _ = runtime.publish_agent_event(request, None);
+        self.wait_for_decision(&pending)
+    }
+
+    fn arm_timeout(self: &Arc<Self>, pending: Arc<PendingPermission>) -> io::Result<()> {
+        #[cfg(test)]
+        if self.take_timeout_spawn_failure() {
+            return Err(io::Error::other("test timeout spawn failure"));
+        }
+        let timeout = self.permission_timeout();
+        let broker = Arc::clone(self);
+        let tool_call_id = pending.tool_call_id.clone();
+        std::thread::Builder::new()
+            .name("acp-permission-timeout".to_string())
+            .spawn(move || {
+                let (done, wake) = &*pending.done;
+                let deadline = Instant::now() + timeout;
+                let Ok(mut completed) = done.lock() else {
+                    return;
+                };
+                while !completed.done {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    let Ok((next, timed_out)) = wake.wait_timeout(completed, remaining) else {
+                        return;
+                    };
+                    completed = next;
+                    if timed_out.timed_out() {
+                        break;
+                    }
+                }
+                if !completed.done {
+                    drop(completed);
+                    let _ = broker.expire(&tool_call_id, &pending);
+                }
+            })
+            .map(|_| ())
+    }
+
+    fn wait_for_decision(&self, pending: &PendingPermission) -> HostDecision {
+        let cap = self.permission_timeout() + Duration::from_secs(30);
+        let deadline = Instant::now() + cap;
+        let (done, wake) = &*pending.done;
+        let Ok(mut completed) = done.lock() else {
+            return HostDecision::Cancelled;
+        };
+        while !completed.done {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return HostDecision::Cancelled;
+            }
+            let Ok((next, timed_out)) = wake.wait_timeout(completed, remaining) else {
+                return HostDecision::Cancelled;
+            };
+            completed = next;
+            if timed_out.timed_out() && !completed.done {
+                return HostDecision::Cancelled;
+            }
+        }
+        completed.decision.unwrap_or(HostDecision::Cancelled)
+    }
+
+    fn permission_timeout(&self) -> Duration {
+        #[cfg(test)]
+        {
+            return self
+                .timeout
+                .lock()
+                .ok()
+                .map(|guard| *guard)
+                .unwrap_or(ACP_PERMISSION_TIMEOUT);
+        }
+        #[cfg(not(test))]
+        ACP_PERMISSION_TIMEOUT
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_timeout(&self, timeout: Duration) {
+        if let Ok(mut stored) = self.timeout.lock() {
+            *stored = timeout;
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn pending_ids(&self) -> Vec<String> {
+        self.pending
+            .lock()
+            .map(|table| table.entries.keys().cloned().collect())
+            .unwrap_or_default()
     }
 
     #[cfg(test)]
@@ -588,7 +814,9 @@ fn validate_permission_request(
         title,
         description,
         command,
+        args,
         cwd,
+        env,
         options,
         ..
     } = request
@@ -605,6 +833,35 @@ fn validate_permission_request(
     ] {
         if let Some(value) = value {
             validate_permission_field(field, value)?;
+        }
+    }
+    if let Some(args) = args {
+        if args.len() > MAX_ACP_PERMISSION_ARGS {
+            return Err(PermissionResponseError::InvalidRequest(format!(
+                "permission request has more than the maximum of {MAX_ACP_PERMISSION_ARGS} args"
+            )));
+        }
+        for arg in args {
+            if arg.len() > MAX_ACP_PERMISSION_FIELD_BYTES {
+                return Err(PermissionResponseError::InvalidRequest(format!(
+                    "permission request arg exceeds {MAX_ACP_PERMISSION_FIELD_BYTES} bytes"
+                )));
+            }
+        }
+    }
+    if let Some(env) = env {
+        if env.len() > MAX_ACP_PERMISSION_ENV {
+            return Err(PermissionResponseError::InvalidRequest(format!(
+                "permission request has more than the maximum of {MAX_ACP_PERMISSION_ENV} env vars"
+            )));
+        }
+        for variable in env {
+            validate_permission_field("env name", &variable.name)?;
+            if variable.value.len() > MAX_ACP_PERMISSION_FIELD_BYTES {
+                return Err(PermissionResponseError::InvalidRequest(format!(
+                    "permission request env value exceeds {MAX_ACP_PERMISSION_FIELD_BYTES} bytes"
+                )));
+            }
         }
     }
     if options.is_empty() {
@@ -637,6 +894,18 @@ fn validate_permission_field(field: &str, value: &str) -> Result<(), PermissionR
         )));
     }
     Ok(())
+}
+
+fn decision_from_outcome(journal_outcome: &str) -> HostDecision {
+    // Invariant: only `allow_once` grants a spawn. Any new journal outcome
+    // that is not mapped here is a deny (Cancelled) — the catch-all is
+    // deliberate, not a leftover default.
+    match journal_outcome {
+        "allow_once" => HostDecision::Allow,
+        "deny" => HostDecision::Deny,
+        "timeout" => HostDecision::Timeout,
+        _ => HostDecision::Cancelled,
+    }
 }
 
 fn select_option(
@@ -1321,6 +1590,8 @@ impl AcpReader {
 impl ReaderDispatch for AcpReader {
     fn feed(&mut self, bytes: &[u8], runtime: &Arc<SessionRuntime>) -> Result<(), String> {
         self.turn.bind_runtime(runtime);
+        self.host
+            .bind_permission_gate(&self.permission_broker, runtime);
         if !self.deferred.is_empty() {
             let deferred = std::mem::take(&mut self.deferred);
             for value in deferred {
@@ -1640,7 +1911,9 @@ impl AcpReader {
                 title,
                 description,
                 command,
+                args: None,
                 cwd,
+                env: None,
                 options,
             })
         })();
@@ -1692,58 +1965,23 @@ impl AcpReader {
                     .cancel(&tool_call_id, &pending, "capability_not_supported");
             return;
         }
-        let broker = Arc::clone(&self.permission_broker);
-        let tool_call_id_for_timeout = tool_call_id.clone();
-        let timeout_pending = Arc::clone(&pending);
-        #[cfg(test)]
-        let timeout_spawn_forced = self.permission_broker.take_timeout_spawn_failure();
-        #[cfg(not(test))]
-        let timeout_spawn_forced = false;
-        let timeout_spawn = if timeout_spawn_forced {
-            Err(io::Error::other("test timeout spawn failure"))
-        } else {
-            std::thread::Builder::new()
-                .name("acp-permission-timeout".to_string())
-                .spawn(move || {
-                    let (done, wake) = &*timeout_pending.done;
-                    let deadline = std::time::Instant::now() + ACP_PERMISSION_TIMEOUT;
-                    let Ok(mut completed) = done.lock() else {
-                        return;
-                    };
-                    while !*completed {
-                        let remaining =
-                            deadline.saturating_duration_since(std::time::Instant::now());
-                        if remaining.is_zero() {
-                            break;
-                        }
-                        let Ok((next, timed_out)) = wake.wait_timeout(completed, remaining) else {
-                            return;
-                        };
-                        completed = next;
-                        if timed_out.timed_out() {
-                            break;
-                        }
-                    }
-                    if !*completed {
-                        drop(completed);
-                        let _ = broker.expire(&tool_call_id_for_timeout, &timeout_pending);
-                    }
-                })
+        let timeout_started = match self.permission_broker.arm_timeout(Arc::clone(&pending)) {
+            Ok(()) => true,
+            Err(error) => {
+                let _ =
+                    self.permission_broker
+                        .cancel(&tool_call_id, &pending, "timeout_spawn_failed");
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!(
+                            "Could not start the ACP permission deadline; the request was cancelled: {error}"
+                        ),
+                    },
+                );
+                false
+            }
         };
-        let timeout_started = timeout_spawn.is_ok();
-        if let Err(error) = timeout_spawn {
-            let _ = self
-                .permission_broker
-                .cancel(&tool_call_id, &pending, "timeout_spawn_failed");
-            self.publish(
-                runtime,
-                SessionEvent::AgentError {
-                    message: format!(
-                        "Could not start the ACP permission deadline; the request was cancelled: {error}"
-                    ),
-                },
-            );
-        }
         if timeout_started {
             let _ = runtime.publish_agent_event(event, None);
         }
@@ -1865,7 +2103,8 @@ fn publish_stderr_line(runtime: &SessionRuntime, line: String) {
 mod tests {
     use super::{
         complete_lines, AcpReader, PermissionBroker, PermissionSender, ACP_PERMISSION_TIMEOUT,
-        MAX_ACP_PERMISSION_FIELD_BYTES, MAX_ACP_PERMISSION_LINE_BYTES, MAX_PENDING_ACP_PERMISSIONS,
+        MAX_ACP_PERMISSION_ARGS, MAX_ACP_PERMISSION_FIELD_BYTES, MAX_ACP_PERMISSION_LINE_BYTES,
+        MAX_PENDING_ACP_PERMISSIONS,
     };
     use crate::journal::Journal;
     use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
@@ -1876,7 +2115,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn permission_with_kinds(tool_call_id: &str, kinds: &[(&str, &str)]) -> SessionEvent {
         SessionEvent::PermissionRequest {
@@ -1884,7 +2123,9 @@ mod tests {
             title: "Run command".to_string(),
             description: None,
             command: Some("echo test".to_string()),
+            args: None,
             cwd: None,
+            env: None,
             options: kinds
                 .iter()
                 .map(|(option_id, kind)| PermissionOption {
@@ -2093,6 +2334,33 @@ mod tests {
     }
 
     #[test]
+    fn permission_request_rejects_more_than_256_args() {
+        let (broker, _) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        let mut event = permission("too-many-args");
+        match &mut event {
+            SessionEvent::PermissionRequest { args, .. } => {
+                *args = Some(
+                    (0..=MAX_ACP_PERMISSION_ARGS)
+                        .map(|index| format!("a{index}"))
+                        .collect(),
+                );
+            }
+            _ => panic!("permission fixture is a PermissionRequest"),
+        }
+        let error = match broker.register(1, event, &runtime) {
+            Ok(_) => panic!("{} args must be rejected", MAX_ACP_PERMISSION_ARGS + 1),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains(&MAX_ACP_PERMISSION_ARGS.to_string()),
+            "rejection must name the arg cap: {error}"
+        );
+    }
+
+    #[test]
     fn timeout_spawn_failure_cancels_and_removes_the_request() {
         let (broker, sent) = test_broker();
         broker.fail_next_timeout_spawn();
@@ -2210,7 +2478,21 @@ mod tests {
         )));
 
         assert!(broker.expire("queued", &pending));
-        assert!(second.pull_events().is_empty());
+        let after_expiry = second.pull_events();
+        assert!(
+            after_expiry.iter().any(|event| matches!(
+                event.envelope.event,
+                SessionEvent::PermissionResolved { ref tool_call_id } if tool_call_id == "queued"
+            )),
+            "expiry must tell the attached client the card is gone: {after_expiry:?}"
+        );
+        assert!(
+            !after_expiry.iter().any(|event| matches!(
+                event.envelope.event,
+                SessionEvent::PermissionRequest { .. }
+            )),
+            "expiry must not re-deliver the request: {after_expiry:?}"
+        );
     }
 
     #[test]
@@ -2237,7 +2519,14 @@ mod tests {
             None,
             generation,
         );
-        assert!(conn.pull_events().is_empty());
+        let events = conn.pull_events();
+        assert!(
+            !events.iter().any(|event| matches!(
+                event.envelope.event,
+                SessionEvent::PermissionRequest { .. }
+            )),
+            "expired permission must not replay as a request: {events:?}"
+        );
     }
 
     #[test]
@@ -2397,12 +2686,34 @@ mod tests {
             Arc::new(JobObject::new().expect("job")),
         );
         host.set_session_id("stub-session".to_string());
+        let (broker, _) = test_broker();
+        let session_runtime = Arc::new(SessionRuntime::for_acp(
+            "stub-session".to_string(),
+            None,
+            Arc::clone(&broker),
+        ));
+        host.bind_permission_gate(&broker, &session_runtime);
+        let allow_broker = Arc::clone(&broker);
+        let allow = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(id) = allow_broker.pending_ids().into_iter().next() {
+                    let _ = allow_broker.respond(&id, PermissionOutcome::AllowOnce);
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
         host.test_create_terminal(serde_json::json!({
             "sessionId": "stub-session",
             "command": "ping.exe",
             "args": ["-t", "127.0.0.1"]
         }))
         .expect("create lingering terminal");
+        let _ = allow.join();
         assert_eq!(host.live_terminal_count(), 1);
         let (broker, _) = test_broker();
         let mut reader = AcpReader::for_test_on_host(
@@ -2486,6 +2797,87 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn kill_unblocks_a_pending_terminal_create_gate() {
+        use super::{AcpHost, AcpKiller, AcpTransport};
+        use crate::process_tree::JobObject;
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+        let mut child = Command::new("ping.exe")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .expect("ping");
+        let stdin = child.stdin.take().expect("stdin");
+        let cwd = std::env::temp_dir().join(format!(
+            "devboule-acp-kill-gate-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let host = AcpHost::new(
+            cwd.clone(),
+            cwd.clone(),
+            Arc::new(JobObject::new().expect("job")),
+        );
+        host.set_session_id("stub-session".to_string());
+        let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
+        let runtime = SessionRuntime::for_acp(
+            "stub-session".to_string(),
+            None,
+            Arc::clone(&transport.permission_broker),
+        );
+        host.bind_permission_gate(&transport.permission_broker, &runtime);
+        let create_host = Arc::clone(&host);
+        let create = thread::spawn(move || {
+            create_host.test_create_terminal(serde_json::json!({
+                "sessionId": "stub-session",
+                "command": "cmd.exe",
+                "args": ["/c", "exit"]
+            }))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while transport.permission_broker.pending_len() == 0 {
+            if create.is_finished() {
+                panic!(
+                    "create finished without a pending gate: {:?}",
+                    create.join()
+                );
+            }
+            if Instant::now() >= deadline {
+                panic!("create never reached the terminal permission gate");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let mut killer = AcpKiller {
+            process: Arc::new(Mutex::new(child)),
+            permission_broker: Arc::clone(&transport.permission_broker),
+            transport: Arc::clone(&transport),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        let started = Instant::now();
+        killer.kill();
+        let result = create.join().expect("create thread");
+        let elapsed = started.elapsed();
+        let _ = std::fs::remove_dir_all(&cwd);
+        let error = result.expect_err("kill must deny the pending terminal create");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "kill left the terminal gate blocked for {elapsed:?}"
+        );
+        assert_eq!(error.code, -32001);
+        assert_eq!(error.message, "the user denied this command");
+        assert_eq!(host.spawned_count(), 0);
+    }
+
     fn attached_runtime(
         session_id: &str,
         broker: Arc<PermissionBroker>,
@@ -2504,6 +2896,7 @@ mod tests {
                 SessionEvent::AgentFinished { .. } => "finished",
                 SessionEvent::AgentError { .. } => "error",
                 SessionEvent::PermissionRequest { .. } => "permission",
+                SessionEvent::PermissionResolved { .. } => "permission_resolved",
                 SessionEvent::AgentThought { .. } => "thought",
                 SessionEvent::Snapshot { .. } => "snapshot",
                 _ => "other",
@@ -2663,7 +3056,7 @@ mod tests {
         let mut reader = AcpReader::for_test_with_transport(
             Arc::new(Mutex::new(HashSet::new())),
             "stub-session".to_string(),
-            broker,
+            Arc::clone(&broker),
             Arc::clone(&host),
             transport,
         );
@@ -2694,6 +3087,19 @@ mod tests {
         bytes.push(b'\n');
         let feed_runtime = Arc::clone(&session_runtime);
         let feed_thread = thread::spawn(move || reader.feed(&bytes, &feed_runtime));
+        let allow_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(id) = broker.pending_ids().into_iter().next() {
+                broker
+                    .respond(&id, PermissionOutcome::AllowOnce)
+                    .expect("allow blocked terminal/create so it can hit the create gap");
+                break;
+            }
+            if Instant::now() >= allow_deadline {
+                panic!("terminal/create never registered a host permission");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut saw_thought = false;
         while Instant::now() < deadline {

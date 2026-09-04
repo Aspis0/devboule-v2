@@ -96,7 +96,8 @@ pub use messages::{
 pub use plugin::WorkspaceRootBody;
 pub use session::{
     cursor_replay_ok, AgentActivityState, AvailableCommandView, Cursor, CursorShape,
-    PermissionOption, PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor,
+    PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence, PersistenceKind,
+    ResumeResult, ScreenCursor,
     Session, SessionEvent, SessionKind, SessionState, SessionStateSnapshot, TranscriptIntegrity,
     TurnUsage,
 };
