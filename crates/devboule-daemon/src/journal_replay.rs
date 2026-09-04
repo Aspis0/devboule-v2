@@ -147,6 +147,13 @@ pub(super) fn replay_session(
                     events.push(event);
                 }
             }
+            Some(EventKind::AcpEnvelope) => {
+                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                    if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
+                        events.push(view);
+                    }
+                }
+            }
             None => {}
         }
     }
@@ -157,8 +164,9 @@ pub(super) fn replay_session(
     let mut covered_reports = Vec::new();
     if covered > from_seq {
         let mut report_stmt = conn.prepare(
-            "SELECT seq, payload, checksum FROM events
-             WHERE session_id = ?1 AND generation = ?2 AND kind = 'agent_report'
+            "SELECT seq, kind, payload, checksum FROM events
+             WHERE session_id = ?1 AND generation = ?2
+               AND kind IN ('agent_report', 'acp_envelope')
                AND seq > ?3 AND seq <= ?4
              ORDER BY seq",
         )?;
@@ -172,21 +180,28 @@ pub(super) fn replay_session(
             |row| {
                 Ok((
                     row.get::<_, i64>(0)? as u64,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, i64>(2)? as u32,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)? as u32,
                 ))
             },
         )?;
         for row in report_rows {
-            let (seq, payload, checksum) = row?;
+            let (seq, kind, payload, checksum) = row?;
             if crc32(&payload) != checksum {
                 return Err(JournalError::Checksum {
                     session_id: session_id.to_string(),
                     seq,
                 });
             }
-            if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
-                covered_reports.push(event);
+            if kind == "agent_report" {
+                if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                    covered_reports.push(event);
+                }
+            } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
+                    covered_reports.push(view);
+                }
             }
         }
     }

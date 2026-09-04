@@ -91,6 +91,8 @@ use crate::server::ServerState;
 
 #[path = "acp_client.rs"]
 mod acp_client;
+#[path = "acp_host.rs"]
+mod acp_host;
 #[path = "event_pull.rs"]
 mod event_pull;
 #[path = "session_types.rs"]
@@ -366,14 +368,26 @@ impl SessionRuntime {
                 // Snapshots are screen state, never journal records; a
                 // recovered session replays transcript events only.
                 SessionEvent::Snapshot { .. } => {}
+                SessionEvent::AgentReported { seq, .. } => {
+                    stream.transcript_agent_reports.insert(seq, event);
+                }
                 SessionEvent::AgentMessage { .. }
+                | SessionEvent::AgentUserMessage { .. }
+                | SessionEvent::AgentThought { .. }
+                | SessionEvent::AvailableCommands { .. }
                 | SessionEvent::AgentToolCall { .. }
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
-                | SessionEvent::PermissionRequest { .. } => {}
-                SessionEvent::AgentReported { seq, .. } => {
+                | SessionEvent::PermissionRequest { .. } => {
+                    let seq = stream
+                        .transcript_agent_reports
+                        .keys()
+                        .next_back()
+                        .copied()
+                        .unwrap_or(0)
+                        .saturating_add(1);
                     stream.transcript_agent_reports.insert(seq, event);
                 }
             }
@@ -618,6 +632,32 @@ impl SessionRuntime {
             }
         }
         was_silent
+    }
+
+    fn journal_acp_envelope(&self, envelope: &serde_json::Value) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        if stream.output_closed {
+            return;
+        }
+        let generation = stream.generation;
+        let seq = stream.next_seq;
+        stream.next_seq = stream.next_seq.saturating_add(1);
+        drop(stream);
+        if let Some(journal) = &self.journal {
+            if let Some(record) = crate::journal::acp_envelope_record(
+                self.session_id.clone(),
+                generation,
+                seq,
+                envelope,
+            ) {
+                let accepted = journal.try_append(record);
+                if !accepted || journal.is_session_degraded(&self.session_id) {
+                    self.mark_journal_degraded();
+                }
+            }
+        }
     }
 
     fn publish_agent_event(&self, event: SessionEvent, journal_text: Option<&str>) -> bool {
@@ -956,6 +996,9 @@ impl SessionRuntime {
                 // the historical journal replay path.
                 | SessionEvent::Snapshot { .. }
                 | SessionEvent::AgentMessage { .. }
+                | SessionEvent::AgentUserMessage { .. }
+                | SessionEvent::AgentThought { .. }
+                | SessionEvent::AvailableCommands { .. }
                 | SessionEvent::AgentToolCall { .. }
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
@@ -1572,6 +1615,10 @@ pub struct SessionRegistry {
 }
 
 impl SessionRegistry {
+    pub(super) fn runtime_dir(&self) -> &std::path::Path {
+        &self.paths.dir
+    }
+
     pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
@@ -2636,6 +2683,12 @@ fn reader_loop(
     mut reader_dispatch: Box<dyn ReaderDispatch>,
 ) {
     let mut buf = [0u8; READ_CHUNK];
+    if let Err(error) = reader_dispatch.feed(&[], &runtime) {
+        runtime.record_output_loss();
+        eprintln!("session {id} stopped before the first child read: {error}");
+        reader_dispatch.finish(&runtime);
+        return;
+    }
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,

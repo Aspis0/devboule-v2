@@ -24,6 +24,10 @@ use windows_sys::Win32::System::Threading::{
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+}
+
 fn daemon_bin() -> PathBuf {
     if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_daemon") {
         return PathBuf::from(path);
@@ -156,7 +160,7 @@ fn wait_for_file(path: &Path) -> String {
 
 #[test]
 fn acp_stdin_is_closed_before_wait_and_child_exits() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let (session, _) = test.attached_session();
     let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
@@ -171,7 +175,7 @@ fn acp_stdin_is_closed_before_wait_and_child_exits() {
 
 #[test]
 fn acp_create_no_window_is_asserted() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let session = test.create_session();
     assert_eq!(wait_for_file(&test.console_file()), "no-console");
@@ -182,7 +186,7 @@ fn acp_create_no_window_is_asserted() {
 
 #[test]
 fn acp_child_is_contained_in_the_two_level_job() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let session = test.create_session();
     let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
@@ -198,7 +202,7 @@ fn acp_child_is_contained_in_the_two_level_job() {
 
 #[test]
 fn acp_direct_argv_supports_paths_with_spaces_without_shell() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&["--direct-path-with-spaces"]);
     let (session, events) = test.attached_session();
     test.client
@@ -206,7 +210,7 @@ fn acp_direct_argv_supports_paths_with_spaces_without_shell() {
         .expect("prompt");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::AgentFinished { stop_reason } if stop_reason == "end_turn")
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
         })
     });
     assert!(events.lock().expect("events lock").iter().any(|event| {
@@ -219,7 +223,7 @@ fn acp_direct_argv_supports_paths_with_spaces_without_shell() {
 
 #[test]
 fn acp_framing_handles_partial_crlf_and_skips_malformed_lines() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let (session, events) = test.attached_session();
     test.client
@@ -227,12 +231,21 @@ fn acp_framing_handles_partial_crlf_and_skips_malformed_lines() {
         .expect("prompt");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::AgentFinished { stop_reason } if stop_reason == "end_turn")
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
         })
     });
     let events_snapshot = events.lock().expect("events lock");
     assert!(events_snapshot.iter().any(|event| {
         matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+    }));
+    assert!(events_snapshot.iter().any(|event| {
+        matches!(event, SessionEvent::AgentThought { text, .. } if text == "thinking")
+    }));
+    assert!(events_snapshot
+        .iter()
+        .any(|event| { matches!(event, SessionEvent::AgentUserMessage { .. }) }));
+    assert!(events_snapshot.iter().any(|event| {
+        matches!(event, SessionEvent::AvailableCommands { commands } if commands.iter().any(|command| command.name == "compact"))
     }));
     assert!(events_snapshot.iter().any(|event| {
         matches!(event, SessionEvent::AgentToolCall { tool_call_id, .. } if tool_call_id == "tool-1")
@@ -248,7 +261,7 @@ fn acp_framing_handles_partial_crlf_and_skips_malformed_lines() {
 
 #[test]
 fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let session = test.create_session();
     test.client
@@ -273,7 +286,7 @@ fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id()
         .expect("allow once");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::AgentFinished { stop_reason } if stop_reason == "end_turn")
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
         })
     });
     test.client
@@ -283,7 +296,7 @@ fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id()
 
 #[test]
 fn acp_stderr_is_surfaced_after_start_and_during_handshake() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let (session, events) = test.attached_session();
     test.client
@@ -291,7 +304,7 @@ fn acp_stderr_is_surfaced_after_start_and_during_handshake() {
         .expect("prompt");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::AgentFinished { stop_reason } if stop_reason == "end_turn")
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
         })
     });
     let events_snapshot = events.lock().expect("events lock");
@@ -309,7 +322,7 @@ fn acp_stderr_is_surfaced_after_start_and_during_handshake() {
 
 #[test]
 fn acp_startup_failure_includes_agent_stderr() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&["--fail-initialize"]);
     let error = test
         .client
@@ -326,7 +339,7 @@ fn acp_startup_failure_includes_agent_stderr() {
 
 #[test]
 fn acp_session_cancel_reports_cancelled_stop_reason() {
-    let _test_lock = TEST_LOCK.lock().expect("ACP test lock");
+    let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let (session, events) = test.attached_session();
     let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
@@ -338,7 +351,7 @@ fn acp_session_cancel_reports_cancelled_stop_reason() {
         .expect("cancel ACP prompt");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::AgentFinished { stop_reason } if stop_reason == "cancelled")
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "cancelled")
         })
     });
     test.client
@@ -433,6 +446,135 @@ fn process_is_in_job(pid: u32) -> bool {
     let result = unsafe { IsProcessInJob(handle, std::ptr::null_mut(), &mut in_job) } != 0;
     unsafe { CloseHandle(handle) };
     result
+}
+
+#[test]
+fn acp_mute_prompt_times_out_instead_of_waiting_forever() {
+    let _test_lock = lock_tests();
+    std::env::set_var("DEVBOULE_ACP_TURN_TIMEOUT_MS", "800");
+    struct ClearTimeout;
+    impl Drop for ClearTimeout {
+        fn drop(&mut self) {
+            std::env::remove_var("DEVBOULE_ACP_TURN_TIMEOUT_MS");
+        }
+    }
+    let _clear = ClearTimeout;
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_send(&session.id, "block until cancelled")
+        .expect("blocked prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentError { message } if message.contains("stayed silent"))
+                || matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "cancelled")
+        })
+    });
+    std::env::remove_var("DEVBOULE_ACP_TURN_TIMEOUT_MS");
+    test.client
+        .session_close(&session.id)
+        .expect("close timed-out ACP session");
+}
+
+#[test]
+#[ignore = "talks to a live grok agent; costs real tokens"]
+fn grok_prompt_completes_with_fragments_and_end_turn() {
+    let _test_lock = lock_tests();
+    let argv = grok_acp_argv().expect("grok.exe on PATH");
+    std::env::set_var(
+        "DEVBOULE_ACP_COMMAND",
+        serde_json::to_string(&argv).expect("argv"),
+    );
+    let harness = Harness::spawn();
+    let client = harness.client();
+    let session = client
+        .session_create(None, SessionKind::Acp, None)
+        .expect("create grok ACP session");
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    client
+        .session_attach(&session.id, None, handler)
+        .expect("attach grok");
+    client
+        .session_send(&session.id, "Reply with exactly one word: PONG")
+        .expect("prompt grok");
+    wait_for(&events, Duration::from_secs(60), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let snapshot = events.lock().expect("events lock");
+    let message: String = snapshot
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentMessage { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        message.contains("PONG"),
+        "grok message fragments were {message:?}; events={snapshot:?}"
+    );
+    assert!(
+        snapshot
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentThought { .. })),
+        "grok did not stream thought fragments: {snapshot:?}"
+    );
+    let thoughts = snapshot
+        .iter()
+        .filter(|event| matches!(event, SessionEvent::AgentThought { .. }))
+        .count();
+    let finished = snapshot.iter().find_map(|event| match event {
+        SessionEvent::AgentFinished {
+            stop_reason,
+            model_id,
+            usage,
+        } => Some((stop_reason.as_str(), model_id.clone(), usage.clone())),
+        _ => None,
+    });
+    let view_bytes: usize = snapshot
+        .iter()
+        .map(|event| {
+            serde_json::to_vec(event)
+                .map(|bytes| bytes.len())
+                .unwrap_or(0)
+        })
+        .sum();
+    eprintln!(
+        "grok turn: thought_chunks={thoughts} message={message:?} finished={finished:?} view_bytes={view_bytes} events={}",
+        snapshot.len()
+    );
+    drop(snapshot);
+    client
+        .session_close(&session.id)
+        .expect("close grok session");
+    let journal_path = harness.paths.journal_file();
+    for suffix in ["", "-wal", "-shm"] {
+        let path = PathBuf::from(format!("{}{suffix}", journal_path.display()));
+        if let Ok(meta) = std::fs::metadata(&path) {
+            eprintln!("grok journal {} bytes at {}", meta.len(), path.display());
+        }
+    }
+    std::env::remove_var("DEVBOULE_ACP_COMMAND");
+}
+
+fn grok_acp_argv() -> Option<Vec<String>> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join("grok.exe");
+        if candidate.is_file() {
+            return Some(vec![
+                candidate.to_string_lossy().into_owned(),
+                "agent".to_string(),
+                "stdio".to_string(),
+            ]);
+        }
+    }
+    None
 }
 
 fn wait_until_gone(pid: u32) {

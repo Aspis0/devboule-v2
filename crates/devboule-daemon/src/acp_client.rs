@@ -9,13 +9,18 @@ use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use agent_client_protocol::schema::v1::{
+    ClientCapabilities, FileSystemCapabilities, Implementation, InitializeRequest,
+};
 use agent_client_protocol::schema::ProtocolVersion;
 use devboule_protocol::{ErrorCode, PermissionOption, PermissionOutcome, SessionEvent, WireError};
 
+use super::acp_host::{AcpHost, RpcError, RpcRespond};
+use crate::acp_view::{classify_line, view_from_envelope, AcpLineKind};
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
 use crate::server::ServerState;
@@ -32,12 +37,201 @@ const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
 /// has no permission deadline of its own, so expiry sends `Cancelled`: no
 /// operation was granted and the agent already understands that state.
 pub const ACP_PERMISSION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Silence after `session/prompt` with no inbound traffic and no outstanding
+/// client work. Grok stays mute instead of erroring when `terminal` is missing.
+pub const ACP_TURN_SILENCE: Duration = Duration::from_secs(60);
+const TURN_TIMEOUT_ENV: &str = "DEVBOULE_ACP_TURN_TIMEOUT_MS";
 const MAX_PENDING_ACP_PERMISSIONS: usize = 32;
 const MAX_ACP_PERMISSION_FIELD_BYTES: usize = 8 * 1024;
 const MAX_ACP_PERMISSION_LINE_BYTES: usize = 256 * 1024;
 const MAX_ACP_PERMISSION_OPTIONS: usize = 32;
 
 type PermissionSender = dyn Fn(u64, serde_json::Value) -> io::Result<()> + Send + Sync;
+
+fn turn_silence() -> Duration {
+    std::env::var(TURN_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .map(Duration::from_millis)
+        .filter(|duration| !duration.is_zero())
+        .unwrap_or(ACP_TURN_SILENCE)
+}
+
+fn advertised_initialize_params() -> Result<serde_json::Value, WireError> {
+    let request = InitializeRequest::new(ProtocolVersion::V1)
+        .client_capabilities(
+            ClientCapabilities::new()
+                .fs(FileSystemCapabilities::new()
+                    .read_text_file(true)
+                    .write_text_file(true))
+                .terminal(true),
+        )
+        .client_info(Implementation::new("devboule", env!("CARGO_PKG_VERSION")));
+    serde_json::to_value(request).map_err(|error| {
+        WireError::new(
+            ErrorCode::Internal,
+            format!("Could not encode ACP initialize request: {error}"),
+        )
+    })
+}
+
+struct TurnWatch {
+    silence: Duration,
+    last_activity: Mutex<Instant>,
+    prompt_id: Mutex<Option<u64>>,
+    client_work: std::sync::atomic::AtomicU64,
+    stop: AtomicBool,
+    runtime: Mutex<Option<Weak<SessionRuntime>>>,
+    cancel: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    broker: Mutex<Option<Weak<PermissionBroker>>>,
+}
+
+impl TurnWatch {
+    fn new() -> Arc<Self> {
+        let watch = Arc::new(Self {
+            silence: turn_silence(),
+            last_activity: Mutex::new(Instant::now()),
+            prompt_id: Mutex::new(None),
+            client_work: std::sync::atomic::AtomicU64::new(0),
+            stop: AtomicBool::new(false),
+            runtime: Mutex::new(None),
+            cancel: Mutex::new(None),
+            broker: Mutex::new(None),
+        });
+        let thread_watch = Arc::clone(&watch);
+        let _ = std::thread::Builder::new()
+            .name("acp-turn-timeout".to_string())
+            .spawn(move || thread_watch.run());
+        watch
+    }
+
+    fn set_cancel(&self, cancel: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.cancel.lock() {
+            *slot = Some(cancel);
+        }
+    }
+
+    fn bind_runtime(&self, runtime: &Arc<SessionRuntime>) {
+        if let Ok(mut slot) = self.runtime.lock() {
+            *slot = Some(Arc::downgrade(runtime));
+        }
+    }
+
+    fn bind_broker(&self, broker: &Arc<PermissionBroker>) {
+        if let Ok(mut slot) = self.broker.lock() {
+            *slot = Some(Arc::downgrade(broker));
+        }
+    }
+
+    fn note_activity(&self) {
+        if let Ok(mut last) = self.last_activity.lock() {
+            *last = Instant::now();
+        }
+    }
+
+    fn begin_client_work(&self) {
+        self.client_work.fetch_add(1, Ordering::AcqRel);
+        self.note_activity();
+    }
+
+    fn end_client_work(&self) {
+        self.client_work
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                Some(value.saturating_sub(1))
+            })
+            .ok();
+        self.note_activity();
+    }
+
+    fn start_prompt(&self, id: u64) {
+        if let Ok(mut prompt) = self.prompt_id.lock() {
+            *prompt = Some(id);
+        }
+        self.note_activity();
+    }
+
+    fn finish_prompt(&self, id: u64) {
+        if let Ok(mut prompt) = self.prompt_id.lock() {
+            if *prompt == Some(id) {
+                *prompt = None;
+            }
+        }
+    }
+
+    fn shutdown(&self) {
+        self.stop.store(true, Ordering::Release);
+        if let Ok(mut prompt) = self.prompt_id.lock() {
+            *prompt = None;
+        }
+    }
+
+    fn run(&self) {
+        while !self.stop.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(50));
+            if self.stop.load(Ordering::Acquire) {
+                return;
+            }
+            if self.client_work.load(Ordering::Acquire) != 0 {
+                continue;
+            }
+            let pending_permission = self
+                .broker
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
+                .map(|broker| broker.pending_len() > 0)
+                .unwrap_or(false);
+            if pending_permission {
+                continue;
+            }
+            let Some(prompt_id) = self.prompt_id.lock().ok().and_then(|prompt| *prompt) else {
+                continue;
+            };
+            let idle = self
+                .last_activity
+                .lock()
+                .ok()
+                .map(|last| last.elapsed() >= self.silence)
+                .unwrap_or(false);
+            if !idle {
+                continue;
+            }
+            if let Ok(mut prompt) = self.prompt_id.lock() {
+                if *prompt != Some(prompt_id) {
+                    continue;
+                }
+                *prompt = None;
+            }
+            if let Ok(cancel) = self.cancel.lock() {
+                if let Some(cancel) = cancel.as_ref() {
+                    cancel();
+                }
+            }
+            if let Some(runtime) = self
+                .runtime
+                .lock()
+                .ok()
+                .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
+            {
+                let _ = runtime.publish_agent_event(
+                    SessionEvent::AgentError {
+                        message: format!(
+                            "ACP prompt {prompt_id} stayed silent for {}s and was cancelled.",
+                            self.silence.as_secs().max(1)
+                        ),
+                    },
+                    None,
+                );
+            }
+        }
+    }
+}
+
+impl Drop for TurnWatch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
 
 struct PendingPermission {
     acp_id: u64,
@@ -308,7 +502,6 @@ impl PermissionBroker {
         }
     }
 
-    #[cfg(test)]
     fn pending_len(&self) -> usize {
         self.pending
             .lock()
@@ -565,7 +758,19 @@ pub(super) fn spawn_process(
     })?;
 
     let process = Arc::new(Mutex::new(child));
-    let transport = Arc::new(AcpTransport::new(stdin));
+    let host = AcpHost::new(
+        command.cwd.clone(),
+        state.sessions.runtime_dir().to_path_buf(),
+        Arc::clone(&state.process_job),
+    );
+    let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
+    {
+        let cancel_transport = Arc::clone(&transport);
+        transport.turn.set_cancel(Arc::new(move || {
+            cancel_transport.cancel();
+        }));
+        transport.turn.bind_broker(&transport.permission_broker);
+    }
     let mut stderr_source = match AcpStderr::start(stderr) {
         Ok(source) => source,
         Err(error) => {
@@ -580,35 +785,38 @@ pub(super) fn spawn_process(
         }
     };
     let mut reader = BufReader::new(stdout);
-    if let Err(error) = handshake(&transport, &mut reader, &command.cwd) {
-        let mut killer = AcpKiller {
-            process: Arc::clone(&process),
-            transport: Arc::clone(&transport),
-            permission_broker: Arc::clone(&transport.permission_broker),
-            cancelled: Arc::new(AtomicBool::new(false)),
-        };
-        killer.kill();
-        drop(killer);
-        // AcpTransport owns the only stdin handle. Close it before waiting
-        // for a peer that may require EOF to finish its shutdown path.
-        drop(transport);
-        if let Ok(mut process) = process.lock() {
-            let _ = process.wait();
+    let deferred = match handshake(&transport, &mut reader, &command.cwd) {
+        Ok(deferred) => deferred,
+        Err(error) => {
+            let mut killer = AcpKiller {
+                process: Arc::clone(&process),
+                transport: Arc::clone(&transport),
+                permission_broker: Arc::clone(&transport.permission_broker),
+                cancelled: Arc::new(AtomicBool::new(false)),
+            };
+            killer.kill();
+            drop(killer);
+            // AcpTransport owns the only stdin handle. Close it before waiting
+            // for a peer that may require EOF to finish its shutdown path.
+            drop(transport);
+            if let Ok(mut process) = process.lock() {
+                let _ = process.wait();
+            }
+            let stderr_lines = stderr_source.discard_and_join();
+            drop(process_job);
+            if stderr_lines.is_empty() {
+                return Err(error);
+            }
+            return Err(WireError::new(
+                error.code,
+                format!(
+                    "{} Agent stderr: {}",
+                    error.message,
+                    stderr_lines.join(" | ")
+                ),
+            ));
         }
-        let stderr_lines = stderr_source.discard_and_join();
-        drop(process_job);
-        if stderr_lines.is_empty() {
-            return Err(error);
-        }
-        return Err(WireError::new(
-            error.code,
-            format!(
-                "{} Agent stderr: {}",
-                error.message,
-                stderr_lines.join(" | ")
-            ),
-        ));
-    }
+    };
     let session_id = transport.session_id();
     let writer = AcpWriter {
         transport: Arc::clone(&transport),
@@ -624,6 +832,10 @@ pub(super) fn spawn_process(
         transport.pending_ids(),
         session_id,
         Arc::clone(&transport.permission_broker),
+        Arc::clone(&transport.host),
+        Arc::clone(&transport.turn),
+        Some(Arc::clone(&transport)),
+        deferred,
     );
     Ok(SpawnedSession {
         process_job,
@@ -646,21 +858,45 @@ fn terminate_process(process: &mut Child) {
 struct AcpTransport {
     stdin: Arc<Mutex<ChildStdin>>,
     permission_broker: Arc<PermissionBroker>,
+    host: Arc<AcpHost>,
+    turn: Arc<TurnWatch>,
     next_id: AtomicU64,
     pending: Arc<Mutex<HashSet<u64>>>,
     session_id: Mutex<Option<String>>,
 }
 
 impl AcpTransport {
-    fn new(stdin: ChildStdin) -> Self {
+    fn new(stdin: ChildStdin, host: Arc<AcpHost>) -> Self {
         let stdin = Arc::new(Mutex::new(stdin));
         Self {
             permission_broker: PermissionBroker::new(Arc::clone(&stdin)),
+            host,
+            turn: TurnWatch::new(),
             stdin,
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashSet::new())),
             session_id: Mutex::new(None),
         }
+    }
+
+    fn send_result(
+        &self,
+        id: serde_json::Value,
+        result: Result<serde_json::Value, RpcError>,
+    ) -> io::Result<()> {
+        let value = match result {
+            Ok(result) => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": result,
+            }),
+            Err(error) => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": error.to_json(),
+            }),
+        };
+        self.send_line(&value)
     }
 
     fn send_line(&self, value: &serde_json::Value) -> io::Result<()> {
@@ -744,24 +980,12 @@ fn handshake(
     transport: &AcpTransport,
     reader: &mut BufReader<ChildStdout>,
     cwd: &std::path::Path,
-) -> Result<(), WireError> {
-    let protocol_version = serde_json::to_value(ProtocolVersion::V1).map_err(|error| {
-        WireError::new(
-            ErrorCode::Internal,
-            format!("Could not encode ACP protocol version: {error}"),
-        )
-    })?;
+) -> Result<Vec<serde_json::Value>, WireError> {
+    let mut deferred = Vec::new();
     let initialize_id = transport
-        .request(
-            "initialize",
-            serde_json::json!({
-                "protocolVersion": protocol_version,
-                "clientCapabilities": {},
-                "clientInfo": { "name": "devboule", "version": env!("CARGO_PKG_VERSION") }
-            }),
-        )
+        .request("initialize", advertised_initialize_params()?)
         .map_err(acp_io_error)?;
-    let initialize = read_response(transport, reader, initialize_id)?;
+    let initialize = read_response(transport, reader, initialize_id, &mut deferred)?;
     let negotiated = initialize
         .get("result")
         .and_then(|result| result.get("protocolVersion"))
@@ -787,7 +1011,7 @@ fn handshake(
             }),
         )
         .map_err(acp_io_error)?;
-    let new_session = read_response(transport, reader, new_session_id)?;
+    let new_session = read_response(transport, reader, new_session_id, &mut deferred)?;
     let session_id = new_session
         .get("result")
         .and_then(|result| result.get("sessionId"))
@@ -795,13 +1019,15 @@ fn handshake(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| WireError::new(ErrorCode::Io, "ACP session/new returned no session id."))?;
     transport.set_session_id(session_id.to_string());
-    Ok(())
+    transport.host.set_session_id(session_id.to_string());
+    Ok(deferred)
 }
 
 fn read_response(
     transport: &AcpTransport,
     reader: &mut BufReader<ChildStdout>,
     expected_id: u64,
+    deferred: &mut Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, WireError> {
     loop {
         let mut line = String::new();
@@ -821,6 +1047,7 @@ fn read_response(
             }
         };
         if value.get("id").and_then(serde_json::Value::as_u64) != Some(expected_id) {
+            deferred.push(value);
             continue;
         }
         if !transport.response_seen(expected_id) {
@@ -858,13 +1085,14 @@ impl Write for AcpWriter {
         }
         let prompt = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
-        self.transport.request(
+        let id = self.transport.request(
             "session/prompt",
             serde_json::json!({
                 "sessionId": self.transport.session_id(),
                 "prompt": [{ "type": "text", "text": prompt }]
             }),
         )?;
+        self.transport.turn.start_prompt(id);
         Ok(())
     }
 }
@@ -880,6 +1108,8 @@ impl SessionKiller for AcpKiller {
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             self.permission_broker.cancel_all();
+            self.transport.turn.shutdown();
+            self.transport.host.shutdown();
             self.transport.cancel();
             // Give a compliant peer a brief window to answer the outstanding
             // prompt with stopReason=cancelled before the shutdown kill.
@@ -922,6 +1152,10 @@ struct AcpReader {
     pending: Arc<Mutex<HashSet<u64>>>,
     session_id: String,
     permission_broker: Arc<PermissionBroker>,
+    host: Arc<AcpHost>,
+    turn: Arc<TurnWatch>,
+    transport: Option<Arc<AcpTransport>>,
+    deferred: Vec<serde_json::Value>,
 }
 
 impl AcpReader {
@@ -929,6 +1163,10 @@ impl AcpReader {
         pending: Arc<Mutex<HashSet<u64>>>,
         session_id: String,
         permission_broker: Arc<PermissionBroker>,
+        host: Arc<AcpHost>,
+        turn: Arc<TurnWatch>,
+        transport: Option<Arc<AcpTransport>>,
+        deferred: Vec<serde_json::Value>,
     ) -> Self {
         Self {
             buffer: Vec::new(),
@@ -936,20 +1174,48 @@ impl AcpReader {
             pending,
             session_id,
             permission_broker,
+            host,
+            turn,
+            transport,
+            deferred,
         }
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        pending: Arc<Mutex<HashSet<u64>>>,
+        session_id: String,
+        permission_broker: Arc<PermissionBroker>,
+    ) -> Self {
+        Self::new(
+            pending,
+            session_id,
+            permission_broker,
+            AcpHost::new(
+                std::env::temp_dir(),
+                std::env::temp_dir(),
+                Arc::new(JobObject::new().expect("job")),
+            ),
+            TurnWatch::new(),
+            None,
+            Vec::new(),
+        )
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
         let _ = runtime.publish_agent_event(event, None);
     }
-
-    fn publish_text(&self, runtime: &SessionRuntime, event: SessionEvent, text: &str) {
-        let _ = runtime.publish_agent_event(event, Some(text));
-    }
 }
 
 impl ReaderDispatch for AcpReader {
     fn feed(&mut self, bytes: &[u8], runtime: &Arc<SessionRuntime>) -> Result<(), String> {
+        self.turn.bind_runtime(runtime);
+        if !self.deferred.is_empty() {
+            let deferred = std::mem::take(&mut self.deferred);
+            for value in deferred {
+                self.dispatch_value(&value, runtime);
+            }
+        }
         // `reader_loop` supplies arbitrary chunks. Buffering here means a
         // split UTF-8/JSON line is never parsed as two messages.
         let mut bytes = bytes;
@@ -1061,19 +1327,69 @@ impl AcpReader {
                 return;
             }
         };
-        if value.get("method").and_then(serde_json::Value::as_str)
-            == Some("session/request_permission")
-        {
-            self.dispatch_permission(&value, runtime);
+        self.dispatch_value(&value, runtime);
+    }
+
+    fn dispatch_value(&self, value: &serde_json::Value, runtime: &Arc<SessionRuntime>) {
+        self.turn.note_activity();
+        runtime.journal_acp_envelope(value);
+        match classify_line(value) {
+            Some(AcpLineKind::Request { method }) => {
+                if method == "session/request_permission" {
+                    self.dispatch_permission(value, runtime);
+                    return;
+                }
+                self.dispatch_client_request(&method, value, runtime);
+            }
+            Some(AcpLineKind::Response) => {
+                if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
+                    self.dispatch_response(id, value, runtime);
+                }
+            }
+            Some(AcpLineKind::Notification { .. }) => {
+                if let Some(view) = view_from_envelope(value, &self.session_id) {
+                    self.publish(runtime, view);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn dispatch_client_request(
+        &self,
+        method: &str,
+        value: &serde_json::Value,
+        runtime: &Arc<SessionRuntime>,
+    ) {
+        let Some(id) = value.get("id").cloned() else {
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: format!("ACP client request {method} had no id."),
+                },
+            );
             return;
-        }
-        if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
-            self.dispatch_response(id, &value, runtime);
+        };
+        let params = value
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let Some(transport) = &self.transport else {
             return;
+        };
+        let blocking = method == "terminal/wait_for_exit";
+        if blocking {
+            self.turn.begin_client_work();
         }
-        if value.get("method").and_then(serde_json::Value::as_str) == Some("session/update") {
-            self.dispatch_update(&value, runtime);
-        }
+        let turn = Arc::clone(&self.turn);
+        let transport = Arc::clone(transport);
+        let respond: RpcRespond = Arc::new(move |response_id, result| {
+            if blocking {
+                turn.end_client_work();
+            }
+            let _ = transport.send_result(response_id, result);
+        });
+        self.host.dispatch(method, id, params, respond);
     }
 
     fn dispatch_response(&self, id: u64, value: &serde_json::Value, runtime: &SessionRuntime) {
@@ -1086,6 +1402,7 @@ impl AcpReader {
             eprintln!("skipping ACP response with unknown id {id}");
             return;
         }
+        self.turn.finish_prompt(id);
         if let Some(error) = value.get("error") {
             self.publish(
                 runtime,
@@ -1095,17 +1412,8 @@ impl AcpReader {
             );
             return;
         }
-        if let Some(stop_reason) = value
-            .get("result")
-            .and_then(|result| result.get("stopReason"))
-            .and_then(serde_json::Value::as_str)
-        {
-            self.publish(
-                runtime,
-                SessionEvent::AgentFinished {
-                    stop_reason: stop_reason.to_string(),
-                },
-            );
+        if let Some(view) = view_from_envelope(value, &self.session_id) {
+            self.publish(runtime, view);
         }
     }
 
@@ -1314,98 +1622,6 @@ impl AcpReader {
             let _ = runtime.publish_agent_event(event, None);
         }
     }
-
-    fn dispatch_update(&self, value: &serde_json::Value, runtime: &SessionRuntime) {
-        let Some(params) = value.get("params") else {
-            return;
-        };
-        if params.get("sessionId").and_then(serde_json::Value::as_str)
-            != Some(self.session_id.as_str())
-        {
-            return;
-        }
-        let Some(update) = params.get("update") else {
-            return;
-        };
-        match update
-            .get("sessionUpdate")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some("agent_message_chunk") => {
-                let Some(text) = update
-                    .get("content")
-                    .filter(|content| {
-                        content.get("type").and_then(serde_json::Value::as_str) == Some("text")
-                    })
-                    .and_then(|content| content.get("text"))
-                    .and_then(serde_json::Value::as_str)
-                else {
-                    return;
-                };
-                self.publish_text(
-                    runtime,
-                    SessionEvent::AgentMessage {
-                        message_id: update
-                            .get("messageId")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string),
-                        text: text.to_string(),
-                    },
-                    text,
-                );
-            }
-            Some("tool_call") => {
-                self.publish(
-                    runtime,
-                    SessionEvent::AgentToolCall {
-                        tool_call_id: update
-                            .get("toolCallId")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        title: update
-                            .get("title")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        status: update
-                            .get("status")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("in_progress")
-                            .to_string(),
-                    },
-                );
-            }
-            Some("tool_call_update") => {
-                let text = update
-                    .get("content")
-                    .filter(|content| {
-                        content.get("type").and_then(serde_json::Value::as_str) == Some("text")
-                    })
-                    .and_then(|content| content.get("text"))
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                self.publish(
-                    runtime,
-                    SessionEvent::AgentToolUpdate {
-                        tool_call_id: update
-                            .get("toolCallId")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        status: update
-                            .get("status")
-                            .and_then(serde_json::Value::as_str)
-                            .map(str::to_string),
-                        text,
-                    },
-                );
-            }
-            // Thinking, plans, modes and models remain outside this slice.
-            // Unknown future updates are safe to ignore.
-            Some(_) | None => {}
-        }
-    }
 }
 
 struct AcpStderr {
@@ -1588,6 +1804,77 @@ mod tests {
     type SentResponses = Vec<(u64, serde_json::Value)>;
 
     #[test]
+    fn journal_keeps_raw_envelope_and_replay_derives_the_view() {
+        let path = permission_path("envelope");
+        let journal = Journal::open(&path).expect("journal");
+        journal
+            .upsert_blocking(crate::journal::new_session_record(
+                "s.envelope",
+                "owner",
+                None,
+                devboule_protocol::SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("upsert");
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "01a06c70-ea2b-7882-ad27-aae8188fc243",
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "The"}
+                }
+            }
+        });
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record("s.envelope", 1, 1, &envelope).expect("record"),
+            )
+            .expect("append");
+        let replay = journal.replay("s.envelope", 0).expect("replay");
+        assert!(
+            replay.events.iter().any(|event| matches!(
+                event,
+                SessionEvent::AgentThought { text, .. } if text == "The"
+            )),
+            "replay lost the derived thought: {:?}",
+            replay.events
+        );
+        journal.shutdown();
+        let stored: serde_json::Value = {
+            let conn = rusqlite::Connection::open(&path).expect("inspect");
+            let payload: Vec<u8> = conn
+                .query_row(
+                    "SELECT payload FROM events WHERE session_id = ?1 AND kind = 'acp_envelope'",
+                    ["s.envelope"],
+                    |row| row.get(0),
+                )
+                .expect("payload");
+            serde_json::from_slice(&payload).expect("json")
+        };
+        assert_eq!(stored["method"], "session/update");
+        assert_eq!(
+            stored["params"]["update"]["sessionUpdate"],
+            "agent_thought_chunk"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn initialize_declares_only_implemented_fs_and_terminal() {
+        let params = super::advertised_initialize_params().expect("initialize params");
+        assert_eq!(params["clientCapabilities"]["fs"]["readTextFile"], true);
+        assert_eq!(params["clientCapabilities"]["fs"]["writeTextFile"], true);
+        assert_eq!(params["clientCapabilities"]["terminal"], true);
+        assert!(
+            params["clientCapabilities"].get("elicitation").is_none()
+                || params["clientCapabilities"]["elicitation"].is_null()
+        );
+        assert_eq!(params["clientInfo"]["name"], "devboule");
+    }
+
+    #[test]
     fn ndjson_buffers_partial_lines_and_strips_crlf_at_dispatch_boundary() {
         let mut buffer = b"{\"id\":1}\r".to_vec();
         assert!(complete_lines(&mut buffer).is_empty());
@@ -1683,7 +1970,7 @@ mod tests {
     fn timeout_spawn_failure_cancels_and_removes_the_request() {
         let (broker, sent) = test_broker();
         broker.fail_next_timeout_spawn();
-        let reader = AcpReader::new(
+        let reader = AcpReader::for_test(
             Arc::new(Mutex::new(HashSet::new())),
             "stub-session".to_string(),
             Arc::clone(&broker),
@@ -1713,7 +2000,7 @@ mod tests {
     #[test]
     fn oversized_permission_field_is_cancelled_before_storage() {
         let (broker, sent) = test_broker();
-        let reader = AcpReader::new(
+        let reader = AcpReader::for_test(
             Arc::new(Mutex::new(HashSet::new())),
             "stub-session".to_string(),
             Arc::clone(&broker),
@@ -1743,7 +2030,7 @@ mod tests {
     #[test]
     fn oversized_unterminated_line_is_dropped_and_reported() {
         let (broker, _) = test_broker();
-        let mut reader = AcpReader::new(
+        let mut reader = AcpReader::for_test(
             Arc::new(Mutex::new(HashSet::new())),
             "stub-session".to_string(),
             broker,

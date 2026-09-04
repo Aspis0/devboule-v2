@@ -63,11 +63,31 @@ fn main() -> io::Result<()> {
                     }),
                 )?;
             }
-            "session/new" => respond(
-                &mut stdout,
-                request.get("id").cloned(),
-                json!({"sessionId": "stub-session"}),
-            )?,
+            "session/new" => {
+                emit(
+                    &mut stdout,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": "stub-session",
+                            "update": {
+                                "sessionUpdate": "available_commands_update",
+                                "availableCommands": [{
+                                    "name": "compact",
+                                    "description": "Compress conversation history",
+                                    "input": {"hint": "optional context"}
+                                }]
+                            }
+                        }
+                    }),
+                )?;
+                respond(
+                    &mut stdout,
+                    request.get("id").cloned(),
+                    json!({"sessionId": "stub-session"}),
+                )?;
+            }
             "session/prompt" => {
                 last_prompt_id = request.get("id").and_then(Value::as_u64);
                 let prompt_text = request
@@ -109,6 +129,34 @@ fn main() -> io::Result<()> {
                 }
                 eprintln!("stub-agent stderr marker");
                 stdout.write_all(b"not-json\r\n")?;
+                emit(
+                    &mut stdout,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": "stub-session",
+                            "update": {
+                                "sessionUpdate": "user_message_chunk",
+                                "content": {"type": "text", "text": prompt_text}
+                            }
+                        }
+                    }),
+                )?;
+                emit(
+                    &mut stdout,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": "stub-session",
+                            "update": {
+                                "sessionUpdate": "agent_thought_chunk",
+                                "content": {"type": "text", "text": "thinking"}
+                            }
+                        }
+                    }),
+                )?;
                 emit(
                     &mut stdout,
                     json!({

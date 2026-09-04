@@ -264,6 +264,9 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::AgentMessage { .. }
+        | SessionEvent::AgentUserMessage { .. }
+        | SessionEvent::AgentThought { .. }
+        | SessionEvent::AvailableCommands { .. }
         | SessionEvent::AgentToolCall { .. }
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
@@ -635,6 +638,9 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::AgentThought { .. }
+            | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
@@ -971,6 +977,9 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::AgentThought { .. }
+            | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
@@ -1493,6 +1502,9 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::JournalDegraded { .. }
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::AgentMessage { .. }
+        | SessionEvent::AgentUserMessage { .. }
+        | SessionEvent::AgentThought { .. }
+        | SessionEvent::AvailableCommands { .. }
         | SessionEvent::AgentToolCall { .. }
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
@@ -1888,6 +1900,9 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::SessionsSnapshot { .. }
         | SessionEvent::Snapshot { .. }
         | SessionEvent::AgentMessage { .. }
+        | SessionEvent::AgentUserMessage { .. }
+        | SessionEvent::AgentThought { .. }
+        | SessionEvent::AvailableCommands { .. }
         | SessionEvent::AgentToolCall { .. }
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
@@ -2257,6 +2272,9 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::Snapshot { .. }
             | SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::AgentThought { .. }
+            | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
@@ -2522,6 +2540,9 @@ fn journal_growth_after_13mb_flood() {
             SessionEvent::SessionsSnapshot { .. } => {}
             SessionEvent::Snapshot { .. } => {}
             SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::AgentThought { .. }
+            | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
@@ -2813,6 +2834,9 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::JournalDegraded { .. }
             | SessionEvent::SessionsSnapshot { .. }
             | SessionEvent::AgentMessage { .. }
+            | SessionEvent::AgentUserMessage { .. }
+            | SessionEvent::AgentThought { .. }
+            | SessionEvent::AvailableCommands { .. }
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }

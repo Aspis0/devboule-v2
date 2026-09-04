@@ -283,6 +283,7 @@ pub enum EventKind {
     Output,
     Exit,
     AgentReport,
+    AcpEnvelope,
 }
 
 impl EventKind {
@@ -291,6 +292,7 @@ impl EventKind {
             Self::Output => "output",
             Self::Exit => "exit",
             Self::AgentReport => "agent_report",
+            Self::AcpEnvelope => "acp_envelope",
         }
     }
 
@@ -299,6 +301,7 @@ impl EventKind {
             "output" => Some(Self::Output),
             "exit" => Some(Self::Exit),
             "agent_report" => Some(Self::AgentReport),
+            "acp_envelope" => Some(Self::AcpEnvelope),
             _ => None,
         }
     }
@@ -928,7 +931,7 @@ fn journal_loop(
                 }
             }
             JournalCmd::Append(record) => {
-                let is_output = record.kind == EventKind::Output;
+                let is_output = matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope);
                 let payload_len = record.payload.len() as u64;
                 if let Err(error) =
                     append_event(&conn, &record, &pins, limits, &mut retention_state)
@@ -1169,7 +1172,7 @@ fn append_event(
             checksum,
         ],
     )?;
-    let add = if record.kind == EventKind::Output {
+    let add = if matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope) {
         record.payload.len() as i64
     } else {
         0
@@ -1550,6 +1553,22 @@ pub fn output_record(
         ts_ms: now_ms(),
         payload: data.as_ref().to_vec(),
     }
+}
+
+pub fn acp_envelope_record(
+    session_id: impl Into<String>,
+    generation: u64,
+    seq: u64,
+    envelope: &serde_json::Value,
+) -> Option<EventRecord> {
+    Some(EventRecord {
+        session_id: session_id.into(),
+        generation,
+        seq,
+        kind: EventKind::AcpEnvelope,
+        ts_ms: now_ms(),
+        payload: serde_json::to_vec(envelope).ok()?,
+    })
 }
 
 #[cfg(test)]

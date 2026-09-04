@@ -185,6 +185,20 @@ pub enum SessionEvent {
         message_id: Option<String>,
         text: String,
     },
+    /// Echo of the user prompt, one ACP `user_message_chunk` at a time.
+    AgentUserMessage {
+        message_id: Option<String>,
+        text: String,
+    },
+    /// Agent reasoning, one ACP `agent_thought_chunk` at a time.
+    AgentThought {
+        message_id: Option<String>,
+        text: String,
+    },
+    /// Slash commands advertised by `available_commands_update`.
+    AvailableCommands {
+        commands: Vec<AvailableCommandView>,
+    },
     /// An ACP tool call announced by the agent. A separate permission request
     /// event carries the user-facing authorization conversation.
     AgentToolCall {
@@ -202,6 +216,10 @@ pub enum SessionEvent {
     /// The response to one `session/prompt` request.
     AgentFinished {
         stop_reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
     },
     /// A valid ACP error response or a transport/decoding error surfaced to
     /// the attached session instead of being turned into a silent hang.
@@ -403,6 +421,33 @@ pub struct PermissionOption {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+}
+
+/// One slash command advertised by an ACP agent.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableCommandView {
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+/// Token usage attached to a prompt turn, when the agent supplied it.
+///
+/// Schema 1.5.0 keeps `usage` behind an unstable flag; grok sends the
+/// counters on `session/prompt` result `_meta`. Optional fields keep both.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thought_tokens: Option<u64>,
 }
 
 /// ACP persistence handle. Terminal sessions always use [`PersistenceKind::None`].

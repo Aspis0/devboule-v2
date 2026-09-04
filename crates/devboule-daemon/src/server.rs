@@ -45,7 +45,7 @@ pub struct ServerState {
     shutdown_flag: Arc<Mutex<bool>>,
     shutdown_cvar: Arc<Condvar>,
     idempotency: Mutex<IdempotencyStore>,
-    pub(crate) process_job: JobObject,
+    pub(crate) process_job: Arc<JobObject>,
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
@@ -83,7 +83,7 @@ impl ServerState {
 
     pub fn with_paths(instance_id: String, paths: RuntimePaths) -> Result<Arc<Self>, DaemonError> {
         let _ = paths.ensure_dir();
-        let process_job = JobObject::new()?;
+        let process_job = Arc::new(JobObject::new()?);
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
@@ -710,6 +710,9 @@ fn send_pending_event(
             // A snapshot is screen state and has no replay sequence.
             SessionEvent::Snapshot { .. } => " snapshot".to_string(),
             SessionEvent::AgentMessage { .. } => " agent_message".to_string(),
+            SessionEvent::AgentUserMessage { .. } => " agent_user_message".to_string(),
+            SessionEvent::AgentThought { .. } => " agent_thought".to_string(),
+            SessionEvent::AvailableCommands { .. } => " available_commands".to_string(),
             SessionEvent::AgentToolCall { .. } => " agent_tool_call".to_string(),
             SessionEvent::AgentToolUpdate { .. } => " agent_tool_update".to_string(),
             SessionEvent::AgentFinished { .. } => " agent_finished".to_string(),

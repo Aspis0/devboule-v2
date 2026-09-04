@@ -212,6 +212,9 @@ impl ConnHandle {
                 | SessionEvent::SessionsSnapshot { .. }
                 | SessionEvent::Snapshot { .. }
                 | SessionEvent::AgentMessage { .. }
+                | SessionEvent::AgentUserMessage { .. }
+                | SessionEvent::AgentThought { .. }
+                | SessionEvent::AvailableCommands { .. }
                 | SessionEvent::AgentToolCall { .. }
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
@@ -584,6 +587,9 @@ mod tests {
                 SessionEvent::JournalDegraded { .. } => "journal_degraded",
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
                 SessionEvent::AgentMessage { .. } => "agent_message",
+                SessionEvent::AgentUserMessage { .. } => "agent_user_message",
+                SessionEvent::AgentThought { .. } => "agent_thought",
+                SessionEvent::AvailableCommands { .. } => "available_commands",
                 SessionEvent::AgentToolCall { .. } => "agent_tool_call",
                 SessionEvent::AgentToolUpdate { .. } => "agent_tool_update",
                 SessionEvent::AgentFinished { .. } => "agent_finished",
@@ -765,6 +771,9 @@ mod tests {
                 SessionEvent::SessionsSnapshot { .. } => "sessions_snapshot",
                 SessionEvent::Snapshot { .. } => "snapshot",
                 SessionEvent::AgentMessage { .. } => "agent_message",
+                SessionEvent::AgentUserMessage { .. } => "agent_user_message",
+                SessionEvent::AgentThought { .. } => "agent_thought",
+                SessionEvent::AvailableCommands { .. } => "available_commands",
                 SessionEvent::AgentToolCall { .. } => "agent_tool_call",
                 SessionEvent::AgentToolUpdate { .. } => "agent_tool_update",
                 SessionEvent::AgentFinished { .. } => "agent_finished",
