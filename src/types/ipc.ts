@@ -179,8 +179,30 @@ export type SessionEvent =
       status: string | null;
       text: string | null;
     }
-  /** ACP prompt completion and its stop reason. */
-  | { type: "agent_finished"; stopReason: string }
+  /**
+   * ACP prompt completion. `modelId` and `usage` are what the agent actually
+   * ran and spent, when it says so; grok reports them, others may not.
+   */
+  | {
+      type: "agent_finished";
+      stopReason: string;
+      modelId?: string;
+      usage?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        totalTokens?: number;
+        thoughtTokens?: number;
+      };
+    }
+  /** Echo of the user prompt, one ACP `user_message_chunk` at a time. */
+  | { type: "agent_user_message"; messageId: string | null; text: string }
+  /** Agent reasoning, one ACP `agent_thought_chunk` at a time. */
+  | { type: "agent_thought"; messageId: string | null; text: string }
+  /** Slash commands the agent advertises for this session. */
+  | {
+      type: "available_commands";
+      commands: Array<{ name: string; description: string; hint?: string }>;
+    }
   /** ACP protocol or framing error surfaced by the daemon. */
   | { type: "agent_error"; message: string }
   /** One line drained from the ACP agent's stderr. */

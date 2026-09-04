@@ -385,6 +385,9 @@ export class TerminalSession {
       case "agent_error":
       case "agent_stderr":
       case "agent_reported":
+      case "agent_user_message":
+      case "agent_thought":
+      case "available_commands":
         // ACP sessions use these same daemon channels; the terminal view has
         // no agent transcript renderer yet, so it safely ignores them.
         break;

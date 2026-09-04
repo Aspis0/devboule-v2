@@ -10,7 +10,7 @@ use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread::JoinHandle;
+use std::thread::{self, JoinHandle};
 
 use agent_client_protocol::schema::v1::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalResponse, ReadTextFileRequest,
@@ -77,11 +77,18 @@ pub(super) struct AcpHost {
     cwd: PathBuf,
     runtime_dir: PathBuf,
     daemon_job: Arc<JobObject>,
-    terminals: Mutex<HashMap<String, Arc<AcpTerminal>>>,
+    terminals: Mutex<HashMap<String, TerminalSlot>>,
     next_terminal: AtomicU64,
     max_terminals: usize,
     #[cfg(test)]
     create_gap: Mutex<Option<Arc<std::sync::Barrier>>>,
+    #[cfg(test)]
+    spawned: std::sync::atomic::AtomicUsize,
+}
+
+enum TerminalSlot {
+    Reserved,
+    Live(Arc<AcpTerminal>),
 }
 
 struct AcpTerminal {
@@ -159,19 +166,34 @@ impl AcpHost {
             max_terminals,
             #[cfg(test)]
             create_gap: Mutex::new(None),
+            #[cfg(test)]
+            spawned: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
     #[cfg(test)]
-    fn set_create_gap(&self, barrier: Arc<std::sync::Barrier>) {
+    pub(super) fn set_create_gap(&self, barrier: Arc<std::sync::Barrier>) {
         if let Ok(mut gap) = self.create_gap.lock() {
             *gap = Some(barrier);
         }
     }
 
     #[cfg(test)]
-    fn live_terminal_count(&self) -> usize {
+    pub(super) fn live_terminal_count(&self) -> usize {
         self.terminals.lock().map(|map| map.len()).unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(super) fn spawned_count(&self) -> usize {
+        self.spawned.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_create_terminal(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, RpcError> {
+        self.create_terminal(params)
     }
 
     pub(super) fn set_session_id(&self, session_id: String) {
@@ -192,11 +214,7 @@ impl AcpHost {
         let terminals = self
             .terminals
             .lock()
-            .map(|mut map| {
-                map.drain()
-                    .map(|(_, terminal)| terminal)
-                    .collect::<Vec<_>>()
-            })
+            .map(|mut map| drain_live_terminals(&mut map))
             .unwrap_or_default();
         for terminal in terminals {
             terminal.release();
@@ -204,6 +222,30 @@ impl AcpHost {
     }
 
     pub(super) fn dispatch(
+        self: &Arc<Self>,
+        method: &str,
+        id: serde_json::Value,
+        params: serde_json::Value,
+        respond: RpcRespond,
+    ) {
+        let host = Arc::clone(self);
+        let method = method.to_string();
+        let respond_ok = Arc::clone(&respond);
+        let id_ok = id.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("acp-host-rpc".to_string())
+            .spawn(move || host.dispatch_sync(&method, id_ok, params, respond_ok))
+        {
+            respond(
+                id,
+                Err(RpcError::internal(format!(
+                    "Could not start ACP host work: {error}"
+                ))),
+            );
+        }
+    }
+
+    fn dispatch_sync(
         self: &Arc<Self>,
         method: &str,
         id: serde_json::Value,
@@ -306,14 +348,21 @@ impl AcpHost {
             .output_byte_limit
             .unwrap_or(DEFAULT_OUTPUT_LIMIT)
             .min(HARD_OUTPUT_LIMIT);
-        let terminal = spawn_acp_terminal(
-            &request.command,
-            &request.args,
-            &cwd,
-            &env,
-            Arc::clone(&self.daemon_job),
-            limit,
-        )?;
+        let id = {
+            let mut terminals = self
+                .terminals
+                .lock()
+                .map_err(|_| RpcError::internal("terminal map lock poisoned"))?;
+            if terminals.len() >= self.max_terminals {
+                return Err(RpcError::invalid_params(format!(
+                    "session has reached the maximum of {} ACP terminals",
+                    self.max_terminals
+                )));
+            }
+            let id = format!("t-{}", self.next_terminal.fetch_add(1, Ordering::Relaxed));
+            terminals.insert(id.clone(), TerminalSlot::Reserved);
+            id
+        };
         #[cfg(test)]
         {
             let gap = self.create_gap.lock().ok().and_then(|guard| guard.clone());
@@ -321,23 +370,44 @@ impl AcpHost {
                 barrier.wait();
             }
         }
-        let mut terminals = self
-            .terminals
-            .lock()
-            .map_err(|_| RpcError::internal("terminal map lock poisoned"))?;
-        if terminals.len() >= self.max_terminals {
-            drop(terminals);
-            terminal.release();
-            return Err(RpcError::invalid_params(format!(
-                "session has reached the maximum of {} ACP terminals",
-                self.max_terminals
-            )));
+        #[cfg(test)]
+        self.spawned.fetch_add(1, Ordering::SeqCst);
+        let spawned = spawn_acp_terminal(
+            &request.command,
+            &request.args,
+            &cwd,
+            &env,
+            Arc::clone(&self.daemon_job),
+            limit,
+        );
+        let mut terminals = match self.terminals.lock() {
+            Ok(terminals) => terminals,
+            Err(_) => {
+                if let Ok(terminal) = spawned {
+                    terminal.release();
+                }
+                return Err(RpcError::internal("terminal map lock poisoned"));
+            }
+        };
+        match spawned {
+            Ok(terminal) => {
+                if terminals.remove(&id).is_none() {
+                    drop(terminals);
+                    terminal.release();
+                    return Err(RpcError::internal(
+                        "terminal slot was released before spawn completed",
+                    ));
+                }
+                terminals.insert(id.clone(), TerminalSlot::Live(terminal));
+                drop(terminals);
+                serde_json::to_value(CreateTerminalResponse::new(TerminalId::new(id)))
+                    .map_err(|error| RpcError::internal(error.to_string()))
+            }
+            Err(error) => {
+                terminals.remove(&id);
+                Err(error)
+            }
         }
-        let id = format!("t-{}", self.next_terminal.fetch_add(1, Ordering::Relaxed));
-        terminals.insert(id.clone(), terminal);
-        drop(terminals);
-        serde_json::to_value(CreateTerminalResponse::new(TerminalId::new(id)))
-            .map_err(|error| RpcError::internal(error.to_string()))
     }
 
     fn get_terminal(&self, terminal_id: &str) -> Result<Arc<AcpTerminal>, RpcError> {
@@ -345,10 +415,12 @@ impl AcpHost {
             .terminals
             .lock()
             .map_err(|_| RpcError::internal("terminal map lock poisoned"))?;
-        terminals
-            .get(terminal_id)
-            .cloned()
-            .ok_or_else(|| RpcError::resource_not_found(format!("unknown terminal {terminal_id}")))
+        match terminals.get(terminal_id) {
+            Some(TerminalSlot::Live(terminal)) => Ok(Arc::clone(terminal)),
+            Some(TerminalSlot::Reserved) | None => Err(RpcError::resource_not_found(format!(
+                "unknown terminal {terminal_id}"
+            ))),
+        }
     }
 
     fn terminal_output(&self, params: serde_json::Value) -> Result<serde_json::Value, RpcError> {
@@ -394,14 +466,15 @@ impl AcpHost {
                 .terminals
                 .lock()
                 .map_err(|_| RpcError::internal("terminal map lock poisoned"))?;
-            terminals
-                .remove(request.terminal_id.0.as_ref())
-                .ok_or_else(|| {
-                    RpcError::resource_not_found(format!(
+            match terminals.remove(request.terminal_id.0.as_ref()) {
+                Some(TerminalSlot::Live(terminal)) => terminal,
+                Some(TerminalSlot::Reserved) | None => {
+                    return Err(RpcError::resource_not_found(format!(
                         "unknown terminal {}",
                         request.terminal_id.0
-                    ))
-                })?
+                    )));
+                }
+            }
         };
         terminal.release();
         serde_json::to_value(ReleaseTerminalResponse::new())
@@ -456,16 +529,21 @@ impl Drop for AcpHost {
         let terminals = self
             .terminals
             .lock()
-            .map(|mut map| {
-                map.drain()
-                    .map(|(_, terminal)| terminal)
-                    .collect::<Vec<_>>()
-            })
+            .map(|mut map| drain_live_terminals(&mut map))
             .unwrap_or_default();
         for terminal in terminals {
             terminal.release();
         }
     }
+}
+
+fn drain_live_terminals(map: &mut HashMap<String, TerminalSlot>) -> Vec<Arc<AcpTerminal>> {
+    map.drain()
+        .filter_map(|(_, slot)| match slot {
+            TerminalSlot::Live(terminal) => Some(terminal),
+            TerminalSlot::Reserved => None,
+        })
+        .collect()
 }
 
 impl AcpTerminal {
@@ -501,6 +579,9 @@ impl AcpTerminal {
         if let Ok(mut killer) = self.killer.lock() {
             let _ = killer.kill();
         }
+        if let Ok(mut job) = self.job.lock() {
+            drop(job.take());
+        }
     }
 
     fn push_rpc_waiter(&self, handle: JoinHandle<()>) {
@@ -531,10 +612,13 @@ impl AcpTerminal {
             }
         }
         self.set_exit(TerminalExitStatus::new());
-        if let Ok(mut waiters) = self.rpc_waiters.lock() {
-            for handle in waiters.drain(..) {
-                let _ = handle.join();
-            }
+        let waiters = self
+            .rpc_waiters
+            .lock()
+            .map(|mut waiters| waiters.drain(..).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for handle in waiters {
+            let _ = handle.join();
         }
     }
 }
@@ -1063,67 +1147,52 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn terminal_echo_completes_and_keeps_output_after_kill_race() {
+    fn kill_terminates_a_process_that_would_not_exit_alone() {
         let test = host();
         let host = test.host;
         let created = host
             .create_terminal(serde_json::json!({
                 "sessionId": "stub-session",
-                "command": "cmd.exe",
-                "args": ["/c", "echo PONG"]
+                "command": "ping.exe",
+                "args": ["-t", "127.0.0.1"]
             }))
             .expect("create");
         let terminal_id = created["terminalId"].clone();
-        let start = std::sync::Arc::new(std::sync::Barrier::new(3));
-        let (wait_tx, wait_rx) = std::sync::mpsc::channel();
-        let wait_host = Arc::clone(&host);
-        let wait_id = terminal_id.clone();
-        let wait_start = Arc::clone(&start);
-        let wait_thread = std::thread::spawn(move || {
-            wait_start.wait();
-            let (tx, rx) = std::sync::mpsc::channel();
-            let respond: super::RpcRespond = Arc::new(move |_, result| {
-                let _ = tx.send(result);
-            });
-            wait_host.wait_for_exit(
-                serde_json::json!(1),
-                serde_json::json!({
-                    "sessionId": "stub-session",
-                    "terminalId": wait_id
-                }),
-                respond,
-            );
-            let _ = wait_tx.send(rx.recv_timeout(std::time::Duration::from_secs(10)));
-        });
-        let kill_host = Arc::clone(&host);
-        let kill_id = terminal_id.clone();
-        let kill_start = Arc::clone(&start);
-        let kill_thread = std::thread::spawn(move || {
-            kill_start.wait();
-            kill_host.kill_terminal(serde_json::json!({
-                "sessionId": "stub-session",
-                "terminalId": kill_id
-            }))
-        });
-        start.wait();
-        let wait_result = wait_rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("wait thread")
-            .expect("wait recv");
-        let wait_value = wait_result.expect("wait_for_exit");
-        assert!(wait_value.get("exitCode").is_some() || wait_value.get("signal").is_some());
-        kill_thread.join().expect("kill thread").expect("kill");
-        wait_thread.join().expect("wait join");
-        let output = host
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let before = host
             .terminal_output(serde_json::json!({
                 "sessionId": "stub-session",
                 "terminalId": terminal_id
             }))
-            .expect("output after kill still valid");
-        let text = output["output"].as_str().unwrap_or("");
+            .expect("output before kill");
         assert!(
-            text.contains("PONG") || output.get("exitStatus").is_some(),
-            "terminal produced neither PONG nor exit status: {output}"
+            before.get("exitStatus").is_none() || before["exitStatus"].is_null(),
+            "ping -t exited before kill: {before}"
+        );
+        host.kill_terminal(serde_json::json!({
+            "sessionId": "stub-session",
+            "terminalId": terminal_id
+        }))
+        .expect("kill");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let respond: super::RpcRespond = Arc::new(move |_, result| {
+            let _ = tx.send(result);
+        });
+        host.wait_for_exit(
+            serde_json::json!(1),
+            serde_json::json!({
+                "sessionId": "stub-session",
+                "terminalId": terminal_id
+            }),
+            respond,
+        );
+        let exit = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("wait_for_exit after kill")
+            .expect("kill must make the process exit");
+        assert!(
+            exit.get("exitCode").is_some() || exit.get("signal").is_some(),
+            "kill left no exit status: {exit}"
         );
         host.release_terminal(serde_json::json!({
             "sessionId": "stub-session",
@@ -1152,8 +1221,6 @@ mod tests {
             "args": ["/c", "exit"]
         }))
         .expect("fill to one live terminal");
-        let gap = Arc::new(std::sync::Barrier::new(2));
-        host.set_create_gap(Arc::clone(&gap));
         let start = Arc::new(std::sync::Barrier::new(3));
         let successes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut threads = Vec::new();
@@ -1180,6 +1247,7 @@ mod tests {
             thread.join().expect("create thread");
         }
         let live = host.live_terminal_count();
+        let spawned = host.spawned_count();
         host.shutdown();
         let _ = std::fs::remove_dir_all(cwd);
         let _ = std::fs::remove_dir_all(runtime);
@@ -1187,6 +1255,10 @@ mod tests {
             live <= 2,
             "live terminals={live} successes={}",
             successes.load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert!(
+            spawned <= 2,
+            "started {spawned} processes under a limit of 2 (map live={live})"
         );
     }
 }

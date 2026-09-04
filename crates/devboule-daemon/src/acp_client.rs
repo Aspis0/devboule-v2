@@ -75,10 +75,17 @@ fn advertised_initialize_params() -> Result<serde_json::Value, WireError> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum PromptPhase {
+    Idle,
+    Live(u64),
+    Abandoned(u64),
+}
+
 struct TurnWatch {
     silence: Duration,
     last_activity: Mutex<Instant>,
-    prompt_id: Mutex<Option<u64>>,
+    prompt: Mutex<PromptPhase>,
     client_work: std::sync::atomic::AtomicU64,
     stop: AtomicBool,
     runtime: Mutex<Option<Weak<SessionRuntime>>>,
@@ -91,17 +98,27 @@ impl TurnWatch {
         let watch = Arc::new(Self {
             silence: turn_silence(),
             last_activity: Mutex::new(Instant::now()),
-            prompt_id: Mutex::new(None),
+            prompt: Mutex::new(PromptPhase::Idle),
             client_work: std::sync::atomic::AtomicU64::new(0),
             stop: AtomicBool::new(false),
             runtime: Mutex::new(None),
             cancel: Mutex::new(None),
             broker: Mutex::new(None),
         });
-        let thread_watch = Arc::clone(&watch);
+        let thread_watch = Arc::downgrade(&watch);
         let _ = std::thread::Builder::new()
             .name("acp-turn-timeout".to_string())
-            .spawn(move || thread_watch.run());
+            .spawn(move || loop {
+                let Some(watch) = thread_watch.upgrade() else {
+                    return;
+                };
+                if watch.stop.load(Ordering::Acquire) {
+                    return;
+                }
+                watch.tick();
+                drop(watch);
+                std::thread::sleep(Duration::from_millis(50));
+            });
         watch
     }
 
@@ -144,85 +161,112 @@ impl TurnWatch {
     }
 
     fn start_prompt(&self, id: u64) {
-        if let Ok(mut prompt) = self.prompt_id.lock() {
-            *prompt = Some(id);
+        if let Ok(mut prompt) = self.prompt.lock() {
+            *prompt = PromptPhase::Live(id);
         }
         self.note_activity();
     }
 
-    fn finish_prompt(&self, id: u64) {
-        if let Ok(mut prompt) = self.prompt_id.lock() {
-            if *prompt == Some(id) {
-                *prompt = None;
+    fn finish_prompt(&self, id: u64) -> bool {
+        let Ok(mut prompt) = self.prompt.lock() else {
+            return false;
+        };
+        match *prompt {
+            PromptPhase::Live(current) if current == id => {
+                *prompt = PromptPhase::Idle;
+                true
             }
+            PromptPhase::Abandoned(current) if current == id => false,
+            _ => false,
         }
+    }
+
+    fn prompt_is_live(&self) -> bool {
+        matches!(
+            self.prompt.lock().ok().as_deref(),
+            Some(PromptPhase::Live(_))
+        )
     }
 
     fn shutdown(&self) {
         self.stop.store(true, Ordering::Release);
-        if let Ok(mut prompt) = self.prompt_id.lock() {
-            *prompt = None;
+    }
+
+    fn abandon_live_prompt(&self) -> Option<u64> {
+        let Ok(mut prompt) = self.prompt.lock() else {
+            return None;
+        };
+        match *prompt {
+            PromptPhase::Live(id) => {
+                *prompt = PromptPhase::Abandoned(id);
+                Some(id)
+            }
+            _ => None,
         }
     }
 
-    fn run(&self) {
-        while !self.stop.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(50));
-            if self.stop.load(Ordering::Acquire) {
-                return;
+    fn tick(&self) {
+        if self.stop.load(Ordering::Acquire) {
+            return;
+        }
+        if self.client_work.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        let pending_permission = self
+            .broker
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
+            .map(|broker| broker.pending_len() > 0)
+            .unwrap_or(false);
+        if pending_permission {
+            return;
+        }
+        let idle = self
+            .last_activity
+            .lock()
+            .ok()
+            .map(|last| last.elapsed() >= self.silence)
+            .unwrap_or(false);
+        if !idle {
+            return;
+        }
+        if self.client_work.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        if self
+            .broker
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
+            .map(|broker| broker.pending_len() > 0)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let Some(prompt_id) = self.abandon_live_prompt() else {
+            return;
+        };
+        if let Ok(cancel) = self.cancel.lock() {
+            if let Some(cancel) = cancel.as_ref() {
+                cancel();
             }
-            if self.client_work.load(Ordering::Acquire) != 0 {
-                continue;
-            }
-            let pending_permission = self
-                .broker
-                .lock()
-                .ok()
-                .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
-                .map(|broker| broker.pending_len() > 0)
-                .unwrap_or(false);
-            if pending_permission {
-                continue;
-            }
-            let Some(prompt_id) = self.prompt_id.lock().ok().and_then(|prompt| *prompt) else {
-                continue;
-            };
-            let idle = self
-                .last_activity
-                .lock()
-                .ok()
-                .map(|last| last.elapsed() >= self.silence)
-                .unwrap_or(false);
-            if !idle {
-                continue;
-            }
-            if let Ok(mut prompt) = self.prompt_id.lock() {
-                if *prompt != Some(prompt_id) {
-                    continue;
-                }
-                *prompt = None;
-            }
-            if let Ok(cancel) = self.cancel.lock() {
-                if let Some(cancel) = cancel.as_ref() {
-                    cancel();
-                }
-            }
-            if let Some(runtime) = self
-                .runtime
-                .lock()
-                .ok()
-                .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
-            {
-                let _ = runtime.publish_agent_event(
-                    SessionEvent::AgentError {
-                        message: format!(
-                            "ACP prompt {prompt_id} stayed silent for {}s and was cancelled.",
-                            self.silence.as_secs().max(1)
-                        ),
-                    },
-                    None,
-                );
-            }
+        }
+        if let Some(runtime) = self
+            .runtime
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
+        {
+            let _ = runtime.publish_agent_event(
+                SessionEvent::AgentError {
+                    message: format!(
+                        "ACP prompt {prompt_id} stayed silent for {}s and was cancelled.",
+                        self.silence.as_secs().max(1)
+                    ),
+                },
+                None,
+            );
         }
     }
 }
@@ -273,7 +317,7 @@ impl fmt::Display for PermissionResponseError {
 }
 
 impl PermissionBroker {
-    fn new(stdin: Arc<Mutex<ChildStdin>>) -> Arc<Self> {
+    fn new(stdin: Arc<Mutex<Option<ChildStdin>>>) -> Arc<Self> {
         Arc::new(Self {
             sender: Arc::new(move |id, result| {
                 let mut bytes = serde_json::to_vec(&serde_json::json!({
@@ -283,11 +327,7 @@ impl PermissionBroker {
                 }))
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 bytes.push(b'\n');
-                let mut stdin = stdin
-                    .lock()
-                    .map_err(|_| io::Error::other("ACP stdin lock poisoned"))?;
-                stdin.write_all(&bytes)?;
-                stdin.flush()
+                write_agent_stdin(&stdin, &bytes)
             }),
             pending: Mutex::new(HashMap::new()),
             require_journal: true,
@@ -764,13 +804,7 @@ pub(super) fn spawn_process(
         Arc::clone(&state.process_job),
     );
     let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
-    {
-        let cancel_transport = Arc::clone(&transport);
-        transport.turn.set_cancel(Arc::new(move || {
-            cancel_transport.cancel();
-        }));
-        transport.turn.bind_broker(&transport.permission_broker);
-    }
+    transport.bind_turn();
     let mut stderr_source = match AcpStderr::start(stderr) {
         Ok(source) => source,
         Err(error) => {
@@ -855,8 +889,22 @@ fn terminate_process(process: &mut Child) {
     let _ = process.wait();
 }
 
+fn write_agent_stdin(stdin: &Mutex<Option<ChildStdin>>, bytes: &[u8]) -> io::Result<()> {
+    let mut stdin = stdin
+        .lock()
+        .map_err(|_| io::Error::other("ACP stdin lock poisoned"))?;
+    let Some(stdin) = stdin.as_mut() else {
+        return Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "ACP stdin is closed",
+        ));
+    };
+    stdin.write_all(bytes)?;
+    stdin.flush()
+}
+
 struct AcpTransport {
-    stdin: Arc<Mutex<ChildStdin>>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
     permission_broker: Arc<PermissionBroker>,
     host: Arc<AcpHost>,
     turn: Arc<TurnWatch>,
@@ -867,7 +915,7 @@ struct AcpTransport {
 
 impl AcpTransport {
     fn new(stdin: ChildStdin, host: Arc<AcpHost>) -> Self {
-        let stdin = Arc::new(Mutex::new(stdin));
+        let stdin = Arc::new(Mutex::new(Some(stdin)));
         Self {
             permission_broker: PermissionBroker::new(Arc::clone(&stdin)),
             host,
@@ -903,14 +951,13 @@ impl AcpTransport {
         let mut bytes = serde_json::to_vec(value)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         bytes.push(b'\n');
-        let mut stdin = self
-            .stdin
-            .lock()
-            .map_err(|_| io::Error::other("ACP stdin lock poisoned"))?;
-        stdin.write_all(&bytes)?;
-        // An ACP request is interactive input. Flush explicitly on every
-        // platform; this is especially important for Windows pipe buffers.
-        stdin.flush()
+        write_agent_stdin(&self.stdin, &bytes)
+    }
+
+    fn close_stdin(&self) {
+        if let Ok(mut stdin) = self.stdin.lock() {
+            *stdin = None;
+        }
     }
 
     fn request(&self, method: &str, params: serde_json::Value) -> io::Result<u64> {
@@ -973,6 +1020,24 @@ impl AcpTransport {
             "session/cancel",
             serde_json::json!({ "sessionId": session_id }),
         );
+    }
+
+    fn bind_turn(self: &Arc<Self>) {
+        let cancel_transport = Arc::downgrade(self);
+        self.turn.set_cancel(Arc::new(move || {
+            if let Some(transport) = cancel_transport.upgrade() {
+                transport.cancel();
+            }
+        }));
+        self.turn.bind_broker(&self.permission_broker);
+    }
+}
+
+impl Drop for AcpTransport {
+    fn drop(&mut self) {
+        self.turn.shutdown();
+        self.host.shutdown();
+        self.close_stdin();
     }
 }
 
@@ -1107,17 +1172,29 @@ struct AcpKiller {
 impl SessionKiller for AcpKiller {
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
+            let watchdog = Arc::clone(&self.process);
+            let _ = std::thread::Builder::new()
+                .name("acp-kill-watchdog".to_string())
+                .spawn(move || {
+                    std::thread::sleep(Duration::from_millis(150));
+                    if let Ok(mut process) = watchdog.lock() {
+                        let _ = process.kill();
+                    }
+                });
+            let started = Instant::now();
             self.permission_broker.cancel_all();
             self.transport.turn.shutdown();
-            self.transport.host.shutdown();
             self.transport.cancel();
-            // Give a compliant peer a brief window to answer the outstanding
-            // prompt with stopReason=cancelled before the shutdown kill.
-            std::thread::sleep(Duration::from_millis(25));
+            let remaining = Duration::from_millis(25).saturating_sub(started.elapsed());
+            if !remaining.is_zero() {
+                std::thread::sleep(remaining);
+            }
         }
         if let Ok(mut process) = self.process.lock() {
             let _ = process.kill();
         }
+        self.transport.close_stdin();
+        self.transport.host.shutdown();
     }
 
     fn clone_killer(&self) -> Box<dyn SessionKiller> {
@@ -1187,7 +1264,7 @@ impl AcpReader {
         session_id: String,
         permission_broker: Arc<PermissionBroker>,
     ) -> Self {
-        Self::new(
+        Self::for_test_on_host(
             pending,
             session_id,
             permission_broker,
@@ -1196,8 +1273,42 @@ impl AcpReader {
                 std::env::temp_dir(),
                 Arc::new(JobObject::new().expect("job")),
             ),
+        )
+    }
+
+    #[cfg(test)]
+    fn for_test_on_host(
+        pending: Arc<Mutex<HashSet<u64>>>,
+        session_id: String,
+        permission_broker: Arc<PermissionBroker>,
+        host: Arc<AcpHost>,
+    ) -> Self {
+        Self::new(
+            pending,
+            session_id,
+            permission_broker,
+            host,
             TurnWatch::new(),
             None,
+            Vec::new(),
+        )
+    }
+
+    #[cfg(test)]
+    fn for_test_with_transport(
+        pending: Arc<Mutex<HashSet<u64>>>,
+        session_id: String,
+        permission_broker: Arc<PermissionBroker>,
+        host: Arc<AcpHost>,
+        transport: Arc<AcpTransport>,
+    ) -> Self {
+        Self::new(
+            pending,
+            session_id,
+            permission_broker,
+            host,
+            Arc::clone(&transport.turn),
+            Some(transport),
             Vec::new(),
         )
     }
@@ -1265,6 +1376,9 @@ impl ReaderDispatch for AcpReader {
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
         self.permission_broker.cancel_all();
+        self.turn.shutdown();
+        self.host.shutdown();
+        self.transport = None;
         if !self.buffer.is_empty() {
             eprintln!("skipping unterminated ACP output line");
             self.publish(
@@ -1377,16 +1491,11 @@ impl AcpReader {
         let Some(transport) = &self.transport else {
             return;
         };
-        let blocking = method == "terminal/wait_for_exit";
-        if blocking {
-            self.turn.begin_client_work();
-        }
+        self.turn.begin_client_work();
         let turn = Arc::clone(&self.turn);
         let transport = Arc::clone(transport);
         let respond: RpcRespond = Arc::new(move |response_id, result| {
-            if blocking {
-                turn.end_client_work();
-            }
+            turn.end_client_work();
             let _ = transport.send_result(response_id, result);
         });
         self.host.dispatch(method, id, params, respond);
@@ -1402,7 +1511,9 @@ impl AcpReader {
             eprintln!("skipping ACP response with unknown id {id}");
             return;
         }
-        self.turn.finish_prompt(id);
+        if !self.turn.finish_prompt(id) {
+            return;
+        }
         if let Some(error) = value.get("error") {
             self.publish(
                 runtime,
@@ -1549,6 +1660,15 @@ impl AcpReader {
             _ => unreachable!("permission parser returned a different event"),
         };
         let delivery = runtime.permission_delivery_enabled();
+        if !self.turn.prompt_is_live() {
+            self.cancel_permission_request(
+                id,
+                runtime,
+                "ACP permission request arrived after the turn ended and was cancelled."
+                    .to_string(),
+            );
+            return;
+        }
         let pending = match self.permission_broker.register(id, event.clone(), runtime) {
             Ok(pending) => pending,
             Err(error) => {
@@ -1560,6 +1680,12 @@ impl AcpReader {
                 return;
             }
         };
+        if !self.turn.prompt_is_live() {
+            let _ = self
+                .permission_broker
+                .cancel(&tool_call_id, &pending, "cancelled");
+            return;
+        }
         if delivery == Some(false) {
             let _ =
                 self.permission_broker
@@ -1742,7 +1868,7 @@ mod tests {
         MAX_ACP_PERMISSION_FIELD_BYTES, MAX_ACP_PERMISSION_LINE_BYTES, MAX_PENDING_ACP_PERMISSIONS,
     };
     use crate::journal::Journal;
-    use crate::session::{ConnHandle, ReaderDispatch, SessionRuntime};
+    use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
     use devboule_protocol::{PermissionOption, PermissionOutcome, SessionEvent};
     use rusqlite::Connection;
     use std::collections::HashSet;
@@ -2240,5 +2366,358 @@ mod tests {
             Err(super::PermissionResponseError::NotFound)
         ));
         assert_eq!(ACP_PERMISSION_TIMEOUT.as_secs(), 120);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reader_finish_releases_terminals_left_by_a_dead_agent() {
+        use super::AcpHost;
+        use crate::process_tree::JobObject;
+        let cwd = std::env::temp_dir().join(format!(
+            "devboule-acp-finish-cwd-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let runtime = std::env::temp_dir().join(format!(
+            "devboule-acp-finish-rt-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        std::fs::create_dir_all(&runtime).expect("runtime");
+        let host = AcpHost::new(
+            cwd.clone(),
+            runtime.clone(),
+            Arc::new(JobObject::new().expect("job")),
+        );
+        host.set_session_id("stub-session".to_string());
+        host.test_create_terminal(serde_json::json!({
+            "sessionId": "stub-session",
+            "command": "ping.exe",
+            "args": ["-t", "127.0.0.1"]
+        }))
+        .expect("create lingering terminal");
+        assert_eq!(host.live_terminal_count(), 1);
+        let (broker, _) = test_broker();
+        let mut reader = AcpReader::for_test_on_host(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+            Arc::clone(&host),
+        );
+        let session_runtime = Arc::new(SessionRuntime::new());
+        reader.finish(&session_runtime);
+        assert_eq!(
+            host.live_terminal_count(),
+            0,
+            "EOF must shut down ACP terminals the dead agent left behind"
+        );
+        let _ = std::fs::remove_dir_all(cwd);
+        let _ = std::fs::remove_dir_all(runtime);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn killer_does_not_block_on_a_full_agent_stdin() {
+        use super::{AcpHost, AcpKiller, AcpTransport};
+        use crate::process_tree::JobObject;
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let mut child = Command::new("ping.exe")
+            .args(["-n", "99999", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .expect("ping");
+        let stdin = child.stdin.take().expect("stdin");
+        let cwd = std::env::temp_dir();
+        let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+        let transport = Arc::new(AcpTransport::new(stdin, host));
+        transport.set_session_id("stub-session".to_string());
+        let runtime = Arc::new(SessionRuntime::new());
+        transport
+            .permission_broker
+            .register(1, permission("stuck-kill"), &runtime)
+            .expect("pending permission so cancel_all must write stdin");
+        let filler = {
+            let transport = Arc::clone(&transport);
+            thread::spawn(move || {
+                let blob = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/prompt",
+                    "params": { "pad": "x".repeat(4096) }
+                });
+                for _ in 0..64 {
+                    if transport.send_line(&blob).is_err() {
+                        break;
+                    }
+                }
+            })
+        };
+        thread::sleep(Duration::from_millis(200));
+        let mut killer = AcpKiller {
+            process: Arc::new(Mutex::new(child)),
+            permission_broker: Arc::clone(&transport.permission_broker),
+            transport: Arc::clone(&transport),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        thread::spawn(move || {
+            killer.kill();
+            let _ = done_tx.send(started.elapsed());
+        });
+        let elapsed = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("kill blocked waiting on agent stdin");
+        let _ = filler.join();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "kill blocked for {elapsed:?} waiting on agent stdin"
+        );
+    }
+
+    fn attached_runtime(
+        session_id: &str,
+        broker: Arc<PermissionBroker>,
+    ) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
+        let runtime = SessionRuntime::for_acp(session_id.to_string(), None, Arc::clone(&broker));
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn, true).expect("attach");
+        conn.track(session_id, Arc::clone(&runtime), false, None, generation);
+        (runtime, conn)
+    }
+
+    fn event_kinds(conn: &ConnHandle) -> Vec<&'static str> {
+        conn.pull_events()
+            .into_iter()
+            .map(|event| match event.envelope.event {
+                SessionEvent::AgentFinished { .. } => "finished",
+                SessionEvent::AgentError { .. } => "error",
+                SessionEvent::PermissionRequest { .. } => "permission",
+                SessionEvent::AgentThought { .. } => "thought",
+                SessionEvent::Snapshot { .. } => "snapshot",
+                _ => "other",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn late_prompt_result_after_cancel_is_not_a_second_outcome() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let mut reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::from([7u64]))),
+            "stub-session".to_string(),
+            broker,
+        );
+        reader.turn.start_prompt(7);
+        reader.turn.abandon_live_prompt();
+        let _ = event_kinds(&conn);
+        reader
+            .feed(
+                br#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"end_turn"}}"#
+                    .as_ref()
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(b'\n'))
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                &runtime,
+            )
+            .expect("feed");
+        let kinds = event_kinds(&conn);
+        assert!(
+            !kinds.contains(&"finished"),
+            "timed-out turn published AgentFinished: {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn permission_after_turn_cancel_is_not_shown_to_the_user() {
+        let (broker, sent) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            Arc::clone(&broker),
+        );
+        reader.turn.start_prompt(1);
+        reader.turn.abandon_live_prompt();
+        let _ = event_kinds(&conn);
+        reader.dispatch_permission(
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 88,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "stub-session",
+                    "title": "Run command",
+                    "toolCall": {"toolCallId": "late-perm"},
+                    "options": [{"optionId": "allow", "name": "Allow once", "kind": "allow_once"}]
+                }
+            }),
+            &runtime,
+        );
+        let kinds = event_kinds(&conn);
+        assert_eq!(broker.pending_len(), 0, "late permission stayed pending");
+        assert!(
+            !kinds.contains(&"permission"),
+            "cancelled turn published a permission prompt: {kinds:?}"
+        );
+        let sent = sent.lock().expect("sent lock");
+        assert!(
+            sent.iter()
+                .any(|(id, result)| *id == 88 && result["outcome"]["outcome"] == "cancelled"),
+            "agent was not told the late permission was cancelled: {sent:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancel_closure_does_not_keep_transport_alive() {
+        use super::{AcpHost, AcpTransport};
+        use crate::process_tree::JobObject;
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("ping.exe")
+            .args(["-n", "2", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .expect("ping");
+        let stdin = child.stdin.take().expect("stdin");
+        let cwd = std::env::temp_dir();
+        let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+        let transport = Arc::new(AcpTransport::new(stdin, host));
+        transport.bind_turn();
+        let weak = Arc::downgrade(&transport);
+        drop(transport);
+        let leaked = weak.upgrade();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            leaked.is_none(),
+            "TurnWatch cancel closure kept AcpTransport alive after the session dropped it"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reader_keeps_dispatching_while_a_host_call_is_blocked() {
+        use super::{AcpHost, AcpTransport};
+        use crate::process_tree::JobObject;
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        let cwd = std::env::temp_dir().join(format!(
+            "devboule-acp-e-cwd-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let runtime_dir = std::env::temp_dir().join(format!(
+            "devboule-acp-e-rt-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime");
+        let host = AcpHost::new(
+            cwd.clone(),
+            runtime_dir.clone(),
+            Arc::new(JobObject::new().expect("job")),
+        );
+        host.set_session_id("stub-session".to_string());
+        let gap = Arc::new(Barrier::new(2));
+        host.set_create_gap(Arc::clone(&gap));
+        let mut child = Command::new("ping.exe")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .expect("ping");
+        let stdin = child.stdin.take().expect("stdin");
+        let transport = Arc::new(AcpTransport::new(stdin, Arc::clone(&host)));
+        transport.set_session_id("stub-session".to_string());
+        let (broker, _) = test_broker();
+        let (session_runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let mut reader = AcpReader::for_test_with_transport(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+            Arc::clone(&host),
+            transport,
+        );
+        let create = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "terminal/create",
+            "params": {
+                "sessionId": "stub-session",
+                "command": "cmd.exe",
+                "args": ["/c", "exit"]
+            }
+        });
+        let thought = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "stub-session",
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "still-alive"}
+                }
+            }
+        });
+        let mut bytes = serde_json::to_vec(&create).expect("create line");
+        bytes.push(b'\n');
+        bytes.extend(serde_json::to_vec(&thought).expect("thought line"));
+        bytes.push(b'\n');
+        let feed_runtime = Arc::clone(&session_runtime);
+        let feed_thread = thread::spawn(move || reader.feed(&bytes, &feed_runtime));
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut saw_thought = false;
+        while Instant::now() < deadline {
+            if conn.pull_events().iter().any(|event| {
+                matches!(
+                    &event.envelope.event,
+                    SessionEvent::AgentThought { text, .. } if text == "still-alive"
+                )
+            }) {
+                saw_thought = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        gap.wait();
+        feed_thread.join().expect("feed thread").expect("feed");
+        host.shutdown();
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(cwd);
+        let _ = std::fs::remove_dir_all(runtime_dir);
+        assert!(
+            saw_thought,
+            "reader stayed blocked on terminal/create and never dispatched the next update"
+        );
     }
 }
