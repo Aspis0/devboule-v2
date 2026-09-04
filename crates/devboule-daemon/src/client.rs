@@ -8,10 +8,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_protocol::{
-    ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage, DaemonStatusBody, ErrorCode,
-    JournalRetention, JournalUsage, OwnerId, PermissionOutcome, Persistence, ResumeResult,
-    RetentionPatch, Session, SessionEvent, SessionEventEnvelope, SessionKind, SessionStateSnapshot,
-    WireError,
+    AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
+    DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PermissionOutcome,
+    Persistence, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
+    SessionKind, SessionStateSnapshot, WireError,
 };
 
 use crate::error::DaemonError;
@@ -197,6 +197,38 @@ impl DaemonClient {
             session_id: session_id.to_string(),
             cols,
             rows,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn session_report_agent(
+        &self,
+        session_id: &str,
+        source: &str,
+        agent: &str,
+        state: AgentActivityState,
+        seq: Option<u64>,
+        agent_session_id: Option<String>,
+        agent_session_path: Option<String>,
+        session_start_source: Option<String>,
+        message: Option<String>,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionReportAgent {
+            id,
+            session_id: session_id.to_string(),
+            source: source.to_string(),
+            agent: agent.to_string(),
+            state,
+            message,
+            seq,
+            agent_session_id,
+            agent_session_path,
+            session_start_source,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),

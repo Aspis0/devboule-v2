@@ -185,6 +185,18 @@ export type SessionEvent =
   | { type: "agent_error"; message: string }
   /** One line drained from the ACP agent's stderr. */
   | { type: "agent_stderr"; data: string }
+  | {
+      type: "agent_reported";
+      seq: number;
+      source: string;
+      agent: string;
+      state: "idle" | "working" | "blocked" | "unknown";
+      message?: string;
+      reportSeq?: number;
+      agentSessionId?: string;
+      agentSessionPath?: string;
+      sessionStartSource?: string;
+    }
   | PermissionRequest
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }

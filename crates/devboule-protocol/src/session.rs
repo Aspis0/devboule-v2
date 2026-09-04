@@ -16,6 +16,17 @@ pub enum SessionKind {
     Acp,
 }
 
+/// Activity the agent (or its hook) last reported. Wire names match herdr's
+/// `pane.report_agent` states so a hook payload can be forwarded unchanged.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentActivityState {
+    Idle,
+    Working,
+    Blocked,
+    Unknown,
+}
+
 /// Public session metadata returned by `session_create` and `sessions_list`.
 ///
 /// `workspace_id` is optional in M2 because workspace lookup is not
@@ -216,6 +227,26 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
         options: Vec<PermissionOption>,
+    },
+    /// An external process (agent hook or our stub) announced itself on
+    /// the daemon pipe. `seq` is the journal/stream sequence of this
+    /// record; `report_seq` is the hook's own monotonic counter, which
+    /// must not go backwards.
+    AgentReported {
+        seq: u64,
+        source: String,
+        agent: String,
+        state: AgentActivityState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        report_seq: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_session_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_start_source: Option<String>,
     },
     /// Process was observed to exit while the daemon was alive.
     Exit {
@@ -798,5 +829,45 @@ mod tests {
     fn resume_not_supported_is_an_explicit_variant() {
         let value = serde_json::to_value(ResumeResult::NotSupported).expect("json");
         assert_eq!(value["type"], "not_supported");
+    }
+
+    #[test]
+    fn agent_reported_round_trips_with_herdr_shaped_fields() {
+        let event = SessionEvent::AgentReported {
+            seq: 4,
+            source: "devboule:stub".to_string(),
+            agent: "stub".to_string(),
+            state: AgentActivityState::Working,
+            message: Some("turn started".to_string()),
+            report_seq: Some(7),
+            agent_session_id: Some("agent-session-1".to_string()),
+            agent_session_path: Some(r"C:\tmp\session.json".to_string()),
+            session_start_source: Some("startup".to_string()),
+        };
+        let encoded = serde_json::to_value(&event).expect("json");
+        assert_eq!(encoded["type"], "agent_reported");
+        assert_eq!(encoded["seq"], 4);
+        assert_eq!(encoded["source"], "devboule:stub");
+        assert_eq!(encoded["agent"], "stub");
+        assert_eq!(encoded["state"], "working");
+        assert_eq!(encoded["message"], "turn started");
+        assert_eq!(encoded["reportSeq"], 7);
+        assert_eq!(encoded["agentSessionId"], "agent-session-1");
+        assert_eq!(encoded["agentSessionPath"], r"C:\tmp\session.json");
+        assert_eq!(encoded["sessionStartSource"], "startup");
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, event);
+        assert_eq!(
+            serde_json::to_value(AgentActivityState::Idle).expect("json"),
+            "idle"
+        );
+        assert_eq!(
+            serde_json::to_value(AgentActivityState::Blocked).expect("json"),
+            "blocked"
+        );
+        assert_eq!(
+            serde_json::to_value(AgentActivityState::Unknown).expect("json"),
+            "unknown"
+        );
     }
 }

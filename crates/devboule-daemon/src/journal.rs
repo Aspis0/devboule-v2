@@ -282,6 +282,7 @@ impl SessionRecord {
 pub enum EventKind {
     Output,
     Exit,
+    AgentReport,
 }
 
 impl EventKind {
@@ -289,6 +290,7 @@ impl EventKind {
         match self {
             Self::Output => "output",
             Self::Exit => "exit",
+            Self::AgentReport => "agent_report",
         }
     }
 
@@ -296,6 +298,7 @@ impl EventKind {
         match value {
             "output" => Some(Self::Output),
             "exit" => Some(Self::Exit),
+            "agent_report" => Some(Self::AgentReport),
             _ => None,
         }
     }
@@ -1517,6 +1520,22 @@ pub fn new_session_record(
     }
 }
 
+pub fn agent_report_record(
+    session_id: impl Into<String>,
+    generation: u64,
+    seq: u64,
+    event: &SessionEvent,
+) -> Option<EventRecord> {
+    Some(EventRecord {
+        session_id: session_id.into(),
+        generation,
+        seq,
+        kind: EventKind::AgentReport,
+        ts_ms: now_ms(),
+        payload: serde_json::to_vec(event).ok()?,
+    })
+}
+
 pub fn output_record(
     session_id: impl Into<String>,
     generation: u64,
@@ -1860,6 +1879,39 @@ mod tests {
             }
             other => panic!("unexpected replay: {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_report_survives_replay() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal
+            .upsert_blocking(sample_session("s.a.1"))
+            .expect("upsert");
+        journal
+            .append_blocking(output_record("s.a.1", 1, 1, b"one"))
+            .expect("output");
+        let event = SessionEvent::AgentReported {
+            seq: 2,
+            source: "devboule:stub".to_string(),
+            agent: "stub".to_string(),
+            state: devboule_protocol::AgentActivityState::Working,
+            message: None,
+            report_seq: Some(7),
+            agent_session_id: Some("agent-1".to_string()),
+            agent_session_path: None,
+            session_start_source: Some("startup".to_string()),
+        };
+        journal
+            .append_blocking(agent_report_record("s.a.1", 1, 2, &event).expect("record"))
+            .expect("report");
+        let replay = journal.replay("s.a.1", 0).expect("replay");
+        assert!(
+            replay.events.iter().any(|item| item == &event),
+            "replay missing agent report: {:?}",
+            replay.events
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

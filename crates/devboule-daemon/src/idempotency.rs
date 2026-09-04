@@ -3,7 +3,10 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{DaemonMessage, IDEMPOTENCY_MAX_ENTRIES, IDEMPOTENCY_TTL_SECS};
 
+/// `Hit` stores a full reply frame. Boxing it would scatter clones on the
+/// retry path for a cache of a few thousand entries.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum IdempotencyOutcome {
     Hit(DaemonMessage),
     Conflict,

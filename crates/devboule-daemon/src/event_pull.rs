@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use devboule_protocol::{CursorShape, ScreenCursor, SessionEvent, SessionEventEnvelope};
 
+use crate::agent_report::PeerIdentity;
 use crate::outbound::ConnOut;
 use crate::screen::{ScreenSnapshot, SnapshotCursorShape};
 
@@ -41,16 +42,23 @@ fn snapshot_event(as_of_seq: u64, screen: ScreenSnapshot) -> SessionEvent {
 pub struct ConnHandle {
     pub id: u64,
     pub outbound: Arc<ConnOut>,
+    pub peer: Option<PeerIdentity>,
     attached: Mutex<HashMap<String, PullState>>,
     state_events: Mutex<VecDeque<SessionEventEnvelope>>,
     next_attachment_generation: AtomicU64,
 }
 
 impl ConnHandle {
+    #[cfg(test)]
     pub fn new(id: u64) -> Arc<Self> {
+        Self::with_peer(id, None)
+    }
+
+    pub fn with_peer(id: u64, peer: Option<PeerIdentity>) -> Arc<Self> {
         Arc::new(Self {
             id,
             outbound: ConnOut::new(),
+            peer,
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),
             next_attachment_generation: AtomicU64::new(1),
@@ -209,7 +217,8 @@ impl ConnHandle {
                 | SessionEvent::AgentFinished { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
-                | SessionEvent::PermissionRequest { .. } => false,
+                | SessionEvent::PermissionRequest { .. }
+                | SessionEvent::AgentReported { .. } => false,
             }
         };
         if remove {
@@ -396,9 +405,20 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
             push_dead_events(session_id, pull, events);
             return;
         };
-        stream
+        let mut replay = stream
             .scrollback
-            .replay_after_with_journal(cursor, &journal_outputs)
+            .replay_after_with_journal(cursor, &journal_outputs);
+        let cursor_seq = cursor.unwrap_or(0);
+        for (seq, event) in &stream.transcript_agent_reports {
+            if *seq > cursor_seq {
+                replay.push(event.clone());
+            }
+        }
+        replay.sort_by_key(|event| match event {
+            SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => *seq,
+            _ => u64::MAX,
+        });
+        replay
     };
     for event in replay {
         events.push(PendingEvent {
@@ -570,6 +590,7 @@ mod tests {
                 SessionEvent::AgentError { .. } => "agent_error",
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
                 SessionEvent::PermissionRequest { .. } => "permission_request",
+                SessionEvent::AgentReported { .. } => "agent_reported",
             })
             .collect();
         assert_eq!(kinds, ["snapshot", "output", "exit"]);
@@ -750,6 +771,7 @@ mod tests {
                 SessionEvent::AgentError { .. } => "agent_error",
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
                 SessionEvent::PermissionRequest { .. } => "permission_request",
+                SessionEvent::AgentReported { .. } => "agent_reported",
             })
             .collect();
         assert_eq!(kinds, ["output", "recovered"]);

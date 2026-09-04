@@ -277,6 +277,8 @@ impl SessionRuntime {
                 exit_at: None,
                 pending_silences: VecDeque::new(),
                 disposition: Disposition::Running,
+                agent_reports: crate::agent_report::AgentReportState::default(),
+                transcript_agent_reports: std::collections::BTreeMap::new(),
             }),
             pty_writer: OnceLock::new(),
             journal_degraded: AtomicBool::new(false),
@@ -371,6 +373,9 @@ impl SessionRuntime {
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. } => {}
+                SessionEvent::AgentReported { seq, .. } => {
+                    stream.transcript_agent_reports.insert(seq, event);
+                }
             }
         }
         drop(stream);
@@ -668,6 +673,56 @@ impl SessionRuntime {
         was_silent
     }
 
+    pub(crate) fn accept_agent_report(
+        &self,
+        report: crate::agent_report::AgentReport,
+    ) -> Result<bool, WireError> {
+        let journaled;
+        {
+            let Ok(mut stream) = self.lock_stream() else {
+                return Err(internal("Session state is unavailable."));
+            };
+            match stream.agent_reports.apply(report.clone()) {
+                Ok(false) => return Ok(false),
+                Ok(true) => {}
+                Err(error) => return Err(error),
+            }
+            let seq = stream.next_seq;
+            stream.next_seq = stream.next_seq.saturating_add(1);
+            stream.last_publish = Some(Instant::now());
+            let event = SessionEvent::AgentReported {
+                seq,
+                source: report.source,
+                agent: report.agent,
+                state: report.state,
+                message: report.message,
+                report_seq: report.seq,
+                agent_session_id: report.agent_session_id,
+                agent_session_path: report.agent_session_path,
+                session_start_source: report.session_start_source,
+            };
+            enqueue_agent(&mut stream, event.clone());
+            if let Some(attached) = &stream.attached {
+                attached.outbound.notify();
+            }
+            journaled = (stream.generation, seq, event);
+        }
+        if let Some(journal) = &self.journal {
+            if let Some(record) = crate::journal::agent_report_record(
+                self.session_id.clone(),
+                journaled.0,
+                journaled.1,
+                &journaled.2,
+            ) {
+                let accepted = journal.try_append(record);
+                if !accepted || journal.is_session_degraded(&self.session_id) {
+                    self.mark_journal_degraded();
+                }
+            }
+        }
+        Ok(true)
+    }
+
     fn permission_broker(&self) -> Option<Arc<acp_client::PermissionBroker>> {
         self.permission_broker.as_ref().map(Arc::clone)
     }
@@ -906,7 +961,8 @@ impl SessionRuntime {
                 | SessionEvent::AgentFinished { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
-                | SessionEvent::PermissionRequest { .. } => None,
+                | SessionEvent::PermissionRequest { .. }
+                | SessionEvent::AgentReported { .. } => None,
             })
             .collect()
     }
@@ -1723,11 +1779,17 @@ impl SessionRegistry {
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
         };
-        let command = match command {
+        let mut command = match command {
             Some(command) => command,
             None if metadata.kind == SessionKind::Acp => acp_client::resolve_command(&self.paths)?,
             None => resolve_pty_command(&self.paths)?,
         };
+        crate::agent_env::inject_session_env(
+            &mut command,
+            &metadata.id,
+            metadata.workspace_id.as_deref(),
+            &self.paths,
+        );
         // Journal the row BEFORE spawn. A short-lived command (cmd /c echo)
         // can EOF and enqueue MarkEnded before this function would otherwise
         // reach try_upsert, and the journal thread would then see a missing
@@ -2041,6 +2103,42 @@ impl SessionRegistry {
                 format!("Could not flush input to the terminal: {error}"),
             )
         })
+    }
+
+    pub fn report_agent(
+        &self,
+        session_id: &str,
+        report: crate::agent_report::AgentReport,
+        peer: Option<&crate::agent_report::PeerIdentity>,
+    ) -> Result<bool, WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        crate::agent_report::validate_announcement(&report)?;
+        #[cfg(not(windows))]
+        {
+            let _ = peer;
+            return Err(crate::agent_report::peer_identity_unavailable_on_platform());
+        }
+        let runtime = {
+            let map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get(session_id).ok_or_else(not_found)?;
+            let live = entry.as_live().ok_or_else(process_gone)?;
+            #[cfg(windows)]
+            {
+                let daemon_sid = crate::security::current_user_sid().map_err(|error| {
+                    crate::agent_report::unauthorized_peer(format!(
+                        "Could not verify the announcing process identity: {error}"
+                    ))
+                })?;
+                crate::agent_report::verify_announcement_peer(peer, &daemon_sid)?;
+                crate::agent_report::verify_announcement_peer(peer, &live.owner.user)?;
+            }
+            Arc::clone(&live.runtime)
+        };
+        runtime.accept_agent_report(report)
     }
 
     pub fn resize(

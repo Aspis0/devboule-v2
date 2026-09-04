@@ -9,6 +9,17 @@ assets. Their names, versions, declared licences, copyright attributions,
 and required notice information are documented in THIRD_PARTY.md, which is
 part of this distribution's notices.
 
+The agent-announcement environment variables, hook `seq` rule, and
+`session_report_agent` payload in `crates/devboule-daemon/src/agent_env.rs`
+and `crates/devboule-daemon/src/agent_report.rs` are adapted from herdr,
+licensed under the Apache License, Version 2.0, commit `3150bd9`:
+
+- `herdr-src/src/pane.rs` `apply_pane_launch_env`
+- `herdr-src/src/integration/env.rs` `apply_pane_base_env`
+- `herdr-src/src/api/schema/panes.rs` `PaneReportAgentParams`
+- `herdr-src/src/terminal/state.rs` `accept_hook_report`
+- `herdr-src/src/agent_resume.rs` `is_official_agent_source`
+
 The known-agent executable names and aliases in
 `crates/devboule-daemon/src/provider_catalog.rs` are adapted from herdr,
 licensed under the Apache License, Version 2.0, commit `3150bd9`:

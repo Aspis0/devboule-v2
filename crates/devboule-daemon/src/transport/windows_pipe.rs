@@ -42,8 +42,6 @@ use crate::security::PipeSecurity;
 use crate::security::{self, last_os_error, wide};
 #[cfg(feature = "server")]
 use crate::transport::Listener;
-#[cfg(feature = "server")]
-use devboule_protocol::OwnerId;
 
 #[cfg(feature = "server")]
 const PIPE_BUFFER: u32 = 64 * 1024;
@@ -254,7 +252,7 @@ pub fn inspect_pipe_dacl(file: &File) -> io::Result<String> {
 }
 
 #[cfg(feature = "server")]
-pub fn peer_owner(file: &File) -> io::Result<OwnerId> {
+pub fn peer_identity(file: &File) -> io::Result<crate::agent_report::PeerIdentity> {
     use std::os::windows::io::AsRawHandle;
 
     let mut pid = 0u32;
@@ -263,8 +261,7 @@ pub fn peer_owner(file: &File) -> io::Result<OwnerId> {
         return Err(last_os_error());
     }
     let sid = security::process_user_sid(pid)?;
-    OwnerId::new(sid, format!("process-{pid}"))
-        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))
+    Ok(crate::agent_report::PeerIdentity { user: sid, pid })
 }
 
 #[cfg(feature = "server")]

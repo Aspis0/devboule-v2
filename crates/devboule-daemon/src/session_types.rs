@@ -9,6 +9,7 @@ use devboule_protocol::{
     OwnerId, Session, SessionEvent, SessionEventEnvelope, TranscriptIntegrity,
 };
 
+use crate::agent_report::AgentReportState;
 use crate::outbound::ConnOut;
 use crate::screen::{Screen, ScreenSnapshot};
 
@@ -193,6 +194,12 @@ pub(crate) struct StreamState {
     pub(super) exit_at: Option<Instant>,
     pub(super) pending_silences: VecDeque<u64>,
     pub(super) disposition: Disposition,
+    /// Last accepted hook report per source. Seq is checked under the
+    /// stream lock so two concurrent announcements cannot both apply.
+    pub(super) agent_reports: AgentReportState,
+    /// Journaled agent reports for a recovered transcript, keyed by the
+    /// stream sequence so attach replay can interleave them with output.
+    pub(super) transcript_agent_reports: BTreeMap<u64, SessionEvent>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

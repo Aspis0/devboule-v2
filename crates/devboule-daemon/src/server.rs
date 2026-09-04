@@ -436,15 +436,26 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         return Ok(());
     }
     #[cfg(windows)]
-    let true_owner = match transport::peer_owner(framed.as_file().as_ref()) {
-        Ok(owner) => owner,
+    let peer = match transport::peer_identity(framed.as_file().as_ref()) {
+        Ok(peer) => peer,
         Err(error) => {
             eprintln!("could not derive named-pipe peer identity: {error}");
             let _ = framed.send(&DaemonMessage::Error(WireError::new(
-                ErrorCode::Io,
+                ErrorCode::Unauthorized,
                 "Could not verify the daemon client identity.",
             )));
             return Err(DaemonError::Io(error));
+        }
+    };
+    #[cfg(windows)]
+    let true_owner = match OwnerId::new(peer.user.clone(), format!("process-{}", peer.pid)) {
+        Ok(owner) => owner,
+        Err(message) => {
+            let _ = framed.send(&DaemonMessage::Error(WireError::new(
+                ErrorCode::Unauthorized,
+                "Could not verify the daemon client identity.",
+            )));
+            return Err(DaemonError::Protocol(message));
         }
     };
     #[cfg(not(windows))]
@@ -485,7 +496,10 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     // The hello owner is diagnostic only. All idempotency and session access
     // below use the identity derived from the connected pipe's peer process.
     let owner = true_owner;
-    let conn = ConnHandle::new(state.alloc_conn());
+    #[cfg(windows)]
+    let conn = ConnHandle::with_peer(state.alloc_conn(), Some(peer));
+    #[cfg(not(windows))]
+    let conn = ConnHandle::with_peer(state.alloc_conn(), None);
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
@@ -702,6 +716,7 @@ fn send_pending_event(
             SessionEvent::AgentError { .. } => " agent_error".to_string(),
             SessionEvent::AgentStderr { .. } => " agent_stderr".to_string(),
             SessionEvent::PermissionRequest { .. } => " permission_request".to_string(),
+            SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
         };
         eprintln!(
             "discarded stale pending event for session {} generation {}{}",
@@ -838,7 +853,8 @@ fn dispatch(
         | ClientMessage::SessionsList { .. }
         | ClientMessage::SessionsWatch { .. }
         | ClientMessage::SessionsUnwatch { .. }
-        | ClientMessage::SessionResume { .. } => {
+        | ClientMessage::SessionResume { .. }
+        | ClientMessage::SessionReportAgent { .. } => {
             if !sessions_ok {
                 return capability_not_supported(request.request_id(), caps::SESSIONS);
             }
@@ -1081,6 +1097,38 @@ fn dispatch_session(
             Ok(sessions) => DaemonMessage::Sessions { id, sessions },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
+        ClientMessage::SessionReportAgent {
+            id,
+            session_id,
+            source,
+            agent,
+            state: agent_state,
+            message,
+            seq,
+            agent_session_id,
+            agent_session_path,
+            session_start_source,
+        } => {
+            let report = crate::agent_report::AgentReport {
+                source,
+                agent,
+                state: agent_state,
+                message,
+                seq,
+                agent_session_id,
+                agent_session_path,
+                session_start_source: crate::agent_report::normalize_session_start_source(
+                    session_start_source,
+                ),
+            };
+            reply_result(
+                id,
+                state
+                    .sessions
+                    .report_agent(&session_id, report, conn.peer.as_ref())
+                    .map(|_| DaemonMessage::Ok { id }),
+            )
+        }
         ClientMessage::SessionResume {
             id, persistence, ..
         } => match persistence.kind {

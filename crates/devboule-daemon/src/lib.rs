@@ -4,6 +4,10 @@
 use std::time::Duration;
 
 #[cfg(feature = "server")]
+mod agent_env;
+#[cfg(feature = "server")]
+mod agent_report;
+#[cfg(feature = "server")]
 mod atomic;
 mod client;
 mod error;
@@ -32,6 +36,12 @@ mod transport;
 mod security;
 
 #[cfg(feature = "server")]
+pub use agent_env::{
+    BIN_PATH as DEVBOULE_BIN_PATH, ENV_MARKER as DEVBOULE_ENV,
+    ENV_MARKER_VALUE as DEVBOULE_ENV_VALUE, SESSION_ID as DEVBOULE_SESSION_ID,
+    SOCKET_PATH as DEVBOULE_SOCKET_PATH, WORKSPACE_ID as DEVBOULE_WORKSPACE_ID,
+};
+#[cfg(feature = "server")]
 pub use atomic::atomic_write;
 pub use client::{
     connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler,
@@ -41,7 +51,7 @@ pub use error::DaemonError;
 pub use framing::Framed;
 #[cfg(feature = "server")]
 pub use journal::{
-    Journal, JournalError, JournalLimits, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_BYTES,
+    Journal, JournalError, JournalLimits, Replay, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_BYTES,
     JOURNAL_MAX_SESSIONS, JOURNAL_QUEUE_CAP, JOURNAL_SCHEMA_VERSION, JOURNAL_SESSION_MAX_BYTES,
     SNAPSHOT_EVERY_BYTES,
 };

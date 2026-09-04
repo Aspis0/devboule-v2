@@ -7,7 +7,8 @@ use crate::capability::Capability;
 use crate::error::WireError;
 use crate::handshake::{ClientHello, DaemonHello};
 use crate::session::{
-    Cursor, PermissionOutcome, Persistence, ResumeResult, Session, SessionEvent, SessionKind,
+    AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult, Session,
+    SessionEvent, SessionKind,
 };
 
 /// Messages the client writes.
@@ -98,6 +99,26 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    /// External announcement from an agent hook (or our stub). The
+    /// `session_id` in the frame is a claim, not a proof: the daemon
+    /// verifies the named-pipe peer before accepting it.
+    SessionReportAgent {
+        id: u64,
+        session_id: String,
+        source: String,
+        agent: String,
+        state: AgentActivityState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_session_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_start_source: Option<String>,
+    },
     SessionsList {
         id: u64,
     },
@@ -165,6 +186,7 @@ impl ClientMessage {
             | Self::SessionResize { id, .. }
             | Self::SessionInterrupt { id, .. }
             | Self::SessionPermissionRespond { id, .. }
+            | Self::SessionReportAgent { id, .. }
             | Self::SessionsList { id }
             | Self::SessionsWatch { id }
             | Self::SessionsUnwatch { id }
@@ -209,6 +231,7 @@ impl ClientMessage {
             | Self::SessionStop { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
+            | Self::SessionReportAgent { .. }
             | Self::SessionsList { .. }
             | Self::SessionsWatch { .. }
             | Self::SessionsUnwatch { .. }
@@ -586,6 +609,39 @@ mod tests {
         assert!(!encoded.contains('\n'));
         let decoded: ClientMessage = serde_json::from_str(&encoded).expect("parse");
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn session_report_agent_round_trips_with_herdr_payload() {
+        let msg = ClientMessage::SessionReportAgent {
+            id: 11,
+            session_id: "s.client.1".to_string(),
+            source: "devboule:stub".to_string(),
+            agent: "stub".to_string(),
+            state: AgentActivityState::Working,
+            message: None,
+            seq: Some(3),
+            agent_session_id: Some("agent-1".to_string()),
+            agent_session_path: None,
+            session_start_source: Some("startup".to_string()),
+        };
+        let value = serde_json::to_value(&msg).expect("json");
+        assert_eq!(value["type"], "session_report_agent");
+        assert_eq!(value["sessionId"], "s.client.1");
+        assert_eq!(value["source"], "devboule:stub");
+        assert_eq!(value["agent"], "stub");
+        assert_eq!(value["state"], "working");
+        assert_eq!(value["seq"], 3);
+        assert_eq!(value["agentSessionId"], "agent-1");
+        assert_eq!(value["sessionStartSource"], "startup");
+        assert!(value.get("message").is_none());
+        assert!(value.get("agentSessionPath").is_none());
+        assert_eq!(msg.request_id(), Some(11));
+        assert_eq!(msg.idempotency_key(), None);
+        let encoded = serde_json::to_string(&msg).expect("json");
+        assert!(!encoded.contains('\n'));
+        let decoded: ClientMessage = serde_json::from_str(&encoded).expect("parse");
+        assert_eq!(decoded, msg);
     }
 
     #[test]

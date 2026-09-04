@@ -142,8 +142,60 @@ pub(super) fn replay_session(
                 };
                 exit_event = Some(SessionEvent::Exit { code });
             }
+            Some(EventKind::AgentReport) => {
+                if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                    events.push(event);
+                }
+            }
             None => {}
         }
+    }
+
+    // Snapshots cover output seqs and raise `covered`, which would hide
+    // agent_report rows that stay in `events` (they are not compacted).
+    // Reload those rows independently and merge by stream sequence.
+    let mut covered_reports = Vec::new();
+    if covered > from_seq {
+        let mut report_stmt = conn.prepare(
+            "SELECT seq, payload, checksum FROM events
+             WHERE session_id = ?1 AND generation = ?2 AND kind = 'agent_report'
+               AND seq > ?3 AND seq <= ?4
+             ORDER BY seq",
+        )?;
+        let report_rows = report_stmt.query_map(
+            params![
+                session_id,
+                generation as i64,
+                from_seq as i64,
+                covered as i64
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, i64>(2)? as u32,
+                ))
+            },
+        )?;
+        for row in report_rows {
+            let (seq, payload, checksum) = row?;
+            if crc32(&payload) != checksum {
+                return Err(JournalError::Checksum {
+                    session_id: session_id.to_string(),
+                    seq,
+                });
+            }
+            if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
+                covered_reports.push(event);
+            }
+        }
+    }
+    if !covered_reports.is_empty() {
+        events.extend(covered_reports);
+        events.sort_by_key(|event| match event {
+            SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => *seq,
+            _ => u64::MAX,
+        });
     }
 
     let terminated = matches!(record.status, PersistStatus::Ended)
