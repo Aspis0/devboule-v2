@@ -43,12 +43,6 @@ jobs:
       - name: Check dependency shrinkwrap hygiene
         run: pnpm run check:shrinkwrap
 
-      - name: Check direct dependency major versions
-        run: pnpm run check:dependency-majors
-
-      - name: Audit npm dependencies (High and above are blocking)
-        run: pnpm audit --audit-level high
-
       - name: Show pinned Rust toolchain
         run: rustup show active-toolchain
 
@@ -125,6 +119,22 @@ jobs:
         # advisory notices remain visible without turning Tauri's transitive GTK
         # notices into a false-green workaround.
         run: cargo audit
+
+      # These two run LAST, and the position is the point. Both reach the npm
+      # registry, so both fail when a third party is unreachable — and while
+      # they sat ahead of the Rust steps, every such failure marked build, fmt,
+      # clippy and cargo test as never executed. Measured on 2026-09-03/04:
+      # three times in one day the Rust half went dark, once for dependencies
+      # genuinely behind (oxfmt, sha2), once for a fresh major (vitest 5), and
+      # once for an npm registry outage that had nothing to do with this repo.
+      # They stay blocking — the project's rule is every dependency on the
+      # latest stable — but npm's uptime no longer decides whether our own code
+      # gets compiled and tested.
+      - name: Check direct dependency major versions
+        run: pnpm run check:dependency-majors
+
+      - name: Audit npm dependencies (High and above are blocking)
+        run: pnpm audit --audit-level high
 
   polis-plugin:
     runs-on: windows-latest
