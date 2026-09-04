@@ -6,9 +6,14 @@
 //! The executable-file check is likewise adapted from herdr under that
 //! license and commit, from `herdr-src/src/integration/registry.rs:161-179`.
 //! The launch resolver is Devboule code: it follows PATHEXT but retains only
-//! extensions that `std::process::Command` can launch directly. The provider
-//! catalog shape, ACP launch metadata, and explicit unknown authentication
-//! state are also Devboule code.
+//! extensions that `std::process::Command` can launch directly. On Windows it
+//! then unwraps an npm `cmd-shim` `.cmd`/`.bat` to `node` plus the package
+//! script, so CreateProcess does not go through `cmd.exe`. That unwrap is the
+//! inverse of herdr's `normalized_process_name` /
+//! `agent_name_from_known_package_path` (`herdr-src/src/detect/mod.rs:359-650`,
+//! commit `3150bd9`), which identify a running `node.exe` agent from argv.
+//! The provider catalog shape, ACP launch metadata, and explicit unknown
+//! authentication state are also Devboule code.
 
 use std::path::{Path, PathBuf};
 #[cfg(test)]
@@ -53,7 +58,10 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
     KnownAgent {
         id: "qwen",
         aliases: &["qwen", "qwen-code", "qwen code"],
-        acp_args: Some(&["--experimental-acp"]),
+        // Measured 2026-09-04: `--acp` answers `initialize` and
+        // `--experimental-acp` still works but prints "deprecated and will be
+        // removed in a future release. Please use --acp instead."
+        acp_args: Some(&["--acp"]),
     },
     KnownAgent {
         id: "gemini",
@@ -75,12 +83,34 @@ pub enum AuthenticationStatus {
     Unknown,
 }
 
+/// Direct CreateProcess program plus arguments that must precede ACP/user args.
+///
+/// A native CLI (`claude.exe`, `grok.exe`) has an empty `prefix_args`. An
+/// unwrapped npm cmd-shim is `node` plus the package script path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResolvedLaunch {
+    program: PathBuf,
+    prefix_args: Vec<String>,
+}
+
+impl ResolvedLaunch {
+    fn program(program: PathBuf) -> Self {
+        Self {
+            program,
+            prefix_args: Vec::new(),
+        }
+    }
+}
+
 /// One known provider found on this machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledAgent {
     pub id: &'static str,
     pub aliases: &'static [&'static str],
     pub executable: PathBuf,
+    /// Arguments inserted between `executable` and ACP/user args.
+    /// Empty for a native binary; the package script for an npm cmd-shim.
+    pub prefix_args: Vec<String>,
     /// The command as displayed to a user, using the canonical agent name.
     pub acp_command: Option<Vec<String>>,
     pub authentication: AuthenticationStatus,
@@ -91,7 +121,7 @@ pub fn discover() -> Vec<InstalledAgent> {
     KNOWN_AGENTS
         .iter()
         .filter_map(|spec| {
-            let executable = spec
+            let launch = spec
                 .aliases
                 .iter()
                 .find_map(|alias| resolve_command_path(alias))?;
@@ -104,7 +134,8 @@ pub fn discover() -> Vec<InstalledAgent> {
             Some(InstalledAgent {
                 id: spec.id,
                 aliases: spec.aliases,
-                executable,
+                executable: launch.program,
+                prefix_args: launch.prefix_args,
                 acp_command,
                 authentication: AuthenticationStatus::Unknown,
             })
@@ -143,7 +174,7 @@ pub(crate) fn executable_file_exists(path: &Path) -> bool {
     }
 }
 
-fn resolve_command_path(command: &str) -> Option<PathBuf> {
+fn resolve_command_path(command: &str) -> Option<ResolvedLaunch> {
     let paths = std::env::var_os("PATH")?;
     let directories = std::env::split_paths(&paths).collect::<Vec<_>>();
     resolve_launch_command_in_paths(&directories, command)
@@ -213,12 +244,100 @@ fn is_direct_launch_extension(extension: &str) -> bool {
         .any(|known| known.eq_ignore_ascii_case(extension))
 }
 
-fn resolve_launch_command_in_paths(paths: &[PathBuf], command: &str) -> Option<PathBuf> {
+fn resolve_direct_program(paths: &[PathBuf], command: &str) -> Option<PathBuf> {
     paths.iter().find_map(|dir| {
         launch_path_candidates(dir, command)
             .into_iter()
             .find_map(|path| executable_file_exists(&path).then(|| absolute_path(&path)))
             .flatten()
+    })
+}
+
+fn resolve_launch_command_in_paths(paths: &[PathBuf], command: &str) -> Option<ResolvedLaunch> {
+    let program = resolve_direct_program(paths, command)?;
+    #[cfg(windows)]
+    if let Some(unwrapped) = unwrap_windows_npm_cmd_shim(&program, paths) {
+        return Some(unwrapped);
+    }
+    Some(ResolvedLaunch::program(program))
+}
+
+/// npm's `cmd-shim` writes a batch that assigns `_prog` to `node` (or a
+/// sibling `node.exe`) and then launches `"%_prog%" "%dp0%\<script>" %*`.
+/// Measured on this machine for `codex.cmd`, `pi.cmd`, and `qwen.cmd`.
+fn is_npm_node_cmd_shim(contents: &str) -> bool {
+    let lower = contents.to_ascii_lowercase();
+    lower.contains(r#"set "_prog=node""#) || lower.contains(r#"set "_prog=%dp0%\node.exe""#)
+}
+
+/// Relative script path from an npm cmd-shim, if the launch line is the
+/// measured `"%_prog%" "%dp0%\<script>" %*` form. Anything else is left alone.
+fn npm_cmd_shim_script_relative(contents: &str) -> Option<&str> {
+    if !is_npm_node_cmd_shim(contents) {
+        return None;
+    }
+
+    let mut rest = contents;
+    while let Some(offset) = rest.find(r#""%_prog%""#) {
+        rest = &rest[offset + r#""%_prog%""#.len()..];
+        let trimmed = rest.trim_start_matches([' ', '\t']);
+        let Some((relative, after)) = split_quoted_dp0_path(trimmed) else {
+            continue;
+        };
+        let after = after.trim_start_matches([' ', '\t']);
+        if after.starts_with("%*") && !relative.is_empty() {
+            return Some(relative);
+        }
+    }
+    None
+}
+
+fn split_quoted_dp0_path(input: &str) -> Option<(&str, &str)> {
+    let rest = input.strip_prefix('"')?;
+    let rest = rest
+        .strip_prefix("%dp0%")
+        .or_else(|| rest.strip_prefix("%~dp0"))?;
+    let rest = rest.trim_start_matches(['\\', '/']);
+    let end = rest.find('"')?;
+    Some((&rest[..end], &rest[end + 1..]))
+}
+
+#[cfg(windows)]
+fn unwrap_windows_npm_cmd_shim(shim: &Path, search_paths: &[PathBuf]) -> Option<ResolvedLaunch> {
+    let extension = shim.extension()?.to_str()?;
+    if !extension.eq_ignore_ascii_case("cmd") && !extension.eq_ignore_ascii_case("bat") {
+        return None;
+    }
+
+    let contents = std::fs::read_to_string(shim).ok()?;
+    let relative = npm_cmd_shim_script_relative(&contents)?;
+    let shim_dir = shim.parent()?;
+    let mut script = shim_dir.to_path_buf();
+    for component in relative.split(['/', '\\']) {
+        if component.is_empty() || component == "." {
+            continue;
+        }
+        if component == ".." {
+            return None;
+        }
+        script.push(component);
+    }
+    if !script.is_file() {
+        return None;
+    }
+
+    let node = {
+        let local_node = shim_dir.join("node.exe");
+        if executable_file_exists(&local_node) {
+            absolute_path(&local_node)
+        } else {
+            resolve_direct_program(search_paths, "node")
+        }
+    }?;
+    let script = absolute_path(&script)?;
+    Some(ResolvedLaunch {
+        program: node,
+        prefix_args: vec![script.to_string_lossy().into_owned()],
     })
 }
 
@@ -271,8 +390,11 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
 }
 
 #[cfg(test)]
-fn probe_version(executable: &Path) -> std::io::Result<Output> {
-    Command::new(executable).arg("--version").output()
+fn probe_version(agent: &InstalledAgent) -> std::io::Result<Output> {
+    Command::new(&agent.executable)
+        .args(&agent.prefix_args)
+        .arg("--version")
+        .output()
 }
 
 #[cfg(test)]
@@ -280,7 +402,8 @@ mod tests {
     use super::discover;
     #[cfg(windows)]
     use super::{
-        executable_file_exists, launch_path_candidates_for_pathext, resolve_launch_command_in_paths,
+        executable_file_exists, launch_path_candidates_for_pathext,
+        resolve_launch_command_in_paths, ResolvedLaunch,
     };
     #[cfg(windows)]
     use std::fs::{self, File};
@@ -331,18 +454,233 @@ mod tests {
         let paths = vec![dir.clone()];
         assert_eq!(
             resolve_launch_command_in_paths(&paths, "codex"),
-            Some(super::normalize_windows_path(
+            Some(ResolvedLaunch::program(super::normalize_windows_path(
                 fs::canonicalize(dir.join("codex.cmd")).expect("canonical cmd shim"),
-            ))
+            )))
         );
         assert_eq!(
             resolve_launch_command_in_paths(&paths, "qwen"),
-            Some(super::normalize_windows_path(
+            Some(ResolvedLaunch::program(super::normalize_windows_path(
                 fs::canonicalize(dir.join("qwen.cmd")).expect("canonical cmd shim"),
-            ))
+            )))
         );
 
         fs::remove_dir_all(dir).expect("temporary directory cleanup");
+    }
+
+    #[cfg(windows)]
+    fn npm_cmd_shim_contents(script_from_dp0: &str) -> String {
+        format!(
+            "\
+@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST \"%dp0%\\node.exe\" (
+  SET \"_prog=%dp0%\\node.exe\"
+) ELSE (
+  SET \"_prog=node\"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{script_from_dp0}\" %*
+"
+        )
+    }
+
+    #[cfg(windows)]
+    fn canonical(path: &Path) -> PathBuf {
+        super::normalize_windows_path(fs::canonicalize(path).expect("canonical path"))
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_npm_cmd_shim_resolves_to_node_and_package_script() {
+        let dir = temporary_directory("npm-real-shim");
+        let node_dir = temporary_directory("npm-real-shim-node");
+        fs::create_dir_all(
+            dir.join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin"),
+        )
+        .expect("package directory");
+        fs::create_dir_all(&node_dir).expect("node directory");
+        File::create(dir.join("codex")).expect("fake POSIX shim");
+        fs::write(
+            dir.join("codex.cmd"),
+            npm_cmd_shim_contents(r"node_modules\@openai\codex\bin\codex.js"),
+        )
+        .expect("npm cmd shim");
+        fs::write(
+            dir.join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin")
+                .join("codex.js"),
+            "console.log('codex');\n",
+        )
+        .expect("package script");
+        File::create(node_dir.join("node.exe")).expect("fake node");
+
+        let paths = vec![dir.clone(), node_dir.clone()];
+        let resolved = resolve_launch_command_in_paths(&paths, "codex");
+        assert_eq!(
+            resolved,
+            Some(ResolvedLaunch {
+                program: canonical(&node_dir.join("node.exe")),
+                prefix_args: vec![canonical(
+                    &dir.join("node_modules")
+                        .join("@openai")
+                        .join("codex")
+                        .join("bin")
+                        .join("codex.js"),
+                )
+                .to_string_lossy()
+                .into_owned()],
+            })
+        );
+
+        fs::remove_dir_all(dir).expect("temporary directory cleanup");
+        fs::remove_dir_all(node_dir).expect("temporary node directory cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_npm_cmd_shim_prefers_sibling_node_exe() {
+        let dir = temporary_directory("npm-local-node");
+        fs::create_dir_all(dir.join("node_modules").join("pkg")).expect("package directory");
+        File::create(dir.join("codex")).expect("fake POSIX shim");
+        fs::write(
+            dir.join("codex.cmd"),
+            npm_cmd_shim_contents(r"node_modules\pkg\cli.js"),
+        )
+        .expect("npm cmd shim");
+        fs::write(
+            dir.join("node_modules").join("pkg").join("cli.js"),
+            "/* js */\n",
+        )
+        .expect("package script");
+        File::create(dir.join("node.exe")).expect("sibling node");
+
+        let resolved = resolve_launch_command_in_paths(std::slice::from_ref(&dir), "codex");
+        assert_eq!(
+            resolved,
+            Some(ResolvedLaunch {
+                program: canonical(&dir.join("node.exe")),
+                prefix_args: vec![
+                    canonical(&dir.join("node_modules").join("pkg").join("cli.js"))
+                        .to_string_lossy()
+                        .into_owned()
+                ],
+            })
+        );
+
+        fs::remove_dir_all(dir).expect("temporary directory cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_npm_cmd_shim_without_script_stays_the_cmd() {
+        let dir = temporary_directory("npm-missing-script");
+        let node_dir = temporary_directory("npm-missing-script-node");
+        fs::create_dir_all(&dir).expect("temporary directory");
+        fs::create_dir_all(&node_dir).expect("node directory");
+        fs::write(
+            dir.join("codex.cmd"),
+            npm_cmd_shim_contents(r"node_modules\@openai\codex\bin\codex.js"),
+        )
+        .expect("npm cmd shim");
+        File::create(node_dir.join("node.exe")).expect("fake node");
+
+        assert_eq!(
+            resolve_launch_command_in_paths(&[dir.clone(), node_dir.clone()], "codex"),
+            Some(ResolvedLaunch::program(canonical(&dir.join("codex.cmd"))))
+        );
+
+        fs::remove_dir_all(dir).expect("temporary directory cleanup");
+        fs::remove_dir_all(node_dir).expect("temporary node directory cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_npm_cmd_shim_without_node_stays_the_cmd() {
+        let dir = temporary_directory("npm-missing-node");
+        fs::create_dir_all(dir.join("node_modules").join("pkg")).expect("package directory");
+        fs::write(
+            dir.join("codex.cmd"),
+            npm_cmd_shim_contents(r"node_modules\pkg\cli.js"),
+        )
+        .expect("npm cmd shim");
+        fs::write(
+            dir.join("node_modules").join("pkg").join("cli.js"),
+            "/* js */\n",
+        )
+        .expect("package script");
+
+        assert_eq!(
+            resolve_launch_command_in_paths(std::slice::from_ref(&dir), "codex"),
+            Some(ResolvedLaunch::program(canonical(&dir.join("codex.cmd"))))
+        );
+
+        fs::remove_dir_all(dir).expect("temporary directory cleanup");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_exe_is_not_unwrapped() {
+        let dir = temporary_directory("native-exe");
+        fs::create_dir_all(&dir).expect("temporary directory");
+        File::create(dir.join("grok.exe")).expect("native grok");
+
+        assert_eq!(
+            resolve_launch_command_in_paths(std::slice::from_ref(&dir), "grok"),
+            Some(ResolvedLaunch::program(canonical(&dir.join("grok.exe"))))
+        );
+
+        fs::remove_dir_all(dir).expect("temporary directory cleanup");
+    }
+
+    #[test]
+    fn npm_cmd_shim_parser_reads_measured_launch_lines() {
+        let cases = [
+            (
+                r#"SET "_prog=node"
+"%_prog%"  "%dp0%\node_modules\@openai\codex\bin\codex.js" %*"#,
+                r"node_modules\@openai\codex\bin\codex.js",
+            ),
+            (
+                r#"SET "_prog=node"
+"%_prog%"  "%dp0%\node_modules\@earendil-works\pi-coding-agent\dist\bundle\cli.js" %*"#,
+                r"node_modules\@earendil-works\pi-coding-agent\dist\bundle\cli.js",
+            ),
+            (
+                r#"SET "_prog=node"
+"%_prog%"  "%dp0%\node_modules\@qwen-code\qwen-code\cli-entry.js" %*"#,
+                r"node_modules\@qwen-code\qwen-code\cli-entry.js",
+            ),
+            (
+                r#"SET "_prog=node"
+"%_prog%"  "%dp0%\node_modules\pnpm\bin\pnpm.cjs" %*"#,
+                r"node_modules\pnpm\bin\pnpm.cjs",
+            ),
+        ];
+        for (contents, expected) in cases {
+            assert_eq!(
+                super::npm_cmd_shim_script_relative(contents),
+                Some(expected),
+                "{contents}"
+            );
+        }
+        assert_eq!(
+            super::npm_cmd_shim_script_relative("@ECHO off\ncodex --version\n"),
+            None
+        );
     }
 
     #[cfg(windows)]
@@ -460,6 +798,15 @@ mod tests {
         );
     }
 
+    fn launch_display(agent: &super::InstalledAgent) -> String {
+        let mut line = agent.executable.display().to_string();
+        for arg in &agent.prefix_args {
+            line.push(' ');
+            line.push_str(arg);
+        }
+        line
+    }
+
     #[test]
     #[ignore = "measurement, not an assertion; run by hand with --ignored --nocapture"]
     fn reports_installed_cli_agents() {
@@ -469,7 +816,7 @@ mod tests {
             println!(
                 "{} => {} | ACP={:?} | auth={:?}",
                 agent.id,
-                agent.executable.display(),
+                launch_display(&agent),
                 agent.acp_command,
                 agent.authentication
             );
@@ -492,7 +839,7 @@ mod tests {
     #[ignore = "measurement, not an assertion; run by hand with --ignored --nocapture"]
     fn reports_cli_launchability() {
         for agent in discover() {
-            match super::probe_version(&agent.executable) {
+            match super::probe_version(&agent) {
                 Ok(output) => println!(
                     "{} => STARTED exit={:?} stdout={:?} stderr={:?}",
                     agent.id,
@@ -503,7 +850,7 @@ mod tests {
                 Err(error) => println!(
                     "{} => NOT STARTED path={} error={error}",
                     agent.id,
-                    agent.executable.display()
+                    launch_display(&agent)
                 ),
             }
         }

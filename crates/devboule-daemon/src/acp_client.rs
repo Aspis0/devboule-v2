@@ -468,8 +468,11 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             let acp_command = agent
                 .acp_command
                 .expect("an ACP-capable catalog entry has an ACP command");
-            let mut argv = Vec::with_capacity(acp_command.len());
+            let mut argv = Vec::with_capacity(
+                1 + agent.prefix_args.len() + acp_command.len().saturating_sub(1),
+            );
             argv.push(agent.executable.to_string_lossy().into_owned());
+            argv.extend(agent.prefix_args.iter().cloned());
             argv.extend(acp_command.into_iter().skip(1));
             argv
         }

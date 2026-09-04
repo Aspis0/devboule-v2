@@ -28,6 +28,13 @@ licensed under the Apache License, Version 2.0, commit `3150bd9`:
 - `herdr-src/src/integration/registry.rs:161-179` for the executable-file
   check used by the launch resolver.
 
+Unwrapping an npm `.cmd` shim to `node` plus the package script is Devboule
+code. It is informed by herdr's `normalized_process_name` and
+`agent_name_from_known_package_path` (`herdr-src/src/detect/mod.rs:359-650`),
+which identify a running `node.exe` agent from argv; the catalog inverts
+that mapping to produce the launch argv. No herdr source was copied for
+the unwrap.
+
 The provider catalog adds Devboule's installed-agent model, ACP launch
 metadata, and an explicit unknown authentication status; it does not probe
 login state.
