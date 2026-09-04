@@ -18,6 +18,7 @@ mod lock;
 mod outbound;
 mod paths;
 mod process_tree;
+pub mod provider_catalog;
 #[cfg(feature = "server")]
 mod screen;
 #[cfg(feature = "server")]

@@ -9,8 +9,21 @@ assets. Their names, versions, declared licences, copyright attributions,
 and required notice information are documented in THIRD_PARTY.md, which is
 part of this distribution's notices.
 
-No third-party library source code is copied into this repository. This does
-not mean that linked dependency code is absent from a built binary; the
+The known-agent executable names and aliases in
+`crates/devboule-daemon/src/provider_catalog.rs` are adapted from herdr,
+licensed under the Apache License, Version 2.0, commit `3150bd9`:
+
+- `herdr-src/src/detect/mod.rs:149-218`.
+- `herdr-src/src/integration/registry.rs:161-179` for the executable-file
+  check used by the launch resolver.
+
+The provider catalog adds Devboule's installed-agent model, ACP launch
+metadata, and an explicit unknown authentication status; it does not probe
+login state.
+
+No third-party library source code beyond the explicitly attributed herdr
+portion above is copied into this repository. This does not mean that linked
+dependency code is absent from a built binary; the
 Cargo and npm dependencies identified in THIRD_PARTY.md are compiled or
 bundled according to their respective licences. The three checked-in fonts
 and the application icon asset are listed separately there.

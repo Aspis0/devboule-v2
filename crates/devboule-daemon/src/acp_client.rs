@@ -26,8 +26,6 @@ use super::{
 };
 
 const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
-const DEFAULT_PROGRAM: &str = "gemini";
-const DEFAULT_ARGUMENT: &str = "--acp";
 
 /// Two minutes gives a person enough time to inspect a command while still
 /// bounding an ACP agent that is waiting on a viewer who has gone away. ACP
@@ -451,16 +449,31 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             format!("Could not determine agent working directory: {error}"),
         )
     })?;
-    let argv = std::env::var(COMMAND_ENV).unwrap_or_else(|_| {
-        serde_json::to_string(&[DEFAULT_PROGRAM, DEFAULT_ARGUMENT])
-            .expect("default ACP command is serializable")
-    });
-    let mut argv: Vec<String> = serde_json::from_str(&argv).map_err(|error| {
-        WireError::new(
-            ErrorCode::InvalidRequest,
-            format!("{COMMAND_ENV} must be a non-empty JSON string array: {error}"),
-        )
-    })?;
+    let mut argv: Vec<String> = match std::env::var(COMMAND_ENV) {
+        Ok(argv) => serde_json::from_str(&argv).map_err(|error| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("{COMMAND_ENV} must be a non-empty JSON string array: {error}"),
+            )
+        })?,
+        Err(_) => {
+            let Some(agent) = crate::provider_catalog::first_acp_available() else {
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    format!(
+                        "No ACP-capable agent was found on PATH. Set {COMMAND_ENV} to a non-empty JSON string array to choose an ACP command explicitly."
+                    ),
+                ));
+            };
+            let acp_command = agent
+                .acp_command
+                .expect("an ACP-capable catalog entry has an ACP command");
+            let mut argv = Vec::with_capacity(acp_command.len());
+            argv.push(agent.executable.to_string_lossy().into_owned());
+            argv.extend(acp_command.into_iter().skip(1));
+            argv
+        }
+    };
     if argv.is_empty() || argv[0].trim().is_empty() {
         return Err(WireError::new(
             ErrorCode::InvalidRequest,
