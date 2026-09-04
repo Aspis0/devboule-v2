@@ -62,6 +62,7 @@ pub(super) fn replay_session(
     }
     let generation = record.generation;
     let mut events: Vec<SessionEvent> = Vec::new();
+    let mut event_seqs: Vec<u64> = Vec::new();
     let mut covered = from_seq;
 
     let mut snap_stmt = conn.prepare(
@@ -97,6 +98,7 @@ pub(super) fn replay_session(
                     seq,
                     data: String::from_utf8_lossy(&data).into_owned(),
                 });
+                event_seqs.push(seq);
             }
         }
         covered = covered.max(up_to);
@@ -128,10 +130,13 @@ pub(super) fn replay_session(
             });
         }
         match EventKind::parse(&kind) {
-            Some(EventKind::Output) => events.push(SessionEvent::Output {
-                seq,
-                data: String::from_utf8_lossy(&payload).into_owned(),
-            }),
+            Some(EventKind::Output) => {
+                events.push(SessionEvent::Output {
+                    seq,
+                    data: String::from_utf8_lossy(&payload).into_owned(),
+                });
+                event_seqs.push(seq);
+            }
             Some(EventKind::Exit) => {
                 let code = if payload.len() == 4 {
                     Some(u32::from_le_bytes(
@@ -145,12 +150,14 @@ pub(super) fn replay_session(
             Some(EventKind::AgentReport) => {
                 if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
                     events.push(event);
+                    event_seqs.push(seq);
                 }
             }
             Some(EventKind::AcpEnvelope) => {
                 if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
                     if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
                         events.push(view);
+                        event_seqs.push(seq);
                     }
                 }
             }
@@ -196,21 +203,23 @@ pub(super) fn replay_session(
             }
             if kind == "agent_report" {
                 if let Ok(event) = serde_json::from_slice::<SessionEvent>(&payload) {
-                    covered_reports.push(event);
+                    covered_reports.push((seq, event));
                 }
             } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
                 if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
-                    covered_reports.push(view);
+                    covered_reports.push((seq, view));
                 }
             }
         }
     }
     if !covered_reports.is_empty() {
-        events.extend(covered_reports);
-        events.sort_by_key(|event| match event {
-            SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => *seq,
-            _ => u64::MAX,
-        });
+        for (seq, event) in covered_reports {
+            events.push(event);
+            event_seqs.push(seq);
+        }
+        let mut paired: Vec<(u64, SessionEvent)> = event_seqs.into_iter().zip(events).collect();
+        paired.sort_by_key(|(seq, _)| *seq);
+        (event_seqs, events) = paired.into_iter().unzip();
     }
 
     let terminated = matches!(record.status, PersistStatus::Ended)
@@ -222,12 +231,15 @@ pub(super) fn replay_session(
                 dropped_frames: record.dropped_frames,
                 dropped_bytes: record.dropped_bytes,
             });
+            event_seqs.push(record.last_seq);
         }
         events.push(exit_event.unwrap_or(SessionEvent::Exit {
             code: record.exit_code,
         }));
+        event_seqs.push(record.last_seq);
     } else {
         events.push(SessionEvent::Recovered { integrity });
+        event_seqs.push(record.last_seq);
     }
 
     Ok(Replay {
@@ -235,5 +247,6 @@ pub(super) fn replay_session(
         last_seq: record.last_seq,
         integrity,
         events,
+        event_seqs,
     })
 }

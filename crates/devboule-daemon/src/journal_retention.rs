@@ -195,19 +195,16 @@ fn trim_session(
     if limits.session_max_bytes == 0 {
         return Ok(());
     }
-    let Some((kind, payload)) = conn
+    let Some(payload) = conn
         .query_row(
-            "SELECT kind, payload_bytes FROM sessions WHERE id = ?1",
+            "SELECT payload_bytes FROM sessions WHERE id = ?1",
             [session_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| row.get::<_, i64>(0),
         )
         .optional()?
     else {
         return Ok(());
     };
-    if kind == "acp" {
-        return Ok(());
-    }
     let mut remaining = payload.max(0) as u64;
     while remaining > limits.session_max_bytes {
         let oldest: Option<(i64, i64)> = conn
@@ -231,17 +228,19 @@ fn trim_session(
             )?;
             remaining = remaining.saturating_sub(snap_bytes.max(0) as u64);
         } else {
-            let oldest_event: Option<(i64, i64)> = conn
+            let oldest_event: Option<(i64, i64, String)> = conn
                 .query_row(
-                    "SELECT seq, LENGTH(payload) FROM events WHERE session_id = ?1 AND kind = 'output' ORDER BY seq ASC LIMIT 1",
+                    "SELECT seq, LENGTH(payload), kind FROM events
+                     WHERE session_id = ?1 AND kind IN ('output', 'acp_envelope', 'agent_report')
+                     ORDER BY seq ASC LIMIT 1",
                     [session_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?;
-            if let Some((seq, bytes)) = oldest_event {
+            if let Some((seq, bytes, kind)) = oldest_event {
                 conn.execute(
-                    "DELETE FROM events WHERE session_id = ?1 AND seq = ?2 AND kind = 'output'",
-                    params![session_id, seq],
+                    "DELETE FROM events WHERE session_id = ?1 AND seq = ?2 AND kind = ?3",
+                    params![session_id, seq, kind],
                 )?;
                 conn.execute(
                     "UPDATE sessions SET
@@ -334,7 +333,7 @@ fn pick_trim_victim(
 ) -> Result<Option<String>, JournalError> {
     let mut stmt = conn.prepare(
         "SELECT id FROM sessions
-         WHERE status != 'live' AND kind != 'acp'
+         WHERE status != 'live'
          ORDER BY closed DESC, updated_at_ms ASC",
     )?;
     let mut rows = stmt.query([])?;
@@ -462,7 +461,7 @@ pub(super) fn journal_usage(
         let bytes = row.get::<_, i64>(3)?.max(0) as u64;
         let updated_at_ms = row.get::<_, i64>(4)?.max(0) as u64;
         let status: String = row.get(5)?;
-        let reclaimable = status != "live" && kind_name != "acp" && !pins.contains(&id);
+        let reclaimable = status != "live" && !pins.contains(&id);
 
         session_count += 1;
         total_bytes = total_bytes.saturating_add(bytes);
@@ -470,7 +469,9 @@ pub(super) fn journal_usage(
             reclaimable_bytes = reclaimable_bytes.saturating_add(bytes);
             reclaimable_sessions += 1;
         }
-        if cutoff.is_some_and(|value| updated_at_ms < value) && !reclaimable {
+        if cutoff.is_some_and(|value| updated_at_ms < value)
+            && (status == "live" || pins.contains(&id) || kind_name == "acp")
+        {
             aged_out += 1;
         }
         per_session.push(JournalSessionUsage {
@@ -488,7 +489,7 @@ pub(super) fn journal_usage(
     let has_reclaimable = {
         let mut stmt = conn.prepare(
             "SELECT id FROM sessions
-             WHERE status != 'live' AND kind != 'acp'
+             WHERE status != 'live'
              ORDER BY closed DESC, updated_at_ms ASC
              LIMIT ?1",
         )?;
@@ -546,8 +547,9 @@ mod tests {
     use devboule_protocol::{SessionEvent, SessionKind, TranscriptIntegrity};
 
     use super::super::{
-        append_event, new_session_record, now_ms, output_record, sample_session, snapshot_limits,
-        tiny_limits, tmp_journal, Journal, JournalError, JournalLimits, PersistStatus,
+        acp_envelope_record, append_event, new_session_record, now_ms, output_record,
+        sample_session, snapshot_limits, tiny_limits, tmp_journal, Journal, JournalError,
+        JournalLimits, PersistStatus,
     };
     use super::RetentionState;
 
@@ -827,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn acp_sessions_are_exempt_from_session_quota_victims() {
+    fn ended_acp_sessions_are_session_quota_victims() {
         let (dir, path) = tmp_journal();
         let journal = Journal::open_with_limits(
             &path,
@@ -853,8 +855,60 @@ mod tests {
             .expect("append");
 
         let rows = journal.list().expect("list");
-        assert!(rows.iter().any(|row| row.id == "s.acp.quota"));
-        assert!(!rows.iter().any(|row| row.id == "s.terminal.quota"));
+        assert!(
+            !rows.iter().any(|row| row.id == "s.acp.quota"),
+            "ended ACP must be reclaimable under the session cap"
+        );
+        assert!(rows.iter().any(|row| row.id == "s.terminal.quota"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acp_session_envelopes_are_head_trimmed_to_the_session_byte_cap() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                session_max_bytes: 40,
+                max_bytes: 0,
+                max_sessions: 0,
+                max_age_ms: 0,
+                snapshot_every_bytes: 0,
+            },
+        )
+        .expect("open");
+        let mut acp = new_session_record("s.acp.trim", "owner", None, SessionKind::Acp, "Agent");
+        acp.status = PersistStatus::Live;
+        journal.upsert_blocking(acp).expect("acp row");
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "abcdefghij"}
+                }
+            }
+        });
+        for seq in 1..=6 {
+            journal
+                .append_blocking(
+                    acp_envelope_record("s.acp.trim", 1, seq, &envelope).expect("envelope"),
+                )
+                .expect("append");
+        }
+        let stored = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.acp.trim")
+            .expect("session");
+        assert!(
+            stored.payload_bytes <= 40,
+            "ACP envelopes must be trimmed under session_max_bytes, got {}",
+            stored.payload_bytes
+        );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -874,7 +928,7 @@ mod tests {
         )
         .expect("open");
         let mut acp = new_session_record("s.acp.bytes", "owner", None, SessionKind::Acp, "Agent");
-        acp.status = PersistStatus::Ended;
+        acp.status = PersistStatus::Live;
         journal.upsert_blocking(acp).expect("acp row");
         journal
             .append_blocking(output_record("s.acp.bytes", 1, 1, b"1234567890"))
@@ -911,7 +965,7 @@ mod tests {
             SessionKind::Acp,
             "Agent",
         );
-        acp.status = PersistStatus::Ended;
+        acp.status = PersistStatus::Live;
         journal.upsert_blocking(acp).expect("acp row");
         journal
             .append_blocking(output_record("s.unreclaimable.bytes", 1, 1, b"1234567890"))
@@ -941,7 +995,7 @@ mod tests {
         .expect("open");
         for id in ["s.unreclaimable.sessions.1", "s.unreclaimable.sessions.2"] {
             let mut acp = new_session_record(id, "owner", None, SessionKind::Acp, "Agent");
-            acp.status = PersistStatus::Ended;
+            acp.status = PersistStatus::Live;
             journal.upsert_blocking(acp).expect("acp row");
         }
         journal

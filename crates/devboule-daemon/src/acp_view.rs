@@ -395,8 +395,20 @@ mod tests {
         assert!(view_from_envelope(&line, SESSION).is_none());
     }
 
+    /// A shape demonstration on SYNTHETIC input, not a measurement.
+    ///
+    /// The fixtures below are padded on purpose so the ratio is visible at a
+    /// glance; the byte counts this produces describe the fixtures and nothing
+    /// else. Its previous name claimed it measured the probe, and those numbers
+    /// reached a public commit message before anyone recomputed them.
+    ///
+    /// The real turn, counted line by line from
+    /// `recon/probes/grok-acp-fullcaps.txt`: 56 inbound lines, 92,586 bytes, of
+    /// which 64,263 -- 69% -- are three dumps of the slash-command catalogue.
+    /// Thought fragments are 15,692 bytes over 34 lines, about 8x their view.
+    /// Written up in `recon/M6-completion-plan.md` section 12.
     #[test]
-    fn grok_one_word_turn_journal_cost_is_measured_from_the_probe() {
+    fn an_envelope_costs_more_than_the_view_derived_from_it() {
         fn envelope_len(value: &serde_json::Value) -> usize {
             serde_json::to_vec(value).expect("envelope").len()
         }

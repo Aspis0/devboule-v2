@@ -330,6 +330,9 @@ struct PermissionRecord {
 pub struct Replay {
     pub generation: u64,
     pub events: Vec<SessionEvent>,
+    /// Journal stream sequence for each `events` entry. ACP views have no
+    /// seq on the event itself; this is the same space as Output.
+    pub event_seqs: Vec<u64>,
     pub last_seq: u64,
     pub integrity: TranscriptIntegrity,
 }
@@ -1172,8 +1175,14 @@ fn append_event(
             checksum,
         ],
     )?;
-    let add = if matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope) {
-        record.payload.len() as i64
+    let add = match record.kind {
+        EventKind::Output | EventKind::AcpEnvelope | EventKind::AgentReport => {
+            record.payload.len() as i64
+        }
+        EventKind::Exit => 0,
+    };
+    let unsnapshotted_add = if matches!(record.kind, EventKind::Output) {
+        add
     } else {
         0
     };
@@ -1182,12 +1191,13 @@ fn append_event(
             last_seq = MAX(last_seq, ?1),
             updated_at_ms = ?2,
             payload_bytes = payload_bytes + ?3,
-            unsnapshotted_bytes = unsnapshotted_bytes + ?3
-         WHERE id = ?4",
+            unsnapshotted_bytes = unsnapshotted_bytes + ?4
+         WHERE id = ?5",
         params![
             record.seq as i64,
             record.ts_ms as i64,
             add,
+            unsnapshotted_add,
             record.session_id
         ],
     )?;
@@ -1931,6 +1941,72 @@ mod tests {
             "replay missing agent report: {:?}",
             replay.events
         );
+        let payload = serde_json::to_vec(&event).expect("payload");
+        let stored = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.a.1")
+            .expect("session");
+        assert_eq!(
+            stored.payload_bytes,
+            b"one".len() as u64 + payload.len() as u64,
+            "agent_report must count toward payload_bytes"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn acp_envelopes_do_not_leave_unsnapshotted_bytes_stuck() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open_with_limits(
+            &path,
+            JournalLimits {
+                snapshot_every_bytes: 8,
+                ..JournalLimits::default()
+            },
+        )
+        .expect("open");
+        let mut session = sample_session("s.acp.snap");
+        session.kind = SessionKind::Acp;
+        journal.upsert_blocking(session).expect("upsert");
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "s",
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "The"}
+                }
+            }
+        });
+        for seq in 1..=4 {
+            journal
+                .append_blocking(acp_envelope_record("s.acp.snap", 1, seq, &envelope).expect("rec"))
+                .expect("append");
+        }
+        journal.flush().expect("flush");
+        let conn = Connection::open(&path).expect("inspect");
+        let unsnapshotted: i64 = conn
+            .query_row(
+                "SELECT unsnapshotted_bytes FROM sessions WHERE id = ?1",
+                ["s.acp.snap"],
+                |row| row.get(0),
+            )
+            .expect("unsnapshotted");
+        assert_eq!(
+            unsnapshotted, 0,
+            "ACP envelopes must not accumulate unsnapshotted_bytes"
+        );
+        let snapshots: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snapshots", [], |row| row.get(0))
+            .expect("snapshots");
+        assert_eq!(
+            snapshots, 0,
+            "ACP envelopes must not create output snapshots"
+        );
+        journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

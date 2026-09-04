@@ -57,10 +57,16 @@ impl From<&AgentReport> for AcceptedAgentReport {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceSeq {
+    Unsequenced,
+    Number(u64),
+}
+
 /// Last accepted report per hook `source`, plus the current visible state.
 #[derive(Debug, Default)]
 pub struct AgentReportState {
-    sequences: HashMap<String, u64>,
+    sequences: HashMap<String, SourceSeq>,
     last: Option<AcceptedAgentReport>,
 }
 
@@ -73,6 +79,12 @@ impl AgentReportState {
     /// Apply `report` if its `seq` is fresh for `report.source`. Returns
     /// whether the accepted state changed.
     pub fn apply(&mut self, report: AgentReport) -> Result<bool, WireError> {
+        if report.seq == Some(u64::MAX) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Agent announcement seq u64::MAX is not a valid hook sequence.",
+            ));
+        }
         let last_seq = self.sequences.get(&report.source).copied();
         if !accept_hook_seq(last_seq, report.seq) {
             return Ok(false);
@@ -84,14 +96,11 @@ impl AgentReportState {
                 format!("Agent announcement may track at most {MAX_HOOK_SOURCES} sources"),
             ));
         }
-        match report.seq {
-            Some(seq) => {
-                self.sequences.insert(report.source.clone(), seq);
-            }
-            None => {
-                self.sequences.entry(report.source.clone()).or_insert(0);
-            }
-        }
+        let mark = match report.seq {
+            Some(seq) => SourceSeq::Number(seq),
+            None => SourceSeq::Unsequenced,
+        };
+        self.sequences.insert(report.source.clone(), mark);
         self.last = Some(AcceptedAgentReport::from(&report));
         Ok(true)
     }
@@ -125,11 +134,13 @@ impl SharedAgentReportState {
 /// A missing `seq` is accepted only before this `source` has any accepted
 /// report. After that, only a strictly greater `seq` may apply. Duplicates
 /// and older values are ignored so they cannot regress state.
-pub fn accept_hook_seq(last: Option<u64>, incoming: Option<u64>) -> bool {
+fn accept_hook_seq(last: Option<SourceSeq>, incoming: Option<u64>) -> bool {
     match (last, incoming) {
         (None, None) | (None, Some(_)) => true,
-        (Some(_), None) => false,
-        (Some(last), Some(incoming)) => incoming > last,
+        (Some(SourceSeq::Unsequenced), None) => false,
+        (Some(SourceSeq::Unsequenced), Some(_)) => true,
+        (Some(SourceSeq::Number(_)), None) => false,
+        (Some(SourceSeq::Number(last)), Some(incoming)) => incoming > last,
     }
 }
 
@@ -163,8 +174,9 @@ pub fn unauthorized_peer(message: impl Into<String>) -> WireError {
 /// agent id, source, or session path and far below the 1 MiB frame cap.
 pub const MAX_ANNOUNCEMENT_FIELD_BYTES: usize = 4096;
 /// Distinct hook `source` keys tracked per session. Official sources are
-/// fewer than this; overflowing it is abuse, not a supported case.
-pub const MAX_HOOK_SOURCES: usize = 32;
+/// `devboule:<id>` for each known agent plus the test stub, so this cap is
+/// the actual number of keys `validate_announcement` can admit.
+pub const MAX_HOOK_SOURCES: usize = crate::provider_catalog::KNOWN_AGENTS.len() + 1;
 
 /// Official sources have the form `devboule:<agent>` and must name the
 /// same agent they claim. Adapted from herdr `is_official_agent_source`
@@ -321,6 +333,35 @@ mod tests {
             Some(AgentActivityState::Working)
         );
         assert_eq!(state.last().and_then(|last| last.seq), Some(2));
+    }
+
+    #[test]
+    fn a_missing_seq_does_not_block_a_later_zero() {
+        let mut state = AgentReportState::default();
+        assert!(state
+            .apply(report(None, AgentActivityState::Idle))
+            .expect("unsequenced"));
+        assert!(
+            state
+                .apply(report(Some(0), AgentActivityState::Working))
+                .expect("zero after none"),
+            "seq 0 must be distinct from a missing seq"
+        );
+        assert_eq!(
+            state.last().map(|last| last.state),
+            Some(AgentActivityState::Working)
+        );
+        assert_eq!(state.last().and_then(|last| last.seq), Some(0));
+    }
+
+    #[test]
+    fn u64_max_seq_is_rejected() {
+        let mut state = AgentReportState::default();
+        let error = state
+            .apply(report(Some(u64::MAX), AgentActivityState::Working))
+            .expect_err("MAX is not a usable hook seq");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(state.last().is_none());
     }
 
     #[test]

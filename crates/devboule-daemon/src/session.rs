@@ -339,7 +339,8 @@ impl SessionRuntime {
         // replay below serves its attaches.
         stream.screen = None;
         stream.transcript = true;
-        for event in replay.events {
+        for (index, event) in replay.events.into_iter().enumerate() {
+            let journal_seq = replay.event_seqs.get(index).copied();
             match event {
                 SessionEvent::Output { seq, data } => {
                     stream.scrollback.push(seq, data.as_bytes());
@@ -381,13 +382,9 @@ impl SessionRuntime {
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. } => {
-                    let seq = stream
-                        .transcript_agent_reports
-                        .keys()
-                        .next_back()
-                        .copied()
-                        .unwrap_or(0)
-                        .saturating_add(1);
+                    let Some(seq) = journal_seq else {
+                        continue;
+                    };
                     stream.transcript_agent_reports.insert(seq, event);
                 }
             }

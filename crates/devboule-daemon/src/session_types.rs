@@ -234,6 +234,9 @@ pub(crate) struct PendingEvent {
     pub(crate) session_id: String,
     pub(crate) attachment_generation: u64,
     pub(crate) envelope: SessionEventEnvelope,
+    /// Transcript-only: journal seq of this envelope, including ACP views
+    /// that do not carry seq on the event itself.
+    pub(crate) transcript_seq: Option<u64>,
 }
 
 pub(super) struct TranscriptSession {

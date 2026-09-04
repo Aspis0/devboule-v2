@@ -11,6 +11,24 @@ use crate::screen::{ScreenSnapshot, SnapshotCursorShape};
 
 use super::{Disposition, PendingEvent, PendingItem, PullState, SessionRuntime};
 
+fn wire_event(
+    session_id: &str,
+    pull: &PullState,
+    event: SessionEvent,
+    transcript_seq: Option<u64>,
+) -> PendingEvent {
+    PendingEvent {
+        session_id: session_id.to_string(),
+        attachment_generation: pull.attachment_generation,
+        envelope: SessionEventEnvelope {
+            session_id: session_id.to_string(),
+            generation: pull.generation,
+            event,
+        },
+        transcript_seq,
+    }
+}
+
 /// Render an owned captured screen into the wire snapshot event. Called with
 /// no locks held: the ANSI presenter is O(rows x cols) and must never run
 /// inside the state mutex.
@@ -200,9 +218,9 @@ impl ConnHandle {
                 return;
             }
             match &event.envelope.event {
-                SessionEvent::Output { seq, .. } => {
+                SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => {
                     if let Some(cursor) = pull.transcript_cursor.as_mut() {
-                        *cursor = *seq;
+                        *cursor = (*cursor).max(*seq);
                     }
                     false
                 }
@@ -220,8 +238,14 @@ impl ConnHandle {
                 | SessionEvent::AgentFinished { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
-                | SessionEvent::PermissionRequest { .. }
-                | SessionEvent::AgentReported { .. } => false,
+                | SessionEvent::PermissionRequest { .. } => {
+                    if let (Some(cursor), Some(seq)) =
+                        (pull.transcript_cursor.as_mut(), event.transcript_seq)
+                    {
+                        *cursor = (*cursor).max(seq);
+                    }
+                    false
+                }
             }
         };
         if remove {
@@ -308,74 +332,41 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
             PendingItem::Output { seq, data } => SessionEvent::Output { seq, data },
             PendingItem::Agent { event, .. } => event,
         };
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event,
-            },
-        });
+        events.push(wire_event(session_id, pull, event, None));
     }
     if degraded {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event: pull.runtime.journal_degraded_event(),
-            },
-        });
+        events.push(wire_event(
+            session_id,
+            pull,
+            pull.runtime.journal_degraded_event(),
+            None,
+        ));
     }
     if let Some(event) = silent_event {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event,
-            },
-        });
+        events.push(wire_event(session_id, pull, event, None));
     }
     if let Some(event) = exit_event {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event,
-            },
-        });
+        events.push(wire_event(session_id, pull, event, None));
     }
 }
 
 fn push_dead_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
     if !pull.journal_degraded_sent {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event: pull.runtime.journal_degraded_event(),
-            },
-        });
+        events.push(wire_event(
+            session_id,
+            pull,
+            pull.runtime.journal_degraded_event(),
+            None,
+        ));
         pull.journal_degraded_sent = true;
     }
     if !pull.exit_sent {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event: SessionEvent::Exit { code: None },
-            },
-        });
+        events.push(wire_event(
+            session_id,
+            pull,
+            SessionEvent::Exit { code: None },
+            None,
+        ));
         pull.exit_sent = true;
     }
 }
@@ -408,42 +399,34 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
             push_dead_events(session_id, pull, events);
             return;
         };
-        let mut replay = stream
+        let mut replay: Vec<(u64, SessionEvent)> = stream
             .scrollback
-            .replay_after_with_journal(cursor, &journal_outputs);
+            .replay_after_with_journal(cursor, &journal_outputs)
+            .into_iter()
+            .filter_map(|event| match event {
+                SessionEvent::Output { seq, .. } => Some((seq, event)),
+                _ => None,
+            })
+            .collect();
         let cursor_seq = cursor.unwrap_or(0);
         for (seq, event) in &stream.transcript_agent_reports {
             if *seq > cursor_seq {
-                replay.push(event.clone());
+                replay.push((*seq, event.clone()));
             }
         }
-        replay.sort_by_key(|event| match event {
-            SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => *seq,
-            _ => u64::MAX,
-        });
+        replay.sort_by_key(|(seq, _)| *seq);
         replay
     };
-    for event in replay {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event,
-            },
-        });
+    for (seq, event) in replay {
+        events.push(wire_event(session_id, pull, event, Some(seq)));
     }
     if !pull.journal_degraded_sent && pull.runtime.journal_degraded() {
-        events.push(PendingEvent {
-            session_id: session_id.to_string(),
-            attachment_generation: pull.attachment_generation,
-            envelope: SessionEventEnvelope {
-                session_id: session_id.to_string(),
-                generation: pull.generation,
-                event: pull.runtime.journal_degraded_event(),
-            },
-        });
+        events.push(wire_event(
+            session_id,
+            pull,
+            pull.runtime.journal_degraded_event(),
+            None,
+        ));
         pull.journal_degraded_sent = true;
     }
     if !pull.exit_sent {
@@ -460,15 +443,7 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
                     }
                 }
             };
-            events.push(PendingEvent {
-                session_id: session_id.to_string(),
-                attachment_generation: pull.attachment_generation,
-                envelope: SessionEventEnvelope {
-                    session_id: session_id.to_string(),
-                    generation: pull.generation,
-                    event,
-                },
-            });
+            events.push(wire_event(session_id, pull, event, None));
             pull.exit_sent = true;
         }
     }
@@ -564,6 +539,142 @@ mod tests {
                 },
                 SessionEvent::Exit { code: Some(0) },
             ]
+        );
+    }
+
+    fn recovered_integrity() -> TranscriptIntegrity {
+        TranscriptIntegrity::Unverifiable {
+            dropped_frames: 0,
+            dropped_bytes: 0,
+            trimmed_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn recovered_acp_views_must_not_vanish_behind_a_high_output_cursor() {
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 1,
+            last_seq: 11,
+            integrity,
+            event_seqs: vec![10, 11, 11],
+            events: vec![
+                SessionEvent::Output {
+                    seq: 10,
+                    data: "shell".to_string(),
+                },
+                SessionEvent::AgentThought {
+                    message_id: None,
+                    text: "The".to_string(),
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime = SessionRuntime::from_replay("s.acp.replay".to_string(), None, replay);
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn, false).expect("attach");
+        conn.track(
+            "s.acp.replay",
+            Arc::clone(&runtime),
+            true,
+            Some(10),
+            generation,
+        );
+        let events = drain(&conn);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                SessionEvent::AgentThought { text, .. } if text == "The"
+            )),
+            "reattach after seq 10 dropped the ACP thought: {events:?}"
+        );
+    }
+
+    #[test]
+    fn transcript_cursor_advances_past_agent_reported() {
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 1,
+            last_seq: 3,
+            integrity,
+            event_seqs: vec![2, 3, 3],
+            events: vec![
+                SessionEvent::Output {
+                    seq: 2,
+                    data: "out".to_string(),
+                },
+                SessionEvent::AgentReported {
+                    seq: 3,
+                    source: "devboule:stub".to_string(),
+                    agent: "stub".to_string(),
+                    state: devboule_protocol::AgentActivityState::Working,
+                    message: None,
+                    report_seq: Some(1),
+                    agent_session_id: None,
+                    agent_session_path: None,
+                    session_start_source: None,
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime = SessionRuntime::from_replay("s.report.cursor".to_string(), None, replay);
+        let conn = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &conn, false).expect("attach");
+        conn.track(
+            "s.report.cursor",
+            Arc::clone(&runtime),
+            true,
+            Some(0),
+            generation,
+        );
+        let first = {
+            let batch = conn.pull_events();
+            for event in &batch {
+                if matches!(
+                    event.envelope.event,
+                    SessionEvent::Recovered { .. } | SessionEvent::Exit { .. }
+                ) {
+                    continue;
+                }
+                conn.event_sent(event);
+            }
+            batch
+        };
+        assert!(first.iter().any(|event| matches!(
+            event.envelope.event,
+            SessionEvent::AgentReported { seq: 3, .. }
+        )));
+        let cursor = conn
+            .attached
+            .lock()
+            .expect("attached")
+            .get("s.report.cursor")
+            .and_then(|pull| pull.transcript_cursor);
+        assert_eq!(
+            cursor,
+            Some(3),
+            "cursor stayed at {cursor:?} after delivering AgentReported seq 3"
+        );
+        runtime.detach_if_conn(conn.id);
+        let conn2 = ConnHandle::new(2);
+        let generation = runtime.try_attach(None, &conn2, false).expect("reattach");
+        conn2.track(
+            "s.report.cursor",
+            Arc::clone(&runtime),
+            true,
+            cursor,
+            generation,
+        );
+        let second = conn2.pull_events();
+        assert!(
+            !second
+                .iter()
+                .any(|event| matches!(event.envelope.event, SessionEvent::AgentReported { .. })),
+            "AgentReported was delivered again on reattach: {:?}",
+            second
+                .iter()
+                .map(|event| format!("{:?}", event.envelope.event))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -742,6 +853,7 @@ mod tests {
                 dropped_bytes: 0,
                 trimmed_bytes: 0,
             },
+            event_seqs: vec![1, 1],
             events: vec![
                 SessionEvent::Output {
                     seq: 1,
