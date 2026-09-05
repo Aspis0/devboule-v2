@@ -26,7 +26,14 @@ const CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
  */
 const inlineExceptions = {
   npm: {},
-  cargo: {},
+  cargo: {
+    reqwest: {
+      reason:
+        "0.12.28 is what the workspace already resolves via oracle-core (hf-hub, lancedb), so the daemon reuses that artifact; 0.13's rustls feature drags in the aws-lc-rs native cmake/NASM build, which the CI runner cannot be assumed to carry",
+      exitCondition:
+        "oracle-core's dependents (hf-hub, lance-namespace-reqwest-client) move to reqwest 0.13, or reqwest regains a ring-based TLS feature",
+    },
+  },
 };
 
 const npmRegistryUrl = (name) => `https://registry.npmjs.org/${encodeURIComponent(name)}/latest`;
