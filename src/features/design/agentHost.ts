@@ -25,16 +25,25 @@ interface AgentSessionHandle {
 interface ActiveRun {
   sessionId: string;
   prompt: string;
+  itemStart: number;
   toolObservations: Map<string, ToolObservation>;
   settled: boolean;
   resolve: (result: DesignGenerationResult) => void;
   reject: (error: unknown) => void;
 }
 
-type ToolObservation = { kind?: string; locations?: readonly string[]; status: string | null };
+type ToolObservation = {
+  kind?: string;
+  locations?: readonly string[];
+  status: string | null;
+  completed: boolean;
+};
 
 const WRITE_TOOL_KINDS = new Set(["edit", "delete", "move"]);
 const COMPLETED_TOOL_STATUS = "completed";
+// Keep static previews large enough for a normal screen while bounding UI-thread work and memory.
+export const MAX_ARTIFACT_BYTES = 256 * 1024;
+export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
 
 const hostDisposers = new WeakMap<DesignHost, () => Promise<void>>();
 
@@ -57,15 +66,28 @@ export function extractFencedHtml(text: string): string | undefined {
   return lastContent;
 }
 
-export function extractArtifactHtml(state: AgentSessionState): string | undefined {
+interface ArtifactExtraction {
+  html?: string;
+  error?: string;
+}
+
+function extractArtifact(state: AgentSessionState, startIndex = 0): ArtifactExtraction {
   for (let index = state.items.length - 1; index >= 0; index -= 1) {
+    if (index < startIndex) break;
     const item = state.items[index];
     if (item.role === "assistant") {
       const html = extractFencedHtml(item.text);
-      if (html !== undefined) return html;
+      if (html !== undefined) {
+        const byteLength = new TextEncoder().encode(html).byteLength;
+        return byteLength > MAX_ARTIFACT_BYTES ? { error: ARTIFACT_TOO_LARGE_MESSAGE } : { html };
+      }
     }
   }
-  return undefined;
+  return {};
+}
+
+export function extractArtifactHtml(state: AgentSessionState, startIndex = 0): string | undefined {
+  return extractArtifact(state, startIndex).html;
 }
 
 function groundedPrompt(prompt: string, searchSources: readonly string[]): string {
@@ -92,11 +114,16 @@ function resultFor(
   toolObservations: Map<string, ToolObservation>,
 ): DesignGenerationResult {
   const observations = [...toolObservations.values()];
+  const shellCommandsRan = observations.some(
+    (observation) => observation.kind === "execute" && observation.completed,
+  );
+  const shellWarning = shellCommandsRan
+    ? " Completed shell commands also ran and may also have changed additional files without reported locations."
+    : "";
   const sources = [
     ...new Set(
       observations.flatMap((observation) =>
-        observation.status !== null &&
-        observation.status.toLowerCase() === COMPLETED_TOOL_STATUS &&
+        observation.completed &&
         observation.kind !== undefined &&
         WRITE_TOOL_KINDS.has(observation.kind)
           ? (observation.locations ?? [])
@@ -112,8 +139,8 @@ function resultFor(
       prompt,
       title: locationsReported ? "Agent wrote no files" : "Agent did not report written files",
       desc: locationsReported
-        ? "No files were reported as written. Check Workspace Changes for the authoritative diff."
-        : "The agent did not report which files it touched. Check Workspace Changes for the authoritative diff.",
+        ? `No files were reported as written. Check Workspace Changes for the authoritative diff.${shellWarning}`
+        : `The agent did not report which files it touched. Check Workspace Changes for the authoritative diff.${shellWarning}`,
       sources,
       nodeIds: [],
     };
@@ -123,7 +150,7 @@ function resultFor(
   return {
     prompt,
     title: `Agent wrote ${sources.length} ${noun}`,
-    desc: `The agent wrote ${sources.length} ${noun}: ${sources.join(", ")}. Check Workspace Changes for the authoritative diff.`,
+    desc: `The agent wrote ${sources.length} ${noun}: ${sources.join(", ")}. Check Workspace Changes for the authoritative diff.${shellWarning}`,
     sources,
     nodeIds: [],
   };
@@ -134,10 +161,12 @@ function observeToolEvent(
   run: ActiveRun,
 ): void {
   const previous = run.toolObservations.get(event.toolCallId);
+  const status = event.status ?? previous?.status ?? null;
   run.toolObservations.set(event.toolCallId, {
     kind: event.kind?.toLowerCase() ?? previous?.kind,
     locations: event.locations?.map(({ path }) => path) ?? previous?.locations,
-    status: event.status ?? previous?.status ?? null,
+    status,
+    completed: previous?.completed === true || status?.toLowerCase() === COMPLETED_TOOL_STATUS,
   });
 }
 
@@ -305,6 +334,7 @@ export function createAgentHost(): DesignHost {
     const run: ActiveRun = {
       sessionId: handle.session.id,
       prompt,
+      itemStart: 0,
       toolObservations: new Map<string, ToolObservation>(),
       settled: false,
       resolve: () => undefined,
@@ -331,18 +361,24 @@ export function createAgentHost(): DesignHost {
     };
     signal.addEventListener("abort", onAbort, { once: true });
 
-    // send() clears lastFinished synchronously; subscribe only after it so a prior turn cannot settle this run.
+    // Record the boundary immediately before send(); send() clears lastFinished synchronously.
+    run.itemStart = handle.controller.getState().items.length;
+    // Subscribe only after send() so a prior turn cannot settle this run.
     const sendPromise = handle.controller.send(groundedPrompt(prompt, grounding.sources));
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;
       const state = handle.controller.getState();
       if (state.lastFinished !== null) {
         const result = resultFor(run.prompt, run.toolObservations);
-        const artifactHtml = extractArtifactHtml(state);
+        const artifact = extractArtifact(state, run.itemStart);
         settleRun(
           run,
           "resolve",
-          artifactHtml !== undefined ? { ...result, artifactHtml } : result,
+          artifact.html !== undefined
+            ? { ...result, artifactHtml: artifact.html }
+            : artifact.error !== undefined
+              ? { ...result, artifactError: artifact.error }
+              : result,
         );
         return true;
       } else if (state.status === "error") {

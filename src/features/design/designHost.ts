@@ -40,6 +40,7 @@ export interface DesignAssistantMessage {
   nodeIds: readonly string[];
   instruction?: string;
   artifactHtml?: string;
+  artifactError?: string;
 }
 
 export type DesignMessage = DesignUserMessage | DesignAssistantMessage;
@@ -51,6 +52,7 @@ export interface DesignGenerationResult {
   sources: readonly string[];
   nodeIds: readonly string[];
   artifactHtml?: string;
+  artifactError?: string;
 }
 
 export interface DesignCanvasContent {

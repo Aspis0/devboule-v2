@@ -4,9 +4,17 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
-import { createViewport, panViewport, viewportTransform, zoomViewport } from "./designViewport";
+import {
+  createViewport,
+  fitViewport,
+  panViewport,
+  viewportTransform,
+  zoomViewport,
+} from "./designViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationResult } from "./designHost";
+import { nodesBounds } from "../../lib/canvas/viewportMath";
+import type { NodeRect } from "../../types/geometry";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -87,6 +95,11 @@ const GENERATION_RESULT = {
 const ARTIFACT_RESULT = {
   ...GENERATION_RESULT,
   artifactHtml: '<main class="generated-card">Generated</main>',
+};
+
+const ARTIFACT_ERROR_RESULT = {
+  ...GENERATION_RESULT,
+  artifactError: "Artifact too large to display (maximum 256 KiB).",
 };
 
 function createHost(
@@ -519,6 +532,10 @@ describe("DesignSurface host capabilities", () => {
     const iframe = artifact.querySelector<HTMLIFrameElement>("iframe");
     if (iframe === null) throw new Error("Generated artifact frame missing");
     expect(iframe.style.pointerEvents).toBe("none");
+    expect(iframe.getAttribute("sandbox")).toBe("");
+    expect(artifact.querySelector(".design-canvas-artifact-content")?.hasAttribute("inert")).toBe(
+      true,
+    );
 
     await act(async () => {
       artifact.dispatchEvent(
@@ -529,6 +546,12 @@ describe("DesignSurface host capabilities", () => {
     expect(container.querySelector(".design-composer-context")?.textContent).toContain(
       "Editing Generated artifact",
     );
+    expect(container.querySelector(".design-inspector-panel")).toBeNull();
+
+    await act(async () => {
+      artifact.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    expect(artifact.classList.contains("design-canvas-artifact-selected")).toBe(true);
 
     await fillDraft(container, "Refine this artifact.");
     await act(async () => send.click());
@@ -542,6 +565,23 @@ describe("DesignSurface host capabilities", () => {
     });
     expect(artifact.classList.contains("design-canvas-artifact-selected")).toBe(false);
     expect(container.querySelector(".design-composer-context")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("shows an explicit artifact display error instead of mounting an oversized frame", async () => {
+    const generate = vi.fn(async () => ARTIFACT_ERROR_RESULT);
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Create a very large first pass.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(container.querySelector(".design-canvas-artifact-error")?.textContent).toBe(
+      "Artifact too large to display (maximum 256 KiB).",
+    );
+    expect(container.querySelector("iframe")).toBeNull();
     await act(async () => root.unmount());
   });
 
@@ -858,6 +898,47 @@ describe("DesignSurface host capabilities", () => {
 
     expect(zoomValue.textContent).toBe("300%");
     expect(stage.style.transform).toContain("scale(3)");
+    await act(async () => root.unmount());
+  });
+
+  it("includes the generated artifact when fitting the canvas", async () => {
+    const generate = vi.fn(async () => ARTIFACT_RESULT);
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Create the first pass.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    const canvas = container.querySelector<HTMLDivElement>(".design-canvas");
+    const stage = container.querySelector<HTMLDivElement>(".design-canvas-stage");
+    const fit = container.querySelector<HTMLButtonElement>(".design-fit-button");
+    if (send === null || canvas === null || stage === null || fit === null) {
+      throw new Error("Canvas controls missing");
+    }
+    await act(async () => send.click());
+
+    Object.defineProperty(canvas, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 800, height: 600, left: 0, top: 0 }),
+    });
+    await act(async () => fit.click());
+
+    const layerRects: NodeRect[] = DOCUMENT.layers.map((layer, index) => ({
+      id: layer.id,
+      x: layer.transform.x,
+      y: layer.transform.y,
+      w: layer.transform.width,
+      h: layer.transform.height,
+      z: index,
+    }));
+    const expected = fitViewport(
+      nodesBounds([
+        ...layerRects,
+        { id: "generated-artifact", x: 60, y: 420, w: 700, h: 500, z: layerRects.length },
+      ]),
+      800,
+      600,
+    );
+    expect(stage.style.transform).toBe(viewportTransform(expected));
     await act(async () => root.unmount());
   });
 

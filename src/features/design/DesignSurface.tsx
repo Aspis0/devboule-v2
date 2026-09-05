@@ -100,6 +100,7 @@ interface CanvasProps {
   tool: DesignTool;
   zoom: number;
   artifactHtml?: string;
+  artifactError?: string;
   onSelectLayer: (layerId: string) => void;
   onViewportChange: (viewport: DesignViewport) => void;
 }
@@ -477,6 +478,23 @@ const ARTIFACT_NODE_HEIGHT = 500;
 const ARTIFACT_NODE_ID = "generated-artifact";
 const ARTIFACT_CONTEXT_NAME = "Generated artifact";
 
+function latestArtifact(messages: readonly DesignMessage[]): {
+  html?: string;
+  error?: string;
+} | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message.role === "assistant" &&
+      message.status === "done" &&
+      (message.artifactHtml !== undefined || message.artifactError !== undefined)
+    ) {
+      return { html: message.artifactHtml, error: message.artifactError };
+    }
+  }
+  return null;
+}
+
 const DesignCanvas = memo(function DesignCanvas({
   content,
   layers,
@@ -486,6 +504,7 @@ const DesignCanvas = memo(function DesignCanvas({
   tool,
   zoom,
   artifactHtml,
+  artifactError,
   onSelectLayer,
   onViewportChange,
 }: CanvasProps) {
@@ -541,7 +560,7 @@ const DesignCanvas = memo(function DesignCanvas({
   );
   const hitRects = useMemo<NodeRect[]>(
     () =>
-      artifactHtml
+      artifactHtml !== undefined || artifactError !== undefined
         ? [
             ...layerRects,
             {
@@ -554,7 +573,7 @@ const DesignCanvas = memo(function DesignCanvas({
             },
           ]
         : layerRects,
-    [artifactHtml, layerRects, layers.length],
+    [artifactError, artifactHtml, layerRects, layers.length],
   );
 
   const handleCanvasClick = useCallback(
@@ -720,7 +739,7 @@ const DesignCanvas = memo(function DesignCanvas({
             selected={selectedLayerId === layer.id}
           />
         ))}
-        {artifactHtml ? (
+        {artifactHtml !== undefined || artifactError !== undefined ? (
           <div
             className={`design-canvas-artifact${selectedLayerId === ARTIFACT_NODE_ID ? " design-canvas-artifact-selected" : ""}`}
             style={{
@@ -734,15 +753,30 @@ const DesignCanvas = memo(function DesignCanvas({
             tabIndex={0}
             aria-label="Select generated artifact"
             aria-pressed={selectedLayerId === ARTIFACT_NODE_ID}
+            onClick={() => onSelectLayer(ARTIFACT_NODE_ID)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelectLayer(ARTIFACT_NODE_ID);
+              }
+            }}
           >
-            {/* Keep the iframe inert: clicks belong to the app, never agent-generated markup. */}
-            <iframe
-              sandbox="allow-downloads"
-              srcDoc={artifactHtml}
-              title="Generated artifact"
-              className="design-artifact-frame"
-              style={{ pointerEvents: "none" }}
-            />
+            {artifactError ? (
+              <div className="design-canvas-artifact-error" role="status">
+                {artifactError}
+              </div>
+            ) : (
+              <div className="design-canvas-artifact-content" inert>
+                {/* Keep agent markup inert: clicks belong to the app, never the generated document. */}
+                <iframe
+                  sandbox=""
+                  srcDoc={artifactHtml}
+                  title="Generated artifact"
+                  className="design-artifact-frame"
+                  style={{ pointerEvents: "none" }}
+                />
+              </div>
+            )}
           </div>
         ) : null}
         {tool === "ai" ? (
@@ -1171,7 +1205,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   }, [messages, busy]);
 
   const selectedLayer = useMemo(
-    () => layers.find((layer) => layer.id === selectedLayerId) ?? layers[0],
+    () => layers.find((layer) => layer.id === selectedLayerId) ?? null,
     [layers, selectedLayerId],
   );
 
@@ -1185,20 +1219,34 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     [layers, selectedLayerId, snapshot.hiddenLayerIds],
   );
 
-  const fitRects = useMemo<NodeRect[]>(
-    () =>
-      layers
-        .map((layer, index) => ({
-          id: layer.id,
-          x: layer.transform.x,
-          y: layer.transform.y,
-          w: layer.transform.width,
-          h: layer.transform.height,
-          z: index,
-        }))
-        .filter((layer) => !snapshot.hiddenLayerIds.includes(layer.id)),
-    [layers, snapshot.hiddenLayerIds],
-  );
+  const artifact = latestArtifact(messages);
+  const artifactHtml = artifact?.html;
+  const artifactError = artifact?.error;
+
+  const fitRects = useMemo<NodeRect[]>(() => {
+    const rects = layers
+      .map((layer, index) => ({
+        id: layer.id,
+        x: layer.transform.x,
+        y: layer.transform.y,
+        w: layer.transform.width,
+        h: layer.transform.height,
+        z: index,
+      }))
+      .filter((layer) => !snapshot.hiddenLayerIds.includes(layer.id));
+    if (!artifact) return rects;
+    return [
+      ...rects,
+      {
+        id: ARTIFACT_NODE_ID,
+        x: ARTIFACT_NODE_X,
+        y: ARTIFACT_NODE_Y,
+        w: ARTIFACT_NODE_WIDTH,
+        h: ARTIFACT_NODE_HEIGHT,
+        z: layers.length,
+      },
+    ];
+  }, [artifact, layers, snapshot.hiddenLayerIds]);
   const fitRectsRef = useRef<NodeRect[]>([]);
   useEffect(() => {
     fitRectsRef.current = fitRects;
@@ -1228,17 +1276,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   );
 
   const generationLabel = `${generationCount} ${generationCount === 1 ? "generation" : "generations"}`;
-  const artifactHtml = useMemo(() => {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const m = messages[index];
-      if (m.role === "assistant" && m.status === "done" && m.artifactHtml) {
-        return m.artifactHtml;
-      }
-    }
-    return undefined;
-  }, [messages]);
   const composerContextTarget = useMemo(() => {
-    if (composerContextLayerId === ARTIFACT_NODE_ID && artifactHtml !== undefined) {
+    if (composerContextLayerId === ARTIFACT_NODE_ID && artifact !== null) {
       return {
         label: ARTIFACT_CONTEXT_NAME,
         scope: `${document.contextPrefix} ${ARTIFACT_CONTEXT_NAME}; the user is refining the artifact the agent just produced.`,
@@ -1251,7 +1290,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       label: layer.name,
       scope: `${document.contextPrefix} ${layer.name} (${layer.kind}); the user is pointing at the layer named "${layer.name}".`,
     };
-  }, [artifactHtml, composerContextLayerId, document.contextPrefix, layers]);
+  }, [artifact, composerContextLayerId, document.contextPrefix, layers]);
   const composerContextLayerName = composerContextTarget?.label ?? null;
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
@@ -1307,7 +1346,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   }, [commitSnapshot, layers, selectedLayerId, selectLayer]);
 
   const deleteLayer = useCallback(() => {
-    if (layers.length <= 1) return;
+    if (layers.length <= 1 || selectedLayer === null) return;
 
     const selectedIndex = layers.findIndex((layer) => layer.id === selectedLayerId);
     const nextLayer = layers[selectedIndex + 1] ?? layers[selectedIndex - 1];
@@ -1319,7 +1358,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       layers: current.layers.filter((layer) => layer.id !== selectedLayerId),
       hiddenLayerIds: current.hiddenLayerIds.filter((id) => id !== selectedLayerId),
     }));
-  }, [commitSnapshot, layers, selectedLayerId, selectLayer]);
+  }, [commitSnapshot, layers, selectedLayer, selectedLayerId, selectLayer]);
 
   const toggleLayerVisibility = useCallback(
     (layerId: string) => {
@@ -1549,6 +1588,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                     sources: [...result.sources],
                     nodeIds: [...result.nodeIds],
                     artifactHtml: result.artifactHtml,
+                    artifactError: result.artifactError,
                     instruction: prompt,
                   }
                 : message,
@@ -1696,6 +1736,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             tool={tool}
             zoom={zoom}
             artifactHtml={artifactHtml}
+            artifactError={artifactError}
             onSelectLayer={selectLayer}
             onViewportChange={setViewport}
           />
@@ -1733,17 +1774,19 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             onZoomReset={zoomReset}
             onFit={fitCanvas}
           />
-          <InspectorPanel
-            layer={selectedLayer}
-            tokenFooter={document.tokenFooter}
-            radiusOptions={radiusOptions}
-            flat={snapshot.flat}
-            onRadiusChange={setRadius}
-            onElevationChange={setElevation}
-            onDuplicate={duplicateLayer}
-            onDelete={deleteLayer}
-            canDelete={layers.length > 1}
-          />
+          {selectedLayer ? (
+            <InspectorPanel
+              layer={selectedLayer}
+              tokenFooter={document.tokenFooter}
+              radiusOptions={radiusOptions}
+              flat={snapshot.flat}
+              onRadiusChange={setRadius}
+              onElevationChange={setElevation}
+              onDuplicate={duplicateLayer}
+              onDelete={deleteLayer}
+              canDelete={layers.length > 1}
+            />
+          ) : null}
         </div>
 
         <DesignAssistant

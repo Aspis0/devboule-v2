@@ -64,6 +64,7 @@ import {
   disposeAgentHost,
   extractArtifactHtml,
   extractFencedHtml,
+  MAX_ARTIFACT_BYTES,
 } from "./agentHost";
 
 (
@@ -282,6 +283,34 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
+  it("keeps a completed write counted after a later status update", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    emitToolCall("write-1", "completed", "edit", ["src/done.ts"]);
+    emitToolUpdate("write-1", "in_progress", "A later update arrived.");
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual(["src/done.ts"]);
+
+    await disposeAgentHost(host);
+  });
+
+  it("warns that completed shell commands may hide additional changes", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    emitToolCall("shell-1", "completed", "execute");
+    finishRun();
+
+    const result = await run;
+    expect(result.desc).toContain("shell commands");
+    expect(result.desc).toContain("may also have changed");
+
+    await disposeAgentHost(host);
+  });
+
   it("does not report a failed write as a written file", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
@@ -396,6 +425,29 @@ describe("ACP design host", () => {
     expect(mocks.sessionCreate).toHaveBeenCalledTimes(1);
     expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
     expect(mocks.sessionSend).toHaveBeenCalledTimes(2);
+    await disposeAgentHost(host);
+  });
+
+  it("extracts an artifact only from the current generation turn", async () => {
+    const host = createAgentHost();
+    const { run: first } = await startRun(host);
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "m-1",
+      text: "```html\n<div>First artifact</div>\n```",
+    });
+    finishRun();
+    expect((await first).artifactHtml).toBe("<div>First artifact</div>");
+
+    const { run: second } = await startRun(host);
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "m-2",
+      text: "This turn has no artifact.",
+    });
+    finishRun();
+
+    expect((await second).artifactHtml).toBeUndefined();
     await disposeAgentHost(host);
   });
 
@@ -742,6 +794,23 @@ describe("ACP design host", () => {
 
         const result = await run;
         expect(result.artifactHtml).toBeUndefined();
+        await disposeAgentHost(host);
+      });
+
+      it("returns an explicit state when the artifact exceeds the display limit", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+        const oversizedHtml = `<div>${"x".repeat(MAX_ARTIFACT_BYTES)}</div>`;
+        channelHarness.active?.({
+          type: "agent_message",
+          messageId: "m-oversized",
+          text: `Generated:\n\`\`\`html\n${oversizedHtml}\n\`\`\``,
+        });
+        finishRun();
+
+        const result = await run;
+        expect(result.artifactHtml).toBeUndefined();
+        expect(result.artifactError).toBe("Artifact too large to display (maximum 256 KiB).");
         await disposeAgentHost(host);
       });
     });
