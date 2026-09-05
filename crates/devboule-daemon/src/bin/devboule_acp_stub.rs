@@ -88,6 +88,53 @@ fn main() -> io::Result<()> {
                     json!({"sessionId": "stub-session"}),
                 )?;
             }
+            "session/load" => {
+                for update in [
+                    json!({
+                        "sessionUpdate": "user_message_chunk",
+                        "content": {"type": "text", "text": "replayed user"}
+                    }),
+                    json!({
+                        "sessionUpdate": "agent_thought_chunk",
+                        "content": {"type": "text", "text": "replayed thought"}
+                    }),
+                    json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "messageId": "replayed-message",
+                        "content": {"type": "text", "text": "replayed answer"}
+                    }),
+                ] {
+                    emit(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "_meta": {"isReplay": true},
+                            "params": {
+                                "sessionId": "stub-session",
+                                "update": update
+                            }
+                        }),
+                    )?;
+                }
+                respond(
+                    &mut stdout,
+                    request.get("id").cloned(),
+                    json!({
+                        "models": {
+                            "currentModelId": "stub-model",
+                            "availableModels": [{
+                                "modelId": "stub-model",
+                                "name": "Stub Model",
+                                "_meta": {
+                                    "supportsReasoningEffort": true,
+                                    "reasoningEfforts": [{"id": "high", "label": "High"}]
+                                }
+                            }]
+                        }
+                    }),
+                )?;
+            }
             "session/prompt" => {
                 last_prompt_id = request.get("id").and_then(Value::as_u64);
                 let prompt_text = request

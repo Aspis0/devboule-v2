@@ -1177,13 +1177,15 @@ fn dispatch_session(
                 id,
                 result: ResumeResult::NotSupported,
             },
-            PersistenceKind::Acp { .. } => DaemonMessage::Error(
-                WireError::new(
-                    ErrorCode::Unimplemented,
-                    "ACP resume is not implemented yet",
-                )
-                .with_id(id),
-            ),
+            PersistenceKind::Acp { handle } => {
+                match state.sessions.resume(state, &handle, owner, conn) {
+                    Ok(session) => DaemonMessage::Resume {
+                        id,
+                        result: ResumeResult::Resumed { session },
+                    },
+                    Err(error) => DaemonMessage::Error(error.with_id(id)),
+                }
+            }
         },
         ClientMessage::SessionInterrupt { id, .. } => DaemonMessage::Error(
             WireError::new(ErrorCode::Unimplemented, "not implemented in M3b").with_id(id),

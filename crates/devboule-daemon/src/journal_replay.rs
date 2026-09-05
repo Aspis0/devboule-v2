@@ -11,7 +11,7 @@ pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, Jou
         "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
                 generation, status, exit_code, closed, last_seq, degraded,
                 dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
-                peer_session_id
+                peer_session_id, provider
          FROM sessions WHERE closed = 0 ORDER BY id",
     )?;
     let rows = stmt.query_map([], row_to_session)?;
@@ -40,6 +40,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         payload_bytes: row.get::<_, i64>(16)? as u64,
         reaped: row.get::<_, i64>(17)? != 0,
         peer_session_id: row.get(18)?,
+        provider: row.get(19)?,
     })
 }
 
@@ -53,7 +54,7 @@ pub(super) fn replay_session(
             "SELECT id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
                     generation, status, exit_code, closed, last_seq, degraded,
                     dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, reaped,
-                    peer_session_id
+                    peer_session_id, provider
              FROM sessions WHERE id = ?1",
             [session_id],
             row_to_session,

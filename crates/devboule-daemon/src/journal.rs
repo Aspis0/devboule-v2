@@ -49,7 +49,7 @@ use journal_schema::open_connection;
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 4;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 5;
 
 /// Bounded journal queue. Each slot is one coalesced frame (typically
 /// ≤ 8 KiB). A full queue never blocks the PTY path.
@@ -198,6 +198,9 @@ pub struct SessionRecord {
     pub owner: String,
     pub workspace_id: Option<String>,
     pub kind: SessionKind,
+    /// Catalog provider id used to start an ACP/Claude session. NULL means
+    /// this row predates provider persistence or was not resumable.
+    pub provider: Option<String>,
     pub title: String,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
@@ -438,6 +441,11 @@ enum JournalCmd {
         peer_session_id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
     },
+    StartGeneration {
+        session_id: String,
+        generation: u64,
+        reply: mpsc::Sender<Result<(), JournalError>>,
+    },
     MarkDegraded {
         session_id: String,
     },
@@ -675,6 +683,16 @@ impl Journal {
         self.rpc(|reply| JournalCmd::SetPeerSessionId {
             session_id: session_id.to_string(),
             peer_session_id: peer_session_id.to_string(),
+            reply,
+        })
+    }
+
+    /// Begin a fresh provider process generation while retaining the same
+    /// Devboule session id and all earlier generations' events.
+    pub fn start_generation(&self, session_id: &str, generation: u64) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::StartGeneration {
+            session_id: session_id.to_string(),
+            generation,
             reply,
         })
     }
@@ -1040,6 +1058,17 @@ fn journal_loop(
                 }
                 let _ = reply.send(result);
             }
+            JournalCmd::StartGeneration {
+                session_id,
+                generation,
+                reply,
+            } => {
+                let result = start_generation(&conn, &session_id, generation);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
             JournalCmd::MarkDegraded { session_id } => {
                 let (degraded, dropped) = degradation_state(&degraded_sessions, &session_id);
                 if let Err(error) = mark_degraded(&conn, &session_id, degraded, dropped) {
@@ -1145,8 +1174,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
             generation, status, exit_code, closed, last_seq, degraded,
             dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
-            reaped, peer_session_id
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19)
+            reaped, peer_session_id, provider
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19, ?20)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -1160,7 +1189,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             dropped_bytes = MAX(sessions.dropped_bytes, excluded.dropped_bytes),
             trimmed_bytes = MAX(sessions.trimmed_bytes, excluded.trimmed_bytes),
             reaped = MAX(sessions.reaped, excluded.reaped),
-            peer_session_id = COALESCE(excluded.peer_session_id, sessions.peer_session_id)",
+            peer_session_id = COALESCE(excluded.peer_session_id, sessions.peer_session_id),
+            provider = COALESCE(excluded.provider, sessions.provider)",
         params![
             record.id,
             record.owner,
@@ -1181,6 +1211,7 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             record.payload_bytes as i64,
             if record.reaped { 1 } else { 0 },
             record.peer_session_id,
+            record.provider,
         ],
     )?;
     Ok(())
@@ -1461,6 +1492,30 @@ fn set_peer_session_id(
     }
 }
 
+fn start_generation(
+    conn: &Connection,
+    session_id: &str,
+    generation: u64,
+) -> Result<(), JournalError> {
+    let n = conn.execute(
+        "UPDATE sessions SET
+             generation = ?1,
+             status = 'live',
+             exit_code = NULL,
+             closed = 0,
+             last_seq = 0,
+             reaped = 0,
+             updated_at_ms = ?2
+         WHERE id = ?3",
+        params![generation as i64, now_ms() as i64, session_id],
+    )?;
+    if n == 0 {
+        Err(JournalError::SessionNotFound)
+    } else {
+        Ok(())
+    }
+}
+
 fn mark_degraded(
     conn: &Connection,
     session_id: &str,
@@ -1568,6 +1623,7 @@ pub fn new_session_record(
         owner: owner.into(),
         workspace_id,
         kind,
+        provider: None,
         title: title.into(),
         created_at_ms: now,
         updated_at_ms: now,

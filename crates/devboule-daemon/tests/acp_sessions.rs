@@ -15,7 +15,11 @@ use std::time::{Duration, Instant};
 use devboule_daemon::{
     connect, current_user_sid, spawn_daemon, DaemonClient, EventHandler, RuntimePaths,
 };
-use devboule_protocol::{ClientHello, OwnerId, PermissionOutcome, SessionEvent, SessionKind};
+use devboule_protocol::{
+    ClientHello, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
+    SessionEvent, SessionKind,
+};
+use rusqlite::Connection;
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 use windows_sys::Win32::System::Threading::{
@@ -29,6 +33,9 @@ fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn daemon_bin() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule_daemon") {
+        return PathBuf::from(path);
+    }
     if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_daemon") {
         return PathBuf::from(path);
     }
@@ -36,6 +43,9 @@ fn daemon_bin() -> PathBuf {
 }
 
 fn stub_bin() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule_acp_stub") {
+        return PathBuf::from(path);
+    }
     if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_acp_stub") {
         return PathBuf::from(path);
     }
@@ -114,7 +124,11 @@ impl Harness {
     }
 
     fn client(&self) -> DaemonClient {
-        connect(&self.paths, hello("client")).expect("connect")
+        self.client_named("client")
+    }
+
+    fn client_named(&self, name: &str) -> DaemonClient {
+        connect(&self.paths, hello(name)).expect("connect")
     }
 }
 
@@ -360,6 +374,84 @@ fn acp_session_cancel_reports_cancelled_stop_reason() {
     wait_until_gone(pid);
 }
 
+#[test]
+fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+    test.client
+        .session_send(&session.id, "before resume")
+        .expect("initial prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_stop(&session.id)
+        .expect("stop ACP session");
+    wait_until_gone(pid);
+    let before_resume = test.journal_event_count(&session.id);
+
+    let result = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume ACP session");
+    assert!(matches!(
+        result,
+        ResumeResult::Resumed { session: resumed }
+            if resumed.id == session.id
+                && matches!(resumed.state, devboule_protocol::SessionState::Live { generation: 2 })
+    ));
+
+    let resumed_received = Arc::clone(&events);
+    let resumed_handler: EventHandler = Arc::new(move |envelope| {
+        resumed_received
+            .lock()
+            .expect("events lock")
+            .push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, resumed_handler)
+        .expect("attach resumed ACP session");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::SessionManifest { .. }))
+            .count()
+            == 1
+    });
+    assert_eq!(test.journal_event_count(&session.id), before_resume);
+    test.client
+        .session_send(&session.id, "after resume")
+        .expect("live prompt after resume");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    assert!(test.journal_event_count(&session.id) > before_resume);
+    test.client
+        .session_close(&session.id)
+        .expect("close resumed ACP session");
+}
+
 struct AcpTest {
     observation_dir: PathBuf,
     _harness: Harness,
@@ -376,11 +468,13 @@ impl AcpTest {
         argv.extend(extra_args.iter().map(|arg| (*arg).to_string()));
         let command = serde_json::to_string(&argv).expect("ACP argv");
         std::env::set_var("DEVBOULE_ACP_COMMAND", command);
+        std::env::set_var("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub");
         std::env::set_var("DEVBOULE_ACP_STUB_PID_FILE", &pid_file);
         std::env::set_var("DEVBOULE_ACP_STUB_CONSOLE_FILE", &console_file);
         let env = EnvGuard {
             names: vec![
                 "DEVBOULE_ACP_COMMAND",
+                "DEVBOULE_ACP_PROVIDER_ID",
                 "DEVBOULE_ACP_STUB_PID_FILE",
                 "DEVBOULE_ACP_STUB_CONSOLE_FILE",
             ],
@@ -424,6 +518,19 @@ impl AcpTest {
 
     fn console_file(&self) -> PathBuf {
         self.observation_dir.join("stub console.txt")
+    }
+
+    fn journal_event_count(&self, session_id: &str) -> i64 {
+        self.client.journal_usage().expect("flush journal");
+        let connection =
+            Connection::open(self._harness.paths.journal_file()).expect("open journal");
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .expect("count journal events")
     }
 }
 

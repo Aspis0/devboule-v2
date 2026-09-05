@@ -499,6 +499,16 @@ impl SessionRuntime {
             .and_then(|stored| stored.clone())
     }
 
+    /// Set the generation for a freshly spawned replacement process. The
+    /// caller has already reset the journal row; no old stream state is reused
+    /// by the new ACP runtime.
+    pub(crate) fn set_generation(&self, generation: u64) {
+        if let Ok(mut stream) = self.lock_stream() {
+            stream.generation = generation;
+            self.generation.store(generation, Ordering::Release);
+        }
+    }
+
     pub(crate) fn publish_agent_event(
         &self,
         event: SessionEvent,
@@ -1026,7 +1036,26 @@ impl SessionRuntime {
                 .filter(|item| !matches!(item, PendingItem::Snapshot { .. }))
                 .count() as u64;
         }
-        if !stream.transcript {
+        if !stream.transcript
+            && !stream.pending.iter().any(|item| {
+                matches!(
+                    item,
+                    PendingItem::Agent {
+                        event: SessionEvent::SessionManifest { .. },
+                        ..
+                    }
+                )
+            })
+            && !stream.agent_backlog.iter().any(|item| {
+                matches!(
+                    item,
+                    PendingItem::Agent {
+                        event: SessionEvent::SessionManifest { .. },
+                        ..
+                    }
+                )
+            })
+        {
             if let Some(event) = self
                 .session_manifest
                 .lock()

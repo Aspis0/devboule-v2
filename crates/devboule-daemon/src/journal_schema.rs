@@ -70,6 +70,9 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
         if version < 4 && !session_has_column(&tx, "peer_session_id")? {
             tx.execute("ALTER TABLE sessions ADD COLUMN peer_session_id TEXT", [])?;
         }
+        if version < 5 && !session_has_column(&tx, "provider")? {
+            tx.execute("ALTER TABLE sessions ADD COLUMN provider TEXT", [])?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -275,7 +278,8 @@ mod tests {
         conn.execute_batch(
             "ALTER TABLE sessions ADD COLUMN dropped_frames INTEGER NOT NULL DEFAULT 0;
              ALTER TABLE sessions ADD COLUMN dropped_bytes INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE sessions ADD COLUMN trimmed_bytes INTEGER NOT NULL DEFAULT 0;",
+             ALTER TABLE sessions ADD COLUMN trimmed_bytes INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN peer_session_id TEXT;",
         )
         .expect("v3 schema");
         conn.execute(
@@ -301,6 +305,7 @@ mod tests {
             .find(|row| row.id == "s.old-peer")
             .expect("migrated row");
         assert_eq!(row.peer_session_id, None);
+        assert_eq!(row.provider, None);
         let check = Connection::open(&path).expect("check migrated schema");
         let columns: i64 = check
             .query_row(
@@ -311,6 +316,15 @@ mod tests {
             )
             .expect("peer session id column");
         assert_eq!(columns, 1);
+        let provider_columns: i64 = check
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions')
+                 WHERE name = 'provider'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("provider column");
+        assert_eq!(provider_columns, 1);
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

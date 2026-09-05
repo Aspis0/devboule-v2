@@ -36,6 +36,10 @@ use super::{
 };
 
 const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
+/// Test/direct-command counterpart to [`COMMAND_ENV`]. A direct command has
+/// no catalog row to identify it; tests set this to the stub provider id so a
+/// later resume can still exercise the named-provider path.
+const COMMAND_PROVIDER_ENV: &str = "DEVBOULE_ACP_PROVIDER_ID";
 
 /// Silence after `session/prompt` with no inbound traffic and no outstanding
 /// client work. Grok stays mute instead of erroring when `terminal` is missing.
@@ -297,14 +301,19 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             format!("Could not determine agent working directory: {error}"),
         )
     })?;
-    let mut provider_id = None;
-    let mut argv: Vec<String> = match std::env::var(COMMAND_ENV) {
-        Ok(argv) => serde_json::from_str(&argv).map_err(|error| {
-            WireError::new(
-                ErrorCode::InvalidRequest,
-                format!("{COMMAND_ENV} must be a non-empty JSON string array: {error}"),
-            )
-        })?,
+    let (provider_id, mut argv): (Option<String>, Vec<String>) = match std::env::var(COMMAND_ENV) {
+        Ok(argv) => {
+            let provider_id = std::env::var(COMMAND_PROVIDER_ENV)
+                .ok()
+                .filter(|id| !id.trim().is_empty());
+            let argv = serde_json::from_str(&argv).map_err(|error| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("{COMMAND_ENV} must be a non-empty JSON string array: {error}"),
+                )
+            })?;
+            (provider_id, argv)
+        }
         Err(_) => {
             let Some(agent) = crate::provider_catalog::first_acp_available() else {
                 return Err(WireError::new(
@@ -314,10 +323,12 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
                     ),
                 ));
             };
-            provider_id = Some(agent.id.to_string());
-            agent
-                .acp_command
-                .expect("an ACP-capable catalog entry has an ACP command")
+            (
+                Some(agent.id.to_string()),
+                agent
+                    .acp_command
+                    .expect("an ACP-capable catalog entry has an ACP command"),
+            )
         }
     };
     if argv.is_empty() || argv[0].trim().is_empty() {
@@ -344,6 +355,17 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
             format!("Could not determine agent working directory: {error}"),
         )
     })?;
+    // Direct-command test providers have no catalog entry. Keep this narrow:
+    // only the exact provider identity paired with DEVBOULE_ACP_COMMAND may
+    // use the override, preserving the normal named catalog resolution path.
+    if std::env::var(COMMAND_ENV).is_ok()
+        && std::env::var(COMMAND_PROVIDER_ENV).ok().as_deref() == Some(id)
+    {
+        let command = resolve_command(paths)?;
+        if command.provider_id.as_deref() == Some(id) {
+            return Ok(command);
+        }
+    }
     let Some(agent) = crate::provider_catalog::find_in_catalog(
         id,
         &crate::registry::CdnRegistryFetch,
@@ -375,6 +397,22 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
+) -> Result<SpawnedSession, WireError> {
+    spawn_process_with_load(state, command, None)
+}
+
+pub(super) fn spawn_process_resuming(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+    peer_session_id: String,
+) -> Result<SpawnedSession, WireError> {
+    spawn_process_with_load(state, command, Some(peer_session_id))
+}
+
+fn spawn_process_with_load(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+    load_session_id: Option<String>,
 ) -> Result<SpawnedSession, WireError> {
     let mut process = Command::new(&command.program);
     process
@@ -483,6 +521,7 @@ pub(super) fn spawn_process(
         &mut reader,
         &command.cwd,
         command.provider_id.clone(),
+        load_session_id.as_deref(),
     ) {
         Ok(handshake) => handshake,
         Err(error) => {
@@ -700,6 +739,7 @@ fn handshake(
     reader: &mut BufReader<ChildStdout>,
     cwd: &std::path::Path,
     provider_id: Option<String>,
+    load_session_id: Option<&str>,
 ) -> Result<(Vec<serde_json::Value>, Option<SessionEvent>, String), WireError> {
     let mut deferred = Vec::new();
     let initialize_id = transport
@@ -722,29 +762,42 @@ fn handshake(
             format!("ACP peer negotiated unsupported protocol version {negotiated}."),
         ));
     }
-    let new_session_id = transport
-        .request(
+    let (method, params) = match load_session_id {
+        Some(session_id) => (
+            "session/load",
+            serde_json::json!({
+                "sessionId": session_id,
+                "cwd": cwd.to_string_lossy(),
+                "mcpServers": []
+            }),
+        ),
+        None => (
             "session/new",
             serde_json::json!({
                 "cwd": cwd.to_string_lossy(),
                 "mcpServers": []
             }),
-        )
-        .map_err(acp_io_error)?;
-    let new_session = read_response(transport, reader, new_session_id, &mut deferred)?;
-    let session_id = new_session
-        .get("result")
-        .and_then(|result| result.get("sessionId"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| WireError::new(ErrorCode::Io, "ACP session/new returned no session id."))?;
+        ),
+    };
+    let session_request_id = transport.request(method, params).map_err(acp_io_error)?;
+    let session = read_response(transport, reader, session_request_id, &mut deferred)?;
+    let session_id = match load_session_id {
+        Some(session_id) if !session_id.is_empty() => session_id.to_string(),
+        _ => session
+            .get("result")
+            .and_then(|result| result.get("sessionId"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                WireError::new(ErrorCode::Io, "ACP session/new returned no session id.")
+            })?
+            .to_string(),
+    };
     transport.set_session_id(session_id.to_string());
     transport.host.set_session_id(session_id.to_string());
     let manifest = merge_handshake_manifest(
         initialize.get("result").unwrap_or(&serde_json::Value::Null),
-        new_session
-            .get("result")
-            .unwrap_or(&serde_json::Value::Null),
+        session.get("result").unwrap_or(&serde_json::Value::Null),
         provider_id,
     );
     Ok((deferred, manifest, session_id.to_string()))
@@ -881,6 +934,7 @@ struct AcpReader {
     deferred: Vec<serde_json::Value>,
     provider_id: Option<String>,
     handshake_manifest: Option<SessionEvent>,
+    replay_count: AtomicU64,
 }
 
 impl AcpReader {
@@ -908,6 +962,7 @@ impl AcpReader {
             deferred,
             provider_id,
             handshake_manifest,
+            replay_count: AtomicU64::new(0),
         }
     }
 
@@ -1059,6 +1114,13 @@ impl ReaderDispatch for AcpReader {
         self.turn.shutdown();
         self.host.shutdown();
         self.transport = None;
+        let replay_count = self.replay_count.load(Ordering::Relaxed);
+        if replay_count > 0 {
+            eprintln!(
+                "session {} dropped {} ACP replay notifications during resume",
+                self.session_id, replay_count
+            );
+        }
         if !self.buffer.is_empty() {
             eprintln!("skipping unterminated ACP output line");
             self.publish(
@@ -1125,6 +1187,16 @@ impl AcpReader {
     }
 
     fn dispatch_value(&self, value: &serde_json::Value, runtime: &Arc<SessionRuntime>) {
+        if matches!(classify_line(value), Some(AcpLineKind::Notification { .. }))
+            && value
+                .get("_meta")
+                .and_then(|meta| meta.get("isReplay"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        {
+            self.replay_count.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         self.turn.note_activity();
         runtime.journal_agent_envelope(value);
         match classify_line(value) {

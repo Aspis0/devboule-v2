@@ -389,9 +389,11 @@ fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireEr
     OwnerId::new(user, client).map_err(|_| unauthorized())
 }
 
-// Full-owner checks remain on client-scoped operations (send, resize,
-// permission_respond, and detach). A live process must not be driven by a
-// new app process; pass A only relaxes read-only reattach and lifecycle paths.
+// Full-owner checks remain on client-scoped operations (send, resize, and
+// permission_respond). A live process must not be driven by a new app process;
+// pass A relaxed read-only reattach and lifecycle paths, while pass B's resume
+// is the deliberate ownership-transfer boundary that installs a new live
+// process under the resuming client's OwnerId.
 fn check_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> {
     if entry.owner() == owner {
         Ok(())
@@ -736,7 +738,7 @@ impl SessionRegistry {
             None if metadata.kind == SessionKind::Claude => {
                 claude_client::resolve_command(&self.paths)?
             }
-            None if metadata.kind == SessionKind::Acp => match provider {
+            None if metadata.kind == SessionKind::Acp => match provider.clone() {
                 Some(id) => {
                     Self::reject_env_npx_wrapper(&id, provenance, &self.paths)?;
                     acp_client::resolve_named(&id, &self.paths)?
@@ -763,6 +765,11 @@ impl SessionRegistry {
                 metadata.kind.clone(),
                 metadata.title.clone(),
             );
+            record.provider = match metadata.kind {
+                SessionKind::Acp => provider.or_else(|| command.provider_id.clone()),
+                SessionKind::Claude => Some("claude".to_string()),
+                SessionKind::Terminal => None,
+            };
             record.status = PersistStatus::Live;
             journal.try_upsert(record);
         }
@@ -808,6 +815,108 @@ impl SessionRegistry {
         // otherwise quiet and no status request or later output occurs.
         runtime.refresh_journal_degradation();
         Ok(())
+    }
+
+    pub fn resume(
+        &self,
+        state: &Arc<ServerState>,
+        session_id: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<Session, WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        let record = journal
+            .list()?
+            .into_iter()
+            .find(|record| record.id == session_id)
+            .ok_or_else(not_found)?;
+        let (provider, peer_session_id) = resume_handle(&record, owner)?;
+        // The persisted provider is the original explicit provider choice.
+        // In particular, a persisted npx wrapper is allowed through this
+        // named path because its original create already supplied consent.
+        // Resume deliberately keeps the normal spawn cwd (currently the
+        // daemon process cwd). The known workspace/cwd debt is unchanged by
+        // this slice.
+        let command = acp_client::resolve_named(&provider, &self.paths)?;
+        let generation = record.generation.saturating_add(1);
+
+        // A previous-run transcript is replaced. A stopped live entry is also
+        // replaced, but only after it has been observed dead; resuming a still
+        // live process would create two writers for one session id.
+        let (old_entry, had_live_slot) = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            if let Some(entry) = map.get(session_id) {
+                check_user_owner(entry, owner)?;
+                if entry
+                    .as_live()
+                    .is_some_and(|session| !session.runtime.process_exited())
+                {
+                    return Err(WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "This session cannot be resumed while its process is running.",
+                    ));
+                }
+            }
+            let old_entry = map.remove(session_id);
+            let had_live_slot = matches!(old_entry, Some(RegistryEntry::Live(_)));
+            (old_entry, had_live_slot)
+        };
+        if let Some(old_entry) = old_entry {
+            match old_entry {
+                RegistryEntry::Live(session) => {
+                    session.runtime.detach_if_conn(conn.id);
+                    teardown_session_for_resume(session);
+                }
+                RegistryEntry::Transcript(session) => {
+                    session.runtime.detach_if_conn(conn.id);
+                    journal.unpin(session_id);
+                }
+            }
+        }
+        conn.untrack(session_id);
+
+        if !had_live_slot && !state.session_started() {
+            return Err(WireError::new(
+                ErrorCode::ShuttingDown,
+                "daemon is shutting down",
+            ));
+        }
+        if let Err(error) = journal.start_generation(session_id, generation) {
+            state.session_finished();
+            return Err(error.into());
+        }
+        let metadata = Session {
+            id: session_id.to_string(),
+            workspace_id: record.workspace_id,
+            kind: SessionKind::Acp,
+            title: record.title,
+            state: SessionState::Live { generation },
+            elapsed_ms: Some(0),
+        };
+        if let Err(error) = spawn_resumed_session(
+            state,
+            self,
+            metadata,
+            owner.clone(),
+            command,
+            peer_session_id,
+            generation,
+        ) {
+            state.session_finished();
+            return Err(error);
+        }
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        map.get(session_id)
+            .map(RegistryEntry::to_session)
+            .ok_or_else(|| internal("resumed session was not registered"))
     }
 
     fn hydrate_transcript(
@@ -1329,6 +1438,7 @@ pub fn spawn_session(
             registry,
             metadata,
             owner,
+            None,
             claude_client::spawn_process(state, command)?,
         );
     }
@@ -1338,6 +1448,7 @@ pub fn spawn_session(
             registry,
             metadata,
             owner,
+            None,
             acp_client::spawn_process(state, command)?,
         );
     }
@@ -1463,7 +1574,26 @@ pub fn spawn_session(
         os_handle,
         peer_session_id: None,
     };
-    start_spawned_session(state, registry, metadata, owner, spawned)
+    start_spawned_session(state, registry, metadata, owner, None, spawned)
+}
+
+pub fn spawn_resumed_session(
+    state: &Arc<ServerState>,
+    registry: &SessionRegistry,
+    metadata: Session,
+    owner: OwnerId,
+    command: PtyCommand,
+    peer_session_id: String,
+    generation: u64,
+) -> Result<(), WireError> {
+    start_spawned_session(
+        state,
+        registry,
+        metadata,
+        owner,
+        Some(generation),
+        acp_client::spawn_process_resuming(state, command, peer_session_id)?,
+    )
 }
 
 fn start_spawned_session(
@@ -1471,6 +1601,7 @@ fn start_spawned_session(
     registry: &SessionRegistry,
     metadata: Session,
     owner: OwnerId,
+    generation: Option<u64>,
     spawned: SpawnedSession,
 ) -> Result<(), WireError> {
     let SpawnedSession {
@@ -1500,6 +1631,9 @@ fn start_spawned_session(
     };
     if let Some(peer_session_id) = peer_session_id {
         runtime.set_peer_session_id(peer_session_id);
+    }
+    if let Some(generation) = generation {
+        runtime.set_generation(generation);
     }
     if let Some(handle) = os_handle {
         runtime.install_os_handle(handle);
@@ -1869,6 +2003,16 @@ fn terminate_spawned_child(pair: portable_pty::PtyPair, mut child: Box<dyn Child
 /// deadlock the ConPTY host. Dropping the master also unblocks the
 /// reader's blocking read.
 fn teardown_session(session: PtySession) {
+    teardown_session_inner(session, true);
+}
+
+/// Tear down a replaced provider generation without marking the journal row
+/// ended. `resume` immediately starts the next generation on this same row.
+fn teardown_session_for_resume(session: PtySession) {
+    teardown_session_inner(session, false);
+}
+
+fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     session.exited.store(true, Ordering::SeqCst);
     let PtySession {
         process_job,
@@ -1917,7 +2061,9 @@ fn teardown_session(session: PtySession) {
     // failures instead of silently claiming completeness.
     join_coalesce(coalesce_handle, &runtime);
     bounded_join(reader_handle);
-    runtime.finish(None);
+    if finish_runtime {
+        runtime.finish(None);
+    }
 }
 
 fn join_coalesce(handle: Option<JoinHandle<()>>, runtime: &SessionRuntime) {
@@ -1947,6 +2093,34 @@ fn bounded_join<T>(handle: Option<JoinHandle<T>>) -> bool {
 
 fn not_found() -> WireError {
     WireError::new(ErrorCode::SessionNotFound, "No session with that id.")
+}
+
+fn cannot_resume(reason: &str) -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        format!("This session cannot be resumed: {reason}."),
+    )
+}
+
+fn resume_handle(
+    record: &crate::journal::SessionRecord,
+    owner: &OwnerId,
+) -> Result<(String, String), WireError> {
+    if record.owner != owner.user {
+        return Err(unauthorized());
+    }
+    if record.kind != SessionKind::Acp {
+        return Err(cannot_resume("only ACP sessions support this resume path"));
+    }
+    let provider = record
+        .provider
+        .clone()
+        .ok_or_else(|| cannot_resume("the provider was not persisted"))?;
+    let peer_session_id = record
+        .peer_session_id
+        .clone()
+        .ok_or_else(|| cannot_resume("the provider session id was not persisted"))?;
+    Ok((provider, peer_session_id))
 }
 
 fn journal_unavailable() -> WireError {
@@ -3124,6 +3298,72 @@ mod tests {
         let history = registry.list(&caller).expect("history");
         assert!(history.iter().any(|session| session.id == previous_id));
         assert!(history.iter().all(|session| session.id != stranger_id));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resume_refuses_a_session_without_a_persisted_provider() {
+        let owner = test_owner("S-1-5-21-resume-provider", "process-1111");
+        let session_id = compose_session_id(&owner.session_token(), "resume01").expect("id");
+        let mut record = ended_record(&session_id, &owner.user);
+        record.kind = SessionKind::Acp;
+        record.peer_session_id = Some("peer-session".to_string());
+        let error = resume_handle(&record, &owner).expect_err("missing provider must refuse");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("provider was not persisted"));
+    }
+
+    #[test]
+    fn resume_refuses_a_session_without_a_persisted_peer_id() {
+        let owner = test_owner("S-1-5-21-resume-peer", "process-1111");
+        let session_id = compose_session_id(&owner.session_token(), "resume02").expect("id");
+        let mut record = ended_record(&session_id, &owner.user);
+        record.kind = SessionKind::Acp;
+        record.provider = Some("grok".to_string());
+        let error = resume_handle(&record, &owner).expect_err("missing peer id must refuse");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error
+            .message
+            .contains("provider session id was not persisted"));
+    }
+
+    #[test]
+    fn resume_refuses_a_session_from_another_user() {
+        let owner = test_owner("S-1-5-21-resume-owner", "process-1111");
+        let stranger = test_owner("S-1-5-21-resume-stranger", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "resume03").expect("id");
+        let mut record = ended_record(&session_id, &owner.user);
+        record.kind = SessionKind::Acp;
+        record.provider = Some("grok".to_string());
+        record.peer_session_id = Some("peer-session".to_string());
+        let error = resume_handle(&record, &stranger).expect_err("wrong user must refuse");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
+    }
+
+    #[test]
+    fn resume_owner_transfer_allows_the_resumer_and_rejects_a_third_client() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-resume-transfer", "process-1111");
+        let resumer = test_owner("S-1-5-21-resume-transfer", "process-2222");
+        let third = test_owner("S-1-5-21-resume-transfer", "process-3333");
+        let session_id = compose_session_id(&original.session_token(), "resume04").expect("id");
+        insert_live(&registry, &session_id, original);
+        {
+            let mut map = registry.inner.lock().expect("registry");
+            let entry = map.get_mut(&session_id).expect("live entry");
+            entry.as_live_mut().expect("live session").owner = resumer.clone();
+        }
+        let map = registry.inner.lock().expect("registry");
+        let entry = map.get(&session_id).expect("transferred entry");
+        assert!(check_owner(entry, &resumer).is_ok());
+        assert_eq!(
+            check_owner(entry, &third)
+                .expect_err("third client must not drive resumed session")
+                .code,
+            ErrorCode::Unauthorized
+        );
+        drop(map);
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }
