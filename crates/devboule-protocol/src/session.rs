@@ -51,6 +51,12 @@ pub struct Session {
     pub workspace_id: Option<String>,
     pub kind: SessionKind,
     pub title: String,
+    /// Catalog provider id for ACP sessions, when one was persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Provider-side session id used by the ACP resume/load handshake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_session_id: Option<String>,
     pub state: SessionState,
     /// Monotonic age of the last observed sign of life. It is unavailable
     /// for journal-only transcripts because their monotonic clock died with
@@ -674,6 +680,8 @@ mod tests {
             title: "Terminal".to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: None,
+            provider: None,
+            peer_session_id: None,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["workspaceId"], "ws-1");
@@ -692,6 +700,8 @@ mod tests {
             title: "Terminal".to_string(),
             state: SessionState::Silent { generation: 1 },
             elapsed_ms: Some(300_042),
+            provider: None,
+            peer_session_id: None,
         };
         let encoded = serde_json::to_value(&session).expect("session json");
         assert_eq!(encoded["state"]["type"], "silent");
@@ -703,6 +713,32 @@ mod tests {
         .expect("event json");
         assert_eq!(event["type"], "silent");
         assert_eq!(event["elapsedMs"], 300_042);
+    }
+
+    #[test]
+    fn resumable_session_metadata_uses_camel_case_wire_names() {
+        let session = Session {
+            id: "session-1-1".to_string(),
+            workspace_id: None,
+            kind: SessionKind::Acp,
+            title: "Agent".to_string(),
+            state: SessionState::Recovered {
+                generation: 1,
+                integrity: TranscriptIntegrity::Unverifiable {
+                    dropped_frames: 0,
+                    dropped_bytes: 0,
+                    trimmed_bytes: 0,
+                },
+            },
+            elapsed_ms: None,
+            provider: Some("grok".to_string()),
+            peer_session_id: Some("peer-session-1".to_string()),
+        };
+        let value = serde_json::to_value(&session).expect("json");
+        assert_eq!(value["provider"], "grok");
+        assert_eq!(value["peerSessionId"], "peer-session-1");
+        let decoded: Session = serde_json::from_value(value).expect("round trip");
+        assert_eq!(decoded, session);
     }
 
     #[test]
@@ -1042,6 +1078,37 @@ mod tests {
     fn resume_not_supported_is_an_explicit_variant() {
         let value = serde_json::to_value(ResumeResult::NotSupported).expect("json");
         assert_eq!(value["type"], "not_supported");
+    }
+
+    #[test]
+    fn resume_resumed_and_failed_round_trip_on_the_wire() {
+        let resumed = ResumeResult::Resumed {
+            session: Session {
+                id: "s.client.1".to_string(),
+                workspace_id: None,
+                kind: SessionKind::Acp,
+                title: "t".to_string(),
+                state: SessionState::Live { generation: 2 },
+                elapsed_ms: None,
+                provider: Some("grok".to_string()),
+                peer_session_id: Some("peer-1".to_string()),
+            },
+        };
+        let value = serde_json::to_value(&resumed).expect("json");
+        assert_eq!(value["type"], "resumed");
+        assert_eq!(value["session"]["id"], "s.client.1");
+        assert_eq!(value["session"]["peerSessionId"], "peer-1");
+        let back: ResumeResult = serde_json::from_value(value).expect("round trip");
+        assert!(matches!(back, ResumeResult::Resumed { .. }));
+
+        let failed = ResumeResult::Failed {
+            message: "no".to_string(),
+        };
+        let value = serde_json::to_value(&failed).expect("json");
+        assert_eq!(value["type"], "failed");
+        assert_eq!(value["message"], "no");
+        let back: ResumeResult = serde_json::from_value(value).expect("round trip");
+        assert!(matches!(back, ResumeResult::Failed { message } if message == "no"));
     }
 
     #[test]

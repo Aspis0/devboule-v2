@@ -491,7 +491,6 @@ impl SessionRuntime {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn peer_session_id(&self) -> Option<String> {
         self.peer_session_id
             .lock()

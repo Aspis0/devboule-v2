@@ -277,6 +277,8 @@ impl SessionRecord {
             workspace_id: self.workspace_id.clone(),
             kind: self.kind.clone(),
             title: self.title.clone(),
+            provider: self.provider.clone(),
+            peer_session_id: self.peer_session_id.clone(),
             state,
             elapsed_ms: None,
         }

@@ -7,6 +7,7 @@ import {
   journalRetentionSet,
   journalUsage,
   sessionDelete,
+  sessionResume,
 } from "./tauri";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -80,5 +81,15 @@ describe("retention command wrappers", () => {
       maxAgeMs: 0,
     });
     expect(invoke).toHaveBeenNthCalledWith(4, "session_delete", { id: "s.owner.1" });
+  });
+});
+
+describe("resume command wrapper", () => {
+  it("passes the camelCase sessionId expected by Tauri v2", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({ type: "not_supported" } as never);
+    await sessionResume("s.owner.1");
+
+    expect(invoke).toHaveBeenCalledWith("session_resume", { sessionId: "s.owner.1" });
   });
 });

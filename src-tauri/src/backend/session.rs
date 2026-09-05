@@ -10,7 +10,9 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use devboule_daemon::{DaemonClient, EventHandler, SessionStateHandler};
-use devboule_protocol::{Cursor, ErrorCode, PermissionOutcome};
+use devboule_protocol::{
+    Cursor, ErrorCode, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
+};
 
 use crate::client::DaemonBridge;
 
@@ -31,6 +33,20 @@ pub fn session_create(
 ) -> Result<Session, CommandError> {
     require_terminal_kind(&kind)?;
     Ok(require_client(&bridge)?.session_create_with(workspace_id, kind, provider, None)?)
+}
+
+#[tauri::command]
+pub fn session_resume(
+    bridge: State<'_, DaemonBridge>,
+    session_id: String,
+) -> Result<ResumeResult, CommandError> {
+    require_session_id(&session_id)?;
+    Ok(require_client(&bridge)?.session_resume(
+        Persistence {
+            kind: PersistenceKind::Acp { handle: session_id },
+        },
+        None,
+    )?)
 }
 
 /// IMPORTANT STARTUP ORDER: the client registers the Channel as the

@@ -1,5 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { journalUsage, reasonFromCause, sessionDelete, sessionsList } from "../../lib/tauri";
+import {
+  journalUsage,
+  reasonFromCause,
+  sessionDelete,
+  sessionResume,
+  sessionsList,
+} from "../../lib/tauri";
 import type { JournalSessionUsage, JournalUsage, Session } from "../../types/ipc";
 import { useTrackedRequest } from "../oracle/oracleRequests";
 import { formatCount } from "../oracle/oracleUtils";
@@ -9,6 +15,7 @@ import "./history.css";
 export interface HistoryPanelProps {
   search: string;
   now?: number;
+  onReopen?: (session: Session) => void;
 }
 
 interface HistoryRow extends JournalSessionUsage {
@@ -22,7 +29,7 @@ interface HistoryRow extends JournalSessionUsage {
 const CLOSE_FIRST_REASON = "Close the session before deleting it from history.";
 const EMPTY_SESSIONS: Session[] = [];
 
-export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
+export function HistoryPanel({ search, now: injectedNow, onReopen }: HistoryPanelProps) {
   const loadUsage = useCallback(async (): Promise<JournalUsage> => {
     try {
       return await journalUsage();
@@ -41,8 +48,10 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
   const sessionsRequest = useTrackedRequest<Session[]>(loadSessions, { status: "loading" }, true);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const mountedRef = useRef(false);
+  const resumeInFlightRef = useRef<string | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -118,6 +127,34 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
     [confirmingId, deletingId, refreshSessions, refreshUsage],
   );
 
+  const reopenRow = useCallback(
+    (row: HistoryRow) => {
+      if (!isResumableSession(row.session) || resumeInFlightRef.current !== null) return;
+      resumeInFlightRef.current = row.id;
+      setResumingId(row.id);
+      setActionError(null);
+      void (async () => {
+        try {
+          const result = await sessionResume(row.id);
+          if (!mountedRef.current) return;
+          if (result.type === "resumed") {
+            onReopen?.(result.session);
+          } else {
+            setActionError(
+              result.type === "failed" ? result.message : "This session does not support resume.",
+            );
+          }
+        } catch (cause) {
+          if (mountedRef.current) setActionError(reasonFromCause(cause));
+        } finally {
+          resumeInFlightRef.current = null;
+          if (mountedRef.current) setResumingId(null);
+        }
+      })();
+    },
+    [onReopen],
+  );
+
   const usageError = usageRequest.state.status === "error" ? usageRequest.state.message : null;
   const sessionsError =
     sessionsRequest.state.status === "error" ? sessionsRequest.state.message : null;
@@ -168,7 +205,9 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
                     row={row}
                     confirming={confirmingId === row.id}
                     deleting={deletingId === row.id}
+                    resuming={resumingId === row.id}
                     onDelete={deleteRow}
+                    onReopen={reopenRow}
                   />
                 )),
               )}
@@ -185,7 +224,9 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
                       row={row}
                       confirming={confirmingId === row.id}
                       deleting={deletingId === row.id}
+                      resuming={resumingId === row.id}
                       onDelete={deleteRow}
+                      onReopen={reopenRow}
                     />
                   ))}
                 </div>
@@ -224,18 +265,37 @@ function RetentionNotice({ usage }: { usage: JournalUsage }) {
   );
 }
 
+function isResumableSession(
+  session: Session | null,
+): session is Session & { kind: "acp"; provider: string; peerSessionId: string } {
+  return (
+    session?.kind === "acp" &&
+    // A live or silent session still has its process; the daemon refuses to
+    // resume those, so the button must not offer it.
+    (session.state.type === "ended" || session.state.type === "recovered") &&
+    typeof session.provider === "string" &&
+    session.provider.length > 0 &&
+    typeof session.peerSessionId === "string" &&
+    session.peerSessionId.length > 0
+  );
+}
+
 const HistoryRowView = memo(function HistoryRowView({
   now,
   row,
   confirming,
   deleting,
+  resuming,
   onDelete,
+  onReopen,
 }: {
   now: number;
   row: HistoryRow;
   confirming: boolean;
   deleting: boolean;
+  resuming: boolean;
   onDelete: (row: HistoryRow) => void;
+  onReopen: (row: HistoryRow) => void;
 }) {
   const live = row.session?.state.type === "live";
   const trimmed = transcriptWasTrimmed(row.session);
@@ -253,6 +313,17 @@ const HistoryRowView = memo(function HistoryRowView({
           <div className="history-row-note">Oldest part removed by the history limit.</div>
         ) : null}
       </div>
+      {isResumableSession(row.session) ? (
+        <button
+          type="button"
+          className="history-reopen-action"
+          title="Reopen this session"
+          disabled={resuming}
+          onClick={() => onReopen(row)}
+        >
+          {resuming ? "Reopening…" : "Reopen"}
+        </button>
+      ) : null}
       <button
         type="button"
         className="history-delete-action"

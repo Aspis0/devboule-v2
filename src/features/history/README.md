@@ -1,6 +1,6 @@
 # History surface
 
-History is a read-only log view for saved journal sessions. It does not attach,
-resume, replay, or restore terminal output. The panel reads `journal_usage`,
-joins metadata from `sessions_list`, and deletes only after an explicit
-user-confirmed `session_delete` action.
+History reads `journal_usage`, joins metadata from `sessions_list`, and offers
+`Reopen` for ACP rows with persisted provider and peer-session metadata. A
+successful resume hands the session to the workspace's normal attach flow.
+Deletion still requires an explicit user-confirmed `session_delete` action.

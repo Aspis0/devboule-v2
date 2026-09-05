@@ -29,6 +29,7 @@ export interface WorkspaceSessionController {
   refresh: () => Promise<void>;
   create: (kind?: SessionKind, provider?: string | null) => Promise<Session | null>;
   select: (sessionId: string) => void;
+  open: (session: Session) => void;
   watch: () => () => void;
 }
 
@@ -252,6 +253,15 @@ export function createWorkspaceSessionController(
         publish({ ...state, selectedSessionId: sessionId });
       }
     },
+    open: (session) => {
+      ++refreshGeneration;
+      publish({
+        ...state,
+        sessions: [...state.sessions.filter((current) => current.id !== session.id), session],
+        selectedSessionId: session.id,
+        error: null,
+      });
+    },
   };
 }
 
@@ -282,6 +292,7 @@ export function useWorkspaceSessions(): WorkspaceSessionState & {
   refresh: () => Promise<void>;
   create: (kind?: SessionKind, provider?: string | null) => Promise<Session | null>;
   select: (sessionId: string) => void;
+  open: (session: Session) => void;
 } {
   const [controller] = useState<WorkspaceSessionController>(() =>
     createWorkspaceSessionController(),
@@ -304,6 +315,7 @@ export function useWorkspaceSessions(): WorkspaceSessionState & {
     [controller],
   );
   const select = useCallback((sessionId: string) => controller.select(sessionId), [controller]);
+  const open = useCallback((session: Session) => controller.open(session), [controller]);
 
-  return { ...state, refresh, create, select };
+  return { ...state, refresh, create, select, open };
 }

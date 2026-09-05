@@ -24,7 +24,7 @@ import {
   sessionTitle,
   useWorkspaceSessions,
 } from "./workspaceSessions";
-import type { DaemonStatus, PermissionRequest, ProviderInfo } from "../../types/ipc";
+import type { DaemonStatus, PermissionRequest, ProviderInfo, Session } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
 import { providersList, reasonFromCause, sessionPermissionRespond } from "../../lib/tauri";
 import "./Workspace.css";
@@ -113,10 +113,19 @@ export function Workspace() {
     refresh: refreshSessions,
     create: createSession,
     select: selectSession,
+    open: openSession,
   } = useWorkspaceSessions();
   const selectedSurface =
     MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
+  const handleReopenSession = useCallback(
+    (session: Session) => {
+      openSession(session);
+      setHistoryOpen(false);
+      setHistorySearch("");
+    },
+    [openSession],
+  );
   const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
@@ -325,7 +334,7 @@ export function Workspace() {
 
             <div className="workspace-scroll workspace-project-list">
               {historyOpen ? (
-                <HistoryPanel search={historySearch} />
+                <HistoryPanel search={historySearch} onReopen={handleReopenSession} />
               ) : (
                 <>
                   {visibleProjects.map((project) => (

@@ -49,6 +49,7 @@ pub fn run() {
             app_identity,
             client::daemon_status,
             backend::session::session_create,
+            backend::session::session_resume,
             backend::session::session_attach,
             backend::session::session_detach,
             backend::session::session_send,

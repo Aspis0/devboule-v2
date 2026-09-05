@@ -324,6 +324,7 @@ fn elapsed_ms_since_last_life(
 
 fn live_session_view(session: &PtySession) -> Session {
     let mut metadata = session.metadata.clone();
+    metadata.peer_session_id = session.runtime.peer_session_id();
     if session.runtime.terminal_dead.load(Ordering::Acquire) {
         metadata.state = SessionState::Ended {
             generation: session.runtime.generation(),
@@ -721,6 +722,23 @@ impl SessionRegistry {
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let (kind, provider, provenance) =
             Self::resolve_session_provider(kind, provider, env_provider);
+        let mut command = match command {
+            Some(command) => command,
+            None if kind == SessionKind::Claude => claude_client::resolve_command(&self.paths)?,
+            None if kind == SessionKind::Acp => match provider.clone() {
+                Some(id) => {
+                    Self::reject_env_npx_wrapper(&id, provenance, &self.paths)?;
+                    acp_client::resolve_named(&id, &self.paths)?
+                }
+                None => acp_client::resolve_command(&self.paths)?,
+            },
+            None => resolve_pty_command(&self.paths)?,
+        };
+        let session_provider = match kind {
+            SessionKind::Acp => provider.or_else(|| command.provider_id.clone()),
+            SessionKind::Claude => Some("claude".to_string()),
+            SessionKind::Terminal => None,
+        };
         let metadata = Session {
             id: id.clone(),
             workspace_id,
@@ -730,22 +748,10 @@ impl SessionRegistry {
                 SessionKind::Acp | SessionKind::Claude => "Agent",
             }
             .to_string(),
+            provider: session_provider.clone(),
+            peer_session_id: None,
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
-        };
-        let mut command = match command {
-            Some(command) => command,
-            None if metadata.kind == SessionKind::Claude => {
-                claude_client::resolve_command(&self.paths)?
-            }
-            None if metadata.kind == SessionKind::Acp => match provider.clone() {
-                Some(id) => {
-                    Self::reject_env_npx_wrapper(&id, provenance, &self.paths)?;
-                    acp_client::resolve_named(&id, &self.paths)?
-                }
-                None => acp_client::resolve_command(&self.paths)?,
-            },
-            None => resolve_pty_command(&self.paths)?,
         };
         crate::agent_env::inject_session_env(
             &mut command,
@@ -765,11 +771,7 @@ impl SessionRegistry {
                 metadata.kind.clone(),
                 metadata.title.clone(),
             );
-            record.provider = match metadata.kind {
-                SessionKind::Acp => provider.or_else(|| command.provider_id.clone()),
-                SessionKind::Claude => Some("claude".to_string()),
-                SessionKind::Terminal => None,
-            };
+            record.provider = session_provider;
             record.status = PersistStatus::Live;
             journal.try_upsert(record);
         }
@@ -895,6 +897,8 @@ impl SessionRegistry {
             workspace_id: record.workspace_id,
             kind: SessionKind::Acp,
             title: record.title,
+            provider: Some(provider),
+            peer_session_id: Some(peer_session_id.clone()),
             state: SessionState::Live { generation },
             elapsed_ms: Some(0),
         };
@@ -2921,6 +2925,8 @@ mod tests {
                 integrity: TranscriptIntegrity::Complete,
             },
             elapsed_ms: Some(0),
+            provider: None,
+            peer_session_id: None,
         };
         let runtime = Arc::new(SessionRuntime::with_journal(
             id.to_string(),
@@ -2953,6 +2959,8 @@ mod tests {
             title: "Terminal".to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
+            provider: None,
+            peer_session_id: None,
         };
         let runtime = Arc::new(SessionRuntime::with_journal(
             id.to_string(),

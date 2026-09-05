@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { JournalUsage, Session } from "../../types/ipc";
+import type { JournalUsage, ResumeResult, Session } from "../../types/ipc";
 
 vi.mock("../../lib/tauri", () => ({
   isCommandError: vi.fn(
@@ -12,6 +12,7 @@ vi.mock("../../lib/tauri", () => ({
   ),
   journalUsage: vi.fn(),
   sessionDelete: vi.fn(),
+  sessionResume: vi.fn(),
   sessionsList: vi.fn(),
   reasonFromCause: vi.fn((cause: unknown) => {
     if (cause instanceof Error && cause.message) return cause.message;
@@ -20,7 +21,13 @@ vi.mock("../../lib/tauri", () => ({
   }),
 }));
 
-import { journalUsage, reasonFromCause, sessionDelete, sessionsList } from "../../lib/tauri";
+import {
+  journalUsage,
+  reasonFromCause,
+  sessionDelete,
+  sessionResume,
+  sessionsList,
+} from "../../lib/tauri";
 import { HistoryPanel } from "./HistoryPanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,6 +50,15 @@ function endedSession(id: string): Session {
       integrity: { kind: "complete" },
     },
     elapsedMs: 0,
+  };
+}
+
+function resumableSession(id: string): Session {
+  return {
+    ...endedSession(id),
+    kind: "acp",
+    provider: "grok",
+    peerSessionId: "peer-session-1",
   };
 }
 
@@ -100,6 +116,10 @@ describe("HistoryPanel", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(sessionDelete).mockResolvedValue(undefined);
+    vi.mocked(sessionResume).mockResolvedValue({
+      type: "resumed",
+      session: resumableSession("session-review"),
+    });
     vi.mocked(reasonFromCause).mockImplementation((cause: unknown) => {
       if (cause instanceof Error && cause.message) return cause.message;
       if (typeof cause === "string" && cause) return cause;
@@ -134,6 +154,86 @@ describe("HistoryPanel", () => {
     await renderPanel();
     expect(container.textContent).toContain("12 345");
     expect(container.textContent).toContain("2");
+  });
+
+  it("shows Reopen only for ACP rows with provider and peer session metadata", async () => {
+    const usage = baseUsage();
+    usage.perSession = [
+      usage.perSession[0],
+      usage.perSession[1],
+      { ...usage.perSession[1], id: "session-no-provider", title: "No provider" },
+      { ...usage.perSession[1], id: "session-no-peer", title: "No peer" },
+      { ...usage.perSession[1], id: "session-still-running", title: "Still running" },
+    ];
+    await renderPanel(usage, [
+      endedSession("session-build"),
+      resumableSession("session-review"),
+      { ...resumableSession("session-no-provider"), provider: undefined },
+      { ...resumableSession("session-no-peer"), peerSessionId: undefined },
+      {
+        ...resumableSession("session-still-running"),
+        state: { type: "live", generation: 1 },
+      },
+    ]);
+    expect(container.querySelectorAll(".history-reopen-action")).toHaveLength(1);
+    expect(container.textContent).toContain("Reopen");
+  });
+
+  it("resumes the selected history row exactly once and hands the session to onReopen", async () => {
+    const onReopen = vi.fn();
+    const usage = baseUsage();
+    usage.perSession = [usage.perSession[1]];
+    vi.mocked(journalUsage).mockResolvedValueOnce(usage);
+    vi.mocked(sessionsList).mockResolvedValueOnce([resumableSession("session-review")]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<HistoryPanel now={now} search="" onReopen={onReopen} />);
+      await Promise.resolve();
+    });
+    const reopen = container.querySelector<HTMLButtonElement>(".history-reopen-action");
+    if (!reopen) throw new Error("reopen control did not render");
+    await act(async () => reopen.click());
+    expect(sessionResume).toHaveBeenCalledTimes(1);
+    expect(sessionResume).toHaveBeenCalledWith("session-review");
+    expect(onReopen).toHaveBeenCalledTimes(1);
+    expect(onReopen).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "session-review", kind: "acp" }),
+    );
+  });
+
+  it("shows the daemon message when resuming fails", async () => {
+    const cause = { code: "invalid_request", message: "provider session is unavailable" };
+    vi.mocked(reasonFromCause).mockReturnValueOnce("provider session is unavailable");
+    vi.mocked(sessionResume).mockRejectedValueOnce(cause);
+    const usage = baseUsage();
+    usage.perSession = [usage.perSession[1]];
+    await renderPanel(usage, [resumableSession("session-review")]);
+    const reopen = container.querySelector<HTMLButtonElement>(".history-reopen-action");
+    if (!reopen) throw new Error("reopen control did not render");
+    await act(async () => reopen.click());
+    await act(async () => undefined);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "provider session is unavailable",
+    );
+    expect(reasonFromCause).toHaveBeenCalledWith(cause);
+  });
+
+  it("ignores a second Reopen click while resume is in flight", async () => {
+    let resolveResume: ((result: ResumeResult) => void) | undefined;
+    vi.mocked(sessionResume).mockReturnValue(
+      new Promise<ResumeResult>((resolve) => {
+        resolveResume = resolve;
+      }),
+    );
+    const usage = baseUsage();
+    usage.perSession = [usage.perSession[1]];
+    await renderPanel(usage, [resumableSession("session-review")]);
+    const reopen = container.querySelector<HTMLButtonElement>(".history-reopen-action");
+    if (!reopen) throw new Error("reopen control did not render");
+    await act(async () => reopen.click());
+    await act(async () => reopen.click());
+    expect(sessionResume).toHaveBeenCalledTimes(1);
+    await act(async () => resolveResume?.({ type: "not_supported" }));
   });
 
   it("declares deleted sessions and unreclaimable sessions", async () => {

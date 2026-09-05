@@ -17,6 +17,7 @@ import type {
   PluginInventory,
   Project,
   ProviderCatalog,
+  ResumeResult,
   Session,
   SessionEvent,
   SessionKind,
@@ -33,6 +34,7 @@ type CommandArgs = {
   workspaces_list: { project_id: Id };
   workspace_create: { project_id: Id; isolation: Workspace["isolation"]; branch?: string | null };
   session_create: { workspace_id: Id | null; kind: SessionKind; provider?: string | null };
+  session_resume: { sessionId: Id };
   session_attach: { id: Id; from_cursor: number | null; ch: SessionChannel };
   session_send: { id: Id; text: string };
   session_interrupt: { id: Id };
@@ -77,6 +79,7 @@ type CommandResults = {
   workspaces_list: Workspace[];
   workspace_create: Workspace;
   session_create: Session;
+  session_resume: ResumeResult;
   session_attach: void;
   session_send: void;
   session_interrupt: void;
@@ -177,6 +180,10 @@ export const sessionCreate = (
   kind: SessionKind = "terminal",
   provider?: string | null,
 ) => invokeTyped("session_create", { workspace_id: workspaceId, kind, provider: provider ?? null });
+export const sessionResume = (sessionId: Id) =>
+  // Tauri v2 converts snake_case Rust params to camelCase for the JS side.
+  // Keep this new command aligned with its `session_id` Rust parameter.
+  invokeTyped("session_resume", { sessionId });
 export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChannel) =>
   invokeTyped("session_attach", { id, from_cursor: fromCursor, ch });
 export const sessionSend = (id: Id, text: string) => invokeTyped("session_send", { id, text });

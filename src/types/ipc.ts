@@ -187,10 +187,17 @@ export interface Session {
   workspaceId: Id | null;
   kind: SessionKind;
   title: string;
+  provider?: string;
+  peerSessionId?: string;
   state: SessionState;
   /** Milliseconds since the last observed output; null for recovered records. */
   elapsedMs: number | null;
 }
+
+export type ResumeResult =
+  | { type: "resumed"; session: Session }
+  | { type: "not_supported" }
+  | { type: "failed"; message: string };
 
 /** Compact daemon push used to update the workspace tab roster. */
 export interface SessionStateSnapshot {
