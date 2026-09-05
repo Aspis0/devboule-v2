@@ -246,6 +246,13 @@ pub(super) struct SessionRuntime {
     /// Duplicated OS process handle. Queried by the shared sweeper; never a
     /// PID, which the OS may reuse after the child dies.
     os_handle: Mutex<Option<ProcessHandle>>,
+    /// ACP registers the killer cascade here. Fired once on newly observed
+    /// OS death, on a detached thread so the 2s sweeper never blocks.
+    on_os_death: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    os_death_started: AtomicBool,
+    /// Roster `sessions_watch` notify. ACP publish uses this so Silent→Live
+    /// is not swallowed (the PTY coalescer already notifies the registry).
+    roster_notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl SessionRuntime {
@@ -305,6 +312,9 @@ impl SessionRuntime {
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
             os_handle: Mutex::new(None),
+            on_os_death: Mutex::new(None),
+            os_death_started: AtomicBool::new(false),
+            roster_notify: Mutex::new(None),
         }
     }
 
@@ -658,6 +668,9 @@ impl SessionRuntime {
                 self.mark_journal_degraded();
             }
         }
+        if was_silent {
+            self.notify_roster();
+        }
         was_silent
     }
 
@@ -900,6 +913,52 @@ impl SessionRuntime {
         drop(slot);
         self.mark_exited(code);
         true
+    }
+
+    fn set_on_os_death(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.on_os_death.lock() {
+            *slot = Some(callback);
+        }
+    }
+
+    fn fire_os_death(&self) {
+        if self.os_death_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let callback = self
+            .on_os_death
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let Some(callback) = callback else {
+            return;
+        };
+        let id = self.session_id.clone();
+        let spawned = callback.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("session-os-death-{id}"))
+            .spawn(move || spawned())
+        {
+            eprintln!("session {id} could not detach OS-death cascade: {error}");
+            callback();
+        }
+    }
+
+    fn set_roster_notify(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut slot) = self.roster_notify.lock() {
+            *slot = Some(callback);
+        }
+    }
+
+    fn notify_roster(&self) {
+        if !self.transition_ready() {
+            return;
+        }
+        if let Ok(slot) = self.roster_notify.lock() {
+            if let Some(callback) = slot.as_ref() {
+                callback();
+            }
+        }
     }
 
     fn refresh_journal_degradation(&self) {
@@ -1155,6 +1214,7 @@ impl SessionRuntime {
             journal.try_mark_reaped(&self.session_id, code);
         }
         self.refresh_exit_integrity();
+        self.fire_os_death();
     }
 
     fn terminated_integrity(&self) -> TranscriptIntegrity {
@@ -1409,7 +1469,7 @@ fn move_agent_pending_to_backlog(stream: &mut StreamState) {
 struct PtySession {
     metadata: Session,
     owner: OwnerId,
-    process_job: JobObject,
+    process_job: Arc<JobObject>,
     master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     killer: Box<dyn SessionKiller>,
     /// This is separate from the stdout reader: stderr must never be able to
@@ -2333,6 +2393,9 @@ fn sweep_os_liveness(
     drop(map);
     for (runtime, owner) in work {
         let newly_dead = runtime.observe_os_liveness();
+        if newly_dead {
+            runtime.fire_os_death();
+        }
         let notify = if newly_dead || runtime.process_exited() {
             runtime.should_publish_exit_transition()
         } else {
@@ -2521,6 +2584,24 @@ fn start_spawned_session(
     };
     if let Some(handle) = os_handle {
         runtime.install_os_handle(handle);
+    }
+    let process_job = Arc::new(process_job);
+    {
+        let registry = registry.clone();
+        let owner = owner.clone();
+        runtime.set_roster_notify(Arc::new(move || {
+            registry.notify_transition(&owner);
+        }));
+    }
+    if metadata.kind == SessionKind::Acp {
+        let death_killer = Mutex::new(killer.clone_killer());
+        let job = Arc::clone(&process_job);
+        runtime.set_on_os_death(Arc::new(move || {
+            if let Ok(mut killer) = death_killer.lock() {
+                killer.kill();
+            }
+            let _ = job.terminate();
+        }));
     }
     let exited = Arc::new(AtomicBool::new(false));
     // Register before the reader thread starts: ConPTY's startup DSR can be
@@ -3180,6 +3261,51 @@ mod tests {
             drain(&conn),
             vec![SessionEvent::Exit { code: Some(7) }],
             "exit must be the only terminal transition delivered after silence"
+        );
+    }
+
+    #[test]
+    fn acp_publish_notifies_roster_when_leaving_silent() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.transition_ready.store(true, Ordering::Release);
+        let notified = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&notified);
+        runtime.set_roster_notify(Arc::new(move || {
+            flag.store(true, Ordering::SeqCst);
+        }));
+        let last_publish = runtime
+            .stream
+            .lock()
+            .expect("stream lock")
+            .last_publish
+            .expect("new sessions have an observed start time");
+        runtime.mark_silent_if_due(
+            last_publish + SESSION_SILENCE_THRESHOLD + Duration::from_millis(1),
+        );
+        assert!(
+            matches!(
+                runtime.lock_stream().expect("stream").disposition,
+                Disposition::Silent
+            ),
+            "precondition: session is Silent"
+        );
+        runtime.publish_agent_event(
+            SessionEvent::AgentMessage {
+                message_id: Some("m1".to_string()),
+                text: "back".to_string(),
+            },
+            None,
+        );
+        assert!(
+            matches!(
+                runtime.lock_stream().expect("stream").disposition,
+                Disposition::Running
+            ),
+            "ACP output must return the stream to Running"
+        );
+        assert!(
+            notified.load(Ordering::SeqCst),
+            "ACP Silent→Live must notify the sessions_watch roster, like PTY output"
         );
     }
 

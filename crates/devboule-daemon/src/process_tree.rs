@@ -17,7 +17,7 @@ mod platform {
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
@@ -66,6 +66,17 @@ mod platform {
 
         pub fn assign(&self, process: RawHandle) -> io::Result<()> {
             let result = unsafe { AssignProcessToJobObject(self.handle, process as HANDLE) };
+            if result == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// Kill every process in the job without closing the handle. Used when
+        /// OS liveness observes the root is dead but descendants still hold
+        /// pipes open (so EOF never arrives).
+        pub fn terminate(&self) -> io::Result<()> {
+            let result = unsafe { TerminateJobObject(self.handle, 1) };
             if result == 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -183,6 +194,10 @@ mod platform {
     impl JobObject {
         pub fn new() -> io::Result<Self> {
             Ok(Self)
+        }
+
+        pub fn terminate(&self) -> io::Result<()> {
+            Ok(())
         }
     }
 

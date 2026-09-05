@@ -259,6 +259,16 @@ impl AcpHost {
         broker.request_host_permission(event, &runtime)
     }
 
+    fn agent_process_exited(&self) -> bool {
+        self.gate
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .and_then(|gate| gate.runtime.upgrade())
+            .map(|runtime| runtime.process_exited())
+            .unwrap_or(true)
+    }
+
     fn release_reserved_slot(&self, id: &str) {
         if let Ok(mut terminals) = self.terminals.lock() {
             if matches!(terminals.get(id), Some(TerminalSlot::Reserved)) {
@@ -431,7 +441,12 @@ impl AcpHost {
         let plan = spawn_plan(&request.command, &request.args);
         let event = terminal_permission_event(&plan, &cwd, &env);
         match self.await_user_permission(event) {
-            HostDecision::Allow => {}
+            HostDecision::Allow => {
+                if self.agent_process_exited() {
+                    self.release_reserved_slot(&id);
+                    return Err(RpcError::denied("the agent is gone"));
+                }
+            }
             HostDecision::Deny | HostDecision::Timeout | HostDecision::Cancelled => {
                 self.release_reserved_slot(&id);
                 return Err(RpcError::denied("the user denied this command"));
@@ -1001,7 +1016,12 @@ fn prepare_spawn(plan: &SpawnPlan, runtime_dir: &Path, terminal_id: &str) -> Res
 
 #[cfg(windows)]
 fn write_shell_batch(runtime_dir: &Path, terminal_id: &str, line: &str) -> Result<PathBuf, RpcError> {
-    let path = runtime_dir.join(format!("acp-{terminal_id}.cmd"));
+    static BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
+    let seq = BATCH_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = runtime_dir.join(format!(
+        "acp-{:x}-{seq}-{terminal_id}.cmd",
+        std::process::id()
+    ));
     std::fs::write(&path, format!("{line}\r\n")).map_err(|error| {
         RpcError::internal(format!("Could not write ACP shell batch: {error}"))
     })?;
@@ -1680,6 +1700,92 @@ mod tests {
     }
 
     #[test]
+    fn terminal_create_allow_after_exit_does_not_spawn() {
+        let test = host();
+        let (broker, runtime) = bind_gate(&test.host);
+        let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let id = wait_for_pending(&broker, Duration::from_secs(2));
+        runtime.mark_exited(Some(1));
+        broker
+            .respond(&id, PermissionOutcome::AllowOnce)
+            .expect("allow after the agent is already dead");
+        let error = thread
+            .join()
+            .expect("create thread")
+            .expect_err("allow after OS death must not spawn");
+        let spawned = test.host.spawned_count();
+        let live = test.host.live_terminal_count();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert_eq!(error.code, -32001);
+        assert_eq!(error.message, "the agent is gone");
+        assert_eq!(spawned, 0, "dead agent must not spawn (spawned={spawned})");
+        assert_eq!(live, 0, "reserved slot must be released (live={live})");
+    }
+
+    #[cfg(windows)]
+    fn spawn_innocuous() -> std::process::Child {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("cmd.exe")
+            .args(["/d", "/c", "ping", "-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn ping")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn os_death_cancels_pending_terminal_create_without_eof() {
+        use crate::process_tree::ProcessHandle;
+        use std::os::windows::io::AsRawHandle;
+        let test = host();
+        let (broker, runtime) = bind_gate(&test.host);
+        broker.set_timeout(Duration::from_secs(2));
+        let wake = Arc::clone(&broker);
+        runtime.set_on_os_death(Arc::new(move || wake.cancel_all()));
+        let mut child = spawn_innocuous();
+        let handle =
+            ProcessHandle::duplicate(AsRawHandle::as_raw_handle(&child)).expect("duplicate");
+        runtime.install_os_handle(handle);
+        let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let _id = wait_for_pending(&broker, Duration::from_secs(2));
+        child.kill().expect("kill ping");
+        let _ = child.wait();
+        let started = Instant::now();
+        assert!(
+            runtime.observe_os_liveness(),
+            "OS observation must mark Exited without waiting on ACP stdout EOF"
+        );
+        let deadline = Instant::now() + Duration::from_millis(800);
+        while !thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let error = thread
+            .join()
+            .expect("create thread")
+            .expect_err("OS death must deny the pending gate");
+        let elapsed = started.elapsed();
+        let spawned = test.host.spawned_count();
+        let live = test.host.live_terminal_count();
+        test.host.shutdown();
+        let _ = std::fs::remove_dir_all(&test.cwd);
+        let _ = std::fs::remove_dir_all(&test.runtime);
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "pending terminal/create stayed blocked for {elapsed:?} after OS death"
+        );
+        assert_eq!(error.code, -32001);
+        assert_eq!(spawned, 0);
+        assert_eq!(live, 0);
+    }
+
+    #[test]
     fn terminal_create_deny_returns_server_error_and_releases_the_slot() {
         let test = host();
         let (broker, _runtime) = bind_gate(&test.host);
@@ -2178,6 +2284,25 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn shell_batch_paths_do_not_collide_across_hosts() {
+        let dir = unique_dir("batch");
+        let plan = super::spawn_plan("echo collide", &[]);
+        let first = super::prepare_spawn(&plan, &dir, "t-1").expect("first batch");
+        let second = super::prepare_spawn(&plan, &dir, "t-1").expect("second batch");
+        let left = first.batch_file.expect("first path");
+        let right = second.batch_file.expect("second path");
+        let same = left == right;
+        let _ = std::fs::remove_file(&left);
+        let _ = std::fs::remove_file(&right);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !same,
+            "two hosts sharing a runtime_dir and terminal_id must not share a .cmd path: {left:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn terminal_kill_deletes_the_shell_batch_file() {
         let test = host();
         let (broker, _runtime) = bind_gate(&test.host);
@@ -2190,7 +2315,17 @@ mod tests {
             }))
             .expect("create");
         let terminal_id = created["terminalId"].as_str().expect("id").to_string();
-        let batch = test.runtime.join(format!("acp-{terminal_id}.cmd"));
+        let suffix = format!("-{terminal_id}.cmd");
+        let batch = std::fs::read_dir(&test.runtime)
+            .expect("runtime dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("acp-") && name.ends_with(&suffix))
+            })
+            .expect("spawn must write a unique acp-*.cmd");
         assert!(batch.is_file(), "spawn must write {batch:?}");
         test.host
             .kill_terminal(serde_json::json!({
