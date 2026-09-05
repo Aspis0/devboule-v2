@@ -56,10 +56,10 @@ describe("design viewport", () => {
     });
   });
 
-  it("uses the tested engine fit calculation", () => {
+  it("fits with the same pan convention while using the 3x range", () => {
     expect(fitViewport({ x: 0, y: 0, w: 100, h: 100 }, 800, 600)).toEqual({
-      zoom: 2,
-      pan: { x: 300, y: 200 },
+      zoom: 3,
+      pan: { x: 250, y: 150 },
     });
   });
 
@@ -90,5 +90,26 @@ describe("design viewport", () => {
     frame?.();
     expect(commit).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledWith(second);
+  });
+
+  it("cancels a pending viewport commit", () => {
+    let frame: (() => void) | undefined;
+    const commit = vi.fn();
+    const cancelFrame = vi.fn();
+    const scheduler = createViewportCommitScheduler(
+      commit,
+      (callback) => {
+        frame = callback;
+        return 7;
+      },
+      cancelFrame,
+    );
+
+    scheduler.schedule(createViewport(1.2));
+    scheduler.cancel();
+    frame?.();
+
+    expect(cancelFrame).toHaveBeenCalledWith(7);
+    expect(commit).not.toHaveBeenCalled();
   });
 });

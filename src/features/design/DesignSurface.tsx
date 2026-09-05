@@ -69,13 +69,6 @@ interface RadiusViewModel extends DesignRadiusOption {
   selected: boolean;
 }
 
-interface MessageViewModel {
-  message: DesignMessage;
-  icon: string;
-  iconTone: "working" | "error" | "done";
-  actions: readonly MessageAction[];
-}
-
 interface DesignToolbarProps {
   documentName: string;
   documentPath: string;
@@ -148,7 +141,7 @@ interface AssistantProps {
   draftPlaceholder: string;
   sendLabel: string;
   busy: boolean;
-  messages: readonly MessageViewModel[];
+  messages: readonly DesignMessage[];
   assistantRef: RefObject<HTMLDivElement | null>;
   onDraftChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -161,18 +154,43 @@ interface AssistantProps {
 type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
 
 function cloneMessages(document: DesignDocument): DesignMessage[] {
-  return cloneMessageList(document.messages);
+  return cloneMessageList(document.messages).map((message) =>
+    normalizeIncompleteMessage(message, "loaded"),
+  );
 }
 
 function cloneMessageList(messages: readonly DesignMessage[]): DesignMessage[] {
-  return messages.map((message) => {
-    if (message.role === "user") return { ...message };
-    return {
-      ...message,
-      sources: [...message.sources],
-      nodeIds: [...message.nodeIds],
-    };
-  });
+  return messages.map((message) =>
+    message.role === "user"
+      ? { ...message }
+      : { ...message, sources: [...message.sources], nodeIds: [...message.nodeIds] },
+  );
+}
+
+function normalizeIncompleteMessage(
+  message: DesignMessage,
+  phase: "loaded" | "saved",
+): DesignMessage {
+  if (message.role !== "assistant" || message.status !== "working") return message;
+  const boundary = phase === "saved" ? "saved" : "loaded";
+  return {
+    ...message,
+    status: "error",
+    title: "Generation incomplete",
+    desc: `This generation did not complete before the document was ${boundary}.`,
+  };
+}
+
+function terminalMessagesForSave(messages: readonly DesignMessage[]): DesignMessage[] {
+  return cloneMessageList(messages).map((message) => normalizeIncompleteMessage(message, "saved"));
+}
+
+function messageActions(message: DesignMessage, canGenerate: boolean): readonly MessageAction[] {
+  if (message.role === "user") return [];
+  if (message.status === "working") return canGenerate ? ["stop"] : [];
+  if (message.status === "error") return canGenerate ? ["retry"] : [];
+  if (message.nodeIds.length === 0) return canGenerate ? ["regenerate"] : [];
+  return canGenerate ? ["select", "regenerate"] : ["select"];
 }
 
 function cloneLayers(document: DesignDocument): DesignLayer[] {
@@ -830,14 +848,14 @@ const InspectorPanel = memo(function InspectorPanel({
 });
 
 const DesignMessageCard = memo(function DesignMessageCard({
-  view,
+  canGenerate,
+  message,
   onAction,
 }: {
-  view: MessageViewModel;
+  canGenerate: boolean;
+  message: DesignMessage;
   onAction: (action: MessageAction, message: DesignMessage) => void;
 }) {
-  const { message } = view;
-
   if (message.role === "user") {
     return (
       <div className="design-message design-user-message-wrap">
@@ -851,10 +869,10 @@ const DesignMessageCard = memo(function DesignMessageCard({
     <div className="design-message-card">
       <div className="design-message-card-heading">
         <span
-          className={`design-message-icon design-message-icon-${view.iconTone}`}
+          className={`design-message-icon design-message-icon-${message.status === "working" ? "working" : message.status === "error" ? "error" : "done"}`}
           aria-hidden="true"
         >
-          {view.icon}
+          {message.status === "working" ? "◌" : message.status === "error" ? "!" : "✓"}
         </span>
         <span className="design-message-title">{message.title}</span>
       </div>
@@ -867,7 +885,7 @@ const DesignMessageCard = memo(function DesignMessageCard({
         </div>
       ) : null}
       <div className="design-message-actions">
-        {view.actions.map((action) => (
+        {messageActions(message, canGenerate).map((action) => (
           <button type="button" key={action} onClick={() => onAction(action, message)}>
             {action === "stop"
               ? "Stop"
@@ -924,8 +942,13 @@ const DesignAssistant = memo(function DesignAssistant({
       </div>
 
       <div className="design-assistant-scroll design-scroll" ref={assistantRef}>
-        {messages.map((view) => (
-          <DesignMessageCard key={view.message.id} view={view} onAction={onMessageAction} />
+        {messages.map((message) => (
+          <DesignMessageCard
+            key={message.id}
+            canGenerate={canGenerate}
+            message={message}
+            onAction={onMessageAction}
+          />
         ))}
       </div>
 
@@ -1048,7 +1071,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   };
   const initialViewState: DesignViewState = {
     pan: { x: 0, y: 0 },
-    selectedLayerId: document.initialState.selectedLayerId,
+    selectedLayerId: document.selectedLayerId,
     tool: document.initialState.tool,
     zoom: clampViewportZoom(document.initialState.zoom),
   };
@@ -1062,17 +1085,19 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [composerContextLayerId, setComposerContextLayerId] = useState<string | null>(
     initialViewState.selectedLayerId,
   );
-  const [grounded, setGrounded] = useState(document.initialState.grounded);
+  const [grounded, setGrounded] = useState(document.grounded);
   const [draft, setDraft] = useState(document.initialState.draft);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [messages, setMessages] = useState<DesignMessage[]>(() => cloneMessages(document));
 
+  const savingRef = useRef(false);
   const activeGenerationRef = useRef<{
     controller: AbortController;
     delivered: boolean;
   } | null>(null);
+  const messagesRef = useRef(messages);
   const documentRevisionRef = useRef(0);
   const layerCopyCounterRef = useRef(0);
   const assistantRef = useRef<HTMLDivElement>(null);
@@ -1090,6 +1115,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   }, []);
 
   useEffect(() => {
+    messagesRef.current = messages;
     if (assistantRef.current) assistantRef.current.scrollTop = assistantRef.current.scrollHeight;
   }, [messages, busy]);
 
@@ -1130,6 +1156,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         .filter((layer) => !snapshot.hiddenLayerIds.includes(layer.id)),
     [layers, snapshot.hiddenLayerIds],
   );
+  const fitRectsRef = useRef<NodeRect[]>([]);
+  useEffect(() => {
+    fitRectsRef.current = fitRects;
+  }, [fitRects]);
 
   const radiusOptions = useMemo(
     () =>
@@ -1145,38 +1175,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const canSave = saveDocument !== undefined;
   const canGenerate = generate !== undefined;
 
-  const messageViews = useMemo<MessageViewModel[]>(
-    () =>
-      messages.map((message) => {
-        if (message.role === "user") {
-          return { message, icon: "", iconTone: "done", actions: [] };
-        }
-        return {
-          message,
-          icon: message.status === "working" ? "◌" : message.status === "error" ? "!" : "✓",
-          iconTone:
-            message.status === "working"
-              ? "working"
-              : message.status === "error"
-                ? "error"
-                : "done",
-          actions:
-            message.status === "working"
-              ? canGenerate
-                ? (["stop"] as const)
-                : []
-              : message.status === "error"
-                ? canGenerate
-                  ? (["retry"] as const)
-                  : []
-                : canGenerate
-                  ? (["select", "regenerate"] as const)
-                  : (["select"] as const),
-        };
-      }),
-    [canGenerate, messages],
-  );
-
   const generationCount = useMemo(
     () =>
       messages.filter(
@@ -1191,10 +1189,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const canRedo = history.future.length > 0;
 
   const commitSnapshot = useCallback((change: SnapshotChange) => {
+    documentRevisionRef.current += 1;
     setHistory((current) => {
       const next = change(current.present);
       if (next === null) return current;
-      documentRevisionRef.current += 1;
       return {
         ...current,
         present: next,
@@ -1205,12 +1203,21 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     });
   }, []);
 
-  const selectLayer = useCallback((layerId: string) => {
-    setViewState((current) =>
-      current.selectedLayerId === layerId ? current : { ...current, selectedLayerId: layerId },
-    );
-    setComposerContextLayerId(layerId);
+  const markDocumentDirty = useCallback(() => {
+    documentRevisionRef.current += 1;
+    setHistory((current) => (current.saved ? { ...current, saved: false } : current));
   }, []);
+
+  const selectLayer = useCallback(
+    (layerId: string) => {
+      markDocumentDirty();
+      setViewState((current) =>
+        current.selectedLayerId === layerId ? current : { ...current, selectedLayerId: layerId },
+      );
+      setComposerContextLayerId(layerId);
+    },
+    [markDocumentDirty],
+  );
 
   const duplicateLayer = useCallback(() => {
     const source = layers.find((layer) => layer.id === selectedLayerId);
@@ -1314,15 +1321,15 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
     if (!canvas) return;
     const bounds = canvas.getBoundingClientRect();
-    setViewport(fitViewport(nodesBounds(fitRects), bounds.width, bounds.height));
-  }, [fitRects, setViewport]);
+    setViewport(fitViewport(nodesBounds(fitRectsRef.current), bounds.width, bounds.height));
+  }, [setViewport]);
 
   const undo = useCallback(() => {
     if (!canUndo) return;
+    documentRevisionRef.current += 1;
     setHistory((current) => {
       if (current.past.length === 0) return current;
       const previous = current.past[current.past.length - 1];
-      documentRevisionRef.current += 1;
       return {
         ...current,
         present: previous,
@@ -1335,10 +1342,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
 
   const redo = useCallback(() => {
     if (!canRedo) return;
+    documentRevisionRef.current += 1;
     setHistory((current) => {
       if (current.future.length === 0) return current;
       const next = current.future[0];
-      documentRevisionRef.current += 1;
       return {
         ...current,
         present: next,
@@ -1382,9 +1389,13 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   }, [canRedo, canUndo, redo, undo]);
 
   const save = useCallback(async () => {
-    if (saveDocument === undefined || saving) return;
+    if (saveDocument === undefined || savingRef.current) return;
 
+    savingRef.current = true;
     const revisionAtSave = documentRevisionRef.current;
+    const hasWorkingMessage = messages.some(
+      (message) => message.role === "assistant" && message.status === "working",
+    );
     const documentToSave: DesignDocument = {
       ...document,
       initialState: {
@@ -1393,25 +1404,31 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         radius: history.present.radius,
         flat: history.present.flat,
       },
+      selectedLayerId,
+      grounded,
       layers: cloneLayerList(layers),
-      messages: cloneMessageList(messages),
+      messages: terminalMessagesForSave(messages),
     };
 
     setSaveError(null);
     setSaving(true);
     try {
       await saveDocument(documentToSave);
-      if (documentRevisionRef.current === revisionAtSave) {
+      if (documentRevisionRef.current === revisionAtSave && !hasWorkingMessage) {
         setHistory((current) => (current.saved ? current : { ...current, saved: true }));
       }
     } catch (error: unknown) {
       setHistory((current) => (current.saved ? { ...current, saved: false } : current));
       setSaveError(error instanceof Error ? error.message : "The design document could not save.");
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
-  }, [document, history.present, layers, messages, saveDocument, saving]);
-  const toggleGrounding = useCallback(() => setGrounded((value) => !value), []);
+  }, [document, grounded, history.present, layers, messages, saveDocument, selectedLayerId]);
+  const toggleGrounding = useCallback(() => {
+    markDocumentDirty();
+    setGrounded((value) => !value);
+  }, [markDocumentDirty]);
 
   const startGeneration = useCallback(
     (prompt: string) => {
@@ -1419,8 +1436,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       activeGenerationRef.current?.controller.abort();
       const controller = new AbortController();
       const activeGeneration = { controller, delivered: false };
-      const userId = Date.now();
-      const assistantId = userId + 1;
+      const userId = crypto.randomUUID();
+      const assistantId = crypto.randomUUID();
       const userMessage: DesignMessage = {
         id: userId,
         role: "user",
@@ -1447,7 +1464,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       setBusy(true);
       void generate(prompt, controller.signal)
         .then((result) => {
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || activeGenerationRef.current !== activeGeneration) return;
           activeGeneration.delivered = true;
           documentRevisionRef.current += 1;
           setMessages((current) =>
@@ -1470,7 +1487,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           activeGenerationRef.current = null;
         })
         .catch((error: unknown) => {
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || activeGenerationRef.current !== activeGeneration) return;
           documentRevisionRef.current += 1;
           setMessages((current) =>
             current.map((message) =>
@@ -1523,8 +1540,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         const activeGeneration = activeGenerationRef.current;
         if (activeGeneration === null || activeGeneration.delivered) return;
 
-        activeGeneration.controller.abort();
         activeGenerationRef.current = null;
+        activeGeneration.controller.abort();
         documentRevisionRef.current += 1;
         setBusy(false);
         setMessages((current) =>
@@ -1545,20 +1562,19 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       if (action === "select") {
         const nodeId = message.role === "assistant" ? message.nodeIds[0] : null;
         if (nodeId) selectLayer(nodeId);
-        else startGeneration("Run a visual check on the canvas.");
         return;
       }
 
       if (action === "retry") {
-        const prompt = promptForMessage(messages, message);
+        const prompt = promptForMessage(messagesRef.current, message);
         if (prompt !== null) startGeneration(prompt);
         return;
       }
 
-      const prompt = promptForMessage(messages, message);
+      const prompt = promptForMessage(messagesRef.current, message);
       if (prompt !== null) startGeneration(prompt);
     },
-    [messages, selectLayer, startGeneration],
+    [selectLayer, startGeneration],
   );
 
   const clearComposerContext = useCallback(() => setComposerContextLayerId(null), []);
@@ -1662,7 +1678,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           }
           sendLabel={busy ? "Working…" : "Generate"}
           busy={busy}
-          messages={messageViews}
+          messages={messages}
           assistantRef={assistantRef}
           onDraftChange={handleDraftChange}
           onComposerKeyDown={handleComposerKeyDown}

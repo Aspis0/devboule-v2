@@ -95,8 +95,25 @@ export function fitViewport(
   height: number,
   margin?: number,
 ): DesignViewport {
-  const fitted = fitToBounds(bounds, width, height, margin);
-  return { ...fitted, zoom: clampViewportZoom(fitted.zoom) };
+  if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
+    const fitted = fitToBounds(bounds, width, height, margin);
+    return { ...fitted, zoom: clampViewportZoom(fitted.zoom) };
+  }
+
+  // The ported engine's fit helper has a separate 2x clamp. Derive the valid
+  // fit here so every Design viewport uses the same [0.2, 3] range and pan
+  // convention as the interactive zoom path.
+  const fitMargin = margin ?? 80;
+  const availableWidth = Math.max(1, width - fitMargin * 2);
+  const availableHeight = Math.max(1, height - fitMargin * 2);
+  const zoom = clampViewportZoom(Math.min(availableWidth / bounds.w, availableHeight / bounds.h));
+  return {
+    zoom,
+    pan: {
+      x: (width - bounds.w * zoom) / 2 - bounds.x * zoom,
+      y: (height - bounds.h * zoom) / 2 - bounds.y * zoom,
+    },
+  };
 }
 
 export function viewportTransform(viewport: DesignViewport): string {

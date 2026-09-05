@@ -19,17 +19,16 @@ const DOCUMENT: DesignDocument = {
   contextPrefix: "Editing",
   draftPlaceholder: "Describe the change to Index header…",
   noContextPlaceholder: "Describe what to generate…",
-  generationFooter: "Generations land on the Design canvas.",
   tokenFooter: "Values snap to design tokens (DTCG)",
+  selectedLayerId: "index-header",
+  grounded: true,
   initialState: {
     tool: "move",
     zoom: 1,
     radius: 14,
     flat: false,
     saved: false,
-    grounded: true,
     draft: "",
-    selectedLayerId: "index-header",
     hiddenLayerIds: [],
   },
   layers: [
@@ -57,12 +56,12 @@ const DOCUMENT: DesignDocument = {
   ],
   messages: [
     {
-      id: 0,
+      id: "message-0",
       role: "user",
       text: "Use the real stale count in the header.",
     },
     {
-      id: 1,
+      id: "message-1",
       role: "assistant",
       status: "done",
       title: "Edited Index header",
@@ -269,6 +268,154 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("does not offer canvas selection when a result has no node", async () => {
+    const assistantMessage = DOCUMENT.messages[1];
+    if (assistantMessage?.role !== "assistant") throw new Error("Assistant fixture missing");
+    const documentWithoutNode = {
+      ...DOCUMENT,
+      messages: [DOCUMENT.messages[0]!, { ...assistantMessage, nodeIds: [] }],
+    } satisfies DesignDocument;
+    const generate = vi.fn(async () => ({ ...GENERATION_RESULT, nodeIds: [] }));
+    const { container, root } = await renderDesign(createHost({ generate }, documentWithoutNode));
+
+    expect(
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === "Select on canvas",
+      ),
+    ).toBeUndefined();
+
+    await fillDraft(container, "Make the stale count dynamic.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === "Select on canvas",
+      ),
+    ).toBeUndefined();
+    await act(async () => root.unmount());
+  });
+
+  it("persists the selected layer and grounding preference", async () => {
+    let savedDocument: DesignDocument | undefined;
+    const saveDocument = vi.fn(async (next: DesignDocument) => {
+      savedDocument = next;
+    });
+    const { container, root } = await renderDesign(createHost({ saveDocument }));
+    const staleQueue = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Select Stale queue"]',
+    );
+    const grounding = container.querySelector<HTMLButtonElement>(".design-grounding-toggle");
+    const save = container.querySelector<HTMLButtonElement>(".design-save-primary");
+    if (staleQueue === null || grounding === null || save === null) {
+      throw new Error("Document controls missing");
+    }
+
+    await act(async () => staleQueue.click());
+    await act(async () => grounding.click());
+    await act(async () => save.click());
+
+    expect(savedDocument?.selectedLayerId).toBe("stale-queue");
+    expect(savedDocument?.grounded).toBe(false);
+    await act(async () => root.unmount());
+
+    if (savedDocument === undefined) throw new Error("Save did not produce a document");
+    const reloaded = await renderDesign(createHost({}, savedDocument));
+    expect(
+      reloaded.container
+        .querySelector<HTMLButtonElement>('[aria-label="Select Stale queue"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      reloaded.container
+        .querySelector<HTMLButtonElement>(".design-grounding-toggle")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("false");
+    await act(async () => reloaded.root.unmount());
+  });
+
+  it("normalizes a working message found in a loaded document", async () => {
+    const assistantMessage = DOCUMENT.messages[1];
+    if (assistantMessage?.role !== "assistant") throw new Error("Assistant fixture missing");
+    const workingDocument = {
+      ...DOCUMENT,
+      messages: [
+        DOCUMENT.messages[0]!,
+        { ...assistantMessage, status: "working" as const, title: "Generating…" },
+      ],
+    } satisfies DesignDocument;
+    const { container, root } = await renderDesign(createHost({}, workingDocument));
+
+    expect(container.textContent).toContain("Generation incomplete");
+    expect(
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === "Stop",
+      ),
+    ).toBeUndefined();
+    await act(async () => root.unmount());
+  });
+
+  it("turns a working generation into a terminal message before saving and reload", async () => {
+    let savedDocument: DesignDocument | undefined;
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const saveDocument = vi.fn(async (next: DesignDocument) => {
+      savedDocument = next;
+    });
+    const { container, root } = await renderDesign(createHost({ generate, saveDocument }));
+    await fillDraft(container, "Make the stale count dynamic.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    const save = container.querySelector<HTMLButtonElement>(".design-save-primary");
+    if (send === null || save === null) throw new Error("Generation controls missing");
+
+    await act(async () => send.click());
+    expect(container.textContent).toContain("Generating…");
+    await act(async () => save.click());
+
+    if (savedDocument === undefined) throw new Error("Save did not produce a document");
+    expect(
+      savedDocument.messages.some(
+        (message) => message.role === "assistant" && message.status === "working",
+      ),
+    ).toBe(false);
+    expect(container.querySelector(".design-save-status")?.textContent).toContain(
+      "Unsaved changes",
+    );
+    await act(async () => root.unmount());
+
+    const reloaded = await renderDesign(createHost({ generate }, savedDocument));
+    expect(reloaded.container.textContent).toContain("Generation incomplete");
+    expect(
+      Array.from(reloaded.container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === "Stop",
+      ),
+    ).toBeUndefined();
+    await act(async () => reloaded.root.unmount());
+  });
+
+  it("rejects a second save before the first save renders its state", async () => {
+    let resolveSave: (() => void) | undefined;
+    const saveDocument = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    const { container, root } = await renderDesign(createHost({ saveDocument }));
+    const save = container.querySelector<HTMLButtonElement>(".design-save-primary");
+    if (save === null) throw new Error("Save control missing");
+
+    await act(async () => {
+      save.click();
+      save.click();
+    });
+
+    expect(saveDocument).toHaveBeenCalledTimes(1);
+    resolveSave?.();
+    await act(async () => undefined);
+    await act(async () => root.unmount());
+  });
+
   it("shows a load failure instead of rendering an empty document", async () => {
     const host = createHost({
       loadDocument: vi.fn(async () => {
@@ -340,6 +487,38 @@ describe("DesignSurface host capabilities", () => {
 
     expect(generationSignal?.aborted).toBe(true);
     expect(container.textContent).toContain("Cancelled before the host returned a result.");
+    await act(async () => root.unmount());
+  });
+
+  it("does not overwrite a stopped message when the host resolves afterward", async () => {
+    let resolveGeneration: ((result: DesignGenerationResult) => void) | undefined;
+    const generate = vi.fn(
+      () =>
+        new Promise<DesignGenerationResult>((resolve) => {
+          resolveGeneration = resolve;
+        }),
+    );
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "Make the stale count dynamic.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const stop = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Stop",
+    );
+    if (stop === undefined || resolveGeneration === undefined) {
+      throw new Error("Stop controls missing");
+    }
+    await act(async () => stop.click());
+    await act(async () => {
+      resolveGeneration?.(GENERATION_RESULT);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Stopped");
+    expect(container.textContent).not.toContain("Generated result");
     await act(async () => root.unmount());
   });
 
@@ -463,7 +642,7 @@ describe("DesignSurface host capabilities", () => {
   it("selects the topmost layer at a canvas point and clears on empty canvas", async () => {
     const overlappingDocument: DesignDocument = {
       ...DOCUMENT,
-      initialState: { ...DOCUMENT.initialState, selectedLayerId: "index-header" },
+      selectedLayerId: "index-header",
       layers: [
         {
           ...DOCUMENT.layers[0]!,
@@ -537,7 +716,7 @@ describe("DesignSurface host capabilities", () => {
   it("selects the clicked layer when rendered content is outside the math hit", async () => {
     const overlappingDocument: DesignDocument = {
       ...DOCUMENT,
-      initialState: { ...DOCUMENT.initialState, selectedLayerId: "stale-queue" },
+      selectedLayerId: "stale-queue",
       layers: [
         {
           ...DOCUMENT.layers[0]!,

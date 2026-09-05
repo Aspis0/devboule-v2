@@ -3,7 +3,13 @@
 import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OracleIndexStatus, Session, SessionEvent, Workspace } from "../../types/ipc";
+import type {
+  OracleIndexStatus,
+  OracleSearchResponse,
+  Session,
+  SessionEvent,
+  Workspace,
+} from "../../types/ipc";
 
 const channelHarness = vi.hoisted(() => ({
   emit: null as ((event: SessionEvent) => void) | null,
@@ -394,6 +400,24 @@ describe("ACP design host", () => {
     expect(outcome).toMatchObject({ name: "AbortError" });
 
     await disposeAgentHost(host);
+  });
+
+  it("does not create a session when disposed during Oracle grounding", async () => {
+    let resolveOracle: ((response: OracleSearchResponse) => void) | undefined;
+    mocks.oracleAsk.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveOracle = resolve;
+        }),
+    );
+    const host = createAgentHost();
+    const run = host.generate?.("Update the design", new AbortController().signal);
+
+    await disposeAgentHost(host);
+    resolveOracle?.({ query: "Update the design", results: [] });
+
+    await expect(run).rejects.toThrow("The design surface is no longer available.");
+    expect(mocks.sessionCreate).not.toHaveBeenCalled();
   });
 
   it("closes and detaches the agent session when the Design mount unmounts", async () => {

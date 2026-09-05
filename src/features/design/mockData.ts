@@ -32,9 +32,7 @@ export const MOCK_DESIGN_INITIAL_STATE = {
   radius: 14,
   flat: false,
   saved: false,
-  grounded: true,
   draft: "",
-  selectedLayerId: "index-header",
   hiddenLayerIds: [] as readonly string[],
 };
 
@@ -45,9 +43,9 @@ export const MOCK_DESIGN_DOCUMENT = {
   contextPrefix: "Editing",
   draftPlaceholder: "Describe the change to Index header…",
   noContextPlaceholder: "Describe what to generate…",
-  generationFooter:
-    "Generations land on the Design canvas in this worktree; Save to repo writes them back as components.",
   tokenFooter: "Values snap to design tokens (DTCG)",
+  selectedLayerId: "index-header",
+  grounded: true,
 } as const;
 
 export const MOCK_DESIGN_LAYERS: readonly DesignLayer[] = [
@@ -96,13 +94,13 @@ export const MOCK_DESIGN_RADIUS_OPTIONS: readonly DesignRadiusOption[] = [
 
 export const MOCK_DESIGN_MESSAGES: readonly DesignMessage[] = [
   {
-    id: 1,
+    id: "message-1",
     role: "user",
     text: "Make the header state the stale count and drop the second export button.",
     ctx: "Editing Index header",
   },
   {
-    id: 2,
+    id: "message-2",
     role: "assistant",
     status: "done",
     title: "Edited Index header",

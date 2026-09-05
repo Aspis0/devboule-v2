@@ -24,14 +24,14 @@ export interface DesignRadiusOption {
 }
 
 export interface DesignUserMessage {
-  id: number;
+  id: string;
   role: "user";
   text: string;
   ctx?: string;
 }
 
 export interface DesignAssistantMessage {
-  id: number;
+  id: string;
   role: "assistant";
   status: DesignMessageStatus;
   title: string;
@@ -62,14 +62,13 @@ export interface DesignCanvasContent {
 }
 
 export interface DesignInitialState {
+  // Initial values; zoom and tool seed the view but are not rewritten by document saves.
   tool: DesignTool;
   zoom: number;
   radius: number;
   flat: boolean;
   saved: boolean;
-  grounded: boolean;
   draft: string;
-  selectedLayerId: string;
   hiddenLayerIds: readonly string[];
 }
 
@@ -80,9 +79,11 @@ export interface DesignDocument {
   contextPrefix: string;
   draftPlaceholder: string;
   noContextPlaceholder: string;
-  generationFooter: string;
   tokenFooter: string;
   initialState: DesignInitialState;
+  // Persisted document preferences, kept outside the undo snapshot.
+  selectedLayerId: string;
+  grounded: boolean;
   layers: readonly DesignLayer[];
   canvasContent: DesignCanvasContent;
   radiusOptions: readonly DesignRadiusOption[];
