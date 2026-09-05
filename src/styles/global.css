@@ -26,7 +26,7 @@
   --sand: #e7e0d2;
   --ink: #1c1a17;
   --terracotta: #c8532b;
-  --terracotta-deep: #8a3a1b;
+  --terracotta-deep: #8a3a1b; /* worst-case 4.81 */
   --selection: #e8c4b4;
   --green: #3f7a56;
   --green-deep: #315e43; /* worst-case 4.62 */
