@@ -111,8 +111,7 @@ function manifestStrip(manifest: SessionManifest): {
 } {
   const current = manifest.models.find((model) => model.modelId === manifest.currentModelId);
   const effort =
-    current?.currentEffort &&
-    current.efforts?.some((entry) => entry.id === current.currentEffort)
+    current?.currentEffort && current.efforts?.some((entry) => entry.id === current.currentEffort)
       ? current.currentEffort
       : null;
   return {
