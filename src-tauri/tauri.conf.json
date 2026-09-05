@@ -29,6 +29,12 @@
     "security": {
       "csp": {
         "default-src": "'self'",
+        // base-uri and form-action do NOT fall back to default-src; absent
+        // means unprotected. A document could rewrite every relative URL with
+        // <base href>, and nothing here submits forms anywhere but 'self'.
+        // Free hardening, flagged by the Design session's artifact audit.
+        "base-uri": "'self'",
+        "form-action": "'self'",
         // `http://plugin.localhost` is the origin our own registered scheme gets
         // on Windows (src/plugin_assets.rs). A plugin's UI is served by us, from
         // a directory we resolved, but it is a DIFFERENT origin than the app, so
