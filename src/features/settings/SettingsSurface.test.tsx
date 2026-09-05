@@ -313,4 +313,47 @@ describe("Settings providers catalog", () => {
     expect(container.textContent).toContain("grok");
     expect(container.textContent).toContain("2 PATH directories could not be read");
   });
+
+  it("shows npx badge and 'available via npx' for npx-wrapper providers", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          id: "codex-acp",
+          executable: "@agentclientprotocol/codex-acp@1.10.0",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+          origin: "npx-wrapper",
+        },
+        {
+          id: "grok",
+          executable: "C:\\\\npm\\\\grok.cmd",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+          origin: "user-binary",
+        },
+        {
+          id: "bare",
+          executable: "bare.exe",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("codex-acp");
+    expect(container.textContent).toContain("@agentclientprotocol/codex-acp@1.10.0");
+    expect(container.textContent).toContain("npx");
+    expect(container.textContent).toContain("available via npx · authentication unknown");
+    expect(container.textContent).toContain("grok");
+    expect(container.textContent).toContain("installed · authentication unknown");
+    expect(container.textContent).toContain("bare");
+    expect(container.textContent).toContain("installed · authentication unknown");
+  });
 });

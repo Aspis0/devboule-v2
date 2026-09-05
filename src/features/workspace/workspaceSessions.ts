@@ -257,13 +257,13 @@ export function createWorkspaceSessionController(
 
 export function chatCapableProviders(providers: ProviderInfo[]): ProviderInfo[] {
   return providers.filter(
-    (provider) =>
-      (provider.protocol === "acp" || provider.protocol === "stream-json") &&
-      // npx wrappers download third-party code on first run; they stay out of
-      // the picker until the consent step (fetta 4 pass B) can show the user
-      // package@version before anything is spawned.
-      provider.origin !== "npx-wrapper",
+    (provider) => provider.protocol === "acp" || provider.protocol === "stream-json",
   );
+}
+
+/** True when the provider spawns via npx and downloads third-party code on first run. */
+export function requiresConsent(provider: ProviderInfo): boolean {
+  return provider.origin === "npx-wrapper";
 }
 
 export function sessionCreateFromProvider(provider: ProviderInfo | undefined): {

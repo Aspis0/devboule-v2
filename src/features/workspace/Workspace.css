@@ -1498,6 +1498,42 @@
   white-space: nowrap;
 }
 
+.workspace-consent-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: var(--surface-muted);
+}
+
+.workspace-consent-provider .workspace-surface-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workspace-consent-spec {
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.workspace-consent-notice {
+  margin: 0;
+  padding: 6px 9px 0;
+  color: var(--silence);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.workspace-consent-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  padding: 8px 0 2px;
+}
+
 .workspace-side-scroll {
   flex: 1;
   min-height: 0;

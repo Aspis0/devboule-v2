@@ -17,6 +17,7 @@ import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./wor
 import { useWorkspaceProjects } from "./workspaceProjects";
 import {
   chatCapableProviders,
+  requiresConsent,
   sessionCreateFromProvider,
   sessionDotTone,
   sessionStateLabel,
@@ -124,7 +125,26 @@ export function Workspace() {
     providers: ProviderInfo[];
   } | null>(null);
   const newWorkspaceInFlightRef = useRef(false);
+  const consentInFlightRef = useRef(false);
   const providerPickerRef = useRef<HTMLDivElement>(null);
+  const [consentProvider, setConsentProvider] = useState<{
+    projectId: string;
+    provider: ProviderInfo;
+  } | null>(null);
+  const consentConfirmRef = useRef<HTMLButtonElement>(null);
+  const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    // Cleared here, not at the end of consentConfirm: a second synchronous
+    // click still sees the stale non-null consentProvider, so the ref must
+    // stay armed until this re-render.
+    consentInFlightRef.current = false;
+    if (consentProvider !== null) {
+      consentConfirmRef.current?.focus();
+    } else {
+      consentRestoreRef.current?.focus();
+      consentRestoreRef.current = null;
+    }
+  }, [consentProvider]);
   const loadChatProviders = useCallback(async (): Promise<ProviderInfo[]> => {
     try {
       const catalog = await providersList();
@@ -161,6 +181,10 @@ export function Workspace() {
   );
   const pickProvider = useCallback(
     (provider: ProviderInfo, projectId: string) => {
+      if (requiresConsent(provider)) {
+        setConsentProvider({ projectId, provider });
+        return;
+      }
       setProviderPicker(null);
       addWorkspace(projectId);
       startAgentSession(provider);
@@ -168,15 +192,38 @@ export function Workspace() {
     },
     [addWorkspace, startAgentSession],
   );
+  const consentConfirm = useCallback(() => {
+    if (consentProvider === null || consentInFlightRef.current) return;
+    consentInFlightRef.current = true;
+    const { projectId, provider } = consentProvider;
+    setConsentProvider(null);
+    setProviderPicker(null);
+    addWorkspace(projectId);
+    startAgentSession(provider);
+    newWorkspaceInFlightRef.current = false;
+  }, [addWorkspace, consentProvider, startAgentSession]);
+  const consentCancel = useCallback(() => {
+    setConsentProvider(null);
+  }, []);
   useEffect(() => {
-    if (providerPicker === null) return;
+    if (providerPicker === null && consentProvider === null) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dismissProviderPicker();
+      if (event.key === "Escape") {
+        if (consentProvider !== null) {
+          consentCancel();
+        } else {
+          dismissProviderPicker();
+        }
+      }
     };
     const onPointer = (event: MouseEvent) => {
       const root = providerPickerRef.current;
       if (root !== null && event.target instanceof Node && !root.contains(event.target)) {
-        dismissProviderPicker();
+        if (consentProvider !== null) {
+          consentCancel();
+        } else {
+          dismissProviderPicker();
+        }
       }
     };
     window.addEventListener("keydown", onKey);
@@ -185,7 +232,7 @@ export function Workspace() {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onPointer);
     };
-  }, [dismissProviderPicker, providerPicker]);
+  }, [consentCancel, consentProvider, dismissProviderPicker, providerPicker]);
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
@@ -327,26 +374,76 @@ export function Workspace() {
                           >
                             <span aria-hidden="true">+</span>New workspace
                           </button>
-                          {providerPicker?.projectId === project.id ? (
+                          {providerPicker?.projectId === project.id ||
+                          consentProvider?.projectId === project.id ? (
                             <div
                               className="workspace-surface-menu"
-                              role="listbox"
-                              aria-label="Choose agent"
+                              role={consentProvider !== null ? "group" : "listbox"}
+                              aria-label={
+                                consentProvider !== null ? "Confirm agent" : "Choose agent"
+                              }
                             >
-                              <div className="workspace-menu-label">Choose agent</div>
-                              <div className="workspace-surface-options">
-                                {providerPicker.providers.map((provider) => (
-                                  <button
-                                    type="button"
-                                    role="option"
-                                    className="workspace-surface-option"
-                                    key={provider.id}
-                                    onClick={() => pickProvider(provider, providerPicker.projectId)}
-                                  >
-                                    <span className="workspace-surface-name">{provider.id}</span>
-                                  </button>
-                                ))}
-                              </div>
+                              {consentProvider !== null ? (
+                                <>
+                                  <div className="workspace-menu-label">
+                                    This agent downloads third-party code
+                                  </div>
+                                  <div className="workspace-surface-options">
+                                    <div className="workspace-consent-provider">
+                                      <span className="workspace-surface-name">
+                                        {consentProvider.provider.id}
+                                      </span>
+                                      <span className="workspace-consent-spec">
+                                        {consentProvider.provider.executable}
+                                      </span>
+                                    </div>
+                                    <p className="workspace-consent-notice">
+                                      npx will download and run third-party code on first use.
+                                    </p>
+                                  </div>
+                                  <div className="workspace-consent-actions">
+                                    <button
+                                      type="button"
+                                      className="workspace-secondary-action"
+                                      onClick={consentCancel}
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      ref={consentConfirmRef}
+                                      type="button"
+                                      className="workspace-primary-action"
+                                      onClick={consentConfirm}
+                                    >
+                                      Confirm
+                                    </button>
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="workspace-menu-label">Choose agent</div>
+                                  <div className="workspace-surface-options">
+                                    {providerPicker!.providers.map((provider) => (
+                                      <button
+                                        type="button"
+                                        role="option"
+                                        className="workspace-surface-option"
+                                        key={provider.id}
+                                        onClick={(event) => {
+                                          if (requiresConsent(provider)) {
+                                            consentRestoreRef.current = event.currentTarget;
+                                          }
+                                          pickProvider(provider, providerPicker!.projectId);
+                                        }}
+                                      >
+                                        <span className="workspace-surface-name">
+                                          {provider.id}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </>
+                              )}
                             </div>
                           ) : null}
                         </div>

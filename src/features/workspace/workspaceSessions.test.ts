@@ -3,6 +3,7 @@ import type { Session, SessionStateSnapshot } from "../../types/ipc";
 import {
   chatCapableProviders,
   createWorkspaceSessionController,
+  requiresConsent,
   sessionCreateFromProvider,
   sessionStateLabel,
 } from "./workspaceSessions";
@@ -57,27 +58,37 @@ describe("workspace session controller", () => {
     ).toEqual(["grok"]);
   });
 
-  it("does not offer an npx wrapper until the consent step exists", () => {
-    expect(
-      chatCapableProviders([
-        {
-          id: "codex-acp",
-          executable: "npx",
-          acpAvailable: true,
-          authentication: "unknown",
-          protocol: "acp",
-          origin: "npx-wrapper",
-        },
-        {
-          id: "grok",
-          executable: "grok.exe",
-          acpAvailable: true,
-          authentication: "unknown",
-          protocol: "acp",
-          origin: "user-binary",
-        },
-      ]).map((provider) => provider.id),
-    ).toEqual(["grok"]);
+  it("offers npx wrappers and flags them with requiresConsent", () => {
+    const providers = [
+      {
+        id: "codex-acp",
+        executable: "npx",
+        acpAvailable: true,
+        authentication: "unknown" as const,
+        protocol: "acp" as const,
+        origin: "npx-wrapper" as const,
+      },
+      {
+        id: "grok",
+        executable: "grok.exe",
+        acpAvailable: true,
+        authentication: "unknown" as const,
+        protocol: "acp" as const,
+        origin: "user-binary" as const,
+      },
+      {
+        id: "bare",
+        executable: "bare.exe",
+        acpAvailable: true,
+        authentication: "unknown" as const,
+        protocol: "acp" as const,
+      },
+    ];
+    const capable = chatCapableProviders(providers);
+    expect(capable.map((p) => p.id)).toEqual(["codex-acp", "grok", "bare"]);
+    expect(requiresConsent(providers[0])).toBe(true);
+    expect(requiresConsent(providers[1])).toBe(false);
+    expect(requiresConsent(providers[2])).toBe(false);
   });
 
   it("does not list a provider whose protocol cannot be launched", () => {
