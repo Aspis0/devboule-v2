@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
+import { createViewport, panViewport, viewportTransform, zoomViewport } from "./designViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationResult } from "./designHost";
 
@@ -45,36 +46,7 @@ const DOCUMENT: DesignDocument = {
       transform: { x: 60, y: 46, width: 300, height: 124 },
     },
   ],
-  canvasNodes: [
-    {
-      id: "index-header",
-      variant: "index-header",
-      name: "Index header",
-      x: 396,
-      y: 92,
-      width: 336,
-      height: 198,
-    },
-    {
-      id: "stale-queue",
-      variant: "stale-queue",
-      name: "Stale queue",
-      x: 60,
-      y: 46,
-      width: 300,
-      height: 124,
-    },
-  ],
   canvasContent: {
-    staleQueue: { label: "Stale queue", rowWidths: [100, 82, 68] },
-    indexHeader: {
-      label: "Index header",
-      staleBadge: "37 stale",
-      cardCount: 3,
-      selectedCardIndex: 2,
-      primaryAction: "Reindex",
-      secondaryAction: "Export",
-    },
     aiRegion: { x: 420, y: 300, width: 240, height: 96, actionLabel: "Analyze this region" },
   },
   radiusOptions: [
@@ -121,6 +93,36 @@ function createHost(
     loadDocument: vi.fn(async () => document),
     ...overrides,
   };
+}
+
+function pointerEvent(
+  type: string,
+  init: { button?: number; clientX?: number; clientY?: number; pointerId: number },
+): MouseEvent {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    button: init.button,
+    clientX: init.clientX,
+    clientY: init.clientY,
+  });
+  Object.defineProperty(event, "pointerId", { value: init.pointerId });
+  return event;
+}
+
+function wheelEvent(init: {
+  clientX: number;
+  clientY: number;
+  deltaMode: number;
+  deltaY: number;
+}): WheelEvent {
+  const event = new Event("wheel", { bubbles: true, cancelable: true }) as WheelEvent;
+  Object.defineProperties(event, {
+    clientX: { value: init.clientX },
+    clientY: { value: init.clientY },
+    deltaMode: { value: init.deltaMode },
+    deltaY: { value: init.deltaY },
+  });
+  return event;
 }
 
 async function fillDraft(container: HTMLDivElement, prompt: string): Promise<HTMLTextAreaElement> {
@@ -433,6 +435,184 @@ describe("DesignSurface host capabilities", () => {
 
     expect(container.textContent).not.toContain("Index header copy");
     await act(async () => root.unmount());
+  });
+
+  it("renders layer geometry instead of the mock canvas-node geometry", async () => {
+    const documentWithMovedLayer: DesignDocument = {
+      ...DOCUMENT,
+      layers: DOCUMENT.layers.map((layer) =>
+        layer.id === "index-header"
+          ? {
+              ...layer,
+              transform: { ...layer.transform, x: 123, y: 234, width: 345, height: 156 },
+            }
+          : layer,
+      ),
+    };
+    const { container, root } = await renderDesign(createHost({}, documentWithMovedLayer));
+    const node = container.querySelector<HTMLButtonElement>('[aria-label="Select Index header"]');
+    if (node === null) throw new Error("Canvas layer missing");
+
+    expect(node.style.left).toBe("123px");
+    expect(node.style.top).toBe("234px");
+    expect(node.style.width).toBe("345px");
+    expect(node.style.height).toBe("156px");
+    await act(async () => root.unmount());
+  });
+
+  it("selects the topmost layer at a canvas point and clears on empty canvas", async () => {
+    const overlappingDocument: DesignDocument = {
+      ...DOCUMENT,
+      initialState: { ...DOCUMENT.initialState, selectedLayerId: "index-header" },
+      layers: [
+        {
+          ...DOCUMENT.layers[0]!,
+          transform: { x: 50, y: 50, width: 120, height: 120 },
+        },
+        {
+          ...DOCUMENT.layers[1]!,
+          transform: { x: 80, y: 80, width: 120, height: 120 },
+        },
+      ],
+    };
+    const { container, root } = await renderDesign(createHost({}, overlappingDocument));
+    const stage = container.querySelector<HTMLDivElement>(".design-canvas-stage");
+    if (stage === null) throw new Error("Canvas stage missing");
+
+    await act(async () => {
+      stage.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 100 }));
+    });
+
+    expect(
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Select Stale queue"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Select Index header"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("false");
+
+    await act(async () => {
+      stage.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 900, clientY: 900 }));
+    });
+
+    expect(container.querySelector(".design-canvas-node-selected")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("composes drag movement with a pan change that happens mid-drag", async () => {
+    const { container, root } = await renderDesign(createHost());
+    const canvas = container.querySelector<HTMLDivElement>(".design-canvas");
+    const stage = container.querySelector<HTMLDivElement>(".design-canvas-stage");
+    if (canvas === null || stage === null) throw new Error("Canvas missing");
+
+    await act(async () => {
+      stage.dispatchEvent(
+        pointerEvent("pointerdown", { button: 0, clientX: 100, clientY: 100, pointerId: 1 }),
+      );
+    });
+    await act(async () => {
+      stage.dispatchEvent(
+        pointerEvent("pointermove", { clientX: 110, clientY: 100, pointerId: 1 }),
+      );
+    });
+    await act(async () => {
+      canvas.dispatchEvent(wheelEvent({ clientX: 100, clientY: 100, deltaMode: 0, deltaY: -8 }));
+    });
+    await act(async () => {
+      stage.dispatchEvent(
+        pointerEvent("pointermove", { clientX: 120, clientY: 100, pointerId: 1 }),
+      );
+    });
+
+    const afterFirstMove = panViewport(createViewport(), { x: 10, y: 0 });
+    const afterWheel = zoomViewport(afterFirstMove, { deltaY: -8, deltaMode: 0 }, 100, 100, 0);
+    expect(stage.style.transform).toBe(viewportTransform(panViewport(afterWheel, { x: 10, y: 0 })));
+
+    await act(async () => root.unmount());
+  });
+
+  it("selects the clicked layer when rendered content is outside the math hit", async () => {
+    const overlappingDocument: DesignDocument = {
+      ...DOCUMENT,
+      initialState: { ...DOCUMENT.initialState, selectedLayerId: "stale-queue" },
+      layers: [
+        {
+          ...DOCUMENT.layers[0]!,
+          transform: { x: 50, y: 50, width: 120, height: 120 },
+        },
+        {
+          ...DOCUMENT.layers[1]!,
+          transform: { x: 80, y: 80, width: 120, height: 120 },
+        },
+      ],
+    };
+    const { container, root } = await renderDesign(createHost({}, overlappingDocument));
+    const indexHeader = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Select Index header"]',
+    );
+    if (indexHeader === null) throw new Error("Canvas layer missing");
+
+    await act(async () => {
+      indexHeader.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(indexHeader.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => root.unmount());
+  });
+
+  it("does not suppress the next selection after a pointer is cancelled", async () => {
+    const { container, root } = await renderDesign(createHost());
+    const stage = container.querySelector<HTMLDivElement>(".design-canvas-stage");
+    const staleQueue = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Select Stale queue"]',
+    );
+    if (stage === null || staleQueue === null) throw new Error("Canvas layer missing");
+
+    await act(async () => {
+      stage.dispatchEvent(
+        pointerEvent("pointerdown", { button: 0, clientX: 10, clientY: 10, pointerId: 2 }),
+      );
+      stage.dispatchEvent(pointerEvent("pointermove", { clientX: 20, clientY: 20, pointerId: 2 }));
+      stage.dispatchEvent(pointerEvent("pointercancel", { pointerId: 2 }));
+      staleQueue.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(staleQueue.getAttribute("aria-pressed")).toBe("true");
+    await act(async () => root.unmount());
+  });
+
+  it("clamps the initial host zoom before rendering the state and canvas", async () => {
+    const zoomDocument: DesignDocument = {
+      ...DOCUMENT,
+      initialState: { ...DOCUMENT.initialState, zoom: 5 },
+    };
+    const { container, root } = await renderDesign(createHost({}, zoomDocument));
+    const zoomValue = container.querySelector<HTMLButtonElement>(".design-zoom-value");
+    const stage = container.querySelector<HTMLDivElement>(".design-canvas-stage");
+    if (zoomValue === null || stage === null) throw new Error("Zoom controls missing");
+
+    expect(zoomValue.textContent).toBe("300%");
+    expect(stage.style.transform).toContain("scale(3)");
+    await act(async () => root.unmount());
+  });
+
+  it("registers and removes a non-passive wheel listener", async () => {
+    const addEventListener = vi.spyOn(HTMLDivElement.prototype, "addEventListener");
+    const removeEventListener = vi.spyOn(HTMLDivElement.prototype, "removeEventListener");
+    const { root } = await renderDesign(createHost());
+
+    const wheelRegistration = addEventListener.mock.calls.find(
+      ([type, , options]) => type === "wheel" && typeof options === "object",
+    );
+    expect(wheelRegistration?.[2]).toEqual({ passive: false });
+
+    await act(async () => root.unmount());
+    expect(removeEventListener.mock.calls.some(([type]) => type === "wheel")).toBe(true);
+    addEventListener.mockRestore();
+    removeEventListener.mockRestore();
   });
 
   it("omits generation affordances when the host cannot generate", async () => {

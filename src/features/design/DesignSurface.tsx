@@ -1,9 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent, RefObject } from "react";
+import type {
+  ChangeEvent,
+  KeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  RefObject,
+} from "react";
 import type {
   DesignAssistantMessage,
   DesignCanvasContent,
-  DesignCanvasNode,
   DesignDocument,
   DesignHost,
   DesignLayer,
@@ -11,6 +16,22 @@ import type {
   DesignRadiusOption,
   DesignTool,
 } from "./designHost";
+import { hitTest } from "../../lib/canvas/hitTest";
+import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
+import type { NodeRect } from "../../types/geometry";
+import {
+  clampViewportZoom,
+  createViewport,
+  createViewportCommitScheduler,
+  DESIGN_MAX_ZOOM,
+  DESIGN_MIN_ZOOM,
+  fitViewport,
+  panViewport,
+  pointerToWorld,
+  viewportTransform,
+  zoomViewport,
+  type DesignViewport,
+} from "./designViewport";
 import "./design.css";
 
 export type { DesignDocument, DesignHost } from "./designHost";
@@ -25,6 +46,8 @@ interface DesignSnapshot {
 }
 
 interface DesignViewState {
+  // Viewport state is deliberately outside DesignHistory, so undo never moves the camera.
+  pan: Pan;
   selectedLayerId: string;
   tool: DesignTool;
   zoom: number;
@@ -77,20 +100,20 @@ interface LayerPanelProps {
 
 interface CanvasProps {
   content: DesignCanvasContent;
-  nodes: readonly DesignCanvasNode[];
+  layers: readonly DesignLayer[];
   hiddenLayerIds: readonly string[];
+  pan: Pan;
   selectedLayerId: string;
   tool: DesignTool;
   zoom: number;
   onSelectLayer: (layerId: string) => void;
+  onViewportChange: (viewport: DesignViewport) => void;
 }
 
 interface CanvasNodeProps {
-  content: DesignCanvasContent;
-  node: DesignCanvasNode;
+  layer: DesignLayer;
   hidden: boolean;
   selected: boolean;
-  onSelect: (layerId: string) => void;
 }
 
 interface ZoomControlsProps {
@@ -337,83 +360,46 @@ const LayerPanel = memo(function LayerPanel({
   );
 });
 
-const CanvasNode = memo(function CanvasNode({
-  content: canvasContent,
-  node,
-  hidden,
-  selected,
-  onSelect,
-}: CanvasNodeProps) {
-  const nodeContent =
-    node.variant === "stale-queue" ? (
-      <>
+const CanvasNode = memo(function CanvasNode({ layer, hidden, selected }: CanvasNodeProps) {
+  return (
+    <button
+      className={`design-canvas-node${selected ? " design-canvas-node-selected" : ""}${hidden ? " design-canvas-node-hidden" : ""}`}
+      type="button"
+      style={{
+        left: layer.transform.x,
+        top: layer.transform.y,
+        width: layer.transform.width,
+        height: layer.transform.height,
+      }}
+      data-canvas-layer-id={layer.id}
+      aria-label={`Select ${layer.name}`}
+      aria-pressed={selected}
+      disabled={hidden}
+    >
+      <div className="design-canvas-node-body">
         <div className="design-node-heading">
-          <span className="design-node-mark design-node-mark-terracotta" aria-hidden="true" />
-          <span className="design-node-title">{canvasContent.staleQueue.label}</span>
-        </div>
-        <div className="design-node-placeholder-list">
-          {canvasContent.staleQueue.rowWidths.map((width) => (
-            <div className="design-node-placeholder" style={{ width: `${width}%` }} key={width} />
-          ))}
-        </div>
-      </>
-    ) : (
-      <>
-        <div className="design-node-heading">
-          <span className="design-node-mark design-node-mark-purple" aria-hidden="true" />
-          <span className="design-node-title">{canvasContent.indexHeader.label}</span>
-          <span className="design-node-badge">{canvasContent.indexHeader.staleBadge}</span>
-        </div>
-        <div className="design-header-cards">
-          {Array.from({ length: canvasContent.indexHeader.cardCount }, (_, index) => (
-            <div
-              className={`design-header-card${index === canvasContent.indexHeader.selectedCardIndex ? " design-header-card-selected" : ""}`}
-              key={index}
-            />
-          ))}
+          <span
+            className={`design-node-mark ${layer.kind === "SVG" ? "design-node-mark-purple" : "design-node-mark-terracotta"}`}
+            aria-hidden="true"
+          />
+          <span className="design-node-title">{layer.name}</span>
+          <span className="design-node-badge">{layer.kind}</span>
         </div>
         <div className="design-node-actions">
           <span className="design-node-primary-action">
-            {canvasContent.indexHeader.primaryAction}
+            {layer.transform.width} × {layer.transform.height}
           </span>
-          <span className="design-node-secondary-action">
-            {canvasContent.indexHeader.secondaryAction}
-          </span>
+          <span className="design-node-secondary-action">World layer</span>
         </div>
-        {selected ? (
-          <>
-            <span
-              className="design-selection-handle design-selection-handle-tl"
-              aria-hidden="true"
-            />
-            <span
-              className="design-selection-handle design-selection-handle-tr"
-              aria-hidden="true"
-            />
-            <span
-              className="design-selection-handle design-selection-handle-bl"
-              aria-hidden="true"
-            />
-            <span
-              className="design-selection-handle design-selection-handle-br"
-              aria-hidden="true"
-            />
-          </>
-        ) : null}
-      </>
-    );
-
-  return (
-    <button
-      className={`design-canvas-node design-canvas-node-${node.variant}${selected ? " design-canvas-node-selected" : ""}${hidden ? " design-canvas-node-hidden" : ""}`}
-      type="button"
-      style={{ left: node.x, top: node.y, width: node.width, minHeight: node.height }}
-      aria-label={`Select ${node.name}`}
-      aria-pressed={selected}
-      disabled={hidden}
-      onClick={() => onSelect(node.id)}
-    >
-      {nodeContent}
+      </div>
+      {selected ? (
+        <>
+          <span className="design-selection-handle design-selection-handle-tl" aria-hidden="true" />
+          <span className="design-selection-handle design-selection-handle-tr" aria-hidden="true" />
+          <span className="design-selection-handle design-selection-handle-bl" aria-hidden="true" />
+          <span className="design-selection-handle design-selection-handle-br" aria-hidden="true" />
+        </>
+      ) : null}
     </button>
   );
 });
@@ -467,27 +453,227 @@ const ZoomControls = memo(function ZoomControls({
 
 const DesignCanvas = memo(function DesignCanvas({
   content,
-  nodes,
+  layers,
   hiddenLayerIds,
+  pan,
   selectedLayerId,
   tool,
   zoom,
   onSelectLayer,
+  onViewportChange,
 }: CanvasProps) {
   const aiRegion = content.aiRegion;
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<DesignViewport>(createViewport(zoom, pan));
+  const pointerDragRef = useRef<{
+    button: number;
+    moved: boolean;
+    pointerId: number;
+    lastX: number;
+    lastY: number;
+  } | null>(null);
+  const suppressClickRef = useRef(false);
+
+  const viewportCommitScheduler = useMemo(
+    () =>
+      createViewportCommitScheduler(
+        onViewportChange,
+        (callback) => window.requestAnimationFrame(callback),
+        (frameId) => window.cancelAnimationFrame(frameId),
+      ),
+    [onViewportChange],
+  );
+
+  // Pointer moves update one stage transform imperatively; React records only settled viewport changes.
+  const applyViewport = useCallback((next: DesignViewport) => {
+    viewportRef.current = next;
+    if (stageRef.current) stageRef.current.style.transform = viewportTransform(next);
+  }, []);
+
+  useEffect(() => {
+    // While a drag is active, React may receive a zoom-button update before the
+    // uncommitted pan does. Preserve the imperative pan so that update composes.
+    const appliedPan = pointerDragRef.current ? viewportRef.current.pan : pan;
+    applyViewport(createViewport(zoom, appliedPan));
+  }, [applyViewport, pan, zoom]);
+
+  const layerRects = useMemo<NodeRect[]>(
+    () =>
+      layers
+        .map((layer, index) => ({
+          id: layer.id,
+          x: layer.transform.x,
+          y: layer.transform.y,
+          w: layer.transform.width,
+          h: layer.transform.height,
+          z: index,
+        }))
+        .filter((layer) => !hiddenLayerIds.includes(layer.id)),
+    [hiddenLayerIds, layers],
+  );
+
+  const handleCanvasClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const bounds = canvas.getBoundingClientRect();
+      const point = pointerToWorld(
+        event.clientX,
+        event.clientY,
+        { left: bounds.left, top: bounds.top },
+        viewportRef.current,
+      );
+      let target = hitTest(point, layerRects);
+      if (!target && event.target instanceof Element) {
+        const clickedNode = event.target.closest<HTMLElement>("[data-canvas-layer-id]");
+        const clickedRect = layerRects.find(
+          (layer) => layer.id === clickedNode?.dataset.canvasLayerId,
+        );
+        if (clickedRect) {
+          onSelectLayer(clickedRect.id);
+          return;
+        }
+      }
+      onSelectLayer(target?.id ?? "");
+    },
+    [layerRects, onSelectLayer],
+  );
+
+  const handleWheel = useCallback(
+    (event: WheelEvent) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      event.preventDefault();
+      const bounds = canvas.getBoundingClientRect();
+      const next = zoomViewport(
+        viewportRef.current,
+        { deltaY: event.deltaY, deltaMode: event.deltaMode },
+        event.clientX - bounds.left,
+        event.clientY - bounds.top,
+        bounds.height,
+      );
+      applyViewport(next);
+      viewportCommitScheduler.schedule(next);
+    },
+    [applyViewport, viewportCommitScheduler],
+  );
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
+
+  useEffect(() => () => viewportCommitScheduler.cancel(), [viewportCommitScheduler]);
+
+  const releasePointer = useCallback((element: HTMLDivElement, pointerId: number) => {
+    try {
+      if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+    } catch {
+      // Pointer capture may already be gone when the browser cancels the gesture.
+    }
+  }, []);
+
+  const finishPointerDrag = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>, followsClick: boolean) => {
+      const active = pointerDragRef.current;
+      if (!active || active.pointerId !== event.pointerId) return;
+      pointerDragRef.current = null;
+      releasePointer(event.currentTarget, event.pointerId);
+      if (active.moved && active.button === 0 && followsClick) suppressClickRef.current = true;
+      if (active.moved) viewportCommitScheduler.flush(viewportRef.current);
+    },
+    [releasePointer, viewportCommitScheduler],
+  );
+
+  const handlePointerUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => finishPointerDrag(event, true),
+    [finishPointerDrag],
+  );
+  const handlePointerCancel = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => finishPointerDrag(event, false),
+    [finishPointerDrag],
+  );
+  const handleLostPointerCapture = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => finishPointerDrag(event, false),
+    [finishPointerDrag],
+  );
+
+  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const startedOnEmptyCanvas = event.button === 0 && event.target === event.currentTarget;
+    if (!startedOnEmptyCanvas && event.button !== 1) return;
+    event.preventDefault();
+
+    pointerDragRef.current = {
+      button: event.button,
+      moved: false,
+      pointerId: event.pointerId,
+      lastX: event.clientX,
+      lastY: event.clientY,
+    };
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      pointerDragRef.current = null;
+    }
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const active = pointerDragRef.current;
+      if (!active || active.pointerId !== event.pointerId) return;
+      try {
+        const delta = { x: event.clientX - active.lastX, y: event.clientY - active.lastY };
+        active.lastX = event.clientX;
+        active.lastY = event.clientY;
+        active.moved = active.moved || delta.x !== 0 || delta.y !== 0;
+        applyViewport(panViewport(viewportRef.current, delta));
+      } catch {
+        finishPointerDrag(event, false);
+      }
+    },
+    [applyViewport, finishPointerDrag],
+  );
+
+  const cleanupPointerDrag = useCallback(() => {
+    const active = pointerDragRef.current;
+    const stage = stageRef.current;
+    pointerDragRef.current = null;
+    if (active && stage) releasePointer(stage, active.pointerId);
+  }, [releasePointer]);
+
+  useEffect(() => cleanupPointerDrag, [cleanupPointerDrag]);
 
   return (
-    <div className="design-canvas" aria-label="Design canvas">
+    <div
+      ref={canvasRef}
+      className="design-canvas"
+      aria-label="Design canvas"
+      onClick={handleCanvasClick}
+    >
       <div className="design-canvas-grid" aria-hidden="true" />
-      <div className="design-canvas-stage" style={{ transform: `scale(${zoom})` }}>
-        {nodes.map((node) => (
+      <div
+        ref={stageRef}
+        className="design-canvas-stage"
+        style={{ transform: viewportTransform({ pan, zoom }) }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onLostPointerCapture={handleLostPointerCapture}
+      >
+        {layers.map((layer) => (
           <CanvasNode
-            content={content}
-            key={node.id}
-            node={node}
-            hidden={isHidden(hiddenLayerIds, node.id)}
-            selected={selectedLayerId === node.id}
-            onSelect={onSelectLayer}
+            key={layer.id}
+            layer={layer}
+            hidden={isHidden(hiddenLayerIds, layer.id)}
+            selected={selectedLayerId === layer.id}
           />
         ))}
         {tool === "ai" ? (
@@ -861,9 +1047,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     flat: document.initialState.flat,
   };
   const initialViewState: DesignViewState = {
+    pan: { x: 0, y: 0 },
     selectedLayerId: document.initialState.selectedLayerId,
     tool: document.initialState.tool,
-    zoom: document.initialState.zoom,
+    zoom: clampViewportZoom(document.initialState.zoom),
   };
   const [history, setHistory] = useState<DesignHistory>(() => ({
     present: initialSnapshot,
@@ -894,7 +1081,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const snapshot = history.present;
   const layers = snapshot.layers;
   const saved = history.saved;
-  const { selectedLayerId, tool, zoom } = viewState;
+  const { pan, selectedLayerId, tool, zoom } = viewState;
 
   useEffect(() => {
     return () => {
@@ -927,6 +1114,21 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         hidden: isHidden(snapshot.hiddenLayerIds, layer.id),
       })),
     [layers, selectedLayerId, snapshot.hiddenLayerIds],
+  );
+
+  const fitRects = useMemo<NodeRect[]>(
+    () =>
+      layers
+        .map((layer, index) => ({
+          id: layer.id,
+          x: layer.transform.x,
+          y: layer.transform.y,
+          w: layer.transform.width,
+          h: layer.transform.height,
+          z: index,
+        }))
+        .filter((layer) => !snapshot.hiddenLayerIds.includes(layer.id)),
+    [layers, snapshot.hiddenLayerIds],
   );
 
   const radiusOptions = useMemo(
@@ -1080,22 +1282,40 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     [],
   );
 
+  const setViewport = useCallback((nextViewport: DesignViewport) => {
+    setViewState((current) => {
+      if (
+        current.zoom === nextViewport.zoom &&
+        current.pan.x === nextViewport.pan.x &&
+        current.pan.y === nextViewport.pan.y
+      ) {
+        return current;
+      }
+      return { ...current, ...nextViewport };
+    });
+  }, []);
   const setZoom = useCallback((nextZoom: number | ((currentZoom: number) => number)) => {
     setViewState((current) => {
-      const next = typeof nextZoom === "function" ? nextZoom(current.zoom) : nextZoom;
+      const requested = typeof nextZoom === "function" ? nextZoom(current.zoom) : nextZoom;
+      const next = clampViewportZoom(requested);
       return current.zoom === next ? current : { ...current, zoom: next };
     });
   }, []);
   const zoomIn = useCallback(
-    () => setZoom((currentZoom) => Math.min(3, Number((currentZoom + 0.1).toFixed(1)))),
+    () => setZoom((currentZoom) => Number((currentZoom + 0.1).toFixed(1))),
     [setZoom],
   );
   const zoomOut = useCallback(
-    () => setZoom((currentZoom) => Math.max(0.2, Number((currentZoom - 0.1).toFixed(1)))),
+    () => setZoom((currentZoom) => Number((currentZoom - 0.1).toFixed(1))),
     [setZoom],
   );
   const zoomReset = useCallback(() => setZoom(1), [setZoom]);
-  const fitCanvas = useCallback(() => setZoom(0.8), [setZoom]);
+  const fitCanvas = useCallback(() => {
+    const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
+    if (!canvas) return;
+    const bounds = canvas.getBoundingClientRect();
+    setViewport(fitViewport(nodesBounds(fitRects), bounds.width, bounds.height));
+  }, [fitRects, setViewport]);
 
   const undo = useCallback(() => {
     if (!canUndo) return;
@@ -1374,12 +1594,14 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         <div className="design-workspace">
           <DesignCanvas
             content={document.canvasContent}
-            nodes={document.canvasNodes}
+            layers={layers}
             hiddenLayerIds={snapshot.hiddenLayerIds}
+            pan={pan}
             selectedLayerId={selectedLayerId}
             tool={tool}
             zoom={zoom}
             onSelectLayer={selectLayer}
+            onViewportChange={setViewport}
           />
           <LayerPanel
             layers={layerRows}
@@ -1408,8 +1630,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           </div>
           <ZoomControls
             zoom={zoom}
-            canZoomIn={zoom < 3}
-            canZoomOut={zoom > 0.2}
+            canZoomIn={zoom < DESIGN_MAX_ZOOM}
+            canZoomOut={zoom > DESIGN_MIN_ZOOM}
             onZoomIn={zoomIn}
             onZoomOut={zoomOut}
             onZoomReset={zoomReset}

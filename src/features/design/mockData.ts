@@ -1,7 +1,6 @@
 /** M1b mock boundary. Replace this module with typed IPC adapters. */
 
 import type {
-  DesignCanvasNode,
   DesignDocument,
   DesignGenerationResult,
   DesignHost,
@@ -13,8 +12,6 @@ import type {
 
 export type {
   DesignAssistantMessage,
-  DesignCanvasNode,
-  DesignCanvasNodeVariant,
   DesignDocument,
   DesignGenerationResult,
   DesignHost,
@@ -80,40 +77,7 @@ export const MOCK_DESIGN_LAYERS: readonly DesignLayer[] = [
   },
 ];
 
-export const MOCK_DESIGN_CANVAS_NODES: readonly DesignCanvasNode[] = [
-  {
-    id: "stale-queue",
-    variant: "stale-queue",
-    name: "Stale queue",
-    x: 60,
-    y: 46,
-    width: 300,
-    height: 124,
-  },
-  {
-    id: "index-header",
-    variant: "index-header",
-    name: "Index header",
-    x: 396,
-    y: 92,
-    width: 336,
-    height: 198,
-  },
-];
-
 export const MOCK_DESIGN_CANVAS_CONTENT = {
-  staleQueue: {
-    label: "Stale queue",
-    rowWidths: [100, 82, 68],
-  },
-  indexHeader: {
-    label: "Index header",
-    staleBadge: "37 stale",
-    cardCount: 3,
-    selectedCardIndex: 2,
-    primaryAction: "Reindex",
-    secondaryAction: "Export",
-  },
   aiRegion: {
     x: 420,
     y: 300,
@@ -196,15 +160,7 @@ function cloneDesignDocument(document: DesignDocument): DesignDocument {
       ...layer,
       transform: { ...layer.transform },
     })),
-    canvasNodes: document.canvasNodes.map((node) => ({ ...node })),
-    canvasContent: {
-      staleQueue: {
-        ...document.canvasContent.staleQueue,
-        rowWidths: [...document.canvasContent.staleQueue.rowWidths],
-      },
-      indexHeader: { ...document.canvasContent.indexHeader },
-      aiRegion: { ...document.canvasContent.aiRegion },
-    },
+    canvasContent: { aiRegion: { ...document.canvasContent.aiRegion } },
     radiusOptions: document.radiusOptions.map((option) => ({ ...option })),
     messages: document.messages.map((message) =>
       message.role === "user"
@@ -220,7 +176,6 @@ function createDemoDocument(): DesignDocument {
     ...MOCK_DESIGN_DOCUMENT,
     initialState: { ...MOCK_DESIGN_INITIAL_STATE },
     layers: MOCK_DESIGN_LAYERS,
-    canvasNodes: MOCK_DESIGN_CANVAS_NODES,
     canvasContent: MOCK_DESIGN_CANVAS_CONTENT,
     radiusOptions: MOCK_DESIGN_RADIUS_OPTIONS,
     messages: MOCK_DESIGN_MESSAGES,

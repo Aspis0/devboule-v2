@@ -43,18 +43,6 @@ export interface DesignAssistantMessage {
 
 export type DesignMessage = DesignUserMessage | DesignAssistantMessage;
 
-export type DesignCanvasNodeVariant = "stale-queue" | "index-header";
-
-export interface DesignCanvasNode {
-  id: string;
-  variant: DesignCanvasNodeVariant;
-  name: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
 export interface DesignGenerationResult {
   prompt: string;
   title: string;
@@ -64,18 +52,6 @@ export interface DesignGenerationResult {
 }
 
 export interface DesignCanvasContent {
-  staleQueue: {
-    label: string;
-    rowWidths: readonly number[];
-  };
-  indexHeader: {
-    label: string;
-    staleBadge: string;
-    cardCount: number;
-    selectedCardIndex: number;
-    primaryAction: string;
-    secondaryAction: string;
-  };
   aiRegion: {
     x: number;
     y: number;
@@ -108,7 +84,6 @@ export interface DesignDocument {
   tokenFooter: string;
   initialState: DesignInitialState;
   layers: readonly DesignLayer[];
-  canvasNodes: readonly DesignCanvasNode[];
   canvasContent: DesignCanvasContent;
   radiusOptions: readonly DesignRadiusOption[];
   messages: readonly DesignMessage[];

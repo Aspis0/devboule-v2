@@ -264,6 +264,7 @@
 .design-canvas-stage {
   position: absolute;
   inset: 0;
+  touch-action: none;
   transform-origin: top left;
 }
 
@@ -291,6 +292,11 @@
 
 .design-canvas-node-hidden {
   visibility: hidden;
+}
+
+.design-canvas-node-body {
+  height: 100%;
+  overflow: hidden;
 }
 
 .design-node-heading {
@@ -321,19 +327,6 @@
   font-weight: 600;
 }
 
-.design-node-placeholder-list {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 12px 13px;
-}
-
-.design-node-placeholder {
-  height: 22px;
-  background: var(--surface-muted);
-  border-radius: 6px;
-}
-
 .design-node-badge {
   display: grid;
   height: 20px;
@@ -345,25 +338,6 @@
   border-radius: 999px;
   font-family: "JetBrains Mono", monospace;
   font-size: 9.5px;
-}
-
-.design-header-cards {
-  display: flex;
-  gap: 9px;
-  padding: 13px;
-}
-
-.design-header-card {
-  flex: 1;
-  height: 52px;
-  background: var(--surface);
-  border: 1px solid var(--line-subtle);
-  border-radius: 8px;
-}
-
-.design-header-card-selected {
-  border-color: var(--terracotta);
-  box-shadow: 0 0 0 3px var(--selection);
 }
 
 .design-node-actions {
