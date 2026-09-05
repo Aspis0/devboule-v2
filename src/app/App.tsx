@@ -61,12 +61,10 @@ interface DesignHostBoundaryProps {
 }
 
 function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
-  const [agentHost] = useState<DesignHost>(() => createAgentHost());
-  const [selection, setSelection] = useState<
-    { host: DesignHost; disclosure: string } | null
-  >(null);
+  const [selection, setSelection] = useState<{ host: DesignHost; disclosure: string } | null>(null);
 
   useEffect(() => {
+    const agentHost = createAgentHost();
     let active = true;
 
     void Promise.allSettled([oracleStatus(), resolveAgentWorkspace()]).then(
@@ -90,7 +88,7 @@ function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
       active = false;
       void disposeAgentHost(agentHost);
     };
-  }, [agentHost]);
+  }, []);
 
   if (selection === null) return <SurfaceLoading />;
 

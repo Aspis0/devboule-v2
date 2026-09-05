@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OracleIndexStatus, Session, SessionEvent, Workspace } from "../../types/ipc";
@@ -14,6 +14,7 @@ const channelHarness = vi.hoisted(() => ({
 const mocks = vi.hoisted(() => ({
   oracleAsk: vi.fn(),
   oracleStatus: vi.fn(),
+  reasonFromCause: vi.fn(),
   projectsList: vi.fn(),
   workspacesList: vi.fn(),
   sessionCreate: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("../../lib/tauri", () => ({
   }),
   oracleAsk: mocks.oracleAsk,
   oracleStatus: mocks.oracleStatus,
+  reasonFromCause: mocks.reasonFromCause,
   projectsList: mocks.projectsList,
   workspacesList: mocks.workspacesList,
   sessionCreate: mocks.sessionCreate,
@@ -122,6 +124,7 @@ beforeEach(() => {
   channelHarness.active = null;
   mocks.oracleAsk.mockReset();
   mocks.oracleStatus.mockReset();
+  mocks.reasonFromCause.mockReset();
   mocks.projectsList.mockReset();
   mocks.workspacesList.mockReset();
   mocks.sessionCreate.mockReset();
@@ -145,6 +148,9 @@ beforeEach(() => {
       },
     ],
   });
+  mocks.reasonFromCause.mockImplementation((cause: unknown) =>
+    cause instanceof Error ? cause.message : String(cause),
+  );
   mocks.projectsList.mockResolvedValue([PROJECT]);
   mocks.workspacesList.mockResolvedValue([WORKSPACE]);
   mocks.sessionCreate.mockResolvedValue(SESSION);
@@ -252,11 +258,44 @@ describe("ACP design host", () => {
     mocks.projectsList.mockResolvedValue([]);
     const host = createAgentHost();
 
-    await expect(host.generate?.("Update the design", new AbortController().signal)).rejects.toThrow(
-      "No workspace is available",
-    );
+    await expect(
+      host.generate?.("Update the design", new AbortController().signal),
+    ).rejects.toThrow("No workspace is available");
     expect(mocks.oracleAsk).toHaveBeenCalledWith("Update the design");
     expect(mocks.sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects when AgentSession cannot attach", async () => {
+    mocks.sessionAttach.mockRejectedValue(new Error("attach failed"));
+    const host = createAgentHost();
+
+    await expect(
+      host.generate?.("Update the design", new AbortController().signal),
+    ).rejects.toThrow("Could not attach the agent session: attach failed");
+    expect(mocks.sessionSend).not.toHaveBeenCalled();
+
+    await disposeAgentHost(host);
+  });
+
+  it("rejects when AgentSession cannot send", async () => {
+    mocks.sessionSend.mockRejectedValue(new Error("send failed"));
+    const host = createAgentHost();
+
+    await expect(
+      host.generate?.("Update the design", new AbortController().signal),
+    ).rejects.toThrow("Could not send the message: send failed");
+
+    await disposeAgentHost(host);
+  });
+
+  it("uses AgentSession's error when the agent exits during a turn", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({ type: "exit", code: 1 });
+
+    await expect(run).rejects.toThrow("The agent stopped before finishing this turn.");
+    await disposeAgentHost(host);
   });
 
   it("stops on a permission request without approving it", async () => {
@@ -307,6 +346,56 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
+  it("reopens a session that closed between generations", async () => {
+    const host = createAgentHost();
+    const { run: first } = await startRun(host);
+    finishRun();
+    await first;
+
+    channelHarness.active?.({ type: "exit", code: 1 });
+
+    const { run: second } = await startRun(host);
+    finishRun();
+    await second;
+
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(2);
+    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1");
+    await disposeAgentHost(host);
+  });
+
+  it("rejects an overlapping generation without disturbing the first", async () => {
+    const host = createAgentHost();
+    const { run: first } = await startRun(host);
+
+    const second = host.generate?.("Another design", new AbortController().signal);
+    await expect(second).rejects.toThrow("A design generation is already running.");
+
+    finishRun();
+    await first;
+    await disposeAgentHost(host);
+  });
+
+  it("lets abort reject while sending is still pending", async () => {
+    mocks.sessionSend.mockImplementation(() => new Promise<void>(() => undefined));
+    const host = createAgentHost();
+    const controller = new AbortController();
+    const run = host.generate?.("Update the design", controller.signal);
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalled());
+
+    controller.abort();
+    const outcome = await Promise.race([
+      run?.then(
+        () => "resolved",
+        (error: unknown) => error,
+      ),
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 100)),
+    ]);
+    expect(outcome).toMatchObject({ name: "AbortError" });
+
+    await disposeAgentHost(host);
+  });
+
   it("closes and detaches the agent session when the Design mount unmounts", async () => {
     mocks.oracleStatus.mockResolvedValue(READY_STATUS);
     const { container, root } = createRootContainer();
@@ -315,11 +404,15 @@ describe("ACP design host", () => {
     await act(async () => undefined);
     await act(async () => undefined);
     await vi.waitFor(() =>
-      expect(container.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Describe a design change"]',
-      )).not.toBeNull(),
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
     );
-    expect(container.textContent).toContain("Repository agent — ACP writes in the active worktree.");
+    expect(container.textContent).toContain(
+      "Repository agent — ACP writes in the active worktree.",
+    );
 
     const draft = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Describe a design change"]',
@@ -338,5 +431,45 @@ describe("ACP design host", () => {
 
     expect(mocks.sessionDetach).toHaveBeenCalledWith("session-1");
     expect(mocks.sessionClose).toHaveBeenCalledWith("session-1");
+  });
+
+  it("creates a fresh agent host after StrictMode effect cleanup", async () => {
+    mocks.oracleStatus.mockResolvedValue(READY_STATUS);
+    const { container, root } = createRootContainer();
+
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <App />
+        </StrictMode>,
+      ),
+    );
+    await act(async () => undefined);
+    await act(async () => undefined);
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    );
+
+    const draft = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Describe a design change"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (draft === null || send === null) throw new Error("Design composer did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(draft, "Update the design");
+    draft.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalled());
+    await act(async () => finishRun());
+    await settle();
+
+    await act(async () => root.unmount());
+    await settle();
   });
 });

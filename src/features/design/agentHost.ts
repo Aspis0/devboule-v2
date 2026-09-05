@@ -1,3 +1,4 @@
+import { AgentSession, type AgentSessionState } from "../../lib/agentSession";
 import {
   createSessionChannel,
   projectsList,
@@ -11,19 +12,17 @@ import {
   type SessionChannel,
   workspacesList,
 } from "../../lib/tauri";
-import type { Session, SessionEvent, Workspace } from "../../types/ipc";
+import type { Session, Workspace } from "../../types/ipc";
 import type { DesignGenerationResult, DesignHost } from "./designHost";
 import { createOracleHost } from "./oracleHost";
 
 interface AgentSessionHandle {
   session: Session;
-  channel: SessionChannel;
-  attached: boolean;
+  controller: AgentSession;
   closed: boolean;
 }
 
 interface ActiveRun {
-  id: number;
   sessionId: string;
   prompt: string;
   referencedFiles: Set<string>;
@@ -59,7 +58,10 @@ function throwIfAborted(signal: AbortSignal): void {
 }
 
 function normalizeFilePath(raw: string): string | null {
-  let value = raw.trim().replace(/^[([{"'`<]+/, "").replace(/[\]),.;:'"`} >]+$/g, "");
+  let value = raw
+    .trim()
+    .replace(/^[([{"'`<]+/, "")
+    .replace(/[\]),.;:'"`} >]+$/g, "");
   const lineSuffix = value.match(/^(.*?)(?::\d+(?::\d+)?)$/);
   if (lineSuffix?.[1]) value = lineSuffix[1];
   if (value.startsWith("file://")) value = value.slice("file://".length);
@@ -83,7 +85,7 @@ function groundedPrompt(prompt: string, searchSources: readonly string[]): strin
   const grounding =
     searchSources.length === 0
       ? "Oracle found no matching files."
-    : searchSources.map((source) => `- ${source}`).join("\n");
+      : searchSources.map((source) => `- ${source}`).join("\n");
   return [
     "Work on the requested design change in the active Devboule workspace.",
     `User request: ${prompt}`,
@@ -119,6 +121,31 @@ function sessionError(prefix: string, cause: unknown): Error {
   return new Error(`${prefix}: ${reasonFromCause(cause)}`);
 }
 
+function lastErrorText(state: AgentSessionState): string {
+  for (let index = state.items.length - 1; index >= 0; index -= 1) {
+    const item = state.items[index];
+    if (item.role === "error") return item.text;
+  }
+  return "The agent session did not answer.";
+}
+
+function invokeAgentCommand<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  switch (command) {
+    case "session_attach":
+      return sessionAttach(
+        args.id as string,
+        (args.from_cursor as number | null | undefined) ?? null,
+        args.ch as SessionChannel,
+      ) as Promise<T>;
+    case "session_send":
+      return sessionSend(args.id as string, args.text as string) as Promise<T>;
+    case "session_detach":
+      return sessionDetach(args.id as string) as Promise<T>;
+    default:
+      return Promise.reject(new Error(`Unsupported agent session command: ${command}`));
+  }
+}
+
 export async function resolveAgentWorkspace(): Promise<Workspace> {
   const projects = await projectsList();
   for (const project of projects) {
@@ -132,8 +159,8 @@ export async function resolveAgentWorkspace(): Promise<Workspace> {
 export function createAgentHost(): DesignHost {
   const oracleHost = createOracleHost();
   let disposed = false;
-  let nextRunId = 0;
   let activeRun: ActiveRun | null = null;
+  let runPending = false;
   let sessionHandle: AgentSessionHandle | null = null;
   let sessionPromise: Promise<AgentSessionHandle> | null = null;
   let disposalPromise: Promise<void> | null = null;
@@ -145,75 +172,18 @@ export function createAgentHost(): DesignHost {
   ): void => {
     if (run.settled) return;
     run.settled = true;
-    if (activeRun?.id === run.id) activeRun = null;
+    if (activeRun === run) activeRun = null;
     if (outcome === "resolve") run.resolve(value as DesignGenerationResult);
     else run.reject(value);
-  };
-
-  const handleEvent = (event: SessionEvent): void => {
-    if (disposed) return;
-    const run = activeRun;
-    if (run === null) return;
-
-    switch (event.type) {
-      case "agent_tool_call": {
-        if (hasFileReferenceSignal(event.title)) collectFilePaths(event.title, run.referencedFiles);
-        return;
-      }
-      case "agent_tool_update": {
-        // Updates are free-form agent narration and cannot prove a file operation.
-        return;
-      }
-      case "permission_request": {
-        const message = new Error(
-          "The agent requested permission. Respond in the Workspace surface; this design run was stopped.",
-        );
-        const handle = sessionHandle;
-        if (handle) void sessionInterrupt(handle.session.id).catch(() => undefined);
-        settleRun(run, "reject", message);
-        return;
-      }
-      case "agent_finished":
-        settleRun(run, "resolve", resultFor(run.prompt, run.referencedFiles));
-        return;
-      case "agent_error":
-        settleRun(run, "reject", new Error(event.message || "The agent reported an unknown error."));
-        return;
-      case "exit":
-        settleRun(run, "reject", new Error("The agent stopped before finishing this design run."));
-        return;
-      case "recovered":
-        settleRun(run, "reject", new Error("The agent session is no longer available."));
-        return;
-      case "output":
-      case "agent_message":
-      case "agent_user_message":
-      case "agent_thought":
-      case "agent_stderr":
-      case "silent":
-      case "journal_degraded":
-      case "sessions_snapshot":
-      case "snapshot":
-      case "agent_reported":
-      case "available_commands":
-      case "permission_resolved":
-      case "session_manifest":
-        return;
-    }
   };
 
   const closeSession = async (handle: AgentSessionHandle): Promise<void> => {
     if (handle.closed) return;
     handle.closed = true;
     if (sessionHandle === handle) sessionHandle = null;
-    if (handle.attached) {
-      handle.attached = false;
-      try {
-        await sessionDetach(handle.session.id);
-      } catch {
-        // Closing the runtime session is still required if detaching fails.
-      }
-    }
+    handle.controller.dispose();
+    // AgentSession.dispose() starts session_detach without awaiting it. The daemon's
+    // close path (server.rs:536-541) safely accepts session_close while attached.
     try {
       await sessionClose(handle.session.id);
     } catch {
@@ -222,42 +192,84 @@ export function createAgentHost(): DesignHost {
   };
 
   const openSession = async (workspace: Workspace): Promise<AgentSessionHandle> => {
-    let session: Session | null = null;
+    let session: Session;
     try {
       session = await sessionCreate(workspace.id, "acp");
-      const handle: AgentSessionHandle = {
-        session,
-        channel: createSessionChannel(handleEvent),
-        attached: false,
-        closed: false,
-      };
-      sessionHandle = handle;
-      if (disposed) throw abortError();
-      await sessionAttach(session.id, null, handle.channel);
-      handle.attached = true;
-      return handle;
     } catch (cause) {
-      const failedHandle = sessionHandle;
-      if (failedHandle !== null && failedHandle.session.id === session?.id) {
-        await closeSession(failedHandle);
-      }
+      throw sessionError("Could not start the agent session", cause);
+    }
+
+    const sessionId = session.id;
+    const controller = new AgentSession({
+      sessionId,
+      invoke: invokeAgentCommand,
+      createChannel: (onEvent) =>
+        createSessionChannel((event) => {
+          if (event.type === "agent_tool_call" && hasFileReferenceSignal(event.title)) {
+            const run = activeRun;
+            if (run?.sessionId === sessionId) collectFilePaths(event.title, run.referencedFiles);
+          }
+          onEvent(event);
+        }),
+      onPermissionRequest: () => {
+        const run = activeRun;
+        if (run?.sessionId !== sessionId) return;
+        void sessionInterrupt(sessionId).catch(() => undefined);
+        settleRun(
+          run,
+          "reject",
+          new Error(
+            "The agent requested permission. Respond in the Workspace surface; this design run was stopped.",
+          ),
+        );
+      },
+    });
+    const handle: AgentSessionHandle = { session, controller, closed: false };
+    sessionHandle = handle;
+
+    try {
+      await controller.start();
+    } catch (cause) {
+      await closeSession(handle);
       if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
       throw sessionError("Could not start the agent session", cause);
     }
+
+    const state = controller.getState();
+    if (state.status === "error") {
+      await closeSession(handle);
+      throw new Error(lastErrorText(state));
+    }
+    if (disposed) {
+      await closeSession(handle);
+      throw abortError();
+    }
+    return handle;
   };
 
-  const ensureSession = (workspace: Workspace): Promise<AgentSessionHandle> => {
-    if (disposed) return Promise.reject(new Error("The design surface is no longer available."));
-    if (sessionHandle !== null && !sessionHandle.closed) return Promise.resolve(sessionHandle);
+  const ensureSession = async (workspace: Workspace): Promise<AgentSessionHandle> => {
+    if (disposed) throw new Error("The design surface is no longer available.");
+    if (sessionHandle !== null && !sessionHandle.closed) {
+      if (sessionHandle.controller.getState().status !== "closed") {
+        // An "error" is an agent-reported failure, not a dead session; keep it reusable.
+        return sessionHandle;
+      }
+      await closeSession(sessionHandle);
+    }
     if (sessionPromise !== null) return sessionPromise;
-    sessionPromise = openSession(workspace).catch((cause: unknown) => {
-      sessionPromise = null;
-      throw cause;
-    });
-    return sessionPromise;
+    const pending = openSession(workspace);
+    sessionPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      if (sessionPromise === pending) sessionPromise = null;
+    }
   };
 
-  const generate = async (prompt: string, signal: AbortSignal): Promise<DesignGenerationResult> => {
+  const runGeneration = async (
+    prompt: string,
+    signal: AbortSignal,
+  ): Promise<DesignGenerationResult> => {
     throwIfAborted(signal);
     const grounding = await oracleHost.generate!(prompt, signal);
     throwIfAborted(signal);
@@ -267,7 +279,6 @@ export function createAgentHost(): DesignHost {
     throwIfAborted(signal);
 
     const run: ActiveRun = {
-      id: ++nextRunId,
       sessionId: handle.session.id,
       prompt,
       referencedFiles: new Set<string>(),
@@ -296,20 +307,54 @@ export function createAgentHost(): DesignHost {
     };
     signal.addEventListener("abort", onAbort, { once: true });
 
-    try {
-      if (signal.aborted) onAbort();
-      else {
-        try {
-          await sessionSend(handle.session.id, groundedPrompt(prompt, grounding.sources));
-        } catch (cause) {
-          if (activeRun?.id === run.id) {
-            settleRun(run, "reject", sessionError("Could not send the design request", cause));
-          }
-        }
+    // send() clears lastFinished synchronously; subscribe only after it so a prior turn cannot settle this run.
+    const sendPromise = handle.controller.send(groundedPrompt(prompt, grounding.sources));
+    const settleFromState = (): boolean => {
+      if (activeRun !== run || run.settled) return true;
+      const state = handle.controller.getState();
+      if (state.lastFinished !== null) {
+        settleRun(run, "resolve", resultFor(run.prompt, run.referencedFiles));
+        return true;
+      } else if (state.status === "error") {
+        settleRun(run, "reject", new Error(lastErrorText(state)));
+        return true;
+      } else if (state.status === "closed") {
+        settleRun(run, "reject", new Error("The agent session is closed."));
+        return true;
       }
+      return false;
+    };
+    const unsubscribe = handle.controller.subscribe(settleFromState);
+    settleFromState();
+    void sendPromise
+      .then((sent) => {
+        if (!sent && !settleFromState())
+          settleRun(run, "reject", new Error("Could not send the message."));
+      })
+      .catch((cause: unknown) => {
+        settleRun(run, "reject", sessionError("Could not send the message", cause));
+      });
+
+    try {
       return await outcomePromise;
     } finally {
+      unsubscribe();
       signal.removeEventListener("abort", onAbort);
+    }
+  };
+
+  // activeRun is only assigned after the Oracle, workspace and session awaits, so a
+  // second call can pass a check on activeRun alone while the first is still in that
+  // window. runPending is set synchronously at entry, which is what serialises runs.
+  const generate = async (prompt: string, signal: AbortSignal): Promise<DesignGenerationResult> => {
+    if (runPending || activeRun !== null) {
+      throw new Error("A design generation is already running.");
+    }
+    runPending = true;
+    try {
+      return await runGeneration(prompt, signal);
+    } finally {
+      runPending = false;
     }
   };
 

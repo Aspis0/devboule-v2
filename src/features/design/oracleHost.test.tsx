@@ -145,7 +145,7 @@ describe("Oracle design host", () => {
   });
 
   it("rejects after Oracle resolves when the signal was aborted", async () => {
-    let resolveAsk: ((value: { query: string; results: typeof RESULT[] }) => void) | undefined;
+    let resolveAsk: ((value: { query: string; results: (typeof RESULT)[] }) => void) | undefined;
     mocks.oracleAsk.mockReturnValue(
       new Promise((resolve) => {
         resolveAsk = resolve;
