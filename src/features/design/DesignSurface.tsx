@@ -477,6 +477,13 @@ const ARTIFACT_NODE_WIDTH = 700;
 const ARTIFACT_NODE_HEIGHT = 500;
 const ARTIFACT_NODE_ID = "generated-artifact";
 const ARTIFACT_CONTEXT_NAME = "Generated artifact";
+const ARTIFACT_CSP =
+  "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; manifest-src 'none'";
+const ARTIFACT_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_CSP}" />`;
+
+function artifactSrcDoc(html: string): string {
+  return `${ARTIFACT_CSP_META}\n${html}`;
+}
 
 function latestArtifact(messages: readonly DesignMessage[]): {
   html?: string;
@@ -767,10 +774,14 @@ const DesignCanvas = memo(function DesignCanvas({
               </div>
             ) : (
               <div className="design-canvas-artifact-content" inert>
-                {/* Keep agent markup inert: clicks belong to the app, never the generated document. */}
+                {/*
+                  WebView2 measurement on 2026-09-05: the parent CSP is not inherited by srcdoc.
+                  This policy is therefore delivered inside the frame; the sandbox remains a
+                  separate boundary, and later artifact policies cannot relax this one.
+                */}
                 <iframe
                   sandbox=""
-                  srcDoc={artifactHtml}
+                  srcDoc={artifactSrcDoc(artifactHtml ?? "")}
                   title="Generated artifact"
                   className="design-artifact-frame"
                   style={{ pointerEvents: "none" }}

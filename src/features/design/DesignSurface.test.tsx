@@ -13,6 +13,7 @@ import {
 } from "./designViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationResult } from "./designHost";
+import { MAX_ARTIFACT_BYTES } from "./agentHost";
 import { nodesBounds } from "../../lib/canvas/viewportMath";
 import type { NodeRect } from "../../types/geometry";
 
@@ -101,6 +102,9 @@ const ARTIFACT_ERROR_RESULT = {
   ...GENERATION_RESULT,
   artifactError: "Artifact too large to display (maximum 256 KiB).",
 };
+
+const ARTIFACT_CSP_META =
+  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; manifest-src 'none'\" />";
 
 function createHost(
   overrides: Partial<DesignHost> = {},
@@ -565,6 +569,48 @@ describe("DesignSurface host capabilities", () => {
     });
     expect(artifact.classList.contains("design-canvas-artifact-selected")).toBe(false);
     expect(container.querySelector(".design-composer-context")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("prefixes the artifact with its own CSP before any artifact markup", async () => {
+    const artifactHtml =
+      '<meta http-equiv="Content-Security-Policy" content="default-src *"><main>Generated</main>';
+    const generate = vi.fn(async () => ({ ...GENERATION_RESULT, artifactHtml }));
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Create a constrained first pass.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const iframe = container.querySelector<HTMLIFrameElement>("iframe");
+    if (iframe === null) throw new Error("Generated artifact frame missing");
+    const srcDoc = iframe.getAttribute("srcdoc");
+    if (srcDoc === null) throw new Error("Generated artifact source missing");
+    expect(srcDoc.startsWith(`${ARTIFACT_CSP_META}\n`)).toBe(true);
+    expect(srcDoc.indexOf('content="default-src *"')).toBeGreaterThan(ARTIFACT_CSP_META.length);
+    expect(srcDoc).toBe(`${ARTIFACT_CSP_META}\n${artifactHtml}`);
+    await act(async () => root.unmount());
+  });
+
+  it("measures the cap on the artifact without counting the CSP prefix", async () => {
+    const artifactHtml = "x".repeat(MAX_ARTIFACT_BYTES);
+    const generate = vi.fn(async () => ({ ...GENERATION_RESULT, artifactHtml }));
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Create a maximum-size first pass.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const iframe = container.querySelector<HTMLIFrameElement>("iframe");
+    if (iframe === null) throw new Error("Artifact at the cap was not rendered");
+    const srcDoc = iframe.getAttribute("srcdoc");
+    if (srcDoc === null) throw new Error("Generated artifact source missing");
+    expect(srcDoc.endsWith(artifactHtml)).toBe(true);
+    expect(srcDoc.length).toBeGreaterThan(MAX_ARTIFACT_BYTES);
     await act(async () => root.unmount());
   });
 
