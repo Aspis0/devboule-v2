@@ -14,11 +14,11 @@ keep accurate.
 
 `App.tsx` picks a host at mount by asking what actually exists:
 
-| Host | Chosen when | Capabilities |
-|---|---|---|
-| `agentHost` | Oracle can answer **and** a workspace exists | load, generate |
-| `oracleHost` | Oracle can answer, no workspace | load only — view-only by construction |
-| demo (`mockData`) | otherwise | load, save (of a fixture) |
+| Host              | Chosen when                                  | Capabilities                          |
+| ----------------- | -------------------------------------------- | ------------------------------------- |
+| `agentHost`       | Oracle can answer **and** a workspace exists | load, generate                        |
+| `oracleHost`      | Oracle can answer, no workspace              | load only — view-only by construction |
+| demo (`mockData`) | otherwise                                    | load, save (of a fixture)             |
 
 Each announces itself with a disclosure line, so the surface never implies more than the
 host behind it can do.
@@ -32,7 +32,7 @@ search hits and not as files changed.
 
 Afterwards the surface reports which files were **written**, from the structured `kind`
 and `locations` the daemon puts on tool events — not from scraping tool titles, which
-cannot tell an affirmative write from a negation. A file counts only when a *completed*
+cannot tell an affirmative write from a negation. A file counts only when a _completed_
 tool call had kind `edit`, `delete` or `move`; `kind` alone is intent. Locations on an
 update **replace** the collection rather than extending it, so they are tracked per
 `toolCallId`. When no locations arrive, the surface says the agent did not report them
