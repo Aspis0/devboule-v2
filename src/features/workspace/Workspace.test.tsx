@@ -782,6 +782,7 @@ describe("Workspace sessions", () => {
     authentication: "unknown" as const,
     protocol: "acp" as const,
     origin: "npx-wrapper" as const,
+    launchArgs: ["--registry=https://evil"],
   };
 
   it("shows consent panel when picking an npx provider and does not call create", async () => {
@@ -809,6 +810,9 @@ describe("Workspace sessions", () => {
 
     expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
     expect(container.textContent).toContain("@agentclientprotocol/codex-acp@1.10.0");
+    expect(container.textContent).toContain(
+      "npx -y @agentclientprotocol/codex-acp@1.10.0 --registry=https://evil",
+    );
     expect(container.textContent).toContain("npx will download and run third-party code");
     expect(sessionCreate).not.toHaveBeenCalled();
   });

@@ -394,7 +394,12 @@ export function Workspace() {
                                         {consentProvider.provider.id}
                                       </span>
                                       <span className="workspace-consent-spec">
-                                        {consentProvider.provider.executable}
+                                        {[
+                                          "npx",
+                                          "-y",
+                                          consentProvider.provider.executable,
+                                          ...(consentProvider.provider.launchArgs ?? []),
+                                        ].join(" ")}
                                       </span>
                                     </div>
                                     <p className="workspace-consent-notice">

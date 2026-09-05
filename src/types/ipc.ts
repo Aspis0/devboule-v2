@@ -366,6 +366,10 @@ export interface ProviderInfo {
   protocol?: string | null;
   /** `"user-binary"` from PATH; `"npx-wrapper"` from the ACP registry. */
   origin?: "user-binary" | "npx-wrapper" | null;
+  /** Registry-supplied args appended after `npx -y <package>`. */
+  launchArgs?: string[] | null;
+  /** Explicit picker policy; covered wrappers remain visible in Settings. */
+  pickable?: boolean | null;
 }
 
 export interface ProviderCatalog {

@@ -5,7 +5,10 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(not(test))]
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -13,6 +16,7 @@ const REGISTRY_URL: &str = "https://cdn.agentclientprotocol.com/registry/v1/late
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const CACHE_FILE: &str = "acp-registry-cache.json";
 const MEMORY_TTL: Duration = Duration::from_secs(30 * 60);
+const MAX_REGISTRY_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 type MemoryEntries = HashMap<PathBuf, (Instant, Vec<RegistryNpxEntry>)>;
 
@@ -25,6 +29,7 @@ type MemoryEntries = HashMap<PathBuf, (Instant, Vec<RegistryNpxEntry>)>;
 /// fetch. This 30-minute TTL is the stopgap; a dedicated refresher should
 /// populate the map off the `providers_list` / session-create path.
 static MEMORY_CACHE: OnceLock<Mutex<MemoryEntries>> = OnceLock::new();
+static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn memory_cache() -> &'static Mutex<MemoryEntries> {
     MEMORY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -68,7 +73,22 @@ fn fetch_registry_json() -> Result<String, String> {
     if !response.status().is_success() {
         return Err(format!("registry HTTP {}", response.status()));
     }
-    response.text().map_err(|error| error.to_string())
+    let mut body = Vec::new();
+    response
+        .take((MAX_REGISTRY_BODY_BYTES + 1) as u64)
+        .read_to_end(&mut body)
+        .map_err(|error| error.to_string())?;
+    let body = String::from_utf8(body).map_err(|error| error.to_string())?;
+    bounded_registry_body(body)
+}
+
+fn bounded_registry_body(body: String) -> Result<String, String> {
+    if body.len() > MAX_REGISTRY_BODY_BYTES {
+        return Err(format!(
+            "registry response exceeds {MAX_REGISTRY_BODY_BYTES} bytes"
+        ));
+    }
+    Ok(body)
 }
 
 /// One npx-capable registry agent. `package` is the registry's package
@@ -244,7 +264,7 @@ pub fn load_npx_entries(fetch: &dyn RegistryFetch, cache_dir: &Path) -> Vec<Regi
     if let Some(entries) = memory_get(cache_dir) {
         return entries;
     }
-    let entries = match fetch.fetch_body() {
+    let entries = match fetch.fetch_body().and_then(bounded_registry_body) {
         Ok(body) => {
             write_cache(cache_dir, &body);
             parse_npx_entries(&body)
@@ -271,7 +291,19 @@ pub(crate) fn write_cache(cache_dir: &Path, body: &str) {
         registry,
     });
     if let Ok(bytes) = encoded {
-        let _ = fs::write(cache_dir.join(CACHE_FILE), bytes);
+        let target = cache_dir.join(CACHE_FILE);
+        let temp = cache_dir.join(format!(
+            ".{CACHE_FILE}.tmp-{}-{}",
+            std::process::id(),
+            CACHE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        if fs::write(&temp, bytes).is_ok() {
+            if fs::rename(&temp, &target).is_err() {
+                let _ = fs::remove_file(temp);
+            }
+        } else {
+            let _ = fs::remove_file(temp);
+        }
     }
 }
 
@@ -568,6 +600,56 @@ mod tests {
         );
         assert_eq!(first, second);
         assert!(!first.is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_rejects_an_oversized_fetch_before_parsing_or_caching() {
+        reset_memory_cache();
+        let dir = temp_dir("oversized-fetch");
+        let mut body = r#"{
+  "agents": [
+    {
+      "id": "oversized",
+      "distribution": { "npx": { "package": "oversized@1.0.0" } }
+    }
+  ]
+}"#
+        .to_string();
+        body.push_str(&" ".repeat(MAX_REGISTRY_BODY_BYTES + 1));
+
+        let entries = load_npx_entries(&FakeFetch { result: Ok(body) }, &dir);
+
+        assert!(entries.is_empty());
+        assert!(!dir.join(CACHE_FILE).exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn write_cache_round_trips_after_replace() {
+        let dir = temp_dir("atomic-write");
+        write_cache(&dir, TEST_REGISTRY_FIXTURE);
+        write_cache(
+            &dir,
+            r#"{
+  "agents": [
+    {
+      "id": "replacement",
+      "distribution": {
+        "npx": { "package": "replacement@1.0.0" }
+      }
+    }
+  ]
+}"#,
+        );
+        let entries = load_npx_entries(
+            &FakeFetch {
+                result: Err("cdn down".to_string()),
+            },
+            &dir,
+        );
+        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, ["replacement"]);
         let _ = fs::remove_dir_all(dir);
     }
 }

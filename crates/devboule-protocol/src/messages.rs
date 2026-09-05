@@ -332,6 +332,15 @@ pub struct ProviderInfo {
     /// `"npx-wrapper"` comes from the ACP registry. Omitted for older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// Registry-supplied arguments appended after `npx -y <package>`. Present
+    /// only for npx-wrapper rows so consent can show the complete trusted
+    /// launch line without exposing local npx plumbing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_args: Option<Vec<String>>,
+    /// Explicit picker policy. `Some(false)` means a covered registry wrapper
+    /// remains visible in Settings but is omitted from the workspace picker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pickable: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -844,6 +853,8 @@ mod tests {
                 authentication: "unknown".to_string(),
                 protocol: Some("acp".to_string()),
                 origin: None,
+                launch_args: None,
+                pickable: None,
             }],
             unreadable_dirs: 2,
         };
@@ -872,6 +883,8 @@ mod tests {
                 authentication: "unknown".to_string(),
                 protocol: Some("acp".to_string()),
                 origin: Some("npx-wrapper".to_string()),
+                launch_args: None,
+                pickable: None,
             }],
             unreadable_dirs: 0,
         };
@@ -885,6 +898,8 @@ mod tests {
             authentication: "unknown".to_string(),
             protocol: Some("acp".to_string()),
             origin: Some("user-binary".to_string()),
+            launch_args: None,
+            pickable: None,
         };
         let native_json = serde_json::to_value(&native).expect("json");
         assert_eq!(native_json["origin"], "user-binary");
@@ -892,5 +907,35 @@ mod tests {
             serde_json::from_value::<ProviderInfo>(native_json).expect("round trip"),
             native
         );
+    }
+
+    #[test]
+    fn provider_launch_args_and_pickable_are_optional_camel_case_fields() {
+        let wrapper = ProviderInfo {
+            id: "codex-acp".to_string(),
+            executable: "@agentclientprotocol/codex-acp@1.10.0".to_string(),
+            acp_available: true,
+            authentication: "unknown".to_string(),
+            protocol: Some("acp".to_string()),
+            origin: Some("npx-wrapper".to_string()),
+            launch_args: Some(vec!["--registry=https://evil".to_string()]),
+            pickable: Some(false),
+        };
+        let encoded = serde_json::to_value(&wrapper).expect("json");
+        assert_eq!(encoded["launchArgs"][0], "--registry=https://evil");
+        assert_eq!(encoded["pickable"], false);
+        assert_eq!(
+            serde_json::from_value::<ProviderInfo>(encoded).expect("round trip"),
+            wrapper
+        );
+
+        let native = ProviderInfo {
+            launch_args: None,
+            pickable: None,
+            ..wrapper
+        };
+        let native_json = serde_json::to_value(native).expect("json");
+        assert!(native_json.get("launchArgs").is_none());
+        assert!(native_json.get("pickable").is_none());
     }
 }

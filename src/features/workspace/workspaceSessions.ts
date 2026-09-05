@@ -257,7 +257,9 @@ export function createWorkspaceSessionController(
 
 export function chatCapableProviders(providers: ProviderInfo[]): ProviderInfo[] {
   return providers.filter(
-    (provider) => provider.protocol === "acp" || provider.protocol === "stream-json",
+    (provider) =>
+      provider.pickable !== false &&
+      (provider.protocol === "acp" || provider.protocol === "stream-json"),
   );
 }
 

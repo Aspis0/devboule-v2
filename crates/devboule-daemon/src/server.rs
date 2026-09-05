@@ -896,6 +896,8 @@ fn wire_provider(
         authentication: "unknown".to_string(),
         protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
         origin: Some(agent.origin.as_wire().to_string()),
+        launch_args: agent.launch_args,
+        pickable: agent.pickable,
     }
 }
 

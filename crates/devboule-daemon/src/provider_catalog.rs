@@ -100,6 +100,17 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
     },
 ];
 
+/// Registry wrappers that a better native chat-capable provider covers in the
+/// workspace picker. This is an explicit product-policy map from §1.1:
+/// `claude-acp` is a proprietary npx wrapper, while native `claude` already
+/// speaks stream-json and reuses the user's Claude subscription. It stays in
+/// Settings so the installed option remains honest and discoverable.
+/// `codex-acp` is intentionally not covered because native codex is not
+/// chat-capable; `pi-acp` is likewise not covered because native pi is not
+/// chat-capable.
+#[cfg(feature = "server")]
+const REGISTRY_NATIVE_CHAT_COVERAGE: &[(&str, &str)] = &[("claude-acp", "claude")];
+
 /// Explicit product policy for selecting the default ACP provider.
 ///
 /// This is deliberately separate from `KNOWN_AGENTS` layout: on 2026-09-04,
@@ -166,6 +177,12 @@ pub struct InstalledAgent {
     pub stream_json_command: Option<Vec<String>>,
     pub authentication: AuthenticationStatus,
     pub origin: ProviderOrigin,
+    /// Registry-supplied arguments appended after `npx -y <package>`. None
+    /// for native providers; Some, including an empty vector, for wrappers.
+    pub launch_args: Option<Vec<String>>,
+    /// Explicit picker policy. Covered wrappers are kept in Settings but are
+    /// omitted from the workspace provider picker.
+    pub pickable: Option<bool>,
 }
 
 /// PATH scan result. `unreadable_dirs` is the number of unique PATH entries
@@ -208,6 +225,8 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 stream_json_command,
                 authentication: AuthenticationStatus::Unknown,
                 origin: ProviderOrigin::UserBinary,
+                launch_args: None,
+                pickable: None,
             })
         })
         .collect();
@@ -296,7 +315,7 @@ pub(crate) fn discover_catalog_in_paths(
     let local = discover_in_paths(directories);
     let registry = crate::registry::load_npx_entries(fetch, cache_dir)
         .into_iter()
-        .map(|entry| registry_agent(directories, entry))
+        .map(|entry| registry_agent(directories, &local, entry))
         .collect();
     merge_native_beats_registry(local, registry)
 }
@@ -304,19 +323,41 @@ pub(crate) fn discover_catalog_in_paths(
 #[cfg(feature = "server")]
 fn registry_agent(
     directories: &[PathBuf],
+    native: &ProviderDiscovery,
     entry: crate::registry::RegistryNpxEntry,
 ) -> InstalledAgent {
-    let acp_command = npx_acp_command(directories, &entry.package, &entry.args);
+    let crate::registry::RegistryNpxEntry { id, package, args } = entry;
+    let pickable = registry_picker_policy(&id, native);
+    let acp_command = npx_acp_command(directories, &package, &args);
     InstalledAgent {
-        id: entry.id,
+        id,
         aliases: &[],
-        executable: PathBuf::from(&entry.package),
+        executable: PathBuf::from(&package),
         prefix_args: Vec::new(),
         acp_command,
         stream_json_command: None,
         authentication: AuthenticationStatus::Unknown,
         origin: ProviderOrigin::NpxWrapper,
+        launch_args: Some(args),
+        pickable,
     }
+}
+
+#[cfg(feature = "server")]
+fn registry_picker_policy(id: &str, native: &ProviderDiscovery) -> Option<bool> {
+    let covering_native = REGISTRY_NATIVE_CHAT_COVERAGE
+        .iter()
+        .find(|(wrapper, _)| id.eq_ignore_ascii_case(wrapper))
+        .map(|(_, native_id)| *native_id)?;
+    native
+        .agents
+        .iter()
+        .any(|agent| {
+            agent.origin == ProviderOrigin::UserBinary
+                && agent.id.eq_ignore_ascii_case(covering_native)
+                && chat_protocol(agent).is_some()
+        })
+        .then_some(false)
 }
 
 #[cfg(feature = "server")]
@@ -1534,6 +1575,113 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         fn fetch_body(&self) -> Result<String, String> {
             Ok(crate::registry::TEST_REGISTRY_FIXTURE.to_string())
         }
+    }
+
+    struct CoverageFixtureFetch;
+
+    impl crate::registry::RegistryFetch for CoverageFixtureFetch {
+        fn fetch_body(&self) -> Result<String, String> {
+            Ok(r#"{
+  "agents": [
+    {
+      "id": "claude-acp",
+      "distribution": {
+        "npx": { "package": "claude-acp@1.0.0" }
+      }
+    },
+    {
+      "id": "codex-acp",
+      "distribution": {
+        "npx": {
+          "package": "codex-acp@1.0.0",
+          "args": ["--registry=https://evil"]
+        }
+      }
+    },
+    {
+      "id": "pi-acp",
+      "distribution": {
+        "npx": { "package": "pi-acp@1.0.0" }
+      }
+    }
+  ]
+}"#
+            .to_string())
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn registry_coverage_marks_only_claude_wrapper_unpickable_when_native_exists() {
+        let dir = temporary_directory("registry-coverage-native");
+        fs::create_dir_all(&dir).expect("temporary directory");
+        fake_cli_path(&dir, "claude");
+        fake_cli_path(&dir, "npx");
+        let cache = temporary_directory("registry-coverage-native-cache");
+        let catalog = super::discover_catalog_in_paths(
+            &CoverageFixtureFetch,
+            &cache,
+            std::slice::from_ref(&dir),
+        );
+
+        let claude = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "claude-acp")
+            .expect("claude-acp from registry");
+        assert_eq!(claude.pickable, Some(false));
+        assert_eq!(claude.launch_args, Some(Vec::new()));
+        assert_eq!(
+            catalog
+                .agents
+                .iter()
+                .find(|agent| agent.id == "codex-acp")
+                .expect("codex-acp from registry")
+                .launch_args,
+            Some(vec!["--registry=https://evil".to_string()])
+        );
+        assert_eq!(
+            catalog
+                .agents
+                .iter()
+                .find(|agent| agent.id == "codex-acp")
+                .expect("codex-acp from registry")
+                .pickable,
+            None
+        );
+        assert_eq!(
+            catalog
+                .agents
+                .iter()
+                .find(|agent| agent.id == "pi-acp")
+                .expect("pi-acp from registry")
+                .pickable,
+            None
+        );
+
+        let no_native_dir = temporary_directory("registry-coverage-no-native");
+        fs::create_dir_all(&no_native_dir).expect("temporary directory");
+        fake_cli_path(&no_native_dir, "npx");
+        let no_native_cache = temporary_directory("registry-coverage-no-native-cache");
+        let no_native = super::discover_catalog_in_paths(
+            &CoverageFixtureFetch,
+            &no_native_cache,
+            std::slice::from_ref(&no_native_dir),
+        );
+        assert_eq!(
+            no_native
+                .agents
+                .iter()
+                .find(|agent| agent.id == "claude-acp")
+                .expect("claude-acp without native claude")
+                .pickable,
+            None
+        );
+
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(cache);
+        let _ = fs::remove_dir_all(no_native_dir);
+        let _ = fs::remove_dir_all(no_native_cache);
     }
 
     #[cfg(feature = "server")]

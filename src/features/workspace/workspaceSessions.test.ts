@@ -112,6 +112,55 @@ describe("workspace session controller", () => {
     ).toEqual(["grok"]);
   });
 
+  it("excludes only registry wrappers covered by a better native provider", () => {
+    const providers = [
+      {
+        id: "claude",
+        executable: "claude.exe",
+        acpAvailable: false,
+        authentication: "unknown" as const,
+        protocol: "stream-json" as const,
+        origin: "user-binary" as const,
+      },
+      {
+        id: "claude-acp",
+        executable: "claude-acp@1.0.0",
+        acpAvailable: true,
+        authentication: "unknown" as const,
+        protocol: "acp" as const,
+        origin: "npx-wrapper" as const,
+        pickable: false,
+      },
+      {
+        id: "codex-acp",
+        executable: "codex-acp@1.0.0",
+        acpAvailable: true,
+        authentication: "unknown" as const,
+        protocol: "acp" as const,
+        origin: "npx-wrapper" as const,
+      },
+      {
+        id: "pi-acp",
+        executable: "pi-acp@1.0.0",
+        acpAvailable: true,
+        authentication: "unknown" as const,
+        protocol: "acp" as const,
+        origin: "npx-wrapper" as const,
+      },
+    ];
+
+    expect(chatCapableProviders(providers).map((provider) => provider.id)).toEqual([
+      "claude",
+      "codex-acp",
+      "pi-acp",
+    ]);
+    expect(
+      chatCapableProviders([{ ...providers[1], pickable: undefined }, providers[2]]).map(
+        (provider) => provider.id,
+      ),
+    ).toEqual(["claude-acp", "codex-acp"]);
+  });
+
   it("loads terminal and ACP sessions and selects the first real session", async () => {
     const list = vi.fn(async () => [
       liveSession("terminal-1", "shell one"),
