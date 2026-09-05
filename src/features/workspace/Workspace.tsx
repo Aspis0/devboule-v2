@@ -11,6 +11,7 @@ import {
 } from "./sidePanels";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
+import { HistoryPanel } from "../history/HistoryPanel";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
@@ -90,6 +91,8 @@ export function Workspace() {
     handleResizeKey,
   } = useWorkspacePanelResize();
   const [activeSidePanel, setActiveSidePanel] = useState<ActiveSidePanel>("changes");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historySearch, setHistorySearch] = useState("");
   const [surfaceMenuOpen, setSurfaceMenuOpen] = useState(false);
   const [diffState, setDiffState] = useState<DiffState>("unstaged");
   const [appBuild, setAppBuild] = useState(41);
@@ -158,7 +161,7 @@ export function Workspace() {
       <aside
         className="workspace-panel workspace-left-panel"
         style={{ width: leftCollapsed ? "30px" : `${leftWidth}px` }}
-        aria-label="Workspaces"
+        aria-label={historyOpen ? "History" : "Workspaces"}
       >
         {leftCollapsed ? (
           <button
@@ -184,8 +187,20 @@ export function Workspace() {
                 ‹
               </button>
               <label className="workspace-search">
-                <span className="sr-only">Search workspaces</span>
-                <input value={search} onChange={handleSearchChange} placeholder="Search" />
+                <span className="sr-only">
+                  {historyOpen ? "Search history" : "Search workspaces"}
+                </span>
+                <input
+                  value={historyOpen ? historySearch : search}
+                  onChange={(event) => {
+                    if (historyOpen) {
+                      setHistorySearch(event.target.value);
+                    } else {
+                      handleSearchChange(event);
+                    }
+                  }}
+                  placeholder="Search"
+                />
               </label>
               <button
                 type="button"
@@ -200,59 +215,76 @@ export function Workspace() {
             </div>
 
             <div className="workspace-scroll workspace-project-list">
-              {visibleProjects.map((project) => (
-                <div className="workspace-project" key={project.name}>
-                  <div className="workspace-project-heading">
-                    <span>{project.name}</span>
-                    <button
-                      type="button"
-                      className="workspace-project-add"
-                      onClick={() => handleNewWorkspace(project.id)}
-                      title="New workspace in this project"
-                      aria-label={`New workspace in ${project.name}`}
-                    >
-                      +
-                    </button>
-                  </div>
-                  <div className="workspace-project-items">
-                    {project.workspaces.map((workspace) => (
-                      <button
-                        type="button"
-                        className={`workspace-row${selectedWorkspace === workspace.id ? " workspace-row-selected" : ""}`}
-                        key={workspace.id}
-                        onClick={() => setSelectedWorkspace(workspace.id)}
-                        aria-pressed={selectedWorkspace === workspace.id}
-                      >
-                        <span
-                          className={`workspace-status-dot workspace-dot-${workspace.dotTone}`}
-                        />
-                        <span className="workspace-row-copy">
-                          <span className="workspace-row-title">{workspace.title}</span>
-                          <span className="workspace-row-meta">{workspace.meta}</span>
-                        </span>
-                        <span className="workspace-isolation">{workspace.isolation}</span>
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      className="workspace-new-row"
-                      onClick={() => handleNewWorkspace(project.id)}
-                    >
-                      <span aria-hidden="true">+</span>New workspace
-                    </button>
-                  </div>
-                </div>
-              ))}
-              {visibleProjects.length === 0 ? (
-                <div className="workspace-empty">No matching workspaces</div>
-              ) : null}
+              {historyOpen ? (
+                <HistoryPanel search={historySearch} />
+              ) : (
+                <>
+                  {visibleProjects.map((project) => (
+                    <div className="workspace-project" key={project.name}>
+                      <div className="workspace-project-heading">
+                        <span>{project.name}</span>
+                        <button
+                          type="button"
+                          className="workspace-project-add"
+                          onClick={() => handleNewWorkspace(project.id)}
+                          title="New workspace in this project"
+                          aria-label={`New workspace in ${project.name}`}
+                        >
+                          +
+                        </button>
+                      </div>
+                      <div className="workspace-project-items">
+                        {project.workspaces.map((workspace) => (
+                          <button
+                            type="button"
+                            className={`workspace-row${selectedWorkspace === workspace.id ? " workspace-row-selected" : ""}`}
+                            key={workspace.id}
+                            onClick={() => setSelectedWorkspace(workspace.id)}
+                            aria-pressed={selectedWorkspace === workspace.id}
+                          >
+                            <span
+                              className={`workspace-status-dot workspace-dot-${workspace.dotTone}`}
+                            />
+                            <span className="workspace-row-copy">
+                              <span className="workspace-row-title">{workspace.title}</span>
+                              <span className="workspace-row-meta">{workspace.meta}</span>
+                            </span>
+                            <span className="workspace-isolation">{workspace.isolation}</span>
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="workspace-new-row"
+                          onClick={() => handleNewWorkspace(project.id)}
+                        >
+                          <span aria-hidden="true">+</span>New workspace
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {visibleProjects.length === 0 ? (
+                    <div className="workspace-empty">No matching workspaces</div>
+                  ) : null}
+                </>
+              )}
             </div>
 
-            <div className="workspace-daemon-status" title={daemon.message ?? undefined}>
-              <span
-                className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`}
-              />
-              {daemonLabel(daemon)}
+            <div className="workspace-sidebar-footer">
+              <button
+                type="button"
+                className="workspace-history-button"
+                aria-pressed={historyOpen}
+                onClick={() => setHistoryOpen((open) => !open)}
+                title={historyOpen ? "Show workspaces" : "Show history"}
+              >
+                History
+              </button>
+              <div className="workspace-daemon-status" title={daemon.message ?? undefined}>
+                <span
+                  className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`}
+                />
+                {daemonLabel(daemon)}
+              </div>
             </div>
           </div>
         )}
