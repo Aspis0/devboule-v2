@@ -39,8 +39,30 @@ The provider catalog adds Devboule's installed-agent model, ACP launch
 metadata, and an explicit unknown authentication status; it does not probe
 login state.
 
+The canvas geometry modules `src/lib/canvas/snapAdvanced.ts` and
+`src/lib/canvas/multiResize.ts` are adapted from excalidraw/excalidraw,
+licensed under the MIT License (Copyright (c) 2020 Excalidraw), at commit
+`e9c856d262a14c12bd0bdc3f4ac55c7a86a71577`:
+
+- `snapAdvanced.ts` - rect-only point, edge, center, visible-gap,
+  equal-spacing and resize snapping adapted from
+  `packages/excalidraw/snapping.ts`, with small range and bounds helpers
+  adapted from `packages/math/src/range.ts` and
+  `packages/element/src/bounds.ts`.
+- `multiResize.ts` - rect-only multi-element proportional resize (angle=0)
+  adapted from `packages/element/src/resizeElements.ts`: the anchor and scale
+  derivation from `getNextMultipleWidthAndHeightFromPointer`, and the
+  per-member scaling around the anchor from `resizeMultipleElements`. There is
+  no rotation or flip path, and a uniform minimum-size clamp replaces the
+  source'''s per-element distortion.
+
+Both reached Devboule by way of PubSpark, another Aspis0 project, whose
+`THIRD_PARTY_NOTICES.md` records the same derivation. The modules beside them
+in `src/lib/canvas` - `hitTest.ts`, `snap.ts` and `viewportMath.ts` - are
+Aspis0 code and are not third-party derivatives.
+
 No third-party library source code beyond the explicitly attributed herdr
-portion above is copied into this repository. This does not mean that linked
+and Excalidraw portions above is copied into this repository. This does not mean that linked
 dependency code is absent from a built binary; the
 Cargo and npm dependencies identified in THIRD_PARTY.md are compiled or
 bundled according to their respective licences. The three checked-in fonts

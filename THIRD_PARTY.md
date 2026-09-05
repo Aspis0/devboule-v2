@@ -16,7 +16,14 @@ The lockfile inventories include conditional platform packages. A package listed
 
 One third-party file is vendored as **data, not code**: `crates/devboule-augur/vendor/gitleaks/gitleaks.toml`, the gitleaks secret-detection rule set taken at tag v8.21.2, commit 43fae355e6fe4d99d2a7b240a224b85e2903aeb4, under the MIT licence (Copyright (c) 2019 Zachary Rice). Its LICENSE ships beside it and `VERSION` records the upstream repository, tag, commit and the date taken. No Go code is used; the TOML is parsed and the regexes compiled by our own loader.
 
-Beyond that there is no third-party library source code checked into this repository: no Cargo patch/fork, no git submodule, and no third-party path dependency; the path dependencies are the local Devboule workspace crates.
+Two third-party source files are adapted as **code**, not data: `src/lib/canvas/snapAdvanced.ts` and `src/lib/canvas/multiResize.ts`. They were added on 2026-09-05 and therefore postdate the 2026-08-27 audit recorded above. Both derive from [excalidraw/excalidraw](https://github.com/excalidraw/excalidraw) at commit `e9c856d262a14c12bd0bdc3f4ac55c7a86a71577`, under the MIT licence (Copyright (c) 2020 Excalidraw). Each file carries a header comment naming its origin.
+
+- `snapAdvanced.ts`: rect-only point, edge, center, visible-gap, equal-spacing and resize snapping adapted from `packages/excalidraw/snapping.ts`, with small range and bounds helpers adapted from `packages/math/src/range.ts` and `packages/element/src/bounds.ts`. Simplified against the source: rectangles only, and the AppState/React coupling stripped.
+- `multiResize.ts`: rect-only multi-element proportional resize at angle 0, adapted from `packages/element/src/resizeElements.ts` - the anchor and scale derivation of `getNextMultipleWidthAndHeightFromPointer`, and the per-member scaling around the anchor of `resizeMultipleElements`. Simplified against the source: no rotation or flip path, and a uniform minimum-size clamp in place of per-element distortion.
+
+Both reached Devboule by way of PubSpark, another Aspis0 project, whose `THIRD_PARTY_NOTICES.md` records the same derivation. Their accompanying test files were written for PubSpark and are Aspis0 code, as are the three modules beside them in `src/lib/canvas`: `hitTest.ts`, `snap.ts` and `viewportMath.ts`.
+
+Beyond the gitleaks rule set and the two adapted Excalidraw modules described above, there is no third-party library source code checked into this repository: no Cargo patch/fork, no git submodule, and no third-party path dependency; the path dependencies are the local Devboule workspace crates.
 
 The daemon directly depends on `agent-client-protocol` 2.0.0 for the ACP
 schema/protocol definitions. It is Apache-2.0 licensed; no source from that
