@@ -478,7 +478,7 @@ pub(super) fn spawn_process(
         }
     };
     let mut reader = BufReader::new(stdout);
-    let (deferred, handshake_manifest) = match handshake(
+    let (deferred, handshake_manifest, peer_session_id) = match handshake(
         &transport,
         &mut reader,
         &command.cwd,
@@ -548,6 +548,7 @@ pub(super) fn spawn_process(
         stderr: Some(Box::new(stderr_source)),
         permission_broker: Some(Arc::clone(&transport.permission_broker)),
         os_handle,
+        peer_session_id: Some(peer_session_id),
     })
 }
 
@@ -699,7 +700,7 @@ fn handshake(
     reader: &mut BufReader<ChildStdout>,
     cwd: &std::path::Path,
     provider_id: Option<String>,
-) -> Result<(Vec<serde_json::Value>, Option<SessionEvent>), WireError> {
+) -> Result<(Vec<serde_json::Value>, Option<SessionEvent>, String), WireError> {
     let mut deferred = Vec::new();
     let initialize_id = transport
         .request("initialize", advertised_initialize_params()?)
@@ -746,7 +747,7 @@ fn handshake(
             .unwrap_or(&serde_json::Value::Null),
         provider_id,
     );
-    Ok((deferred, manifest))
+    Ok((deferred, manifest, session_id.to_string()))
 }
 
 fn read_response(

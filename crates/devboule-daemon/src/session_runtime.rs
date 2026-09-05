@@ -474,6 +474,18 @@ impl SessionRuntime {
     }
 
     pub(crate) fn set_peer_session_id(&self, session_id: String) {
+        self.restore_peer_session_id(session_id.clone());
+        if let Some(journal) = &self.journal {
+            if let Err(error) = journal.set_peer_session_id(&self.session_id, &session_id) {
+                eprintln!(
+                    "journal could not persist peer session id for {}: {error}",
+                    self.session_id
+                );
+            }
+        }
+    }
+
+    pub(crate) fn restore_peer_session_id(&self, session_id: String) {
         if let Ok(mut stored) = self.peer_session_id.lock() {
             *stored = Some(session_id);
         }

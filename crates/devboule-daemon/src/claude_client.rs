@@ -210,6 +210,7 @@ pub(super) fn spawn_process(
         stderr: Some(Box::new(stderr_source)),
         permission_broker: Some(permission_broker),
         os_handle,
+        peer_session_id: None,
     })
 }
 

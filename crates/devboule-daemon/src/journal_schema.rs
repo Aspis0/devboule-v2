@@ -67,6 +67,9 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                 )?;
             }
         }
+        if version < 4 && !session_has_column(&tx, "peer_session_id")? {
+            tx.execute("ALTER TABLE sessions ADD COLUMN peer_session_id TEXT", [])?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -260,6 +263,54 @@ mod tests {
             .expect("read after migration")
             .iter()
             .any(|record| record.id == "s.atomic"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn current_schema_migrates_peer_session_id_and_preserves_old_rows() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("old journal");
+        conn.execute_batch(SCHEMA_SQL).expect("old schema");
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN dropped_frames INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN dropped_bytes INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN trimmed_bytes INTEGER NOT NULL DEFAULT 0;",
+        )
+        .expect("v3 schema");
+        conn.execute(
+            "INSERT INTO sessions (
+                id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                generation, status, exit_code, closed, last_seq, degraded,
+                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes,
+                unsnapshotted_bytes, reaped
+             ) VALUES ('s.old-peer', 'owner', NULL, 'acp', 'Agent', 1, 1,
+                       1, 'ended', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0)",
+            [],
+        )
+        .expect("old row");
+        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 1)
+            .expect("old version");
+        drop(conn);
+
+        let journal = Journal::open(&path).expect("migrate");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.old-peer")
+            .expect("migrated row");
+        assert_eq!(row.peer_session_id, None);
+        let check = Connection::open(&path).expect("check migrated schema");
+        let columns: i64 = check
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions')
+                 WHERE name = 'peer_session_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("peer session id column");
+        assert_eq!(columns, 1);
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

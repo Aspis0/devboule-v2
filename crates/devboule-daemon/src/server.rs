@@ -1134,7 +1134,7 @@ fn dispatch_session(
                 .resize(&session_id, cols, rows, owner)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
-        ClientMessage::SessionsList { id } => match state.sessions.list() {
+        ClientMessage::SessionsList { id } => match state.sessions.list(owner) {
             Ok(sessions) => DaemonMessage::Sessions { id, sessions },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
@@ -1690,7 +1690,7 @@ mod tests {
         ));
         assert!(state
             .sessions
-            .list()
+            .list(&owner)
             .expect("list after refused delete")
             .iter()
             .any(|session| session.id == "s.test-client.live"));

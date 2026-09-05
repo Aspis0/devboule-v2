@@ -256,6 +256,7 @@ struct SpawnedSession {
     stderr: Option<Box<dyn StderrSource>>,
     permission_broker: Option<Arc<permission_broker::PermissionBroker>>,
     os_handle: Option<ProcessHandle>,
+    peer_session_id: Option<String>,
 }
 
 struct PtyKiller {
@@ -388,8 +389,19 @@ fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireEr
     OwnerId::new(user, client).map_err(|_| unauthorized())
 }
 
+// Full-owner checks remain on client-scoped operations (send, resize,
+// permission_respond, and detach). A live process must not be driven by a
+// new app process; pass A only relaxes read-only reattach and lifecycle paths.
 fn check_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> {
     if entry.owner() == owner {
+        Ok(())
+    } else {
+        Err(unauthorized())
+    }
+}
+
+fn check_user_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> {
+    if entry.owner().user == owner.user {
         Ok(())
     } else {
         Err(unauthorized())
@@ -454,7 +466,7 @@ impl SessionRegistry {
             .lock()
             .map(|map| {
                 map.values()
-                    .filter(|entry| entry.owner() == owner)
+                    .filter(|entry| entry.owner().user == owner.user)
                     .map(RegistryEntry::to_session)
                     .collect::<Vec<_>>()
             })
@@ -463,16 +475,13 @@ impl SessionRegistry {
             .iter()
             .map(|session| session.id.clone())
             .collect::<std::collections::HashSet<_>>();
-        let owner_token = owner.session_token();
         if let Some(journal) = &self.journal {
             if let Ok(rows) = journal.list() {
                 sessions.extend(rows.into_iter().filter_map(|row| {
                     if live_ids.contains(&row.id) {
                         return None;
                     }
-                    let session_token = row.id.split('.').nth(1);
-                    (row.owner == owner.user && session_token == Some(owner_token.as_str()))
-                        .then(|| row.to_session())
+                    (row.owner == owner.user).then(|| row.to_session())
                 }));
             }
         }
@@ -769,7 +778,7 @@ impl SessionRegistry {
         owner: &OwnerId,
         typed_permissions: bool,
     ) -> Result<(), WireError> {
-        let runtime = match self.runtime_for_owner(session_id, owner) {
+        let runtime = match self.runtime_for_user(session_id, owner) {
             Ok(runtime) => runtime,
             Err(error) if error.code == ErrorCode::SessionNotFound => {
                 self.hydrate_transcript(session_id, from_cursor, owner)?
@@ -816,7 +825,7 @@ impl SessionRegistry {
             .find(|row| row.id == session_id)
             .ok_or_else(not_found)?;
         let session_owner = owner_from_session_id(session_id, &record.owner)?;
-        if &session_owner != owner {
+        if session_owner.user != owner.user {
             return Err(unauthorized());
         }
         journal.pin(session_id)?;
@@ -837,13 +846,16 @@ impl SessionRegistry {
         let metadata = record.to_session();
         let runtime =
             SessionRuntime::from_replay(session_id.to_string(), Some(Arc::clone(journal)), replay);
+        if let Some(peer_session_id) = record.peer_session_id.clone() {
+            runtime.restore_peer_session_id(peer_session_id);
+        }
         {
             let Ok(mut map) = self.inner.lock() else {
                 journal.unpin(session_id);
                 return Err(internal("Session state is unavailable."));
             };
             if let Some(existing) = map.get(session_id) {
-                check_owner(existing, owner)?;
+                check_user_owner(existing, owner)?;
                 journal.unpin(session_id);
                 return Ok(existing.runtime());
             }
@@ -959,7 +971,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             if let Some(entry) = map.get(session_id) {
-                check_owner(entry, owner)?;
+                check_user_owner(entry, owner)?;
                 if let Some(session) = entry.as_live() {
                     session
                         .runtime
@@ -992,7 +1004,7 @@ impl SessionRegistry {
                     let known = journal.list()?.into_iter().find(|row| row.id == session_id);
                     if let Some(record) = known {
                         let session_owner = owner_from_session_id(session_id, &record.owner)?;
-                        if &session_owner != owner {
+                        if session_owner.user != owner.user {
                             return Err(unauthorized());
                         }
                         journal.try_mark_closed(session_id);
@@ -1014,7 +1026,7 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let session = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_owner(session, owner)?;
+            check_user_owner(session, owner)?;
             let session = session.as_live_mut().ok_or_else(process_gone)?;
             session.preserve_on_exit.store(true, Ordering::SeqCst);
             session.killer.clone_killer()
@@ -1156,16 +1168,23 @@ impl SessionRegistry {
         Ok(())
     }
 
-    pub fn list(&self) -> Result<Vec<Session>, WireError> {
+    pub fn list(&self, owner: &OwnerId) -> Result<Vec<Session>, WireError> {
         let map = self
             .inner
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
-        let mut sessions: Vec<Session> = map.values().map(RegistryEntry::to_session).collect();
+        let mut sessions: Vec<Session> = map
+            .values()
+            .filter(|entry| entry.owner().user == owner.user)
+            .map(RegistryEntry::to_session)
+            .collect();
         drop(map);
         if let Some(journal) = &self.journal {
             if let Ok(rows) = journal.list() {
                 for row in rows {
+                    if row.owner != owner.user {
+                        continue;
+                    }
                     if sessions.iter().any(|session| session.id == row.id) {
                         continue;
                     }
@@ -1222,6 +1241,22 @@ impl SessionRegistry {
             .map_err(|_| internal("Session state is unavailable."))?;
         let session = map.get(session_id).ok_or_else(not_found)?;
         check_owner(session, owner)?;
+        Ok(session.runtime())
+    }
+
+    fn runtime_for_user(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+    ) -> Result<Arc<SessionRuntime>, WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let session = map.get(session_id).ok_or_else(not_found)?;
+        check_user_owner(session, owner)?;
         Ok(session.runtime())
     }
 }
@@ -1426,6 +1461,7 @@ pub fn spawn_session(
         stderr: None,
         permission_broker: None,
         os_handle,
+        peer_session_id: None,
     };
     start_spawned_session(state, registry, metadata, owner, spawned)
 }
@@ -1448,6 +1484,7 @@ fn start_spawned_session(
         stderr,
         permission_broker,
         os_handle,
+        peer_session_id,
     } = spawned;
     let runtime = if metadata.kind.is_agent() {
         SessionRuntime::for_acp(
@@ -1461,6 +1498,9 @@ fn start_spawned_session(
             registry.journal.clone(),
         ))
     };
+    if let Some(peer_session_id) = peer_session_id {
+        runtime.set_peer_session_id(peer_session_id);
+    }
     if let Some(handle) = os_handle {
         runtime.install_os_handle(handle);
     }
@@ -2875,6 +2915,215 @@ mod tests {
                 .is_some(),
             "live registry entry must stay"
         );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn learned_peer_session_id_is_durable_and_restored_on_hydration() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-peer", "process-1111");
+        let caller = test_owner("S-1-5-21-peer", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "peer01").expect("id");
+        let mut record = ended_record(&session_id, &original.user);
+        record.kind = SessionKind::Acp;
+        journal.upsert_blocking(record).expect("row");
+
+        let runtime = SessionRuntime::with_journal(session_id.clone(), Some(Arc::clone(&journal)));
+        runtime.set_peer_session_id("peer-session-1".to_string());
+        journal.flush().expect("peer id");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == session_id)
+            .expect("row");
+        assert_eq!(row.peer_session_id.as_deref(), Some("peer-session-1"));
+
+        let conn = ConnHandle::new(1);
+        registry
+            .attach(&session_id, None, &conn, &caller, true)
+            .expect("same-user hydration");
+        let hydrated = registry
+            .inner
+            .lock()
+            .expect("registry")
+            .get(&session_id)
+            .expect("hydrated entry")
+            .runtime()
+            .peer_session_id();
+        assert_eq!(hydrated.as_deref(), Some("peer-session-1"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_attach_allows_a_previous_run_session_for_the_same_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-attach", "process-1111");
+        let caller = test_owner("S-1-5-21-attach", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "attach01").expect("id");
+        journal
+            .upsert_blocking(ended_record(&session_id, &original.user))
+            .expect("row");
+        registry
+            .attach(&session_id, None, &ConnHandle::new(1), &caller, false)
+            .expect("same user, different client must attach");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_attach_allows_a_live_registry_session_from_a_dead_client_same_user() {
+        // The most common restart shape: the daemon survives, the app does
+        // not. The registry still holds the LIVE entry under the old client
+        // token; the new client (same user) must attach through
+        // runtime_for_user, not through journal hydration.
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-attach-live", "process-1111");
+        let caller = test_owner("S-1-5-21-attach-live", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "attach03").expect("id");
+        insert_live(&registry, &session_id, original);
+        registry
+            .attach(&session_id, None, &ConnHandle::new(1), &caller, false)
+            .expect("same user, different client must attach to the live entry");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_attach_rejects_a_live_registry_session_from_another_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-attach-live-owner", "process-1111");
+        let stranger = test_owner("S-1-5-21-attach-live-stranger", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "attach04").expect("id");
+        insert_live(&registry, &session_id, original);
+        let error = registry
+            .attach(&session_id, None, &ConnHandle::new(1), &stranger, false)
+            .expect_err("different user must stay unauthorized on the live entry");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_attach_rejects_a_previous_run_session_from_another_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-attach-owner", "process-1111");
+        let stranger = test_owner("S-1-5-21-attach-stranger", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "attach02").expect("id");
+        journal
+            .upsert_blocking(ended_record(&session_id, &original.user))
+            .expect("row");
+        let error = registry
+            .attach(&session_id, None, &ConnHandle::new(1), &stranger, false)
+            .expect_err("different user must stay unauthorized");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_close_allows_a_previous_run_session_for_the_same_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-close", "process-1111");
+        let caller = test_owner("S-1-5-21-close", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "close01").expect("id");
+        journal
+            .upsert_blocking(ended_record(&session_id, &original.user))
+            .expect("row");
+        assert!(!registry
+            .close(&session_id, &caller)
+            .expect("same user, different client must close"));
+        assert!(journal
+            .list()
+            .expect("list")
+            .iter()
+            .all(|row| row.id != session_id));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_close_rejects_a_previous_run_session_from_another_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-close-owner", "process-1111");
+        let stranger = test_owner("S-1-5-21-close-stranger", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "close02").expect("id");
+        journal
+            .upsert_blocking(ended_record(&session_id, &original.user))
+            .expect("row");
+        let error = registry
+            .close(&session_id, &stranger)
+            .expect_err("different user must stay unauthorized");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
+        assert!(journal
+            .list()
+            .expect("list")
+            .iter()
+            .any(|row| row.id == session_id));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_stop_allows_a_previous_run_live_session_for_the_same_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-stop", "process-1111");
+        let caller = test_owner("S-1-5-21-stop", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "stop01").expect("id");
+        insert_live(&registry, &session_id, original);
+        registry
+            .stop(&session_id, &caller)
+            .expect("same user, different client must stop");
+        assert!(registry
+            .inner
+            .lock()
+            .expect("registry")
+            .get(&session_id)
+            .and_then(RegistryEntry::as_live)
+            .is_some_and(|session| session.preserve_on_exit.load(Ordering::Acquire)));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn session_stop_rejects_a_previous_run_live_session_from_another_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-stop-owner", "process-1111");
+        let stranger = test_owner("S-1-5-21-stop-stranger", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "stop02").expect("id");
+        insert_live(&registry, &session_id, original);
+        let error = registry
+            .stop(&session_id, &stranger)
+            .expect_err("different user must stay unauthorized");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn roster_and_history_are_user_scoped_and_include_previous_run_sessions() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let previous_run = test_owner("S-1-5-21-roster", "process-1111");
+        let caller = test_owner("S-1-5-21-roster", "process-2222");
+        let stranger = test_owner("S-1-5-21-other", "process-3333");
+        let previous_id =
+            compose_session_id(&previous_run.session_token(), "roster01").expect("id");
+        let stranger_id = compose_session_id(&stranger.session_token(), "roster02").expect("id");
+        journal
+            .upsert_blocking(ended_record(&previous_id, &previous_run.user))
+            .expect("previous row");
+        journal
+            .upsert_blocking(ended_record(&stranger_id, &stranger.user))
+            .expect("stranger row");
+
+        let roster = registry.state_snapshots(&caller);
+        assert!(roster.iter().any(|session| session.id == previous_id));
+        assert!(roster.iter().all(|session| session.id != stranger_id));
+        let history = registry.list(&caller).expect("history");
+        assert!(history.iter().any(|session| session.id == previous_id));
+        assert!(history.iter().all(|session| session.id != stranger_id));
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

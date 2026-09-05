@@ -49,7 +49,7 @@ use journal_schema::open_connection;
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 3;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 4;
 
 /// Bounded journal queue. Each slot is one coalesced frame (typically
 /// ≤ 8 KiB). A full queue never blocks the PTY path.
@@ -213,6 +213,8 @@ pub struct SessionRecord {
     pub trimmed_bytes: u64,
     /// Child::wait returned. Output may still be arriving (ConPTY drain).
     pub reaped: bool,
+    /// Provider-side session id used by a future resume/load handshake.
+    pub peer_session_id: Option<String>,
 }
 
 impl SessionRecord {
@@ -430,6 +432,11 @@ enum JournalCmd {
     },
     MarkClosed {
         session_id: String,
+    },
+    SetPeerSessionId {
+        session_id: String,
+        peer_session_id: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
     },
     MarkDegraded {
         session_id: String,
@@ -658,6 +665,18 @@ impl Journal {
         self.try_send(JournalCmd::MarkClosed {
             session_id: session_id.to_string(),
         });
+    }
+
+    pub fn set_peer_session_id(
+        &self,
+        session_id: &str,
+        peer_session_id: &str,
+    ) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::SetPeerSessionId {
+            session_id: session_id.to_string(),
+            peer_session_id: peer_session_id.to_string(),
+            reply,
+        })
     }
 
     pub fn list(&self) -> Result<Vec<SessionRecord>, JournalError> {
@@ -1010,6 +1029,17 @@ fn journal_loop(
                     retention_state.session_set_changed();
                 }
             }
+            JournalCmd::SetPeerSessionId {
+                session_id,
+                peer_session_id,
+                reply,
+            } => {
+                let result = set_peer_session_id(&conn, &session_id, &peer_session_id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
             JournalCmd::MarkDegraded { session_id } => {
                 let (degraded, dropped) = degradation_state(&degraded_sessions, &session_id);
                 if let Err(error) = mark_degraded(&conn, &session_id, degraded, dropped) {
@@ -1114,8 +1144,9 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
         "INSERT INTO sessions (
             id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
             generation, status, exit_code, closed, last_seq, degraded,
-            dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes, reaped
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18)
+            dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes, unsnapshotted_bytes,
+            reaped, peer_session_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, 0, ?18, ?19)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             updated_at_ms = excluded.updated_at_ms,
@@ -1128,7 +1159,8 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             dropped_frames = MAX(sessions.dropped_frames, excluded.dropped_frames),
             dropped_bytes = MAX(sessions.dropped_bytes, excluded.dropped_bytes),
             trimmed_bytes = MAX(sessions.trimmed_bytes, excluded.trimmed_bytes),
-            reaped = MAX(sessions.reaped, excluded.reaped)",
+            reaped = MAX(sessions.reaped, excluded.reaped),
+            peer_session_id = COALESCE(excluded.peer_session_id, sessions.peer_session_id)",
         params![
             record.id,
             record.owner,
@@ -1148,6 +1180,7 @@ fn upsert_session(conn: &Connection, record: &SessionRecord) -> Result<(), Journ
             record.trimmed_bytes as i64,
             record.payload_bytes as i64,
             if record.reaped { 1 } else { 0 },
+            record.peer_session_id,
         ],
     )?;
     Ok(())
@@ -1412,6 +1445,22 @@ fn mark_closed(conn: &Connection, session_id: &str) -> Result<(), JournalError> 
     }
 }
 
+fn set_peer_session_id(
+    conn: &Connection,
+    session_id: &str,
+    peer_session_id: &str,
+) -> Result<(), JournalError> {
+    let n = conn.execute(
+        "UPDATE sessions SET peer_session_id = ?1, updated_at_ms = ?2 WHERE id = ?3",
+        params![peer_session_id, now_ms() as i64, session_id],
+    )?;
+    if n == 0 {
+        Err(JournalError::SessionNotFound)
+    } else {
+        Ok(())
+    }
+}
+
 fn mark_degraded(
     conn: &Connection,
     session_id: &str,
@@ -1533,6 +1582,7 @@ pub fn new_session_record(
         payload_bytes: 0,
         trimmed_bytes: 0,
         reaped: false,
+        peer_session_id: None,
     }
 }
 
