@@ -412,6 +412,12 @@
   font-size: 10.5px;
 }
 
+.workspace-skills-note {
+  margin-top: 5px;
+  color: var(--silence);
+  font-size: 10.5px;
+}
+
 .workspace-daemon-status {
   display: flex;
   flex: none;

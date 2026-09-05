@@ -210,8 +210,8 @@
   border: 1px solid var(--border-strong);
 }
 
-.marketplace-action-install:hover,
-.marketplace-action-install:focus-visible {
+.marketplace-action-install:hover:not(:disabled),
+.marketplace-action-install:focus-visible:not(:disabled) {
   border-color: var(--terracotta);
 }
 

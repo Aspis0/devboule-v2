@@ -118,7 +118,7 @@ export function MarketplaceSurface() {
                     {skillIsInstallable(entry) ? (
                       <button
                         type="button"
-                        className="marketplace-action marketplace-action-install"
+                        className={`marketplace-action marketplace-action-install${installed ? " marketplace-action-disabled" : ""}`}
                         data-action="install-skill"
                         onClick={() => handleSkillInstall(entry)}
                         disabled={installed}

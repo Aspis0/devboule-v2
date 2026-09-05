@@ -219,6 +219,7 @@ describe("Workspace sessions", () => {
 
     expect(container.textContent).toContain("Skills");
     expect(container.textContent).toContain("No skills yet.");
+    expect(container.querySelector(".workspace-skills-note")).toBeNull();
   });
 
   it("shows an installed skill in the Skills section", async () => {
@@ -239,6 +240,9 @@ describe("Workspace sessions", () => {
 
     expect(container.textContent).toContain("Skills");
     expect(container.textContent).toContain("Repo Rhythm");
+    expect(container.querySelector(".workspace-skills-note")?.textContent).toBe(
+      "Session only — not saved to disk.",
+    );
   });
 
   it("does not render a permission card before typed_permissions is negotiated", async () => {

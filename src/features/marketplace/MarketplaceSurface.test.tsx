@@ -85,8 +85,19 @@ describe("MarketplaceSurface", () => {
     );
     if (install === null) throw new Error("free skill Install control missing");
 
+    expect(install.disabled).toBe(false);
+    expect(install.classList.contains("marketplace-action-disabled")).toBe(false);
+
     await act(async () => install.click());
 
+    expect(install.disabled).toBe(true);
+    expect(install.classList.contains("marketplace-action-disabled")).toBe(true);
+    const untouchedInstall = container.querySelector<HTMLButtonElement>(
+      '[data-entry-id="change-notes"] [data-action="install-skill"]',
+    );
+    if (untouchedInstall === null) throw new Error("untouched skill Install control missing");
+    expect(untouchedInstall.disabled).toBe(false);
+    expect(untouchedInstall.classList.contains("marketplace-action-disabled")).toBe(false);
     expect(container.querySelector('[role="alert"]')?.textContent).toMatch(
       /Workspace.*session-only|Workspace.*session only/i,
     );
