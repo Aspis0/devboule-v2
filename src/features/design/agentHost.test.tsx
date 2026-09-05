@@ -102,6 +102,37 @@ function finishRun(): void {
   channelHarness.active({ type: "agent_finished", stopReason: "end_turn" });
 }
 
+function emitToolCall(
+  toolCallId: string,
+  status: string,
+  kind?: string,
+  paths?: readonly string[],
+): void {
+  channelHarness.active?.({
+    type: "agent_tool_call",
+    toolCallId,
+    title: "Tool",
+    status,
+    ...(kind === undefined ? {} : { kind }),
+    ...(paths === undefined ? {} : { locations: paths.map((path) => ({ path })) }),
+  });
+}
+
+function emitToolUpdate(
+  toolCallId: string,
+  status: string | null,
+  text: string | null,
+  paths?: readonly string[],
+): void {
+  channelHarness.active?.({
+    type: "agent_tool_update",
+    toolCallId,
+    status,
+    text,
+    ...(paths === undefined ? {} : { locations: paths.map((path) => ({ path })) }),
+  });
+}
+
 async function startRun(
   host: ReturnType<typeof createAgentHost>,
 ): Promise<{ run: Promise<DesignGenerationResult> }> {
@@ -179,38 +210,18 @@ afterEach(() => {
 });
 
 describe("ACP design host", () => {
-  it("reports file paths referenced by agent tool summaries as sources", async () => {
+  it("reports paths from a completed write tool as sources", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
 
-    channelHarness.active?.({
-      type: "agent_tool_call",
-      toolCallId: "write-1",
-      title: "Write src/features/design/DesignSurface.tsx",
-      status: "running",
-    });
-    channelHarness.active?.({
-      type: "agent_tool_update",
-      toolCallId: "write-1",
-      status: "completed",
-      text: "Wrote src/features/design/DesignSurface.tsx",
-    });
-    channelHarness.active?.({
-      type: "agent_tool_call",
-      toolCallId: "edit-1",
-      title: "Edit src/features/design/agentHost.ts",
-      status: "completed",
-    });
+    emitToolCall("write-1", "completed", "edit", ["src/features/design/DesignSurface.tsx"]);
     finishRun();
 
     const result = await run;
-    expect(result.sources).toEqual([
-      "src/features/design/DesignSurface.tsx",
-      "src/features/design/agentHost.ts",
-    ]);
-    expect(result.desc).toContain("2 files");
+    expect(result.sources).toEqual(["src/features/design/DesignSurface.tsx"]);
+    expect(result.desc).toContain("wrote 1 file");
     expect(result.desc).toContain("DesignSurface.tsx");
-    expect(result.title).toContain("referenced");
+    expect(result.title).toContain("wrote");
     expect(result.desc).toContain("Workspace Changes");
     expect(mocks.sessionCreate).toHaveBeenCalledWith(WORKSPACE.id, "acp");
     expect(mocks.sessionAttach).toHaveBeenCalledWith("session-1", null, expect.anything());
@@ -222,40 +233,70 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("says when the agent finishes without referencing file paths", async () => {
+  it("replaces a tool's earlier locations when an update reports new ones", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    emitToolCall("write-1", "in_progress", "edit", ["src/old.ts"]);
+    emitToolUpdate("write-1", "completed", "Finished", ["src/new.ts"]);
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual(["src/new.ts"]);
+    expect(result.sources).not.toContain("src/old.ts");
+
+    await disposeAgentHost(host);
+  });
+
+  it("ignores locations from non-write tool kinds", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    emitToolCall("read-1", "completed", "read", ["src/read-only.ts"]);
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual([]);
+    expect(result.desc).toContain("No files were reported as written");
+
+    await disposeAgentHost(host);
+  });
+
+  it("does not count a write until its tool completes", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    emitToolCall("write-1", "in_progress", "edit", ["src/pending.ts"]);
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual([]);
+    expect(result.desc).toContain("No files were reported as written");
+
+    await disposeAgentHost(host);
+  });
+
+  it("does not report a failed write as a written file", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    emitToolCall("write-1", "failed", "edit", ["src/failed.ts"]);
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).not.toContain("src/failed.ts");
+    expect(result.title).toBe("Agent wrote no files");
+
+    await disposeAgentHost(host);
+  });
+
+  it("says when the agent does not report locations", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
     finishRun();
 
     const result = await run;
     expect(result.sources).toEqual([]);
-    expect(result.desc).toContain("finished without referencing any file paths");
-
-    await disposeAgentHost(host);
-  });
-
-  it("does not present a negated prose mention as a written source", async () => {
-    const host = createAgentHost();
-    const { run } = await startRun(host);
-
-    channelHarness.active?.({
-      type: "agent_tool_call",
-      toolCallId: "edit-1",
-      title: "Edit file",
-      status: "running",
-    });
-    channelHarness.active?.({
-      type: "agent_tool_update",
-      toolCallId: "edit-1",
-      status: "completed",
-      text: "I did not modify src/features/design/agentHost.ts",
-    });
-    finishRun();
-
-    const result = await run;
-    expect(result.sources).not.toContain("src/features/design/agentHost.ts");
-    expect(result.title).toContain("referenced");
-    expect(result.desc).toContain("Workspace Changes");
+    expect(result.desc).toContain("did not report which files it touched");
 
     await disposeAgentHost(host);
   });

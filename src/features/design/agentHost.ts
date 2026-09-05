@@ -12,7 +12,7 @@ import {
   type SessionChannel,
   workspacesList,
 } from "../../lib/tauri";
-import type { Session, Workspace } from "../../types/ipc";
+import type { Session, SessionEvent, Workspace } from "../../types/ipc";
 import type { DesignGenerationResult, DesignHost } from "./designHost";
 import { createOracleHost } from "./oracleHost";
 
@@ -25,27 +25,16 @@ interface AgentSessionHandle {
 interface ActiveRun {
   sessionId: string;
   prompt: string;
-  referencedFiles: Set<string>;
+  toolObservations: Map<string, ToolObservation>;
   settled: boolean;
   resolve: (result: DesignGenerationResult) => void;
   reject: (error: unknown) => void;
 }
 
-/**
- * SessionEvent does not expose ACP ToolCall.locations or kind; the daemon
- * flattens those fields into the tool title/text. This conservative fallback
- * scrapes likely file references from tool summaries. A tool title is stronger
- * evidence than agent_tool_update.text because it is the tool's summary rather
- * than free-form agent narration, so update text is deliberately ignored.
- * Neither signal can distinguish an affirmative write from a negation, so the
- * result says "referenced" and points to Workspace Changes for the authority
- * on the actual diff. The durable fix is to carry structured locations in the
- * daemon event.
- */
-const filePathPattern =
-  /(?:[A-Za-z]:[\\/])?(?:\.{0,2}[\\/])?(?:[\w@.-]+[\\/])*[\w@.-]+\.[A-Za-z0-9]+(?::\d+(?::\d+)?)?/g;
-const fileBearingToolPattern =
-  /\b(?:write|wrote|written|edit|edited|create|created|delete|deleted|remove|removed|move|moved|rename|renamed|patch|patched|modify|modified|replace|replaced|save|saved|apply|applied|touch|mkdir|mv|cp)\b/i;
+type ToolObservation = { kind?: string; locations?: readonly string[]; status: string | null };
+
+const WRITE_TOOL_KINDS = new Set(["edit", "delete", "move"]);
+const COMPLETED_TOOL_STATUS = "completed";
 
 const hostDisposers = new WeakMap<DesignHost, () => Promise<void>>();
 
@@ -55,30 +44,6 @@ function abortError(): DOMException {
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortError();
-}
-
-function normalizeFilePath(raw: string): string | null {
-  let value = raw
-    .trim()
-    .replace(/^[([{"'`<]+/, "")
-    .replace(/[\]),.;:'"`} >]+$/g, "");
-  const lineSuffix = value.match(/^(.*?)(?::\d+(?::\d+)?)$/);
-  if (lineSuffix?.[1]) value = lineSuffix[1];
-  if (value.startsWith("file://")) value = value.slice("file://".length);
-  if (!/\.[A-Za-z0-9]+$/.test(value) || /^https?:/i.test(value)) return null;
-  return value.replaceAll("\\", "/");
-}
-
-function collectFilePaths(text: string | null | undefined, target: Set<string>): void {
-  if (!text) return;
-  for (const match of text.matchAll(filePathPattern)) {
-    const path = normalizeFilePath(match[0]);
-    if (path) target.add(path);
-  }
-}
-
-function hasFileReferenceSignal(text: string | null | undefined): boolean {
-  return text !== null && text !== undefined && fileBearingToolPattern.test(text);
 }
 
 function groundedPrompt(prompt: string, searchSources: readonly string[]): string {
@@ -91,17 +56,37 @@ function groundedPrompt(prompt: string, searchSources: readonly string[]): strin
     `User request: ${prompt}`,
     "Oracle grounding (search hits, not files changed):",
     grounding,
-    "Use the grounding as context, make only the requested change, and report any file paths referenced in tool activity. The Workspace Changes panel is authoritative for the actual diff.",
+    "Use the grounding as context and make only the requested change. The Workspace Changes panel is authoritative for the actual diff.",
   ].join("\n\n");
 }
 
-function resultFor(prompt: string, referencedFiles: Set<string>): DesignGenerationResult {
-  const sources = [...referencedFiles];
+function resultFor(
+  prompt: string,
+  toolObservations: Map<string, ToolObservation>,
+): DesignGenerationResult {
+  const observations = [...toolObservations.values()];
+  const sources = [
+    ...new Set(
+      observations.flatMap((observation) =>
+        observation.status !== null &&
+        observation.status.toLowerCase() === COMPLETED_TOOL_STATUS &&
+        observation.kind !== undefined &&
+        WRITE_TOOL_KINDS.has(observation.kind)
+          ? (observation.locations ?? [])
+          : [],
+      ),
+    ),
+  ];
   if (sources.length === 0) {
+    const locationsReported = observations.some(
+      (observation) => observation.locations !== undefined,
+    );
     return {
       prompt,
-      title: "Agent referenced no file paths",
-      desc: "The agent finished without referencing any file paths. Check Workspace Changes for the authoritative diff.",
+      title: locationsReported ? "Agent wrote no files" : "Agent did not report written files",
+      desc: locationsReported
+        ? "No files were reported as written. Check Workspace Changes for the authoritative diff."
+        : "The agent did not report which files it touched. Check Workspace Changes for the authoritative diff.",
       sources,
       nodeIds: [],
     };
@@ -110,11 +95,23 @@ function resultFor(prompt: string, referencedFiles: Set<string>): DesignGenerati
   const noun = sources.length === 1 ? "file" : "files";
   return {
     prompt,
-    title: `Agent referenced ${sources.length} ${noun}`,
-    desc: `The agent's tool activity referenced ${sources.length} ${noun}: ${sources.join(", ")}. These references do not establish what was written; check Workspace Changes for the authoritative diff.`,
+    title: `Agent wrote ${sources.length} ${noun}`,
+    desc: `The agent wrote ${sources.length} ${noun}: ${sources.join(", ")}. Check Workspace Changes for the authoritative diff.`,
     sources,
     nodeIds: [],
   };
+}
+
+function observeToolEvent(
+  event: Extract<SessionEvent, { type: "agent_tool_call" | "agent_tool_update" }>,
+  run: ActiveRun,
+): void {
+  const previous = run.toolObservations.get(event.toolCallId);
+  run.toolObservations.set(event.toolCallId, {
+    kind: event.kind?.toLowerCase() ?? previous?.kind,
+    locations: event.locations?.map(({ path }) => path) ?? previous?.locations,
+    status: event.status ?? previous?.status ?? null,
+  });
 }
 
 function sessionError(prefix: string, cause: unknown): Error {
@@ -205,9 +202,9 @@ export function createAgentHost(): DesignHost {
       invoke: invokeAgentCommand,
       createChannel: (onEvent) =>
         createSessionChannel((event) => {
-          if (event.type === "agent_tool_call" && hasFileReferenceSignal(event.title)) {
+          if (event.type === "agent_tool_call" || event.type === "agent_tool_update") {
             const run = activeRun;
-            if (run?.sessionId === sessionId) collectFilePaths(event.title, run.referencedFiles);
+            if (run?.sessionId === sessionId) observeToolEvent(event, run);
           }
           onEvent(event);
         }),
@@ -281,7 +278,7 @@ export function createAgentHost(): DesignHost {
     const run: ActiveRun = {
       sessionId: handle.session.id,
       prompt,
-      referencedFiles: new Set<string>(),
+      toolObservations: new Map<string, ToolObservation>(),
       settled: false,
       resolve: () => undefined,
       reject: () => undefined,
@@ -313,7 +310,7 @@ export function createAgentHost(): DesignHost {
       if (activeRun !== run || run.settled) return true;
       const state = handle.controller.getState();
       if (state.lastFinished !== null) {
-        settleRun(run, "resolve", resultFor(run.prompt, run.referencedFiles));
+        settleRun(run, "resolve", resultFor(run.prompt, run.toolObservations));
         return true;
       } else if (state.status === "error") {
         settleRun(run, "reject", new Error(lastErrorText(state)));
