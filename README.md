@@ -40,10 +40,13 @@ What works today:
 - **Settings** — providers, projects, devices and Oracle administration.
 - **Design** — a chat grounded in the repository by Oracle, driving that same
   agent, with a canvas that renders what the agent produced inside a sandboxed
-  frame. The canvas is for looking and pointing, not for dragging. Its layer
-  list is still fixture data; see
-  [`src/features/design/README.md`](src/features/design/README.md), which says
-  so plainly.
+  frame. The canvas is for looking and pointing, not for dragging. Its layers
+  are the repository's own components, each carrying the file it came from, so
+  a request can be scoped to one of them. They are drawn as labelled
+  rectangles rather than previews: rendering a component means compiling it,
+  and there is no bundler in a packaged app. See
+  [`src/features/design/README.md`](src/features/design/README.md) for what
+  else is not real yet.
 
 What is drawn but not wired: the provider inventory, projects, devices and Labs
 in Settings still read from fixed sample data. The boundary between those and
