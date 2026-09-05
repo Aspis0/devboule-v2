@@ -7,7 +7,7 @@ import {
   type SessionChannel,
 } from "../../lib/tauri";
 import type { PermissionRequest, SessionManifest, SessionState } from "../../types/ipc";
-import { AgentSession, type AgentChatItem, type AgentSessionState } from "./agentSession";
+import { AgentSession, type AgentChatItem, type AgentSessionState } from "../../lib/agentSession";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
 interface AgentChatSurfaceProps {

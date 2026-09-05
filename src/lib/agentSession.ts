@@ -1,5 +1,5 @@
 import type { Channel } from "@tauri-apps/api/core";
-import type { PermissionRequest, SessionEvent, SessionManifest } from "../../types/ipc";
+import type { PermissionRequest, SessionEvent, SessionManifest } from "../types/ipc";
 
 export type AgentChannel = Channel<SessionEvent>;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";

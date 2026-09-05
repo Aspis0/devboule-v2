@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SessionEvent } from "../../types/ipc";
+import type { SessionEvent } from "../types/ipc";
 import { AgentSession, type AgentChannel, type AgentSessionDeps } from "./agentSession";
 
 interface Harness {
