@@ -84,6 +84,11 @@ const GENERATION_RESULT = {
   nodeIds: ["index-header"],
 };
 
+const ARTIFACT_RESULT = {
+  ...GENERATION_RESULT,
+  artifactHtml: '<main class="generated-card">Generated</main>',
+};
+
 function createHost(
   overrides: Partial<DesignHost> = {},
   document: DesignDocument = DOCUMENT,
@@ -459,6 +464,84 @@ describe("DesignSurface host capabilities", () => {
 
     expect(container.textContent).toContain("Generated result");
     expect(container.textContent).not.toContain("Generating…");
+    expect(container.querySelector("iframe")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("sends the selected layer scope shown by the composer chip", async () => {
+    const generate = vi.fn(async () => GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    expect(container.querySelector(".design-composer-context")?.textContent).toContain(
+      "Editing Index header",
+    );
+
+    await fillDraft(container, "Make the header quieter.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(generate).toHaveBeenCalledWith(
+      'Make the header quieter.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
+      expect.any(AbortSignal),
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("does not send a scope when nothing is selected", async () => {
+    const generate = vi.fn(async () => GENERATION_RESULT);
+    const noSelectionDocument = { ...DOCUMENT, selectedLayerId: "" };
+    const { container, root } = await renderDesign(createHost({ generate }, noSelectionDocument));
+    expect(container.querySelector(".design-composer-context")).toBeNull();
+
+    await fillDraft(container, "Make the header quieter.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(generate).toHaveBeenCalledWith("Make the header quieter.", expect.any(AbortSignal));
+    await act(async () => root.unmount());
+  });
+
+  it("selects the artifact, scopes the next prompt to it, and clears on empty canvas", async () => {
+    const generate = vi.fn(async () => ARTIFACT_RESULT);
+    const noSelectionDocument = { ...DOCUMENT, selectedLayerId: "" };
+    const { container, root } = await renderDesign(createHost({ generate }, noSelectionDocument));
+    await fillDraft(container, "Create the first pass.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const artifact = container.querySelector<HTMLDivElement>(".design-canvas-artifact");
+    const stage = container.querySelector<HTMLDivElement>(".design-canvas-stage");
+    if (artifact === null || stage === null) {
+      throw new Error("Generated artifact or canvas stage missing");
+    }
+    const iframe = artifact.querySelector<HTMLIFrameElement>("iframe");
+    if (iframe === null) throw new Error("Generated artifact frame missing");
+    expect(iframe.style.pointerEvents).toBe("none");
+
+    await act(async () => {
+      artifact.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 500 }),
+      );
+    });
+    expect(artifact.classList.contains("design-canvas-artifact-selected")).toBe(true);
+    expect(container.querySelector(".design-composer-context")?.textContent).toContain(
+      "Editing Generated artifact",
+    );
+
+    await fillDraft(container, "Refine this artifact.");
+    await act(async () => send.click());
+    expect(generate).toHaveBeenLastCalledWith(
+      "Refine this artifact.\n\nScope: Editing Generated artifact; the user is refining the artifact the agent just produced.",
+      expect.any(AbortSignal),
+    );
+
+    await act(async () => {
+      stage.dispatchEvent(new MouseEvent("click", { bubbles: true, clientX: 900, clientY: 900 }));
+    });
+    expect(artifact.classList.contains("design-canvas-artifact-selected")).toBe(false);
+    expect(container.querySelector(".design-composer-context")).toBeNull();
     await act(async () => root.unmount());
   });
 
@@ -533,7 +616,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => regenerate.click());
 
     expect(generate).toHaveBeenCalledWith(
-      "Use the real stale count in the header.",
+      'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
     );
     await act(async () => root.unmount());
@@ -565,7 +648,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => retry.click());
 
     expect(generate).toHaveBeenCalledWith(
-      "Use the real stale count in the header.",
+      'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
     );
     await act(async () => root.unmount());

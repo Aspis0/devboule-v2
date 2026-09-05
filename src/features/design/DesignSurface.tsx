@@ -474,6 +474,8 @@ const ARTIFACT_NODE_X = 60;
 const ARTIFACT_NODE_Y = 420;
 const ARTIFACT_NODE_WIDTH = 700;
 const ARTIFACT_NODE_HEIGHT = 500;
+const ARTIFACT_NODE_ID = "generated-artifact";
+const ARTIFACT_CONTEXT_NAME = "Generated artifact";
 
 const DesignCanvas = memo(function DesignCanvas({
   content,
@@ -537,6 +539,23 @@ const DesignCanvas = memo(function DesignCanvas({
         .filter((layer) => !hiddenLayerIds.includes(layer.id)),
     [hiddenLayerIds, layers],
   );
+  const hitRects = useMemo<NodeRect[]>(
+    () =>
+      artifactHtml
+        ? [
+            ...layerRects,
+            {
+              id: ARTIFACT_NODE_ID,
+              x: ARTIFACT_NODE_X,
+              y: ARTIFACT_NODE_Y,
+              w: ARTIFACT_NODE_WIDTH,
+              h: ARTIFACT_NODE_HEIGHT,
+              z: layers.length,
+            },
+          ]
+        : layerRects,
+    [artifactHtml, layerRects, layers.length],
+  );
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -553,10 +572,10 @@ const DesignCanvas = memo(function DesignCanvas({
         { left: bounds.left, top: bounds.top },
         viewportRef.current,
       );
-      let target = hitTest(point, layerRects);
+      let target = hitTest(point, hitRects);
       if (!target && event.target instanceof Element) {
         const clickedNode = event.target.closest<HTMLElement>("[data-canvas-layer-id]");
-        const clickedRect = layerRects.find(
+        const clickedRect = hitRects.find(
           (layer) => layer.id === clickedNode?.dataset.canvasLayerId,
         );
         if (clickedRect) {
@@ -566,7 +585,7 @@ const DesignCanvas = memo(function DesignCanvas({
       }
       onSelectLayer(target?.id ?? "");
     },
-    [layerRects, onSelectLayer],
+    [hitRects, onSelectLayer],
   );
 
   const handleWheel = useCallback(
@@ -703,19 +722,26 @@ const DesignCanvas = memo(function DesignCanvas({
         ))}
         {artifactHtml ? (
           <div
-            className="design-canvas-artifact"
+            className={`design-canvas-artifact${selectedLayerId === ARTIFACT_NODE_ID ? " design-canvas-artifact-selected" : ""}`}
             style={{
               left: ARTIFACT_NODE_X,
               top: ARTIFACT_NODE_Y,
               width: ARTIFACT_NODE_WIDTH,
               height: ARTIFACT_NODE_HEIGHT,
             }}
+            data-canvas-layer-id={ARTIFACT_NODE_ID}
+            role="button"
+            tabIndex={0}
+            aria-label="Select generated artifact"
+            aria-pressed={selectedLayerId === ARTIFACT_NODE_ID}
           >
+            {/* Keep the iframe inert: clicks belong to the app, never agent-generated markup. */}
             <iframe
               sandbox="allow-downloads"
               srcDoc={artifactHtml}
               title="Generated artifact"
               className="design-artifact-frame"
+              style={{ pointerEvents: "none" }}
             />
           </div>
         ) : null}
@@ -1149,14 +1175,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     [layers, selectedLayerId],
   );
 
-  const composerContextLayerName = useMemo(
-    () =>
-      composerContextLayerId
-        ? (layers.find((layer) => layer.id === composerContextLayerId)?.name ?? null)
-        : null,
-    [composerContextLayerId, layers],
-  );
-
   const layerRows = useMemo(
     () =>
       layers.map((layer) => ({
@@ -1219,6 +1237,22 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     }
     return undefined;
   }, [messages]);
+  const composerContextTarget = useMemo(() => {
+    if (composerContextLayerId === ARTIFACT_NODE_ID && artifactHtml !== undefined) {
+      return {
+        label: ARTIFACT_CONTEXT_NAME,
+        scope: `${document.contextPrefix} ${ARTIFACT_CONTEXT_NAME}; the user is refining the artifact the agent just produced.`,
+      };
+    }
+
+    const layer = layers.find((candidate) => candidate.id === composerContextLayerId);
+    if (!layer) return null;
+    return {
+      label: layer.name,
+      scope: `${document.contextPrefix} ${layer.name} (${layer.kind}); the user is pointing at the layer named "${layer.name}".`,
+    };
+  }, [artifactHtml, composerContextLayerId, document.contextPrefix, layers]);
+  const composerContextLayerName = composerContextTarget?.label ?? null;
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
 
@@ -1467,6 +1501,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const startGeneration = useCallback(
     (prompt: string) => {
       if (busy || generate === undefined) return;
+      const scopedPrompt = composerContextTarget
+        ? `${prompt}\n\nScope: ${composerContextTarget.scope}`
+        : prompt;
       activeGenerationRef.current?.controller.abort();
       const controller = new AbortController();
       const activeGeneration = { controller, delivered: false };
@@ -1496,7 +1533,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       setMessages((current) => [...current, userMessage, assistantMessage]);
       setDraft("");
       setBusy(true);
-      void generate(prompt, controller.signal)
+      void generate(scopedPrompt, controller.signal)
         .then((result) => {
           if (controller.signal.aborted || activeGenerationRef.current !== activeGeneration) return;
           activeGeneration.delivered = true;
@@ -1541,7 +1578,14 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           activeGenerationRef.current = null;
         });
     },
-    [busy, composerContextLayerName, document.contextPrefix, document.workingMessage, generate],
+    [
+      busy,
+      composerContextLayerName,
+      composerContextTarget,
+      document.contextPrefix,
+      document.workingMessage,
+      generate,
+    ],
   );
 
   const send = useCallback(() => {
