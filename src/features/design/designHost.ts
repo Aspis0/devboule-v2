@@ -16,6 +16,7 @@ export interface DesignLayer {
   name: string;
   kind: DesignLayerKind;
   transform: DesignTransform;
+  source?: { path: string };
 }
 
 export interface DesignRadiusOption {
@@ -89,6 +90,7 @@ export interface DesignDocument {
   selectedLayerId: string;
   grounded: boolean;
   layers: readonly DesignLayer[];
+  layerNotice?: string;
   canvasContent: DesignCanvasContent;
   radiusOptions: readonly DesignRadiusOption[];
   messages: readonly DesignMessage[];

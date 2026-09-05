@@ -15,6 +15,7 @@ import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSur
 import type { DesignGenerationResult } from "./designHost";
 import { MAX_ARTIFACT_BYTES } from "./agentHost";
 import { nodesBounds } from "../../lib/canvas/viewportMath";
+import { rectIntersects } from "../../lib/canvas/hitTest";
 import type { NodeRect } from "../../types/geometry";
 
 (
@@ -519,6 +520,157 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("sends the selected layer source path in the scope", async () => {
+    const generate = vi.fn(async () => GENERATION_RESULT);
+    const sourceDocument: DesignDocument = {
+      ...DOCUMENT,
+      selectedLayerId: "source-header",
+      layers: [
+        {
+          ...DOCUMENT.layers[0]!,
+          id: "source-header",
+          name: "Source header",
+          source: { path: "src/components/Header.tsx" },
+        },
+      ],
+    };
+    const { container, root } = await renderDesign(createHost({ generate }, sourceDocument));
+
+    await fillDraft(container, "Make this quieter.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(generate).toHaveBeenCalledWith(
+      expect.stringContaining("source file: src/components/Header.tsx"),
+      expect.any(AbortSignal),
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("shows a truthful notice when no repository layers were found", async () => {
+    const emptyDocument: DesignDocument = {
+      ...DOCUMENT,
+      selectedLayerId: "",
+      layers: [],
+      layerNotice: "No TSX or SVG components found in the indexed workspace.",
+    };
+    const { container, root } = await renderDesign(createHost({}, emptyDocument));
+
+    expect(container.querySelector(".design-canvas-empty")?.textContent).toBe(
+      "No TSX or SVG components found in the indexed workspace.",
+    );
+    expect(container.querySelector(".design-layer-count")?.textContent).toBe("0");
+    await act(async () => root.unmount());
+  });
+
+  it("shows a partial-list notice above layers without intercepting canvas input", async () => {
+    const documentWithPartialNotice: DesignDocument = {
+      ...DOCUMENT,
+      layerNotice: "Oracle's component list is partial; showing the first 36 layers.",
+    };
+    const { container, root } = await renderDesign(createHost({}, documentWithPartialNotice));
+
+    const notice = container.querySelector<HTMLElement>('.design-canvas-notice[role="status"]');
+    if (notice === null) throw new Error("Partial-list notice missing");
+    expect(notice.textContent).toContain("component list is partial");
+    expect(getComputedStyle(notice).zIndex).toBe("1");
+    expect(getComputedStyle(notice).pointerEvents).toBe("none");
+    await act(async () => root.unmount());
+  });
+
+  it("shows a repository source directory instead of invented dimensions", async () => {
+    const sourceDocument: DesignDocument = {
+      ...DOCUMENT,
+      layers: [
+        {
+          ...DOCUMENT.layers[0]!,
+          source: { path: "src/components/Header.tsx" },
+        },
+        DOCUMENT.layers[1]!,
+      ],
+    };
+    const { container, root } = await renderDesign(createHost({}, sourceDocument));
+
+    const sourceNode = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Select Index header"]',
+    );
+    const fixtureNode = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Select Stale queue"]',
+    );
+    if (sourceNode === null || fixtureNode === null) throw new Error("Canvas layers missing");
+    expect(sourceNode.textContent).toContain("src/components");
+    expect(sourceNode.textContent).not.toContain("336 × 198");
+    expect(fixtureNode.textContent).not.toContain("300 × 124");
+    expect(fixtureNode.textContent).not.toContain("World layer");
+    await act(async () => root.unmount());
+  });
+
+  it("does not offer Duplicate for a repository-backed layer", async () => {
+    const sourceDocument: DesignDocument = {
+      ...DOCUMENT,
+      layers: [
+        {
+          ...DOCUMENT.layers[0]!,
+          source: { path: "src/components/Header.tsx" },
+        },
+        DOCUMENT.layers[1]!,
+      ],
+    };
+    const { container, root } = await renderDesign(createHost({}, sourceDocument));
+
+    expect(
+      Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Duplicate",
+      ),
+    ).toBeUndefined();
+    await act(async () => root.unmount());
+  });
+
+  it("places the generated artifact below every layer rectangle", async () => {
+    const layers = Array.from({ length: 12 }, (_, index) => ({
+      ...DOCUMENT.layers[0]!,
+      id: `grid-layer-${index}`,
+      name: `Grid layer ${index}`,
+      transform: {
+        x: 60 + (index % 4) * 312,
+        y: 46 + Math.floor(index / 4) * 172,
+        width: 280,
+        height: 140,
+      },
+    }));
+    const gridDocument: DesignDocument = { ...DOCUMENT, selectedLayerId: "", layers };
+    const generate = vi.fn(async () => ARTIFACT_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }, gridDocument));
+    await fillDraft(container, "Create the first pass.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const artifact = container.querySelector<HTMLElement>(".design-canvas-artifact");
+    if (artifact === null) throw new Error("Generated artifact missing");
+    const artifactRect: NodeRect = {
+      id: "generated-artifact",
+      x: Number.parseFloat(artifact.style.left),
+      y: Number.parseFloat(artifact.style.top),
+      w: Number.parseFloat(artifact.style.width),
+      h: Number.parseFloat(artifact.style.height),
+      z: layers.length,
+    };
+    for (const node of container.querySelectorAll<HTMLElement>(".design-canvas-node")) {
+      const layerRect: NodeRect = {
+        id: node.dataset.canvasLayerId ?? "",
+        x: Number.parseFloat(node.style.left),
+        y: Number.parseFloat(node.style.top),
+        w: Number.parseFloat(node.style.width),
+        h: Number.parseFloat(node.style.height),
+        z: 0,
+      };
+      expect(rectIntersects(artifactRect, layerRect)).toBe(false);
+    }
+    await act(async () => root.unmount());
+  });
+
   it("selects the artifact, scopes the next prompt to it, and clears on empty canvas", async () => {
     const generate = vi.fn(async () => ARTIFACT_RESULT);
     const noSelectionDocument = { ...DOCUMENT, selectedLayerId: "" };
@@ -979,7 +1131,14 @@ describe("DesignSurface host capabilities", () => {
     const expected = fitViewport(
       nodesBounds([
         ...layerRects,
-        { id: "generated-artifact", x: 60, y: 420, w: 700, h: 500, z: layerRects.length },
+        {
+          id: "generated-artifact",
+          x: nodesBounds(layerRects)?.x ?? 60,
+          y: (nodesBounds(layerRects)?.y ?? 46) + (nodesBounds(layerRects)?.h ?? 0) + 32,
+          w: 700,
+          h: 500,
+          z: layerRects.length,
+        },
       ]),
       800,
       600,

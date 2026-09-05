@@ -261,6 +261,33 @@
   background-size: 22px 22px;
 }
 
+.design-canvas-empty {
+  position: absolute;
+  inset: 24px;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  color: var(--ink-soft);
+  text-align: center;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.design-canvas-notice {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  left: 14px;
+  z-index: 1;
+  padding: 8px 12px;
+  color: var(--ink-soft);
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  pointer-events: none;
+  text-align: center;
+}
+
 .design-canvas-stage {
   position: absolute;
   inset: 0;

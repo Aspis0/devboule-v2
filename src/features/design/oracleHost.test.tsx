@@ -6,12 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   oracleAsk: vi.fn(),
+  oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
   pluginsList: vi.fn(),
 }));
 
 vi.mock("../../lib/tauri", () => ({
   oracleAsk: mocks.oracleAsk,
+  oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
   pluginsList: mocks.pluginsList,
 }));
@@ -70,7 +72,9 @@ beforeEach(() => {
     installError: null,
   });
   mocks.oracleAsk.mockReset();
+  mocks.oracleFiles.mockReset();
   mocks.oracleStatus.mockReset();
+  mocks.oracleFiles.mockResolvedValue([]);
   mocks.pluginsList.mockResolvedValue({ root: "", plugins: [], problem: null });
 });
 
@@ -83,6 +87,23 @@ describe("Oracle design host", () => {
     const document = await createOracleHost().loadDocument();
 
     expect(document.messages).toEqual([]);
+  });
+
+  it("does not use fixture layers when Oracle has no workspace", async () => {
+    mocks.oracleFiles.mockRejectedValue(new Error("No workspace is available."));
+
+    const document = await createOracleHost().loadDocument();
+
+    expect(document.layers).toEqual([]);
+    expect(document.layers).not.toContainEqual(expect.objectContaining({ id: "index-header" }));
+    expect(document.layerNotice).toContain("could not enumerate");
+  });
+
+  it("reports an honest empty state when Oracle finds no components", async () => {
+    const document = await createOracleHost().loadDocument();
+
+    expect(document.layers).toEqual([]);
+    expect(document.layerNotice).toContain("No TSX or SVG components");
   });
 
   it("maps Oracle result paths into generation sources", async () => {

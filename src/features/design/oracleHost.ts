@@ -2,6 +2,7 @@ import { oracleAsk } from "../../lib/tauri";
 import type { OracleSearchResponse } from "../../types/ipc";
 import type { DesignDocument, DesignGenerationResult, DesignHost } from "./designHost";
 import { createDemoHost } from "./mockData";
+import { loadRepositoryLayers } from "./repositoryLayers";
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {
@@ -25,7 +26,14 @@ export function createOracleHost(): DesignHost {
   return {
     loadDocument: async (): Promise<DesignDocument> => {
       const document = await documentHost.loadDocument();
-      return { ...document, messages: [] };
+      const repositoryLayers = await loadRepositoryLayers();
+      return {
+        ...document,
+        layers: repositoryLayers.layers,
+        selectedLayerId: repositoryLayers.layers[0]?.id ?? "",
+        layerNotice: repositoryLayers.notice,
+        messages: [],
+      };
     },
     generate: async (prompt, signal): Promise<DesignGenerationResult> => {
       throwIfAborted(signal);
