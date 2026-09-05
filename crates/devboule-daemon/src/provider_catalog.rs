@@ -523,6 +523,103 @@ fn split_quoted_dp0_path(input: &str) -> Option<(&str, &str)> {
     Some((&rest[..end], &rest[end + 1..]))
 }
 
+/// npm's own launcher shim (npx.cmd, npm.cmd) uses a different batch shape
+/// than per-package cmd-shims. It assigns a node executable variable and a
+/// script variable from `%~dp0`, then invokes
+/// `"%NODE_VAR%" "%SCRIPT_VAR%" %*`. Measured on this machine for npx.cmd
+/// (npm 10.x).
+///
+/// Recognized by the `SET "NODE_EXE=%~dp0\node.exe"` (or `%dp0%`) line.
+fn is_npm_launcher_shim(contents: &str) -> bool {
+    let lower = contents.to_ascii_lowercase();
+    lower.contains(r#"set "node_exe=%~dp0\node.exe""#)
+        || lower.contains(r#"set "node_exe=%dp0%\node.exe""#)
+        || lower.contains(r#"set "node_exe=%~dp0/node.exe""#)
+        || lower.contains(r#"set "node_exe=%dp0%/node.exe""#)
+}
+
+/// Relative script path from an npm launcher shim, if recognized.
+///
+/// Parses `SET "VAR=%~dp0\..."` assignments to find the node executable
+/// variable (value ends in `node.exe`) and the script variable (value ends in
+/// `.js`). Then looks for the final invocation line
+/// `"%NODE_VAR%" "%SCRIPT_VAR%" %*` and returns the relative path from the
+/// last static `%~dp0` / `%dp0%` assignment for the script variable.
+///
+/// The FOR /F dynamic override (if present) is intentionally ignored — the
+/// static `%~dp0\node_modules\npm\bin\npx-cli.js` always exists in a real npm
+/// install and is the correct fallback.
+fn npm_launcher_shim_script_relative(contents: &str) -> Option<&str> {
+    if !is_npm_launcher_shim(contents) {
+        return None;
+    }
+
+    let mut node_var_name: Option<&str> = None;
+    let mut script_var_name: Option<&str> = None;
+    let mut script_relative: Option<&str> = None;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        // Match: SET "VAR=%~dp0\path" or SET "VAR=%dp0%\path". A non-SET line
+        // (@ECHO, IF, FOR, the final invocation) is skipped, not a parse
+        // failure — the launcher body is mostly non-SET lines.
+        let Some(rest) = trimmed
+            .strip_prefix("SET \"")
+            .or_else(|| trimmed.strip_prefix("set \""))
+        else {
+            continue;
+        };
+        let Some(eq) = rest.find('=') else {
+            continue;
+        };
+        let var_name = &rest[..eq];
+        let value = &rest[eq + 1..];
+        let value = value.strip_suffix('"').unwrap_or(value);
+
+        // Not a dp0-relative assignment (e.g. SET "NODE_EXE=node") — skip.
+        let Some(relative) = value
+            .strip_prefix("%~dp0\\")
+            .or_else(|| value.strip_prefix("%dp0%\\"))
+            .or_else(|| value.strip_prefix("%~dp0/"))
+            .or_else(|| value.strip_prefix("%dp0%/"))
+        else {
+            continue;
+        };
+
+        let value_lower = value.to_ascii_lowercase();
+        if value_lower.ends_with("node.exe") {
+            node_var_name = Some(var_name);
+        } else if value_lower.ends_with(".js") {
+            script_var_name = Some(var_name);
+            script_relative = Some(relative);
+        }
+    }
+
+    let node_var = node_var_name?;
+    let script_var = script_var_name?;
+    let relative = script_relative?;
+
+    // Find the final invocation line: "%NODE_VAR%" "%SCRIPT_VAR%" %*
+    let node_pat = format!("\"%{node_var}%\"");
+    let script_pat = format!("\"%{script_var}%\"");
+
+    let mut rest = contents;
+    while let Some(offset) = rest.find(&node_pat) {
+        let after_node = &rest[offset + node_pat.len()..];
+        let after_node = after_node.trim_start_matches([' ', '\t']);
+        let Some(after_script) = after_node.strip_prefix(&script_pat) else {
+            rest = &rest[offset + node_pat.len()..];
+            continue;
+        };
+        let after_script = after_script.trim_start_matches([' ', '\t']);
+        if after_script.starts_with("%*") && !relative.is_empty() {
+            return Some(relative);
+        }
+        rest = &rest[offset + node_pat.len()..];
+    }
+    None
+}
+
 #[cfg(windows)]
 fn unwrap_windows_npm_cmd_shim(shim: &Path, search_paths: &[PathBuf]) -> Option<ResolvedLaunch> {
     let extension = shim.extension()?.to_str()?;
@@ -531,7 +628,29 @@ fn unwrap_windows_npm_cmd_shim(shim: &Path, search_paths: &[PathBuf]) -> Option<
     }
 
     let contents = std::fs::read_to_string(shim).ok()?;
-    let relative = npm_cmd_shim_script_relative(&contents)?;
+
+    // Try per-package cmd-shim shape first ("%_prog%" "%dp0%\<script>" %*).
+    if let Some(relative) = npm_cmd_shim_script_relative(&contents) {
+        return resolve_shim_script(shim, search_paths, relative);
+    }
+
+    // Fall back to npm launcher shape ("%NODE_EXE%" "%NPX_CLI_JS%" %*).
+    if let Some(relative) = npm_launcher_shim_script_relative(&contents) {
+        return resolve_shim_script(shim, search_paths, relative);
+    }
+
+    None
+}
+
+/// Shared resolution logic: build the script path from the shim directory +
+/// relative path, check `..` traversal and existence, resolve `node.exe` from
+/// the shim sibling or PATH, and return a `ResolvedLaunch`.
+#[cfg(windows)]
+fn resolve_shim_script(
+    shim: &Path,
+    search_paths: &[PathBuf],
+    relative: &str,
+) -> Option<ResolvedLaunch> {
     let shim_dir = shim.parent()?;
     let mut script = shim_dir.to_path_buf();
     for component in relative.split(['/', '\\']) {
@@ -898,6 +1017,134 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
             super::npm_cmd_shim_script_relative("@ECHO off\ncodex --version\n"),
             None
         );
+    }
+
+    #[test]
+    fn npm_launcher_shim_relative_extracts_script_from_real_npx_cmd() {
+        // Verbatim tail of the real npx.cmd on this machine (npm 10.x).
+        let contents = "\
+SET \"NODE_EXE=%~dp0\\node.exe\"\n\
+IF NOT EXIST \"%NODE_EXE%\" ( SET \"NODE_EXE=node\" )\n\
+SET \"NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js\"\n\
+SET \"NPX_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npx-cli.js\"\n\
+FOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_PREFIX_JS%\"') DO ( SET \"NPM_PREFIX_NPX_CLI_JS=%%F\\node_modules\\npm\\bin\\npx-cli.js\" )\n\
+IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\" )\n\
+\"%NODE_EXE%\" \"%NPX_CLI_JS%\" %*\n";
+        assert_eq!(
+            super::npm_launcher_shim_script_relative(contents),
+            Some(r"node_modules\npm\bin\npx-cli.js")
+        );
+    }
+
+    #[test]
+    fn npm_launcher_shim_relative_handles_forward_slashes_in_set() {
+        let contents = "\
+SET \"NODE_EXE=%~dp0/node.exe\"\n\
+SET \"CLI_JS=%~dp0/node_modules/pkg/cli.js\"\n\
+\"%NODE_EXE%\" \"%CLI_JS%\" %*\n";
+        assert_eq!(
+            super::npm_launcher_shim_script_relative(contents),
+            Some("node_modules/pkg/cli.js")
+        );
+    }
+
+    #[test]
+    fn npm_launcher_shim_relative_returns_none_when_node_exe_is_missing() {
+        let contents = "\
+SET \"CLI_JS=%~dp0\\cli.js\"\n\
+\"%NODE_EXE%\" \"%CLI_JS%\" %*\n";
+        assert_eq!(super::npm_launcher_shim_script_relative(contents), None);
+    }
+
+    #[test]
+    fn npm_launcher_shim_relative_returns_none_for_non_launcher_contents() {
+        assert_eq!(
+            super::npm_launcher_shim_script_relative("@ECHO off\necho hello\n"),
+            None
+        );
+        // Per-package cmd-shim shape should NOT match the launcher parser.
+        assert_eq!(
+            super::npm_launcher_shim_script_relative(
+                r#"SET "_prog=node"
+"%_prog%"  "%dp0%\node_modules\pkg\cli.js" %*"#
+            ),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn npm_launcher_shim_rejects_dot_dot_traversal() {
+        let dir = temporary_directory("launcher-dotdot");
+        fs::create_dir_all(dir.join("node_modules").join("npm").join("bin")).expect("npm bin");
+        File::create(dir.join("node.exe")).expect("node");
+        fs::write(
+            dir.join("npx.cmd"),
+            "\
+SET \"NODE_EXE=%~dp0\\node.exe\"\n\
+SET \"NPX_CLI_JS=%~dp0\\..\\escape\\npx-cli.js\"\n\
+\"%NODE_EXE%\" \"%NPX_CLI_JS%\" %*\n",
+        )
+        .expect("npx.cmd");
+        fs::create_dir_all(dir.join("..").join("escape")).expect("escape dir");
+        fs::write(
+            dir.join("..").join("escape").join("npx-cli.js"),
+            "/* npx */\n",
+        )
+        .expect("escape script");
+        // The script exists but the relative path contains .. — must be None.
+        assert_eq!(
+            super::resolve_launch_command_in_paths(std::slice::from_ref(&dir), "npx"),
+            Some(ResolvedLaunch::program(canonical(&dir.join("npx.cmd"))))
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_npm_launcher_shim_unwraps_to_node_and_script() {
+        let dir = temporary_directory("launcher-unwrap");
+        fs::create_dir_all(dir.join("node_modules").join("npm").join("bin")).expect("npm bin");
+        File::create(dir.join("node.exe")).expect("node");
+        // Real npx.cmd launcher shape.
+        fs::write(
+            dir.join("npx.cmd"),
+            "\
+SET \"NODE_EXE=%~dp0\\node.exe\"\n\
+IF NOT EXIST \"%NODE_EXE%\" ( SET \"NODE_EXE=node\" )\n\
+SET \"NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js\"\n\
+SET \"NPX_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npx-cli.js\"\n\
+FOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_PREFIX_JS%\"') DO ( SET \"NPM_PREFIX_NPX_CLI_JS=%%F\\node_modules\\npm\\bin\\npx-cli.js\" )\n\
+IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\" )\n\
+\"%NODE_EXE%\" \"%NPX_CLI_JS%\" %*\n",
+        )
+        .expect("npx.cmd");
+        fs::write(
+            dir.join("node_modules")
+                .join("npm")
+                .join("bin")
+                .join("npx-cli.js"),
+            "/* npx */\n",
+        )
+        .expect("npx-cli.js");
+
+        let resolved = resolve_launch_command_in_paths(std::slice::from_ref(&dir), "npx");
+        assert_eq!(
+            resolved,
+            Some(ResolvedLaunch {
+                program: canonical(&dir.join("node.exe")),
+                prefix_args: vec![canonical(
+                    &dir.join("node_modules")
+                        .join("npm")
+                        .join("bin")
+                        .join("npx-cli.js"),
+                )
+                .to_string_lossy()
+                .into_owned()],
+            })
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[cfg(windows)]
@@ -1361,6 +1608,69 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
             .acp_command
             .as_ref()
             .expect("npx-wrapper must resolve an ACP command");
+        assert!(
+            !argv[0].to_ascii_lowercase().contains(".cmd"),
+            "argv[0] must be node.exe, not a .cmd shim: {}",
+            argv[0]
+        );
+        assert!(
+            argv.iter()
+                .any(|part| part.to_ascii_lowercase().ends_with("npx-cli.js")),
+            "argv must include npx-cli.js: {argv:?}"
+        );
+        assert_eq!(argv[argv.len() - 2], "-y");
+        assert_eq!(
+            argv[argv.len() - 1],
+            "@agentclientprotocol/codex-acp@1.10.0"
+        );
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(cache);
+    }
+
+    #[cfg(all(windows, feature = "server"))]
+    #[test]
+    fn npx_wrapper_real_launcher_shape_unwraps_to_node_and_npx_cli_js() {
+        // Uses the real npm launcher shape (npx.cmd as shipped by npm 10.x),
+        // NOT the per-package cmd-shim shape. The per-package shape test
+        // above passed before the fix; this test with the REAL launcher
+        // shape is the one that was red because the old code did not
+        // recognize it.
+        let dir = temporary_directory("npx-real-launcher");
+        fs::create_dir_all(dir.join("node_modules").join("npm").join("bin")).expect("npm bin");
+        File::create(dir.join("node.exe")).expect("node");
+        fs::write(
+            dir.join("npx.cmd"),
+            "\
+SET \"NODE_EXE=%~dp0\\node.exe\"\n\
+IF NOT EXIST \"%NODE_EXE%\" ( SET \"NODE_EXE=node\" )\n\
+SET \"NPM_PREFIX_JS=%~dp0\\node_modules\\npm\\bin\\npm-prefix.js\"\n\
+SET \"NPX_CLI_JS=%~dp0\\node_modules\\npm\\bin\\npx-cli.js\"\n\
+FOR /F \"delims=\" %%F IN ('CALL \"%NODE_EXE%\" \"%NPM_PREFIX_JS%\"') DO ( SET \"NPM_PREFIX_NPX_CLI_JS=%%F\\node_modules\\npm\\bin\\npx-cli.js\" )\n\
+IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\" )\n\
+\"%NODE_EXE%\" \"%NPX_CLI_JS%\" %*\n",
+        )
+        .expect("npx.cmd");
+        fs::write(
+            dir.join("node_modules")
+                .join("npm")
+                .join("bin")
+                .join("npx-cli.js"),
+            "/* npx */\n",
+        )
+        .expect("npx-cli.js");
+        let cache = temporary_directory("npx-real-launcher-cache");
+        fs::create_dir_all(&cache).expect("cache");
+        let catalog =
+            super::discover_catalog_in_paths(&FixtureFetch, &cache, std::slice::from_ref(&dir));
+        let codex = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex-acp")
+            .expect("codex-acp from registry");
+        let argv = codex
+            .acp_command
+            .as_ref()
+            .expect("npx-wrapper with real launcher shape must resolve an ACP command");
         assert!(
             !argv[0].to_ascii_lowercase().contains(".cmd"),
             "argv[0] must be node.exe, not a .cmd shim: {}",
