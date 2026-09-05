@@ -446,7 +446,17 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
             matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
         })
     });
-    assert!(test.journal_event_count(&session.id) > before_resume);
+    // The journal writer is asynchronous: the AgentFinished publish can win
+    // the race against the row landing on disk, and did on the 4-vCPU CI
+    // runner. Poll with a deadline instead of asserting a snapshot.
+    let journal_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while test.journal_event_count(&session.id) <= before_resume {
+        assert!(
+            std::time::Instant::now() < journal_deadline,
+            "the live prompt after resume must reach the journal"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
     test.client
         .session_close(&session.id)
         .expect("close resumed ACP session");
