@@ -19,6 +19,7 @@ const channelHarness = vi.hoisted(() => ({
 
 const mocks = vi.hoisted(() => ({
   oracleAsk: vi.fn(),
+  oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
   reasonFromCause: vi.fn(),
   projectsList: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock("../../lib/tauri", () => ({
     return channel;
   }),
   oracleAsk: mocks.oracleAsk,
+  oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
   reasonFromCause: mocks.reasonFromCause,
   projectsList: mocks.projectsList,
@@ -167,6 +169,7 @@ beforeEach(() => {
   channelHarness.emit = null;
   channelHarness.active = null;
   mocks.oracleAsk.mockReset();
+  mocks.oracleFiles.mockReset();
   mocks.oracleStatus.mockReset();
   mocks.reasonFromCause.mockReset();
   mocks.projectsList.mockReset();
@@ -192,6 +195,7 @@ beforeEach(() => {
       },
     ],
   });
+  mocks.oracleFiles.mockResolvedValue([]);
   mocks.reasonFromCause.mockImplementation((cause: unknown) =>
     cause instanceof Error ? cause.message : String(cause),
   );
@@ -229,12 +233,12 @@ describe("ACP design host", () => {
     expect(result.desc).toContain("wrote 1 file");
     expect(result.desc).toContain("DesignSurface.tsx");
     expect(result.title).toContain("wrote");
-    expect(result.desc).toContain("Workspace Changes");
+    expect(result.desc).toContain("Review what the agent wrote with your own git.");
     expect(mocks.sessionCreate).toHaveBeenCalledWith(WORKSPACE.id, "acp");
     expect(mocks.sessionAttach).toHaveBeenCalledWith("session-1", null, expect.anything());
     expect(mocks.sessionSend).toHaveBeenCalledWith(
       "session-1",
-      expect.stringContaining("src/app/Shell.tsx"),
+      expect.stringContaining("src/app/Shell.tsx:1-4"),
     );
 
     await disposeAgentHost(host);
@@ -743,6 +747,76 @@ describe("ACP design host", () => {
           manifest: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Second</div>");
+      });
+    });
+
+    describe("grounding prompt content", () => {
+      it("does not mention Workspace Changes or a Changes panel", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+        finishRun();
+        await run;
+
+        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        expect(sentText).not.toContain("Workspace Changes");
+        expect(sentText).not.toContain("Changes panel");
+        expect(sentText).not.toContain("authoritative");
+
+        await disposeAgentHost(host);
+      });
+
+      it("carries a hit's line range into the prompt", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+        finishRun();
+        await run;
+
+        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        expect(sentText).toContain("src/app/Shell.tsx:1-4");
+
+        await disposeAgentHost(host);
+      });
+
+      it("does not print empty brackets when a hit has no symbol name", async () => {
+        mocks.oracleAsk.mockResolvedValueOnce({
+          query: "Find the workspace resolver.",
+          results: [
+            {
+              path: "src/lib/workspace.ts",
+              line_start: 42,
+              line_end: 58,
+              snippet: "export function resolve() {}",
+              score: 0.95,
+              // symbol_name omitted
+            },
+          ],
+        });
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+        finishRun();
+        await run;
+
+        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        expect(sentText).toContain("src/lib/workspace.ts:42-58");
+        expect(sentText).not.toContain("()");
+
+        await disposeAgentHost(host);
+      });
+
+      it("says 'Oracle found no matching files' when there are zero hits", async () => {
+        mocks.oracleAsk.mockResolvedValueOnce({
+          query: "nonexistent",
+          results: [],
+        });
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+        finishRun();
+        await run;
+
+        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        expect(sentText).toContain("Oracle found no matching files.");
+
+        await disposeAgentHost(host);
       });
     });
 

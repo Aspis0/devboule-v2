@@ -83,19 +83,27 @@ looking.
 
 Clicking a node scopes the next prompt to it, and the chip and the scope sent to the
 agent agree by construction. Selecting the artifact scopes precisely, since it is what
-the agent just produced. Selecting a layer carries its name and kind and nothing more,
-because that is all a layer has — no source file, no symbol, no line range — and the
-surface does not imply otherwise.
+the agent just produced. A repository layer carries its name, kind, and indexed source
+path; a demo fixture carries only its name and kind. The surface does not invent a
+symbol or line range that the index does not provide.
 
 **There is no dragging and no resizing, and there will not be.** Layers derive from the
-repository and nothing writes a moved layer back to the code it stands for. Snapping and
-multi-resize were deleted for this reason and should not return.
+repository and nothing writes a moved layer back to the code it stands for.
+`snapAdvanced.ts` and `multiResize.ts` were deleted for this reason and should not return.
+
+`src/lib/canvas/snap.ts` was ported alongside them and **is still in the tree, imported by
+nothing but its own test**. It serves the same manipulation model, so it is dead by the
+same argument; it survived only because it was deleted less thoroughly. Do not wire it up.
 
 ## What is not real yet
 
-- **Layers are fixtures.** Every host's `loadDocument` still ends at `MOCK_DESIGN_LAYERS`,
-  including the agent host. The chat, the agent and the grounding are real; the rectangles
-  are not, and they carry no provenance.
+- **Layers are indexed file entries, not parsed component instances.** The Oracle and agent
+  hosts enumerate workspace files from `oracle_files("indexed", page)` and expose `.tsx` and
+  `.svg` paths with their extension-derived kind and source provenance. The client places
+  them in a deterministic grid; those positions are a layout decision here, not a property
+  of the code. Test/spec files and conventional non-source directories are excluded by a
+  small path heuristic that can be wrong. The demo host still uses explicit fixture
+  rectangles, with no source provenance.
 - **There is no diff review.** Workspace's Changes panel is a mockup and no git plumbing
   exists anywhere in the project, so review of what an agent wrote is the user's own git.
 - **Save exists only on the demo host**, and saves a fixture.

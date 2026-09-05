@@ -1,6 +1,7 @@
 import { AgentSession, type AgentSessionState } from "../../lib/agentSession";
 import {
   createSessionChannel,
+  oracleAsk,
   projectsList,
   reasonFromCause,
   sessionAttach,
@@ -12,7 +13,7 @@ import {
   type SessionChannel,
   workspacesList,
 } from "../../lib/tauri";
-import type { Session, SessionEvent, Workspace } from "../../types/ipc";
+import type { OracleResult, Session, SessionEvent, Workspace } from "../../types/ipc";
 import type { DesignGenerationResult, DesignHost } from "./designHost";
 import { createOracleHost } from "./oracleHost";
 
@@ -90,17 +91,24 @@ export function extractArtifactHtml(state: AgentSessionState, startIndex = 0): s
   return extractArtifact(state, startIndex).html;
 }
 
-function groundedPrompt(prompt: string, searchSources: readonly string[]): string {
+function formatGroundingHit(result: OracleResult): string {
+  const range = `:${result.line_start}-${result.line_end}`;
+  const symbol =
+    result.symbol_name != null && result.symbol_name.length > 0 ? ` (${result.symbol_name})` : "";
+  return `- ${result.path}${range}${symbol}`;
+}
+
+function groundedPrompt(prompt: string, oracleResults: readonly OracleResult[]): string {
   const grounding =
-    searchSources.length === 0
+    oracleResults.length === 0
       ? "Oracle found no matching files."
-      : searchSources.map((source) => `- ${source}`).join("\n");
+      : oracleResults.map(formatGroundingHit).join("\n");
   return [
     "Work on the requested design change in the active Devboule workspace.",
     `User request: ${prompt}`,
     "Oracle grounding (search hits, not files changed):",
     grounding,
-    "Use the grounding as context and make only the requested change. The Workspace Changes panel is authoritative for the actual diff.",
+    "Use the grounding as context and make only the requested change.",
     "",
     "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
     "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
@@ -139,8 +147,8 @@ function resultFor(
       prompt,
       title: locationsReported ? "Agent wrote no files" : "Agent did not report written files",
       desc: locationsReported
-        ? `No files were reported as written. Check Workspace Changes for the authoritative diff.${shellWarning}`
-        : `The agent did not report which files it touched. Check Workspace Changes for the authoritative diff.${shellWarning}`,
+        ? `No files were reported as written. Review what the agent wrote with your own git.${shellWarning}`
+        : `The agent did not report which files it touched. Review what the agent wrote with your own git.${shellWarning}`,
       sources,
       nodeIds: [],
     };
@@ -150,7 +158,7 @@ function resultFor(
   return {
     prompt,
     title: `Agent wrote ${sources.length} ${noun}`,
-    desc: `The agent wrote ${sources.length} ${noun}: ${sources.join(", ")}. Check Workspace Changes for the authoritative diff.${shellWarning}`,
+    desc: `The agent wrote ${sources.length} ${noun}: ${sources.join(", ")}. Review what the agent wrote with your own git.${shellWarning}`,
     sources,
     nodeIds: [],
   };
@@ -324,7 +332,7 @@ export function createAgentHost(): DesignHost {
     signal: AbortSignal,
   ): Promise<DesignGenerationResult> => {
     throwIfAborted(signal);
-    const grounding = await oracleHost.generate!(prompt, signal);
+    const oracleResponse = await oracleAsk(prompt);
     throwIfAborted(signal);
     const workspace = await resolveAgentWorkspace();
     throwIfAborted(signal);
@@ -364,7 +372,7 @@ export function createAgentHost(): DesignHost {
     // Record the boundary immediately before send(); send() clears lastFinished synchronously.
     run.itemStart = handle.controller.getState().items.length;
     // Subscribe only after send() so a prior turn cannot settle this run.
-    const sendPromise = handle.controller.send(groundedPrompt(prompt, grounding.sources));
+    const sendPromise = handle.controller.send(groundedPrompt(prompt, oracleResponse.results));
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;
       const state = handle.controller.getState();
