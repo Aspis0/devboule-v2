@@ -14,12 +14,36 @@ src-tauri/gen/
 # Plans, porting notes, audits, reconnaissance and agent reports live one
 # directory up, outside the repo. Only user-facing docs ship here: README,
 # LICENSE, NOTICE, THIRD_PARTY and the per-module READMEs.
+#
+# What may stay at the root is named here, rather than what may not. The
+# forbidden-prefix list this replaces did not hold: it said `audit-*.md`, and
+# what accumulated was `marketplace-ux-audit.md` — the same word on the other
+# end. Twelve internal reports sat in the working tree of a public repository,
+# one careless `git add -A` from being published. An allowlist cannot fail that
+# way, because a document nobody has vouched for is ignored by default.
+/*.md
+!/README.md
+!/THIRD_PARTY.md
+
+# The same documents, should they ever be written into a subdirectory.
 ARCHITETTURA.md
 PORTING-*.md
 *-REPORT.md
-audit-*.md
-review-*.md
+*audit*.md
+*review*.md
 recon/
+
+# Raw agent and test-run transcripts. Regenerable by definition, and superseded
+# the moment they are written: whether a slice passed is recorded by CI, not by
+# a captured terminal.
+*-red.txt
+*-green.txt
+verify*.txt
+tmp-jobs/
+
+# Not the Windows null device. A POSIX shell redirecting to `nul` creates an
+# ordinary file, so this is where stray error output collects unnoticed.
+nul
 
 # Workspace-local Oracle/Augur runtime data (CKG, findings ledger).
 oracle-data/

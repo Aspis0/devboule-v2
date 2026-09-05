@@ -34,11 +34,20 @@ What works today:
   Sessions do not outlive the application yet: on exit, Devboule asks the
   daemon to shut down. Surviving a full restart is the next step, and it is
   what the daemon and the journal were built for.
+- **Agent sessions** — the conversation drives a real ACP agent through the
+  daemon, in the active worktree, and reports what it wrote from the structured
+  tool events the protocol carries rather than by reading its prose.
 - **Settings** — providers, projects, devices and Oracle administration.
+- **Design** — a chat grounded in the repository by Oracle, driving that same
+  agent, with a canvas that renders what the agent produced inside a sandboxed
+  frame. The canvas is for looking and pointing, not for dragging. Its layer
+  list is still fixture data; see
+  [`src/features/design/README.md`](src/features/design/README.md), which says
+  so plainly.
 
-What is drawn but not wired: the agent conversation and the provider inventory
-still read from fixed sample data. The boundary between those and real IPC is
-deliberate and marked in the source.
+What is drawn but not wired: the provider inventory, projects, devices and Labs
+in Settings still read from fixed sample data. The boundary between those and
+real IPC is deliberate and marked in the source.
 
 Developed and tested on Windows. Tauri itself is cross-platform, but no other
 platform has been verified, so treat them as unsupported for now.
@@ -130,7 +139,15 @@ hard to hold in your head, and a map you can recognise at a glance turns out to
 be a real way to navigate one — and a way to point an agent at a place rather
 than a path.
 
-Not yet ported into this repository.
+It lives in [`plugins/polis`](plugins/polis) as Devboule's first real plugin —
+installed as files rather than compiled in, which is the point: it exercises the
+path by which the app loads code it did not build. Buildings are files, sized by
+line count and tinted by top-level folder; roads are imports. The city it draws
+is this repository.
+
+The graph currently comes from a regex extractor that is named in its own README
+as a stand-in. The real source is the code knowledge graph the host already
+builds, which will arrive over the plugin bridge as a capability.
 
 ## Plugins
 
@@ -179,9 +196,11 @@ If a deliberate exception is ever needed, add it inline in
 `cargo` map. Each entry must include both `reason` and `exitCondition`; the
 exception output must state why the lag exists and what will allow its removal.
 
-The Cargo workspace holds the Tauri application (`src-tauri`) plus two crates:
-`devboule-protocol` for the wire types shared with the daemon, and
-`devboule-daemon` for the session host itself.
+The Cargo workspace holds the Tauri application (`src-tauri`) plus six crates,
+inventoried in [`crates/README.md`](crates/README.md). The division that matters
+is that plugin work runs in its own process: the Polis backend and the review
+detectors it uses are separate binaries reached over a pipe, never linked into
+the host.
 
 ## Licence
 
