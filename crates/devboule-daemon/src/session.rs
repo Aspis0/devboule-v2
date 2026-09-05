@@ -93,6 +93,8 @@ use crate::server::ServerState;
 mod acp_client;
 #[path = "acp_host.rs"]
 mod acp_host;
+#[path = "claude_client.rs"]
+mod claude_client;
 #[path = "event_pull.rs"]
 mod event_pull;
 #[path = "session_types.rs"]
@@ -253,6 +255,9 @@ pub(super) struct SessionRuntime {
     /// Roster `sessions_watch` notify. ACP publish uses this so Silent→Live
     /// is not swallowed (the PTY coalescer already notifies the registry).
     roster_notify: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Provider-side session id (ACP `sessionId`, Claude `system/init`
+    /// `session_id`). Stored for resume; not the Devboule session id.
+    peer_session_id: Mutex<Option<String>>,
 }
 
 impl SessionRuntime {
@@ -315,6 +320,7 @@ impl SessionRuntime {
             on_os_death: Mutex::new(None),
             os_death_started: AtomicBool::new(false),
             roster_notify: Mutex::new(None),
+            peer_session_id: Mutex::new(None),
         }
     }
 
@@ -589,7 +595,7 @@ impl SessionRuntime {
         was_silent
     }
 
-    fn journal_acp_envelope(&self, envelope: &serde_json::Value) {
+    fn journal_agent_envelope(&self, envelope: &serde_json::Value) {
         let Ok(mut stream) = self.lock_stream() else {
             return;
         };
@@ -619,6 +625,19 @@ impl SessionRuntime {
         if let Ok(mut stored) = self.session_manifest.lock() {
             *stored = Some(event);
         }
+    }
+
+    pub(super) fn set_peer_session_id(&self, session_id: String) {
+        if let Ok(mut stored) = self.peer_session_id.lock() {
+            *stored = Some(session_id);
+        }
+    }
+
+    pub(super) fn peer_session_id(&self) -> Option<String> {
+        self.peer_session_id
+            .lock()
+            .ok()
+            .and_then(|stored| stored.clone())
     }
 
     fn publish_agent_event(&self, event: SessionEvent, journal_text: Option<&str>) -> bool {
@@ -925,11 +944,7 @@ impl SessionRuntime {
         if self.os_death_started.swap(true, Ordering::AcqRel) {
             return;
         }
-        let callback = self
-            .on_os_death
-            .lock()
-            .ok()
-            .and_then(|slot| slot.clone());
+        let callback = self.on_os_death.lock().ok().and_then(|slot| slot.clone());
         let Some(callback) = callback else {
             return;
         };
@@ -1841,24 +1856,54 @@ impl SessionRegistry {
         Ok(())
     }
 
+    /// Env override applies only when the request did not name a provider.
+    /// An explicit `provider` is the frontend's choice and must not be
+    /// silently replaced by `DEVBOULE_AGENT_PROVIDER`.
+    fn resolve_session_provider(
+        kind: SessionKind,
+        provider: Option<String>,
+        env_provider: Option<&str>,
+    ) -> (SessionKind, Option<String>) {
+        let requested = provider.filter(|id| !id.is_empty());
+        let env_provider = env_provider.filter(|value| !value.is_empty());
+        let kind =
+            if kind == SessionKind::Acp && requested.is_none() && env_provider == Some("claude") {
+                SessionKind::Claude
+            } else {
+                kind
+            };
+        let provider = if requested.is_some() {
+            requested.filter(|id| id != "claude")
+        } else {
+            env_provider
+                .map(str::to_string)
+                .filter(|id| id != "claude" && !id.is_empty())
+        };
+        (kind, provider)
+    }
+
     pub fn create(
         &self,
         state: &Arc<ServerState>,
         owner: &OwnerId,
         workspace_id: Option<String>,
         kind: SessionKind,
+        provider: Option<String>,
         command: Option<PtyCommand>,
     ) -> Result<Session, WireError> {
         let unique = format!("{:08x}", SESSION_COUNTER.fetch_add(1, Ordering::Relaxed));
         let id = compose_session_id(&owner.session_token(), &unique)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let env_provider = std::env::var("DEVBOULE_AGENT_PROVIDER").ok();
+        let (kind, provider) =
+            Self::resolve_session_provider(kind, provider, env_provider.as_deref());
         let metadata = Session {
             id: id.clone(),
             workspace_id,
             kind: kind.clone(),
             title: match kind {
                 SessionKind::Terminal => "Terminal",
-                SessionKind::Acp => "Agent",
+                SessionKind::Acp | SessionKind::Claude => "Agent",
             }
             .to_string(),
             state: SessionState::Live { generation: 1 },
@@ -1866,7 +1911,13 @@ impl SessionRegistry {
         };
         let mut command = match command {
             Some(command) => command,
-            None if metadata.kind == SessionKind::Acp => acp_client::resolve_command(&self.paths)?,
+            None if metadata.kind == SessionKind::Claude => {
+                claude_client::resolve_command(&self.paths)?
+            }
+            None if metadata.kind == SessionKind::Acp => match provider {
+                Some(id) => acp_client::resolve_named(&id)?,
+                None => acp_client::resolve_command(&self.paths)?,
+            },
             None => resolve_pty_command(&self.paths)?,
         };
         crate::agent_env::inject_session_env(
@@ -2419,6 +2470,15 @@ pub fn spawn_session(
     owner: OwnerId,
     command: PtyCommand,
 ) -> Result<(), WireError> {
+    if metadata.kind == SessionKind::Claude {
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            claude_client::spawn_process(state, command)?,
+        );
+    }
     if metadata.kind == SessionKind::Acp {
         return start_spawned_session(
             state,
@@ -2571,11 +2631,11 @@ fn start_spawned_session(
         permission_broker,
         os_handle,
     } = spawned;
-    let runtime = if metadata.kind == SessionKind::Acp {
+    let runtime = if metadata.kind.is_agent() {
         SessionRuntime::for_acp(
             metadata.id.clone(),
             registry.journal.clone(),
-            permission_broker.expect("ACP sessions have a permission broker"),
+            permission_broker.expect("agent sessions have a permission broker"),
         )
     } else {
         Arc::new(SessionRuntime::with_journal(
@@ -2594,7 +2654,7 @@ fn start_spawned_session(
             registry.notify_transition(&owner);
         }));
     }
-    if metadata.kind == SessionKind::Acp {
+    if metadata.kind.is_agent() {
         let death_killer = Mutex::new(killer.clone_killer());
         let job = Arc::clone(&process_job);
         runtime.set_on_os_death(Arc::new(move || {
@@ -3999,5 +4059,24 @@ mod tests {
         );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explicit_provider_is_not_hijacked_by_claude_env_override() {
+        let (kind, provider) = SessionRegistry::resolve_session_provider(
+            SessionKind::Acp,
+            Some("grok".to_string()),
+            Some("claude"),
+        );
+        assert_eq!(kind, SessionKind::Acp);
+        assert_eq!(provider.as_deref(), Some("grok"));
+    }
+
+    #[test]
+    fn claude_env_override_applies_when_the_request_has_no_provider() {
+        let (kind, provider) =
+            SessionRegistry::resolve_session_provider(SessionKind::Acp, None, Some("claude"));
+        assert_eq!(kind, SessionKind::Claude);
+        assert_eq!(provider, None);
     }
 }

@@ -51,6 +51,10 @@ pub enum ClientMessage {
         id: u64,
         workspace_id: Option<String>,
         kind: SessionKind,
+        /// Catalog provider id (`grok`, `qwen`, `claude`, …). Single-word so
+        /// Tauri v2's camelCase conversion cannot rename it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
@@ -566,6 +570,7 @@ mod tests {
             id: 1,
             workspace_id: None,
             kind: SessionKind::Terminal,
+            provider: None,
             idempotency_key: Some("k1".to_string()),
         };
         let send = ClientMessage::SessionSend {

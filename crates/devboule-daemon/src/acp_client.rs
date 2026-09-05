@@ -20,7 +20,9 @@ use agent_client_protocol::schema::ProtocolVersion;
 use devboule_protocol::{ErrorCode, PermissionOption, PermissionOutcome, SessionEvent, WireError};
 
 use super::acp_host::{AcpHost, RpcError, RpcRespond};
-use crate::acp_view::{classify_line, merge_handshake_manifest, view_from_envelope, AcpLineKind};
+use crate::acp_view::{
+    classify_line, merge_handshake_manifest, view_from_envelope_in, AcpLineKind,
+};
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::server::ServerState;
@@ -48,7 +50,7 @@ const MAX_ACP_PERMISSION_OPTIONS: usize = 32;
 const MAX_ACP_PERMISSION_ARGS: usize = 256;
 const MAX_ACP_PERMISSION_ENV: usize = 64;
 
-type PermissionSender = dyn Fn(u64, serde_json::Value) -> io::Result<()> + Send + Sync;
+pub(super) type PermissionSender = dyn Fn(u64, serde_json::Value) -> io::Result<()> + Send + Sync;
 
 fn turn_silence() -> Duration {
     std::env::var(TURN_TIMEOUT_ENV)
@@ -301,7 +303,7 @@ struct PermissionCompletion {
     decision: Option<HostDecision>,
 }
 
-struct PendingPermission {
+pub(super) struct PendingPermission {
     responder: PermissionResponder,
     tool_call_id: String,
     session_id: String,
@@ -392,7 +394,28 @@ impl PermissionBroker {
         })
     }
 
-    fn register(
+    pub(super) fn send(&self, id: u64, result: serde_json::Value) -> io::Result<()> {
+        (self.sender)(id, result)
+    }
+
+    pub(super) fn with_sender(sender: Arc<PermissionSender>) -> Arc<Self> {
+        Arc::new(Self {
+            sender,
+            pending: Mutex::new(PermissionTable {
+                entries: HashMap::new(),
+                closed: false,
+            }),
+            require_journal: true,
+            #[cfg(test)]
+            timeout: Mutex::new(ACP_PERMISSION_TIMEOUT),
+            #[cfg(test)]
+            after_take_hook: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_timeout_spawn: AtomicBool::new(false),
+        })
+    }
+
+    pub(super) fn register(
         &self,
         acp_id: u64,
         request: SessionEvent,
@@ -678,7 +701,7 @@ impl PermissionBroker {
         self.wait_for_decision(&pending)
     }
 
-    fn arm_timeout(self: &Arc<Self>, pending: Arc<PendingPermission>) -> io::Result<()> {
+    pub(super) fn arm_timeout(self: &Arc<Self>, pending: Arc<PendingPermission>) -> io::Result<()> {
         #[cfg(test)]
         if self.take_timeout_spawn_failure() {
             return Err(io::Error::other("test timeout spawn failure"));
@@ -961,16 +984,9 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
                 ));
             };
             provider_id = Some(agent.id.to_string());
-            let acp_command = agent
+            agent
                 .acp_command
-                .expect("an ACP-capable catalog entry has an ACP command");
-            let mut argv = Vec::with_capacity(
-                1 + agent.prefix_args.len() + acp_command.len().saturating_sub(1),
-            );
-            argv.push(agent.executable.to_string_lossy().into_owned());
-            argv.extend(agent.prefix_args.iter().cloned());
-            argv.extend(acp_command.into_iter().skip(1));
-            argv
+                .expect("an ACP-capable catalog entry has an ACP command")
         }
     };
     if argv.is_empty() || argv[0].trim().is_empty() {
@@ -985,6 +1001,37 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
         command = command.with_provider_id(provider_id);
     }
     Ok(command)
+}
+
+/// Resolve a specific ACP catalog agent by id. `id` must name an
+/// ACP-capable entry that is actually on PATH.
+pub(super) fn resolve_named(id: &str) -> Result<PtyCommand, WireError> {
+    let cwd = std::env::current_dir().map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not determine agent working directory: {error}"),
+        )
+    })?;
+    let Some(agent) = crate::provider_catalog::find_available(id) else {
+        return Err(WireError::new(
+            ErrorCode::Io,
+            format!("ACP agent '{id}' was not found on PATH."),
+        ));
+    };
+    let Some(mut argv) = agent.acp_command else {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("Provider '{id}' is not an ACP agent."),
+        ));
+    };
+    if argv.is_empty() || argv[0].trim().is_empty() {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("ACP agent '{id}' resolved to an empty command."),
+        ));
+    }
+    let program = argv.remove(0);
+    Ok(PtyCommand::new(program, argv, cwd, Vec::new()).with_provider_id(id.to_string()))
 }
 
 /// Spawn the ACP peer directly, complete initialize + session/new, and return
@@ -1771,7 +1818,7 @@ impl AcpReader {
 
     fn dispatch_value(&self, value: &serde_json::Value, runtime: &Arc<SessionRuntime>) {
         self.turn.note_activity();
-        runtime.journal_acp_envelope(value);
+        runtime.journal_agent_envelope(value);
         match classify_line(value) {
             Some(AcpLineKind::Request { method }) => {
                 if method == "session/request_permission" {
@@ -1786,7 +1833,9 @@ impl AcpReader {
                 }
             }
             Some(AcpLineKind::Notification { .. }) => {
-                if let Some(view) = view_from_envelope(value, &self.session_id) {
+                if let Some(view) =
+                    view_from_envelope_in(value, &self.session_id, Some(self.host.cwd()))
+                {
                     let view = self.with_provider(view);
                     if matches!(view, SessionEvent::SessionManifest { .. }) {
                         runtime.store_session_manifest(view.clone());
@@ -1852,7 +1901,7 @@ impl AcpReader {
             );
             return;
         }
-        if let Some(view) = view_from_envelope(value, &self.session_id) {
+        if let Some(view) = view_from_envelope_in(value, &self.session_id, Some(self.host.cwd())) {
             self.publish(runtime, view);
         }
     }

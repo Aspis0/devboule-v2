@@ -27,9 +27,10 @@ pub fn session_create(
     bridge: State<'_, DaemonBridge>,
     workspace_id: Option<String>,
     kind: SessionKind,
+    provider: Option<String>,
 ) -> Result<Session, CommandError> {
     require_terminal_kind(&kind)?;
-    Ok(require_client(&bridge)?.session_create(workspace_id, kind, None)?)
+    Ok(require_client(&bridge)?.session_create_with(workspace_id, kind, provider, None)?)
 }
 
 /// IMPORTANT STARTUP ORDER: the client registers the Channel as the
@@ -157,7 +158,7 @@ fn require_write_size(text: &str) -> Result<(), CommandError> {
 
 fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
     match kind {
-        SessionKind::Terminal | SessionKind::Acp => Ok(()),
+        SessionKind::Terminal | SessionKind::Acp | SessionKind::Claude => Ok(()),
     }
 }
 
@@ -184,6 +185,7 @@ mod tests {
     fn supported_session_kinds_are_accepted() {
         require_terminal_kind(&SessionKind::Terminal).expect("terminal");
         require_terminal_kind(&SessionKind::Acp).expect("acp");
+        require_terminal_kind(&SessionKind::Claude).expect("claude");
     }
 
     #[test]

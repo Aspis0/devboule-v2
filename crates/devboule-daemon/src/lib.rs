@@ -11,6 +11,8 @@ mod agent_env;
 mod agent_report;
 #[cfg(feature = "server")]
 mod atomic;
+#[cfg(feature = "server")]
+mod claude_view;
 mod client;
 mod error;
 mod framing;

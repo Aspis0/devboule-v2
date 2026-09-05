@@ -10,9 +10,8 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{
     AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
     DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PermissionOutcome,
-    ProviderInfo,
-    Persistence, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
-    SessionKind, SessionStateSnapshot, WireError,
+    Persistence, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
+    SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError,
 };
 
 use crate::error::DaemonError;
@@ -81,11 +80,22 @@ impl DaemonClient {
         kind: SessionKind,
         idempotency_key: Option<String>,
     ) -> Result<Session, DaemonError> {
+        self.session_create_with(workspace_id, kind, None, idempotency_key)
+    }
+
+    pub fn session_create_with(
+        &self,
+        workspace_id: Option<String>,
+        kind: SessionKind,
+        provider: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> Result<Session, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionCreate {
             id,
             workspace_id,
             kind,
+            provider,
             idempotency_key,
         })? {
             DaemonMessage::Session { session, .. } => Ok(session),

@@ -16,9 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::{
-    AgentActivityState, CursorShape, ScreenCursor, SessionEvent, TranscriptIntegrity,
-};
+use crate::{AgentActivityState, CursorShape, ScreenCursor, SessionEvent, TranscriptIntegrity};
 
 /// One dummy of every [`SessionEvent`] variant.
 ///
@@ -62,11 +60,21 @@ fn session_event_samples() -> Vec<SessionEvent> {
             tool_call_id: String::new(),
             title: String::new(),
             status: String::new(),
+            kind: Some("read".to_string()),
+            locations: Some(vec![crate::ToolLocation {
+                path: "src/lib.rs".to_string(),
+                line: Some(1),
+            }]),
         },
         AgentToolUpdate => SessionEvent::AgentToolUpdate {
             tool_call_id: String::new(),
             status: None,
             text: None,
+            kind: Some("edit".to_string()),
+            locations: Some(vec![crate::ToolLocation {
+                path: "src/main.rs".to_string(),
+                line: None,
+            }]),
         },
         AgentFinished => SessionEvent::AgentFinished {
             stop_reason: String::new(),

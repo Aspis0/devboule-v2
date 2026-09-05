@@ -29,12 +29,25 @@
     "type": "agent_thought"
   },
   {
+    "kind": "read",
+    "locations": [
+      {
+        "line": 1,
+        "path": "src/lib.rs"
+      }
+    ],
     "status": "",
     "title": "",
     "toolCallId": "",
     "type": "agent_tool_call"
   },
   {
+    "kind": "edit",
+    "locations": [
+      {
+        "path": "src/main.rs"
+      }
+    ],
     "status": null,
     "text": null,
     "toolCallId": "",

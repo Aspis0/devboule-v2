@@ -1440,12 +1440,14 @@ fn kind_str(kind: &SessionKind) -> &'static str {
     match kind {
         SessionKind::Terminal => "terminal",
         SessionKind::Acp => "acp",
+        SessionKind::Claude => "claude",
     }
 }
 
 fn parse_kind(value: &str) -> SessionKind {
     match value {
         "acp" => SessionKind::Acp,
+        "claude" => SessionKind::Claude,
         _ => SessionKind::Terminal,
     }
 }

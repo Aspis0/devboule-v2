@@ -30,32 +30,58 @@ pub struct KnownAgent {
     pub id: &'static str,
     pub aliases: &'static [&'static str],
     pub acp_args: Option<&'static [&'static str]>,
+    /// Native stream-json argv, used only by the Claude adapter. Other
+    /// agents stay on ACP; this field is None for them.
+    pub stream_json_args: Option<&'static [&'static str]>,
 }
 
 /// Agents currently relevant to the first provider catalog slice.
 ///
 /// Keep one row per agent so adding a known CLI does not require changing the
 /// discovery algorithm.
+/// Measured CLI 2.1.260 stream-json host-permission launch. Empty
+/// `--setting-sources` is a literal empty argument, not an omitted flag.
+pub const CLAUDE_STREAM_JSON_ARGS: &[&str] = &[
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--input-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+    "--permission-prompts",
+    "host",
+    "--permission-prompt-tool",
+    "stdio",
+];
+
 pub const KNOWN_AGENTS: &[KnownAgent] = &[
     KnownAgent {
         id: "claude",
         aliases: &["claude", "claude-code"],
         acp_args: None,
+        stream_json_args: Some(CLAUDE_STREAM_JSON_ARGS),
     },
     KnownAgent {
         id: "codex",
         aliases: &["codex"],
         acp_args: None,
+        stream_json_args: None,
     },
     KnownAgent {
         id: "grok",
         aliases: &["grok", "grok-build"],
         acp_args: Some(&["agent", "stdio"]),
+        stream_json_args: None,
     },
     KnownAgent {
         id: "pi",
         aliases: &["pi"],
         acp_args: None,
+        stream_json_args: None,
     },
     KnownAgent {
         id: "qwen",
@@ -64,11 +90,13 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         // `--experimental-acp` still works but prints "deprecated and will be
         // removed in a future release. Please use --acp instead."
         acp_args: Some(&["--acp"]),
+        stream_json_args: None,
     },
     KnownAgent {
         id: "gemini",
         aliases: &["gemini"],
         acp_args: Some(&["--acp"]),
+        stream_json_args: None,
     },
 ];
 
@@ -113,8 +141,13 @@ pub struct InstalledAgent {
     /// Arguments inserted between `executable` and ACP/user args.
     /// Empty for a native binary; the package script for an npm cmd-shim.
     pub prefix_args: Vec<String>,
-    /// The command as displayed to a user, using the canonical agent name.
+    /// Resolved spawn argv for ACP: executable, then prefix args, then ACP
+    /// flags. Element 0 is the path that CreateProcess will run.
     pub acp_command: Option<Vec<String>>,
+    /// Resolved spawn argv for Claude stream-json: executable, then prefix
+    /// args, then the measured flags. Element 0 is the path that CreateProcess
+    /// will run.
+    pub stream_json_command: Option<Vec<String>>,
     pub authentication: AuthenticationStatus,
 }
 
@@ -143,18 +176,19 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 .aliases
                 .iter()
                 .find_map(|alias| resolve_launch_command_in_paths(directories, alias))?;
-            let acp_command = spec.acp_args.map(|args| {
-                let mut command = Vec::with_capacity(args.len() + 1);
-                command.push(spec.id.to_string());
-                command.extend(args.iter().map(|arg| (*arg).to_string()));
-                command
-            });
+            let acp_command = spec
+                .acp_args
+                .map(|args| protocol_argv(&launch.program, &launch.prefix_args, args));
+            let stream_json_command = spec
+                .stream_json_args
+                .map(|args| protocol_argv(&launch.program, &launch.prefix_args, args));
             Some(InstalledAgent {
                 id: spec.id,
                 aliases: spec.aliases,
                 executable: launch.program,
                 prefix_args: launch.prefix_args,
                 acp_command,
+                stream_json_command,
                 authentication: AuthenticationStatus::Unknown,
             })
         })
@@ -163,6 +197,14 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
         agents,
         unreadable_dirs: count_unreadable_dirs(directories),
     }
+}
+
+fn protocol_argv(executable: &Path, prefix_args: &[String], extra: &[&str]) -> Vec<String> {
+    let mut command = Vec::with_capacity(1 + prefix_args.len() + extra.len());
+    command.push(executable.to_string_lossy().into_owned());
+    command.extend(prefix_args.iter().cloned());
+    command.extend(extra.iter().map(|arg| (*arg).to_string()));
+    command
 }
 
 fn count_unreadable_dirs(directories: &[PathBuf]) -> u32 {
@@ -191,6 +233,11 @@ pub fn first_acp_available() -> Option<InstalledAgent> {
             .find(|agent| agent.id == *preferred_id && agent.acp_command.is_some())
             .cloned()
     })
+}
+
+/// Return the discovered provider with this catalog id, if it is on PATH.
+pub fn find_available(id: &str) -> Option<InstalledAgent> {
+    discover().agents.into_iter().find(|agent| agent.id == id)
 }
 
 pub(crate) fn executable_file_exists(path: &Path) -> bool {
@@ -834,6 +881,92 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
             line.push_str(arg);
         }
         line
+    }
+
+    #[test]
+    fn protocol_argv_inserts_prefix_between_executable_and_flags() {
+        let exe = PathBuf::from(r"C:\nvm\node.exe");
+        let prefix = vec![r"C:\npm\claude.js".to_string()];
+        let argv = super::protocol_argv(&exe, &prefix, &["-p", "--verbose"]);
+        assert_eq!(
+            argv,
+            vec![
+                r"C:\nvm\node.exe".to_string(),
+                r"C:\npm\claude.js".to_string(),
+                "-p".to_string(),
+                "--verbose".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn protocol_command_element_zero_is_the_resolved_executable() {
+        let dir = temporary_directory("honest-argv");
+        #[cfg(windows)]
+        {
+            fs::create_dir_all(&dir).expect("temporary directory");
+            File::create(dir.join("claude.exe")).expect("fake claude");
+            File::create(dir.join("grok.exe")).expect("fake grok");
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir_all(&dir).expect("temporary directory");
+            std::fs::write(dir.join("claude"), []).expect("fake claude");
+            std::fs::write(dir.join("grok"), []).expect("fake grok");
+            for name in ["claude", "grok"] {
+                let path = dir.join(name);
+                let mut perms = std::fs::metadata(&path).expect("meta").permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&path, perms).expect("chmod");
+            }
+        }
+        let discovered = super::discover_in_paths(&[dir.clone()]);
+        let claude = discovered
+            .agents
+            .iter()
+            .find(|agent| agent.id == "claude")
+            .expect("claude on fake PATH");
+        let stream = claude
+            .stream_json_command
+            .as_ref()
+            .expect("claude speaks stream-json");
+        assert_eq!(
+            stream[0],
+            claude.executable.to_string_lossy(),
+            "stream_json_command[0] must be the resolved executable, not the catalog id"
+        );
+        let mut expected = vec![claude.executable.to_string_lossy().into_owned()];
+        expected.extend(claude.prefix_args.iter().cloned());
+        expected.extend(
+            super::CLAUDE_STREAM_JSON_ARGS
+                .iter()
+                .map(|arg| (*arg).to_string()),
+        );
+        assert_eq!(
+            stream, &expected,
+            "spawned stream-json argv must stay executable + prefix + measured flags"
+        );
+
+        let grok = discovered
+            .agents
+            .iter()
+            .find(|agent| agent.id == "grok")
+            .expect("grok on fake PATH");
+        let acp = grok.acp_command.as_ref().expect("grok speaks ACP");
+        assert_eq!(
+            acp[0],
+            grok.executable.to_string_lossy(),
+            "acp_command[0] must be the resolved executable, not the catalog id"
+        );
+        let mut expected = vec![grok.executable.to_string_lossy().into_owned()];
+        expected.extend(grok.prefix_args.iter().cloned());
+        expected.extend(["agent", "stdio"].iter().map(|arg| (*arg).to_string()));
+        assert_eq!(
+            acp, &expected,
+            "spawned ACP argv must stay executable + prefix + acp args"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

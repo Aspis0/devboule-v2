@@ -32,7 +32,7 @@ type CommandArgs = {
   project_add: { path: string };
   workspaces_list: { project_id: Id };
   workspace_create: { project_id: Id; isolation: Workspace["isolation"]; branch?: string | null };
-  session_create: { workspace_id: Id | null; kind: SessionKind };
+  session_create: { workspace_id: Id | null; kind: SessionKind; provider?: string | null };
   session_attach: { id: Id; from_cursor: number | null; ch: SessionChannel };
   session_send: { id: Id; text: string };
   session_interrupt: { id: Id };
@@ -172,8 +172,11 @@ export const workspaceCreate = (
   isolation: Workspace["isolation"],
   branch?: string,
 ) => invokeTyped("workspace_create", { project_id: projectId, isolation, branch });
-export const sessionCreate = (workspaceId: Id | null, kind: SessionKind = "terminal") =>
-  invokeTyped("session_create", { workspace_id: workspaceId, kind });
+export const sessionCreate = (
+  workspaceId: Id | null,
+  kind: SessionKind = "terminal",
+  provider?: string | null,
+) => invokeTyped("session_create", { workspace_id: workspaceId, kind, provider: provider ?? null });
 export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChannel) =>
   invokeTyped("session_attach", { id, from_cursor: fromCursor, ch });
 export const sessionSend = (id: Id, text: string) => invokeTyped("session_send", { id, text });

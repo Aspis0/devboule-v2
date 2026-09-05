@@ -18,7 +18,11 @@ export interface Workspace {
   isolation: "local" | "worktree";
 }
 
-export type SessionKind = "terminal" | "acp";
+export type SessionKind = "terminal" | "acp" | "claude";
+
+export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" {
+  return kind === "acp" || kind === "claude";
+}
 export type SendIntent = "interrupt" | "steer" | "queue";
 export type PermissionOutcome = "allow_once" | "deny";
 
@@ -26,6 +30,11 @@ export interface PermissionOption {
   optionId: string;
   name: string;
   kind: string;
+}
+
+export interface ToolLocation {
+  path: string;
+  line?: number;
 }
 
 export interface PermissionEnvVar {
@@ -225,13 +234,22 @@ export type SessionEvent =
   /** Text emitted by an ACP agent message chunk. */
   | { type: "agent_message"; messageId: string | null; text: string }
   /** ACP tool call announced by the agent. */
-  | { type: "agent_tool_call"; toolCallId: string; title: string; status: string }
+  | {
+      type: "agent_tool_call";
+      toolCallId: string;
+      title: string;
+      status: string;
+      kind?: string;
+      locations?: ToolLocation[];
+    }
   /** ACP update for an existing tool call. */
   | {
       type: "agent_tool_update";
       toolCallId: string;
       status: string | null;
       text: string | null;
+      kind?: string;
+      locations?: ToolLocation[];
     }
   /**
    * ACP prompt completion. `modelId` and `usage` are what the agent actually

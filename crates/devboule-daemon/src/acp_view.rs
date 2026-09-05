@@ -3,9 +3,12 @@
 //! The envelope is the source of truth. This module never mutates it: callers
 //! journal the original object and, separately, publish the derived view.
 
+use std::path::Path;
+
+use crate::claude_view::relativize_tool_path;
 use devboule_protocol::{
     AvailableCommandView, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
-    SessionModelEffort, TurnUsage,
+    SessionModelEffort, ToolLocation, TurnUsage,
 };
 
 /// Kind of a JSON-RPC line. Requests carry a method *and* an id; treating a
@@ -39,8 +42,16 @@ pub(crate) fn view_from_envelope(
     value: &serde_json::Value,
     expected_session_id: &str,
 ) -> Option<SessionEvent> {
+    view_from_envelope_in(value, expected_session_id, None)
+}
+
+pub(crate) fn view_from_envelope_in(
+    value: &serde_json::Value,
+    expected_session_id: &str,
+    cwd: Option<&Path>,
+) -> Option<SessionEvent> {
     if value.get("method").and_then(serde_json::Value::as_str) == Some("session/update") {
-        return view_from_session_update(value, expected_session_id);
+        return view_from_session_update(value, expected_session_id, cwd);
     }
     if value.get("method").and_then(serde_json::Value::as_str) == Some("_x.ai/models/update") {
         let params = value.get("params")?;
@@ -55,6 +66,7 @@ pub(crate) fn view_from_envelope(
 fn view_from_session_update(
     value: &serde_json::Value,
     expected_session_id: &str,
+    cwd: Option<&Path>,
 ) -> Option<SessionEvent> {
     let params = value.get("params")?;
     if !expected_session_id.is_empty()
@@ -112,6 +124,11 @@ fn view_from_session_update(
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("in_progress")
                 .to_string(),
+            kind: update
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            locations: locations_from_value(update.get("locations"), cwd, false),
         }),
         Some("tool_call_update") => {
             let text = text_from_content(update.get("content")).map(str::to_string);
@@ -126,6 +143,11 @@ fn view_from_session_update(
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string),
                 text,
+                kind: update
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                locations: locations_from_value(update.get("locations"), cwd, true),
             })
         }
         _ => None,
@@ -244,7 +266,9 @@ pub(crate) fn session_manifest_from_initialize(
     result: &serde_json::Value,
     provider_id: Option<String>,
 ) -> Option<SessionEvent> {
-    let state = result.get("_meta").and_then(|meta| meta.get("modelState"))?;
+    let state = result
+        .get("_meta")
+        .and_then(|meta| meta.get("modelState"))?;
     manifest_from_vendor_models(state, provider_id, None)
 }
 
@@ -327,7 +351,10 @@ fn manifest_from_vendor_models(
         .get("currentModelId")
         .and_then(serde_json::Value::as_str)
         .map(str::to_string);
-    let models: Vec<SessionModel> = available.iter().filter_map(session_model_from_vendor).collect();
+    let models: Vec<SessionModel> = available
+        .iter()
+        .filter_map(session_model_from_vendor)
+        .collect();
     if models.is_empty() && current_model_id.is_none() && modes.is_none() {
         return None;
     }
@@ -394,7 +421,12 @@ fn session_effort_from_vendor(value: &serde_json::Value) -> Option<SessionModelE
         label: value
             .get("label")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_else(|| value.get("id").and_then(serde_json::Value::as_str).unwrap_or(""))
+            .unwrap_or_else(|| {
+                value
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+            })
             .to_string(),
         description: value
             .get("description")
@@ -402,6 +434,38 @@ fn session_effort_from_vendor(value: &serde_json::Value) -> Option<SessionModelE
             .map(str::to_string),
         default: value.get("default").and_then(serde_json::Value::as_bool),
     })
+}
+
+fn locations_from_value(
+    value: Option<&serde_json::Value>,
+    cwd: Option<&Path>,
+    empty_is_replace: bool,
+) -> Option<Vec<ToolLocation>> {
+    let value = value?;
+    let entries = value.as_array()?;
+    if entries.is_empty() {
+        return if empty_is_replace {
+            Some(Vec::new())
+        } else {
+            None
+        };
+    }
+    Some(
+        entries
+            .iter()
+            .filter_map(|location| {
+                let path = location.get("path").and_then(serde_json::Value::as_str)?;
+                let line = location
+                    .get("line")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok());
+                Some(ToolLocation {
+                    path: relativize_tool_path(path, cwd),
+                    line,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn modes_from_standard(result: &serde_json::Value) -> Option<SessionModeStateView> {
@@ -437,7 +501,7 @@ fn modes_from_standard(result: &serde_json::Value) -> Option<SessionModeStateVie
 mod tests {
     use super::{
         classify_line, merge_handshake_manifest, session_manifest_from_models_update,
-        session_manifest_from_new_session, view_from_envelope, AcpLineKind,
+        session_manifest_from_new_session, view_from_envelope, view_from_envelope_in, AcpLineKind,
     };
     use devboule_protocol::SessionEvent;
 
@@ -871,5 +935,63 @@ mod tests {
             panic!("models update must become SessionManifest, got {view:?}");
         };
         assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
+    }
+
+    #[test]
+    fn tool_call_forwards_kind_and_relativized_locations() {
+        let cwd = std::path::Path::new(r"C:\work");
+        let line = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"Read lib.rs","status":"pending","kind":"read","locations":[{"path":"C:\\work\\src\\lib.rs","line":12}]}}}"#,
+        );
+        match view_from_envelope_in(&line, SESSION, Some(cwd)) {
+            Some(SessionEvent::AgentToolCall {
+                tool_call_id,
+                kind,
+                locations,
+                ..
+            }) => {
+                assert_eq!(tool_call_id, "call-1");
+                assert_eq!(kind.as_deref(), Some("read"));
+                let locations = locations.expect("locations");
+                assert_eq!(locations.len(), 1);
+                assert_eq!(
+                    locations[0].path,
+                    std::path::PathBuf::from("src")
+                        .join("lib.rs")
+                        .to_string_lossy()
+                );
+                assert_eq!(locations[0].line, Some(12));
+            }
+            other => panic!("expected tool call with locations, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_update_locations_replace_and_are_not_merged() {
+        let cwd = std::path::Path::new(r"C:\work");
+        let line = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","kind":"edit","locations":[{"path":"C:\\work\\src\\main.rs"}]}}}"#,
+        );
+        match view_from_envelope_in(&line, SESSION, Some(cwd)) {
+            Some(SessionEvent::AgentToolUpdate {
+                kind,
+                locations,
+                status,
+                ..
+            }) => {
+                assert_eq!(status.as_deref(), Some("completed"));
+                assert_eq!(kind.as_deref(), Some("edit"));
+                let locations = locations.expect("replaced locations");
+                assert_eq!(locations.len(), 1);
+                assert_eq!(
+                    locations[0].path,
+                    std::path::PathBuf::from("src")
+                        .join("main.rs")
+                        .to_string_lossy()
+                );
+                assert!(locations[0].line.is_none());
+            }
+            other => panic!("expected tool update with replaced locations, got {other:?}"),
+        }
     }
 }

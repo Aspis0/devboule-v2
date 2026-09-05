@@ -99,7 +99,7 @@ pub use session::{
     PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence, PersistenceKind,
     ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView,
     SessionModeView, SessionModel, SessionModelEffort, SessionState, SessionStateSnapshot,
-    TranscriptIntegrity, TurnUsage,
+    ToolLocation, TranscriptIntegrity, TurnUsage,
 };
 
 /// Current protocol dialect spoken by this crate.

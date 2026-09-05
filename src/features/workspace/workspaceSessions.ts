@@ -7,6 +7,7 @@ import {
   sessionsWatch,
 } from "../../lib/tauri";
 import type { Session, SessionStateSnapshot } from "../../types/ipc";
+import { isAgentKind } from "../../types/ipc";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
@@ -92,7 +93,7 @@ export function sessionDotTone(state: unknown): "green" | "terracotta" | "border
 export function sessionTitle(session: Pick<Session, "id" | "title" | "kind">): string {
   const title = session.title.trim();
   if (title) return title;
-  return `${session.kind === "acp" ? "Agent" : "Terminal"} ${session.id.slice(0, 8)}`;
+  return `${isAgentKind(session.kind) ? "Agent" : "Terminal"} ${session.id.slice(0, 8)}`;
 }
 
 export function createWorkspaceSessionController(

@@ -64,6 +64,7 @@ pub(super) fn replay_session(
     let mut events: Vec<SessionEvent> = Vec::new();
     let mut event_seqs: Vec<u64> = Vec::new();
     let mut covered = from_seq;
+    let mut claude_view = crate::claude_view::ClaudeView::new(None);
 
     let mut snap_stmt = conn.prepare(
         "SELECT from_seq, up_to_seq, blob, checksum FROM snapshots
@@ -158,6 +159,11 @@ pub(super) fn replay_session(
                     if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
                         events.push(view);
                         event_seqs.push(seq);
+                    } else {
+                        for view in claude_view.ingest(&value) {
+                            events.push(view);
+                            event_seqs.push(seq);
+                        }
                     }
                 }
             }
@@ -169,6 +175,7 @@ pub(super) fn replay_session(
     // agent_report rows that stay in `events` (they are not compacted).
     // Reload those rows independently and merge by stream sequence.
     let mut covered_reports = Vec::new();
+    let mut covered_claude = crate::claude_view::ClaudeView::new(None);
     if covered > from_seq {
         let mut report_stmt = conn.prepare(
             "SELECT seq, kind, payload, checksum FROM events
@@ -208,6 +215,10 @@ pub(super) fn replay_session(
             } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
                 if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
                     covered_reports.push((seq, view));
+                } else {
+                    for view in covered_claude.ingest(&value) {
+                        covered_reports.push((seq, view));
+                    }
                 }
             }
         }

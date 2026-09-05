@@ -14,6 +14,14 @@ use crate::error::{ErrorCode, ErrorDetails, WireError};
 pub enum SessionKind {
     Terminal,
     Acp,
+    Claude,
+}
+
+impl SessionKind {
+    /// ACP and the Claude stream-json adapter are both live agent sessions.
+    pub fn is_agent(&self) -> bool {
+        matches!(self, Self::Acp | Self::Claude)
+    }
 }
 
 /// Activity the agent (or its hook) last reported. Wire names match herdr's
@@ -204,17 +212,33 @@ pub enum SessionEvent {
     },
     /// An ACP tool call announced by the agent. A separate permission request
     /// event carries the user-facing authorization conversation.
+    ///
+    /// `kind` is the ACP `ToolKind` snake_case name (`read`, `edit`, `execute`,
+    /// `search`, `fetch`, `think`, `other`, …). `locations` are paths the
+    /// daemon has already relativized against the session cwd.
     AgentToolCall {
         tool_call_id: String,
         title: String,
         status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locations: Option<Vec<ToolLocation>>,
     },
     /// An ACP tool-call status update. The optional text is the textual part
     /// of any content the agent supplied with the update.
+    ///
+    /// `locations`, when present, replace the previous list wholesale. They
+    /// are never merged — ACP schema: "Collections are overwritten, not
+    /// extended".
     AgentToolUpdate {
         tool_call_id: String,
         status: Option<String>,
         text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locations: Option<Vec<ToolLocation>>,
     },
     /// The response to one `session/prompt` request.
     AgentFinished {
@@ -514,6 +538,17 @@ pub struct AvailableCommandView {
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+}
+
+/// A file the agent is reading or editing. Paths are relativized against the
+/// session cwd in the daemon before this struct is published; a path that is
+/// not under cwd is forwarded absolute.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolLocation {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
 }
 
 /// Token usage attached to a prompt turn, when the agent supplied it.
@@ -1047,5 +1082,69 @@ mod tests {
             serde_json::to_value(AgentActivityState::Unknown).expect("json"),
             "unknown"
         );
+    }
+
+    #[test]
+    fn claude_session_kind_is_the_wire_string_claude() {
+        assert_eq!(
+            serde_json::to_value(SessionKind::Claude).expect("json"),
+            "claude"
+        );
+        let decoded: SessionKind = serde_json::from_str("\"claude\"").expect("kind");
+        assert_eq!(decoded, SessionKind::Claude);
+        assert!(SessionKind::Claude.is_agent());
+        assert!(SessionKind::Acp.is_agent());
+        assert!(!SessionKind::Terminal.is_agent());
+    }
+
+    #[test]
+    fn tool_call_kind_and_locations_are_camel_case_and_optional() {
+        let with = SessionEvent::AgentToolCall {
+            tool_call_id: "toolu_1".to_string(),
+            title: "Read src/lib.rs".to_string(),
+            status: "pending".to_string(),
+            kind: Some("read".to_string()),
+            locations: Some(vec![ToolLocation {
+                path: "src/lib.rs".to_string(),
+                line: Some(12),
+            }]),
+        };
+        let encoded = serde_json::to_value(&with).expect("json");
+        assert_eq!(encoded["type"], "agent_tool_call");
+        assert_eq!(encoded["toolCallId"], "toolu_1");
+        assert_eq!(encoded["kind"], "read");
+        assert_eq!(encoded["locations"][0]["path"], "src/lib.rs");
+        assert_eq!(encoded["locations"][0]["line"], 12);
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, with);
+
+        let without = SessionEvent::AgentToolCall {
+            tool_call_id: "t".to_string(),
+            title: "x".to_string(),
+            status: "pending".to_string(),
+            kind: None,
+            locations: None,
+        };
+        let encoded = serde_json::to_value(&without).expect("json");
+        assert!(encoded.get("kind").is_none());
+        assert!(encoded.get("locations").is_none());
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, without);
+
+        let update = SessionEvent::AgentToolUpdate {
+            tool_call_id: "t".to_string(),
+            status: Some("completed".to_string()),
+            text: Some("ok".to_string()),
+            kind: Some("edit".to_string()),
+            locations: Some(vec![ToolLocation {
+                path: "src/main.rs".to_string(),
+                line: None,
+            }]),
+        };
+        let encoded = serde_json::to_value(&update).expect("json");
+        assert_eq!(encoded["type"], "agent_tool_update");
+        assert_eq!(encoded["kind"], "edit");
+        assert_eq!(encoded["locations"][0]["path"], "src/main.rs");
+        assert!(encoded["locations"][0].get("line").is_none());
     }
 }

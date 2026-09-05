@@ -883,7 +883,9 @@ fn dispatch(
     }
 }
 
-fn wire_provider(agent: crate::provider_catalog::InstalledAgent) -> devboule_protocol::ProviderInfo {
+fn wire_provider(
+    agent: crate::provider_catalog::InstalledAgent,
+) -> devboule_protocol::ProviderInfo {
     devboule_protocol::ProviderInfo {
         id: agent.id.to_string(),
         executable: agent.executable.to_string_lossy().into_owned(),
@@ -1033,8 +1035,17 @@ fn dispatch_session(
             id,
             workspace_id,
             kind,
+            provider,
             idempotency_key,
-        } => session_create(state, owner, id, workspace_id, kind, idempotency_key),
+        } => session_create(
+            state,
+            owner,
+            id,
+            workspace_id,
+            kind,
+            provider,
+            idempotency_key,
+        ),
         ClientMessage::SessionAttach {
             id,
             session_id,
@@ -1214,14 +1225,17 @@ fn session_create(
     id: u64,
     workspace_id: Option<String>,
     kind: SessionKind,
+    provider: Option<String>,
     idempotency_key: Option<String>,
 ) -> DaemonMessage {
     let fingerprint = format!(
-        "create:{}:{}",
+        "create:{}:{}:{}",
         match kind {
             SessionKind::Terminal => "terminal",
             SessionKind::Acp => "acp",
+            SessionKind::Claude => "claude",
         },
+        provider.as_deref().unwrap_or(""),
         workspace_id.as_deref().unwrap_or("")
     );
     if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
@@ -1235,7 +1249,7 @@ fn session_create(
     }
     match state
         .sessions
-        .create(state, owner, workspace_id, kind, None)
+        .create(state, owner, workspace_id, kind, provider, None)
     {
         Ok(session) => {
             let reply = DaemonMessage::Session { id, session };

@@ -180,6 +180,10 @@ impl AcpHost {
         Self::with_terminal_limit(cwd, runtime_dir, daemon_job, MAX_ACP_TERMINALS)
     }
 
+    pub(super) fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
     fn with_terminal_limit(
         cwd: PathBuf,
         runtime_dir: PathBuf,
@@ -734,7 +738,10 @@ impl AcpTerminal {
 }
 
 fn count_dsr_queries(bytes: &[u8]) -> usize {
-    bytes.windows(4).filter(|window| *window == b"\x1b[6n").count()
+    bytes
+        .windows(4)
+        .filter(|window| *window == b"\x1b[6n")
+        .count()
 }
 
 #[derive(Clone, Copy)]
@@ -948,13 +955,8 @@ fn terminal_permission_id() -> String {
 }
 
 enum SpawnPlan {
-    Argv {
-        program: String,
-        args: Vec<String>,
-    },
-    ShellLine {
-        line: String,
-    },
+    Argv { program: String, args: Vec<String> },
+    ShellLine { line: String },
 }
 
 struct PreparedSpawn {
@@ -980,7 +982,11 @@ fn spawn_plan(command: &str, args: &[String]) -> SpawnPlan {
     }
 }
 
-fn prepare_spawn(plan: &SpawnPlan, runtime_dir: &Path, terminal_id: &str) -> Result<PreparedSpawn, RpcError> {
+fn prepare_spawn(
+    plan: &SpawnPlan,
+    runtime_dir: &Path,
+    terminal_id: &str,
+) -> Result<PreparedSpawn, RpcError> {
     match plan {
         SpawnPlan::Argv { program, args } => Ok(PreparedSpawn {
             program: program.clone(),
@@ -1015,16 +1021,19 @@ fn prepare_spawn(plan: &SpawnPlan, runtime_dir: &Path, terminal_id: &str) -> Res
 }
 
 #[cfg(windows)]
-fn write_shell_batch(runtime_dir: &Path, terminal_id: &str, line: &str) -> Result<PathBuf, RpcError> {
+fn write_shell_batch(
+    runtime_dir: &Path,
+    terminal_id: &str,
+    line: &str,
+) -> Result<PathBuf, RpcError> {
     static BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
     let seq = BATCH_SEQ.fetch_add(1, Ordering::Relaxed);
     let path = runtime_dir.join(format!(
         "acp-{:x}-{seq}-{terminal_id}.cmd",
         std::process::id()
     ));
-    std::fs::write(&path, format!("{line}\r\n")).map_err(|error| {
-        RpcError::internal(format!("Could not write ACP shell batch: {error}"))
-    })?;
+    std::fs::write(&path, format!("{line}\r\n"))
+        .map_err(|error| RpcError::internal(format!("Could not write ACP shell batch: {error}")))?;
     Ok(path)
 }
 
@@ -2124,7 +2133,10 @@ mod tests {
         });
         let (command, args) = request.expect("shell-line create must publish a PermissionRequest");
         assert_eq!(command.as_deref(), Some(line));
-        assert_eq!(args, None, "shell-line prompt must show the original line, not the tempfile argv");
+        assert_eq!(
+            args, None,
+            "shell-line prompt must show the original line, not the tempfile argv"
+        );
     }
 
     #[cfg(windows)]
@@ -2188,7 +2200,10 @@ mod tests {
         test.host.shutdown();
         let _ = std::fs::remove_dir_all(&test.cwd);
         let _ = std::fs::remove_dir_all(&test.runtime);
-        assert!(elapsed < Duration::from_secs(1), "closed create blocked {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "closed create blocked {elapsed:?}"
+        );
         assert_eq!(error.code, -32001);
         assert_eq!(test.host.spawned_count(), 0);
         assert_eq!(broker.pending_len(), 0);
@@ -2225,7 +2240,10 @@ mod tests {
         test.host.shutdown();
         let _ = std::fs::remove_dir_all(&test.cwd);
         let _ = std::fs::remove_dir_all(&test.runtime);
-        assert!(elapsed < Duration::from_secs(1), "capability deny blocked {elapsed:?}");
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "capability deny blocked {elapsed:?}"
+        );
         assert_eq!(error.code, -32001);
         assert_eq!(test.host.spawned_count(), 0);
         assert!(
@@ -2375,7 +2393,8 @@ mod tests {
             }))
             .expect("create");
         let terminal_id = created["terminalId"].clone();
-        let output = wait_for_output_containing(&host, &terminal_id, "SPACE_OK", Duration::from_secs(5));
+        let output =
+            wait_for_output_containing(&host, &terminal_id, "SPACE_OK", Duration::from_secs(5));
         let code = wait_for_exit_code(&host, terminal_id.clone());
         host.release_terminal(serde_json::json!({
             "sessionId": "stub-session",

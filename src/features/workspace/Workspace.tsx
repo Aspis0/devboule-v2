@@ -21,8 +21,8 @@ import {
   sessionTitle,
   useWorkspaceSessions,
 } from "./workspaceSessions";
-import type { DaemonStatus } from "../../types/ipc";
-import type { PermissionRequest } from "../../types/ipc";
+import type { DaemonStatus, PermissionRequest } from "../../types/ipc";
+import { isAgentKind } from "../../types/ipc";
 import { reasonFromCause, sessionPermissionRespond } from "../../lib/tauri";
 import "./Workspace.css";
 
@@ -343,7 +343,9 @@ export function Workspace() {
 
         {selectedSessionId !== null ? (
           <>
-            {selectedPermission !== null && selectedSession?.kind === "acp" ? (
+            {selectedPermission !== null &&
+            selectedSession != null &&
+            isAgentKind(selectedSession.kind) ? (
               <WorkspacePermissionCard
                 sessionId={selectedSessionId}
                 request={selectedPermission}
@@ -351,7 +353,7 @@ export function Workspace() {
                 onResolved={handlePermissionResolved}
               />
             ) : null}
-            {selectedSession?.kind === "acp" ? (
+            {selectedSession != null && isAgentKind(selectedSession.kind) ? (
               <AgentChatSurface
                 key={selectedSessionId}
                 id={WORKSPACE_TERMINAL_PANEL_ID}
