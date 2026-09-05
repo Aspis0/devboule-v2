@@ -891,6 +891,7 @@ fn wire_provider(
         executable: agent.executable.to_string_lossy().into_owned(),
         acp_available: agent.acp_command.is_some(),
         authentication: "unknown".to_string(),
+        protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
     }
 }
 

@@ -16,14 +16,16 @@ import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
 import {
+  chatCapableProviders,
+  sessionCreateFromProvider,
   sessionDotTone,
   sessionStateLabel,
   sessionTitle,
   useWorkspaceSessions,
 } from "./workspaceSessions";
-import type { DaemonStatus, PermissionRequest } from "../../types/ipc";
+import type { DaemonStatus, PermissionRequest, ProviderInfo } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
-import { reasonFromCause, sessionPermissionRespond } from "../../lib/tauri";
+import { providersList, reasonFromCause, sessionPermissionRespond } from "../../lib/tauri";
 import "./Workspace.css";
 
 type ActiveSidePanel = MockSurface["id"];
@@ -117,13 +119,73 @@ export function Workspace() {
   const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
-  const handleNewWorkspace = useCallback(
-    (projectId: string) => {
-      addWorkspace(projectId);
-      void createSession();
+  const [providerPicker, setProviderPicker] = useState<{
+    projectId: string;
+    providers: ProviderInfo[];
+  } | null>(null);
+  const newWorkspaceInFlightRef = useRef(false);
+  const providerPickerRef = useRef<HTMLDivElement>(null);
+  const loadChatProviders = useCallback(async (): Promise<ProviderInfo[]> => {
+    try {
+      const catalog = await providersList();
+      return chatCapableProviders(catalog.providers);
+    } catch {
+      return [];
+    }
+  }, []);
+  const startAgentSession = useCallback(
+    (provider: ProviderInfo | undefined) => {
+      const args = sessionCreateFromProvider(provider);
+      void createSession(args.kind, args.provider);
     },
-    [addWorkspace, createSession],
+    [createSession],
   );
+  const dismissProviderPicker = useCallback(() => {
+    setProviderPicker(null);
+    newWorkspaceInFlightRef.current = false;
+  }, []);
+  const handleNewWorkspace = useCallback(
+    async (projectId: string) => {
+      if (newWorkspaceInFlightRef.current) return;
+      newWorkspaceInFlightRef.current = true;
+      const capable = await loadChatProviders();
+      if (capable.length <= 1) {
+        addWorkspace(projectId);
+        startAgentSession(capable[0]);
+        newWorkspaceInFlightRef.current = false;
+        return;
+      }
+      setProviderPicker({ projectId, providers: capable });
+    },
+    [addWorkspace, loadChatProviders, startAgentSession],
+  );
+  const pickProvider = useCallback(
+    (provider: ProviderInfo, projectId: string) => {
+      setProviderPicker(null);
+      addWorkspace(projectId);
+      startAgentSession(provider);
+      newWorkspaceInFlightRef.current = false;
+    },
+    [addWorkspace, startAgentSession],
+  );
+  useEffect(() => {
+    if (providerPicker === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") dismissProviderPicker();
+    };
+    const onPointer = (event: MouseEvent) => {
+      const root = providerPickerRef.current;
+      if (root !== null && event.target instanceof Node && !root.contains(event.target)) {
+        dismissProviderPicker();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onPointer);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onPointer);
+    };
+  }, [dismissProviderPicker, providerPicker]);
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
@@ -226,7 +288,7 @@ export function Workspace() {
                         <button
                           type="button"
                           className="workspace-project-add"
-                          onClick={() => handleNewWorkspace(project.id)}
+                          onClick={() => void handleNewWorkspace(project.id)}
                           title="New workspace in this project"
                           aria-label={`New workspace in ${project.name}`}
                         >
@@ -252,13 +314,42 @@ export function Workspace() {
                             <span className="workspace-isolation">{workspace.isolation}</span>
                           </button>
                         ))}
-                        <button
-                          type="button"
-                          className="workspace-new-row"
-                          onClick={() => handleNewWorkspace(project.id)}
+                        <div
+                          className="workspace-new-row-wrap"
+                          ref={
+                            providerPicker?.projectId === project.id ? providerPickerRef : undefined
+                          }
                         >
-                          <span aria-hidden="true">+</span>New workspace
-                        </button>
+                          <button
+                            type="button"
+                            className="workspace-new-row"
+                            onClick={() => void handleNewWorkspace(project.id)}
+                          >
+                            <span aria-hidden="true">+</span>New workspace
+                          </button>
+                          {providerPicker?.projectId === project.id ? (
+                            <div
+                              className="workspace-surface-menu"
+                              role="listbox"
+                              aria-label="Choose agent"
+                            >
+                              <div className="workspace-menu-label">Choose agent</div>
+                              <div className="workspace-surface-options">
+                                {providerPicker.providers.map((provider) => (
+                                  <button
+                                    type="button"
+                                    role="option"
+                                    className="workspace-surface-option"
+                                    key={provider.id}
+                                    onClick={() => pickProvider(provider, providerPicker.projectId)}
+                                  >
+                                    <span className="workspace-surface-name">{provider.id}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
                   ))}

@@ -6,12 +6,12 @@ import {
   sessionsUnwatch,
   sessionsWatch,
 } from "../../lib/tauri";
-import type { Session, SessionStateSnapshot } from "../../types/ipc";
+import type { ProviderInfo, Session, SessionKind, SessionStateSnapshot } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
-  create: () => Promise<Session>;
+  create: (kind?: SessionKind, provider?: string | null) => Promise<Session>;
   watch?: (listener: (snapshots: SessionStateSnapshot[]) => void) => Promise<() => void>;
 }
 
@@ -27,14 +27,15 @@ export interface WorkspaceSessionController {
   getState: () => WorkspaceSessionState;
   subscribe: (listener: () => void) => () => void;
   refresh: () => Promise<void>;
-  create: () => Promise<Session | null>;
+  create: (kind?: SessionKind, provider?: string | null) => Promise<Session | null>;
   select: (sessionId: string) => void;
   watch: () => () => void;
 }
 
 const DEFAULT_SOURCE: WorkspaceSessionSource = {
   list: sessionsList,
-  create: () => sessionCreate(null, "acp"),
+  create: (kind = "acp", provider = null) =>
+    provider == null ? sessionCreate(null, kind) : sessionCreate(null, kind, provider),
   watch: async (listener) => {
     const channel = createSessionStateChannel(listener);
     await sessionsWatch(channel);
@@ -178,12 +179,15 @@ export function createWorkspaceSessionController(
     });
   };
 
-  const create = async (): Promise<Session | null> => {
+  const create = async (
+    kind: SessionKind = "acp",
+    provider: string | null = null,
+  ): Promise<Session | null> => {
     if (state.creating) return null;
     ++refreshGeneration;
     publish({ ...state, creating: true, error: null });
     try {
-      const session = await source.create();
+      const session = await source.create(kind, provider);
       const sessions = [...state.sessions.filter((current) => current.id !== session.id), session];
       publish({
         ...state,
@@ -251,9 +255,25 @@ export function createWorkspaceSessionController(
   };
 }
 
+export function chatCapableProviders(providers: ProviderInfo[]): ProviderInfo[] {
+  return providers.filter(
+    (provider) => provider.protocol === "acp" || provider.protocol === "stream-json",
+  );
+}
+
+export function sessionCreateFromProvider(provider: ProviderInfo | undefined): {
+  kind: SessionKind;
+  provider: string | null;
+} {
+  if (provider === undefined) return { kind: "acp", provider: null };
+  if (provider.protocol === "stream-json") return { kind: "claude", provider: null };
+  if (provider.protocol === "acp") return { kind: "acp", provider: provider.id };
+  return { kind: "acp", provider: null };
+}
+
 export function useWorkspaceSessions(): WorkspaceSessionState & {
   refresh: () => Promise<void>;
-  create: () => Promise<Session | null>;
+  create: (kind?: SessionKind, provider?: string | null) => Promise<Session | null>;
   select: (sessionId: string) => void;
 } {
   const [controller] = useState<WorkspaceSessionController>(() =>
@@ -272,7 +292,10 @@ export function useWorkspaceSessions(): WorkspaceSessionState & {
   }, [controller]);
 
   const refresh = useCallback(() => controller.refresh(), [controller]);
-  const create = useCallback(() => controller.create(), [controller]);
+  const create = useCallback(
+    (kind?: SessionKind, provider?: string | null) => controller.create(kind, provider),
+    [controller],
+  );
   const select = useCallback((sessionId: string) => controller.select(sessionId), [controller]);
 
   return { ...state, refresh, create, select };

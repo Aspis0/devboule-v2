@@ -362,6 +362,8 @@ export interface ProviderInfo {
   executable: string;
   acpAvailable: boolean;
   authentication: "unknown";
+  /** `"acp"` or `"stream-json"` when the CLI can start a chat session. */
+  protocol?: string | null;
 }
 
 export interface ProviderCatalog {

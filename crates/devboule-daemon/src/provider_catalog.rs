@@ -223,6 +223,18 @@ fn count_unreadable_dirs(directories: &[PathBuf]) -> u32 {
     count
 }
 
+/// Chat dialect this installed agent can speak, if any.
+/// An agent with both launches is offered as ACP: ACP is the road, stream-json the exception.
+pub fn chat_protocol(agent: &InstalledAgent) -> Option<&'static str> {
+    if agent.acp_command.is_some() {
+        Some("acp")
+    } else if agent.stream_json_command.is_some() {
+        Some("stream-json")
+    } else {
+        None
+    }
+}
+
 /// Return the first discovered provider that offers ACP.
 pub fn first_acp_available() -> Option<InstalledAgent> {
     let discovered = discover();
@@ -881,6 +893,41 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
             line.push_str(arg);
         }
         line
+    }
+
+    fn fake_cli_path(dir: &Path, name: &str) {
+        #[cfg(windows)]
+        File::create(dir.join(format!("{name}.exe"))).expect("fake cli");
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.join(name);
+            std::fs::write(&path, []).expect("fake cli");
+            let mut perms = std::fs::metadata(&path).expect("meta").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod");
+        }
+    }
+
+    #[test]
+    fn chat_protocol_reports_stream_json_acp_or_none() {
+        let dir = temporary_directory("chat-protocol");
+        std::fs::create_dir_all(&dir).expect("temporary directory");
+        fake_cli_path(&dir, "claude");
+        fake_cli_path(&dir, "grok");
+        fake_cli_path(&dir, "codex");
+        let discovered = super::discover_in_paths(&[dir.clone()]);
+        let protocol_of = |id: &str| {
+            discovered
+                .agents
+                .iter()
+                .find(|agent| agent.id == id)
+                .and_then(super::chat_protocol)
+        };
+        assert_eq!(protocol_of("claude"), Some("stream-json"));
+        assert_eq!(protocol_of("grok"), Some("acp"));
+        assert_eq!(protocol_of("codex"), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -22,6 +22,7 @@ vi.mock("../../lib/tauri", () => ({
     cause instanceof Error && cause.message ? cause.message : "the app did not answer",
   ),
   sessionCreate: vi.fn(),
+  providersList: vi.fn(),
   sessionPermissionRespond: vi.fn(async () => undefined),
   createSessionStateChannel: vi.fn((onSnapshot: (snapshots: unknown[]) => void) => ({
     onSnapshot,
@@ -112,6 +113,7 @@ vi.mock("./AgentChatSurface", () => ({
 
 import {
   journalUsage,
+  providersList,
   sessionCreate,
   sessionDelete,
   sessionPermissionRespond,
@@ -195,6 +197,7 @@ describe("Workspace sessions", () => {
       ...terminal("session-2", "agent two"),
       kind: "acp",
     });
+    vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
   });
 
   afterEach(async () => {
@@ -240,6 +243,194 @@ describe("Workspace sessions", () => {
 
     expect(sessionCreate).toHaveBeenCalledWith(null, "acp");
     expect(container.querySelector("[data-testid=agent-chat-surface]")).not.toBeNull();
+  });
+
+  const grokProvider = {
+    id: "grok",
+    executable: "grok.exe",
+    acpAvailable: true,
+    authentication: "unknown" as const,
+    protocol: "acp",
+  };
+  const claudeProvider = {
+    id: "claude",
+    executable: "claude.exe",
+    acpAvailable: false,
+    authentication: "unknown" as const,
+    protocol: "stream-json",
+  };
+
+  it("lists chat-capable providers in a popover and creates claude when chosen", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, claudeProvider],
+      unreadableDirs: 0,
+    });
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...terminal("session-claude", "Agent"),
+      kind: "claude",
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+
+    expect(sessionCreate).not.toHaveBeenCalled();
+    const menu = container.querySelector('[aria-label="Choose agent"]');
+    if (menu === null) throw new Error("provider popover did not render");
+    expect(menu.textContent).toContain("grok");
+    expect(menu.textContent).toContain("claude");
+
+    const claudeOption = Array.from(menu.querySelectorAll("button")).find(
+      (button) => button.textContent === "claude",
+    );
+    if (claudeOption === undefined) throw new Error("claude option did not render");
+    await act(async () => claudeOption.click());
+    await act(async () => undefined);
+
+    expect(sessionCreate).toHaveBeenCalledWith(null, "claude");
+    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+  });
+
+  it("creates immediately with the only chat-capable provider", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
+  });
+
+  it("creates an ACP session with no provider when no chat-capable CLI is installed", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [
+        {
+          id: "codex",
+          executable: "codex.exe",
+          acpAvailable: false,
+          authentication: "unknown",
+          protocol: null,
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(sessionCreate).toHaveBeenCalledWith(null, "acp");
+  });
+
+  it("dismisses the provider popover on Escape without creating", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, claudeProvider],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+    expect(container.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("adds one workspace when New workspace is clicked twice before providersList resolves", async () => {
+    let release:
+      | ((value: { providers: (typeof grokProvider)[]; unreadableDirs: number }) => void)
+      | undefined;
+    const pending = new Promise<{ providers: (typeof grokProvider)[]; unreadableDirs: number }>(
+      (resolve) => {
+        release = resolve;
+      },
+    );
+    vi.mocked(providersList).mockImplementation(() => pending);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    const rowsBefore = container.querySelectorAll(".workspace-row").length;
+
+    await act(async () => {
+      newWorkspace.click();
+      newWorkspace.click();
+    });
+    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore);
+    expect(sessionCreate).not.toHaveBeenCalled();
+
+    await act(async () => {
+      if (release === undefined) throw new Error("providersList was not called");
+      release({ providers: [grokProvider], unreadableDirs: 0 });
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore + 1);
+    expect(sessionCreate).toHaveBeenCalledTimes(1);
+    expect(sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
+  });
+
+  it("dismisses the provider popover on outside mousedown without creating", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, claudeProvider],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+    expect(container.querySelector('[aria-label="Choose agent"]')).not.toBeNull();
+
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(sessionCreate).not.toHaveBeenCalled();
   });
 
   it("opens History from the left sidebar", async () => {

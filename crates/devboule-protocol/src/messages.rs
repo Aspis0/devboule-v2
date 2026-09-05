@@ -323,6 +323,11 @@ pub struct ProviderInfo {
     pub executable: String,
     pub acp_available: bool,
     pub authentication: String,
+    /// Chat launch dialect. `"acp"` or `"stream-json"` when the catalog
+    /// entry can start a session; omitted when the CLI is installed but
+    /// not chat-capable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -833,6 +838,7 @@ mod tests {
                 executable: r"C:\Users\gualt\AppData\Roaming\npm\grok.cmd".to_string(),
                 acp_available: true,
                 authentication: "unknown".to_string(),
+                protocol: Some("acp".to_string()),
             }],
             unreadable_dirs: 2,
         };
@@ -840,6 +846,7 @@ mod tests {
         assert_eq!(encoded["type"], "providers");
         assert_eq!(encoded["providers"][0]["id"], "grok");
         assert_eq!(encoded["providers"][0]["acpAvailable"], true);
+        assert_eq!(encoded["providers"][0]["protocol"], "acp");
         assert_eq!(encoded["providers"][0]["authentication"], "unknown");
         assert_eq!(encoded["unreadableDirs"], 2);
         assert!(encoded["providers"][0].get("authenticated").is_none());

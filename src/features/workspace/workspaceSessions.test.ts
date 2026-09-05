@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Session, SessionStateSnapshot } from "../../types/ipc";
-import { createWorkspaceSessionController, sessionStateLabel } from "./workspaceSessions";
+import {
+  chatCapableProviders,
+  createWorkspaceSessionController,
+  sessionCreateFromProvider,
+  sessionStateLabel,
+} from "./workspaceSessions";
 
 const liveSession = (id: string, title = id): Session => ({
   id,
@@ -12,6 +17,67 @@ const liveSession = (id: string, title = id): Session => ({
 });
 
 describe("workspace session controller", () => {
+  it("maps stream-json to kind claude and acp to kind acp plus provider id", () => {
+    expect(
+      sessionCreateFromProvider({
+        id: "claude",
+        executable: "claude.exe",
+        acpAvailable: false,
+        authentication: "unknown",
+        protocol: "stream-json",
+      }),
+    ).toEqual({ kind: "claude", provider: null });
+    expect(
+      sessionCreateFromProvider({
+        id: "grok",
+        executable: "grok.exe",
+        acpAvailable: true,
+        authentication: "unknown",
+        protocol: "acp",
+      }),
+    ).toEqual({ kind: "acp", provider: "grok" });
+    expect(sessionCreateFromProvider(undefined)).toEqual({ kind: "acp", provider: null });
+    expect(
+      chatCapableProviders([
+        {
+          id: "codex",
+          executable: "codex.exe",
+          acpAvailable: false,
+          authentication: "unknown",
+          protocol: null,
+        },
+        {
+          id: "grok",
+          executable: "grok.exe",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+        },
+      ]).map((provider) => provider.id),
+    ).toEqual(["grok"]);
+  });
+
+  it("does not list a provider whose protocol cannot be launched", () => {
+    expect(
+      chatCapableProviders([
+        {
+          id: "future",
+          executable: "future.exe",
+          acpAvailable: false,
+          authentication: "unknown",
+          protocol: "future-proto",
+        },
+        {
+          id: "grok",
+          executable: "grok.exe",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+        },
+      ]).map((provider) => provider.id),
+    ).toEqual(["grok"]);
+  });
+
   it("loads terminal and ACP sessions and selects the first real session", async () => {
     const list = vi.fn(async () => [
       liveSession("terminal-1", "shell one"),

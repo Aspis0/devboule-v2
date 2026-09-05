@@ -168,8 +168,10 @@ function ProvidersPanel() {
                   <span className="provider-detail">{provider.executable}</span>
                 </span>
                 <span className="provider-controls">
-                  {provider.acpAvailable ? (
+                  {provider.protocol === "acp" ? (
                     <span className="provider-status provider-status-ready">ACP</span>
+                  ) : provider.protocol === "stream-json" ? (
+                    <span className="provider-status provider-status-ready">stream-json</span>
                   ) : null}
                   <span className="provider-status provider-status-idle">
                     installed · authentication unknown

@@ -246,12 +246,14 @@ describe("Settings providers catalog", () => {
           executable: "C:\\\\npm\\\\grok.cmd",
           acpAvailable: true,
           authentication: "unknown",
+          protocol: "acp",
         },
         {
           id: "claude",
           executable: "C:\\\\npm\\\\claude.cmd",
           acpAvailable: false,
           authentication: "unknown",
+          protocol: "stream-json",
         },
       ],
       unreadableDirs: 0,
@@ -263,6 +265,7 @@ describe("Settings providers catalog", () => {
     expect(container.textContent).toContain("grok");
     expect(container.textContent).toContain("C:\\\\npm\\\\grok.cmd");
     expect(container.textContent).toContain("ACP");
+    expect(container.textContent).toContain("stream-json");
     expect(container.textContent).toContain("installed · authentication unknown");
     expect(container.textContent).toContain("claude");
     expect(container.querySelector('[role="switch"]')).toBeNull();
