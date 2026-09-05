@@ -3,7 +3,10 @@
 //! The envelope is the source of truth. This module never mutates it: callers
 //! journal the original object and, separately, publish the derived view.
 
-use devboule_protocol::{AvailableCommandView, SessionEvent, TurnUsage};
+use devboule_protocol::{
+    AvailableCommandView, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
+    SessionModelEffort, TurnUsage,
+};
 
 /// Kind of a JSON-RPC line. Requests carry a method *and* an id; treating a
 /// request as a response is how the previous dispatcher went mute.
@@ -38,6 +41,10 @@ pub(crate) fn view_from_envelope(
 ) -> Option<SessionEvent> {
     if value.get("method").and_then(serde_json::Value::as_str) == Some("session/update") {
         return view_from_session_update(value, expected_session_id);
+    }
+    if value.get("method").and_then(serde_json::Value::as_str) == Some("_x.ai/models/update") {
+        let params = value.get("params")?;
+        return session_manifest_from_models_update(params, None);
     }
     if classify_line(value) == Some(AcpLineKind::Response) {
         return view_from_prompt_response(value, expected_session_id);
@@ -233,9 +240,205 @@ fn commands_from_update(update: &serde_json::Value) -> Option<Vec<AvailableComma
     )
 }
 
+pub(crate) fn session_manifest_from_initialize(
+    result: &serde_json::Value,
+    provider_id: Option<String>,
+) -> Option<SessionEvent> {
+    let state = result.get("_meta").and_then(|meta| meta.get("modelState"))?;
+    manifest_from_vendor_models(state, provider_id, None)
+}
+
+pub(crate) fn session_manifest_from_new_session(
+    result: &serde_json::Value,
+    provider_id: Option<String>,
+) -> Option<SessionEvent> {
+    let models = result.get("models").and_then(|value| {
+        manifest_from_vendor_models(value, provider_id.clone(), modes_from_standard(result))
+    });
+    if models.is_some() {
+        return models;
+    }
+    modes_from_standard(result).map(|modes| SessionEvent::SessionManifest {
+        provider_id,
+        current_model_id: None,
+        models: Vec::new(),
+        modes: Some(modes),
+    })
+}
+
+pub(crate) fn session_manifest_from_models_update(
+    params: &serde_json::Value,
+    provider_id: Option<String>,
+) -> Option<SessionEvent> {
+    manifest_from_vendor_models(params, provider_id, None)
+}
+
+pub(crate) fn merge_handshake_manifest(
+    initialize_result: &serde_json::Value,
+    new_session_result: &serde_json::Value,
+    provider_id: Option<String>,
+) -> Option<SessionEvent> {
+    let modes = modes_from_standard(new_session_result);
+    let from_new_models = new_session_result
+        .get("models")
+        .and_then(|value| manifest_from_vendor_models(value, None, None));
+    let from_init = session_manifest_from_initialize(initialize_result, None);
+    match (from_new_models, from_init, modes) {
+        (
+            Some(SessionEvent::SessionManifest {
+                current_model_id,
+                models,
+                ..
+            }),
+            _,
+            modes,
+        )
+        | (
+            None,
+            Some(SessionEvent::SessionManifest {
+                current_model_id,
+                models,
+                ..
+            }),
+            modes,
+        ) => Some(SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        }),
+        (None, None, Some(modes)) => Some(SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(modes),
+        }),
+        _ => None,
+    }
+}
+
+fn manifest_from_vendor_models(
+    value: &serde_json::Value,
+    provider_id: Option<String>,
+    modes: Option<SessionModeStateView>,
+) -> Option<SessionEvent> {
+    let available = value.get("availableModels")?.as_array()?;
+    let current_model_id = value
+        .get("currentModelId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let models: Vec<SessionModel> = available.iter().filter_map(session_model_from_vendor).collect();
+    if models.is_empty() && current_model_id.is_none() && modes.is_none() {
+        return None;
+    }
+    Some(SessionEvent::SessionManifest {
+        provider_id,
+        current_model_id,
+        models,
+        modes,
+    })
+}
+
+fn session_model_from_vendor(value: &serde_json::Value) -> Option<SessionModel> {
+    let model_id = value.get("modelId")?.as_str()?.to_string();
+    let name = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&model_id)
+        .to_string();
+    let description = value
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let meta = value.get("_meta");
+    let context_tokens = meta
+        .and_then(|meta| meta.get("totalContextTokens"))
+        .and_then(serde_json::Value::as_u64);
+    let supports_effort = meta
+        .and_then(|meta| meta.get("supportsReasoningEffort"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let efforts = if supports_effort {
+        meta.and_then(|meta| meta.get("reasoningEfforts"))
+            .and_then(serde_json::Value::as_array)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(session_effort_from_vendor)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|entries| !entries.is_empty())
+    } else {
+        None
+    };
+    let current_effort = if supports_effort {
+        meta.and_then(|meta| meta.get("reasoningEffort"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    } else {
+        None
+    };
+    Some(SessionModel {
+        model_id,
+        name,
+        description,
+        context_tokens,
+        current_effort,
+        efforts,
+    })
+}
+
+fn session_effort_from_vendor(value: &serde_json::Value) -> Option<SessionModelEffort> {
+    Some(SessionModelEffort {
+        id: value.get("id")?.as_str()?.to_string(),
+        label: value
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| value.get("id").and_then(serde_json::Value::as_str).unwrap_or(""))
+            .to_string(),
+        description: value
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        default: value.get("default").and_then(serde_json::Value::as_bool),
+    })
+}
+
+fn modes_from_standard(result: &serde_json::Value) -> Option<SessionModeStateView> {
+    let modes = result.get("modes")?;
+    let current_mode_id = modes
+        .get("currentModeId")
+        .and_then(serde_json::Value::as_str)?
+        .to_string();
+    let available = modes.get("availableModes")?.as_array()?;
+    let available_modes: Vec<SessionModeView> = available
+        .iter()
+        .filter_map(|mode| {
+            Some(SessionModeView {
+                id: mode.get("id")?.as_str()?.to_string(),
+                name: mode.get("name")?.as_str()?.to_string(),
+                description: mode
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect();
+    if available_modes.is_empty() {
+        return None;
+    }
+    Some(SessionModeStateView {
+        current_mode_id,
+        available_modes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{classify_line, view_from_envelope, AcpLineKind};
+    use super::{
+        classify_line, merge_handshake_manifest, session_manifest_from_models_update,
+        session_manifest_from_new_session, view_from_envelope, AcpLineKind,
+    };
     use devboule_protocol::SessionEvent;
 
     // Reconstructed from recon/probes/grok-acp-fullcaps.txt (2026-09-04).
@@ -520,5 +723,153 @@ mod tests {
         );
         assert!(envelope_bytes > view_bytes);
         assert_eq!(envelopes.len(), 1 + 32 + 1 + 2 + 6 + 1);
+    }
+
+    // Reconstructed from recon/probes/acp-handshake.txt (2026-09-04) initialize
+    // result._meta.modelState / session/new.result.models. Truncated probe
+    // lines keep these field names and the grok-4.6 vs grok-4.5 effort split.
+    const GROK_MODELS: &str = r#"{
+        "currentModelId": "grok-4.6",
+        "availableModels": [
+            {
+                "modelId": "grok-4.6",
+                "name": "Grok 4.6",
+                "description": "SpaceXAI's latest frontier model",
+                "_meta": {
+                    "totalContextTokens": 500000,
+                    "agentType": "grok-build-plan",
+                    "supportsReasoningEffort": true,
+                    "reasoningEffort": "xhigh",
+                    "reasoningEfforts": [
+                        {"id": "xhigh", "value": "xhigh", "label": "Extra High Effort", "description": "Highest effort and reasoning level", "default": false},
+                        {"id": "high", "value": "high", "label": "High Effort", "description": "Higher implementation quality with extensive reasoning", "default": true},
+                        {"id": "medium", "value": "medium", "label": "Medium Effort", "description": "Balanced effort with standard implementation and testing", "default": false},
+                        {"id": "low", "value": "low", "label": "Low Effort", "description": "Quick, fast implementations", "default": false}
+                    ]
+                }
+            },
+            {
+                "modelId": "grok-4.5",
+                "name": "Grok 4.5",
+                "_meta": {
+                    "totalContextTokens": 500000,
+                    "agentType": "grok-build-plan",
+                    "supportsReasoningEffort": true,
+                    "reasoningEffort": "high",
+                    "reasoningEfforts": [
+                        {"id": "high", "value": "high", "label": "High Effort", "description": "Highest implementation quality with extensive reasoning", "default": true},
+                        {"id": "medium", "value": "medium", "label": "Medium Effort", "description": "Balanced effort with standard implementation and testing", "default": false},
+                        {"id": "low", "value": "low", "label": "Low Effort", "description": "Quick, fast implementations", "default": false}
+                    ]
+                }
+            }
+        ]
+    }"#;
+
+    #[test]
+    fn grok_session_new_models_become_a_session_manifest() {
+        let result = parse(&format!(
+            r#"{{"sessionId":"{SESSION}","models":{GROK_MODELS}}}"#
+        ));
+        let SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        } = session_manifest_from_new_session(&result, Some("grok".to_string()))
+            .expect("vendor models must parse")
+        else {
+            panic!("expected SessionManifest");
+        };
+        assert_eq!(provider_id.as_deref(), Some("grok"));
+        assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
+        assert!(modes.is_none());
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].model_id, "grok-4.6");
+        assert_eq!(models[0].context_tokens, Some(500_000));
+        assert_eq!(models[0].current_effort.as_deref(), Some("xhigh"));
+        let grok46_ids: Vec<&str> = models[0]
+            .efforts
+            .as_ref()
+            .expect("grok-4.6 declares efforts")
+            .iter()
+            .map(|effort| effort.id.as_str())
+            .collect();
+        assert!(grok46_ids.contains(&"xhigh"));
+        let grok45_ids: Vec<&str> = models[1]
+            .efforts
+            .as_ref()
+            .expect("grok-4.5 declares efforts")
+            .iter()
+            .map(|effort| effort.id.as_str())
+            .collect();
+        assert!(!grok45_ids.contains(&"xhigh"));
+    }
+
+    #[test]
+    fn standard_acp_modes_are_parsed_from_session_new() {
+        let result = parse(
+            r#"{"sessionId":"s1","modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Always ask","description":"Ask before every tool call."},{"id":"acceptEdits","name":"Accept edits"}]}}"#,
+        );
+        let SessionEvent::SessionManifest { modes, models, .. } =
+            session_manifest_from_new_session(&result, None).expect("standard modes must parse")
+        else {
+            panic!("expected SessionManifest");
+        };
+        assert!(models.is_empty());
+        let modes = modes.expect("modes");
+        assert_eq!(modes.current_mode_id, "ask");
+        assert_eq!(modes.available_modes.len(), 2);
+        assert_eq!(modes.available_modes[0].name, "Always ask");
+        assert_eq!(modes.available_modes[1].id, "acceptEdits");
+    }
+
+    #[test]
+    fn handshake_prefers_session_new_models_over_initialize_meta() {
+        let initialize = parse(&format!(
+            r#"{{"_meta":{{"modelState":{{"currentModelId":"stale","availableModels":[{{"modelId":"stale","name":"Stale"}}]}}}}}}"#
+        ));
+        let new_session = parse(&format!(
+            r#"{{"sessionId":"{SESSION}","models":{GROK_MODELS}}}"#
+        ));
+        let SessionEvent::SessionManifest {
+            current_model_id, ..
+        } = merge_handshake_manifest(&initialize, &new_session, Some("grok".to_string()))
+            .expect("handshake merge")
+        else {
+            panic!("expected SessionManifest");
+        };
+        assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
+    }
+
+    // Wire shape measured from a live journal:
+    // recon/probes/grok-xai-models-update.txt. The two `_x.ai/models/update`
+    // envelopes there match GROK_MODELS above.
+    #[test]
+    fn xai_models_update_replaces_the_manifest() {
+        let params = parse(GROK_MODELS);
+        let SessionEvent::SessionManifest {
+            current_model_id,
+            models,
+            ..
+        } = session_manifest_from_models_update(&params, Some("grok".to_string()))
+            .expect("models update must parse")
+        else {
+            panic!("expected SessionManifest");
+        };
+        assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
+        assert_eq!(models[0].current_effort.as_deref(), Some("xhigh"));
+
+        let envelope = parse(&format!(
+            r#"{{"jsonrpc":"2.0","method":"_x.ai/models/update","params":{GROK_MODELS}}}"#
+        ));
+        let view = view_from_envelope(&envelope, SESSION).expect("models update is modeled");
+        let SessionEvent::SessionManifest {
+            current_model_id, ..
+        } = view
+        else {
+            panic!("models update must become SessionManifest, got {view:?}");
+        };
+        assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
     }
 }

@@ -85,6 +85,10 @@
     "type": "recovered"
   },
   {
+    "models": [],
+    "type": "session_manifest"
+  },
+  {
     "sessions": [],
     "type": "sessions_snapshot"
   },

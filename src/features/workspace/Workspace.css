@@ -645,6 +645,30 @@
   height: 6px;
 }
 
+.workspace-agent-manifest,
+.workspace-agent-modes {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px 8px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.workspace-agent-modes [role="radio"] {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.workspace-agent-modes [role="radio"][aria-checked="true"] {
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+
 .workspace-agent-title {
   color: var(--ink);
   font-size: 11.5px;

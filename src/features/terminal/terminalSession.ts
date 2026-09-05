@@ -403,6 +403,8 @@ export class TerminalSession {
       case "permission_resolved":
         this.deps.onPermissionResolved?.(event.toolCallId);
         break;
+      case "session_manifest":
+        break;
       default: {
         const unknownEvent: never = event;
         this.showError(

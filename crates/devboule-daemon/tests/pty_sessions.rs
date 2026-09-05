@@ -274,6 +274,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::AgentStderr { .. }
         | SessionEvent::PermissionRequest { .. }
         | SessionEvent::PermissionResolved { .. }
+        | SessionEvent::SessionManifest { .. }
         | SessionEvent::AgentReported { .. } => false,
     }
 }
@@ -1515,6 +1516,7 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::AgentStderr { .. }
         | SessionEvent::PermissionRequest { .. }
         | SessionEvent::PermissionResolved { .. }
+        | SessionEvent::SessionManifest { .. }
         | SessionEvent::AgentReported { .. } => {}
     });
     client
@@ -1914,6 +1916,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::AgentStderr { .. }
         | SessionEvent::PermissionRequest { .. }
         | SessionEvent::PermissionResolved { .. }
+        | SessionEvent::SessionManifest { .. }
         | SessionEvent::AgentReported { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {

@@ -73,6 +73,19 @@ describe("ACP agent session", () => {
     });
   });
 
+  it("stores the session manifest from the live event", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "session_manifest",
+      providerId: "grok",
+      currentModelId: "grok-4.6",
+      models: [{ modelId: "grok-4.6", name: "Grok 4.6" }],
+    });
+    expect(harness.session.getState().manifest?.currentModelId).toBe("grok-4.6");
+    expect(harness.session.getState().manifest?.providerId).toBe("grok");
+  });
+
   it("forwards permission_resolved to the host callback", async () => {
     let emit: (event: SessionEvent) => void = () => undefined;
     const onPermissionResolved = vi.fn();

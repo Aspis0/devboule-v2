@@ -720,6 +720,7 @@ fn send_pending_event(
             SessionEvent::AgentStderr { .. } => " agent_stderr".to_string(),
             SessionEvent::PermissionRequest { .. } => " permission_request".to_string(),
             SessionEvent::PermissionResolved { .. } => " permission_resolved".to_string(),
+            SessionEvent::SessionManifest { .. } => " session_manifest".to_string(),
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
         };
         eprintln!(
@@ -864,6 +865,14 @@ fn dispatch(
             }
             dispatch_session(state, owner, request, conn, typed_permissions_ok)
         }
+        ClientMessage::ProvidersList { id } => {
+            let discovery = crate::provider_catalog::discover();
+            DaemonMessage::Providers {
+                id,
+                providers: discovery.agents.into_iter().map(wire_provider).collect(),
+                unreadable_dirs: discovery.unreadable_dirs,
+            }
+        }
         ClientMessage::Invoke { id, method, .. } => DaemonMessage::Error(
             WireError::new(
                 ErrorCode::Unimplemented,
@@ -871,6 +880,15 @@ fn dispatch(
             )
             .with_id(id),
         ),
+    }
+}
+
+fn wire_provider(agent: crate::provider_catalog::InstalledAgent) -> devboule_protocol::ProviderInfo {
+    devboule_protocol::ProviderInfo {
+        id: agent.id.to_string(),
+        executable: agent.executable.to_string_lossy().into_owned(),
+        acp_available: agent.acp_command.is_some(),
+        authentication: "unknown".to_string(),
     }
 }
 
@@ -1471,6 +1489,46 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn providers_list_returns_catalog_entries_with_unknown_authentication() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-providers-test-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let state = ServerState::with_paths(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+        )
+        .expect("state");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(2);
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProvidersList { id: 11 },
+            &conn,
+            false,
+            false,
+            false,
+        );
+        let _ = std::fs::remove_dir_all(&path);
+        let DaemonMessage::Providers {
+            id,
+            providers,
+            unreadable_dirs: _,
+        } = reply
+        else {
+            panic!("providers_list must reply with Providers, got {reply:?}");
+        };
+        assert_eq!(id, 11);
+        for provider in &providers {
+            assert!(!provider.id.is_empty());
+            assert!(!provider.executable.is_empty());
+            assert_eq!(provider.authentication, "unknown");
+        }
     }
 
     #[test]

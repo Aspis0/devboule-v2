@@ -242,6 +242,7 @@ pub(super) struct SessionRuntime {
     exit_transition_sent: AtomicBool,
     published_frames: AtomicU64,
     published_bytes: AtomicUsize,
+    session_manifest: Mutex<Option<SessionEvent>>,
 }
 
 impl SessionRuntime {
@@ -300,6 +301,7 @@ impl SessionRuntime {
             exit_transition_sent: AtomicBool::new(false),
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
+            session_manifest: Mutex::new(None),
         }
     }
 
@@ -382,7 +384,8 @@ impl SessionRuntime {
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
-                | SessionEvent::PermissionResolved { .. } => {
+                | SessionEvent::PermissionResolved { .. }
+                | SessionEvent::SessionManifest { .. } => {
                     let Some(seq) = journal_seq else {
                         continue;
                     };
@@ -655,6 +658,12 @@ impl SessionRuntime {
                     self.mark_journal_degraded();
                 }
             }
+        }
+    }
+
+    pub(super) fn store_session_manifest(&self, event: SessionEvent) {
+        if let Ok(mut stored) = self.session_manifest.lock() {
+            *stored = Some(event);
         }
     }
 
@@ -1004,6 +1013,7 @@ impl SessionRuntime {
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
+                | SessionEvent::SessionManifest { .. }
                 | SessionEvent::AgentReported { .. } => None,
             })
             .collect()
@@ -1116,6 +1126,16 @@ impl SessionRuntime {
                 .iter()
                 .filter(|item| !matches!(item, PendingItem::Snapshot { .. }))
                 .count() as u64;
+        }
+        if !stream.transcript {
+            if let Some(event) = self
+                .session_manifest
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone())
+            {
+                enqueue_agent(&mut stream, event);
+            }
         }
         Ok(stream.generation)
     }

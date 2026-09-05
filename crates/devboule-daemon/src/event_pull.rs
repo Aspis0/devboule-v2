@@ -239,7 +239,8 @@ impl ConnHandle {
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
-                | SessionEvent::PermissionResolved { .. } => {
+                | SessionEvent::PermissionResolved { .. }
+                | SessionEvent::SessionManifest { .. } => {
                     if let (Some(cursor), Some(seq)) =
                         (pull.transcript_cursor.as_mut(), event.transcript_seq)
                     {
@@ -709,6 +710,7 @@ mod tests {
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
                 SessionEvent::PermissionRequest { .. } => "permission_request",
                 SessionEvent::PermissionResolved { .. } => "permission_resolved",
+                SessionEvent::SessionManifest { .. } => "session_manifest",
                 SessionEvent::AgentReported { .. } => "agent_reported",
             })
             .collect();
@@ -895,6 +897,7 @@ mod tests {
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
                 SessionEvent::PermissionRequest { .. } => "permission_request",
                 SessionEvent::PermissionResolved { .. } => "permission_resolved",
+                SessionEvent::SessionManifest { .. } => "session_manifest",
                 SessionEvent::AgentReported { .. } => "agent_reported",
             })
             .collect();

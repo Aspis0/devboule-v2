@@ -1,5 +1,5 @@
 import type { Channel } from "@tauri-apps/api/core";
-import type { PermissionRequest, SessionEvent } from "../../types/ipc";
+import type { PermissionRequest, SessionEvent, SessionManifest } from "../../types/ipc";
 
 export type AgentChannel = Channel<SessionEvent>;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -21,6 +21,7 @@ export interface AgentSessionState {
   streaming: boolean;
   availableCommands: Array<{ name: string; description: string; hint?: string }>;
   lastFinished: AgentFinished | null;
+  manifest: SessionManifest | null;
 }
 
 export interface AgentSessionDeps {
@@ -38,6 +39,7 @@ const INITIAL_STATE: AgentSessionState = {
   streaming: false,
   availableCommands: [],
   lastFinished: null,
+  manifest: null,
 };
 
 type MessageRole = "user" | "assistant" | "thought";
@@ -155,6 +157,9 @@ export class AgentSession {
         return;
       case "permission_resolved":
         this.deps.onPermissionResolved?.(event.toolCallId);
+        return;
+      case "session_manifest":
+        this.update({ manifest: event });
         return;
       case "agent_tool_call":
         this.ensureTurn();

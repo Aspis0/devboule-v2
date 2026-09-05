@@ -12,13 +12,19 @@ vi.mock("../../lib/tauri", () => ({
   journalRetentionGet: vi.fn(),
   journalRetentionSet: vi.fn(),
   journalUsage: vi.fn(),
+  providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
 }));
 
 vi.mock("../oracle/OraclePanel", () => ({
   OraclePanel: () => <div>Oracle mock</div>,
 }));
 
-import { journalRetentionGet, journalRetentionSet, journalUsage } from "../../lib/tauri";
+import {
+  journalRetentionGet,
+  journalRetentionSet,
+  journalUsage,
+  providersList,
+} from "../../lib/tauri";
 import type { JournalRetention } from "../../types/ipc";
 import { SettingsSurface } from "./SettingsSurface";
 
@@ -192,5 +198,114 @@ describe("Settings retention panel", () => {
     expect(container.querySelector('[role="alert"]')?.textContent ?? "").toContain("rejected");
     expect(input.getAttribute("value")).toBe("0");
     expect(input.value).toBe("0");
+  });
+});
+
+describe("Settings providers catalog", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(journalUsage).mockResolvedValue({
+      totalBytes: 0,
+      sessionCount: 0,
+      deletedCount: 0,
+      unreclaimable: { bytesOver: 0, sessionsOver: 0, agedOut: 0 },
+      limits: {
+        snapshotEveryBytes: 65_536,
+        sessionMaxBytes: 1,
+        maxBytes: 1,
+        maxSessions: 1,
+        maxAgeMs: 0,
+      },
+      perSession: [],
+    });
+    vi.mocked(journalRetentionGet).mockResolvedValue({
+      sessionMaxBytes: { value: 1, source: "default" },
+      maxBytes: { value: 1, source: "default" },
+      maxSessions: { value: 1, source: "default" },
+      maxAgeMs: { value: 0, source: "default" },
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("renders PATH providers with ACP badge and unknown authentication", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\\\npm\\\\grok.cmd",
+          acpAvailable: true,
+          authentication: "unknown",
+        },
+        {
+          id: "claude",
+          executable: "C:\\\\npm\\\\claude.cmd",
+          acpAvailable: false,
+          authentication: "unknown",
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("grok");
+    expect(container.textContent).toContain("C:\\\\npm\\\\grok.cmd");
+    expect(container.textContent).toContain("ACP");
+    expect(container.textContent).toContain("installed · authentication unknown");
+    expect(container.textContent).toContain("claude");
+    expect(container.querySelector('[role="switch"]')).toBeNull();
+    expect(container.textContent).not.toContain("ready");
+  });
+
+  it("says when no agent CLI is on PATH", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({ providers: [], unreadableDirs: 0 });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("No agent CLI found on PATH");
+    expect(container.textContent).toContain("Install an agent CLI");
+  });
+
+  it("does not call an unreadable PATH scan an empty catalog", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({ providers: [], unreadableDirs: 3 });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain(
+      "No agent CLI found, but 3 PATH directories could not be read",
+    );
+    expect(container.textContent).not.toContain("No agent CLI found on PATH");
+  });
+
+  it("notes unreadable PATH directories under a non-empty catalog", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\\\npm\\\\grok.cmd",
+          acpAvailable: true,
+          authentication: "unknown",
+        },
+      ],
+      unreadableDirs: 2,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("grok");
+    expect(container.textContent).toContain("2 PATH directories could not be read");
   });
 });

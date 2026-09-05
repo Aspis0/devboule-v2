@@ -1,25 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { providersList } from "../../lib/tauri";
+import type { ProviderCatalog } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import {
-  MOCK_DEFAULT_MODELS,
   MOCK_DEVICES,
   MOCK_GENERAL_SETTINGS,
   MOCK_LABS,
   MOCK_PROJECTS,
-  MOCK_PROVIDERS,
-  MOCK_PROVIDER_ENABLED,
   MOCK_SETTINGS_TABS,
   MOCK_WORKTREE_DEFAULTS,
-  type ProviderId,
   type SettingsTab,
 } from "./mockData";
 import "./settings.css";
 
 export function SettingsSurface() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("providers");
-  const [providerEnabled, setProviderEnabled] = useState(MOCK_PROVIDER_ENABLED);
 
   const settingsTabs = MOCK_SETTINGS_TABS.map((tab) => ({
     ...tab,
@@ -45,81 +42,10 @@ export function SettingsSurface() {
     setActiveTab(MOCK_SETTINGS_TABS[nextIndex].id);
   }
 
-  function toggleProvider(providerId: ProviderId) {
-    setProviderEnabled((current) => ({
-      ...current,
-      [providerId]: !current[providerId],
-    }));
-  }
-
-  const providers = MOCK_PROVIDERS.map((provider) => {
-    const on = providerEnabled[provider.id];
-    // PATH discovery and authentication are separate mock facts by design.
-    const status = !provider.installed
-      ? "not installed"
-      : on && provider.authenticated
-        ? "ready"
-        : "disabled";
-    const statusTone =
-      status === "ready" ? "ready" : status === "not installed" ? "missing" : "disabled";
-
-    return {
-      ...provider,
-      on,
-      status,
-      statusTone,
-    };
-  });
-
   function renderActivePanel() {
     switch (activeTab) {
       case "providers":
-        return (
-          <div id="settings-panel-providers" role="tabpanel" aria-label="Providers and models">
-            <SettingsHeading
-              title="Providers & models"
-              description="Devboule wraps the CLIs already installed on this machine. Enable one and it appears in the workspace composer."
-            />
-            <div className="provider-list">
-              {providers.map((provider) => (
-                <div className="provider-card" key={provider.id}>
-                  <span
-                    className={`provider-mark provider-mark-${provider.tone}`}
-                    aria-hidden="true"
-                  >
-                    {provider.initial}
-                  </span>
-                  <span className="provider-copy">
-                    <span className="provider-name">{provider.name}</span>
-                    <span className="provider-detail">{provider.detail}</span>
-                  </span>
-                  <span className="provider-controls">
-                    <span className={`provider-status provider-status-${provider.statusTone}`}>
-                      {provider.status}
-                    </span>
-                    <button
-                      className={`provider-switch${provider.on ? " provider-switch-on" : ""}`}
-                      type="button"
-                      role="switch"
-                      aria-checked={provider.on}
-                      aria-label={`Enable ${provider.name}`}
-                      onClick={() => toggleProvider(provider.id)}
-                    >
-                      <span className="provider-switch-knob" aria-hidden="true" />
-                    </button>
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div className="settings-subheading">Default model per surface</div>
-            <div className="default-model-grid">
-              {MOCK_DEFAULT_MODELS.map((model) => (
-                <ModelChoice key={model.title} title={model.title} value={model.value} />
-              ))}
-            </div>
-          </div>
-        );
+        return <ProvidersPanel />;
       case "oracle":
         return (
           <div id="settings-panel-oracle" role="tabpanel" aria-label="Oracle administration">
@@ -188,18 +114,77 @@ function SettingsHeading({ title, description }: SettingsHeadingProps) {
   );
 }
 
-function ModelChoice({ title, value }: { title: string; value: string }) {
+function ProvidersPanel() {
+  const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void providersList()
+      .then((listed) => {
+        if (!cancelled) setCatalog(listed);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setCatalog({ providers: [], unreadableDirs: 0 });
+          setError(cause instanceof Error ? cause.message : "Could not list providers.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const providers = catalog?.providers ?? null;
+  const unreadableDirs = catalog?.unreadableDirs ?? 0;
+
   return (
-    <div className="model-choice">
-      <div className="model-choice-title">{title}</div>
-      <button
-        className="model-choice-control"
-        type="button"
-        aria-label={`Choose default model for ${title}`}
-      >
-        {value}
-        <span aria-hidden="true">▾</span>
-      </button>
+    <div id="settings-panel-providers" role="tabpanel" aria-label="Providers and models">
+      <SettingsHeading
+        title="Providers & models"
+        description="CLI agents found on PATH. An executable is not a login: authentication stays unknown until the agent says otherwise."
+      />
+      {error ? <div role="alert">{error}</div> : null}
+      {providers === null ? (
+        <div role="status">Looking for agent CLIs on PATH…</div>
+      ) : providers.length === 0 ? (
+        <div className="provider-empty" role="status">
+          <div>
+            {unreadableDirs > 0
+              ? `No agent CLI found, but ${unreadableDirs} PATH directories could not be read`
+              : "No agent CLI found on PATH"}
+          </div>
+          <p>
+            Install an agent CLI such as grok, claude, or gemini and restart Devboule. Until then
+            there is no provider to start a session with.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="provider-list">
+            {providers.map((provider) => (
+              <div className="provider-card" key={provider.id}>
+                <span className="provider-copy">
+                  <span className="provider-name">{provider.id}</span>
+                  <span className="provider-detail">{provider.executable}</span>
+                </span>
+                <span className="provider-controls">
+                  {provider.acpAvailable ? (
+                    <span className="provider-status provider-status-ready">ACP</span>
+                  ) : null}
+                  <span className="provider-status provider-status-idle">
+                    installed · authentication unknown
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+          {unreadableDirs > 0 ? (
+            <p className="provider-empty" role="status">
+              {unreadableDirs} PATH directories could not be read
+            </p>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

@@ -301,4 +301,78 @@ describe("AgentChatSurface", () => {
     );
     expect(commandMenu?.textContent).toContain("/modernize-transform");
   });
+
+  it("does not invent provider or model values before a manifest arrives", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelector("[data-testid=session-manifest]")).toBeNull();
+    expect(container.textContent).not.toContain("Medium");
+    expect(container.querySelector("[data-testid=session-modes]")).toBeNull();
+  });
+
+  it("shows provider, model, and effort from the session manifest", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "xhigh",
+            efforts: [{ id: "xhigh", label: "Extra High Effort" }],
+          },
+        ],
+      });
+    });
+
+    const strip = container.querySelector("[data-testid=session-manifest]");
+    expect(strip?.textContent).toContain("grok");
+    expect(strip?.textContent).toContain("Grok 4.6");
+    expect(strip?.textContent).toContain("xhigh");
+    expect(container.querySelector("[data-testid=session-modes]")).toBeNull();
+  });
+
+  it("does not show a current effort the model did not declare", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "turbo",
+            efforts: [
+              { id: "low", label: "Low" },
+              { id: "medium", label: "Medium" },
+              { id: "high", label: "High" },
+            ],
+          },
+        ],
+      });
+    });
+
+    const strip = container.querySelector("[data-testid=session-manifest]");
+    expect(strip?.textContent).toContain("Grok 4.6");
+    expect(strip?.textContent).not.toContain("turbo");
+  });
 });

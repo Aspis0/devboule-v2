@@ -261,6 +261,20 @@ pub enum SessionEvent {
     PermissionResolved {
         tool_call_id: String,
     },
+    /// Models, thinking, and modes the live ACP session has declared.
+    ///
+    /// The UI renders only what this event carries. It is emitted after
+    /// handshake and whenever the agent publishes a models update, and
+    /// re-emitted on attach so a remounted surface does not invent values.
+    SessionManifest {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current_model_id: Option<String>,
+        models: Vec<SessionModel>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modes: Option<SessionModeStateView>,
+    },
     /// An external process (agent hook or our stub) announced itself on
     /// the daemon pipe. `seq` is the journal/stream sequence of this
     /// record; `report_seq` is the hook's own monotonic counter, which
@@ -444,6 +458,52 @@ pub struct PermissionOption {
 pub struct PermissionEnvVar {
     pub name: String,
     pub value: String,
+}
+
+/// One thinking/effort level a model declared.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModelEffort {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<bool>,
+}
+
+/// One model in a live ACP session's declared catalog.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModel {
+    pub model_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub efforts: Option<Vec<SessionModelEffort>>,
+}
+
+/// One mutually exclusive ACP session mode.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModeView {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Standard ACP `SessionModeState` as shown to the UI.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModeStateView {
+    pub current_mode_id: String,
+    pub available_modes: Vec<SessionModeView>,
 }
 
 /// One slash command advertised by an ACP agent.
@@ -696,6 +756,47 @@ mod tests {
         assert_eq!(encoded["env"][0]["value"], "SAFE");
         assert_eq!(encoded["options"][0]["optionId"], "allow");
         assert_eq!(encoded["options"][0]["kind"], "allow_once");
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn session_manifest_round_trips_with_camel_case_wire_names() {
+        let event = SessionEvent::SessionManifest {
+            provider_id: Some("grok".to_string()),
+            current_model_id: Some("grok-4.6".to_string()),
+            models: vec![SessionModel {
+                model_id: "grok-4.6".to_string(),
+                name: "Grok 4.6".to_string(),
+                description: Some("SpaceXAI's latest frontier model".to_string()),
+                context_tokens: Some(500_000),
+                current_effort: Some("xhigh".to_string()),
+                efforts: Some(vec![SessionModelEffort {
+                    id: "xhigh".to_string(),
+                    label: "Extra High Effort".to_string(),
+                    description: Some("Highest effort and reasoning level".to_string()),
+                    default: Some(false),
+                }]),
+            }],
+            modes: Some(SessionModeStateView {
+                current_mode_id: "ask".to_string(),
+                available_modes: vec![SessionModeView {
+                    id: "ask".to_string(),
+                    name: "Always ask".to_string(),
+                    description: Some("Ask before every tool call.".to_string()),
+                }],
+            }),
+        };
+        let encoded = serde_json::to_value(&event).expect("json");
+        assert_eq!(encoded["type"], "session_manifest");
+        assert_eq!(encoded["providerId"], "grok");
+        assert_eq!(encoded["currentModelId"], "grok-4.6");
+        assert_eq!(encoded["models"][0]["modelId"], "grok-4.6");
+        assert_eq!(encoded["models"][0]["contextTokens"], 500_000);
+        assert_eq!(encoded["models"][0]["currentEffort"], "xhigh");
+        assert_eq!(encoded["models"][0]["efforts"][0]["id"], "xhigh");
+        assert_eq!(encoded["modes"]["currentModeId"], "ask");
+        assert_eq!(encoded["modes"]["availableModes"][0]["name"], "Always ask");
         let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
         assert_eq!(decoded, event);
     }

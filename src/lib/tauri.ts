@@ -7,7 +7,6 @@ import type {
   JournalRetention,
   JournalUsage,
   IndexedFile,
-  ModelInfo,
   OracleHealth,
   OracleIndexStatus,
   OracleIndexStats,
@@ -17,7 +16,7 @@ import type {
   PluginBackendStatus,
   PluginInventory,
   Project,
-  ProviderInfo,
+  ProviderCatalog,
   Session,
   SessionEvent,
   SessionKind,
@@ -49,7 +48,6 @@ type CommandArgs = {
   sessions_watch: { ch: SessionStateChannel };
   sessions_unwatch: undefined;
   providers_list: undefined;
-  provider_models: { provider: string };
   oracle_status: undefined;
   oracle_workspace_get: undefined;
   oracle_workspace_set: { path: string };
@@ -93,8 +91,7 @@ type CommandResults = {
   sessions_list: Session[];
   sessions_watch: void;
   sessions_unwatch: void;
-  providers_list: ProviderInfo[];
-  provider_models: ModelInfo[];
+  providers_list: ProviderCatalog;
   oracle_status: OracleIndexStatus;
   oracle_workspace_get: OracleWorkspace;
   oracle_workspace_set: OracleWorkspace;
@@ -200,7 +197,6 @@ export const sessionsList = () => invokeTyped("sessions_list");
 export const sessionsWatch = (ch: SessionStateChannel) => invokeTyped("sessions_watch", { ch });
 export const sessionsUnwatch = () => invokeTyped("sessions_unwatch");
 export const providersList = () => invokeTyped("providers_list");
-export const providerModels = (provider: string) => invokeTyped("provider_models", { provider });
 export const oracleStatus = () => invokeTyped("oracle_status");
 export const oracleWorkspaceGet = () => invokeTyped("oracle_workspace_get");
 export const oracleWorkspaceSet = (path: string) => invokeTyped("oracle_workspace_set", { path });

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{
     AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
     DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PermissionOutcome,
+    ProviderInfo,
     Persistence, ResumeResult, RetentionPatch, Session, SessionEvent, SessionEventEnvelope,
     SessionKind, SessionStateSnapshot, WireError,
 };
@@ -286,6 +287,19 @@ impl DaemonClient {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalUsage { id })? {
             DaemonMessage::JournalUsage { usage, .. } => Ok(usage),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn providers_list(&self) -> Result<(Vec<ProviderInfo>, u32), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProvidersList { id })? {
+            DaemonMessage::Providers {
+                providers,
+                unreadable_dirs,
+                ..
+            } => Ok((providers, unreadable_dirs)),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -662,6 +676,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Sessions { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }
+        | DaemonMessage::Providers { id, .. }
         | DaemonMessage::Ok { id }
         | DaemonMessage::Resume { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),

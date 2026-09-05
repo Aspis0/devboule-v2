@@ -15,6 +15,8 @@
 //! The provider catalog shape, ACP launch metadata, and explicit unknown
 //! authentication state are also Devboule code.
 
+use std::collections::HashSet;
+use std::io;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::{Command, Output};
@@ -116,15 +118,31 @@ pub struct InstalledAgent {
     pub authentication: AuthenticationStatus,
 }
 
+/// PATH scan result. `unreadable_dirs` is the number of unique PATH entries
+/// that could not be listed (I/O error, not "the directory is missing").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderDiscovery {
+    pub agents: Vec<InstalledAgent>,
+    pub unreadable_dirs: u32,
+}
+
 /// Return the known agents whose executable can be resolved from PATH.
-pub fn discover() -> Vec<InstalledAgent> {
-    KNOWN_AGENTS
+pub fn discover() -> ProviderDiscovery {
+    let directories = match std::env::var_os("PATH") {
+        Some(paths) => std::env::split_paths(&paths).collect(),
+        None => Vec::new(),
+    };
+    discover_in_paths(&directories)
+}
+
+pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
+    let agents = KNOWN_AGENTS
         .iter()
         .filter_map(|spec| {
             let launch = spec
                 .aliases
                 .iter()
-                .find_map(|alias| resolve_command_path(alias))?;
+                .find_map(|alias| resolve_launch_command_in_paths(directories, alias))?;
             let acp_command = spec.acp_args.map(|args| {
                 let mut command = Vec::with_capacity(args.len() + 1);
                 command.push(spec.id.to_string());
@@ -140,7 +158,27 @@ pub fn discover() -> Vec<InstalledAgent> {
                 authentication: AuthenticationStatus::Unknown,
             })
         })
-        .collect()
+        .collect();
+    ProviderDiscovery {
+        agents,
+        unreadable_dirs: count_unreadable_dirs(directories),
+    }
+}
+
+fn count_unreadable_dirs(directories: &[PathBuf]) -> u32 {
+    let mut seen = HashSet::new();
+    let mut count = 0;
+    for dir in directories {
+        if dir.as_os_str().is_empty() || !seen.insert(dir.clone()) {
+            continue;
+        }
+        match std::fs::read_dir(dir) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => count += 1,
+        }
+    }
+    count
 }
 
 /// Return the first discovered provider that offers ACP.
@@ -148,6 +186,7 @@ pub fn first_acp_available() -> Option<InstalledAgent> {
     let discovered = discover();
     ACP_PREFERENCE.iter().find_map(|preferred_id| {
         discovered
+            .agents
             .iter()
             .find(|agent| agent.id == *preferred_id && agent.acp_command.is_some())
             .cloned()
@@ -172,12 +211,6 @@ pub(crate) fn executable_file_exists(path: &Path) -> bool {
     {
         true
     }
-}
-
-fn resolve_command_path(command: &str) -> Option<ResolvedLaunch> {
-    let paths = std::env::var_os("PATH")?;
-    let directories = std::env::split_paths(&paths).collect::<Vec<_>>();
-    resolve_launch_command_in_paths(&directories, command)
 }
 
 fn launch_path_candidates(dir: &Path, command: &str) -> Vec<PathBuf> {
@@ -407,13 +440,9 @@ mod tests {
     };
     #[cfg(windows)]
     use std::fs::{self, File};
-    #[cfg(windows)]
-    use std::path::Path;
-    use std::path::PathBuf;
-    #[cfg(windows)]
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[cfg(windows)]
     fn temporary_directory(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -810,7 +839,7 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
     #[test]
     #[ignore = "measurement, not an assertion; run by hand with --ignored --nocapture"]
     fn reports_installed_cli_agents() {
-        let agents = discover();
+        let agents = discover().agents;
         println!("provider catalog found {} agent(s):", agents.len());
         for agent in agents {
             println!(
@@ -838,7 +867,7 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
     #[test]
     #[ignore = "measurement, not an assertion; run by hand with --ignored --nocapture"]
     fn reports_cli_launchability() {
-        for agent in discover() {
+        for agent in discover().agents {
             match super::probe_version(&agent) {
                 Ok(output) => println!(
                     "{} => STARTED exit={:?} stdout={:?} stderr={:?}",
@@ -854,5 +883,92 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
                 ),
             }
         }
+    }
+
+    struct UnreadableDirectory {
+        path: PathBuf,
+        #[cfg(windows)]
+        user: String,
+        #[cfg(unix)]
+        original_mode: std::fs::Permissions,
+    }
+
+    impl UnreadableDirectory {
+        fn new(path: &Path) -> Self {
+            #[cfg(windows)]
+            {
+                use std::ffi::OsStr;
+                let user = String::from_utf8(
+                    std::process::Command::new("whoami")
+                        .output()
+                        .expect("whoami")
+                        .stdout,
+                )
+                .expect("whoami output")
+                .trim()
+                .to_string();
+                let deny = format!("{user}:(OI)(CI)(RX)");
+                let result = std::process::Command::new("icacls")
+                    .args([path.as_os_str(), OsStr::new("/deny"), OsStr::new(&deny)])
+                    .status()
+                    .expect("icacls");
+                assert!(result.success(), "icacls failed to deny directory access");
+                Self {
+                    path: path.to_path_buf(),
+                    user,
+                }
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let metadata = std::fs::metadata(path).expect("directory metadata");
+                let original_mode = metadata.permissions();
+                let mut denied = original_mode.clone();
+                denied.set_mode(0);
+                std::fs::set_permissions(path, denied).expect("remove directory permissions");
+                Self {
+                    path: path.to_path_buf(),
+                    original_mode,
+                }
+            }
+        }
+    }
+
+    impl Drop for UnreadableDirectory {
+        fn drop(&mut self) {
+            #[cfg(windows)]
+            {
+                use std::ffi::OsStr;
+                let _ = std::process::Command::new("icacls")
+                    .args([
+                        self.path.as_os_str(),
+                        OsStr::new("/remove:d"),
+                        OsStr::new(&self.user),
+                    ])
+                    .status();
+            }
+            #[cfg(unix)]
+            {
+                let _ = std::fs::set_permissions(&self.path, self.original_mode.clone());
+            }
+        }
+    }
+
+    #[test]
+    fn discover_counts_unreadable_path_directories() {
+        let readable = temporary_directory("readable");
+        std::fs::create_dir_all(&readable).expect("readable");
+        let blocked = temporary_directory("blocked");
+        std::fs::create_dir_all(&blocked).expect("blocked");
+        let guard = UnreadableDirectory::new(&blocked);
+        let discovery = super::discover_in_paths(&[readable.clone(), blocked.clone()]);
+        let unreadable = discovery.unreadable_dirs;
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&readable);
+        let _ = std::fs::remove_dir_all(&blocked);
+        assert_eq!(
+            unreadable, 1,
+            "an unreadable PATH directory must not be reported as missing"
+        );
     }
 }

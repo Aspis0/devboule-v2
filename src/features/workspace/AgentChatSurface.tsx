@@ -6,7 +6,7 @@ import {
   sessionSend,
   type SessionChannel,
 } from "../../lib/tauri";
-import type { PermissionRequest } from "../../types/ipc";
+import type { PermissionRequest, SessionManifest } from "../../types/ipc";
 import { AgentSession, type AgentChatItem, type AgentSessionState } from "./agentSession";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
@@ -83,6 +83,24 @@ function usageCopy(state: AgentSessionState): string | null {
   return details.length > 0 ? details.join(" · ") : null;
 }
 
+function manifestStrip(manifest: SessionManifest): {
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
+} {
+  const current = manifest.models.find((model) => model.modelId === manifest.currentModelId);
+  const effort =
+    current?.currentEffort &&
+    current.efforts?.some((entry) => entry.id === current.currentEffort)
+      ? current.currentEffort
+      : null;
+  return {
+    provider: manifest.providerId ?? null,
+    model: current?.name ?? manifest.currentModelId ?? null,
+    effort,
+  };
+}
+
 function renderItem(item: AgentChatItem) {
   const className = `workspace-chat-entry workspace-chat-${item.role}`;
   if (item.role === "thought") {
@@ -116,6 +134,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     streaming: false,
     availableCommands: [],
     lastFinished: null,
+    manifest: null,
   });
   const conversationRef = useRef<HTMLDivElement>(null);
 
@@ -152,6 +171,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   }, [state.items, state.streaming]);
 
   const finishCopy = usageCopy(state);
+  const strip = state.manifest === null ? null : manifestStrip(state.manifest);
   const composerDisabled = state.status !== "idle" && state.status !== "running";
   const disabledReason =
     state.status === "initializing"
@@ -167,6 +187,32 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           {statusCopy(state)}
         </span>
       </div>
+      {strip !== null && (strip.provider !== null || strip.model !== null) ? (
+        <div className="workspace-agent-manifest" data-testid="session-manifest">
+          {strip.provider !== null ? <span>{strip.provider}</span> : null}
+          {strip.model !== null ? <span>{strip.model}</span> : null}
+          {strip.effort !== null ? <span>{strip.effort}</span> : null}
+        </div>
+      ) : null}
+      {state.manifest?.modes && state.manifest.modes.availableModes.length > 0 ? (
+        <div
+          className="workspace-agent-modes"
+          role="radiogroup"
+          aria-label="Session mode"
+          data-testid="session-modes"
+        >
+          {state.manifest.modes.availableModes.map((mode) => (
+            <span
+              key={mode.id}
+              role="radio"
+              aria-checked={mode.id === state.manifest?.modes?.currentModeId}
+              title={mode.description}
+            >
+              {mode.name}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div ref={conversationRef} className="workspace-conversation workspace-scroll">
         {state.items.length === 0 && state.status === "idle" ? (
           <div className="workspace-chat-empty">Start a conversation with the agent.</div>

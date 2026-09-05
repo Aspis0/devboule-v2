@@ -92,6 +92,12 @@ fn session_event_samples() -> Vec<SessionEvent> {
         PermissionResolved => SessionEvent::PermissionResolved {
             tool_call_id: String::new(),
         },
+        SessionManifest => SessionEvent::SessionManifest {
+            provider_id: None,
+            current_model_id: None,
+            models: Vec::new(),
+            modes: None,
+        },
         AgentReported => SessionEvent::AgentReported {
             seq: 0,
             source: String::new(),

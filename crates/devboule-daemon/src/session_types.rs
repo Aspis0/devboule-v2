@@ -20,6 +20,7 @@ pub struct PtyCommand {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
+    pub provider_id: Option<String>,
 }
 
 impl PtyCommand {
@@ -34,7 +35,13 @@ impl PtyCommand {
             args,
             cwd,
             env,
+            provider_id: None,
         }
+    }
+
+    pub fn with_provider_id(mut self, id: impl Into<String>) -> Self {
+        self.provider_id = Some(id.into());
+        self
     }
 
     pub(super) fn to_command_builder(&self) -> CommandBuilder {

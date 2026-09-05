@@ -50,6 +50,41 @@ export interface PermissionResolved {
   toolCallId: Id;
 }
 
+export interface SessionModelEffort {
+  id: string;
+  label: string;
+  description?: string;
+  default?: boolean;
+}
+
+export interface SessionModel {
+  modelId: string;
+  name: string;
+  description?: string;
+  contextTokens?: number;
+  currentEffort?: string;
+  efforts?: SessionModelEffort[];
+}
+
+export interface SessionModeView {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface SessionModeState {
+  currentModeId: string;
+  availableModes: SessionModeView[];
+}
+
+export interface SessionManifest {
+  type: "session_manifest";
+  providerId?: string;
+  currentModelId?: string;
+  models: SessionModel[];
+  modes?: SessionModeState;
+}
+
 export type RetentionSource = "default" | "user";
 
 export interface RetentionLimit {
@@ -239,6 +274,7 @@ export type SessionEvent =
     }
   | PermissionRequest
   | PermissionResolved
+  | SessionManifest
   | { type: "exit"; code: number | null }
   | { type: "silent"; elapsedMs: number }
   | { type: "recovered"; integrity: UnverifiableTranscriptIntegrity }
@@ -304,15 +340,14 @@ export interface CommandError {
 
 export interface ProviderInfo {
   id: string;
-  name: string;
-  installed: boolean;
-  authenticated: boolean;
+  executable: string;
+  acpAvailable: boolean;
+  authentication: "unknown";
 }
 
-export interface ModelInfo {
-  id: string;
-  label: string;
-  thinkingLevels: string[];
+export interface ProviderCatalog {
+  providers: ProviderInfo[];
+  unreadableDirs: number;
 }
 
 export type FileTab = "indexed" | "pending" | "stale";

@@ -301,6 +301,24 @@
 .provider-status-missing {
   color: var(--ochre-deep);
 }
+.provider-status-idle {
+  color: var(--silence);
+}
+
+.provider-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 0;
+  color: var(--ink-soft);
+}
+
+.provider-empty p {
+  margin: 0;
+  max-width: 42em;
+  color: var(--silence);
+  font-size: 12.5px;
+}
 
 .provider-switch {
   position: relative;

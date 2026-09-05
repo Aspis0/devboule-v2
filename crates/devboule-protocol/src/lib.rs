@@ -90,16 +90,16 @@ pub use ids::{
 };
 pub use messages::{
     ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits, JournalRetention,
-    JournalSessionUsage, JournalStats, JournalUsage, RetentionLimit, RetentionPatch,
+    JournalSessionUsage, JournalStats, JournalUsage, ProviderInfo, RetentionLimit, RetentionPatch,
     RetentionSource, SessionEventEnvelope, Unreclaimable,
 };
 pub use plugin::WorkspaceRootBody;
 pub use session::{
     cursor_replay_ok, AgentActivityState, AvailableCommandView, Cursor, CursorShape,
     PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence, PersistenceKind,
-    ResumeResult, ScreenCursor,
-    Session, SessionEvent, SessionKind, SessionState, SessionStateSnapshot, TranscriptIntegrity,
-    TurnUsage,
+    ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView,
+    SessionModeView, SessionModel, SessionModelEffort, SessionState, SessionStateSnapshot,
+    TranscriptIntegrity, TurnUsage,
 };
 
 /// Current protocol dialect spoken by this crate.

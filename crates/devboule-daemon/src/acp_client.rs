@@ -20,7 +20,9 @@ use agent_client_protocol::schema::ProtocolVersion;
 use devboule_protocol::{ErrorCode, PermissionOption, PermissionOutcome, SessionEvent, WireError};
 
 use super::acp_host::{AcpHost, RpcError, RpcRespond};
-use crate::acp_view::{classify_line, view_from_envelope, AcpLineKind};
+use crate::acp_view::{
+    classify_line, merge_handshake_manifest, view_from_envelope, AcpLineKind,
+};
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
 use crate::server::ServerState;
@@ -951,6 +953,7 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             format!("Could not determine agent working directory: {error}"),
         )
     })?;
+    let mut provider_id = None;
     let mut argv: Vec<String> = match std::env::var(COMMAND_ENV) {
         Ok(argv) => serde_json::from_str(&argv).map_err(|error| {
             WireError::new(
@@ -967,6 +970,7 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
                     ),
                 ));
             };
+            provider_id = Some(agent.id.to_string());
             let acp_command = agent
                 .acp_command
                 .expect("an ACP-capable catalog entry has an ACP command");
@@ -986,7 +990,11 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
         ));
     }
     let program = argv.remove(0);
-    Ok(PtyCommand::new(program, argv, cwd, Vec::new()))
+    let mut command = PtyCommand::new(program, argv, cwd, Vec::new());
+    if let Some(provider_id) = provider_id {
+        command = command.with_provider_id(provider_id);
+    }
+    Ok(command)
 }
 
 /// Spawn the ACP peer directly, complete initialize + session/new, and return
@@ -1088,8 +1096,13 @@ pub(super) fn spawn_process(
         }
     };
     let mut reader = BufReader::new(stdout);
-    let deferred = match handshake(&transport, &mut reader, &command.cwd) {
-        Ok(deferred) => deferred,
+    let (deferred, handshake_manifest) = match handshake(
+        &transport,
+        &mut reader,
+        &command.cwd,
+        command.provider_id.clone(),
+    ) {
+        Ok(handshake) => handshake,
         Err(error) => {
             let mut killer = AcpKiller {
                 process: Arc::clone(&process),
@@ -1139,6 +1152,8 @@ pub(super) fn spawn_process(
         Arc::clone(&transport.turn),
         Some(Arc::clone(&transport)),
         deferred,
+        command.provider_id.clone(),
+        handshake_manifest,
     );
     Ok(SpawnedSession {
         process_job,
@@ -1314,7 +1329,8 @@ fn handshake(
     transport: &AcpTransport,
     reader: &mut BufReader<ChildStdout>,
     cwd: &std::path::Path,
-) -> Result<Vec<serde_json::Value>, WireError> {
+    provider_id: Option<String>,
+) -> Result<(Vec<serde_json::Value>, Option<SessionEvent>), WireError> {
     let mut deferred = Vec::new();
     let initialize_id = transport
         .request("initialize", advertised_initialize_params()?)
@@ -1354,7 +1370,12 @@ fn handshake(
         .ok_or_else(|| WireError::new(ErrorCode::Io, "ACP session/new returned no session id."))?;
     transport.set_session_id(session_id.to_string());
     transport.host.set_session_id(session_id.to_string());
-    Ok(deferred)
+    let manifest = merge_handshake_manifest(
+        initialize.get("result").unwrap_or(&serde_json::Value::Null),
+        new_session.get("result").unwrap_or(&serde_json::Value::Null),
+        provider_id,
+    );
+    Ok((deferred, manifest))
 }
 
 fn read_response(
@@ -1502,6 +1523,8 @@ struct AcpReader {
     turn: Arc<TurnWatch>,
     transport: Option<Arc<AcpTransport>>,
     deferred: Vec<serde_json::Value>,
+    provider_id: Option<String>,
+    handshake_manifest: Option<SessionEvent>,
 }
 
 impl AcpReader {
@@ -1513,6 +1536,8 @@ impl AcpReader {
         turn: Arc<TurnWatch>,
         transport: Option<Arc<AcpTransport>>,
         deferred: Vec<serde_json::Value>,
+        provider_id: Option<String>,
+        handshake_manifest: Option<SessionEvent>,
     ) -> Self {
         Self {
             buffer: Vec::new(),
@@ -1524,6 +1549,8 @@ impl AcpReader {
             turn,
             transport,
             deferred,
+            provider_id,
+            handshake_manifest,
         }
     }
 
@@ -1560,6 +1587,8 @@ impl AcpReader {
             TurnWatch::new(),
             None,
             Vec::new(),
+            None,
+            None,
         )
     }
 
@@ -1579,11 +1608,30 @@ impl AcpReader {
             Arc::clone(&transport.turn),
             Some(transport),
             Vec::new(),
+            None,
+            None,
         )
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
         let _ = runtime.publish_agent_event(event, None);
+    }
+
+    fn with_provider(&self, event: SessionEvent) -> SessionEvent {
+        match event {
+            SessionEvent::SessionManifest {
+                provider_id,
+                current_model_id,
+                models,
+                modes,
+            } => SessionEvent::SessionManifest {
+                provider_id: provider_id.or_else(|| self.provider_id.clone()),
+                current_model_id,
+                models,
+                modes,
+            },
+            other => other,
+        }
     }
 }
 
@@ -1592,6 +1640,10 @@ impl ReaderDispatch for AcpReader {
         self.turn.bind_runtime(runtime);
         self.host
             .bind_permission_gate(&self.permission_broker, runtime);
+        if let Some(manifest) = self.handshake_manifest.take() {
+            runtime.store_session_manifest(manifest.clone());
+            self.publish(runtime, manifest);
+        }
         if !self.deferred.is_empty() {
             let deferred = std::mem::take(&mut self.deferred);
             for value in deferred {
@@ -1733,6 +1785,10 @@ impl AcpReader {
             }
             Some(AcpLineKind::Notification { .. }) => {
                 if let Some(view) = view_from_envelope(value, &self.session_id) {
+                    let view = self.with_provider(view);
+                    if matches!(view, SessionEvent::SessionManifest { .. }) {
+                        runtime.store_session_manifest(view.clone());
+                    }
                     self.publish(runtime, view);
                 }
             }
@@ -2526,6 +2582,65 @@ mod tests {
                 SessionEvent::PermissionRequest { .. }
             )),
             "expired permission must not replay as a request: {events:?}"
+        );
+    }
+
+    #[test]
+    fn reattach_reemits_the_stored_session_manifest() {
+        let (broker, _) = test_broker();
+        let runtime = SessionRuntime::for_acp(
+            "s.manifest.reattach".to_string(),
+            None,
+            Arc::clone(&broker),
+        );
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("grok".to_string()),
+            current_model_id: Some("grok-4.6".to_string()),
+            models: Vec::new(),
+            modes: None,
+        });
+
+        let first = ConnHandle::new(1);
+        let generation = runtime.try_attach(None, &first, true).expect("attach");
+        first.track(
+            "s.manifest.reattach",
+            Arc::clone(&runtime),
+            false,
+            None,
+            generation,
+        );
+        let first_events = first.pull_events();
+        assert!(
+            first_events.iter().any(|event| matches!(
+                event.envelope.event,
+                SessionEvent::SessionManifest {
+                    ref current_model_id,
+                    ..
+                } if current_model_id.as_deref() == Some("grok-4.6")
+            )),
+            "first attach must deliver the stored manifest: {first_events:?}"
+        );
+
+        runtime.detach_if_conn(first.id);
+        let second = ConnHandle::new(2);
+        let generation = runtime.try_attach(None, &second, true).expect("reattach");
+        second.track(
+            "s.manifest.reattach",
+            Arc::clone(&runtime),
+            false,
+            None,
+            generation,
+        );
+        let second_events = second.pull_events();
+        assert!(
+            second_events.iter().any(|event| matches!(
+                event.envelope.event,
+                SessionEvent::SessionManifest {
+                    ref current_model_id,
+                    ..
+                } if current_model_id.as_deref() == Some("grok-4.6")
+            )),
+            "reattach must re-emit the stored manifest: {second_events:?}"
         );
     }
 

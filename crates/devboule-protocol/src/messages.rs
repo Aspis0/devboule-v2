@@ -159,6 +159,9 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    ProvidersList {
+        id: u64,
+    },
     /// Plugin-backend tenant. `method` is a capability name (`workspace.root`
     /// today). The daemon returns [`ErrorCode::Unimplemented`]; it is not a
     /// plugin backend.
@@ -195,6 +198,7 @@ impl ClientMessage {
             | Self::JournalRetentionGet { id }
             | Self::JournalRetentionSet { id, .. }
             | Self::SessionDelete { id, .. }
+            | Self::ProvidersList { id }
             | Self::Invoke { id, .. } => Some(*id),
         }
     }
@@ -237,6 +241,7 @@ impl ClientMessage {
             | Self::SessionsUnwatch { .. }
             | Self::JournalUsage { .. }
             | Self::JournalRetentionGet { .. }
+            | Self::ProvidersList { .. }
             | Self::Invoke { .. } => None,
         }
     }
@@ -294,7 +299,26 @@ pub enum DaemonMessage {
         id: u64,
         retention: JournalRetention,
     },
+    Providers {
+        id: u64,
+        providers: Vec<ProviderInfo>,
+        /// PATH directories the catalog could not list. Zero when every
+        /// entry was readable or simply missing.
+        #[serde(default)]
+        unreadable_dirs: u32,
+    },
     Event(SessionEventEnvelope),
+}
+
+/// One CLI agent the daemon found on PATH. Authentication is never probed:
+/// an executable on PATH is "installed, status unknown".
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInfo {
+    pub id: String,
+    pub executable: String,
+    pub acp_available: bool,
+    pub authentication: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -783,6 +807,36 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DaemonMessage>(&encoded).expect("round trip"),
             usage
+        );
+    }
+
+    #[test]
+    fn providers_list_round_trips_with_camel_case_and_unknown_auth() {
+        let request = ClientMessage::ProvidersList { id: 9 };
+        let request_json = serde_json::to_value(&request).expect("json");
+        assert_eq!(request_json["type"], "providers_list");
+        assert_eq!(request_json["id"], 9);
+
+        let reply = DaemonMessage::Providers {
+            id: 9,
+            providers: vec![ProviderInfo {
+                id: "grok".to_string(),
+                executable: r"C:\Users\gualt\AppData\Roaming\npm\grok.cmd".to_string(),
+                acp_available: true,
+                authentication: "unknown".to_string(),
+            }],
+            unreadable_dirs: 2,
+        };
+        let encoded = serde_json::to_value(&reply).expect("json");
+        assert_eq!(encoded["type"], "providers");
+        assert_eq!(encoded["providers"][0]["id"], "grok");
+        assert_eq!(encoded["providers"][0]["acpAvailable"], true);
+        assert_eq!(encoded["providers"][0]["authentication"], "unknown");
+        assert_eq!(encoded["unreadableDirs"], 2);
+        assert!(encoded["providers"][0].get("authenticated").is_none());
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(encoded).expect("round trip"),
+            reply
         );
     }
 }
