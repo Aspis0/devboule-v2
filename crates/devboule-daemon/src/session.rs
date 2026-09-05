@@ -68,7 +68,7 @@ use std::io::{Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -85,7 +85,7 @@ use devboule_protocol::{
 use crate::journal::{new_session_record, output_record, Journal, PersistStatus, Replay};
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
-use crate::process_tree::JobObject;
+use crate::process_tree::{JobObject, ProcessHandle};
 use crate::screen::Screen;
 use crate::server::ServerState;
 
@@ -170,6 +170,9 @@ const EXIT_DRAIN: Duration = Duration::from_millis(200);
 /// a liveness warning. A shorter threshold would turn normal terminal pauses
 /// into noise and make the signal less trustworthy.
 pub const SESSION_SILENCE_THRESHOLD: Duration = Duration::from_secs(300);
+/// Shared OS liveness sweeper interval. Under the 5 s UI bound: a Task
+/// Manager kill is observed on the next WaitForSingleObject(0) pass.
+pub const SESSION_OS_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -221,9 +224,6 @@ pub(super) struct SessionRuntime {
     attachment_notify: Mutex<Option<Arc<ConnOut>>>,
     journal_dropped_frames: AtomicU64,
     journal_dropped_bytes: AtomicU64,
-    /// Output that resumes a silent stream, exit, and teardown wake the
-    /// deadline sleeper without turning it back into a one-second poller.
-    liveness_wake: Arc<(Mutex<bool>, Condvar)>,
     /// The last generation is also needed if the stream lock is poisoned
     /// before the EOF path can read its generation.
     generation: AtomicU64,
@@ -243,6 +243,9 @@ pub(super) struct SessionRuntime {
     published_frames: AtomicU64,
     published_bytes: AtomicUsize,
     session_manifest: Mutex<Option<SessionEvent>>,
+    /// Duplicated OS process handle. Queried by the shared sweeper; never a
+    /// PID, which the OS may reuse after the child dies.
+    os_handle: Mutex<Option<ProcessHandle>>,
 }
 
 impl SessionRuntime {
@@ -289,7 +292,6 @@ impl SessionRuntime {
             journal_dropped_bytes: AtomicU64::new(0),
             terminal_dead: AtomicBool::new(false),
             attachment_notify: Mutex::new(None),
-            liveness_wake: Arc::new((Mutex::new(false), Condvar::new())),
             generation: AtomicU64::new(1),
             peak_pending_bytes: AtomicUsize::new(0),
             coalesced_bytes: AtomicU64::new(0),
@@ -302,6 +304,7 @@ impl SessionRuntime {
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
+            os_handle: Mutex::new(None),
         }
     }
 
@@ -470,62 +473,6 @@ impl SessionRuntime {
         }
     }
 
-    fn notify_liveness(&self) {
-        let (wake_lock, wake) = &*self.liveness_wake;
-        if let Ok(mut notified) = wake_lock.lock() {
-            *notified = true;
-            wake.notify_one();
-        }
-    }
-
-    /// Return `None` when the monitor should stop, `Some(None)` when it should
-    /// wait for output or exit, and `Some(Some(deadline))` for a timed wait.
-    fn next_liveness_deadline(&self) -> Option<Option<Instant>> {
-        let stream = self.lock_stream().ok()?;
-        if stream.process_exited || stream.output_closed {
-            return None;
-        }
-        if !matches!(stream.disposition, Disposition::Running) {
-            return Some(None);
-        }
-        let Some(last_publish) = stream.last_publish else {
-            return Some(None);
-        };
-        Some(last_publish.checked_add(SESSION_SILENCE_THRESHOLD))
-    }
-
-    fn wait_for_liveness(&self, deadline: Option<Instant>) {
-        let (wake_lock, wake) = &*self.liveness_wake;
-        let Ok(mut notified) = wake_lock.lock() else {
-            return;
-        };
-        if *notified {
-            *notified = false;
-            return;
-        }
-        match deadline {
-            Some(deadline) => {
-                let wait = deadline.saturating_duration_since(Instant::now());
-                if wait.is_zero() {
-                    drop(notified);
-                    // `mark_silent_if_due` intentionally uses a strict
-                    // greater-than threshold; avoid a hot loop at the exact
-                    // deadline while preserving that boundary.
-                    std::thread::sleep(Duration::from_millis(1));
-                    return;
-                }
-                if let Ok((mut notified, _)) = wake.wait_timeout(notified, wait) {
-                    *notified = false;
-                }
-            }
-            None => {
-                if let Ok(mut notified) = wake.wait(notified) {
-                    *notified = false;
-                }
-            }
-        }
-    }
-
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
@@ -608,9 +555,6 @@ impl SessionRuntime {
             if let Some(attached) = &stream.attached {
                 attached.outbound.notify();
             }
-        }
-        if was_silent {
-            self.notify_liveness();
         }
         // Terminal query replies (DSR/CPR) go straight back to the PTY:
         // ConPTY stalls its render pipeline until they are answered, so they
@@ -702,9 +646,6 @@ impl SessionRuntime {
             if let Some(attached) = &stream.attached {
                 attached.outbound.notify();
             }
-        }
-        if was_silent {
-            self.notify_liveness();
         }
         if let (Some(journal), Some((generation, seq, text))) = (&self.journal, journal_output) {
             let accepted = journal.try_append(output_record(
@@ -934,10 +875,31 @@ impl SessionRuntime {
         Some(elapsed_ms)
     }
 
-    fn liveness_monitor_should_stop(&self) -> bool {
-        self.lock_stream()
-            .map(|stream| stream.process_exited || stream.output_closed)
-            .unwrap_or(true)
+    fn install_os_handle(&self, handle: ProcessHandle) {
+        if let Ok(mut slot) = self.os_handle.lock() {
+            *slot = Some(handle);
+        }
+    }
+
+    /// Observe the OS process handle. Returns true when this call newly
+    /// marked the session exited. Does not wait on pipe EOF or Child::wait.
+    fn observe_os_liveness(&self) -> bool {
+        if self.process_exited() {
+            return false;
+        }
+        let Ok(slot) = self.os_handle.lock() else {
+            return false;
+        };
+        let Some(handle) = slot.as_ref() else {
+            return false;
+        };
+        if handle.is_alive() {
+            return false;
+        }
+        let code = handle.exit_code();
+        drop(slot);
+        self.mark_exited(code);
+        true
     }
 
     fn refresh_journal_degradation(&self) {
@@ -1184,18 +1146,13 @@ impl SessionRuntime {
             attached.outbound.notify();
         }
         drop(stream);
-        self.notify_liveness();
         // Child::wait returns before ConPTY EOFs (ARCHITETTURA §1.7). Record
         // that the process was observed, but do not freeze last_seq: drain
         // frames still need seqs. Ended (exit row) is written at EOF.
+        // Fire-and-forget: a blocking journal RPC here would stall
+        // sessions_watch past the 5s OS-liveness bound.
         if let Some(journal) = &self.journal {
-            if let Err(error) = journal.mark_reaped(&self.session_id, code) {
-                self.mark_journal_degraded();
-                eprintln!(
-                    "journal could not record process exit for {}: {error}",
-                    self.session_id
-                );
-            }
+            journal.try_mark_reaped(&self.session_id, code);
         }
         self.refresh_exit_integrity();
     }
@@ -1232,7 +1189,6 @@ impl SessionRuntime {
             attached.outbound.notify();
         }
         drop(stream);
-        self.notify_liveness();
     }
 
     fn finish(&self, code: Option<u32>) {
@@ -1463,7 +1419,6 @@ struct PtySession {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     reader_handle: Option<JoinHandle<()>>,
     coalesce_handle: Option<JoinHandle<()>>,
-    liveness_handle: Option<JoinHandle<()>>,
     runtime: Arc<SessionRuntime>,
     exited: Arc<AtomicBool>,
     /// Set by `stop`: the process dies but the session object stays. The
@@ -1483,6 +1438,7 @@ struct SpawnedSession {
     reader_dispatch: Option<Box<dyn ReaderDispatch>>,
     stderr: Option<Box<dyn StderrSource>>,
     permission_broker: Option<Arc<acp_client::PermissionBroker>>,
+    os_handle: Option<ProcessHandle>,
 }
 
 struct PtyKiller {
@@ -1639,12 +1595,14 @@ impl SessionRegistry {
     }
 
     pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>) -> Self {
-        Self {
+        let registry = Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             paths,
             journal,
             transition_sink: Arc::new(Mutex::new(None)),
-        }
+        };
+        spawn_os_liveness_sweeper(&registry);
+        registry
     }
 
     pub(crate) fn set_transition_sink(&self, sink: TransitionSink) {
@@ -2338,6 +2296,58 @@ impl SessionRegistry {
     }
 }
 
+fn spawn_os_liveness_sweeper(registry: &SessionRegistry) {
+    let inner = Arc::downgrade(&registry.inner);
+    let sink = Arc::downgrade(&registry.transition_sink);
+    if let Err(error) = std::thread::Builder::new()
+        .name("session-os-liveness".to_string())
+        .spawn(move || loop {
+            std::thread::sleep(SESSION_OS_SWEEP_INTERVAL);
+            let Some(inner) = inner.upgrade() else {
+                return;
+            };
+            let Some(sink) = sink.upgrade() else {
+                return;
+            };
+            sweep_os_liveness(&inner, &sink);
+        })
+    {
+        eprintln!("could not start OS liveness sweeper: {error}");
+    }
+}
+
+fn sweep_os_liveness(
+    inner: &Mutex<HashMap<String, RegistryEntry>>,
+    sink: &Mutex<Option<TransitionSink>>,
+) {
+    let Ok(map) = inner.lock() else {
+        return;
+    };
+    let work: Vec<(Arc<SessionRuntime>, OwnerId)> = map
+        .values()
+        .filter_map(|entry| {
+            let session = entry.as_live()?;
+            Some((Arc::clone(&session.runtime), session.owner.clone()))
+        })
+        .collect();
+    drop(map);
+    for (runtime, owner) in work {
+        let newly_dead = runtime.observe_os_liveness();
+        let notify = if newly_dead || runtime.process_exited() {
+            runtime.should_publish_exit_transition()
+        } else {
+            runtime.mark_silent_if_due(Instant::now()).is_some() && runtime.transition_ready()
+        };
+        if !notify {
+            continue;
+        }
+        let callback = sink.lock().ok().and_then(|guard| guard.clone());
+        if let Some(callback) = callback {
+            callback(owner);
+        }
+    }
+}
+
 pub fn spawn_session(
     state: &Arc<ServerState>,
     registry: &SessionRegistry,
@@ -2381,7 +2391,7 @@ pub fn spawn_session(
     // ConPTY CreateProcessW seam to create suspended and resume after both
     // assignments; that is deliberately not part of this milestone.
     #[cfg(windows)]
-    let process_job = {
+    let (process_job, os_handle) = {
         let process_job = match JobObject::new() {
             Ok(process_job) => process_job,
             Err(error) => {
@@ -2413,7 +2423,14 @@ pub fn spawn_session(
                 format!("Could not contain the terminal process: {error}"),
             ));
         }
-        process_job
+        let os_handle = match ProcessHandle::duplicate(process_handle) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                eprintln!("could not duplicate terminal process handle for OS liveness: {error}");
+                None
+            }
+        };
+        (process_job, os_handle)
     };
 
     #[cfg(not(windows))]
@@ -2423,6 +2440,8 @@ pub fn spawn_session(
             format!("Could not create the terminal process job: {error}"),
         )
     })?;
+    #[cfg(not(windows))]
+    let os_handle = None;
 
     let killer = child.clone_killer();
 
@@ -2464,6 +2483,7 @@ pub fn spawn_session(
         reader_dispatch: None,
         stderr: None,
         permission_broker: None,
+        os_handle,
     };
     start_spawned_session(state, registry, metadata, owner, spawned)
 }
@@ -2485,6 +2505,7 @@ fn start_spawned_session(
         reader_dispatch,
         stderr,
         permission_broker,
+        os_handle,
     } = spawned;
     let runtime = if metadata.kind == SessionKind::Acp {
         SessionRuntime::for_acp(
@@ -2498,6 +2519,9 @@ fn start_spawned_session(
             registry.journal.clone(),
         ))
     };
+    if let Some(handle) = os_handle {
+        runtime.install_os_handle(handle);
+    }
     let exited = Arc::new(AtomicBool::new(false));
     // Register before the reader thread starts: ConPTY's startup DSR can be
     // read within milliseconds, and the reply path needs the writer.
@@ -2526,33 +2550,6 @@ fn start_spawned_session(
             code
         })
         .ok();
-    let monitor_runtime = Arc::clone(&runtime);
-    let monitor_registry = registry.clone();
-    let monitor_owner = owner.clone();
-    let liveness_handle = std::thread::Builder::new()
-        .name(format!("session-liveness-{id}"))
-        .spawn(move || {
-            // This remains one sleeping thread per live session for now. If
-            // session counts grow large, replace it with one shared sweeper.
-            loop {
-                if monitor_runtime.liveness_monitor_should_stop() {
-                    return;
-                }
-                let Some(deadline) = monitor_runtime.next_liveness_deadline() else {
-                    return;
-                };
-                monitor_runtime.wait_for_liveness(deadline);
-                if monitor_runtime.liveness_monitor_should_stop() {
-                    return;
-                }
-                if monitor_runtime.mark_silent_if_due(Instant::now()).is_some()
-                    && monitor_runtime.transition_ready()
-                {
-                    monitor_registry.notify_transition(&monitor_owner);
-                }
-            }
-        })
-        .ok();
     let session = PtySession {
         metadata,
         owner: owner.clone(),
@@ -2563,7 +2560,6 @@ fn start_spawned_session(
         writer,
         reader_handle: None,
         coalesce_handle: None,
-        liveness_handle,
         stderr_handle: None,
         runtime: Arc::clone(&runtime),
         exited: Arc::clone(&exited),
@@ -2820,7 +2816,6 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     let coalesce = session.coalesce_handle.take();
     let stderr = session.stderr_handle.take();
     let child_wait = session.child_wait.take();
-    let liveness = session.liveness_handle.take();
     let PtySession {
         master,
         writer,
@@ -2835,7 +2830,6 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     drop(master);
     bounded_join(stderr);
     bounded_join(child_wait);
-    bounded_join(liveness);
     join_coalesce(coalesce, runtime);
     let _ = session_runtime;
     journal_mark_ended(registry, runtime);
@@ -2884,7 +2878,6 @@ fn teardown_session(session: PtySession) {
         writer,
         reader_handle,
         coalesce_handle,
-        liveness_handle,
         stderr_handle,
         runtime,
         exited: _,
@@ -2912,7 +2905,6 @@ fn teardown_session(session: PtySession) {
     //    owns Child::wait so we join it here instead of calling wait()
     //    ourselves.
     bounded_join(child_wait);
-    bounded_join(liveness_handle);
     bounded_join(stderr_handle);
     // 4) Best-effort bounded join. JoinHandle has no timed join; the
     //    endpoint close above makes the reader finish promptly, while this
@@ -3188,6 +3180,51 @@ mod tests {
             drain(&conn),
             vec![SessionEvent::Exit { code: Some(7) }],
             "exit must be the only terminal transition delivered after silence"
+        );
+    }
+
+    #[cfg(windows)]
+    fn spawn_innocuous_os_child() -> std::process::Child {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        Command::new("cmd.exe")
+            .args(["/d", "/c", "ping", "-n", "30", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("spawn innocuous ping")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn os_liveness_observation_marks_exited_without_eof() {
+        use std::os::windows::io::AsRawHandle;
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.transition_ready.store(true, Ordering::Release);
+        let mut child = spawn_innocuous_os_child();
+        let handle =
+            ProcessHandle::duplicate(AsRawHandle::as_raw_handle(&child)).expect("duplicate");
+        runtime.install_os_handle(handle);
+        assert!(!runtime.process_exited(), "a live OS process is not Exited");
+        assert!(
+            !runtime.observe_os_liveness(),
+            "an alive process must not be marked exited"
+        );
+        child.kill().expect("kill ping");
+        let _ = child.wait();
+        assert!(
+            runtime.observe_os_liveness(),
+            "OS observation must mark Exited without waiting on the PTY/ACP pipe EOF"
+        );
+        assert!(runtime.process_exited());
+        let stream = runtime.lock_stream().expect("stream");
+        assert!(
+            matches!(stream.disposition, Disposition::Exited { .. }),
+            "disposition must be Exited from the OS query, not from child.wait: {:?}",
+            stream.disposition
         );
     }
 

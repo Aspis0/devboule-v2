@@ -6,7 +6,7 @@ import {
   sessionSend,
   type SessionChannel,
 } from "../../lib/tauri";
-import type { PermissionRequest, SessionManifest } from "../../types/ipc";
+import type { PermissionRequest, SessionManifest, SessionState } from "../../types/ipc";
 import { AgentSession, type AgentChatItem, type AgentSessionState } from "./agentSession";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
@@ -14,6 +14,8 @@ interface AgentChatSurfaceProps {
   sessionId: string;
   title: string;
   id?: string;
+  observedState?: SessionState | null;
+  elapsedMs?: number | null;
   onPermissionRequest?: (sessionId: string, request: PermissionRequest) => void;
   onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
 }
@@ -39,18 +41,37 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
   return Promise.reject(new Error(`Unsupported agent command: ${command}`));
 }
 
-function statusCopy(state: AgentSessionState): string {
-  if (state.status === "initializing") return "Connecting…";
-  if (state.status === "running") return "Working…";
-  if (state.status === "error") return "Needs attention";
-  if (state.status === "closed") return "Stopped";
-  return "Ready";
+function formatElapsed(elapsedMs: number): string {
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes > 0) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  const seconds = Math.floor(elapsedMs / 1_000);
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
 }
 
-function statusTone(state: AgentSessionState): "green" | "terracotta" | "border" {
-  if (state.status === "idle" || state.status === "running") return "green";
-  if (state.status === "initializing") return "border";
-  return "terracotta";
+function observedType(state: SessionState | null | undefined): SessionState["type"] | null {
+  return state?.type ?? null;
+}
+
+function toolbarStatus(
+  observed: SessionState | null | undefined,
+  elapsedMs: number | null | undefined,
+  agent: AgentSessionState,
+): { copy: string; tone: "green" | "terracotta" | "border" } {
+  const type = observedType(observed);
+  if (type === "ended" || type === "recovered") {
+    return { copy: "Finished", tone: "terracotta" };
+  }
+  if (type === "silent") {
+    return {
+      copy: typeof elapsedMs === "number" ? `Silent for ${formatElapsed(elapsedMs)}` : "Silent",
+      tone: "border",
+    };
+  }
+  if (agent.status === "error") return { copy: "Needs attention", tone: "terracotta" };
+  if (agent.status === "closed") return { copy: "Finished", tone: "terracotta" };
+  if (agent.status === "running") return { copy: "Working…", tone: "green" };
+  if (type === "live") return { copy: "Live", tone: "green" };
+  return { copy: "Connecting…", tone: "border" };
 }
 
 function itemLabel(item: AgentChatItem): string {
@@ -124,6 +145,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   sessionId,
   title,
   id,
+  observedState = null,
+  elapsedMs = null,
   onPermissionRequest,
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
@@ -172,19 +195,22 @@ export const AgentChatSurface = memo(function AgentChatSurface({
 
   const finishCopy = usageCopy(state);
   const strip = state.manifest === null ? null : manifestStrip(state.manifest);
-  const composerDisabled = state.status !== "idle" && state.status !== "running";
+  const osGone =
+    observedType(observedState) === "ended" || observedType(observedState) === "recovered";
+  const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
+  const composerDisabled = osGone || (state.status !== "idle" && state.status !== "running");
   const disabledReason =
-    state.status === "initializing"
+    state.status === "initializing" && !osGone
       ? "Connecting to the agent…"
       : "This session is no longer available.";
 
   return (
     <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
       <div className="workspace-agent-toolbar">
-        <span className={`workspace-status-dot workspace-dot-${statusTone(state)}`} />
+        <span className={`workspace-status-dot workspace-dot-${statusDot}`} />
         <span className="workspace-agent-title">{title || "Agent"}</span>
         <span className="workspace-agent-status" role="status">
-          {statusCopy(state)}
+          {statusLabel}
         </span>
       </div>
       {strip !== null && (strip.provider !== null || strip.model !== null) ? (
@@ -214,11 +240,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         </div>
       ) : null}
       <div ref={conversationRef} className="workspace-conversation workspace-scroll">
-        {state.items.length === 0 && state.status === "idle" ? (
+        {state.items.length === 0 && state.status === "idle" && !osGone ? (
           <div className="workspace-chat-empty">Start a conversation with the agent.</div>
         ) : null}
         {state.items.map(renderItem)}
-        {state.streaming ? (
+        {state.streaming && !osGone ? (
           <div className="workspace-chat-typing" role="status">
             Agent is working
             <span className="workspace-stream-caret" aria-hidden="true" />
@@ -227,7 +253,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         {finishCopy !== null ? <div className="workspace-chat-finish">{finishCopy}</div> : null}
       </div>
       <WorkspaceComposer
-        streaming={state.streaming}
+        streaming={state.streaming && !osGone}
         disabled={composerDisabled}
         disabledReason={disabledReason}
         availableCommands={state.availableCommands}

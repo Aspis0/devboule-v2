@@ -20,11 +20,9 @@ use agent_client_protocol::schema::ProtocolVersion;
 use devboule_protocol::{ErrorCode, PermissionOption, PermissionOutcome, SessionEvent, WireError};
 
 use super::acp_host::{AcpHost, RpcError, RpcRespond};
-use crate::acp_view::{
-    classify_line, merge_handshake_manifest, view_from_envelope, AcpLineKind,
-};
+use crate::acp_view::{classify_line, merge_handshake_manifest, view_from_envelope, AcpLineKind};
 use crate::paths::RuntimePaths;
-use crate::process_tree::JobObject;
+use crate::process_tree::{JobObject, ProcessHandle};
 use crate::server::ServerState;
 
 use super::PtyCommand;
@@ -534,11 +532,7 @@ impl PermissionBroker {
             .lock()
             .map(|mut table| {
                 table.closed = true;
-                table
-                    .entries
-                    .drain()
-                    .map(|(_, pending)| pending)
-                    .collect()
+                table.entries.drain().map(|(_, pending)| pending).collect()
             })
             .unwrap_or_else(|_| Vec::new());
         for pending in pending {
@@ -673,11 +667,7 @@ impl PermissionBroker {
             Err(_) => return HostDecision::Cancelled,
         };
         if runtime.permission_delivery_enabled() == Some(false) {
-            let _ = self.cancel(
-                &pending.tool_call_id,
-                &pending,
-                "capability_not_supported",
-            );
+            let _ = self.cancel(&pending.tool_call_id, &pending, "capability_not_supported");
             return HostDecision::Cancelled;
         }
         if self.arm_timeout(Arc::clone(&pending)).is_err() {
@@ -1028,7 +1018,7 @@ pub(super) fn spawn_process(
     })?;
 
     #[cfg(windows)]
-    let process_job = {
+    let (process_job, os_handle) = {
         use std::os::windows::io::AsRawHandle;
         let process_job = JobObject::new().map_err(|error| {
             terminate_process(&mut child);
@@ -1049,7 +1039,14 @@ pub(super) fn spawn_process(
                 format!("Could not contain the ACP agent process: {error}"),
             ));
         }
-        process_job
+        let os_handle = match ProcessHandle::duplicate(handle) {
+            Ok(duplicated) => Some(duplicated),
+            Err(error) => {
+                eprintln!("could not duplicate ACP process handle for OS liveness: {error}");
+                None
+            }
+        };
+        (process_job, os_handle)
     };
 
     #[cfg(not(windows))]
@@ -1060,6 +1057,8 @@ pub(super) fn spawn_process(
             format!("Could not create the ACP process job: {error}"),
         )
     })?;
+    #[cfg(not(windows))]
+    let os_handle = None;
 
     let stdin = child.stdin.take().ok_or_else(|| {
         terminate_process(&mut child);
@@ -1165,6 +1164,7 @@ pub(super) fn spawn_process(
         reader_dispatch: Some(Box::new(reader_dispatch)),
         stderr: Some(Box::new(stderr_source)),
         permission_broker: Some(Arc::clone(&transport.permission_broker)),
+        os_handle,
     })
 }
 
@@ -1372,7 +1372,9 @@ fn handshake(
     transport.host.set_session_id(session_id.to_string());
     let manifest = merge_handshake_manifest(
         initialize.get("result").unwrap_or(&serde_json::Value::Null),
-        new_session.get("result").unwrap_or(&serde_json::Value::Null),
+        new_session
+            .get("result")
+            .unwrap_or(&serde_json::Value::Null),
         provider_id,
     );
     Ok((deferred, manifest))
@@ -2588,11 +2590,8 @@ mod tests {
     #[test]
     fn reattach_reemits_the_stored_session_manifest() {
         let (broker, _) = test_broker();
-        let runtime = SessionRuntime::for_acp(
-            "s.manifest.reattach".to_string(),
-            None,
-            Arc::clone(&broker),
-        );
+        let runtime =
+            SessionRuntime::for_acp("s.manifest.reattach".to_string(), None, Arc::clone(&broker));
         runtime.store_session_manifest(SessionEvent::SessionManifest {
             provider_id: Some("grok".to_string()),
             current_model_id: Some("grok-4.6".to_string()),

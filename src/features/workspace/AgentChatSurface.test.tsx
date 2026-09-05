@@ -3,7 +3,7 @@
 import { StrictMode, act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionEvent } from "../../types/ipc";
+import type { SessionEvent, SessionState } from "../../types/ipc";
 
 const channelHarness = vi.hoisted(() => ({
   emit: null as ((event: SessionEvent) => void) | null,
@@ -110,6 +110,8 @@ vi.mock("../../lib/tauri", () => ({
 import { sessionAttach, sessionDetach, sessionSend } from "../../lib/tauri";
 import { AgentChatSurface } from "./AgentChatSurface";
 
+const LIVE_OBSERVED: SessionState = { type: "live", generation: 1 };
+
 describe("AgentChatSurface", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -178,7 +180,12 @@ describe("AgentChatSurface", () => {
   it("recreates its session across StrictMode cleanup and can send after a remount", async () => {
     const renderSurface = () => (
       <StrictMode>
-        <AgentChatSurface sessionId="strict-agent" title="Agent" />
+        <AgentChatSurface
+          sessionId="strict-agent"
+          title="Agent"
+          observedState={LIVE_OBSERVED}
+          elapsedMs={0}
+        />
       </StrictMode>
     );
 
@@ -186,7 +193,7 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Ready");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Live");
     expect(
       container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
         ?.disabled,
@@ -197,7 +204,7 @@ describe("AgentChatSurface", () => {
     await act(async () => root.render(renderSurface()));
     await act(async () => undefined);
 
-    expect(container.querySelector('[role="status"]')?.textContent).toBe("Ready");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Live");
     const textarea = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Message the agent"]',
     );
@@ -218,7 +225,12 @@ describe("AgentChatSurface", () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <AgentChatSurface sessionId="live-agent" title="Agent" />
+          <AgentChatSurface
+            sessionId="live-agent"
+            title="Agent"
+            observedState={LIVE_OBSERVED}
+            elapsedMs={0}
+          />
         </StrictMode>,
       );
     });
@@ -280,7 +292,7 @@ describe("AgentChatSurface", () => {
     });
 
     expect(container.textContent).toContain("DEVBOULE");
-    expect(container.querySelector(".workspace-agent-status")?.textContent).toBe("Ready");
+    expect(container.querySelector(".workspace-agent-status")?.textContent).toBe("Live");
     expect(container.querySelector(".workspace-chat-typing")).toBeNull();
 
     const conversation = container.querySelector(".workspace-conversation");
@@ -374,5 +386,62 @@ describe("AgentChatSurface", () => {
     const strip = container.querySelector("[data-testid=session-manifest]");
     expect(strip?.textContent).toContain("Grok 4.6");
     expect(strip?.textContent).not.toContain("turbo");
+  });
+
+  it("shows Finished from an ended sessions_watch snapshot, not Ready", async () => {
+    const ended: SessionState = {
+      type: "ended",
+      generation: 1,
+      code: 1,
+      integrity: { kind: "complete" },
+    };
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          sessionId="agent-1"
+          title="Agent"
+          observedState={ended}
+          elapsedMs={4600}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Finished");
+    expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Ready");
+    expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Stopped");
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message the agent"]')
+        ?.disabled,
+    ).toBe(true);
+  });
+
+  it("shows Silent for N from a silent sessions_watch snapshot", async () => {
+    const silent: SessionState = { type: "silent", generation: 1 };
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          sessionId="agent-1"
+          title="Agent"
+          observedState={silent}
+          elapsedMs={12_000}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Silent for 12 seconds");
+  });
+
+  it("does not infer Ready from attach alone without observed OS state", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Ready");
   });
 });

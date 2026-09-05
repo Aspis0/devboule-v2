@@ -324,6 +324,8 @@ export function Workspace() {
                 id={WORKSPACE_TERMINAL_PANEL_ID}
                 sessionId={selectedSessionId}
                 title={sessionTitle(selectedSession)}
+                observedState={selectedSession.state}
+                elapsedMs={selectedSession.elapsedMs}
                 onPermissionRequest={handlePermissionRequest}
                 onPermissionResolved={handlePermissionResolved}
               />
