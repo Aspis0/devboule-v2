@@ -364,6 +364,8 @@ export interface ProviderInfo {
   authentication: "unknown";
   /** `"acp"` or `"stream-json"` when the CLI can start a chat session. */
   protocol?: string | null;
+  /** `"user-binary"` from PATH; `"npx-wrapper"` from the ACP registry. */
+  origin?: "user-binary" | "npx-wrapper" | null;
 }
 
 export interface ProviderCatalog {

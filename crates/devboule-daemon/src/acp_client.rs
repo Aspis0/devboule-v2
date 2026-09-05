@@ -334,19 +334,24 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
     Ok(command)
 }
 
-/// Resolve a specific ACP catalog agent by id. `id` must name an
-/// ACP-capable entry that is actually on PATH.
-pub(super) fn resolve_named(id: &str) -> Result<PtyCommand, WireError> {
+/// Resolve a specific ACP catalog agent by id. Local PATH agents and
+/// registry npx-wrapper rows are both accepted; npx-wrapper is only
+/// reachable through this explicit-id path.
+pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand, WireError> {
     let cwd = std::env::current_dir().map_err(|error| {
         WireError::new(
             ErrorCode::Io,
             format!("Could not determine agent working directory: {error}"),
         )
     })?;
-    let Some(agent) = crate::provider_catalog::find_available(id) else {
+    let Some(agent) = crate::provider_catalog::find_in_catalog(
+        id,
+        &crate::registry::CdnRegistryFetch,
+        &paths.dir,
+    ) else {
         return Err(WireError::new(
             ErrorCode::Io,
-            format!("ACP agent '{id}' was not found on PATH."),
+            format!("ACP agent '{id}' was not found on PATH or in the ACP registry."),
         ));
     };
     let Some(mut argv) = agent.acp_command else {

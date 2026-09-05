@@ -57,6 +57,29 @@ describe("workspace session controller", () => {
     ).toEqual(["grok"]);
   });
 
+  it("does not offer an npx wrapper until the consent step exists", () => {
+    expect(
+      chatCapableProviders([
+        {
+          id: "codex-acp",
+          executable: "npx",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+          origin: "npx-wrapper",
+        },
+        {
+          id: "grok",
+          executable: "grok.exe",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+          origin: "user-binary",
+        },
+      ]).map((provider) => provider.id),
+    ).toEqual(["grok"]);
+  });
+
   it("does not list a provider whose protocol cannot be launched", () => {
     expect(
       chatCapableProviders([

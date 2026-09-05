@@ -866,7 +866,10 @@ fn dispatch(
             dispatch_session(state, owner, request, conn, typed_permissions_ok)
         }
         ClientMessage::ProvidersList { id } => {
-            let discovery = crate::provider_catalog::discover();
+            let discovery = crate::provider_catalog::discover_catalog(
+                &crate::registry::CdnRegistryFetch,
+                state.sessions.runtime_dir(),
+            );
             DaemonMessage::Providers {
                 id,
                 providers: discovery.agents.into_iter().map(wire_provider).collect(),
@@ -892,6 +895,7 @@ fn wire_provider(
         acp_available: agent.acp_command.is_some(),
         authentication: "unknown".to_string(),
         protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
+        origin: Some(agent.origin.as_wire().to_string()),
     }
 }
 

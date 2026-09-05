@@ -113,6 +113,22 @@ pub enum AuthenticationStatus {
     Unknown,
 }
 
+/// How a catalog row was obtained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderOrigin {
+    UserBinary,
+    NpxWrapper,
+}
+
+impl ProviderOrigin {
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::UserBinary => "user-binary",
+            Self::NpxWrapper => "npx-wrapper",
+        }
+    }
+}
+
 /// Direct CreateProcess program plus arguments that must precede ACP/user args.
 ///
 /// A native CLI (`claude.exe`, `grok.exe`) has an empty `prefix_args`. An
@@ -135,7 +151,7 @@ impl ResolvedLaunch {
 /// One known provider found on this machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstalledAgent {
-    pub id: &'static str,
+    pub id: String,
     pub aliases: &'static [&'static str],
     pub executable: PathBuf,
     /// Arguments inserted between `executable` and ACP/user args.
@@ -149,6 +165,7 @@ pub struct InstalledAgent {
     /// will run.
     pub stream_json_command: Option<Vec<String>>,
     pub authentication: AuthenticationStatus,
+    pub origin: ProviderOrigin,
 }
 
 /// PATH scan result. `unreadable_dirs` is the number of unique PATH entries
@@ -183,13 +200,14 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 .stream_json_args
                 .map(|args| protocol_argv(&launch.program, &launch.prefix_args, args));
             Some(InstalledAgent {
-                id: spec.id,
+                id: spec.id.to_string(),
                 aliases: spec.aliases,
                 executable: launch.program,
                 prefix_args: launch.prefix_args,
                 acp_command,
                 stream_json_command,
                 authentication: AuthenticationStatus::Unknown,
+                origin: ProviderOrigin::UserBinary,
             })
         })
         .collect();
@@ -250,6 +268,117 @@ pub fn first_acp_available() -> Option<InstalledAgent> {
 /// Return the discovered provider with this catalog id, if it is on PATH.
 pub fn find_available(id: &str) -> Option<InstalledAgent> {
     discover().agents.into_iter().find(|agent| agent.id == id)
+}
+
+#[cfg(feature = "server")]
+fn path_directories() -> Vec<PathBuf> {
+    match std::env::var_os("PATH") {
+        Some(paths) => std::env::split_paths(&paths).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Local PATH scan plus ACP-registry npx rows. Native ids/aliases win.
+#[cfg(feature = "server")]
+pub fn discover_catalog(
+    fetch: &dyn crate::registry::RegistryFetch,
+    cache_dir: &Path,
+) -> ProviderDiscovery {
+    discover_catalog_in_paths(fetch, cache_dir, &path_directories())
+}
+
+#[cfg(feature = "server")]
+pub(crate) fn discover_catalog_in_paths(
+    fetch: &dyn crate::registry::RegistryFetch,
+    cache_dir: &Path,
+    directories: &[PathBuf],
+) -> ProviderDiscovery {
+    let local = discover_in_paths(directories);
+    let registry = crate::registry::load_npx_entries(fetch, cache_dir)
+        .into_iter()
+        .map(|entry| registry_agent(directories, entry))
+        .collect();
+    merge_native_beats_registry(local, registry)
+}
+
+#[cfg(feature = "server")]
+fn registry_agent(
+    directories: &[PathBuf],
+    entry: crate::registry::RegistryNpxEntry,
+) -> InstalledAgent {
+    let acp_command = npx_acp_command(directories, &entry.package, &entry.args);
+    InstalledAgent {
+        id: entry.id,
+        aliases: &[],
+        executable: PathBuf::from(&entry.package),
+        prefix_args: Vec::new(),
+        acp_command,
+        stream_json_command: None,
+        authentication: AuthenticationStatus::Unknown,
+        origin: ProviderOrigin::NpxWrapper,
+    }
+}
+
+#[cfg(feature = "server")]
+fn launch_program_is_cmd_or_bat(program: &Path) -> bool {
+    program
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"))
+}
+
+#[cfg(feature = "server")]
+fn npx_acp_command(directories: &[PathBuf], package: &str, args: &[String]) -> Option<Vec<String>> {
+    let launch = resolve_launch_command_in_paths(directories, "npx")?;
+    if launch_program_is_cmd_or_bat(&launch.program) {
+        return None;
+    }
+    let mut extra = Vec::with_capacity(2 + args.len());
+    extra.push("-y".to_string());
+    extra.push(package.to_string());
+    extra.extend(args.iter().cloned());
+    let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
+    Some(protocol_argv(
+        &launch.program,
+        &launch.prefix_args,
+        &extra_refs,
+    ))
+}
+
+#[cfg(feature = "server")]
+fn merge_native_beats_registry(
+    mut local: ProviderDiscovery,
+    registry: Vec<InstalledAgent>,
+) -> ProviderDiscovery {
+    let occupied: HashSet<String> = local
+        .agents
+        .iter()
+        .flat_map(|agent| {
+            std::iter::once(agent.id.clone())
+                .chain(agent.aliases.iter().map(|alias| (*alias).to_string()))
+        })
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
+    for row in registry {
+        if occupied.contains(&row.id.to_ascii_lowercase()) {
+            continue;
+        }
+        local.agents.push(row);
+    }
+    local
+}
+
+/// PATH scan plus registry, then the named row if it exists.
+#[cfg(feature = "server")]
+pub fn find_in_catalog(
+    id: &str,
+    fetch: &dyn crate::registry::RegistryFetch,
+    cache_dir: &Path,
+) -> Option<InstalledAgent> {
+    discover_catalog(fetch, cache_dir)
+        .agents
+        .into_iter()
+        .find(|agent| agent.id == id)
 }
 
 pub(crate) fn executable_file_exists(path: &Path) -> bool {
@@ -1150,5 +1279,151 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
             unreadable, 1,
             "an unreadable PATH directory must not be reported as missing"
         );
+    }
+
+    struct FixtureFetch;
+
+    impl crate::registry::RegistryFetch for FixtureFetch {
+        fn fetch_body(&self) -> Result<String, String> {
+            Ok(crate::registry::TEST_REGISTRY_FIXTURE.to_string())
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn native_installed_grok_drops_registry_grok_build() {
+        let dir = temporary_directory("native-beats-registry");
+        fs::create_dir_all(&dir).expect("temporary directory");
+        fake_cli_path(&dir, "grok");
+        let cache = temporary_directory("native-beats-cache");
+        fs::create_dir_all(&cache).expect("cache");
+        let catalog =
+            super::discover_catalog_in_paths(&FixtureFetch, &cache, std::slice::from_ref(&dir));
+        let ids: Vec<&str> = catalog
+            .agents
+            .iter()
+            .map(|agent| agent.id.as_str())
+            .collect();
+        assert!(ids.contains(&"grok"), "native grok must remain: {ids:?}");
+        assert!(
+            !ids.contains(&"grok-build"),
+            "registry grok-build must not appear next to native grok: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"codex-acp"),
+            "codex-acp has no native equivalent: {ids:?}"
+        );
+        let grok = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "grok")
+            .expect("grok");
+        assert_eq!(grok.origin, super::ProviderOrigin::UserBinary);
+        let codex = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex-acp")
+            .expect("codex-acp");
+        assert_eq!(codex.origin, super::ProviderOrigin::NpxWrapper);
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(cache);
+    }
+
+    #[cfg(all(windows, feature = "server"))]
+    #[test]
+    fn npx_wrapper_argv_is_node_and_npx_cli_not_cmd() {
+        let dir = temporary_directory("npx-unwrap");
+        fs::create_dir_all(dir.join("node_modules").join("npm").join("bin")).expect("npm bin");
+        File::create(dir.join("node.exe")).expect("node");
+        fs::write(
+            dir.join("npx.cmd"),
+            npm_cmd_shim_contents(r"node_modules\npm\bin\npx-cli.js"),
+        )
+        .expect("npx shim");
+        fs::write(
+            dir.join("node_modules")
+                .join("npm")
+                .join("bin")
+                .join("npx-cli.js"),
+            "/* npx */\n",
+        )
+        .expect("npx-cli.js");
+        let cache = temporary_directory("npx-unwrap-cache");
+        fs::create_dir_all(&cache).expect("cache");
+        let catalog =
+            super::discover_catalog_in_paths(&FixtureFetch, &cache, std::slice::from_ref(&dir));
+        let codex = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex-acp")
+            .expect("codex-acp from registry");
+        let argv = codex
+            .acp_command
+            .as_ref()
+            .expect("npx-wrapper must resolve an ACP command");
+        assert!(
+            !argv[0].to_ascii_lowercase().contains(".cmd"),
+            "argv[0] must be node.exe, not a .cmd shim: {}",
+            argv[0]
+        );
+        assert!(
+            argv.iter()
+                .any(|part| part.to_ascii_lowercase().ends_with("npx-cli.js")),
+            "argv must include npx-cli.js: {argv:?}"
+        );
+        assert_eq!(argv[argv.len() - 2], "-y");
+        assert_eq!(
+            argv[argv.len() - 1],
+            "@agentclientprotocol/codex-acp@1.10.0"
+        );
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(cache);
+    }
+
+    #[cfg(all(windows, feature = "server"))]
+    #[test]
+    fn npx_wrapper_command_is_none_when_npx_cmd_is_not_a_shim() {
+        let dir = temporary_directory("npx-nonsim");
+        fs::create_dir_all(&dir).expect("temporary directory");
+        File::create(dir.join("npx.cmd")).expect("non-shim npx.cmd");
+        let cache = temporary_directory("npx-nonsim-cache");
+        fs::create_dir_all(&cache).expect("cache");
+        let catalog =
+            super::discover_catalog_in_paths(&FixtureFetch, &cache, std::slice::from_ref(&dir));
+        let codex = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex-acp")
+            .expect("codex-acp from registry");
+        assert_eq!(
+            codex.acp_command, None,
+            "a leftover .cmd/.bat argv[0] is not an ACP agent: {:?}",
+            codex.acp_command
+        );
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(cache);
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn npx_wrapper_command_is_none_when_npx_is_absent_from_path() {
+        let dir = temporary_directory("npx-absent");
+        fs::create_dir_all(&dir).expect("temporary directory");
+        let cache = temporary_directory("npx-absent-cache");
+        fs::create_dir_all(&cache).expect("cache");
+        let catalog =
+            super::discover_catalog_in_paths(&FixtureFetch, &cache, std::slice::from_ref(&dir));
+        let codex = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex-acp")
+            .expect("codex-acp from registry");
+        assert_eq!(
+            codex.acp_command, None,
+            "npx missing from PATH must not invent an ACP command: {:?}",
+            codex.acp_command
+        );
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(cache);
     }
 }

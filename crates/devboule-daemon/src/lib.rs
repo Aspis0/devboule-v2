@@ -28,6 +28,8 @@ mod paths;
 mod process_tree;
 pub mod provider_catalog;
 #[cfg(feature = "server")]
+mod registry;
+#[cfg(feature = "server")]
 mod screen;
 #[cfg(feature = "server")]
 mod server;

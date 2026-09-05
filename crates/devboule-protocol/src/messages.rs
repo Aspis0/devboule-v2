@@ -328,6 +328,10 @@ pub struct ProviderInfo {
     /// not chat-capable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+    /// How this row was obtained. `"user-binary"` is a locally installed CLI;
+    /// `"npx-wrapper"` comes from the ACP registry. Omitted for older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -839,6 +843,7 @@ mod tests {
                 acp_available: true,
                 authentication: "unknown".to_string(),
                 protocol: Some("acp".to_string()),
+                origin: None,
             }],
             unreadable_dirs: 2,
         };
@@ -853,6 +858,39 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<DaemonMessage>(encoded).expect("round trip"),
             reply
+        );
+    }
+
+    #[test]
+    fn provider_origin_is_camel_case_on_the_wire() {
+        let reply = DaemonMessage::Providers {
+            id: 3,
+            providers: vec![ProviderInfo {
+                id: "codex-acp".to_string(),
+                executable: "@agentclientprotocol/codex-acp@1.10.0".to_string(),
+                acp_available: true,
+                authentication: "unknown".to_string(),
+                protocol: Some("acp".to_string()),
+                origin: Some("npx-wrapper".to_string()),
+            }],
+            unreadable_dirs: 0,
+        };
+        let encoded = serde_json::to_value(&reply).expect("json");
+        assert_eq!(encoded["providers"][0]["origin"], "npx-wrapper");
+        assert!(encoded["providers"][0].get("npx_wrapper").is_none());
+        let native = ProviderInfo {
+            id: "grok".to_string(),
+            executable: r"C:\npm\grok.exe".to_string(),
+            acp_available: true,
+            authentication: "unknown".to_string(),
+            protocol: Some("acp".to_string()),
+            origin: Some("user-binary".to_string()),
+        };
+        let native_json = serde_json::to_value(&native).expect("json");
+        assert_eq!(native_json["origin"], "user-binary");
+        assert_eq!(
+            serde_json::from_value::<ProviderInfo>(native_json).expect("round trip"),
+            native
         );
     }
 }

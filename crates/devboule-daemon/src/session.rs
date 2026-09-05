@@ -406,8 +406,17 @@ pub struct SessionRegistry {
     transition_sink: Arc<Mutex<Option<TransitionSink>>>,
 }
 
+/// Whether a resolved provider id came from the session-create request
+/// or from `DEVBOULE_AGENT_PROVIDER`. Consent for npx wrappers requires
+/// the request; the env override cannot supply it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderProvenance {
+    Request,
+    Env,
+}
+
 impl SessionRegistry {
-    pub(super) fn runtime_dir(&self) -> &std::path::Path {
+    pub(crate) fn runtime_dir(&self) -> &std::path::Path {
         &self.paths.dir
     }
 
@@ -605,7 +614,7 @@ impl SessionRegistry {
         kind: SessionKind,
         provider: Option<String>,
         env_provider: Option<&str>,
-    ) -> (SessionKind, Option<String>) {
+    ) -> (SessionKind, Option<String>, Option<ProviderProvenance>) {
         let requested = provider.filter(|id| !id.is_empty());
         let env_provider = env_provider.filter(|value| !value.is_empty());
         let kind =
@@ -614,14 +623,52 @@ impl SessionRegistry {
             } else {
                 kind
             };
-        let provider = if requested.is_some() {
-            requested.filter(|id| id != "claude")
+        let (provider, provenance) = if requested.is_some() {
+            let provider = requested.filter(|id| id != "claude");
+            let provenance = provider.as_ref().map(|_| ProviderProvenance::Request);
+            (provider, provenance)
         } else {
-            env_provider
+            let provider = env_provider
                 .map(str::to_string)
-                .filter(|id| id != "claude" && !id.is_empty())
+                .filter(|id| id != "claude" && !id.is_empty());
+            let provenance = provider.as_ref().map(|_| ProviderProvenance::Env);
+            (provider, provenance)
         };
-        (kind, provider)
+        (kind, provider, provenance)
+    }
+
+    /// Consent for npx wrappers is explicit `provider` on the request.
+    /// An env override must not launch third-party npx code.
+    fn env_override_cannot_launch_npx(
+        id: &str,
+        provenance: Option<ProviderProvenance>,
+        origin: Option<crate::provider_catalog::ProviderOrigin>,
+    ) -> Result<(), WireError> {
+        if provenance == Some(ProviderProvenance::Env)
+            && origin == Some(crate::provider_catalog::ProviderOrigin::NpxWrapper)
+        {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "provider '{id}' is an npx wrapper; npx wrappers require explicit selection, the env override cannot launch them"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn reject_env_npx_wrapper(
+        id: &str,
+        provenance: Option<ProviderProvenance>,
+        paths: &RuntimePaths,
+    ) -> Result<(), WireError> {
+        let origin = crate::provider_catalog::find_in_catalog(
+            id,
+            &crate::registry::CdnRegistryFetch,
+            &paths.dir,
+        )
+        .map(|agent| agent.origin);
+        Self::env_override_cannot_launch_npx(id, provenance, origin)
     }
 
     pub fn create(
@@ -633,12 +680,36 @@ impl SessionRegistry {
         provider: Option<String>,
         command: Option<PtyCommand>,
     ) -> Result<Session, WireError> {
+        let env_provider = std::env::var("DEVBOULE_AGENT_PROVIDER").ok();
+        self.create_with_provider_env(
+            state,
+            owner,
+            workspace_id,
+            kind,
+            provider,
+            command,
+            env_provider.as_deref(),
+        )
+    }
+
+    // Env is a seventh caller argument so tests inject DEVBOULE_AGENT_PROVIDER
+    // without mutating process env (which races under cargo's parallel harness).
+    #[allow(clippy::too_many_arguments)]
+    fn create_with_provider_env(
+        &self,
+        state: &Arc<ServerState>,
+        owner: &OwnerId,
+        workspace_id: Option<String>,
+        kind: SessionKind,
+        provider: Option<String>,
+        command: Option<PtyCommand>,
+        env_provider: Option<&str>,
+    ) -> Result<Session, WireError> {
         let unique = format!("{:08x}", SESSION_COUNTER.fetch_add(1, Ordering::Relaxed));
         let id = compose_session_id(&owner.session_token(), &unique)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let env_provider = std::env::var("DEVBOULE_AGENT_PROVIDER").ok();
-        let (kind, provider) =
-            Self::resolve_session_provider(kind, provider, env_provider.as_deref());
+        let (kind, provider, provenance) =
+            Self::resolve_session_provider(kind, provider, env_provider);
         let metadata = Session {
             id: id.clone(),
             workspace_id,
@@ -657,7 +728,10 @@ impl SessionRegistry {
                 claude_client::resolve_command(&self.paths)?
             }
             None if metadata.kind == SessionKind::Acp => match provider {
-                Some(id) => acp_client::resolve_named(&id)?,
+                Some(id) => {
+                    Self::reject_env_npx_wrapper(&id, provenance, &self.paths)?;
+                    acp_client::resolve_named(&id, &self.paths)?
+                }
                 None => acp_client::resolve_command(&self.paths)?,
             },
             None => resolve_pty_command(&self.paths)?,
@@ -2807,20 +2881,142 @@ mod tests {
 
     #[test]
     fn explicit_provider_is_not_hijacked_by_claude_env_override() {
-        let (kind, provider) = SessionRegistry::resolve_session_provider(
+        let (kind, provider, provenance) = SessionRegistry::resolve_session_provider(
             SessionKind::Acp,
             Some("grok".to_string()),
             Some("claude"),
         );
         assert_eq!(kind, SessionKind::Acp);
         assert_eq!(provider.as_deref(), Some("grok"));
+        assert_eq!(provenance, Some(ProviderProvenance::Request));
     }
 
     #[test]
     fn claude_env_override_applies_when_the_request_has_no_provider() {
-        let (kind, provider) =
+        let (kind, provider, provenance) =
             SessionRegistry::resolve_session_provider(SessionKind::Acp, None, Some("claude"));
         assert_eq!(kind, SessionKind::Claude);
         assert_eq!(provider, None);
+        assert_eq!(provenance, None);
+    }
+
+    #[test]
+    fn env_named_provider_is_marked_as_env_provenance() {
+        let (kind, provider, provenance) =
+            SessionRegistry::resolve_session_provider(SessionKind::Acp, None, Some("codex-acp"));
+        assert_eq!(kind, SessionKind::Acp);
+        assert_eq!(provider.as_deref(), Some("codex-acp"));
+        assert_eq!(provenance, Some(ProviderProvenance::Env));
+    }
+
+    #[test]
+    fn env_override_cannot_launch_npx_wrapper() {
+        let error = SessionRegistry::env_override_cannot_launch_npx(
+            "codex-acp",
+            Some(ProviderProvenance::Env),
+            Some(crate::provider_catalog::ProviderOrigin::NpxWrapper),
+        )
+        .expect_err("env npx must be denied");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            error.message,
+            "provider 'codex-acp' is an npx wrapper; npx wrappers require explicit selection, the env override cannot launch them"
+        );
+    }
+
+    #[test]
+    fn env_override_still_allows_native_user_binary() {
+        SessionRegistry::env_override_cannot_launch_npx(
+            "grok",
+            Some(ProviderProvenance::Env),
+            Some(crate::provider_catalog::ProviderOrigin::UserBinary),
+        )
+        .expect("env native must still resolve");
+    }
+
+    #[test]
+    fn request_provided_npx_wrapper_is_not_blocked_by_env_policy() {
+        SessionRegistry::env_override_cannot_launch_npx(
+            "codex-acp",
+            Some(ProviderProvenance::Request),
+            Some(crate::provider_catalog::ProviderOrigin::NpxWrapper),
+        )
+        .expect("explicit npx is the consent path");
+    }
+
+    fn tmp_registry_cache() -> std::path::PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let process_id = std::process::id();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("devboule-env-npx-{process_id}-{stamp}-{counter}"));
+        std::fs::create_dir(&dir).expect("tmp dir");
+        crate::registry::write_cache(&dir, crate::registry::TEST_REGISTRY_FIXTURE);
+        dir
+    }
+
+    #[test]
+    fn env_provided_npx_wrapper_is_denied_on_session_create() {
+        let dir = tmp_registry_cache();
+        let state = ServerState::with_paths(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(dir.clone()),
+        )
+        .expect("state");
+        let owner = test_owner("S-1-5-21-env-npx", "process-env-npx");
+        let error = state
+            .sessions
+            .create_with_provider_env(
+                &state,
+                &owner,
+                None,
+                SessionKind::Acp,
+                None,
+                None,
+                Some("codex-acp"),
+            )
+            .expect_err("env npx create must fail");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            error.message,
+            "provider 'codex-acp' is an npx wrapper; npx wrappers require explicit selection, the env override cannot launch them"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_provided_native_id_passes_env_reject_gate() {
+        let dir = tmp_registry_cache();
+        let paths = RuntimePaths::from_dir(&dir);
+        SessionRegistry::reject_env_npx_wrapper("grok", Some(ProviderProvenance::Env), &paths)
+            .expect("env native must pass the env gate");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn request_provided_npx_id_still_resolves_past_env_gate() {
+        let dir = tmp_registry_cache();
+        let paths = RuntimePaths::from_dir(&dir);
+        SessionRegistry::reject_env_npx_wrapper(
+            "codex-acp",
+            Some(ProviderProvenance::Request),
+            &paths,
+        )
+        .expect("request npx must pass the env gate");
+        let agent = crate::provider_catalog::find_in_catalog(
+            "codex-acp",
+            &crate::registry::CdnRegistryFetch,
+            &dir,
+        )
+        .expect("explicit npx id must still resolve in the catalog");
+        assert_eq!(
+            agent.origin,
+            crate::provider_catalog::ProviderOrigin::NpxWrapper
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

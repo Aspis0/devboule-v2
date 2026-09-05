@@ -2539,6 +2539,7 @@ dependencies = [
  "alacritty_terminal",
  "devboule-protocol",
  "portable-pty",
+ "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",
