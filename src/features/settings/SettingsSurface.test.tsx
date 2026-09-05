@@ -314,6 +314,99 @@ describe("Settings providers catalog", () => {
     expect(container.textContent).toContain("2 PATH directories could not be read");
   });
 
+  it("shows the failure reason when the last provider start failed", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\npm\\grok.cmd",
+          acpAvailable: true,
+          authentication: "failed: OAuth expired",
+          protocol: "acp",
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    const status = container.querySelector(".provider-status-missing");
+    if (status === null) throw new Error("provider-status-missing did not render");
+    expect(status.textContent).toContain("start failed");
+    expect(status.textContent).toContain("OAuth expired");
+    expect(status.textContent).not.toContain("failed:");
+  });
+
+  it("renders just 'start failed' when the daemon sends no reason", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\npm\\grok.cmd",
+          acpAvailable: true,
+          authentication: "failed: ",
+          protocol: "acp",
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    const status = container.querySelector(".provider-status-missing");
+    if (status === null) throw new Error("provider-status-missing did not render");
+    expect(status.textContent).toBe("start failed");
+  });
+
+  it("marks a provider whose last start completed as ready", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\npm\\grok.cmd",
+          acpAvailable: true,
+          authentication: "ok",
+          protocol: "acp",
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    const status = Array.from(container.querySelectorAll(".provider-status")).find((element) =>
+      element.textContent?.includes("last start ok"),
+    );
+    if (status === undefined) throw new Error("last-start-ok status did not render");
+    expect(status.className).toContain("provider-status-ready");
+    expect(status.textContent).toContain("installed");
+  });
+
+  it("keeps the unknown-authentication text when the daemon has not measured a start", async () => {
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          id: "grok",
+          executable: "C:\\npm\\grok.cmd",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+        },
+      ],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    const status = container.querySelector(".provider-status-idle");
+    if (status === null) throw new Error("provider-status-idle did not render");
+    expect(status.textContent).toContain("installed · authentication unknown");
+  });
+
   it("shows npx badge and 'available via npx' for npx-wrapper providers", async () => {
     vi.mocked(providersList).mockResolvedValueOnce({
       providers: [

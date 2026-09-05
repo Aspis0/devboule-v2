@@ -159,6 +159,32 @@ where
     );
 }
 
+/// Make the stub's build directory resolvable by the daemon-side provider
+/// catalog, which scans PATH. The guard restores the original PATH on drop.
+struct PathGuard {
+    original: std::ffi::OsString,
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        std::env::set_var("PATH", &self.original);
+    }
+}
+
+fn prepend_stub_dir_to_path() -> PathGuard {
+    let original = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries = std::env::split_paths(&original).collect::<Vec<_>>();
+    entries.insert(
+        0,
+        stub_bin().parent().expect("stub build dir").to_path_buf(),
+    );
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(&entries).expect("joinable PATH"),
+    );
+    PathGuard { original }
+}
+
 fn wait_for_file(path: &Path) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -349,6 +375,100 @@ fn acp_startup_failure_includes_agent_stderr() {
         "startup error did not include stderr: {}",
         error
     );
+}
+
+#[test]
+fn acp_handshake_failure_ends_the_journal_row_and_records_provider_failure() {
+    let _test_lock = lock_tests();
+    let _path = prepend_stub_dir_to_path();
+    std::env::set_var("DEVBOULE_STUB_FAIL_SESSION_NEW", "1");
+    struct ClearFailEnv;
+    impl Drop for ClearFailEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("DEVBOULE_STUB_FAIL_SESSION_NEW");
+        }
+    }
+    let _clear = ClearFailEnv;
+    let test = AcpTest::new(&[]);
+
+    let error = test
+        .client
+        .session_create(None, SessionKind::Acp, None)
+        .expect_err("a session/new handshake error must reject the create");
+    assert!(
+        error.to_string().contains("stub credentials expired"),
+        "create error did not surface the stub error: {error}"
+    );
+    // The JSON-RPC error's string message must reach the user, not the
+    // serialized error object: auth payloads are noise in a chat banner.
+    assert!(
+        !error.to_string().contains("authMethods"),
+        "create error must not carry the raw error object: {error}"
+    );
+    assert!(
+        error.to_string().contains("(-32000)"),
+        "create error must carry the numeric JSON-RPC code: {error}"
+    );
+
+    // The journal row was upserted before spawn; a failed spawn must end it,
+    // or the roster renders a phantom recovered session with zero events.
+    // The journal writer is asynchronous, so poll with a deadline.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let state = loop {
+        let sessions = test.client.sessions_list().expect("sessions list");
+        if let Some(session) = sessions
+            .iter()
+            .find(|session| session.kind == SessionKind::Acp)
+        {
+            break session.state.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the failed session never appeared in sessions_list"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        matches!(state, devboule_protocol::SessionState::Ended { .. }),
+        "the failed-handshake session must render as ended, got {state:?}"
+    );
+
+    let (providers, _) = test.client.providers_list().expect("providers list");
+    let stub = providers
+        .iter()
+        .find(|provider| provider.id == "devboule-acp-stub")
+        .expect("stub provider present in providers_list");
+    assert!(
+        stub.authentication.starts_with("failed:")
+            && stub.authentication.contains("stub credentials expired"),
+        "stub authentication must carry the failed handshake, got {:?}",
+        stub.authentication
+    );
+    assert!(
+        !stub.authentication.contains("authMethods"),
+        "the health line must not carry the raw error object, got {:?}",
+        stub.authentication
+    );
+}
+
+#[test]
+fn acp_successful_handshake_records_provider_ok() {
+    let _test_lock = lock_tests();
+    let _path = prepend_stub_dir_to_path();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let (providers, _) = test.client.providers_list().expect("providers list");
+    let stub = providers
+        .iter()
+        .find(|provider| provider.id == "devboule-acp-stub")
+        .expect("stub provider present in providers_list");
+    assert_eq!(
+        stub.authentication, "ok",
+        "a completed ACP handshake must measure the provider as ok"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
 }
 
 #[test]

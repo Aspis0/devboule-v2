@@ -13,6 +13,10 @@ fn main() -> io::Result<()> {
     write_observation_files();
     eprintln!("stub-agent handshake stderr marker");
     let fail_initialize = std::env::args().any(|arg| arg == "--fail-initialize");
+    // Emulate an expired-credentials peer: session/new answers with a
+    // JSON-RPC error and the process keeps reading instead of exiting, so
+    // the daemon observes a handshake failure against a live process.
+    let fail_session_new = std::env::var_os("DEVBOULE_STUB_FAIL_SESSION_NEW").is_some();
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
     let stdout = io::stdout();
@@ -64,6 +68,21 @@ fn main() -> io::Result<()> {
                 )?;
             }
             "session/new" => {
+                if fail_session_new {
+                    respond_error(
+                        &mut stdout,
+                        request.get("id").cloned(),
+                        json!({
+                            "code": -32000,
+                            "message": "Authentication required: stub credentials expired",
+                            // Mirror real peers (qwen): error objects carry
+                            // structured auth payloads the user never needs
+                            // in an error banner.
+                            "data": {"authMethods": [{"id": "oauth"}]}
+                        }),
+                    )?;
+                    continue;
+                }
                 emit(
                     &mut stdout,
                     json!({
@@ -253,6 +272,10 @@ fn main() -> io::Result<()> {
             _ => {}
         }
     }
+}
+
+fn respond_error(stdout: &mut impl Write, id: Option<Value>, error: Value) -> io::Result<()> {
+    emit(stdout, json!({"jsonrpc": "2.0", "id": id, "error": error}))
 }
 
 fn respond(stdout: &mut impl Write, id: Option<Value>, result: Value) -> io::Result<()> {

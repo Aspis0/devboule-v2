@@ -763,6 +763,7 @@ impl SessionRegistry {
         // can EOF and enqueue MarkEnded before this function would otherwise
         // reach try_upsert, and the journal thread would then see a missing
         // session and leave status=live — recovered-as-killed on reopen.
+        let mut record_generation = 1;
         if let Some(journal) = &self.journal {
             let mut record = new_session_record(
                 metadata.id.clone(),
@@ -773,9 +774,37 @@ impl SessionRegistry {
             );
             record.provider = session_provider;
             record.status = PersistStatus::Live;
+            record_generation = record.generation;
             journal.try_upsert(record);
         }
-        spawn_session(state, self, metadata.clone(), owner.clone(), command)?;
+        // The journal row above is the durable product boundary. A failed
+        // spawn must end that row, or the next roster render resurrects a
+        // phantom recovered session with zero events.
+        match spawn_session(state, self, metadata.clone(), owner.clone(), command) {
+            Ok(()) => {
+                // A completed ACP handshake proves the provider started and
+                // accepted a session, so it measures provider health. A
+                // claude process spawn proves nothing about the provider,
+                // so claude only records failures (below).
+                if kind == SessionKind::Acp {
+                    if let Some(provider_id) = &metadata.provider {
+                        state.record_provider_health(provider_id, Ok(()));
+                    }
+                }
+            }
+            Err(error) => {
+                if let Some(journal) = &self.journal {
+                    // try_send drops on a saturated queue, and the end marker
+                    // is the durable product boundary: this rare failure path
+                    // may block briefly, a phantom live row may not exist.
+                    let _ = journal.mark_ended_blocking(&metadata.id, record_generation, None);
+                }
+                if let Some(provider_id) = &metadata.provider {
+                    state.record_provider_health(provider_id, Err(&error));
+                }
+                return Err(error);
+            }
+        }
         Ok(metadata)
     }
 
@@ -892,6 +921,9 @@ impl SessionRegistry {
             state.session_finished();
             return Err(error.into());
         }
+        // Health is measured per provider id; `provider` is moved into the
+        // metadata below, so keep a copy for the spawn outcome recording.
+        let health_provider = provider.clone();
         let metadata = Session {
             id: session_id.to_string(),
             workspace_id: record.workspace_id,
@@ -902,7 +934,7 @@ impl SessionRegistry {
             state: SessionState::Live { generation },
             elapsed_ms: Some(0),
         };
-        if let Err(error) = spawn_resumed_session(
+        match spawn_resumed_session(
             state,
             self,
             metadata,
@@ -911,8 +943,19 @@ impl SessionRegistry {
             peer_session_id,
             generation,
         ) {
-            state.session_finished();
-            return Err(error);
+            Ok(()) => state.record_provider_health(&health_provider, Ok(())),
+            Err(error) => {
+                state.session_finished();
+                // The generation was already started on the journal row; a
+                // failed respawn must end it, or the row stays live and the
+                // roster renders a phantom recovered session. try_send drops
+                // on a saturated queue and the end marker is the durable
+                // product boundary, so this rare failure path blocks on the
+                // blocking variant instead of risking a phantom row.
+                let _ = journal.mark_ended_blocking(session_id, generation, None);
+                state.record_provider_health(&health_provider, Err(&error));
+                return Err(error);
+            }
         }
         let map = self
             .inner

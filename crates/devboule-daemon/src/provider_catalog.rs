@@ -100,6 +100,22 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
     },
 ];
 
+// Test-only provider: the integration stub binary. It resolves only when its
+// build directory is on PATH, so end-user machines never list it; release
+// builds drop the row entirely so a shipped daemon cannot discover it. The
+// row exists so provider health measured against the stub (spawn + handshake
+// outcomes) is visible through ProvidersList in integration tests, mirroring
+// how real providers are surfaced.
+#[cfg(debug_assertions)]
+const TEST_ONLY_AGENTS: &[KnownAgent] = &[KnownAgent {
+    id: "devboule-acp-stub",
+    aliases: &["devboule-acp-stub"],
+    acp_args: None,
+    stream_json_args: None,
+}];
+#[cfg(not(debug_assertions))]
+const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
+
 /// Registry wrappers that a better native chat-capable provider covers in the
 /// workspace picker. This is an explicit product-policy map from §1.1:
 /// `claude-acp` is a proprietary npx wrapper, while native `claude` already
@@ -205,6 +221,10 @@ pub fn discover() -> ProviderDiscovery {
 pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
     let agents = KNOWN_AGENTS
         .iter()
+        // Chained here (the only KNOWN_AGENTS consumption in this module) so
+        // every discovery path — ProvidersList, find_in_catalog,
+        // find_available — sees the test-only row in debug builds.
+        .chain(TEST_ONLY_AGENTS.iter())
         .filter_map(|spec| {
             let launch = spec
                 .aliases

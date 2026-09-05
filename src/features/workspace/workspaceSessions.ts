@@ -31,6 +31,7 @@ export interface WorkspaceSessionController {
   select: (sessionId: string) => void;
   open: (session: Session) => void;
   watch: () => () => void;
+  dismissError: () => void;
 }
 
 const DEFAULT_SOURCE: WorkspaceSessionSource = {
@@ -47,7 +48,22 @@ const DEFAULT_SOURCE: WorkspaceSessionSource = {
 };
 
 const LIST_ERROR = "Could not load sessions. The daemon is unreachable.";
-const CREATE_ERROR = "Could not create an agent session. The daemon is unreachable.";
+const CREATE_FALLBACK_ERROR = "Could not create the agent session.";
+
+/**
+ * Message from a rejected invoke. Tauri rejections are not always `Error`s:
+ * the daemon's serialized WireError arrives as a plain
+ * `{ code, message }` object, which `String(cause)` would render as
+ * "[object Object]".
+ */
+function rejectionMessage(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  if (typeof cause === "object" && cause !== null && "message" in cause) {
+    const message = (cause as { message: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return String(cause);
+}
 
 export function workspaceSessions(sessions: readonly Session[]): Session[] {
   return [...sessions];
@@ -198,8 +214,15 @@ export function createWorkspaceSessionController(
         error: null,
       });
       return session;
-    } catch {
-      publish({ ...state, creating: false, error: CREATE_ERROR });
+    } catch (cause) {
+      // The daemon answered and rejected the start; surface its reason instead
+      // of a generic claim about reachability.
+      const message = rejectionMessage(cause);
+      publish({
+        ...state,
+        creating: false,
+        error: message.trim().length > 0 ? message : CREATE_FALLBACK_ERROR,
+      });
       return null;
     }
   };
@@ -262,6 +285,10 @@ export function createWorkspaceSessionController(
         error: null,
       });
     },
+    dismissError: () => {
+      if (state.error === null) return;
+      publish({ ...state, error: null });
+    },
   };
 }
 
@@ -293,6 +320,7 @@ export function useWorkspaceSessions(): WorkspaceSessionState & {
   create: (kind?: SessionKind, provider?: string | null) => Promise<Session | null>;
   select: (sessionId: string) => void;
   open: (session: Session) => void;
+  dismissError: () => void;
 } {
   const [controller] = useState<WorkspaceSessionController>(() =>
     createWorkspaceSessionController(),
@@ -316,6 +344,7 @@ export function useWorkspaceSessions(): WorkspaceSessionState & {
   );
   const select = useCallback((sessionId: string) => controller.select(sessionId), [controller]);
   const open = useCallback((session: Session) => controller.open(session), [controller]);
+  const dismissError = useCallback(() => controller.dismissError(), [controller]);
 
-  return { ...state, refresh, create, select, open };
+  return { ...state, refresh, create, select, open, dismissError };
 }

@@ -114,6 +114,7 @@ export function Workspace() {
     create: createSession,
     select: selectSession,
     open: openSession,
+    dismissError: dismissSessionsError,
   } = useWorkspaceSessions();
   const selectedSurface =
     MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
@@ -542,6 +543,21 @@ export function Workspace() {
           <span className="workspace-tabs-spacer" />
           <span className="workspace-rate">{sessionStatusText}</span>
         </div>
+
+        {sessionsError !== null ? (
+          <div className="workspace-session-error" role="alert">
+            <span className="workspace-session-error-text">{sessionsError}</span>
+            <button
+              type="button"
+              className="workspace-session-error-dismiss"
+              onClick={dismissSessionsError}
+              aria-label="Dismiss error"
+              title="Dismiss error"
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
 
         {selectedSessionId !== null ? (
           <>

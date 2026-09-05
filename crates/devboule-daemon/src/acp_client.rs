@@ -837,10 +837,26 @@ fn read_response(
         if let Some(error) = value.get("error") {
             return Err(WireError::new(
                 ErrorCode::Io,
-                format!("ACP request failed: {error}"),
+                acp_request_error_message(error),
             ));
         }
         return Ok(value);
+    }
+}
+
+/// Format a JSON-RPC error object for a user-facing message. Agents embed
+/// structured payloads in the error object (qwen carries `authMethods`);
+/// the string `message` field is what belongs in a chat banner, so the raw
+/// serialized object is only the fallback when no string message exists.
+fn acp_request_error_message(error: &serde_json::Value) -> String {
+    let message = error.get("message").and_then(serde_json::Value::as_str);
+    match (
+        error.get("code").and_then(serde_json::Value::as_i64),
+        message,
+    ) {
+        (Some(code), Some(message)) => format!("ACP request failed ({code}): {message}"),
+        (None, Some(message)) => format!("ACP request failed: {message}"),
+        _ => format!("ACP request failed: {error}"),
     }
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { providersList } from "../../lib/tauri";
-import type { ProviderCatalog } from "../../types/ipc";
+import type { ProviderCatalog, ProviderInfo } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import {
@@ -114,6 +114,17 @@ function SettingsHeading({ title, description }: SettingsHeadingProps) {
   );
 }
 
+/** Status label for one provider, derived from the daemon's measured authentication. */
+function providerStatusText(provider: ProviderInfo): string {
+  const viaNpx = provider.origin === "npx-wrapper" ? "available via npx" : "installed";
+  if (provider.authentication === "ok") return `${viaNpx} · last start ok`;
+  if (provider.authentication.startsWith("failed:")) {
+    const reason = provider.authentication.slice("failed:".length).trim();
+    return reason.length > 0 ? `start failed — ${reason}` : "start failed";
+  }
+  return `${viaNpx} · authentication unknown`;
+}
+
 function ProvidersPanel() {
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -136,12 +147,11 @@ function ProvidersPanel() {
   }, []);
   const providers = catalog?.providers ?? null;
   const unreadableDirs = catalog?.unreadableDirs ?? 0;
-
   return (
     <div id="settings-panel-providers" role="tabpanel" aria-label="Providers and models">
       <SettingsHeading
         title="Providers & models"
-        description="CLI agents found on PATH. An executable is not a login: authentication stays unknown until the agent says otherwise."
+        description="CLI agents found on PATH. An executable is not a login: the status shows the last measured start outcome, or unknown until one is measured."
       />
       {error ? <div role="alert">{error}</div> : null}
       {providers === null ? (
@@ -176,10 +186,16 @@ function ProvidersPanel() {
                   ) : provider.protocol === "stream-json" ? (
                     <span className="provider-status provider-status-ready">stream-json</span>
                   ) : null}
-                  <span className="provider-status provider-status-idle">
-                    {provider.origin === "npx-wrapper"
-                      ? "available via npx · authentication unknown"
-                      : "installed · authentication unknown"}
+                  <span
+                    className={`provider-status ${
+                      provider.authentication === "ok"
+                        ? "provider-status-ready"
+                        : provider.authentication.startsWith("failed:")
+                          ? "provider-status-missing"
+                          : "provider-status-idle"
+                    }`}
+                  >
+                    {providerStatusText(provider)}
                   </span>
                 </span>
               </div>

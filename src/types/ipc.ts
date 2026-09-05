@@ -368,7 +368,12 @@ export interface ProviderInfo {
   id: string;
   executable: string;
   acpAvailable: boolean;
-  authentication: "unknown";
+  /**
+   * Wire contract set by the daemon: `"unknown"` = never measured, `"ok"` =
+   * most recent provider start completed, `"failed: <reason>"` = most recent
+   * start failed with a one-line reason.
+   */
+  authentication: string;
   /** `"acp"` or `"stream-json"` when the CLI can start a chat session. */
   protocol?: string | null;
   /** `"user-binary"` from PATH; `"npx-wrapper"` from the ACP registry. */

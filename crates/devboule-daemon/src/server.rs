@@ -50,6 +50,13 @@ pub struct ServerState {
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
     session_watchers: Mutex<HashMap<u64, SessionWatch>>,
+    /// Last measured spawn+handshake outcome per provider id. Contract for
+    /// ProviderInfo.authentication: "unknown" (never measured since daemon
+    /// start), "ok" (most recent spawn+handshake completed), or
+    /// "failed: <reason>" (most recent attempt failed; reason is the error
+    /// message collapsed to one line, max 200 chars). A measured last-start
+    /// observation, never an auth probe.
+    provider_health: Mutex<HashMap<String, String>>,
 }
 
 struct SessionWatch {
@@ -101,6 +108,7 @@ impl ServerState {
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
             session_watchers: Mutex::new(HashMap::new()),
+            provider_health: Mutex::new(HashMap::new()),
         });
         let state_for_transitions = Arc::downgrade(&state);
         state.sessions.set_transition_sink(Arc::new(move |owner| {
@@ -258,6 +266,49 @@ impl ServerState {
         if let Some(generation) = generation {
             arm_idle_shutdown(Arc::clone(self), generation);
         }
+    }
+
+    /// Record the measured outcome of this provider's most recent spawn +
+    /// handshake. `Ok(())` measures "ok"; the error measures
+    /// "failed: <reason>" with the error message collapsed to one line and
+    /// capped at 200 chars. This is a last-start observation, not an auth
+    /// probe: it never contacts the provider on its own.
+    pub(crate) fn record_provider_health(
+        &self,
+        provider_id: &str,
+        outcome: Result<(), &WireError>,
+    ) {
+        let value = match outcome {
+            Ok(()) => "ok".to_string(),
+            Err(error) => {
+                // The handshake error embeds the agent stderr as
+                // "<error> Agent stderr: <lines>". The full text stays in
+                // the RPC error shown in chat; the health string lands in
+                // the Settings status line and persists across renders, so
+                // it must not carry stderr, which can echo tokens/paths.
+                let base = error
+                    .message
+                    .split(" Agent stderr:")
+                    .next()
+                    .unwrap_or(&error.message);
+                format!("failed: {}", collapse_health_reason(base))
+            }
+        };
+        self.provider_health
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(provider_id.to_string(), value);
+    }
+
+    /// The measured authentication value for this provider id, or "unknown"
+    /// when nothing was measured since daemon start.
+    pub(crate) fn provider_health(&self, provider_id: &str) -> String {
+        self.provider_health
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(provider_id)
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string())
     }
 
     fn status_body(&self, request_id: u64) -> DaemonMessage {
@@ -870,9 +921,22 @@ fn dispatch(
                 &crate::registry::CdnRegistryFetch,
                 state.sessions.runtime_dir(),
             );
+            // ProviderInfo.authentication carries the measured last-start
+            // outcome for this provider: "ok" when the most recent spawn +
+            // handshake completed, "failed: <reason>" when it failed, and
+            // "unknown" when nothing was measured since daemon start. This
+            // is a recorded observation, not an auth probe.
+            let providers = discovery
+                .agents
+                .into_iter()
+                .map(|agent| {
+                    let authentication = state.provider_health(&agent.id);
+                    wire_provider(agent, authentication)
+                })
+                .collect();
             DaemonMessage::Providers {
                 id,
-                providers: discovery.agents.into_iter().map(wire_provider).collect(),
+                providers,
                 unreadable_dirs: discovery.unreadable_dirs,
             }
         }
@@ -888,17 +952,41 @@ fn dispatch(
 
 fn wire_provider(
     agent: crate::provider_catalog::InstalledAgent,
+    authentication: String,
 ) -> devboule_protocol::ProviderInfo {
     devboule_protocol::ProviderInfo {
         id: agent.id.to_string(),
         executable: agent.executable.to_string_lossy().into_owned(),
         acp_available: agent.acp_command.is_some(),
-        authentication: "unknown".to_string(),
+        authentication,
         protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
         origin: Some(agent.origin.as_wire().to_string()),
         launch_args: agent.launch_args,
         pickable: agent.pickable,
     }
+}
+
+/// Collapse an error message to a single line for the provider-health
+/// string: newlines, tabs and repeated spaces become single spaces, then
+/// the result is truncated to 200 chars.
+fn collapse_health_reason(message: &str) -> String {
+    let mut reason = String::with_capacity(message.len());
+    let mut pending_space = false;
+    for ch in message.chars() {
+        if ch.is_whitespace() {
+            pending_space = !reason.is_empty();
+        } else {
+            if pending_space {
+                reason.push(' ');
+                pending_space = false;
+            }
+            reason.push(ch);
+        }
+    }
+    if reason.chars().count() > 200 {
+        reason = reason.chars().take(200).collect();
+    }
+    reason
 }
 
 fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage {
@@ -1409,6 +1497,42 @@ mod tests {
 
     fn state() -> Arc<ServerState> {
         ServerState::new("test-instance".to_string())
+    }
+
+    #[test]
+    fn record_provider_health_strips_agent_stderr_from_the_reason() {
+        let state = state();
+        let error = WireError::new(
+            ErrorCode::Io,
+            "ACP request failed: {\"code\":-32000} Agent stderr: SECRET-TOKEN leaked | C:\\Users",
+        );
+        state.record_provider_health("stub", Err(&error));
+        let value = state.provider_health("stub");
+        assert!(
+            value.starts_with("failed: ") && value.contains("ACP request failed"),
+            "the pre-stderr part of the message must survive: {value:?}"
+        );
+        assert!(
+            !value.contains("SECRET-TOKEN"),
+            "health must not carry agent stderr: {value:?}"
+        );
+    }
+
+    #[test]
+    fn collapse_health_reason_cases() {
+        assert_eq!(collapse_health_reason(""), "");
+        assert_eq!(collapse_health_reason("  \n\t "), "");
+        let exactly_200 = "x".repeat(200);
+        assert_eq!(collapse_health_reason(&exactly_200), exactly_200);
+        assert_eq!(
+            collapse_health_reason(&"y".repeat(201)).chars().count(),
+            200
+        );
+        // Char-boundary-safe truncation: 300 two-byte characters must yield
+        // exactly 200 valid characters, not a byte slice mid-character.
+        let collapsed = collapse_health_reason(&"\u{e8}".repeat(300));
+        assert_eq!(collapsed, "\u{e8}".repeat(200));
+        assert_eq!(collapse_health_reason("a\n\tb   c"), "a b c");
     }
 
     fn wait_for_shutdown(state: &ServerState) {
