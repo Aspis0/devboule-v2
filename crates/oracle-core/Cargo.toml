@@ -93,7 +93,7 @@ required-features = ["full"]
 fastembed = { version = "6", features = ["qwen3"], optional = true }
 candle-core = { version = "0.11", optional = true }
 lancedb = { version = "0.37", optional = true }
-arrow-array = { version = "58.3", optional = true }
+arrow-array = { version = "59.2", optional = true }
 arrow-schema = { version = "58.3", optional = true }
 futures = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
