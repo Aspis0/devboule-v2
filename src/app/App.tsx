@@ -1,9 +1,19 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { ComponentType } from "react";
 import { Shell } from "./Shell";
 import { SurfacePlaceholder } from "./SurfacePlaceholder";
+import { oracleStatus } from "../lib/tauri";
 import { useAppStore } from "../store/appStore";
+import type { OracleIndexStatus } from "../types/ipc";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
+import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
+import {
+  createAgentHost,
+  disposeAgentHost,
+  resolveAgentWorkspace,
+} from "../features/design/agentHost";
+import { createDemoHost } from "../features/design/mockData";
+import { createOracleHost } from "../features/design/oracleHost";
 
 interface SurfaceRendererProps {
   surface: SurfaceDefinition;
@@ -29,9 +39,67 @@ const LazyPolis = lazy(() =>
   })),
 );
 
+const DEMO_DESIGN_HOST = createDemoHost();
+const ORACLE_DESIGN_HOST = createOracleHost();
+const DEMO_DESIGN_DISCLOSURE = "Demo design — fixtures, not a live store.";
+const ORACLE_DESIGN_DISCLOSURE = "Repository index — Oracle results, no design writes.";
+const AGENT_DESIGN_DISCLOSURE = "Repository agent — ACP writes in the active worktree.";
+
+function oracleCanAnswer(status: OracleIndexStatus): boolean {
+  return (
+    status.state !== "error" &&
+    status.state !== "indexing" &&
+    status.indexed_files > 0 &&
+    status.model.state === "ready" &&
+    status.reranker?.state !== "downloading" &&
+    status.reranker?.state !== "missing"
+  );
+}
+
+interface DesignHostBoundaryProps {
+  DesignSurface: ComponentType<DesignSurfaceProps>;
+}
+
+function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
+  const [agentHost] = useState<DesignHost>(() => createAgentHost());
+  const [selection, setSelection] = useState<
+    { host: DesignHost; disclosure: string } | null
+  >(null);
+
+  useEffect(() => {
+    let active = true;
+
+    void Promise.allSettled([oracleStatus(), resolveAgentWorkspace()]).then(
+      ([oracleResult, workspaceResult]) => {
+        if (!active) return;
+        if (
+          oracleResult.status === "fulfilled" &&
+          oracleCanAnswer(oracleResult.value) &&
+          workspaceResult.status === "fulfilled"
+        ) {
+          setSelection({ host: agentHost, disclosure: AGENT_DESIGN_DISCLOSURE });
+        } else if (oracleResult.status === "fulfilled" && oracleCanAnswer(oracleResult.value)) {
+          setSelection({ host: ORACLE_DESIGN_HOST, disclosure: ORACLE_DESIGN_DISCLOSURE });
+        } else {
+          setSelection({ host: DEMO_DESIGN_HOST, disclosure: DEMO_DESIGN_DISCLOSURE });
+        }
+      },
+    );
+
+    return () => {
+      active = false;
+      void disposeAgentHost(agentHost);
+    };
+  }, [agentHost]);
+
+  if (selection === null) return <SurfaceLoading />;
+
+  return <DesignSurface host={selection.host} disclosure={selection.disclosure} />;
+}
+
 const LazyDesign = lazy(() =>
   import("../features/design/DesignSurface").then(({ DesignSurface }) => ({
-    default: () => <DesignSurface />,
+    default: () => <DesignHostBoundary DesignSurface={DesignSurface} />,
   })),
 );
 

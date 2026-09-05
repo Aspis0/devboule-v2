@@ -1,69 +1,33 @@
 /** M1b mock boundary. Replace this module with typed IPC adapters. */
 
-export type DesignTool = "move" | "ai";
-export type DesignLayerKind = "TSX" | "SVG";
-export type DesignRadiusToken = "none" | "sm" | "md" | "lg";
-export type DesignMessageStatus = "working" | "done" | "error";
+import type {
+  DesignCanvasNode,
+  DesignDocument,
+  DesignGenerationResult,
+  DesignHost,
+  DesignLayer,
+  DesignMessage,
+  DesignRadiusOption,
+  DesignTool,
+} from "./designHost";
 
-export interface DesignTransform {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  hug?: boolean;
-}
-
-export interface DesignLayer {
-  id: string;
-  name: string;
-  kind: DesignLayerKind;
-  transform: DesignTransform;
-}
-
-export interface DesignRadiusOption {
-  token: DesignRadiusToken;
-  value: number;
-}
-
-export interface DesignUserMessage {
-  id: number;
-  role: "user";
-  text: string;
-  ctx?: string;
-}
-
-export interface DesignAssistantMessage {
-  id: number;
-  role: "assistant";
-  status: DesignMessageStatus;
-  title: string;
-  desc: string;
-  sources: readonly string[];
-  nodeIds: readonly string[];
-  instruction?: string;
-}
-
-export type DesignMessage = DesignUserMessage | DesignAssistantMessage;
-
-export type DesignCanvasNodeVariant = "stale-queue" | "index-header";
-
-export interface DesignCanvasNode {
-  id: string;
-  variant: DesignCanvasNodeVariant;
-  name: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface DesignGenerationResult {
-  prompt: string;
-  title: string;
-  desc: string;
-  sources: readonly string[];
-  nodeIds: readonly string[];
-}
+export type {
+  DesignAssistantMessage,
+  DesignCanvasNode,
+  DesignCanvasNodeVariant,
+  DesignDocument,
+  DesignGenerationResult,
+  DesignHost,
+  DesignLayer,
+  DesignLayerKind,
+  DesignMessage,
+  DesignMessageStatus,
+  DesignRadiusOption,
+  DesignRadiusToken,
+  DesignTool,
+  DesignTransform,
+  DesignUserMessage,
+} from "./designHost";
 
 export const MOCK_DESIGN_INITIAL_STATE = {
   tool: "move" as DesignTool,
@@ -220,3 +184,71 @@ export const MOCK_DESIGN_WORKING_MESSAGE = {
   title: "Generating…",
   desc: "Reading the grounded files, then writing the node.",
 } as const;
+
+function cloneDesignDocument(document: DesignDocument): DesignDocument {
+  return {
+    ...document,
+    initialState: {
+      ...document.initialState,
+      hiddenLayerIds: [...document.initialState.hiddenLayerIds],
+    },
+    layers: document.layers.map((layer) => ({
+      ...layer,
+      transform: { ...layer.transform },
+    })),
+    canvasNodes: document.canvasNodes.map((node) => ({ ...node })),
+    canvasContent: {
+      staleQueue: {
+        ...document.canvasContent.staleQueue,
+        rowWidths: [...document.canvasContent.staleQueue.rowWidths],
+      },
+      indexHeader: { ...document.canvasContent.indexHeader },
+      aiRegion: { ...document.canvasContent.aiRegion },
+    },
+    radiusOptions: document.radiusOptions.map((option) => ({ ...option })),
+    messages: document.messages.map((message) =>
+      message.role === "user"
+        ? { ...message }
+        : { ...message, sources: [...message.sources], nodeIds: [...message.nodeIds] },
+    ),
+    workingMessage: { ...document.workingMessage },
+  };
+}
+
+function createDemoDocument(): DesignDocument {
+  return {
+    ...MOCK_DESIGN_DOCUMENT,
+    initialState: { ...MOCK_DESIGN_INITIAL_STATE },
+    layers: MOCK_DESIGN_LAYERS,
+    canvasNodes: MOCK_DESIGN_CANVAS_NODES,
+    canvasContent: MOCK_DESIGN_CANVAS_CONTENT,
+    radiusOptions: MOCK_DESIGN_RADIUS_OPTIONS,
+    messages: MOCK_DESIGN_MESSAGES,
+    workingMessage: MOCK_DESIGN_WORKING_MESSAGE,
+  };
+}
+
+export function createDemoHost(): DesignHost {
+  let currentDocument = createDemoDocument();
+
+  return {
+    loadDocument: async () => cloneDesignDocument(currentDocument),
+    saveDocument: async (document) => {
+      currentDocument = cloneDesignDocument(document);
+    },
+    generate: async (prompt, signal) => {
+      await Promise.resolve();
+      if (signal.aborted) throw new DOMException("Generation aborted", "AbortError");
+
+      const normalizedPrompt = prompt.toLowerCase();
+      const result = normalizedPrompt.includes("visual check")
+        ? MOCK_DESIGN_GENERATION_RESULTS.visualCheck
+        : normalizedPrompt.includes("retry")
+          ? MOCK_DESIGN_GENERATION_RESULTS.retry
+          : normalizedPrompt.includes("regenerate")
+            ? MOCK_DESIGN_GENERATION_RESULTS.regenerate
+            : MOCK_DESIGN_GENERATION_RESULTS.edit;
+      return { ...result, prompt };
+    },
+  };
+}

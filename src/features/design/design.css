@@ -2,6 +2,14 @@
   background: var(--surface-muted);
 }
 
+.design-demo-disclosure {
+  flex: none;
+  padding: 7px 14px 0;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
 .design-toolbar {
   display: flex;
   flex: none;
