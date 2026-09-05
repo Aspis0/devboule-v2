@@ -1802,7 +1802,9 @@ impl SessionRegistry {
                 .map_err(|_| internal("Session state is unavailable."))?;
             match map.get(session_id) {
                 Some(entry) => {
-                    check_owner(entry, owner)?;
+                    if entry.owner().user != owner.user {
+                        return Err(unauthorized());
+                    }
                     if entry.as_live().is_some() {
                         return Err(WireError::new(
                             ErrorCode::InvalidRequest,
@@ -1822,8 +1824,7 @@ impl SessionRegistry {
                 .into_iter()
                 .find(|record| record.id == session_id)
                 .ok_or_else(not_found)?;
-            let session_owner = owner_from_session_id(session_id, &record.owner)?;
-            if &session_owner != owner {
+            if record.owner != owner.user {
                 return Err(unauthorized());
             }
         }
@@ -3786,5 +3787,217 @@ mod tests {
             "Could not start the terminal shell. (OS error 1450: no system resources)."
         );
         assert!(!wire.message.contains("secret"));
+    }
+
+    fn tmp_delete_registry() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let process_id = std::process::id();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-delete-session-{process_id}-{stamp}-{counter}"
+        ));
+        std::fs::create_dir(&dir).expect("tmp dir");
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).expect("journal"));
+        let registry =
+            SessionRegistry::new(RuntimePaths::from_dir(&dir), Some(Arc::clone(&journal)));
+        (dir, registry, journal)
+    }
+
+    fn test_owner(user: &str, client: &str) -> OwnerId {
+        OwnerId::new(user, client).expect("owner")
+    }
+
+    fn ended_record(id: &str, user: &str) -> crate::journal::SessionRecord {
+        let mut record = new_session_record(id, user, None, SessionKind::Terminal, "Terminal");
+        record.status = PersistStatus::Ended;
+        record
+    }
+
+    fn insert_transcript(registry: &SessionRegistry, id: &str, owner: OwnerId) {
+        let metadata = Session {
+            id: id.to_string(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            title: "Terminal".to_string(),
+            state: SessionState::Ended {
+                generation: 1,
+                code: Some(0),
+                integrity: TranscriptIntegrity::Complete,
+            },
+            elapsed_ms: Some(0),
+        };
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            id.to_string(),
+            registry.journal.clone(),
+        ));
+        registry.inner.lock().expect("registry").insert(
+            id.to_string(),
+            RegistryEntry::Transcript(TranscriptSession {
+                metadata,
+                owner,
+                runtime,
+            }),
+        );
+    }
+
+    struct NoopKiller;
+
+    impl SessionKiller for NoopKiller {
+        fn kill(&mut self) {}
+        fn clone_killer(&self) -> Box<dyn SessionKiller> {
+            Box::new(NoopKiller)
+        }
+    }
+
+    fn insert_live(registry: &SessionRegistry, id: &str, owner: OwnerId) {
+        let metadata = Session {
+            id: id.to_string(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
+            title: "Terminal".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+        };
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            id.to_string(),
+            registry.journal.clone(),
+        ));
+        let session = PtySession {
+            metadata,
+            owner,
+            process_job: Arc::new(JobObject::new().expect("job")),
+            master: None,
+            killer: Box::new(NoopKiller),
+            stderr_handle: None,
+            child_wait: None,
+            writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            reader_handle: None,
+            coalesce_handle: None,
+            runtime,
+            exited: Arc::new(AtomicBool::new(false)),
+            preserve_on_exit: Arc::new(AtomicBool::new(false)),
+        };
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .insert(id.to_string(), RegistryEntry::Live(session));
+    }
+
+    #[test]
+    fn delete_session_allows_journal_only_record_from_another_client_of_the_same_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-1", "process-1111");
+        let caller = test_owner("S-1-5-21-1", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "dead01").expect("id");
+        journal
+            .upsert_blocking(ended_record(&session_id, &original.user))
+            .expect("row");
+
+        let result = registry.delete_session(&session_id, &caller);
+        assert!(
+            result.is_ok(),
+            "same user, different client must be able to delete a journal-only history row: {result:?}"
+        );
+        assert!(
+            journal
+                .list()
+                .expect("list")
+                .iter()
+                .all(|row| row.id != session_id),
+            "journal-only delete must remove the row"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_session_rejects_journal_only_record_owned_by_another_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("user-alice", "process-1111");
+        let stranger = test_owner("user-bob", "process-1111");
+        let session_id = compose_session_id(&owner.session_token(), "dead02").expect("id");
+        journal
+            .upsert_blocking(ended_record(&session_id, &owner.user))
+            .expect("row");
+
+        let error = registry
+            .delete_session(&session_id, &stranger)
+            .expect_err("different user must stay unauthorized");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
+        assert!(
+            journal
+                .list()
+                .expect("list")
+                .iter()
+                .any(|row| row.id == session_id),
+            "unauthorized delete must leave the row"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_session_allows_dead_registry_entry_from_another_client_of_the_same_user() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-1", "process-1111");
+        let caller = test_owner("S-1-5-21-1", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "dead03").expect("id");
+        journal
+            .upsert_blocking(ended_record(&session_id, &original.user))
+            .expect("row");
+        insert_transcript(&registry, &session_id, original);
+
+        let result = registry.delete_session(&session_id, &caller);
+        assert!(
+            result.is_ok(),
+            "same user, different client must delete a dead registry entry: {result:?}"
+        );
+        assert!(
+            registry
+                .inner
+                .lock()
+                .expect("registry")
+                .get(&session_id)
+                .is_none(),
+            "dead registry entry must be removed"
+        );
+        assert!(journal
+            .list()
+            .expect("list")
+            .iter()
+            .all(|row| row.id != session_id));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_session_refuses_live_registry_entry_until_closed() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-1", "process-1111");
+        let caller = test_owner("S-1-5-21-1", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "live01").expect("id");
+        insert_live(&registry, &session_id, original);
+
+        let error = registry
+            .delete_session(&session_id, &caller)
+            .expect_err("live session must refuse delete");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.message, "Close the session before deleting it.");
+        assert!(
+            registry
+                .inner
+                .lock()
+                .expect("registry")
+                .get(&session_id)
+                .is_some(),
+            "live registry entry must stay"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

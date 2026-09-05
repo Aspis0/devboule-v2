@@ -50,7 +50,10 @@ describe("history grouping helpers", () => {
     );
     const nonSearchableMetadata = { title: "", kind: "acp", host: "this machine" };
     expect(historyRowMatches(nonSearchableMetadata, "acp")).toBe(false);
-    expect(historyRowMatches(nonSearchableMetadata, "machine")).toBe(false);
+  });
+
+  it("matches a row via the host column", () => {
+    expect(historyRowMatches({ title: "Build", host: "this machine" }, "machine")).toBe(true);
   });
 
   it("accepts empty and undefined inputs", () => {

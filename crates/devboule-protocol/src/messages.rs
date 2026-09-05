@@ -326,7 +326,8 @@ pub struct ProviderInfo {
 pub struct JournalUsage {
     pub total_bytes: u64,
     pub session_count: usize,
-    pub deleted_count: usize,
+    pub deleted_by_user: usize,
+    pub deleted_by_retention: usize,
     pub unreclaimable: Unreclaimable,
     pub limits: JournalLimits,
     pub per_session: Vec<JournalSessionUsage>,
@@ -777,7 +778,8 @@ mod tests {
             usage: JournalUsage {
                 total_bytes: 10,
                 session_count: 2,
-                deleted_count: 1,
+                deleted_by_user: 1,
+                deleted_by_retention: 4,
                 unreclaimable: Unreclaimable {
                     bytes_over: 3,
                     sessions_over: 4,
@@ -800,6 +802,8 @@ mod tests {
             },
         };
         let encoded = serde_json::to_string(&usage).expect("json");
+        assert!(encoded.contains("\"deletedByUser\":1"));
+        assert!(encoded.contains("\"deletedByRetention\":4"));
         assert!(encoded.contains("\"unreclaimable\":{"));
         assert!(encoded.contains("\"bytesOver\":3"));
         assert!(encoded.contains("\"sessionsOver\":4"));

@@ -438,10 +438,24 @@ pub(super) fn journal_usage(
     defaults: JournalLimits,
 ) -> Result<JournalUsage, JournalError> {
     let limits = effective_limits(conn, defaults)?;
-    let deleted_count: i64 =
-        conn.query_row("SELECT COUNT(*) FROM deleted_sessions", [], |row| {
-            row.get(0)
-        })?;
+    let mut deleted_by_user = 0usize;
+    let mut deleted_by_retention = 0usize;
+    {
+        let mut deleted_stmt =
+            conn.prepare("SELECT reason, COUNT(*) FROM deleted_sessions GROUP BY reason")?;
+        let mut deleted_rows = deleted_stmt.query([])?;
+        while let Some(row) = deleted_rows.next()? {
+            let reason: String = row.get(0)?;
+            let count = row.get::<_, i64>(1)?.max(0) as usize;
+            match reason.as_str() {
+                "user" => deleted_by_user = deleted_by_user.saturating_add(count),
+                "limit_bytes" | "limit_sessions" | "limit_age" => {
+                    deleted_by_retention = deleted_by_retention.saturating_add(count);
+                }
+                _ => {}
+            }
+        }
+    }
     let cutoff = (limits.max_age_ms > 0).then(|| now_ms().saturating_sub(limits.max_age_ms));
     let mut session_count = 0usize;
     let mut total_bytes = 0u64;
@@ -531,7 +545,8 @@ pub(super) fn journal_usage(
     Ok(JournalUsage {
         total_bytes,
         session_count,
-        deleted_count: deleted_count.max(0) as usize,
+        deleted_by_user,
+        deleted_by_retention,
         unreclaimable,
         limits,
         per_session,
@@ -1527,6 +1542,34 @@ mod tests {
         )));
         journal.unpin("s.a.2");
         journal.flush().expect("flush");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_usage_splits_user_and_retention_deleted_counts() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal.shutdown();
+        let conn = Connection::open(&path).expect("inspect");
+        for (id, reason) in [
+            ("s.del.user.1", "user"),
+            ("s.del.user.2", "user"),
+            ("s.del.bytes", "limit_bytes"),
+            ("s.del.sessions", "limit_sessions"),
+            ("s.del.age", "limit_age"),
+        ] {
+            conn.execute(
+                "INSERT INTO deleted_sessions (
+                    id, workspace_id, kind, title, created_at_ms, deleted_at_ms, reason, bytes_removed
+                 ) VALUES (?1, NULL, 'terminal', 'Terminal', 1, 2, ?2, 0)",
+                rusqlite::params![id, reason],
+            )
+            .expect("tombstone");
+        }
+        let usage =
+            super::journal_usage(&conn, &HashSet::new(), JournalLimits::default()).expect("usage");
+        assert_eq!(usage.deleted_by_user, 2);
+        assert_eq!(usage.deleted_by_retention, 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -274,6 +274,7 @@ export function Workspace() {
                 type="button"
                 className="workspace-history-button"
                 aria-pressed={historyOpen}
+                aria-controls="workspace-history-panel"
                 onClick={() => setHistoryOpen((open) => !open)}
                 title={historyOpen ? "Show workspaces" : "Show history"}
               >

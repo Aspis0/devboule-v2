@@ -67,11 +67,13 @@
 
 .history-row-copy {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 auto;
 }
 
 .history-row-meta {
+  min-width: 0;
   overflow: visible;
+  overflow-wrap: anywhere;
   line-height: 1.45;
   white-space: normal;
 }

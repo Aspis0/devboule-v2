@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { journalUsage, reasonFromCause, sessionDelete, sessionsList } from "../../lib/tauri";
 import type { JournalSessionUsage, JournalUsage, Session } from "../../types/ipc";
 import { useTrackedRequest } from "../oracle/oracleRequests";
@@ -52,9 +52,17 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
   }, []);
 
   const usage = usageRequest.state.status === "ready" ? usageRequest.state.value : null;
-  const joinedSessions =
-    sessionsRequest.state.status === "ready" ? sessionsRequest.state.value : EMPTY_SESSIONS;
-  const [renderNow] = useState(() => Date.now());
+  const sessionsValue =
+    sessionsRequest.state.status === "ready" ? sessionsRequest.state.value : null;
+  const joinedSessions = Array.isArray(sessionsValue) ? sessionsValue : EMPTY_SESSIONS;
+  const [renderNow, setRenderNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (typeof injectedNow === "number") return;
+    const intervalId = window.setInterval(() => {
+      setRenderNow(Date.now());
+    }, 30_000);
+    return () => window.clearInterval(intervalId);
+  }, [injectedNow]);
   const now = typeof injectedNow === "number" ? injectedNow : renderNow;
   const rows = useMemo(() => {
     if (!usage) return [];
@@ -78,6 +86,7 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
   const groups = useMemo(() => groupByDay(filteredRows, now), [filteredRows, now]);
   const isSearchActive = typeof search === "string" && search.trim().length > 0;
   const refreshUsage = usageRequest.run;
+  const refreshSessions = sessionsRequest.run;
 
   const deleteRow = useCallback(
     (row: HistoryRow) => {
@@ -97,6 +106,7 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
           setDeletingId(null);
           setConfirmingId(null);
           refreshUsage(false);
+          refreshSessions(false);
         } catch (cause) {
           if (!mountedRef.current) return;
           setDeletingId(null);
@@ -105,7 +115,7 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
         }
       })();
     },
-    [confirmingId, deletingId, refreshUsage],
+    [confirmingId, deletingId, refreshSessions, refreshUsage],
   );
 
   const usageError = usageRequest.state.status === "error" ? usageRequest.state.message : null;
@@ -113,7 +123,7 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
     sessionsRequest.state.status === "error" ? sessionsRequest.state.message : null;
 
   return (
-    <div className="history-panel" aria-label="History">
+    <div className="history-panel" id="workspace-history-panel" aria-label="History">
       <div className="history-heading">
         <h2 className="history-heading-title">History</h2>
       </div>
@@ -138,9 +148,9 @@ export function HistoryPanel({ search, now: injectedNow }: HistoryPanelProps) {
             <span>Total saved bytes: {formatCount(usage.totalBytes)}</span>
             <span>Saved sessions: {formatCount(usage.sessionCount)}</span>
           </div>
-          {usage.deletedCount > 0 ? (
+          {usage.deletedByRetention > 0 ? (
             <p className="history-notice">
-              {formatCount(usage.deletedCount)} sessions were removed from history.
+              The history limit removed {formatCount(usage.deletedByRetention)} sessions.
             </p>
           ) : null}
           <RetentionNotice usage={usage} />
@@ -214,7 +224,7 @@ function RetentionNotice({ usage }: { usage: JournalUsage }) {
   );
 }
 
-function HistoryRowView({
+const HistoryRowView = memo(function HistoryRowView({
   now,
   row,
   confirming,
@@ -255,7 +265,7 @@ function HistoryRowView({
       </button>
     </div>
   );
-}
+});
 
 function transcriptWasTrimmed(session: Session | null): boolean {
   const state = session?.state;

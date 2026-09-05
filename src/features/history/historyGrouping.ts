@@ -9,6 +9,7 @@ export interface HistorySearchFields {
   workspace?: string | null;
   branch?: string | null;
   project?: string | null;
+  host?: string | null;
 }
 
 interface TimestampedEntry {
@@ -80,7 +81,7 @@ export function historyRowMatches(
   if (!normalizedQuery) return true;
   if (!row) return false;
 
-  return [row.title, row.workspace, row.branch, row.project].some(
+  return [row.title, row.workspace, row.branch, row.project, row.host].some(
     (value) => typeof value === "string" && value.toLowerCase().includes(normalizedQuery),
   );
 }

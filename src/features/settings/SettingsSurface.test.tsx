@@ -46,7 +46,8 @@ describe("Settings retention panel", () => {
     vi.mocked(journalUsage).mockResolvedValue({
       totalBytes: 12_345,
       sessionCount: 10_002,
-      deletedCount: 3,
+      deletedByUser: 0,
+      deletedByRetention: 3,
       unreclaimable: { bytesOver: 0, sessionsOver: 2, agedOut: 4 },
       limits: {
         snapshotEveryBytes: 65_536,
@@ -211,7 +212,8 @@ describe("Settings providers catalog", () => {
     vi.mocked(journalUsage).mockResolvedValue({
       totalBytes: 0,
       sessionCount: 0,
-      deletedCount: 0,
+      deletedByUser: 0,
+      deletedByRetention: 0,
       unreclaimable: { bytesOver: 0, sessionsOver: 0, agedOut: 0 },
       limits: {
         snapshotEveryBytes: 65_536,

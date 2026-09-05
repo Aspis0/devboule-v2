@@ -158,11 +158,11 @@ const spawnPermissionRequest: PermissionRequest = {
   ],
 };
 
-
 const historyUsage: JournalUsage = {
   totalBytes: 32,
   sessionCount: 1,
-  deletedCount: 0,
+  deletedByUser: 0,
+  deletedByRetention: 0,
   unreclaimable: { bytesOver: 0, sessionsOver: 0, agedOut: 0 },
   limits: {
     snapshotEveryBytes: 65_536,
@@ -244,6 +244,18 @@ describe("Workspace sessions", () => {
 
   it("opens History from the left sidebar", async () => {
     vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    vi.mocked(sessionsList).mockResolvedValue([
+      {
+        ...terminal("session-1", "shell one"),
+        workspaceId: "workspace-rust",
+        state: {
+          type: "ended",
+          generation: 1,
+          code: 0,
+          integrity: { kind: "complete" },
+        },
+      },
+    ]);
     root = createRoot(container);
     await act(async () => {
       root.render(<Workspace />);
@@ -253,14 +265,18 @@ describe("Workspace sessions", () => {
       (button) => button.textContent?.includes("History"),
     );
     if (!history) throw new Error("History button did not render");
+    expect(history.getAttribute("aria-controls")).toBe("workspace-history-panel");
     await act(async () => history.click());
     await act(async () => undefined);
+    expect(container.querySelector("#workspace-history-panel")).not.toBeNull();
     expect(container.textContent).toContain("Saved build history");
+    expect(container.textContent).toContain("workspace-rust");
     expect(sessionDelete).not.toHaveBeenCalled();
   });
 
   it("keeps workspace and History searches independent across toggles", async () => {
     vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    vi.mocked(sessionsList).mockResolvedValue([]);
     root = createRoot(container);
     await act(async () => {
       root.render(<Workspace />);

@@ -50,7 +50,8 @@ function baseUsage(): JournalUsage {
   return {
     totalBytes: 12_345,
     sessionCount: 2,
-    deletedCount: 0,
+    deletedByUser: 0,
+    deletedByRetention: 0,
     unreclaimable: { bytesOver: 0, sessionsOver: 0, agedOut: 0 },
     limits: {
       snapshotEveryBytes: 65_536,
@@ -107,6 +108,7 @@ describe("HistoryPanel", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await act(async () => root?.unmount());
     container.remove();
     vi.clearAllMocks();
@@ -136,11 +138,30 @@ describe("HistoryPanel", () => {
 
   it("declares deleted sessions and unreclaimable sessions", async () => {
     const usage = baseUsage();
-    usage.deletedCount = 3;
+    usage.deletedByRetention = 3;
     usage.unreclaimable.sessionsOver = 2;
     await renderPanel(usage);
-    expect(container.textContent).toContain("3 sessions were removed from history.");
+    expect(container.textContent).toContain("The history limit removed 3 sessions.");
     expect(container.textContent).toContain("Retention cannot reclaim 2 sessions");
+  });
+
+  it("renders the history-limit notice when retention removed sessions", async () => {
+    const usage = baseUsage();
+    usage.deletedByRetention = 3;
+    usage.deletedByUser = 0;
+    await renderPanel(usage);
+    expect(container.textContent).toContain("The history limit removed 3 sessions.");
+    expect(container.textContent).not.toContain("sessions were removed from history");
+  });
+
+  it("does not render a history notice for user-only deletions", async () => {
+    const usage = baseUsage();
+    usage.deletedByUser = 4;
+    usage.deletedByRetention = 0;
+    await renderPanel(usage);
+    expect(container.querySelector(".history-notice")).toBeNull();
+    expect(container.textContent).not.toContain("sessions were removed from history");
+    expect(container.textContent).not.toContain("The history limit removed");
   });
 
   it("disables delete for a joined live session with a close-first explanation", async () => {
@@ -285,5 +306,126 @@ describe("HistoryPanel", () => {
     await act(async () => root.unmount());
     resolveUsage?.(baseUsage());
     await act(async () => undefined);
+  });
+
+  it("refetches usage and the session list after a successful delete", async () => {
+    const usage = baseUsage();
+    usage.perSession = [usage.perSession[0]];
+    vi.mocked(journalUsage).mockResolvedValue(usage);
+    vi.mocked(sessionsList).mockResolvedValue([endedSession("session-build")]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<HistoryPanel now={now} search="" />);
+      await Promise.resolve();
+    });
+    expect(journalUsage).toHaveBeenCalledTimes(1);
+    expect(sessionsList).toHaveBeenCalledTimes(1);
+    const initial = container.querySelector<HTMLButtonElement>(".history-delete-action");
+    if (!initial) throw new Error("delete control did not render");
+    await act(async () => initial.click());
+    const confirm = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".history-delete-action"),
+    ).find((button) => button.textContent === "Delete from history");
+    if (!confirm) throw new Error("delete confirmation did not render");
+    await act(async () => confirm.click());
+    await act(async () => undefined);
+    expect(sessionDelete).toHaveBeenCalledWith("session-build");
+    expect(journalUsage).toHaveBeenCalledTimes(2);
+    expect(sessionsList).toHaveBeenCalledTimes(2);
+  });
+
+  it("ticks relative times while the panel stays open and clears the interval on unmount", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const usage = baseUsage();
+    usage.perSession = [{ ...usage.perSession[0], updatedAtMs: now }];
+    vi.mocked(journalUsage).mockResolvedValue(usage);
+    vi.mocked(sessionsList).mockResolvedValue([]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<HistoryPanel search="" />);
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("just now");
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(container.textContent).toContain("1m ago");
+    const clearInterval = vi.spyOn(globalThis, "clearInterval");
+    await act(async () => root.unmount());
+    expect(clearInterval).toHaveBeenCalled();
+    clearInterval.mockRestore();
+    root = createRoot(container);
+  });
+
+  it("renders usage rows when sessionsList resolves undefined", async () => {
+    vi.mocked(journalUsage).mockResolvedValueOnce(baseUsage());
+    vi.mocked(sessionsList).mockResolvedValueOnce(undefined as unknown as Session[]);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<HistoryPanel now={now} search="" />);
+      await Promise.resolve();
+    });
+    await act(async () => undefined);
+    expect(container.textContent).toContain("Build history");
+  });
+
+  it("ignores a second delete click while a delete is in flight", async () => {
+    let resolveDelete: (() => void) | undefined;
+    vi.mocked(sessionDelete).mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+    const usage = baseUsage();
+    usage.perSession = [usage.perSession[0]];
+    await renderPanel(usage, [endedSession("session-build")]);
+    const initial = container.querySelector<HTMLButtonElement>(".history-delete-action");
+    if (!initial) throw new Error("delete control did not render");
+    await act(async () => initial.click());
+    const confirm = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".history-delete-action"),
+    ).find((button) => button.textContent === "Delete from history");
+    if (!confirm) throw new Error("delete confirmation did not render");
+    await act(async () => confirm.click());
+    expect(sessionDelete).toHaveBeenCalledTimes(1);
+    const pending = container.querySelector<HTMLButtonElement>(".history-delete-action");
+    if (!pending) throw new Error("pending delete control did not render");
+    await act(async () => pending.click());
+    expect(sessionDelete).toHaveBeenCalledTimes(1);
+    await act(async () => resolveDelete?.());
+  });
+
+  it("does not refresh usage or sessions when delete resolves after unmount", async () => {
+    let resolveDelete: (() => void) | undefined;
+    vi.mocked(sessionDelete).mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDelete = resolve;
+      }),
+    );
+    const usage = baseUsage();
+    usage.perSession = [usage.perSession[0]];
+    await renderPanel(usage, [endedSession("session-build")]);
+    expect(journalUsage).toHaveBeenCalledTimes(1);
+    expect(sessionsList).toHaveBeenCalledTimes(1);
+    const initial = container.querySelector<HTMLButtonElement>(".history-delete-action");
+    if (!initial) throw new Error("delete control did not render");
+    await act(async () => initial.click());
+    const confirm = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".history-delete-action"),
+    ).find((button) => button.textContent === "Delete from history");
+    if (!confirm) throw new Error("delete confirmation did not render");
+    await act(async () => confirm.click());
+    expect(sessionDelete).toHaveBeenCalledTimes(1);
+    expect(journalUsage).toHaveBeenCalledTimes(1);
+    expect(sessionsList).toHaveBeenCalledTimes(1);
+    await act(async () => root.unmount());
+    resolveDelete?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(journalUsage).toHaveBeenCalledTimes(1);
+    expect(sessionsList).toHaveBeenCalledTimes(1);
+    root = createRoot(container);
   });
 });

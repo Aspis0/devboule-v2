@@ -131,7 +131,8 @@ export interface Unreclaimable {
 export interface JournalUsage {
   totalBytes: number;
   sessionCount: number;
-  deletedCount: number;
+  deletedByUser: number;
+  deletedByRetention: number;
   unreclaimable: Unreclaimable;
   limits: JournalLimits;
   perSession: JournalSessionUsage[];

@@ -993,7 +993,8 @@ fn wire_journal_usage(usage: crate::journal::JournalUsage) -> WireJournalUsage {
     WireJournalUsage {
         total_bytes: usage.total_bytes,
         session_count: usage.session_count,
-        deleted_count: usage.deleted_count,
+        deleted_by_user: usage.deleted_by_user,
+        deleted_by_retention: usage.deleted_by_retention,
         unreclaimable: WireUnreclaimable {
             bytes_over: usage.unreclaimable.bytes_over,
             sessions_over: usage.unreclaimable.sessions_over,

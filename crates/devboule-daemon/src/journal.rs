@@ -384,7 +384,8 @@ pub struct Unreclaimable {
 pub struct JournalUsage {
     pub total_bytes: u64,
     pub session_count: usize,
-    pub deleted_count: usize,
+    pub deleted_by_user: usize,
+    pub deleted_by_retention: usize,
     pub unreclaimable: Unreclaimable,
     pub limits: JournalLimits,
     pub per_session: Vec<JournalSessionUsage>,
