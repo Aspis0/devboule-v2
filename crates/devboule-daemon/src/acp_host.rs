@@ -27,7 +27,7 @@ use agent_client_protocol::schema::v1::{
 use devboule_protocol::{PermissionEnvVar, PermissionOption, SessionEvent};
 use portable_pty::{CommandBuilder, PtySize};
 
-use super::acp_client::{HostDecision, PermissionBroker};
+use super::permission_broker::{HostDecision, PermissionBroker};
 use super::SessionRuntime;
 use crate::process_tree::JobObject;
 
@@ -1216,7 +1216,7 @@ fn spawn_acp_terminal(
 
 #[cfg(test)]
 mod tests {
-    use super::super::acp_client::PermissionBroker;
+    use super::super::permission_broker::PermissionBroker;
     use super::super::{ConnHandle, SessionRuntime};
     use super::{slice_lines, AcpHost, BoundedBuffer, MAX_FS_BYTES};
     use crate::process_tree::JobObject;

@@ -3,7 +3,7 @@
 //! This module owns only the process and protocol adapters. The parent
 //! session module still owns the runtime, attachment queue, journal,
 //! liveness monitor, registry and teardown order. Permissions go through
-//! the existing [`super::acp_client::PermissionBroker`]; this file does not
+//! the existing [`super::permission_broker::PermissionBroker`]; this file does not
 //! fork it.
 
 use std::collections::HashMap;
@@ -12,15 +12,17 @@ use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+#[cfg(test)]
 use std::time::Duration;
 
 use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, WireError};
 use serde_json::Value;
 
-use super::acp_client::{PermissionBroker, PermissionSender};
+use super::permission_broker::{PermissionBroker, PermissionSender};
 use super::PtyCommand;
 use super::{
-    ReaderDispatch, SessionKiller, SessionRuntime, SpawnedSession, StderrSource, WaitableChild,
+    write_child_stdin, ReaderDispatch, SessionKiller, SessionRuntime, SpawnedSession, StderrSource,
+    StdioWaitableChild,
 };
 use crate::claude_view::ClaudeView;
 use crate::paths::RuntimePaths;
@@ -201,7 +203,7 @@ pub(super) fn spawn_process(
         process_job,
         master: None,
         killer: Box::new(killer),
-        child: Box::new(ClaudeWaitableChild { process }),
+        child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
         reader: Box::new(BufReader::new(stdout)),
         reader_dispatch: Some(Box::new(reader_dispatch)),
@@ -214,20 +216,6 @@ pub(super) fn spawn_process(
 fn terminate_process(process: &mut Child) {
     let _ = process.kill();
     let _ = process.wait();
-}
-
-fn write_claude_stdin(stdin: &Mutex<Option<ChildStdin>>, bytes: &[u8]) -> io::Result<()> {
-    let mut stdin = stdin
-        .lock()
-        .map_err(|_| io::Error::other("Claude stdin lock poisoned"))?;
-    let Some(stdin) = stdin.as_mut() else {
-        return Err(io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "Claude stdin is closed",
-        ));
-    };
-    stdin.write_all(bytes)?;
-    stdin.flush()
 }
 
 fn claude_permission_sender(
@@ -248,7 +236,7 @@ fn claude_permission_sender(
         let mut bytes = serde_json::to_vec(&frame)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         bytes.push(b'\n');
-        write_claude_stdin(&stdin, &bytes)
+        write_child_stdin(&stdin, &bytes, "Claude")
     })
 }
 
@@ -318,7 +306,7 @@ impl Write for ClaudeWriter {
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
         let bytes = frame_user_message(&text)?;
-        write_claude_stdin(&self.stdin, &bytes)
+        write_child_stdin(&self.stdin, &bytes, "Claude")
     }
 }
 
@@ -345,7 +333,7 @@ impl SessionKiller for ClaudeKiller {
                     });
                     if let Ok(mut bytes) = serde_json::to_vec(&frame) {
                         bytes.push(b'\n');
-                        let _ = write_claude_stdin(&stdin, &bytes);
+                        let _ = write_child_stdin(&stdin, &bytes, "Claude");
                     }
                 });
             self.permission_broker.cancel_all();
@@ -366,22 +354,6 @@ impl SessionKiller for ClaudeKiller {
             permission_broker: Arc::clone(&self.permission_broker),
             cancelled: Arc::clone(&self.cancelled),
         })
-    }
-}
-
-struct ClaudeWaitableChild {
-    process: Arc<Mutex<Child>>,
-}
-
-impl WaitableChild for ClaudeWaitableChild {
-    fn wait(self: Box<Self>) -> Option<u32> {
-        loop {
-            let status = self.process.lock().ok()?.try_wait().ok()?;
-            if let Some(status) = status {
-                return status.code().and_then(|code| u32::try_from(code).ok());
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
     }
 }
 
