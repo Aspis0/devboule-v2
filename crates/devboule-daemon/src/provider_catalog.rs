@@ -916,7 +916,7 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
         fake_cli_path(&dir, "claude");
         fake_cli_path(&dir, "grok");
         fake_cli_path(&dir, "codex");
-        let discovered = super::discover_in_paths(&[dir.clone()]);
+        let discovered = super::discover_in_paths(std::slice::from_ref(&dir));
         let protocol_of = |id: &str| {
             discovered
                 .agents
@@ -968,7 +968,7 @@ endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\{
                 std::fs::set_permissions(&path, perms).expect("chmod");
             }
         }
-        let discovered = super::discover_in_paths(&[dir.clone()]);
+        let discovered = super::discover_in_paths(std::slice::from_ref(&dir));
         let claude = discovered
             .agents
             .iter()

@@ -167,10 +167,32 @@ fn frontend_ipc_ts_path() -> PathBuf {
     path
 }
 
+// serde_json's map order depends on feature unification: a workspace build
+// (tauri enables `preserve_order`) renders insertion order, a `-p` build
+// renders BTreeMap order. The snapshot must not depend on who builds it.
+fn canonical(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(String, Value)> = map
+                .into_iter()
+                .map(|(key, value)| (key, canonical(value)))
+                .collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            let mut sorted = serde_json::Map::new();
+            for (key, value) in entries {
+                sorted.insert(key, value);
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(canonical).collect()),
+        other => other,
+    }
+}
+
 fn render_session_event_snapshot(events: &[SessionEvent]) -> String {
     let mut samples: Vec<Value> = events
         .iter()
-        .map(|event| serde_json::to_value(event).expect("SessionEvent JSON"))
+        .map(|event| canonical(serde_json::to_value(event).expect("SessionEvent JSON")))
         .collect();
     samples.sort_by(|left, right| {
         wire_type(left)

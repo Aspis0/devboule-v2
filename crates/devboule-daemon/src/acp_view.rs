@@ -272,6 +272,11 @@ pub(crate) fn session_manifest_from_initialize(
     manifest_from_vendor_models(state, provider_id, None)
 }
 
+// Parses the manifest shape grok sends in `session/new` responses (measured:
+// `models.currentModelId` + `availableModels`). Production consumes the
+// initialize/_meta and models/update paths today; `session/load` (reattach)
+// is the intended production caller.
+#[allow(dead_code)]
 pub(crate) fn session_manifest_from_new_session(
     result: &serde_json::Value,
     provider_id: Option<String>,
@@ -890,9 +895,9 @@ mod tests {
 
     #[test]
     fn handshake_prefers_session_new_models_over_initialize_meta() {
-        let initialize = parse(&format!(
-            r#"{{"_meta":{{"modelState":{{"currentModelId":"stale","availableModels":[{{"modelId":"stale","name":"Stale"}}]}}}}}}"#
-        ));
+        let initialize = parse(
+            r#"{"_meta":{"modelState":{"currentModelId":"stale","availableModels":[{"modelId":"stale","name":"Stale"}]}}}"#,
+        );
         let new_session = parse(&format!(
             r#"{{"sessionId":"{SESSION}","models":{GROK_MODELS}}}"#
         ));

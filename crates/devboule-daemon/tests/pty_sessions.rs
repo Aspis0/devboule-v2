@@ -649,7 +649,8 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
-        | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::SessionManifest { .. }
             | SessionEvent::AgentReported { .. } => None,
         })
         .max()
@@ -989,7 +990,8 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
-        | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::SessionManifest { .. }
             | SessionEvent::AgentReported { .. } => None,
         })
         .collect();
@@ -2289,7 +2291,8 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
-        | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::SessionManifest { .. }
             | SessionEvent::AgentReported { .. } => {}
         }
     }
@@ -2558,7 +2561,8 @@ fn journal_growth_after_13mb_flood() {
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
-        | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::SessionManifest { .. }
             | SessionEvent::AgentReported { .. } => {}
         }
     });
@@ -2853,7 +2857,8 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
-        | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::PermissionResolved { .. }
+            | SessionEvent::SessionManifest { .. }
             | SessionEvent::AgentReported { .. } => {}
         }
     }
