@@ -57,8 +57,14 @@ vi.mock("../../lib/tauri", () => ({
 
 import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
+import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationResult } from "./designHost";
-import { createAgentHost, disposeAgentHost } from "./agentHost";
+import {
+  createAgentHost,
+  disposeAgentHost,
+  extractArtifactHtml,
+  extractFencedHtml,
+} from "./agentHost";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -536,5 +542,208 @@ describe("ACP design host", () => {
 
     await act(async () => root.unmount());
     await settle();
+  });
+
+  describe("artifact HTML extraction", () => {
+    describe("extractFencedHtml", () => {
+      it("returns undefined when there is no fenced block", () => {
+        expect(extractFencedHtml("Just plain text with no fence.")).toBeUndefined();
+      });
+
+      it("returns undefined for an empty or whitespace-only block", () => {
+        expect(extractFencedHtml("text\n```html\n   \n```\nmore")).toBeUndefined();
+        expect(extractFencedHtml("text\n```html\n\n```\nmore")).toBeUndefined();
+      });
+
+      it("returns undefined when the fence opens but never closes", () => {
+        expect(extractFencedHtml("prefix\n```html\n<div>content</div>")).toBeUndefined();
+      });
+
+      it("returns the last non-empty block when multiple are present", () => {
+        const text = [
+          "First block:",
+          "```html",
+          "<div>First</div>",
+          "```",
+          "",
+          "Second block:",
+          "```html",
+          "<span>Second</span>",
+          "```",
+        ].join("\n");
+        expect(extractFencedHtml(text)).toBe("<span>Second</span>");
+      });
+
+      it("does not strip </iframe> from the block content", () => {
+        const text = "text\n```html\n<div></iframe></div>\n```";
+        expect(extractFencedHtml(text)).toBe("<div></iframe></div>");
+      });
+
+      it("does not strip <script> from the block content", () => {
+        const text = "text\n```html\n<script>alert(1)</script>\n```";
+        expect(extractFencedHtml(text)).toBe("<script>alert(1)</script>");
+      });
+
+      it("accepts a block without a trailing newline before the closing fence", () => {
+        expect(extractFencedHtml("```html\n<div>tight</div>\n```")).toBe("<div>tight</div>");
+      });
+
+      it("accepts a block without a leading newline after the opening fence", () => {
+        expect(extractFencedHtml("```html\n<main>Hi</main>\n```")).toBe("<main>Hi</main>");
+      });
+
+      it("accepts a single-line block with both fences on the same line as content", () => {
+        const text = "prefix\n```html\n<p>Hello</p>\n```\nsuffix";
+        expect(extractFencedHtml(text)).toBe("<p>Hello</p>");
+      });
+    });
+
+    describe("extractArtifactHtml", () => {
+      it("scans assistant messages only, not thoughts", () => {
+        const state: AgentSessionState = {
+          items: [
+            {
+              id: "t-1",
+              role: "thought",
+              text: "I could write ```html\n<div>Musing</div>\n```",
+              messageId: null,
+            },
+            {
+              id: "a-1",
+              role: "assistant",
+              text: "Here is the result:\n```html\n<div>Final</div>\n```",
+              messageId: "m-1",
+            },
+          ],
+          status: "idle",
+          streaming: false,
+          availableCommands: [],
+          lastFinished: null,
+          manifest: null,
+        };
+        expect(extractArtifactHtml(state)).toBe("<div>Final</div>");
+      });
+
+      it("returns undefined when no assistant message has a block", () => {
+        const state: AgentSessionState = {
+          items: [
+            {
+              id: "a-1",
+              role: "assistant",
+              text: "No fence here.",
+              messageId: "m-1",
+            },
+          ],
+          status: "idle",
+          streaming: false,
+          availableCommands: [],
+          lastFinished: null,
+          manifest: null,
+        };
+        expect(extractArtifactHtml(state)).toBeUndefined();
+      });
+
+      it("returns undefined when a thought has a block but the assistant does not", () => {
+        const state: AgentSessionState = {
+          items: [
+            {
+              id: "t-1",
+              role: "thought",
+              text: "I could write ```html\n<div>Musing</div>\n```",
+              messageId: null,
+            },
+            {
+              id: "a-1",
+              role: "assistant",
+              text: "Here is my answer without a fence.",
+              messageId: "m-1",
+            },
+          ],
+          status: "idle",
+          streaming: false,
+          availableCommands: [],
+          lastFinished: null,
+          manifest: null,
+        };
+        expect(extractArtifactHtml(state)).toBeUndefined();
+      });
+
+      it("returns the latest block from the last assistant message", () => {
+        const state: AgentSessionState = {
+          items: [
+            {
+              id: "a-1",
+              role: "assistant",
+              text: "First: ```html\n<div>First</div>\n```",
+              messageId: "m-1",
+            },
+            {
+              id: "a-2",
+              role: "assistant",
+              text: "Second: ```html\n<div>Second</div>\n```",
+              messageId: "m-2",
+            },
+          ],
+          status: "idle",
+          streaming: false,
+          availableCommands: [],
+          lastFinished: null,
+          manifest: null,
+        };
+        expect(extractArtifactHtml(state)).toBe("<div>Second</div>");
+      });
+    });
+
+    describe("integration: artifact in generation result", () => {
+      it("carries the artifact HTML from the assistant text to the result", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+
+        channelHarness.active?.({
+          type: "agent_message",
+          messageId: "m-1",
+          text: 'Here is the generated design:\n```html\n<div class="card">Hello</div>\n```',
+        });
+        emitToolCall("write-1", "completed", "edit", ["src/comp.tsx"]);
+        finishRun();
+
+        const result = await run;
+        expect(result.artifactHtml).toBe('<div class="card">Hello</div>');
+        expect(result.sources).toEqual(["src/comp.tsx"]);
+
+        await disposeAgentHost(host);
+      });
+
+      it("does not include an artifact when the agent errors after emitting a block", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+
+        channelHarness.active?.({
+          type: "agent_message",
+          messageId: "m-1",
+          text: "Here is the generated design:\n```html\n<div>Lost</div>\n```",
+        });
+        channelHarness.active?.({ type: "exit", code: 1 });
+
+        await expect(run).rejects.toThrow("The agent stopped before finishing this turn.");
+        await disposeAgentHost(host);
+      });
+
+      it("does not include an artifact when there is no fenced block in the reply", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+
+        channelHarness.active?.({
+          type: "agent_message",
+          messageId: "m-1",
+          text: "No HTML artifact here, just a description.",
+        });
+        finishRun();
+
+        const result = await run;
+        expect(result.artifactHtml).toBeUndefined();
+        await disposeAgentHost(host);
+      });
+    });
   });
 });

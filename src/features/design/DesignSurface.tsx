@@ -99,6 +99,7 @@ interface CanvasProps {
   selectedLayerId: string;
   tool: DesignTool;
   zoom: number;
+  artifactHtml?: string;
   onSelectLayer: (layerId: string) => void;
   onViewportChange: (viewport: DesignViewport) => void;
 }
@@ -469,6 +470,11 @@ const ZoomControls = memo(function ZoomControls({
   );
 });
 
+const ARTIFACT_NODE_X = 60;
+const ARTIFACT_NODE_Y = 420;
+const ARTIFACT_NODE_WIDTH = 700;
+const ARTIFACT_NODE_HEIGHT = 500;
+
 const DesignCanvas = memo(function DesignCanvas({
   content,
   layers,
@@ -477,6 +483,7 @@ const DesignCanvas = memo(function DesignCanvas({
   selectedLayerId,
   tool,
   zoom,
+  artifactHtml,
   onSelectLayer,
   onViewportChange,
 }: CanvasProps) {
@@ -694,6 +701,24 @@ const DesignCanvas = memo(function DesignCanvas({
             selected={selectedLayerId === layer.id}
           />
         ))}
+        {artifactHtml ? (
+          <div
+            className="design-canvas-artifact"
+            style={{
+              left: ARTIFACT_NODE_X,
+              top: ARTIFACT_NODE_Y,
+              width: ARTIFACT_NODE_WIDTH,
+              height: ARTIFACT_NODE_HEIGHT,
+            }}
+          >
+            <iframe
+              sandbox="allow-downloads"
+              srcDoc={artifactHtml}
+              title="Generated artifact"
+              className="design-artifact-frame"
+            />
+          </div>
+        ) : null}
         {tool === "ai" ? (
           <div
             className="design-ai-region"
@@ -1185,6 +1210,15 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   );
 
   const generationLabel = `${generationCount} ${generationCount === 1 ? "generation" : "generations"}`;
+  const artifactHtml = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const m = messages[index];
+      if (m.role === "assistant" && m.status === "done" && m.artifactHtml) {
+        return m.artifactHtml;
+      }
+    }
+    return undefined;
+  }, [messages]);
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
 
@@ -1477,6 +1511,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                     desc: result.desc,
                     sources: [...result.sources],
                     nodeIds: [...result.nodeIds],
+                    artifactHtml: result.artifactHtml,
                     instruction: prompt,
                   }
                 : message,
@@ -1616,6 +1651,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             selectedLayerId={selectedLayerId}
             tool={tool}
             zoom={zoom}
+            artifactHtml={artifactHtml}
             onSelectLayer={selectLayer}
             onViewportChange={setViewport}
           />

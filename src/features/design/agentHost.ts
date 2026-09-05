@@ -46,6 +46,28 @@ function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortError();
 }
 
+export function extractFencedHtml(text: string): string | undefined {
+  const regex = /```html\s*\n?([\s\S]*?)\n?\s*```/g;
+  let match: RegExpExecArray | null;
+  let lastContent: string | undefined;
+  while ((match = regex.exec(text)) !== null) {
+    const content = match[1].trim();
+    if (content.length > 0) lastContent = content;
+  }
+  return lastContent;
+}
+
+export function extractArtifactHtml(state: AgentSessionState): string | undefined {
+  for (let index = state.items.length - 1; index >= 0; index -= 1) {
+    const item = state.items[index];
+    if (item.role === "assistant") {
+      const html = extractFencedHtml(item.text);
+      if (html !== undefined) return html;
+    }
+  }
+  return undefined;
+}
+
 function groundedPrompt(prompt: string, searchSources: readonly string[]): string {
   const grounding =
     searchSources.length === 0
@@ -57,6 +79,11 @@ function groundedPrompt(prompt: string, searchSources: readonly string[]): strin
     "Oracle grounding (search hits, not files changed):",
     grounding,
     "Use the grounding as context and make only the requested change. The Workspace Changes panel is authoritative for the actual diff.",
+    "",
+    "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
+    "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
+    "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
+    "If you produce more than one block, only the last one is used.",
   ].join("\n\n");
 }
 
@@ -310,7 +337,13 @@ export function createAgentHost(): DesignHost {
       if (activeRun !== run || run.settled) return true;
       const state = handle.controller.getState();
       if (state.lastFinished !== null) {
-        settleRun(run, "resolve", resultFor(run.prompt, run.toolObservations));
+        const result = resultFor(run.prompt, run.toolObservations);
+        const artifactHtml = extractArtifactHtml(state);
+        settleRun(
+          run,
+          "resolve",
+          artifactHtml !== undefined ? { ...result, artifactHtml } : result,
+        );
         return true;
       } else if (state.status === "error") {
         settleRun(run, "reject", new Error(lastErrorText(state)));
