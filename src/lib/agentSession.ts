@@ -95,7 +95,7 @@ export class AgentSession {
     try {
       await this.deps.invoke("session_attach", {
         id: this.deps.sessionId,
-        from_cursor: null,
+        fromCursor: null,
         ch: channel,
       });
       this.attached = true;

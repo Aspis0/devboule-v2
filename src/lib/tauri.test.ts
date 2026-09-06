@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import type { Channel } from "@tauri-apps/api/core";
 import {
+  COMMAND_ARG_KEYS,
   invokeTyped,
   isCommandError,
   journalRetentionGet,
   journalRetentionSet,
   journalUsage,
   providersRefresh,
+  sessionAttach,
+  sessionCreate,
   sessionDelete,
   sessionResume,
   surfaceSettingsGet,
@@ -111,6 +115,60 @@ describe("resume command wrapper", () => {
     await sessionResume("s.owner.1");
 
     expect(invoke).toHaveBeenCalledWith("session_resume", { sessionId: "s.owner.1" });
+  });
+});
+
+describe("create and attach command wrappers", () => {
+  it("sends session_create with the camelCase workspaceId expected by Tauri v2", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({ id: "s.1" } as never);
+    await sessionCreate(null, "terminal");
+
+    // Tauri v2 derives JS arg names from the Rust parameters: the daemon's
+    // `workspace_id: Option<String>` must be addressed as `workspaceId`. The
+    // snake_case spelling was silently coerced to None before this was fixed.
+    expect(invoke).toHaveBeenCalledWith("session_create", {
+      workspaceId: null,
+      kind: "terminal",
+      provider: null,
+    });
+  });
+
+  it("sends session_attach with the camelCase fromCursor expected by Tauri v2", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+    const ch = {} as Channel;
+    await sessionAttach("s.owner.1", null, ch);
+
+    // Same convention: the daemon's `from_cursor: Option<u64>` is `fromCursor`
+    // on the JS side.
+    expect(invoke).toHaveBeenCalledWith("session_attach", {
+      id: "s.owner.1",
+      fromCursor: null,
+      ch,
+    });
+  });
+});
+
+describe("bridge wire-key convention", () => {
+  it("keeps every argument key in the command map camelCase", () => {
+    const offenders = Object.entries(COMMAND_ARG_KEYS).flatMap(([command, keys]) =>
+      keys.filter((key) => key.includes("_")).map((key) => `${command}: ${key}`),
+    );
+    // The message is carried on the assertion itself, so it shows up exactly
+    // when the guard fires. Tauri v2 derives JS arg names from the Rust
+    // snake_case parameters: a snake_case key is either rejected as `invalid
+    // args` or silently coerced to None.
+    expect(
+      offenders,
+      "Snake_case argument keys found in the Tauri bridge. Tauri v2 exposes Rust " +
+        "snake_case parameters to JavaScript as camelCase, so a snake_case key is " +
+        "either rejected as `invalid args` or silently coerced to None. Rename the " +
+        "key in `CommandArgs` (src/lib/tauri.ts), in `COMMAND_ARG_KEYS`, in its " +
+        "exported wrapper, and in every internal shim that builds the argument " +
+        "object. Command NAMES stay snake_case; only argument keys are camelCase.\n" +
+        offenders.map((line) => `  - ${line}`).join("\n"),
+    ).toEqual([]);
   });
 });
 

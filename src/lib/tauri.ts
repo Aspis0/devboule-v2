@@ -15,7 +15,6 @@ import type {
   PermissionOutcome,
   PluginBackendStatus,
   PluginInventory,
-  Project,
   ProviderCatalog,
   ProviderUpdateOutcome,
   ResumeResult,
@@ -24,19 +23,14 @@ import type {
   SessionKind,
   SessionStateSnapshot,
   RetentionPatch,
-  Workspace,
 } from "../types/ipc";
 
 type CommandArgs = {
   app_identity: undefined;
   daemon_status: undefined;
-  projects_list: undefined;
-  project_add: { path: string };
-  workspaces_list: { project_id: Id };
-  workspace_create: { project_id: Id; isolation: Workspace["isolation"]; branch?: string | null };
-  session_create: { workspace_id: Id | null; kind: SessionKind; provider?: string | null };
+  session_create: { workspaceId: Id | null; kind: SessionKind; provider?: string | null };
   session_resume: { sessionId: Id };
-  session_attach: { id: Id; from_cursor: number | null; ch: SessionChannel };
+  session_attach: { id: Id; fromCursor: number | null; ch: SessionChannel };
   session_send: { id: Id; text: string };
   session_interrupt: { id: Id };
   session_set_model: { id: Id; modelId?: string; effort?: string };
@@ -80,10 +74,6 @@ type CommandArgs = {
 type CommandResults = {
   app_identity: string;
   daemon_status: DaemonStatus;
-  projects_list: Project[];
-  project_add: Project;
-  workspaces_list: Workspace[];
-  workspace_create: Workspace;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: void;
@@ -128,6 +118,87 @@ type CommandResults = {
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
+
+/**
+ * Runtime manifest of the argument key names each command puts on the wire.
+ *
+ * Tauri v2 derives the JS-side names from the Rust snake_case parameters, so
+ * every argument key must be camelCase (command NAMES stay snake_case). The
+ * structural guard in `tauri.test.ts` walks this manifest; the `satisfies`
+ * clause forces each entry to list exactly the real keys of that command's
+ * argument type — a snake_case key in `CommandArgs` can only appear here as
+ * snake_case (which the runtime guard then catches) or not at all (which
+ * fails to compile).
+ */
+export const COMMAND_ARG_KEYS = {
+  app_identity: [],
+  daemon_status: [],
+  session_create: ["workspaceId", "kind", "provider"],
+  session_resume: ["sessionId"],
+  session_attach: ["id", "fromCursor", "ch"],
+  session_send: ["id", "text"],
+  session_interrupt: ["id"],
+  session_set_model: ["id", "modelId", "effort"],
+  session_permission_respond: ["id", "requestId", "outcome"],
+  session_resize: ["id", "cols", "rows"],
+  session_detach: ["id"],
+  session_close: ["id"],
+  journal_usage: [],
+  journal_retention_get: [],
+  journal_retention_set: ["sessionMaxBytes", "maxBytes", "maxSessions", "maxAgeMs"],
+  session_delete: ["id"],
+  sessions_list: [],
+  sessions_watch: ["ch"],
+  sessions_unwatch: [],
+  providers_list: [],
+  providers_refresh: [],
+  provider_update: ["providerId"],
+  oracle_status: [],
+  oracle_workspace_get: [],
+  oracle_workspace_set: ["path"],
+  oracle_model_download_start: [],
+  oracle_model_download_cancel: [],
+  oracle_index_cancel: [],
+  oracle_doctor: [],
+  oracle_stats: [],
+  oracle_index_start: [],
+  oracle_watch_start: [],
+  oracle_watch_stop: [],
+  oracle_files: ["tab", "page"],
+  oracle_ask: ["query"],
+  surface_settings_get: ["surfaceId"],
+  surface_settings_set: ["surfaceId", "value"],
+  plugins_list: [],
+  plugins_rescan: [],
+  plugin_install: ["id", "source"],
+  plugin_backend_ensure: ["pluginId"],
+  plugin_backend_stop: ["pluginId", "generation"],
+  plugin_invoke: ["pluginId", "method", "payload"],
+} as const satisfies {
+  [K in CommandName]: readonly (CommandArgs[K] extends undefined
+    ? never
+    : keyof CommandArgs[K] & string)[];
+};
+
+/**
+ * Type-level exhaustiveness check for `COMMAND_ARG_KEYS`: for every command,
+ * the argument keys of its `CommandArgs` entry that are NOT listed in the
+ * manifest must be nothing. `satisfies` alone only validates the strings that
+ * ARE listed — without this, a key added to `CommandArgs` but left out of the
+ * manifest (the classic snake_case-out-of-muscle-memory case) would be
+ * invisible to both the compiler and the runtime camelCase guard.
+ */
+type UnlistedCommandArgKeys = {
+  [K in CommandName]: Exclude<keyof CommandArgs[K] & string, (typeof COMMAND_ARG_KEYS)[K][number]>;
+}[CommandName];
+type AssertUnlistedCommandArgKeysAreNever = UnlistedCommandArgKeys extends never
+  ? true
+  : `ERROR: argument keys of CommandArgs missing from COMMAND_ARG_KEYS: ${UnlistedCommandArgKeys}`;
+/**
+ * Compile-time anchor for `AssertUnlistedCommandArgKeysAreNever` — no runtime
+ * role; exported only so `noUnusedLocals` does not strip the check.
+ */
+export const _unlistedCommandArgKeysMustBeNever: AssertUnlistedCommandArgKeysAreNever = true;
 
 export type SessionChannel = Channel<SessionEvent>;
 export type SessionStateChannel = Channel<SessionStateSnapshot[]>;
@@ -177,26 +248,27 @@ export function isCommandError(error: unknown): error is CommandError {
 
 export const appIdentity = () => invokeTyped("app_identity");
 export const daemonStatus = () => invokeTyped("daemon_status");
-export const projectsList = () => invokeTyped("projects_list");
-export const projectAdd = (path: string) => invokeTyped("project_add", { path });
-export const workspacesList = (projectId: Id) =>
-  invokeTyped("workspaces_list", { project_id: projectId });
-export const workspaceCreate = (
-  projectId: Id,
-  isolation: Workspace["isolation"],
-  branch?: string,
-) => invokeTyped("workspace_create", { project_id: projectId, isolation, branch });
 export const sessionCreate = (
   workspaceId: Id | null,
   kind: SessionKind = "terminal",
   provider?: string | null,
-) => invokeTyped("session_create", { workspace_id: workspaceId, kind, provider: provider ?? null });
+) =>
+  // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
+  // the key must be `workspaceId`, not `workspace_id`. The snake_case spelling
+  // silently coerced the daemon's Option<String> to None.
+  invokeTyped("session_create", {
+    workspaceId,
+    kind,
+    provider: provider ?? null,
+  });
 export const sessionResume = (sessionId: Id) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side.
   // Keep this new command aligned with its `session_id` Rust parameter.
   invokeTyped("session_resume", { sessionId });
 export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChannel) =>
-  invokeTyped("session_attach", { id, from_cursor: fromCursor, ch });
+  // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
+  // the key must be `fromCursor`, not `from_cursor`.
+  invokeTyped("session_attach", { id, fromCursor, ch });
 export const sessionSend = (id: Id, text: string) => invokeTyped("session_send", { id, text });
 export const sessionInterrupt = (id: Id) => invokeTyped("session_interrupt", { id });
 export const sessionSetModel = (id: Id, modelId?: string, effort?: string) =>
