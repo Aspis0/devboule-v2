@@ -48,6 +48,35 @@ describe("artifact custom-property lint", () => {
     ).toEqual(["--inline-token", "--content-token"]);
   });
 
+  it("ignores var references inside CSS comments", () => {
+    expect(
+      findUndefinedCustomProperties("<style>/* var(--commented) */ .card { color: red; }</style>"),
+    ).toEqual([]);
+  });
+
+  it("ignores var references inside HTML comments", () => {
+    expect(findUndefinedCustomProperties("<!-- var(--commented) --><main>Card</main>")).toEqual([]);
+  });
+
+  it("keeps a reference alive when a CSS comment contains a close parenthesis", () => {
+    expect(findUndefinedCustomProperties("color: var(--ink /* ) */)")).toEqual(["--ink"]);
+  });
+
+  it("does not let comments change a definition and its use", () => {
+    expect(
+      findUndefinedCustomProperties(
+        "<style>.card { --ink: #222; /* var(--missing) */ color: var(--ink); }</style>",
+      ),
+    ).toEqual([]);
+  });
+
+  it("finds a reference after a long comment", () => {
+    const longComment = `/* ${"noise ".repeat(200)} */`;
+    expect(
+      findUndefinedCustomProperties(`${longComment}<style>.card { color: var(--after); }</style>`),
+    ).toEqual(["--after"]);
+  });
+
   it("returns nothing when the artifact has no var reference", () => {
     expect(findUndefinedCustomProperties('<main style="color: red">Hello</main>')).toEqual([]);
   });
