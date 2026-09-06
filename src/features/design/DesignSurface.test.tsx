@@ -1387,6 +1387,32 @@ describe("DesignSurface host capabilities", () => {
   // It gates the wiring only; whether the row actually reads as locked was checked
   // by reading design.css and computing the contrast of --silence on
   // --surface-muted (5.37:1), not by measuring the running app.
+  it("shows undecided sections as mixed in automatic mode, not as unchecked", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
+
+    const auto = container.querySelector<HTMLInputElement>('input[type="radio"][value="auto"]');
+    if (auto === null) throw new Error("Automatic mode choice missing");
+    await act(async () => auto.click());
+
+    const boxes = [
+      ...container.querySelectorAll<HTMLInputElement>(
+        '.design-skill-option input[type="checkbox"]',
+      ),
+    ];
+    expect(boxes).toHaveLength(builtInSkillIndex().length);
+    // Unchecked would claim the section is excluded; nothing has decided yet.
+    expect(boxes.every((box) => box.indeterminate)).toBe(true);
+    expect(boxes.every((box) => box.checked)).toBe(false);
+    await act(async () => root.unmount());
+  });
+
   it("marks every option row locked in all mode and none of them in manual mode", async () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
@@ -1481,6 +1507,76 @@ describe("DesignSurface host capabilities", () => {
     expect(preview.textContent).not.toContain(DESIGN_DOCTRINE_BEGIN);
     expect(preview.textContent).not.toContain(DESIGN_DOCTRINE_END);
     expect(preview.textContent).not.toContain(DESIGN_DOCTRINE_RESTATEMENT);
+    await act(async () => root.unmount());
+  });
+
+  it("offers automatic craft selection and reports the sections it used", async () => {
+    const skillIndex = builtInSkillIndex();
+    const selected = skillIndex[0];
+    if (selected === undefined) throw new Error("Built-in skills missing");
+    skillSettingsMocks.load.mockResolvedValueOnce({
+      version: 1,
+      mode: "auto",
+      enabledSlugs: [],
+    });
+    const generate = vi.fn<NonNullable<DesignHost["generate"]>>().mockResolvedValue({
+      ...GENERATION_RESULT,
+      appliedSkillSlugs: [selected.slug],
+      skillSelectionFallback: false,
+    });
+    const { container, root } = await renderDesign(createHost({ generate }));
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+
+    expect(summary.textContent).toBe("Craft: automatic");
+    await act(async () => summary.click());
+    const automatic = container.querySelector<HTMLInputElement>(
+      'input[type="radio"][value="auto"]',
+    );
+    if (automatic === null) throw new Error("Automatic mode missing");
+    expect(container.textContent).toContain(
+      "The agent chooses relevant sections for each request.",
+    );
+
+    await fillDraft(container, "Use automatic craft selection.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(generate.mock.calls[0]?.[2]).toEqual({ skillMode: "auto" });
+    await act(async () => Promise.resolve());
+    expect(container.textContent).toContain(`Automatic craft: ${selected.title}`);
+    await act(async () => root.unmount());
+  });
+
+  it("states when automatic craft selection falls back to every section", async () => {
+    const skillIndex = builtInSkillIndex();
+    skillSettingsMocks.load.mockResolvedValueOnce({
+      version: 1,
+      mode: "auto",
+      enabledSlugs: [],
+    });
+    const generate = vi.fn<NonNullable<DesignHost["generate"]>>().mockResolvedValue({
+      ...GENERATION_RESULT,
+      appliedSkillSlugs: skillIndex.map((entry) => entry.slug),
+      skillSelectionFallback: true,
+    });
+    const { container, root } = await renderDesign(createHost({ generate }));
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await fillDraft(container, "Use automatic craft selection.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+    await act(async () => Promise.resolve());
+
+    expect(container.textContent).toContain(
+      `Automatic choice did not happen; all ${skillIndex.length} craft sections were used.`,
+    );
     await act(async () => root.unmount());
   });
 });

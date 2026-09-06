@@ -60,7 +60,7 @@ vi.mock("../../lib/tauri", () => ({
 import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
-import type { DesignGenerationResult } from "./designHost";
+import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
 import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
 import { parseSkillFile } from "./skillLoader";
 import {
@@ -72,6 +72,7 @@ import {
   extractArtifactHtml,
   extractFencedHtml,
   groundedPrompt,
+  AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
   MAX_ARTIFACT_BYTES,
 } from "./agentHost";
 
@@ -150,7 +151,7 @@ function emitToolUpdate(
 
 async function startRun(
   host: ReturnType<typeof createAgentHost>,
-  options?: { skills?: readonly string[] },
+  options?: DesignGenerationOptions,
 ): Promise<{ run: Promise<DesignGenerationResult> }> {
   const run = host.generate?.("Update the design", new AbortController().signal, options);
   let failure: unknown;
@@ -228,6 +229,159 @@ afterEach(() => {
 });
 
 describe("ACP design host", () => {
+  it("preflights automatic craft selection and uses the returned sections", async () => {
+    const index = builtInSkillIndex();
+    const selected = index[0];
+    const omitted = index[1];
+    if (selected === undefined || omitted === undefined) throw new Error("Built-in skills missing");
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+    const preflight = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    expect(preflight).toContain("Update the design");
+    expect(preflight).toContain(selected.slug);
+    expect(preflight).toContain(selected.title);
+    expect(preflight).toContain(selected.description);
+    expect(preflight).toContain("Do not investigate");
+    expect(preflight).toContain("one line");
+
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: `I choose ${selected.slug}, unknown-future-section.`,
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
+    expect(generationPrompt).toContain(`## ${selected.title}`);
+    expect(generationPrompt).not.toContain(`## ${omitted.title}`);
+    finishRun();
+
+    const result = await run;
+    expect(result.appliedSkillSlugs).toEqual([selected.slug]);
+    expect(result.skillSelectionFallback).toBe(false);
+    await disposeAgentHost(host);
+  });
+
+  it("falls back to every section when automatic selection names none", async () => {
+    const index = builtInSkillIndex();
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: "No section applies.",
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
+    for (const entry of index) expect(generationPrompt).toContain(`## ${entry.title}`);
+    finishRun();
+
+    const result = await run;
+    expect(result.appliedSkillSlugs).toEqual(index.map((entry) => entry.slug));
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
+  it("falls back to every section when the automatic question errors", async () => {
+    const index = builtInSkillIndex();
+    mocks.sessionSend.mockRejectedValueOnce(new Error("preflight unavailable"));
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
+    for (const entry of index) expect(generationPrompt).toContain(`## ${entry.title}`);
+    finishRun();
+
+    const result = await run;
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
+  it("parses a chatty automatic answer in deterministic index order", async () => {
+    const index = builtInSkillIndex();
+    const first = index[0];
+    const second = index[1];
+    if (first === undefined || second === undefined) throw new Error("Built-in skills missing");
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: `I considered the request and recommend ${second.slug}, then ${first.slug}.`,
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    finishRun();
+
+    const result = await run;
+    expect(result.appliedSkillSlugs).toEqual([first.slug, second.slug]);
+    await disposeAgentHost(host);
+  });
+
+  it("falls back after the automatic preflight timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const index = builtInSkillIndex();
+      const host = createAgentHost();
+      const { run } = await startRun(host, { skillMode: "auto" });
+
+      await vi.advanceTimersByTimeAsync(AUTO_SKILL_PREFLIGHT_TIMEOUT_MS);
+      await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+      expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1");
+      const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
+      for (const entry of index) expect(generationPrompt).toContain(`## ${entry.title}`);
+      finishRun();
+
+      const result = await run;
+      expect(result.skillSelectionFallback).toBe(true);
+      await disposeAgentHost(host);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts automatic selection without starting generation", async () => {
+    const host = createAgentHost();
+    const controller = new AbortController();
+    const run = host.generate?.("Update the design", controller.signal, { skillMode: "auto" });
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
+
+    controller.abort();
+
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1");
+    expect(mocks.sessionSend).toHaveBeenCalledTimes(1);
+    await disposeAgentHost(host);
+  });
+
+  it("does not attribute preflight tool events to the generation", async () => {
+    const index = builtInSkillIndex();
+    const selected = index[0];
+    if (selected === undefined) throw new Error("Built-in skills missing");
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+    emitToolCall("preflight-write", "completed", "edit", ["src/preflight.ts"]);
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: selected.slug,
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    emitToolCall("generation-write", "completed", "edit", ["src/generated.tsx"]);
+    finishRun();
+
+    const result = await run;
+    expect(result.sources).toEqual(["src/generated.tsx"]);
+    await disposeAgentHost(host);
+  });
+
   it("sends only the explicitly selected doctrine section", async () => {
     const index = builtInSkillIndex();
     const selected = index[0];

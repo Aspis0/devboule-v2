@@ -60,7 +60,7 @@ describe("loadDesignSkillSelection", () => {
   });
 
   it("falls back when mode is not supported", async () => {
-    await expectDefaultFor({ version: 1, mode: "auto", enabledSlugs: [] });
+    await expectDefaultFor({ version: 1, mode: "future", enabledSlugs: [] });
   });
 
   it("falls back when enabledSlugs is missing", async () => {
@@ -144,6 +144,30 @@ describe("selectedSlugs", () => {
     };
 
     expect(selectedSlugs(selection, KNOWN_SLUGS)).toEqual([]);
+  });
+
+  it("does not resolve automatic selection without request context", () => {
+    const selection: DesignSkillSelection = {
+      version: 1,
+      mode: "auto",
+      enabledSlugs: [KNOWN_SLUGS[0]],
+    };
+
+    expect(selectedSlugs(selection, KNOWN_SLUGS)).toEqual([]);
+  });
+
+  it("accepts automatic mode while preserving its manual list", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      version: 1,
+      mode: "auto",
+      enabledSlugs: [KNOWN_SLUGS[1]],
+    });
+
+    await expect(loadDesignSkillSelection(KNOWN_SLUGS)).resolves.toEqual({
+      version: 1,
+      mode: "auto",
+      enabledSlugs: [KNOWN_SLUGS[1]],
+    });
   });
 });
 

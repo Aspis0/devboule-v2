@@ -1139,6 +1139,13 @@
   outline-offset: 2px;
 }
 
+.design-skill-result {
+  margin-top: 3px;
+  color: var(--silence);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
 .design-skill-modes input:focus-visible,
 .design-skill-option input:focus-visible {
   outline: 1px solid var(--terracotta);
@@ -1222,7 +1229,7 @@
   opacity: 0.55;
 }
 
-/* In "all" mode every box is ticked and locked.  Dimming only the 13px checkbox
+/* In "all" and "automatic" modes every box is locked.  Dimming only the 13px checkbox
    leaves a row that still reads as interactive and still shows a pointer, which
    invites a click that does nothing — the exact defect this surface shipped once
    before.  The whole row has to say it is not editable. */

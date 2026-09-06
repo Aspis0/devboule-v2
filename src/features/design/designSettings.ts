@@ -2,7 +2,7 @@ import { surfaceSettingsGet, surfaceSettingsSet } from "../../lib/tauri";
 
 export interface DesignSkillSelection {
   version: 1;
-  mode: "all" | "manual";
+  mode: "all" | "manual" | "auto";
   enabledSlugs: readonly string[];
 }
 
@@ -49,7 +49,7 @@ export async function loadDesignSkillSelection(
   if (value.version !== 1) return defaultSelection();
 
   const mode = value.mode;
-  if (mode !== "all" && mode !== "manual") return defaultSelection();
+  if (mode !== "all" && mode !== "manual" && mode !== "auto") return defaultSelection();
 
   const enabledSlugs = value.enabledSlugs;
   if (!Array.isArray(enabledSlugs) || !enabledSlugs.every((slug) => typeof slug === "string")) {
@@ -76,5 +76,8 @@ export function selectedSlugs(
   knownSlugs: readonly string[],
 ): readonly string[] {
   if (selection.mode === "all") return [...new Set(knownSlugs)];
+  // Automatic selection needs the request text and an agent round trip, so this pure helper
+  // cannot resolve it. The generation path performs that resolution instead.
+  if (selection.mode === "auto") return [];
   return orderedIntersection(selection.enabledSlugs, knownSlugs);
 }

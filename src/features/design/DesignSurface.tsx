@@ -171,6 +171,7 @@ interface AssistantProps {
   skillIndex: readonly BuiltInSkillIndexEntry[];
   skillSelection: DesignSkillSelection;
   selectedSkillSlugs: readonly string[];
+  autoSkillNotice: string | null;
   onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
   onSkillToggle: (slug: string) => void;
 }
@@ -1069,17 +1070,20 @@ const DesignAssistant = memo(function DesignAssistant({
   skillIndex,
   skillSelection,
   selectedSkillSlugs,
+  autoSkillNotice,
   onSkillModeChange,
   onSkillToggle,
 }: AssistantProps) {
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
   const skillSummary =
-    skillSelection.mode === "all"
-      ? `Craft: all ${selectedSkillSlugs.length} ${selectedSkillSlugs.length === 1 ? "section" : "sections"}`
-      : selectedSkillSlugs.length === 0
-        ? `Craft: 0 of ${skillIndex.length} · no design guidance`
-        : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
+    skillSelection.mode === "auto"
+      ? "Craft: automatic"
+      : skillSelection.mode === "all"
+        ? `Craft: all ${selectedSkillSlugs.length} ${selectedSkillSlugs.length === 1 ? "section" : "sections"}`
+        : selectedSkillSlugs.length === 0
+          ? `Craft: 0 of ${skillIndex.length} · no design guidance`
+          : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
   const skillPreview = useMemo(
     () => buildSkillBlock(builtInSkillSources(), selectedSkillSlugs).text,
     [selectedSkillSlugs],
@@ -1146,6 +1150,11 @@ const DesignAssistant = memo(function DesignAssistant({
               >
                 {skillSummary}
               </button>
+              {autoSkillNotice ? (
+                <div className="design-skill-result" role="status">
+                  {autoSkillNotice}
+                </div>
+              ) : null}
               {skillPickerOpen ? (
                 <div
                   id="design-skill-picker"
@@ -1181,12 +1190,23 @@ const DesignAssistant = memo(function DesignAssistant({
                       <span>Manual</span>
                       <small>Exactly the sections you tick.</small>
                     </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="design-skill-mode"
+                        value="auto"
+                        checked={skillSelection.mode === "auto"}
+                        onChange={() => onSkillModeChange("auto")}
+                      />
+                      <span>Automatic</span>
+                      <small>The agent chooses relevant sections for each request.</small>
+                    </label>
                   </fieldset>
                   <div className="design-skill-list">
                     {skillIndex.map((entry) => (
                       <label
                         className={
-                          skillSelection.mode === "all"
+                          skillSelection.mode !== "manual"
                             ? "design-skill-option design-skill-option-locked"
                             : "design-skill-option"
                         }
@@ -1195,8 +1215,17 @@ const DesignAssistant = memo(function DesignAssistant({
                         <input
                           type="checkbox"
                           aria-label={`Apply ${entry.title}`}
-                          checked={skillSelection.mode === "all" || selectedSlugSet.has(entry.slug)}
-                          disabled={skillSelection.mode === "all"}
+                          // Automatic has not decided yet, and an empty box would say it
+                          // decided no.  `indeterminate` is the state HTML already has for
+                          // exactly this, announced as "mixed" rather than "not checked".
+                          ref={(node) => {
+                            if (node !== null) node.indeterminate = skillSelection.mode === "auto";
+                          }}
+                          checked={
+                            skillSelection.mode === "all" ||
+                            (skillSelection.mode === "manual" && selectedSlugSet.has(entry.slug))
+                          }
+                          disabled={skillSelection.mode !== "manual"}
                           onChange={() => onSkillToggle(entry.slug)}
                         />
                         <span className="design-skill-option-copy">
@@ -1347,6 +1376,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [skillSelection, setSkillSelectionState] = useState<DesignSkillSelection>(
     DEFAULT_DESIGN_SKILL_SELECTION,
   );
+  const [autoSkillNotice, setAutoSkillNotice] = useState<string | null>(null);
 
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -1407,6 +1437,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const handleSkillModeChange = useCallback(
     (mode: DesignSkillSelection["mode"]) => {
       if (skillSelection.mode === mode) return;
+      setAutoSkillNotice(null);
       updateSkillSelection({ ...skillSelection, mode });
     },
     [skillSelection, updateSkillSelection],
@@ -1793,7 +1824,12 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       setMessages((current) => [...current, userMessage, assistantMessage]);
       setDraft("");
       setBusy(true);
-      void generate(scopedPrompt, controller.signal, { skills: selectedSkillSlugs })
+      setAutoSkillNotice(null);
+      const generationOptions =
+        skillSelection.mode === "auto"
+          ? { skillMode: "auto" as const }
+          : { skills: selectedSkillSlugs };
+      void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
           if (controller.signal.aborted || activeGenerationRef.current !== activeGeneration) return;
           activeGeneration.delivered = true;
@@ -1815,6 +1851,18 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                 : message,
             ),
           );
+          if (skillSelection.mode === "auto" && result.appliedSkillSlugs !== undefined) {
+            const appliedTitles = result.appliedSkillSlugs
+              .map((slug) => skillIndex.find((entry) => entry.slug === slug)?.title)
+              .filter((title): title is string => title !== undefined);
+            setAutoSkillNotice(
+              result.skillSelectionFallback
+                ? `Automatic choice did not happen; all ${result.appliedSkillSlugs.length} craft sections were used.`
+                : appliedTitles.length > 0
+                  ? `Automatic craft: ${appliedTitles.join(", ")}`
+                  : "Automatic craft: no sections were used.",
+            );
+          }
           setBusy(false);
           setHistory((current) => (current.saved ? { ...current, saved: false } : current));
           activeGenerationRef.current = null;
@@ -1846,6 +1894,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       document.contextPrefix,
       document.workingMessage,
       generate,
+      skillIndex,
+      skillSelection.mode,
       selectedSkillSlugs,
     ],
   );
@@ -2037,6 +2087,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           skillIndex={skillIndex}
           skillSelection={skillSelection}
           selectedSkillSlugs={selectedSkillSlugs}
+          autoSkillNotice={autoSkillNotice}
           onSkillModeChange={handleSkillModeChange}
           onSkillToggle={handleSkillToggle}
         />

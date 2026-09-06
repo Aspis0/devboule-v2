@@ -54,10 +54,13 @@ export interface DesignGenerationResult {
   nodeIds: readonly string[];
   artifactHtml?: string;
   artifactError?: string;
+  appliedSkillSlugs?: readonly string[];
+  skillSelectionFallback?: boolean;
 }
 
 export interface DesignGenerationOptions {
   skills?: readonly string[];
+  skillMode?: "auto";
 }
 
 export interface DesignCanvasContent {

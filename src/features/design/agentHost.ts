@@ -15,7 +15,7 @@ import {
 } from "../../lib/tauri";
 import type { OracleResult, Session, SessionEvent, Workspace } from "../../types/ipc";
 import type { DesignGenerationOptions, DesignGenerationResult, DesignHost } from "./designHost";
-import { builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
+import { builtInSkillIndex, builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
 import { createOracleHost } from "./oracleHost";
 import { buildSkillBlock } from "./skillLoader";
 
@@ -47,6 +47,8 @@ const COMPLETED_TOOL_STATUS = "completed";
 // Keep static previews large enough for a normal screen while bounding UI-thread work and memory.
 export const MAX_ARTIFACT_BYTES = 256 * 1024;
 export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
+// This is a real ACP turn, so eight seconds bounds a missing answer without pretending it is instant.
+export const AUTO_SKILL_PREFLIGHT_TIMEOUT_MS = 8_000;
 
 const hostDisposers = new WeakMap<DesignHost, () => Promise<void>>();
 
@@ -56,6 +58,36 @@ function abortError(): DOMException {
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortError();
+}
+
+function automaticSkillPrompt(
+  prompt: string,
+  index: readonly { slug: string; title: string; description: string }[],
+): string {
+  const choices = index
+    .map((entry) => `- ${entry.slug}: ${entry.title} — ${entry.description}`)
+    .join("\n");
+  return [
+    "Choose the design craft sections that apply to this request.",
+    `User request: ${prompt}`,
+    "Available sections:",
+    choices,
+    "Reply with only a comma-separated list of section slugs, in one line.",
+    "Do not investigate, read files, use tools, or modify anything.",
+  ].join("\n");
+}
+
+function parseAutomaticSkillReply(
+  reply: string,
+  index: readonly { slug: string; title: string; description: string }[],
+): readonly string[] {
+  const words = new Set(
+    reply
+      .toLowerCase()
+      .split(/[^a-z0-9-]+/)
+      .filter(Boolean),
+  );
+  return index.filter((entry) => words.has(entry.slug.toLowerCase())).map((entry) => entry.slug);
 }
 
 export function extractFencedHtml(text: string): string | undefined {
@@ -260,6 +292,7 @@ export function createAgentHost(): DesignHost {
   let sessionHandle: AgentSessionHandle | null = null;
   let sessionPromise: Promise<AgentSessionHandle> | null = null;
   let disposalPromise: Promise<void> | null = null;
+  let activePreflight: { sessionId: string; reject: (error: Error) => void } | null = null;
 
   const settleRun = (
     run: ActiveRun,
@@ -302,12 +335,28 @@ export function createAgentHost(): DesignHost {
       createChannel: (onEvent) =>
         createSessionChannel((event) => {
           if (event.type === "agent_tool_call" || event.type === "agent_tool_update") {
+            // A pre-flight turn is the host's own question, not the user's request, so
+            // nothing it touches belongs in "the agent wrote N files".  Today the run's
+            // observation map is also created after the pre-flight returns, which would
+            // isolate it anyway — but that is an ordering of statements rather than a
+            // rule, and reordering them would break this silently.
+            const duringPreflight = activePreflight?.sessionId === sessionId;
             const run = activeRun;
-            if (run?.sessionId === sessionId) observeToolEvent(event, run);
+            if (!duringPreflight && run?.sessionId === sessionId) observeToolEvent(event, run);
           }
           onEvent(event);
         }),
       onPermissionRequest: () => {
+        const preflight = activePreflight;
+        if (preflight?.sessionId === sessionId) {
+          void sessionInterrupt(sessionId).catch(() => undefined);
+          preflight.reject(
+            new Error(
+              "The agent requested permission during automatic craft selection. Respond in the Workspace surface; this design run was stopped.",
+            ),
+          );
+          return;
+        }
         const run = activeRun;
         if (run?.sessionId !== sessionId) return;
         void sessionInterrupt(sessionId).catch(() => undefined);
@@ -362,6 +411,91 @@ export function createAgentHost(): DesignHost {
     }
   };
 
+  interface AutomaticSkillChoice {
+    slugs: readonly string[];
+    fallback: boolean;
+  }
+
+  const automaticSkillChoice = async (
+    handle: AgentSessionHandle,
+    prompt: string,
+    signal: AbortSignal,
+  ): Promise<AutomaticSkillChoice> => {
+    const index = builtInSkillIndex();
+    const allSlugs = index.map((entry) => entry.slug);
+    const fallback = (): AutomaticSkillChoice => ({ slugs: allSlugs, fallback: true });
+    throwIfAborted(signal);
+
+    let settle: (choice: AutomaticSkillChoice) => void = () => undefined;
+    let reject: (error: unknown) => void = () => undefined;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe = (): void => undefined;
+    const itemStart = handle.controller.getState().items.length;
+    const outcome = new Promise<AutomaticSkillChoice>((resolve, rejectPromise) => {
+      settle = (choice) => {
+        if (settled) return;
+        settled = true;
+        resolve(choice);
+      };
+      reject = (error) => {
+        if (settled) return;
+        settled = true;
+        rejectPromise(error);
+      };
+    });
+    activePreflight = {
+      sessionId: handle.session.id,
+      reject: (error) => reject(error),
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      void sessionInterrupt(handle.session.id).catch(() => undefined);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    // send() clears lastFinished synchronously; subscribe immediately afterward so a previous
+    // turn cannot settle this pre-flight.
+    const sendPromise = handle.controller.send(automaticSkillPrompt(prompt, index));
+    const settleFromState = (): void => {
+      if (settled) return;
+      const state = handle.controller.getState();
+      if (state.lastFinished !== null) {
+        const reply = state.items
+          .slice(itemStart)
+          .filter((item) => item.role === "assistant")
+          .map((item) => item.text)
+          .join("\n");
+        const selected = parseAutomaticSkillReply(reply, index);
+        settle(selected.length === 0 ? fallback() : { slugs: selected, fallback: false });
+      } else if (state.status === "error" || state.status === "closed") {
+        settle(fallback());
+      }
+    };
+    unsubscribe = handle.controller.subscribe(settleFromState);
+    settleFromState();
+    void sendPromise
+      .then((sent) => {
+        if (!sent) settle(fallback());
+      })
+      .catch(() => settle(fallback()));
+    timer = setTimeout(() => {
+      if (settled) return;
+      void sessionInterrupt(handle.session.id).catch(() => undefined);
+      settle(fallback());
+    }, AUTO_SKILL_PREFLIGHT_TIMEOUT_MS);
+
+    try {
+      return await outcome;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      unsubscribe();
+      signal.removeEventListener("abort", onAbort);
+      if (activePreflight?.sessionId === handle.session.id) activePreflight = null;
+    }
+  };
+
   const runGeneration = async (
     prompt: string,
     signal: AbortSignal,
@@ -374,6 +508,13 @@ export function createAgentHost(): DesignHost {
     throwIfAborted(signal);
     const handle = await ensureSession(workspace);
     throwIfAborted(signal);
+
+    const automatic = options?.skillMode === "auto";
+    const skillChoice = automatic
+      ? await automaticSkillChoice(handle, prompt, signal)
+      : { slugs: options?.skills ?? builtInSkillSlugs(), fallback: false };
+    throwIfAborted(signal);
+    const skillSlugs = skillChoice.slugs;
 
     const run: ActiveRun = {
       sessionId: handle.session.id,
@@ -408,7 +549,6 @@ export function createAgentHost(): DesignHost {
     // Record the boundary immediately before send(); send() clears lastFinished synchronously.
     run.itemStart = handle.controller.getState().items.length;
     // Subscribe only after send() so a prior turn cannot settle this run.
-    const skillSlugs = options?.skills ?? builtInSkillSlugs();
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
     const sendPromise = handle.controller.send(
       groundedPrompt(prompt, oracleResponse.results, composedDoctrine),
@@ -417,7 +557,14 @@ export function createAgentHost(): DesignHost {
       if (activeRun !== run || run.settled) return true;
       const state = handle.controller.getState();
       if (state.lastFinished !== null) {
-        const result = resultFor(run.prompt, run.toolObservations);
+        const baseResult = resultFor(run.prompt, run.toolObservations);
+        const result = automatic
+          ? {
+              ...baseResult,
+              appliedSkillSlugs: [...skillSlugs],
+              skillSelectionFallback: skillChoice.fallback,
+            }
+          : baseResult;
         const artifact = extractArtifact(state, run.itemStart);
         settleRun(
           run,
@@ -485,6 +632,10 @@ export function createAgentHost(): DesignHost {
         const handle = sessionHandle;
         if (handle) void sessionInterrupt(handle.session.id).catch(() => undefined);
         settleRun(run, "reject", abortError());
+      }
+      if (activePreflight !== null) {
+        void sessionInterrupt(activePreflight.sessionId).catch(() => undefined);
+        activePreflight.reject(abortError());
       }
       if (sessionPromise !== null) await sessionPromise.catch(() => undefined);
       if (sessionHandle !== null) await closeSession(sessionHandle);
