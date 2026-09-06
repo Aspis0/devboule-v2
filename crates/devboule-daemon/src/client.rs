@@ -161,6 +161,7 @@ impl DaemonClient {
             session_id: session_id.to_string(),
         });
         self.unsubscribe(session_id);
+        self.remove_pending_subscriptions(session_id);
         match result? {
             DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
@@ -558,6 +559,14 @@ impl DaemonClient {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .remove(&request_id);
+    }
+
+    fn remove_pending_subscriptions(&self, session_id: &str) {
+        self.inner
+            .pending_subscriptions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .retain(|_, pending| pending.session_id != session_id);
     }
 
     fn unsubscribe_sessions_watch(&self) {
@@ -992,6 +1001,105 @@ mod tests {
         );
 
         let _ = release_tx.send(());
+        drop(client);
+        server.join().expect("server joins");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn session_detach_drops_a_pending_attach_handler() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-client-detach-pending-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let paths = crate::paths::RuntimePaths::from_dir(&dir);
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+        let (attach_seen_tx, attach_seen_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let file = listener.accept().expect("accept");
+            let framed = Framed::new(file);
+            let hello = framed.recv::<ClientMessage>().expect("client hello");
+            assert!(matches!(hello, ClientMessage::Hello(_)));
+            framed
+                .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                    "detach-pending-test",
+                    std::process::id(),
+                )))
+                .expect("hello reply");
+
+            let attach = framed.recv::<ClientMessage>().expect("attach request");
+            let attach_id = attach.request_id().expect("attach id");
+            attach_seen_tx.send(()).expect("attach seen");
+            let detach = framed.recv::<ClientMessage>().expect("detach request");
+            let detach_id = detach.request_id().expect("detach id");
+            framed
+                .send(&DaemonMessage::Ok { id: detach_id })
+                .expect("detach reply");
+            release_rx.recv().expect("release late attach");
+            framed
+                .send(&DaemonMessage::Ok { id: attach_id })
+                .expect("late attach reply");
+            framed
+                .send(&DaemonMessage::Event(
+                    devboule_protocol::SessionEventEnvelope {
+                        session_id: "s.detach.pending".to_string(),
+                        generation: 1,
+                        event: SessionEvent::AgentMessage {
+                            message_id: None,
+                            text: "resurrected".to_string(),
+                        },
+                    },
+                ))
+                .expect("late event");
+        });
+
+        let connection = (0..100)
+            .find_map(|_| match crate::transport::connect(&paths) {
+                Ok(connection) => Some(connection),
+                Err(_) => {
+                    thread::yield_now();
+                    None
+                }
+            })
+            .expect("connect");
+        let client = Arc::new(
+            super::handshake(
+                connection,
+                devboule_protocol::ClientHello::m3a(
+                    super::test_owner("client-detach-pending-test").expect("owner"),
+                    "client-detach-pending-test",
+                ),
+            )
+            .expect("handshake"),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let attach_client = Arc::clone(&client);
+        let attach_thread = thread::spawn(move || {
+            attach_client.session_attach(
+                "s.detach.pending",
+                None,
+                Arc::new(move |envelope| {
+                    let _ = event_tx.send(envelope);
+                }),
+            )
+        });
+        attach_seen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("attach reached server");
+        client
+            .session_detach("s.detach.pending")
+            .expect("detach roundtrip");
+        release_tx.send(()).expect("release server");
+        assert!(attach_thread.join().expect("attach joins").is_ok());
+        assert!(event_rx.recv_timeout(Duration::from_millis(100)).is_err());
+
         drop(client);
         server.join().expect("server joins");
         let _ = std::fs::remove_dir_all(&dir);

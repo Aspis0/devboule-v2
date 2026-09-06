@@ -19,6 +19,21 @@ use super::{Disposition, PendingEvent, PendingItem, PullState, SessionRuntime};
 /// unbounded replay loop.
 const LIVE_AGENT_REPLAY_MAX_CATCH_UPS: u8 = 8;
 
+fn mark_replay_parse_failure(
+    runtime: &SessionRuntime,
+    replay: &mut AgentReplay,
+    kind: &str,
+    seq: u64,
+    error: impl std::fmt::Display,
+) {
+    runtime.mark_journal_degraded();
+    replay.journal_lagged = true;
+    eprintln!(
+        "journal replay could not parse {kind} for live agent session {} at seq {seq}: {error}",
+        runtime.session_id
+    );
+}
+
 fn extend_live_agent_watermark(runtime: &SessionRuntime, replay: &mut AgentReplay) -> bool {
     let current_seq = runtime.current_agent_seq();
     if current_seq <= replay.watermark {
@@ -452,10 +467,19 @@ fn pull_live_agent_replay_events(
             replay.cursor = replay.cursor.max(record.seq);
             let derived = match record.kind {
                 crate::journal::EventKind::AgentReport => {
-                    serde_json::from_slice::<SessionEvent>(&record.payload)
-                        .ok()
-                        .into_iter()
-                        .collect::<Vec<_>>()
+                    match serde_json::from_slice::<SessionEvent>(&record.payload) {
+                        Ok(event) => vec![event],
+                        Err(error) => {
+                            mark_replay_parse_failure(
+                                pull.runtime.as_ref(),
+                                replay,
+                                "agent report",
+                                record.seq,
+                                error,
+                            );
+                            Vec::new()
+                        }
+                    }
                 }
                 crate::journal::EventKind::AcpEnvelope => {
                     match serde_json::from_slice::<serde_json::Value>(&record.payload) {
@@ -469,7 +493,16 @@ fn pull_live_agent_replay_events(
                                 view.ingest(&value)
                             }
                         }
-                        Err(_) => Vec::new(),
+                        Err(error) => {
+                            mark_replay_parse_failure(
+                                pull.runtime.as_ref(),
+                                replay,
+                                "ACP envelope",
+                                record.seq,
+                                error,
+                            );
+                            Vec::new()
+                        }
                     }
                 }
                 crate::journal::EventKind::Output | crate::journal::EventKind::Exit => Vec::new(),
@@ -501,7 +534,7 @@ fn pull_live_agent_replay_events(
             // below are only a prefix; keep that hole loud through the
             // existing JournalDegraded signal rather than claiming a
             // complete replay.
-            replay.journal_lagged = page.last_seq < replay.watermark;
+            replay.journal_lagged |= page.last_seq < replay.watermark;
         }
         // A page can contain more derived events than its row count (Claude
         // assistant frames may yield several views). Let the next loop drain
@@ -753,6 +786,135 @@ mod tests {
             outcome.live_agent_replay,
         );
         outcome.generation
+    }
+
+    fn live_agent_replay_fixture(
+        session_id: &str,
+        record: crate::journal::EventRecord,
+    ) -> (
+        std::path::PathBuf,
+        Arc<Journal>,
+        Arc<SessionRuntime>,
+        Arc<ConnHandle>,
+    ) {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-replay-parse-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        let next_seq = record.seq.saturating_add(1);
+        journal.append_blocking(record).unwrap();
+
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = next_seq;
+        }
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach live agent");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        (dir, journal, runtime, conn)
+    }
+
+    #[test]
+    fn malformed_agent_report_replay_marks_journal_degraded() {
+        let session_id = "s.live.agent.replay.malformed-report";
+        let record = crate::journal::EventRecord {
+            session_id: session_id.to_string(),
+            generation: 1,
+            seq: 1,
+            kind: crate::journal::EventKind::AgentReport,
+            ts_ms: 0,
+            payload: b"not a SessionEvent".to_vec(),
+        };
+        let (dir, journal, runtime, conn) = live_agent_replay_fixture(session_id, record);
+        let events = drain(&conn);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::JournalDegraded { .. })));
+        assert!(runtime.journal_degraded());
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn malformed_acp_envelope_replay_marks_journal_degraded() {
+        let session_id = "s.live.agent.replay.malformed-acp";
+        let record = crate::journal::EventRecord {
+            session_id: session_id.to_string(),
+            generation: 1,
+            seq: 1,
+            kind: crate::journal::EventKind::AcpEnvelope,
+            ts_ms: 0,
+            payload: b"not JSON".to_vec(),
+        };
+        let (dir, journal, runtime, conn) = live_agent_replay_fixture(session_id, record);
+        let events = drain(&conn);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::JournalDegraded { .. })));
+        assert!(runtime.journal_degraded());
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unmodeled_acp_envelope_replay_stays_quiet() {
+        let session_id = "s.live.agent.replay.unmodeled";
+        let record = crate::journal::EventRecord {
+            session_id: session_id.to_string(),
+            generation: 1,
+            seq: 1,
+            kind: crate::journal::EventKind::AcpEnvelope,
+            ts_ms: 0,
+            payload: serde_json::to_vec(&json!({
+                "method": "_auth/status_update",
+                "params": {"status": "ok"}
+            }))
+            .unwrap(),
+        };
+        let (dir, journal, runtime, conn) = live_agent_replay_fixture(session_id, record);
+        let events = drain(&conn);
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::JournalDegraded { .. })));
+        assert!(!runtime.journal_degraded());
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
