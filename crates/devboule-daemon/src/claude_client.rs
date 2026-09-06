@@ -215,6 +215,7 @@ pub(super) fn spawn_process(
         permission_broker: Some(permission_broker),
         os_handle,
         peer_session_id: None,
+        agent_version: None,
     })
 }
 

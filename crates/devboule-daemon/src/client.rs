@@ -346,6 +346,19 @@ impl DaemonClient {
         }
     }
 
+    pub fn providers_refresh(&self) -> Result<(Vec<ProviderInfo>, u32), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProvidersRefresh { id })? {
+            DaemonMessage::Providers {
+                providers,
+                unreadable_dirs,
+                ..
+            } => Ok((providers, unreadable_dirs)),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn journal_retention_get(&self) -> Result<JournalRetention, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalRetentionGet { id })? {

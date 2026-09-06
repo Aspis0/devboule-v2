@@ -382,6 +382,17 @@ export interface ProviderInfo {
   launchArgs?: string[] | null;
   /** Explicit picker policy; covered wrappers remain visible in Settings. */
   pickable?: boolean | null;
+  /** Version of the CLI binary installed locally; null when it could not be probed. */
+  installedVersion?: string | null;
+  /** Newest version the daemon knows is available; null when unknown. */
+  latestVersion?: string | null;
+  /**
+   * Version the running adapter reported during its last live ACP handshake.
+   * This is the adapter's own claim and may differ from `installedVersion`.
+   */
+  agentVersion?: string | null;
+  /** How the CLI is installed; null when the daemon could not determine it. */
+  installChannel?: "npm" | "npx-registry" | "native" | null;
 }
 
 export interface ProviderCatalog {

@@ -279,6 +279,40 @@
   font-size: 10.5px;
 }
 
+.provider-version {
+  display: block;
+  margin-top: 2px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.provider-refresh {
+  display: grid;
+  width: fit-content;
+  height: 26px;
+  margin-top: 14px;
+  padding: 0 12px;
+  place-items: center;
+  color: var(--ink-soft);
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.provider-refresh:hover,
+.provider-refresh:focus-visible {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta);
+}
+
+.provider-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .provider-controls {
   display: flex;
   flex: none;

@@ -1,4 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(not(test))]
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
@@ -62,6 +64,17 @@ pub struct ServerState {
     /// multi-user daemon must key it by owner, or the failure reasons leak
     /// across users.
     provider_health: Mutex<HashMap<String, String>>,
+    /// Version declared by the provider's most recent successful ACP
+    /// initialize handshake, keyed by provider id.
+    provider_versions: Mutex<HashMap<String, String>>,
+    /// Version obtained by an explicit native `--version` refresh probe.
+    provider_cli_versions: Mutex<HashMap<String, (String, CliVersionFingerprint)>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CliVersionFingerprint {
+    modified: SystemTime,
+    len: u64,
 }
 
 struct SessionWatch {
@@ -114,6 +127,8 @@ impl ServerState {
             journal_error: Mutex::new(journal_error),
             session_watchers: Mutex::new(HashMap::new()),
             provider_health: Mutex::new(HashMap::new()),
+            provider_versions: Mutex::new(HashMap::new()),
+            provider_cli_versions: Mutex::new(HashMap::new()),
         });
         let state_for_transitions = Arc::downgrade(&state);
         state.sessions.set_transition_sink(Arc::new(move |owner| {
@@ -314,6 +329,53 @@ impl ServerState {
             .get(provider_id)
             .cloned()
             .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    pub(crate) fn record_provider_version(&self, provider_id: &str, version: &str) {
+        let Some(version) = crate::provider_catalog::cap_external_version(version) else {
+            return;
+        };
+        self.provider_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(provider_id.to_string(), version);
+    }
+
+    pub(crate) fn provider_version(&self, provider_id: &str) -> Option<String> {
+        self.provider_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(provider_id)
+            .cloned()
+    }
+
+    fn record_provider_cli_version(
+        &self,
+        provider_id: &str,
+        version: &str,
+        fingerprint: CliVersionFingerprint,
+    ) {
+        let Some(version) = crate::provider_catalog::cap_external_version(version) else {
+            return;
+        };
+        self.provider_cli_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(provider_id.to_string(), (version, fingerprint));
+    }
+
+    fn provider_cli_version(
+        &self,
+        provider_id: &str,
+        executable: &std::path::Path,
+    ) -> Option<String> {
+        let current = executable_fingerprint(executable);
+        let guard = self
+            .provider_cli_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (version, cached) = guard.get(provider_id)?;
+        cli_version_cache_is_current(cached, current.as_ref()).then(|| version.clone())
     }
 
     fn status_body(&self, request_id: u64) -> DaemonMessage {
@@ -565,12 +627,20 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .map_err(DaemonError::from)?;
     let mut pending_events = VecDeque::new();
     let mut pending_state_events = VecDeque::new();
+    let mut pending_replies = VecDeque::new();
     let loop_result = (|| -> Result<(), DaemonError> {
         loop {
             if state.stop.load(Ordering::SeqCst) {
                 break;
             }
             let observed_generation = conn.outbound.wake_generation();
+            if pending_replies.is_empty() {
+                pending_replies.extend(conn.outbound.pull_replies());
+            }
+            if let Some(reply) = pending_replies.pop_front() {
+                framed.send(&reply)?;
+                continue;
+            }
             let (request, request_channel_closed) = match request_rx.try_recv() {
                 Ok(request) => (Some(request), false),
                 Err(TryRecvError::Empty) => (None, false),
@@ -624,7 +694,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     framed.send(&DaemonMessage::Error(error))?;
                     continue;
                 }
-                let reply = dispatch(
+                let Some(reply) = dispatch(
                     &state,
                     &owner,
                     request,
@@ -632,7 +702,9 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     sessions_ok,
                     journal_ok,
                     typed_permissions_ok,
-                );
+                ) else {
+                    continue;
+                };
                 if close_request {
                     // SessionClose joins the coalescer and calls finish(),
                     // which can publish the teardown tail after the pre-drain.
@@ -655,6 +727,13 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
             }
 
             if pending_events.is_empty() && pending_state_events.is_empty() {
+                if pending_replies.is_empty() {
+                    pending_replies.extend(conn.outbound.pull_replies());
+                }
+                if let Some(reply) = pending_replies.pop_front() {
+                    framed.send(&reply)?;
+                    continue;
+                }
                 refill_pending_events(&conn, &mut pending_events);
                 refill_pending_state_events(&conn, &mut pending_state_events);
                 if pending_events.is_empty() && pending_state_events.is_empty() {
@@ -863,6 +942,50 @@ fn dispatch(
     sessions_ok: bool,
     journal_ok: bool,
     typed_permissions_ok: bool,
+) -> Option<DaemonMessage> {
+    if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
+        let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
+        if let Some(id) = request.request_id() {
+            error = error.with_id(id);
+        }
+        return Some(DaemonMessage::Error(error));
+    }
+    if let ClientMessage::ProvidersRefresh { id } = request {
+        let worker_state = Arc::clone(state);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-providers-refresh".to_string())
+            .spawn(move || {
+                let reply = providers_reply(&worker_state, id, true);
+                outbound.enqueue_reply(reply);
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, "could not start provider refresh").with_id(id),
+            ));
+        }
+        return None;
+    }
+    Some(dispatch_immediate(
+        state,
+        owner,
+        request,
+        conn,
+        sessions_ok,
+        journal_ok,
+        typed_permissions_ok,
+    ))
+}
+
+fn dispatch_immediate(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    request: ClientMessage,
+    conn: &Arc<ConnHandle>,
+    sessions_ok: bool,
+    journal_ok: bool,
+    typed_permissions_ok: bool,
 ) -> DaemonMessage {
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
         return DaemonMessage::Error({
@@ -922,29 +1045,9 @@ fn dispatch(
             }
             dispatch_session(state, owner, request, conn, typed_permissions_ok)
         }
-        ClientMessage::ProvidersList { id } => {
-            let discovery = crate::provider_catalog::discover_catalog(
-                &crate::registry::CdnRegistryFetch,
-                state.sessions.runtime_dir(),
-            );
-            // ProviderInfo.authentication carries the measured last-start
-            // outcome for this provider: "ok" when the most recent spawn +
-            // handshake completed, "failed: <reason>" when it failed, and
-            // "unknown" when nothing was measured since daemon start. This
-            // is a recorded observation, not an auth probe.
-            let providers = discovery
-                .agents
-                .into_iter()
-                .map(|agent| {
-                    let authentication = state.provider_health(&agent.id);
-                    wire_provider(agent, authentication)
-                })
-                .collect();
-            DaemonMessage::Providers {
-                id,
-                providers,
-                unreadable_dirs: discovery.unreadable_dirs,
-            }
+        ClientMessage::ProvidersList { id } => providers_reply(state, id, false),
+        ClientMessage::ProvidersRefresh { .. } => {
+            unreachable!("ProvidersRefresh is dispatched by the async wrapper")
         }
         ClientMessage::Invoke { id, method, .. } => DaemonMessage::Error(
             WireError::new(
@@ -956,10 +1059,119 @@ fn dispatch(
     }
 }
 
+fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) -> DaemonMessage {
+    let discovery = if force {
+        refresh_provider_catalog(state)
+    } else {
+        crate::provider_catalog::discover_catalog(
+            &crate::registry::CdnRegistryFetch,
+            state.sessions.runtime_dir(),
+        )
+    };
+    // ProviderInfo.authentication carries the measured last-start outcome for
+    // this provider. It is a recorded observation, not an auth probe.
+    let providers = discovery
+        .agents
+        .into_iter()
+        .map(|agent| {
+            let authentication = state.provider_health(&agent.id);
+            wire_provider(state, agent, authentication)
+        })
+        .collect();
+    DaemonMessage::Providers {
+        id,
+        providers,
+        unreadable_dirs: discovery.unreadable_dirs,
+    }
+}
+
+fn refresh_provider_catalog(
+    state: &Arc<ServerState>,
+) -> crate::provider_catalog::ProviderDiscovery {
+    let directories = crate::provider_catalog::path_directories();
+    let local = crate::provider_catalog::discover_in_paths(&directories);
+    let cache_dir = state.sessions.runtime_dir().to_path_buf();
+
+    let registry_cache_dir = cache_dir.clone();
+    let registry_refresh = std::thread::spawn(move || {
+        crate::registry::refresh_npx_entries(
+            &crate::registry::CdnRegistryFetch,
+            &registry_cache_dir,
+        );
+    });
+
+    let mut npm_packages = HashSet::new();
+    let mut latest_fetches = Vec::new();
+    for agent in &local.agents {
+        let Some(package) = agent.npm_package else {
+            continue;
+        };
+        if !npm_packages.insert(package) {
+            continue;
+        }
+        latest_fetches.push(std::thread::spawn(move || {
+            let _ = crate::registry::load_latest_npm_version(
+                &crate::registry::CdnNpmVersionFetch,
+                package,
+                true,
+            );
+        }));
+    }
+
+    let mut version_probes = Vec::new();
+    // This fan-out is structurally bounded: native probes are at most one per
+    // fixed KNOWN_AGENTS row (plus fixed debug test rows), npm fetches are at
+    // most one per distinct const package name, plus the single registry
+    // refresh. Do not make this registry-driven without adding an explicit
+    // concurrency bound.
+    for agent in local
+        .agents
+        .iter()
+        .filter(|agent| agent.install_channel == crate::provider_catalog::InstallChannel::Native)
+    {
+        let state = Arc::clone(state);
+        let agent = agent.clone();
+        version_probes.push(std::thread::spawn(move || {
+            probe_native_version(&state, &agent)
+                .map(|(version, fingerprint)| (agent.id, version, fingerprint))
+        }));
+    }
+
+    let _ = registry_refresh.join();
+    for fetch in latest_fetches {
+        let _ = fetch.join();
+    }
+    for probe in version_probes {
+        if let Ok(Some((provider_id, version, fingerprint))) = probe.join() {
+            state.record_provider_cli_version(&provider_id, &version, fingerprint);
+        }
+    }
+
+    crate::provider_catalog::discover_catalog_in_paths(
+        &crate::registry::CdnRegistryFetch,
+        state.sessions.runtime_dir(),
+        &directories,
+    )
+}
+
 fn wire_provider(
+    state: &ServerState,
     agent: crate::provider_catalog::InstalledAgent,
     authentication: String,
 ) -> devboule_protocol::ProviderInfo {
+    let installed_version = match agent.install_channel {
+        crate::provider_catalog::InstallChannel::Native => agent
+            .installed_version
+            .clone()
+            .or_else(|| state.provider_cli_version(&agent.id, &agent.executable)),
+        crate::provider_catalog::InstallChannel::Npm => agent.installed_version.clone(),
+        crate::provider_catalog::InstallChannel::NpxRegistry => None,
+    };
+    let latest_version = agent.latest_version.clone().or_else(|| {
+        agent
+            .npm_package
+            .and_then(crate::registry::cached_latest_npm_version)
+    });
     devboule_protocol::ProviderInfo {
         id: agent.id.to_string(),
         executable: agent.executable.to_string_lossy().into_owned(),
@@ -969,7 +1181,104 @@ fn wire_provider(
         origin: Some(agent.origin.as_wire().to_string()),
         launch_args: agent.launch_args,
         pickable: agent.pickable,
+        installed_version,
+        latest_version,
+        agent_version: state.provider_version(&agent.id),
+        install_channel: Some(agent.install_channel.as_wire().to_string()),
     }
+}
+
+fn probe_native_version(
+    state: &ServerState,
+    agent: &crate::provider_catalog::InstalledAgent,
+) -> Option<(String, CliVersionFingerprint)> {
+    #[cfg(test)]
+    {
+        let _ = state;
+        let _ = agent;
+        None
+    }
+    #[cfg(not(test))]
+    {
+        #[cfg(not(windows))]
+        let _ = state;
+        let fingerprint = executable_fingerprint(&agent.executable)?;
+        let mut command = Command::new(&agent.executable);
+        command
+            .args(&agent.prefix_args)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut child = command.spawn().ok()?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            if state.process_job.assign(child.as_raw_handle()).is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+        let output = child.wait_with_output().ok()?;
+        let version = parse_version_token(&output.stdout)?;
+        Some((version, fingerprint))
+    }
+}
+
+fn executable_fingerprint(path: &std::path::Path) -> Option<CliVersionFingerprint> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(CliVersionFingerprint {
+        modified: metadata.modified().ok()?,
+        len: metadata.len(),
+    })
+}
+
+fn cli_version_cache_is_current(
+    cached: &CliVersionFingerprint,
+    current: Option<&CliVersionFingerprint>,
+) -> bool {
+    current == Some(cached)
+}
+
+fn parse_version_token(output: &[u8]) -> Option<String> {
+    let mut run = String::new();
+    let inspect = |run: &mut String| {
+        let candidate = std::mem::take(run);
+        let components: Vec<&str> = candidate.split('.').collect();
+        (components.len() >= 3
+            && components.iter().all(|component| {
+                !component.is_empty() && component.bytes().all(|b| b.is_ascii_digit())
+            }))
+        .then_some(candidate)
+    };
+    for byte in output {
+        if byte.is_ascii_digit() || *byte == b'.' {
+            run.push(*byte as char);
+        } else if let Some(version) = inspect(&mut run) {
+            return crate::provider_catalog::cap_external_version(&version);
+        }
+    }
+    inspect(&mut run).and_then(|version| crate::provider_catalog::cap_external_version(&version))
 }
 
 /// Collapse an error message to a single line for the provider-health
@@ -1620,7 +1929,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             reply,
             DaemonMessage::Error(WireError {
@@ -1650,7 +1960,8 @@ mod tests {
             true,
             true,
             false,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             reply,
             DaemonMessage::Error(WireError {
@@ -1683,7 +1994,8 @@ mod tests {
             false,
             false,
             false,
-        );
+        )
+        .expect("immediate dispatch reply");
         let _ = std::fs::remove_dir_all(&path);
         let DaemonMessage::Providers {
             id,
@@ -1699,6 +2011,44 @@ mod tests {
             assert!(!provider.executable.is_empty());
             assert_eq!(provider.authentication, "unknown");
         }
+    }
+
+    #[test]
+    fn version_token_parser_finds_first_semver_like_token() {
+        assert_eq!(
+            parse_version_token(b"grok version 1.2.3\n"),
+            Some("1.2.3".to_string())
+        );
+        assert_eq!(
+            parse_version_token(b"v2.10.0-beta.1"),
+            Some("2.10.0".to_string())
+        );
+        assert_eq!(parse_version_token(b"build 2026-09-06"), None);
+        assert_eq!(parse_version_token(b"no version here"), None);
+    }
+
+    #[test]
+    fn cli_version_cache_is_invalidated_when_executable_metadata_changes() {
+        let cached = CliVersionFingerprint {
+            modified: UNIX_EPOCH + Duration::from_secs(10),
+            len: 100,
+        };
+        assert!(cli_version_cache_is_current(&cached, Some(&cached)));
+        assert!(!cli_version_cache_is_current(
+            &cached,
+            Some(&CliVersionFingerprint {
+                modified: UNIX_EPOCH + Duration::from_secs(11),
+                len: 100,
+            })
+        ));
+        assert!(!cli_version_cache_is_current(
+            &cached,
+            Some(&CliVersionFingerprint {
+                modified: cached.modified,
+                len: 101,
+            })
+        ));
+        assert!(!cli_version_cache_is_current(&cached, None));
     }
 
     #[test]
@@ -1724,7 +2074,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(usage, DaemonMessage::JournalUsage { id: 1, .. }));
         let retention = dispatch(
             &state,
@@ -1734,7 +2085,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             retention,
             DaemonMessage::JournalRetention { id: 2, .. }
@@ -1793,7 +2145,8 @@ mod tests {
                 true,
                 true,
                 true,
-            );
+            )
+            .expect("immediate dispatch reply");
             assert!(matches!(
                 reply,
                 DaemonMessage::Error(WireError {
@@ -1826,7 +2179,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             delete,
             DaemonMessage::Error(WireError {
@@ -1876,7 +2230,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             first_retention,
             DaemonMessage::JournalRetention { id: 1, .. }
@@ -1896,7 +2251,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             replayed_retention,
             DaemonMessage::JournalRetention { id: 2, .. }
@@ -1916,7 +2272,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             conflict,
             DaemonMessage::Error(WireError {
@@ -1949,7 +2306,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(first_delete, DaemonMessage::Ok { id: 4 }));
         let replayed_delete = dispatch(
             &state,
@@ -1963,7 +2321,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(replayed_delete, DaemonMessage::Ok { id: 5 }));
         drop(state);
         let _ = std::fs::remove_dir_all(path);

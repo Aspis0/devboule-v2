@@ -174,6 +174,9 @@ pub enum ClientMessage {
     ProvidersList {
         id: u64,
     },
+    ProvidersRefresh {
+        id: u64,
+    },
     /// Plugin-backend tenant. `method` is a capability name (`workspace.root`
     /// today). The daemon returns [`ErrorCode::Unimplemented`]; it is not a
     /// plugin backend.
@@ -212,6 +215,7 @@ impl ClientMessage {
             | Self::JournalRetentionSet { id, .. }
             | Self::SessionDelete { id, .. }
             | Self::ProvidersList { id }
+            | Self::ProvidersRefresh { id }
             | Self::Invoke { id, .. } => Some(*id),
         }
     }
@@ -256,6 +260,7 @@ impl ClientMessage {
             | Self::JournalUsage { .. }
             | Self::JournalRetentionGet { .. }
             | Self::ProvidersList { .. }
+            | Self::ProvidersRefresh { .. }
             | Self::Invoke { .. } => None,
         }
     }
@@ -351,6 +356,22 @@ pub struct ProviderInfo {
     /// remains visible in Settings but is omitted from the workspace picker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pickable: Option<bool>,
+    /// Installed CLI version: read from package.json for an npm shim, or
+    /// obtained from a native executable's --version probe on refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+    /// Newest known version from the npm registry or ACP registry feed,
+    /// depending on the installation channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    /// Version declared by the running ACP process during its last live
+    /// initialize handshake. This may be the adapter version, not the
+    /// underlying CLI version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+    /// Installation source: `npm`, `npx-registry`, or `native`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_channel: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -892,6 +913,10 @@ mod tests {
                 origin: None,
                 launch_args: None,
                 pickable: None,
+                installed_version: None,
+                latest_version: None,
+                agent_version: None,
+                install_channel: None,
             }],
             unreadable_dirs: 2,
         };
@@ -903,6 +928,61 @@ mod tests {
         assert_eq!(encoded["providers"][0]["authentication"], "unknown");
         assert_eq!(encoded["unreadableDirs"], 2);
         assert!(encoded["providers"][0].get("authenticated").is_none());
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(encoded).expect("round trip"),
+            reply
+        );
+    }
+
+    #[test]
+    fn providers_refresh_round_trips_with_same_providers_shape() {
+        let request = ClientMessage::ProvidersRefresh { id: 12 };
+        let encoded = serde_json::to_value(&request).expect("json");
+        assert_eq!(encoded["type"], "providers_refresh");
+        assert_eq!(encoded["id"], 12);
+
+        let reply = DaemonMessage::Providers {
+            id: 12,
+            providers: vec![
+                ProviderInfo {
+                    id: "grok".to_string(),
+                    executable: "grok.exe".to_string(),
+                    acp_available: true,
+                    authentication: "unknown".to_string(),
+                    protocol: Some("acp".to_string()),
+                    origin: Some("user-binary".to_string()),
+                    launch_args: None,
+                    pickable: None,
+                    installed_version: Some("1.2.3".to_string()),
+                    latest_version: Some("1.2.4".to_string()),
+                    agent_version: Some("adapter-1".to_string()),
+                    install_channel: Some("native".to_string()),
+                },
+                ProviderInfo {
+                    id: "pi".to_string(),
+                    executable: "pi.exe".to_string(),
+                    acp_available: false,
+                    authentication: "unknown".to_string(),
+                    protocol: None,
+                    origin: Some("user-binary".to_string()),
+                    launch_args: None,
+                    pickable: None,
+                    installed_version: Some("0.1.0".to_string()),
+                    latest_version: None,
+                    agent_version: None,
+                    install_channel: Some("native".to_string()),
+                },
+            ],
+            unreadable_dirs: 0,
+        };
+        let encoded = serde_json::to_value(&reply).expect("json");
+        assert_eq!(encoded["providers"][0]["installedVersion"], "1.2.3");
+        assert_eq!(encoded["providers"][0]["latestVersion"], "1.2.4");
+        assert_eq!(encoded["providers"][0]["agentVersion"], "adapter-1");
+        assert_eq!(encoded["providers"][0]["installChannel"], "native");
+        assert_eq!(encoded["providers"][1]["installedVersion"], "0.1.0");
+        assert!(encoded["providers"][1].get("latestVersion").is_none());
+        assert!(encoded["providers"][1].get("agentVersion").is_none());
         assert_eq!(
             serde_json::from_value::<DaemonMessage>(encoded).expect("round trip"),
             reply
@@ -922,6 +1002,10 @@ mod tests {
                 origin: Some("npx-wrapper".to_string()),
                 launch_args: None,
                 pickable: None,
+                installed_version: None,
+                latest_version: None,
+                agent_version: None,
+                install_channel: None,
             }],
             unreadable_dirs: 0,
         };
@@ -937,6 +1021,10 @@ mod tests {
             origin: Some("user-binary".to_string()),
             launch_args: None,
             pickable: None,
+            installed_version: None,
+            latest_version: None,
+            agent_version: None,
+            install_channel: None,
         };
         let native_json = serde_json::to_value(&native).expect("json");
         assert_eq!(native_json["origin"], "user-binary");
@@ -957,6 +1045,10 @@ mod tests {
             origin: Some("npx-wrapper".to_string()),
             launch_args: Some(vec!["--registry=https://evil".to_string()]),
             pickable: Some(false),
+            installed_version: None,
+            latest_version: None,
+            agent_version: None,
+            install_channel: None,
         };
         let encoded = serde_json::to_value(&wrapper).expect("json");
         assert_eq!(encoded["launchArgs"][0], "--registry=https://evil");

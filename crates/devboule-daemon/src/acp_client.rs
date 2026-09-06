@@ -516,7 +516,7 @@ fn spawn_process_with_load(
         }
     };
     let mut reader = BufReader::new(stdout);
-    let (deferred, handshake_manifest, peer_session_id) = match handshake(
+    let (deferred, handshake_manifest, peer_session_id, agent_version) = match handshake(
         &transport,
         &mut reader,
         &command.cwd,
@@ -593,6 +593,7 @@ fn spawn_process_with_load(
         permission_broker: Some(Arc::clone(&transport.permission_broker)),
         os_handle,
         peer_session_id: Some(peer_session_id),
+        agent_version,
     })
 }
 
@@ -964,13 +965,20 @@ impl Drop for AcpTransport {
     }
 }
 
+type HandshakeResult = (
+    Vec<serde_json::Value>,
+    Option<SessionEvent>,
+    String,
+    Option<String>,
+);
+
 fn handshake(
     transport: &AcpTransport,
     reader: &mut BufReader<ChildStdout>,
     cwd: &std::path::Path,
     provider_id: Option<String>,
     load_session_id: Option<&str>,
-) -> Result<(Vec<serde_json::Value>, Option<SessionEvent>, String), WireError> {
+) -> Result<HandshakeResult, WireError> {
     let mut deferred = Vec::new();
     let initialize_id = transport
         .request("initialize", advertised_initialize_params()?)
@@ -992,6 +1000,12 @@ fn handshake(
             format!("ACP peer negotiated unsupported protocol version {negotiated}."),
         ));
     }
+    let agent_version = initialize
+        .get("result")
+        .and_then(|result| result.get("agentInfo"))
+        .and_then(|agent_info| agent_info.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::provider_catalog::cap_external_version);
     let (method, params) = match load_session_id {
         Some(session_id) => (
             "session/load",
@@ -1030,7 +1044,7 @@ fn handshake(
         session.get("result").unwrap_or(&serde_json::Value::Null),
         provider_id,
     );
-    Ok((deferred, manifest, session_id.to_string()))
+    Ok((deferred, manifest, session_id.to_string(), agent_version))
 }
 
 fn read_response(

@@ -267,6 +267,7 @@ struct SpawnedSession {
     permission_broker: Option<Arc<permission_broker::PermissionBroker>>,
     os_handle: Option<ProcessHandle>,
     peer_session_id: Option<String>,
+    agent_version: Option<String>,
 }
 
 struct PtyKiller {
@@ -1719,6 +1720,7 @@ pub fn spawn_session(
         permission_broker: None,
         os_handle,
         peer_session_id: None,
+        agent_version: None,
     };
     start_spawned_session(state, registry, metadata, owner, None, spawned)
 }
@@ -1763,7 +1765,11 @@ fn start_spawned_session(
         permission_broker,
         os_handle,
         peer_session_id,
+        agent_version,
     } = spawned;
+    if let (Some(provider_id), Some(version)) = (&metadata.provider, agent_version.as_deref()) {
+        state.record_provider_version(provider_id, version);
+    }
     let runtime = if metadata.kind.is_agent() {
         SessionRuntime::for_acp(
             metadata.id.clone(),

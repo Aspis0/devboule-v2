@@ -185,6 +185,12 @@ fn prepend_stub_dir_to_path() -> PathGuard {
     PathGuard { original }
 }
 
+fn stub_only_path() -> PathGuard {
+    let original = std::env::var_os("PATH").unwrap_or_default();
+    std::env::set_var("PATH", stub_bin().parent().expect("stub build dir"));
+    PathGuard { original }
+}
+
 fn wait_for_file(path: &Path) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
@@ -469,6 +475,56 @@ fn acp_successful_handshake_records_provider_ok() {
     test.client
         .session_close(&session.id)
         .expect("close ACP session");
+}
+
+#[test]
+fn acp_handshake_agent_info_version_is_visible_in_providers_list() {
+    let _test_lock = lock_tests();
+    let _path = prepend_stub_dir_to_path();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let (providers, _) = test.client.providers_list().expect("providers list");
+    let stub = providers
+        .iter()
+        .find(|provider| provider.id == "devboule-acp-stub")
+        .expect("stub provider present in providers_list");
+    assert_eq!(stub.agent_version.as_deref(), Some("1"));
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn providers_refresh_probes_stub_version_without_blocking_status() {
+    let _test_lock = lock_tests();
+    let _path = stub_only_path();
+    let version_dir = unique_dir();
+    let version_started = version_dir.join("version started.txt");
+    std::env::set_var("DEVBOULE_ACP_STUB_VERSION_DELAY_MS", "1500");
+    std::env::set_var("DEVBOULE_ACP_STUB_VERSION_FILE", &version_started);
+    let mut test = AcpTest::new(&[]);
+    test._env.names.push("DEVBOULE_ACP_STUB_VERSION_DELAY_MS");
+    test._env.names.push("DEVBOULE_ACP_STUB_VERSION_FILE");
+    let client = Arc::clone(&test.client);
+
+    let refresh_client = Arc::clone(&client);
+    let refresh = std::thread::spawn(move || refresh_client.providers_refresh());
+    let _ = wait_for_file(&version_started);
+    let status_started = Instant::now();
+    client.status().expect("status during provider refresh");
+    assert!(
+        status_started.elapsed() < Duration::from_millis(500),
+        "status was queued behind refresh: {:?}",
+        status_started.elapsed()
+    );
+
+    let (providers, _) = refresh.join().expect("refresh thread").expect("refresh");
+    let stub = providers
+        .iter()
+        .find(|provider| provider.id == "devboule-acp-stub")
+        .expect("stub provider present in providers_refresh");
+    assert_eq!(stub.installed_version.as_deref(), Some("9.9.9"));
+    let _ = std::fs::remove_dir_all(version_dir);
 }
 
 #[test]
@@ -960,7 +1016,7 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
 struct AcpTest {
     observation_dir: PathBuf,
     _harness: Harness,
-    client: DaemonClient,
+    client: Arc<DaemonClient>,
     _env: EnvGuard,
 }
 
@@ -1010,6 +1066,7 @@ impl AcpTest {
         let command = serde_json::to_string(&argv).expect("ACP argv");
         std::env::set_var("DEVBOULE_ACP_COMMAND", command);
         std::env::set_var("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub");
+        std::env::set_var("DEVBOULE_TEST_NO_NETWORK", "1");
         std::env::set_var("DEVBOULE_ACP_STUB_PID_FILE", &pid_file);
         std::env::set_var("DEVBOULE_ACP_STUB_CONSOLE_FILE", &console_file);
         std::env::set_var("DEVBOULE_ACP_STUB_SET_MODEL_FILE", &set_model_file);
@@ -1020,6 +1077,7 @@ impl AcpTest {
         let mut env_names = vec![
             "DEVBOULE_ACP_COMMAND",
             "DEVBOULE_ACP_PROVIDER_ID",
+            "DEVBOULE_TEST_NO_NETWORK",
             "DEVBOULE_ACP_STUB_PID_FILE",
             "DEVBOULE_ACP_STUB_CONSOLE_FILE",
             "DEVBOULE_ACP_STUB_SET_MODEL_FILE",
@@ -1043,7 +1101,7 @@ impl AcpTest {
         }
         let env = EnvGuard { names: env_names };
         let harness = Harness::spawn();
-        let client = harness.client();
+        let client = Arc::new(harness.client());
         Self {
             observation_dir,
             _harness: harness,

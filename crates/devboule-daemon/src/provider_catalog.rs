@@ -23,6 +23,14 @@ use std::process::{Command, Output};
 
 #[cfg(windows)]
 const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+pub(crate) const MAX_EXTERNAL_VERSION_CHARS: usize = 64;
+
+/// Keep externally supplied version labels bounded before they enter the wire
+/// contract or an in-process cache.
+pub(crate) fn cap_external_version(value: &str) -> Option<String> {
+    let capped: String = value.chars().take(MAX_EXTERNAL_VERSION_CHARS).collect();
+    (!capped.is_empty()).then_some(capped)
+}
 
 /// A known CLI name and its aliases, with the ACP invocation when supported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +41,7 @@ pub struct KnownAgent {
     /// Native stream-json argv, used only by the Claude adapter. Other
     /// agents stay on ACP; this field is None for them.
     pub stream_json_args: Option<&'static [&'static str]>,
+    pub npm_package: Option<&'static str>,
 }
 
 /// Agents currently relevant to the first provider catalog slice.
@@ -64,24 +73,28 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         aliases: &["claude", "claude-code"],
         acp_args: None,
         stream_json_args: Some(CLAUDE_STREAM_JSON_ARGS),
+        npm_package: Some("@anthropic-ai/claude-code"),
     },
     KnownAgent {
         id: "codex",
         aliases: &["codex"],
         acp_args: None,
         stream_json_args: None,
+        npm_package: Some("@openai/codex"),
     },
     KnownAgent {
         id: "grok",
         aliases: &["grok", "grok-build"],
         acp_args: Some(&["agent", "stdio"]),
         stream_json_args: None,
+        npm_package: None,
     },
     KnownAgent {
         id: "pi",
         aliases: &["pi"],
         acp_args: None,
         stream_json_args: None,
+        npm_package: None,
     },
     KnownAgent {
         id: "qwen",
@@ -91,12 +104,14 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         // removed in a future release. Please use --acp instead."
         acp_args: Some(&["--acp"]),
         stream_json_args: None,
+        npm_package: Some("@qwen-code/qwen-code"),
     },
     KnownAgent {
         id: "gemini",
         aliases: &["gemini"],
         acp_args: Some(&["--acp"]),
         stream_json_args: None,
+        npm_package: Some("@google/gemini-cli"),
     },
 ];
 
@@ -112,6 +127,7 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[KnownAgent {
     aliases: &["devboule-acp-stub"],
     acp_args: None,
     stream_json_args: None,
+    npm_package: None,
 }];
 #[cfg(not(debug_assertions))]
 const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
@@ -152,6 +168,23 @@ impl ProviderOrigin {
         match self {
             Self::UserBinary => "user-binary",
             Self::NpxWrapper => "npx-wrapper",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallChannel {
+    Npm,
+    NpxRegistry,
+    Native,
+}
+
+impl InstallChannel {
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::NpxRegistry => "npx-registry",
+            Self::Native => "native",
         }
     }
 }
@@ -199,6 +232,10 @@ pub struct InstalledAgent {
     /// Explicit picker policy. Covered wrappers are kept in Settings but are
     /// omitted from the workspace provider picker.
     pub pickable: Option<bool>,
+    pub installed_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub install_channel: InstallChannel,
+    pub npm_package: Option<&'static str>,
 }
 
 /// PATH scan result. `unreadable_dirs` is the number of unique PATH entries
@@ -236,6 +273,16 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
             let stream_json_command = spec
                 .stream_json_args
                 .map(|args| protocol_argv(&launch.program, &launch.prefix_args, args));
+            let install_channel = if launch.prefix_args.is_empty() {
+                InstallChannel::Native
+            } else {
+                InstallChannel::Npm
+            };
+            let installed_version = launch
+                .prefix_args
+                .first()
+                .map(PathBuf::from)
+                .and_then(|script| package_json_version_from_script(&script));
             Some(InstalledAgent {
                 id: spec.id.to_string(),
                 aliases: spec.aliases,
@@ -247,6 +294,10 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 origin: ProviderOrigin::UserBinary,
                 launch_args: None,
                 pickable: None,
+                installed_version,
+                latest_version: None,
+                install_channel,
+                npm_package: spec.npm_package,
             })
         })
         .collect();
@@ -262,6 +313,45 @@ fn protocol_argv(executable: &Path, prefix_args: &[String], extra: &[&str]) -> V
     command.extend(prefix_args.iter().cloned());
     command.extend(extra.iter().map(|arg| (*arg).to_string()));
     command
+}
+
+const MAX_PACKAGE_JSON_BYTES: u64 = 1024 * 1024;
+
+/// Read the nearest npm package version above an unwrapped cmd-shim script.
+/// The walk is bounded and stops at the containing node_modules directory.
+pub(crate) fn package_json_version_from_script(script: &Path) -> Option<String> {
+    let mut directory = script.parent()?.to_path_buf();
+    if !directory.ancestors().any(|ancestor| {
+        ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("node_modules"))
+    }) {
+        return None;
+    }
+    for _ in 0..32 {
+        if directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("node_modules"))
+        {
+            break;
+        }
+        let package_json = directory.join("package.json");
+        if let Ok(metadata) = std::fs::metadata(&package_json) {
+            if metadata.is_file() && metadata.len() <= MAX_PACKAGE_JSON_BYTES {
+                let body = std::fs::read_to_string(package_json).ok()?;
+                return serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|value| value.get("version")?.as_str().map(str::to_string))
+                    .and_then(|version| crate::provider_catalog::cap_external_version(&version));
+            }
+        }
+        if !directory.pop() {
+            break;
+        }
+    }
+    None
 }
 
 fn count_unreadable_dirs(directories: &[PathBuf]) -> u32 {
@@ -310,7 +400,7 @@ pub fn find_available(id: &str) -> Option<InstalledAgent> {
 }
 
 #[cfg(feature = "server")]
-fn path_directories() -> Vec<PathBuf> {
+pub(crate) fn path_directories() -> Vec<PathBuf> {
     match std::env::var_os("PATH") {
         Some(paths) => std::env::split_paths(&paths).collect(),
         None => Vec::new(),
@@ -360,6 +450,11 @@ fn registry_agent(
         origin: ProviderOrigin::NpxWrapper,
         launch_args: Some(args),
         pickable,
+        installed_version: None,
+        latest_version: crate::registry::split_package_version(&package)
+            .and_then(crate::provider_catalog::cap_external_version),
+        install_channel: InstallChannel::NpxRegistry,
+        npm_package: None,
     }
 }
 
@@ -806,8 +901,9 @@ mod tests {
         executable_file_exists, launch_path_candidates_for_pathext,
         resolve_launch_command_in_paths, ResolvedLaunch,
     };
+    use std::fs;
     #[cfg(windows)]
-    use std::fs::{self, File};
+    use std::fs::File;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1451,6 +1547,46 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
             "spawned ACP argv must stay executable + prefix + acp args"
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn npm_package_version_walk_stays_inside_node_modules() {
+        let dir = temporary_directory("package-version-walk");
+        let script = dir
+            .join("node_modules")
+            .join("@scope")
+            .join("pkg")
+            .join("dist")
+            .join("cli.js");
+        fs::create_dir_all(script.parent().expect("script parent")).expect("fixture dirs");
+        fs::write(
+            script
+                .parent()
+                .expect("dist")
+                .parent()
+                .expect("package")
+                .join("package.json"),
+            r#"{"version":"3.4.5"}"#,
+        )
+        .expect("package json");
+        assert_eq!(
+            super::package_json_version_from_script(&script),
+            Some("3.4.5".to_string())
+        );
+
+        fs::write(dir.join("package.json"), r#"{"version":"9.9.9"}"#).expect("outer package");
+        let no_inner_version = dir
+            .join("node_modules")
+            .join("other")
+            .join("dist")
+            .join("cli.js");
+        fs::create_dir_all(no_inner_version.parent().expect("other parent")).expect("other dirs");
+        assert_eq!(
+            super::package_json_version_from_script(&no_inner_version),
+            None,
+            "the walk must reject leaving node_modules"
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -25,6 +25,15 @@ pub fn providers_list(bridge: State<'_, DaemonBridge>) -> Result<ProviderCatalog
     })
 }
 
+#[tauri::command]
+pub fn providers_refresh(bridge: State<'_, DaemonBridge>) -> Result<ProviderCatalog, CommandError> {
+    let (providers, unreadable_dirs) = require_client(&bridge)?.providers_refresh()?;
+    Ok(ProviderCatalog {
+        providers,
+        unreadable_dirs,
+    })
+}
+
 fn require_client(
     bridge: &DaemonBridge,
 ) -> Result<std::sync::Arc<devboule_daemon::DaemonClient>, CommandError> {

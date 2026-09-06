@@ -13,9 +13,12 @@
 //! condition variable when the ring has no output; PTY readers only publish
 //! and notify.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+
+use devboule_protocol::DaemonMessage;
 
 pub struct ConnOut {
     inner: Mutex<Inner>,
@@ -25,12 +28,16 @@ pub struct ConnOut {
 
 struct Inner {
     wake_generation: u64,
+    replies: VecDeque<DaemonMessage>,
 }
 
 impl ConnOut {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::new(Inner { wake_generation: 0 }),
+            inner: Mutex::new(Inner {
+                wake_generation: 0,
+                replies: VecDeque::new(),
+            }),
             cvar: Condvar::new(),
             closed: AtomicBool::new(false),
         })
@@ -41,6 +48,21 @@ impl ConnOut {
         let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         inner.wake_generation = inner.wake_generation.wrapping_add(1);
         self.cvar.notify_all();
+    }
+
+    /// Queue a correlated RPC reply for the connection writer. Refresh
+    /// workers use this same outbound path as session events; they never
+    /// write to the framed pipe directly.
+    pub fn enqueue_reply(&self, reply: DaemonMessage) {
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        inner.replies.push_back(reply);
+        inner.wake_generation = inner.wake_generation.wrapping_add(1);
+        self.cvar.notify_all();
+    }
+
+    pub fn pull_replies(&self) -> VecDeque<DaemonMessage> {
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        std::mem::take(&mut inner.replies)
     }
 
     /// Return the notification state observed by the writer before it drains

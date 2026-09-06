@@ -6,6 +6,7 @@ import {
   journalRetentionGet,
   journalRetentionSet,
   journalUsage,
+  providersRefresh,
   sessionDelete,
   sessionResume,
 } from "./tauri";
@@ -91,5 +92,15 @@ describe("resume command wrapper", () => {
     await sessionResume("s.owner.1");
 
     expect(invoke).toHaveBeenCalledWith("session_resume", { sessionId: "s.owner.1" });
+  });
+});
+
+describe("provider refresh wrapper", () => {
+  it("calls the providers_refresh command with no payload", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({ providers: [], unreadableDirs: 0 } as never);
+    await providersRefresh();
+
+    expect(invoke).toHaveBeenCalledWith("providers_refresh", undefined);
   });
 });

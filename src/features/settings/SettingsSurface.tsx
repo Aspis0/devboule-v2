@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { providersList } from "../../lib/tauri";
+import { providersList, providersRefresh, reasonFromCause } from "../../lib/tauri";
 import type { ProviderCatalog, ProviderInfo } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
@@ -125,26 +125,120 @@ function providerStatusText(provider: ProviderInfo): string {
   return `${viaNpx} · authentication unknown`;
 }
 
+/**
+ * Version segments for one provider card, in display order, or an empty list
+ * when nothing is known. The agent segment is only kept when it disagrees with
+ * the installed CLI version (or none is installed); otherwise it is noise.
+ * Each segment carries its own tooltip; the render maps without re-deriving.
+ */
+interface ProviderVersionSegment {
+  text: string;
+  /** Hover explanation; absent when the text speaks for itself. */
+  title?: string;
+}
+
+const AGENT_VERSION_TITLE =
+  "Version the running agent adapter reported during its last live handshake; it may differ from the installed CLI version.";
+
+const LATEST_VERSION_TITLE =
+  "Latest known version from the last registry check; Refresh revalidates.";
+
+function providerVersionSegments(provider: ProviderInfo): ProviderVersionSegment[] {
+  // The daemon may send empty strings in place of absent versions; treat both
+  // as "unknown" so "" never half-triggers a branch.
+  const installed = provider.installedVersion || undefined;
+  const latest = provider.latestVersion || undefined;
+  const agent = provider.agentVersion || undefined;
+  const segments: ProviderVersionSegment[] = [];
+  if (installed) {
+    segments.push({ text: `v${installed}` });
+    if (latest && latest !== installed) {
+      segments.push({ text: `v${latest} available`, title: LATEST_VERSION_TITLE });
+    } else if (latest) {
+      segments.push({ text: "up to date", title: LATEST_VERSION_TITLE });
+    }
+  } else if (latest) {
+    segments.push({
+      text:
+        provider.installChannel === "npx-registry" ? `v${latest} via npx` : `v${latest} available`,
+      title: LATEST_VERSION_TITLE,
+    });
+  }
+  if (agent && agent !== installed) {
+    segments.push({ text: `agent reports v${agent}`, title: AGENT_VERSION_TITLE });
+  }
+  return segments;
+}
+
+/** Muted version line under the executable path; renders nothing without data. */
+function ProviderVersionLine({ provider }: { provider: ProviderInfo }) {
+  const segments = providerVersionSegments(provider);
+  if (segments.length === 0) return null;
+  return (
+    <span className="provider-version">
+      {segments.map((segment, index) => (
+        <span key={segment.text} title={segment.title}>
+          {index > 0 ? " · " : ""}
+          {segment.text}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function ProvidersPanel() {
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  // Bumped by every fetch (mount and refresh); a response only applies when its
+  // sequence is still the latest, so a slow mount list cannot revert a refresh.
+  const fetchSeqRef = useRef(0);
+  // Set synchronously on click so a second click before the re-render is a no-op.
+  const refreshInFlightRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    const seq = ++fetchSeqRef.current;
     void providersList()
       .then((listed) => {
-        if (!cancelled) setCatalog(listed);
+        if (!cancelled && seq === fetchSeqRef.current) setCatalog(listed);
       })
       .catch((cause: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && seq === fetchSeqRef.current) {
           setCatalog({ providers: [], unreadableDirs: 0 });
-          setError(cause instanceof Error ? cause.message : "Could not list providers.");
+          setError(reasonFromCause(cause));
         }
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  function refresh() {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    setRefreshing(true);
+    setError(null);
+    const seq = ++fetchSeqRef.current;
+    void providersRefresh()
+      .then((fresh) => {
+        if (seq === fetchSeqRef.current) setCatalog(fresh);
+      })
+      .catch((cause: unknown) => {
+        if (seq === fetchSeqRef.current) {
+          setError(reasonFromCause(cause));
+        }
+      })
+      .finally(() => {
+        // Unconditional on purpose: React 18+ treats setState on an unmounted
+        // component as a safe no-op, so the button can never get stuck on
+        // "Refreshing…". Do not re-add an unmount guard here — StrictMode's
+        // double mount kept a stale one true and wedged the button for real.
+        refreshInFlightRef.current = false;
+        setRefreshing(false);
+      });
+  }
+
   const providers = catalog?.providers ?? null;
   const unreadableDirs = catalog?.unreadableDirs ?? 0;
   return (
@@ -153,6 +247,9 @@ function ProvidersPanel() {
         title="Providers & models"
         description="CLI agents found on PATH. An executable is not a login: the status shows the last measured start outcome, or unknown until one is measured."
       />
+      <button className="provider-refresh" type="button" disabled={refreshing} onClick={refresh}>
+        {refreshing ? "Refreshing…" : "Refresh"}
+      </button>
       {error ? <div role="alert">{error}</div> : null}
       {providers === null ? (
         <div role="status">Looking for agent CLIs on PATH…</div>
@@ -170,12 +267,13 @@ function ProvidersPanel() {
         </div>
       ) : (
         <>
-          <div className="provider-list">
+          <div className="provider-list" aria-busy={refreshing}>
             {providers.map((provider) => (
               <div className="provider-card" key={provider.id}>
                 <span className="provider-copy">
                   <span className="provider-name">{provider.id}</span>
                   <span className="provider-detail">{provider.executable}</span>
+                  <ProviderVersionLine provider={provider} />
                 </span>
                 <span className="provider-controls">
                   {provider.origin === "npx-wrapper" ? (

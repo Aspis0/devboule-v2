@@ -66,6 +66,7 @@ pub fn run() {
             backend::session::sessions_watch,
             backend::session::sessions_unwatch,
             backend::providers::providers_list,
+            backend::providers::providers_refresh,
             oracle::oracle_workspace_get,
             oracle::oracle_workspace_set,
             oracle::oracle_model_download_start,
