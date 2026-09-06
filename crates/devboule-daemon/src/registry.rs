@@ -337,12 +337,16 @@ fn memory_put(cache_dir: &Path, entries: Vec<RegistryNpxEntry>) {
     guard.insert(cache_dir.to_path_buf(), (Instant::now(), entries));
 }
 
+// Per-key on purpose: tests run in parallel and the caches are process-global,
+// so a whole-map clear() from one test races the entry another test just
+// seeded (measured on CI: failed_forced_refresh_keeps_the_good_in_process_cache
+// saw its memory entry vanish and fell back to disk).
 #[cfg(test)]
-pub(crate) fn reset_memory_cache() {
+pub(crate) fn reset_memory_cache(cache_dir: &Path) {
     memory_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+        .remove(cache_dir);
 }
 
 /// Fetch (or fall back to cache) and return npx entries. Fetch failure with
@@ -404,6 +408,13 @@ pub(crate) fn cached_latest_npm_version(package: &str) -> Option<String> {
     (fetched_at.elapsed() < NPM_MEMORY_TTL).then(|| version.clone())
 }
 
+pub(crate) fn invalidate_latest_npm_version(package: &str) {
+    npm_version_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(package);
+}
+
 /// Load npm metadata, optionally bypassing the six-hour in-process cache.
 pub(crate) fn load_latest_npm_version(
     fetch: &dyn NpmVersionFetch,
@@ -430,12 +441,14 @@ pub(crate) fn load_latest_npm_version(
     Some(version)
 }
 
+// Per-key for the same reason as reset_memory_cache: clear() would race
+// parallel tests sharing this process-global map.
 #[cfg(test)]
-pub(crate) fn reset_npm_version_cache() {
+pub(crate) fn reset_npm_version_cache(package: &str) {
     npm_version_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+        .remove(package);
 }
 
 pub(crate) fn write_cache(cache_dir: &Path, body: &str) {
@@ -746,8 +759,8 @@ mod tests {
 
     #[test]
     fn load_serves_in_process_memory_within_ttl_without_a_second_fetch() {
-        reset_memory_cache();
         let dir = temp_dir("ttl-memory");
+        reset_memory_cache(&dir);
         let fetch = CountingFetch {
             body: TEST_REGISTRY_FIXTURE.to_string(),
             calls: std::sync::atomic::AtomicUsize::new(0),
@@ -766,8 +779,8 @@ mod tests {
 
     #[test]
     fn load_rejects_an_oversized_fetch_before_parsing_or_caching() {
-        reset_memory_cache();
         let dir = temp_dir("oversized-fetch");
+        reset_memory_cache(&dir);
         let mut body = r#"{
   "agents": [
     {
@@ -826,8 +839,8 @@ mod tests {
 
     #[test]
     fn forced_refresh_refetches_while_plain_load_uses_memory_ttl() {
-        reset_memory_cache();
         let dir = temp_dir("force-refresh");
+        reset_memory_cache(&dir);
         let fetch = CountingFetch {
             body: TEST_REGISTRY_FIXTURE.to_string(),
             calls: std::sync::atomic::AtomicUsize::new(0),
@@ -845,8 +858,8 @@ mod tests {
 
     #[test]
     fn failed_forced_refresh_keeps_the_good_in_process_cache() {
-        reset_memory_cache();
         let dir = temp_dir("force-refresh-failure");
+        reset_memory_cache(&dir);
         let initial = r#"{
   "agents": [{
     "id": "cached-agent",
@@ -892,7 +905,7 @@ mod tests {
 
     #[test]
     fn npm_latest_cache_hits_within_ttl_and_force_bypasses_it() {
-        reset_npm_version_cache();
+        reset_npm_version_cache("@scope/pkg");
         let fetch = FakeNpmFetch {
             calls: std::sync::atomic::AtomicUsize::new(0),
         };
