@@ -1266,7 +1266,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("shows the all-sections summary and sends the same resolved slugs", async () => {
+  it("shows the priority-fit summary and sends the same resolved slugs", async () => {
     const skillIndex = builtInSkillIndex();
     const generate = vi
       .fn<NonNullable<DesignHost["generate"]>>()
@@ -1277,7 +1277,7 @@ describe("DesignSurface host capabilities", () => {
     );
     if (summary === null) throw new Error("Craft summary missing");
 
-    expect(summary.textContent).toBe(`Craft: all ${skillIndex.length} sections`);
+    expect(summary.textContent).toBe("Craft: priority sections that fit");
     await fillDraft(container, "Use every craft rule.");
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
@@ -1551,7 +1551,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("states when automatic craft selection falls back to every section", async () => {
+  it("states when automatic craft selection falls back to the priority fit", async () => {
     const skillIndex = builtInSkillIndex();
     skillSettingsMocks.load.mockResolvedValueOnce({
       version: 1,
@@ -1575,7 +1575,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => Promise.resolve());
 
     expect(container.textContent).toContain(
-      `Automatic choice did not happen; all ${skillIndex.length} craft sections were used.`,
+      "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted.",
     );
     await act(async () => root.unmount());
   });

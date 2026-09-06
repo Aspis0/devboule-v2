@@ -19,16 +19,28 @@
 //
 // Characters are a proxy for tokens, deliberately conservative.  No tokeniser
 // is added for this — ~4 chars/token is a safe estimate for English prose. The
-// 16000-character composed ceiling is about 4000 tokens, enough for roughly six
-// condensed sections; the 2500-character section ceiling keeps one section from
-// monopolising the block, and is binding rather than generous — the shipped sections sit
-// between 2330 and 2415 characters, so it forces condensation instead of permitting it.
+// 12000-character composed ceiling is about 3000 tokens; the 2500-character section
+// ceiling keeps one section from monopolising the block, and is binding rather than
+// generous, so it forces condensation instead of permitting it.
 //
-// Instruction count is what the density literature actually measures (arXiv 2507.11538),
-// and it is deliberately not the unit here. Those instructions are atomic keyword
-// inclusions while these are interdependent principles, so the two do not share a scale;
-// and counting directives in prose needs a heuristic that misfires in both directions.
-// Characters are exact, and they are what the block costs on every request.
+// 12000 is borrowed, not derived. It is the only published hard character cap found in a
+// comparable product: Windsurf limits a workspace rule file to 12000 characters and a
+// global rule file to 6000. The rest publish lines — Cursor under 500, GitHub Copilot
+// roughly 20-50 for custom instructions and about 1000 for a review file, Claude Code
+// under 200 per CLAUDE.md with the accompanying claim that longer files reduce adherence.
+// Nobody publishes a measured optimum, and this is not one either.
+//
+// The corpus is deliberately larger than the ceiling. nexu-io/open-design ships about
+// 112000 characters of the same kind of doctrine with no budget and no truncation at all,
+// because each skill declares the sections it needs and only those are injected. Selection
+// is what makes a large library affordable; the ceiling only decides what happens when
+// selection is refused.
+//
+// Instruction count is what the density literature measures, and it is deliberately not
+// the unit here. Those instructions are atomic keyword inclusions while these are
+// interdependent principles, so the two do not share a scale; and counting directives in
+// prose needs a heuristic that misfires in both directions. Characters are exact, and they
+// are what the block costs on every request.
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -82,8 +94,8 @@ export interface ValidationError {
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-/** Character ceiling for the composed doctrine block (~4000 tokens, about six sections). */
-export const DOCTRINE_CEILING_CHARS = 16000;
+/** Character ceiling for the composed doctrine block (~3000 tokens). See the header note. */
+export const DOCTRINE_CEILING_CHARS = 12000;
 
 /** Strict per-section ceiling: a section outgrowing it is two sections, not a bigger number. */
 export const DOCTRINE_SECTION_CEILING_CHARS = 2500;

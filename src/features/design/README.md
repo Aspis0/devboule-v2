@@ -95,9 +95,11 @@ says so rather than an application that stops responding.
 `skillLoader.ts` composes craft doctrine into one block of prompt text,
 `builtInSkills.ts` discovers the sections, and `groundedPrompt` in `agentHost.ts` sends it
 with every agent generation. **Which sections go is the user's choice**, in three modes:
-every section including ones added later, exactly the ones ticked, or automatic — a short
-pre-flight turn asks the agent which apply to this request and only those are composed. Any
-failure of that question falls back to every section, never to none.
+priority — request every section including ones added later, then send the most important
+sections that fit and declare the rest omitted; manual — exactly the ones ticked; or automatic
+— a short pre-flight turn asks the agent which apply to this request and only those are composed.
+Any failure of that question falls back to requesting every section, with the same priority and
+ceiling behavior, never to none.
 
 The choice persists through `surface_settings_get`/`set` rather than `localStorage`, which
 the project does use elsewhere for per-model effort preferences. This one feeds prompt
@@ -123,20 +125,51 @@ about craft travel; a brand does not. Where the user's own tokens should ground 
 generation, they come from their repository through the Oracle, and when there are none the
 agent has to say what it chose rather than invent a palette in silence.
 
-**Two ceilings, both measured.** The three craft sections weigh 2,406, 2,332 and 2,413
-characters, so `DOCTRINE_SECTION_CEILING_CHARS` (2,500) forces first-party content to
-condense — it is binding, and a section that outgrows it becomes two sections rather than a
-bigger number. `DOCTRINE_CEILING_CHARS` (16,000, roughly 4,000 tokens) bounds the composed
-block at about six sections. It was 8,000, which three full sections could not have
-outgrown at all — the truncation path was unreachable until a fourth section existed, and
-would then have fired on the first `all`-mode generation. They are
-deliberately different numbers: one constant serving both would let a single section pass
-the strict check and then consume the whole block, silently dropping every other section.
-Characters are a conservative proxy for tokens and no tokeniser is added for this.
+**Two ceilings, and where their numbers come from.**
+`DOCTRINE_SECTION_CEILING_CHARS` (2,500) forces first-party content to condense — it is
+binding rather than generous, and a section that outgrows it becomes two sections rather
+than a bigger number. `DOCTRINE_CEILING_CHARS` (12,000, roughly 3,000 tokens) bounds the
+composed block; when priority/all mode requests the whole corpus, whole sections are dropped
+from the tail of the priority order and the block declares what was omitted. They are
+deliberately different constants: one serving both jobs would let a single section pass the
+strict check and then consume the whole block, silently dropping every other section.
+
+The 12,000 is borrowed rather than derived, and the sources are recorded here so nobody has
+to re-derive it. It is the only published hard character cap found in a comparable product:
+Windsurf caps a workspace rule file at 12,000 characters and a global rule file at 6,000.
+Everyone else publishes lines — Cursor under 500, GitHub Copilot roughly 20-50 for custom
+instructions and about 1,000 for a code-review file, Claude Code under 200 per `CLAUDE.md`
+with the accompanying statement that longer files consume more context and reduce adherence.
+No vendor publishes a measured curve of adherence against prompt length.
+
+The ceiling went 8,000 → 16,000 → 12,000. The first raise was right in direction and wrong
+in size: at 8,000 the truncation path could not fire at all, because three sections composed
+to 7,211 and the automatic cap is three. The correction downward came from evidence rather
+than taste, and from noticing that a bigger corpus is a selection problem, not a budget one.
+
+**The corpus is deliberately larger than the ceiling.** nexu-io/open-design ships about
+112,000 characters of comparable doctrine with no budget, no section cap and no truncation
+whatsoever, because each skill declares the sections it needs (`od.craft.requires`) and the
+daemon injects only those, in full. Selection is what makes a large library affordable. The
+ceiling only decides what happens when selection is refused, which is why `all` mode is the
+only mode it constrains.
+
+**What the density literature does and does not say.** In ManyIFEval, satisfying _every_
+instruction at once collapses as instructions are added — GPT-4o from 94% to 21% between one
+and ten — while per-instruction accuracy declines far less. Doctrine is judged on the second
+metric, not the first: an artifact that honours eight rules out of twenty-six is better than
+one that honours none, whereas a compliance checklist scoring 21% has failed. This is the
+reason the corpus is allowed to hold more rules than any model will satisfy jointly, and the
+reason instruction count is not the unit the ceiling is written in.
+
+None of these numbers measured this system. The experiment that would is a fixed task suite
+with objective checks, run at randomised budgets, scoring per-rule adherence separately from
+all-rules success. It has not been run.
 
 **When the ceiling does cut something, the block says so.** Truncation removes whole
-sections, never part of a rule, and the composed text carries a notice that what it holds
-is not the complete doctrine — silence would let the model infer it received everything.
+sections from the tail of the priority order, never part of a rule, and the composed text carries
+a notice that what it holds is not the complete doctrine — silence would let the model infer it
+received everything.
 The notice has a length, so its budget is reserved before the fit rather than appended
 after it: otherwise announcing the truncation would cause more of it.
 

@@ -3,9 +3,24 @@ import {
   buildSkillBlock,
   DOCTRINE_CEILING_CHARS,
   parseSkillFile,
+  TRUNCATION_NOTICE,
   validateSections,
 } from "./skillLoader";
 import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
+
+const EXPECTED_PRIORITY_ORDER = [
+  "anti-ai-slop",
+  "typography",
+  "color",
+  "accessibility",
+  "spacing",
+  "state-coverage",
+  "layout",
+  "microcopy",
+  "icons",
+  "motion",
+  "rtl",
+] as const;
 
 function slugForPath(path: string): string {
   return path.split("/").pop()?.split(".")[0] ?? "";
@@ -25,9 +40,7 @@ describe("built-in design skills", () => {
   });
 
   it("contains exactly the current built-in skill slugs", () => {
-    expect(new Set(builtInSkillIndex().map((entry) => entry.slug))).toEqual(
-      new Set(["anti-ai-slop", "color", "state-coverage", "typography"]),
-    );
+    expect(builtInSkillIndex().map((entry) => entry.slug)).toEqual([...EXPECTED_PRIORITY_ORDER]);
   });
 
   it("indexes each parseable craft file with its front-matter metadata", () => {
@@ -46,24 +59,24 @@ describe("built-in design skills", () => {
     });
     const index = builtInSkillIndex();
 
-    expect(index).toEqual(expected);
+    expect([...index].sort((left, right) => left.slug.localeCompare(right.slug))).toEqual(
+      [...expected].sort((left, right) => left.slug.localeCompare(right.slug)),
+    );
     expect(index).toHaveLength(sources.length);
     expect(index.every((entry) => entry.description.length > 0)).toBe(true);
   });
 
-  // Every built-in section has to fit together, because "all" is the default mode
-  // and truncation there would drop sections in derived order rather than by
-  // relevance.  When this fails, the doctrine has outgrown the ceiling and the
-  // answer is a selection mechanism, not a bigger number.
-  it("composes every built-in skill without dropping any", () => {
+  it("composes the priority head and truncates the tail of the built-in corpus", () => {
     const slugs = builtInSkillIndex().map((entry) => entry.slug);
     const result = buildSkillBlock(builtInSkillSources(), slugs);
-
-    expect(result.dropped).toEqual([]);
-    expect(result.totalChars).toBeLessThan(DOCTRINE_CEILING_CHARS);
-    for (const slug of slugs) {
-      expect(result.text).toContain(`## ${sectionForSlug(slug).title}`);
-    }
+    const includedSlugs = slugs.filter((slug) =>
+      result.text.includes(`## ${sectionForSlug(slug).title}`),
+    );
+    expect(slugs).toEqual([...EXPECTED_PRIORITY_ORDER]);
+    expect(includedSlugs).toEqual(EXPECTED_PRIORITY_ORDER.slice(0, 4));
+    expect(result.dropped).toEqual(EXPECTED_PRIORITY_ORDER.slice(4));
+    expect(result.text).toContain(TRUNCATION_NOTICE);
+    expect(result.totalChars).toBeLessThanOrEqual(DOCTRINE_CEILING_CHARS);
   });
 
   it("composes only the requested built-in skill", () => {

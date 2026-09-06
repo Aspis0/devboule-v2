@@ -105,6 +105,23 @@ const READY_STATUS = {
   reranker: null,
 } as OracleIndexStatus;
 
+const EXPECTED_PRIORITY_HEAD = ["anti-ai-slop", "typography", "color", "accessibility"] as const;
+const EXPECTED_PRIORITY_HEAD_SET = new Set<string>(EXPECTED_PRIORITY_HEAD);
+
+function expectPriorityHead(prompt: string): void {
+  const index = builtInSkillIndex();
+  for (const slug of EXPECTED_PRIORITY_HEAD) {
+    const entry = index.find((candidate) => candidate.slug === slug);
+    if (entry === undefined) throw new Error(`Expected built-in skill missing: ${slug}`);
+    expect(prompt).toContain(`## ${entry.title}`);
+  }
+  for (const entry of index) {
+    if (!EXPECTED_PRIORITY_HEAD_SET.has(entry.slug)) {
+      expect(prompt).not.toContain(`## ${entry.title}`);
+    }
+  }
+}
+
 async function settle(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -269,7 +286,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("falls back to every section when automatic selection names none", async () => {
+  it("falls back to requesting every section when automatic selection names none", async () => {
     const index = builtInSkillIndex();
     const host = createAgentHost();
     const { run } = await startRun(host, { skillMode: "auto" });
@@ -282,7 +299,7 @@ describe("ACP design host", () => {
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
 
     const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
-    for (const entry of index) expect(generationPrompt).toContain(`## ${entry.title}`);
+    expectPriorityHead(generationPrompt);
     finishRun();
 
     const result = await run;
@@ -291,7 +308,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("falls back to every section when the automatic question errors", async () => {
+  it("falls back to requesting every section when the automatic question errors", async () => {
     const index = builtInSkillIndex();
     mocks.sessionSend.mockRejectedValueOnce(new Error("preflight unavailable"));
     const host = createAgentHost();
@@ -299,10 +316,11 @@ describe("ACP design host", () => {
 
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
     const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
-    for (const entry of index) expect(generationPrompt).toContain(`## ${entry.title}`);
+    expectPriorityHead(generationPrompt);
     finishRun();
 
     const result = await run;
+    expect(result.appliedSkillSlugs).toEqual(index.map((entry) => entry.slug));
     expect(result.skillSelectionFallback).toBe(true);
     await disposeAgentHost(host);
   });
@@ -349,7 +367,7 @@ describe("ACP design host", () => {
     expect(parseAutomaticSkillReply(`unknown, ${index[3]!.slug}`, index)).toEqual([index[3]!.slug]);
   });
 
-  it("falls back after the automatic preflight timeout", async () => {
+  it("falls back to requesting every section after the automatic preflight timeout", async () => {
     vi.useFakeTimers();
     try {
       const index = builtInSkillIndex();
@@ -360,10 +378,11 @@ describe("ACP design host", () => {
       await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
       expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1");
       const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
-      for (const entry of index) expect(generationPrompt).toContain(`## ${entry.title}`);
+      expectPriorityHead(generationPrompt);
       finishRun();
 
       const result = await run;
+      expect(result.appliedSkillSlugs).toEqual(index.map((entry) => entry.slug));
       expect(result.skillSelectionFallback).toBe(true);
       await disposeAgentHost(host);
     } finally {
@@ -445,7 +464,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("sends every built-in doctrine section when all are selected", async () => {
+  it("requests every built-in doctrine section but sends the priority head that fits", async () => {
     const index = builtInSkillIndex();
     const host = createAgentHost();
     const { run } = await startRun(host, { skills: index.map((entry) => entry.slug) });
@@ -453,7 +472,7 @@ describe("ACP design host", () => {
     await run;
 
     const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
-    for (const entry of index) expect(sentText).toContain(`## ${entry.title}`);
+    expectPriorityHead(sentText);
 
     await disposeAgentHost(host);
   });

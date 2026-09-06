@@ -1080,7 +1080,7 @@ const DesignAssistant = memo(function DesignAssistant({
     skillSelection.mode === "auto"
       ? "Craft: automatic"
       : skillSelection.mode === "all"
-        ? `Craft: all ${selectedSkillSlugs.length} ${selectedSkillSlugs.length === 1 ? "section" : "sections"}`
+        ? "Craft: priority sections that fit"
         : selectedSkillSlugs.length === 0
           ? `Craft: 0 of ${skillIndex.length} · no design guidance`
           : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
@@ -1176,8 +1176,8 @@ const DesignAssistant = memo(function DesignAssistant({
                         checked={skillSelection.mode === "all"}
                         onChange={() => onSkillModeChange("all")}
                       />
-                      <span>All</span>
-                      <small>Every section, including ones added later.</small>
+                      <span>Priority</span>
+                      <small>Most important sections that fit; the rest are omitted.</small>
                     </label>
                     <label>
                       <input
@@ -1857,7 +1857,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
               .filter((title): title is string => title !== undefined);
             setAutoSkillNotice(
               result.skillSelectionFallback
-                ? `Automatic choice did not happen; all ${result.appliedSkillSlugs.length} craft sections were used.`
+                ? "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted."
                 : appliedTitles.length > 0
                   ? `Automatic craft: ${appliedTitles.join(", ")}`
                   : "Automatic craft: no sections were used.",
