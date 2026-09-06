@@ -1,0 +1,14 @@
+Upstream:  https://github.com/referodesign/refero_skill
+Branch:    master
+Commit:    a9b54a3e62a6391f5f5ab7a20e4ddb32fb79a27d
+Committed: 2026-09-05T12:11:03Z
+Read on:   2026-09-06
+
+Adapted, not copied. The doctrine files in this directory are condensed and
+rewritten from skills/refero-design/references/*.md in the project above:
+shortened to a character budget, stripped of references to the upstream's own
+tooling and research corpus, and written to prescribe no palette at all, because
+the output lands in the user's project rather than in ours. Concrete hex values
+appear only as values to avoid. LICENSE.refero_skill is
+the upstream MIT licence, reproduced verbatim; it does not license this
+directory, it travels with the material adapted from that project.

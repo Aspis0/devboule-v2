@@ -18,6 +18,8 @@ One third-party file is vendored as **data, not code**: `crates/devboule-augur/v
 
 Beyond that there is no third-party library source code checked into this repository: no Cargo patch/fork, no git submodule, and no third-party path dependency; the path dependencies are the local Devboule workspace crates.
 
+The design doctrine under `src/features/design/craft/` is adapted prose. It is condensed and rewritten from the MIT-licensed [refero_skill](https://github.com/referodesign/refero_skill) project (Copyright (c) 2026 Refero), taken from `master` at commit a9b54a3e62a6391f5f5ab7a20e4ddb32fb79a27d on 2026-09-06. No upstream file is copied. The two sections here are about a seventh the length of their upstream counterparts, which are 13,318 and 14,435 bytes; the references to the upstream's own linter and research tooling were dropped, and the rules were rewritten to name no palette, because the text guides code written into a user's project rather than into this one. `LICENSE.refero_skill` ships beside the material with the upstream MIT terms, and `VERSION` records the repository, commit and the date taken. The files are read as text and composed into a prompt; nothing in them is executed. This is prose rather than library source code, so the statement above still holds.
+
 The daemon directly depends on `agent-client-protocol` 2.0.0 for the ACP
 schema/protocol definitions. It is Apache-2.0 licensed; no source from that
 crate is copied into this repository.

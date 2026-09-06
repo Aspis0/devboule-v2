@@ -90,6 +90,53 @@ The `<iframe>` keeps `pointer-events: none` and the artifact's content wrapper i
 focus cannot descend into the frame. Artifacts are capped at 256 KiB, with a card that
 says so rather than an application that stops responding.
 
+## Design doctrine
+
+`skillLoader.ts` composes craft doctrine into one block of prompt text and
+`builtInSkills.ts` discovers the sections. **Nothing sends it yet** — no production code
+imports either module. Wiring the block into `groundedPrompt` and letting the user choose
+which sections apply is the next slice, so what follows describes a format and a loader,
+not a live path.
+
+**A skill is a file, not a feature**: the sections live in `craft/` as markdown with three
+front-matter fields — `slug` (must match the filename), `title`, `requires` — discovered
+with a glob. Adding one is dropping in a file, which is the shape the marketplace will need
+to distribute them. Nothing is ever executed: doctrine is markdown that becomes prompt
+text.
+
+**The doctrine is palette-agnostic, and that is a rule about content, not a style.** The
+agent writes into the user's project, so binding its output to Devboule's terracotta would
+be a defect — an all-black site and an all-green app are both legitimate requests. Rules
+about craft travel; a brand does not. Where the user's own tokens should ground a
+generation, they come from their repository through the Oracle, and when there are none the
+agent has to say what it chose rather than invent a palette in silence.
+
+**Two ceilings, both measured.** A condensed craft section weighs about 1,900 characters,
+so `DOCTRINE_SECTION_CEILING_CHARS` (2,500) forces first-party content to condense, while
+`DOCTRINE_CEILING_CHARS` (8,000, roughly 2,000 tokens) bounds the composed block. They are
+deliberately different numbers: one constant serving both would let a single section pass
+the strict check and then consume the whole block, silently dropping every other section.
+Characters are a conservative proxy for tokens and no tokeniser is added for this.
+
+**When the ceiling does cut something, the block says so.** Truncation removes whole
+sections, never part of a rule, and the composed text carries a notice that what it holds
+is not the complete doctrine — silence would let the model infer it received everything.
+The notice has a length, so its budget is reserved before the fit rather than appended
+after it: otherwise announcing the truncation would cause more of it.
+
+**The runtime is tolerant and the repository is strict**, and both halves are needed. A
+downloaded bundle referencing a section this build does not have must not take the surface
+down, so `buildSkillBlock` skips malformed files, unknown `requires` and cycles. Our own
+content is held to `validateSections`, which a test runs over `craft/` on every CI run, so
+first-party doctrine cannot lose a section to a typo. Taking only the tolerant half gives
+silent drops; taking only the strict half breaks installed bundles on upgrade.
+
+Two practical notes for anyone adding a section. `oxfmt` formats markdown under `src/`, so
+the formatter's output is canonical here and tables get padded — which costs characters
+against the ceiling, and is a reason to prefer prose. And the content is adapted from the
+MIT-licensed [refero_skill](https://github.com/referodesign/refero_skill) (© 2026 Refero);
+see `THIRD_PARTY.md`.
+
 ## The canvas
 
 Pan, cursor-anchored wheel zoom and click-to-select come from the ported geometry engine

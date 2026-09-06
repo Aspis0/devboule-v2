@@ -16,7 +16,10 @@
 //   validateSections — strict first-party check, fails on any problem
 //
 // Characters are a proxy for tokens, deliberately conservative.  No tokeniser
-// is added for this — ~4 chars/token is a safe estimate for English prose.
+// is added for this — ~4 chars/token is a safe estimate for English prose. The
+// 8000-character composed ceiling is about 2000 tokens, enough for roughly four
+// condensed sections; the 2500-character section ceiling is based on the real
+// 1900–2000-character craft sections and keeps one section from monopolising the block.
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -48,7 +51,9 @@ export type ResolveResult =
   | { ok: true; order: readonly SkillSection[] }
   | { ok: false; error: ResolveError };
 
-export type SectionError = { kind: "section_too_large"; slug: string; length: number };
+export type SectionError =
+  | { kind: "section_too_large"; slug: string; length: number }
+  | { kind: "section_empty"; slug: string };
 
 export interface ComposedBlock {
   text: string;
@@ -64,8 +69,11 @@ export interface ValidationError {
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-/** Character ceiling for the composed doctrine block (~1000 tokens). */
-export const DOCTRINE_CEILING_CHARS = 4000;
+/** Character ceiling for the composed doctrine block (~2000 tokens). */
+export const DOCTRINE_CEILING_CHARS = 8000;
+
+/** Strict character ceiling for each first-party doctrine section. */
+export const DOCTRINE_SECTION_CEILING_CHARS = 2500;
 
 const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
 
@@ -339,23 +347,15 @@ export function resolveSections(
 
 // ── Composition ────────────────────────────────────────────────────────
 
-const SECTION_SEPARATOR = "\n\n---\n\n";
+export const SECTION_SEPARATOR = "\n\n---\n\n";
 
-/**
- * Compose an ordered list of sections into one block under a character
- * ceiling. Sections that do not fit are dropped from the end and listed
- * in `dropped`.
- *
- * A single section that alone exceeds the ceiling is still included —
- * the ceiling is a proxy, not a hard limit, and a coherent section is
- * more valuable than an empty block.  The `dropped` list names only
- * sections that were explicitly cut because there was no room after
- * including earlier ones.
- */
-export function composeSections(
+export const TRUNCATION_NOTICE =
+  "Some doctrine sections were omitted to fit the budget; this block is not the complete doctrine.";
+
+function fitSections(
   sections: readonly SkillSection[],
-  ceiling = DOCTRINE_CEILING_CHARS,
-): ComposedBlock {
+  ceiling: number,
+): { parts: string[]; dropped: string[] } {
   const dropped: string[] = [];
   const parts: string[] = [];
 
@@ -376,8 +376,35 @@ export function composeSections(
     }
   }
 
-  const text = parts.join(SECTION_SEPARATOR);
-  return { text, dropped, totalChars: text.length, ceiling };
+  return { parts, dropped };
+}
+
+/**
+ * Compose an ordered list of sections into one block under a character
+ * ceiling. Sections that do not fit are dropped from the end and listed
+ * in `dropped`. If anything is dropped, the returned block includes a notice
+ * that the doctrine is incomplete.
+ *
+ * A single section that alone exceeds the ceiling is still included —
+ * this is the one case where the returned text can exceed `ceiling`. The
+ * ceiling is a proxy, not a hard limit, and a coherent section is more
+ * valuable than an empty block. The `dropped` list names only sections that
+ * were explicitly cut because there was no room after including earlier ones.
+ */
+export function composeSections(
+  sections: readonly SkillSection[],
+  ceiling = DOCTRINE_CEILING_CHARS,
+): ComposedBlock {
+  const firstFit = fitSections(sections, ceiling);
+  if (firstFit.dropped.length === 0) {
+    const text = firstFit.parts.join(SECTION_SEPARATOR);
+    return { text, dropped: [], totalChars: text.length, ceiling };
+  }
+
+  const reservedCeiling = ceiling - (SECTION_SEPARATOR.length + TRUNCATION_NOTICE.length);
+  const finalFit = fitSections(sections, reservedCeiling);
+  const text = [...finalFit.parts, TRUNCATION_NOTICE].join(SECTION_SEPARATOR);
+  return { text, dropped: finalFit.dropped, totalChars: text.length, ceiling };
 }
 
 // ── Tolerant runtime ───────────────────────────────────────────────────
@@ -454,8 +481,8 @@ export function buildSkillBlock(
  * Validate all sources as first-party content.
  *
  * Fails on: malformed front-matter, slug/filename mismatch, duplicate
- * slugs, unknown `requires`, cycles, and sections whose body alone
- * exceeds the doctrine ceiling.
+ * slugs, unknown `requires`, cycles, and sections whose body alone exceeds
+ * the section ceiling.
  * Returns every problem found rather than stopping at the first.
  */
 export function validateSections(sources: readonly SkillSource[]): readonly ValidationError[] {
@@ -468,9 +495,14 @@ export function validateSections(sources: readonly SkillSource[]): readonly Vali
 
   if (sections.length === 0) return errors;
 
-  // Check every section body fits within the ceiling.
+  // Check every section body fits within the per-section ceiling.
   for (const section of sections) {
-    if (section.body.length > DOCTRINE_CEILING_CHARS) {
+    if (section.body.length === 0) {
+      errors.push({
+        path: section.slug,
+        error: { kind: "section_empty", slug: section.slug },
+      });
+    } else if (section.body.length > DOCTRINE_SECTION_CEILING_CHARS) {
       errors.push({
         path: section.slug,
         error: {

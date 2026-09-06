@@ -3,8 +3,11 @@ import {
   buildSkillBlock,
   composeSections,
   DOCTRINE_CEILING_CHARS,
+  DOCTRINE_SECTION_CEILING_CHARS,
   parseSkillFile,
   resolveSections,
+  SECTION_SEPARATOR,
+  TRUNCATION_NOTICE,
   validateSections,
   type SkillSection,
   type SkillSource,
@@ -340,6 +343,62 @@ describe("ordering rules", () => {
 // ── Composition ────────────────────────────────────────────────────────
 
 describe("composeSections", () => {
+  it("leaves an untruncated block unchanged", () => {
+    const all = sections("color", "spacing");
+    const expected = all
+      .map((section) => `## ${section.title}\n\n${section.body}`)
+      .join(SECTION_SEPARATOR);
+    const result = composeSections(all);
+
+    expect(result.dropped).toEqual([]);
+    expect(result.text).toBe(expected);
+    expect(result.text).not.toContain(TRUNCATION_NOTICE);
+  });
+
+  it("announces omitted sections inside the composed block", () => {
+    const result = composeSections(sections("typography", "color"), 50);
+
+    expect(result.dropped.length).toBeGreaterThan(0);
+    expect(result.text).toContain(TRUNCATION_NOTICE);
+  });
+
+  it("refits to reserve room for its truncation notice", () => {
+    const reserved = SECTION_SEPARATOR.length + TRUNCATION_NOTICE.length;
+    const firstTitle = "First";
+    const secondTitle = "Second";
+    const firstHeader = `## ${firstTitle}\n\n`;
+    const secondHeader = `## ${secondTitle}\n\n`;
+    const firstBlockTarget = Math.floor((DOCTRINE_CEILING_CHARS - reserved) / 2);
+    const firstBodyLength = firstBlockTarget - firstHeader.length;
+    const first = makeSection("first", firstTitle, "x".repeat(firstBodyLength));
+    const firstBlockLength = firstHeader.length + firstBodyLength;
+    const fitMargin = "x".length;
+    const firstPassCombinedLength = DOCTRINE_CEILING_CHARS - fitMargin;
+    const secondBodyLength =
+      firstPassCombinedLength - SECTION_SEPARATOR.length - firstBlockLength - secondHeader.length;
+    const second = makeSection("second", secondTitle, "x".repeat(secondBodyLength));
+    const thirdTitle = "Third";
+    const thirdHeader = `## ${thirdTitle}\n\n`;
+    const thirdBodyLength =
+      DOCTRINE_CEILING_CHARS -
+      reserved -
+      firstBlockLength -
+      SECTION_SEPARATOR.length -
+      thirdHeader.length +
+      fitMargin;
+    const third = makeSection("third", thirdTitle, "x".repeat(thirdBodyLength));
+
+    expect(composeSections([first, second]).dropped).toEqual([]);
+
+    const result = composeSections([first, second, third]);
+
+    expect(result.text).toContain(TRUNCATION_NOTICE);
+    expect(result.dropped).toEqual(["second", "third"]);
+    // The property the reservation exists for: appending the notice must not push
+    // the block back over the ceiling it was just fitted to.
+    expect(result.totalChars).toBeLessThanOrEqual(DOCTRINE_CEILING_CHARS);
+  });
+
   it("drops whole sections from the end when over the ceiling", () => {
     const all = sections("typography", "color");
     // Set a very low ceiling so only one fits
@@ -562,8 +621,12 @@ describe("validateSections", () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
-  it("rejects a section whose body exceeds the doctrine ceiling", () => {
-    const oversized = makeSection("oversized", "Oversized", "x".repeat(DOCTRINE_CEILING_CHARS + 1));
+  it("rejects a section whose body exceeds the per-section ceiling", () => {
+    const oversized = makeSection(
+      "oversized",
+      "Oversized",
+      "x".repeat(DOCTRINE_SECTION_CEILING_CHARS + 1),
+    );
     const sources: SkillSource[] = [
       {
         path: "oversized.md",
@@ -575,12 +638,36 @@ describe("validateSections", () => {
     expect(errors[0]!.error.kind).toBe("section_too_large");
     if (errors[0]!.error.kind === "section_too_large") {
       expect(errors[0]!.error.slug).toBe("oversized");
-      expect(errors[0]!.error.length).toBe(DOCTRINE_CEILING_CHARS + 1);
+      expect(errors[0]!.error.length).toBe(DOCTRINE_SECTION_CEILING_CHARS + 1);
     }
   });
 
+  it("rejects a section with an empty body", () => {
+    const errors = validateSections([
+      {
+        path: "empty.md",
+        text: "---\nslug: empty\ntitle: Empty\nrequires: []\n---\n",
+      },
+    ]);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toEqual({ kind: "section_empty", slug: "empty" });
+  });
+
+  it("rejects a section with a whitespace-only body", () => {
+    const errors = validateSections([
+      {
+        path: "whitespace.md",
+        text: "---\nslug: whitespace\ntitle: Whitespace\nrequires: []\n---\n \n \t\n",
+      },
+    ]);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toEqual({ kind: "section_empty", slug: "whitespace" });
+  });
+
   it("accepts a section whose body exactly fits the ceiling", () => {
-    const exact = makeSection("exact", "Exact", "x".repeat(DOCTRINE_CEILING_CHARS));
+    const exact = makeSection("exact", "Exact", "x".repeat(DOCTRINE_SECTION_CEILING_CHARS));
     const sources: SkillSource[] = [
       {
         path: "exact.md",
