@@ -17,7 +17,7 @@ import type { OracleResult, Session, SessionEvent, Workspace } from "../../types
 import type { DesignGenerationOptions, DesignGenerationResult, DesignHost } from "./designHost";
 import { builtInSkillIndex, builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
 import { createOracleHost } from "./oracleHost";
-import { buildSkillBlock } from "./skillLoader";
+import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
 
 interface AgentSessionHandle {
   session: Session;
@@ -63,12 +63,25 @@ function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortError();
 }
 
-function automaticSkillPrompt(
+// The 300-character cap on a description is enforced by the strict first-party
+// check only, and deliberately so: the tolerant runtime must not refuse a bundle
+// over a metadata field.  But this prompt is the one place where unvalidated
+// third-party text reaches the agent *before* any constraint of ours, so a long
+// description could crowd out the user's request and the no-tools instruction.
+// The loader stays neutral and the embedder defends, exactly as it does for the
+// fence delimiters.  The marker matters: a description cut mid-sentence would
+// otherwise read as a complete one that merely trails off.
+function boundedDescription(description: string): string {
+  if (description.length <= DOCTRINE_DESCRIPTION_CEILING_CHARS) return description;
+  return `${description.slice(0, DOCTRINE_DESCRIPTION_CEILING_CHARS)} […]`;
+}
+
+export function automaticSkillPrompt(
   prompt: string,
   index: readonly { slug: string; title: string; description: string }[],
 ): string {
   const choices = index
-    .map((entry) => `- ${entry.slug}: ${entry.title} — ${entry.description}`)
+    .map((entry) => `- ${entry.slug}: ${entry.title} — ${boundedDescription(entry.description)}`)
     .join("\n");
   return [
     "Choose the design craft sections that apply to this request.",

@@ -20,8 +20,9 @@
 // Characters are a proxy for tokens, deliberately conservative.  No tokeniser
 // is added for this — ~4 chars/token is a safe estimate for English prose. The
 // 8000-character composed ceiling is about 2000 tokens, enough for roughly four
-// condensed sections; the 2500-character section ceiling is based on the real
-// 1900–2000-character craft sections and keeps one section from monopolising the block.
+// condensed sections; the 2500-character section ceiling keeps one section from
+// monopolising the block, and is binding rather than generous — the shipped sections sit
+// between 1900 and 2410 characters, so it forces condensation instead of permitting it.
 
 // ── Types ──────────────────────────────────────────────────────────────
 

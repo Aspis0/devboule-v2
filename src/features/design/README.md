@@ -94,13 +94,17 @@ says so rather than an application that stops responding.
 
 `skillLoader.ts` composes craft doctrine into one block of prompt text,
 `builtInSkills.ts` discovers the sections, and `groundedPrompt` in `agentHost.ts` sends it
-with every agent generation. **There is no selection yet** — every built-in section goes,
-always. Letting the user choose is the next slice, and the choice has to persist. The
-project has two mechanisms for that: `localStorage`, used for per-model effort preferences,
-and a JSON document under `<app_config_dir>` behind an IPC command pair, which
-`ARCHITETTURA.md` names as the model to copy. This selection takes the second, because it
-feeds prompt composition rather than UI appearance — it is product configuration, and it
-should outlive a cleared webview store.
+with every agent generation. **Which sections go is the user's choice**, in three modes:
+every section including ones added later, exactly the ones ticked, or automatic — a short
+pre-flight turn asks the agent which apply to this request and only those are composed. Any
+failure of that question falls back to every section, never to none.
+
+The choice persists through `surface_settings_get`/`set` rather than `localStorage`, which
+the project does use elsewhere for per-model effort preferences. This one feeds prompt
+composition rather than UI appearance, so it is product configuration and should outlive a
+cleared webview store. `designSettings.ts` validates it on read: any malformed shape falls
+back to the default, and a slug that no longer resolves is dropped while its siblings
+survive, because uninstalling a bundle must not break a selection.
 
 **A skill is a file, not a feature**: the sections live in `craft/` as markdown with four
 front-matter fields — `slug` (must match the filename), `title`, `description`, `requires`
@@ -119,9 +123,11 @@ about craft travel; a brand does not. Where the user's own tokens should ground 
 generation, they come from their repository through the Oracle, and when there are none the
 agent has to say what it chose rather than invent a palette in silence.
 
-**Two ceilings, both measured.** A condensed craft section weighs about 1,900 characters,
-so `DOCTRINE_SECTION_CEILING_CHARS` (2,500) forces first-party content to condense, while
-`DOCTRINE_CEILING_CHARS` (8,000, roughly 2,000 tokens) bounds the composed block. They are
+**Two ceilings, both measured.** The three craft sections weigh 2,406, 2,332 and 1,902
+characters, so `DOCTRINE_SECTION_CEILING_CHARS` (2,500) forces first-party content to
+condense — it is binding, and a section that outgrows it becomes two sections rather than a
+bigger number. `DOCTRINE_CEILING_CHARS` (8,000, roughly 2,000 tokens) bounds the composed
+block. They are
 deliberately different numbers: one constant serving both would let a single section pass
 the strict check and then consume the whole block, silently dropping every other section.
 Characters are a conservative proxy for tokens and no tokeniser is added for this.

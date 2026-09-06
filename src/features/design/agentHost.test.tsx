@@ -62,8 +62,9 @@ import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
 import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
-import { parseSkillFile } from "./skillLoader";
+import { DOCTRINE_DESCRIPTION_CEILING_CHARS, parseSkillFile } from "./skillLoader";
 import {
+  automaticSkillPrompt,
   DESIGN_DOCTRINE_BEGIN,
   DESIGN_DOCTRINE_END,
   DESIGN_DOCTRINE_RESTATEMENT,
@@ -1094,6 +1095,22 @@ describe("ACP design host", () => {
         expect(restatementPos).toBeGreaterThan(doctrineEnd);
 
         await disposeAgentHost(host);
+      });
+
+      it("bounds an oversized section description before it reaches the pre-flight", () => {
+        const long = "x".repeat(DOCTRINE_DESCRIPTION_CEILING_CHARS * 4);
+        const built = automaticSkillPrompt("Update the design", [
+          { slug: "color", title: "Color", description: long },
+        ]);
+
+        // The strict check caps first-party descriptions; a marketplace bundle is
+        // only held to it here, where its text would otherwise crowd out the user's
+        // request and the instruction not to use tools.
+        expect(built).not.toContain(long);
+        expect(built.length).toBeLessThan(long.length);
+        expect(built).toContain("[…]");
+        expect(built).toContain("Update the design");
+        expect(built).toContain("Do not investigate");
       });
 
       it("neutralizes a doctrine delimiter before embedding the block", () => {

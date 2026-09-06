@@ -9,8 +9,10 @@ Upstream:  https://github.com/nexu-io/open-design
 Commit:    3d0d15fc55031e8e6cead709491e7b82565c4dee
 Licence:   Apache-2.0, Copyright 2026 Open Design contributors
 Covers:    the whole of state-coverage.md, which has no refero_skill
-           counterpart, and the rules against invented metrics and against
-           filler copy in anti-ai-slop.md. OpenDesign's craft/ is itself an
+           counterpart; the rules against invented metrics and against filler
+           copy in anti-ai-slop.md; and in color.md the mechanics of an
+           undefined custom property (from their token-schema.ts) and the cap
+           of two visible accent uses per screen. OpenDesign's craft/ is itself an
            adaptation of the same refero_skill material; their state-coverage
            source credits WCAG 2.2, NN/g, Material Design 3, Apple HIG and
            Baymard Institute research.
