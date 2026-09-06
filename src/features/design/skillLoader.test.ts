@@ -360,8 +360,8 @@ describe("ordering rules", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const slugs = result.order.map((s) => s.slug);
-    // Both are explicit at depth 0, tiebreak is alphabetical: color before typography
-    expect(slugs).toEqual(["color", "typography"]);
+    // Both are explicit at depth 0, so the requested order wins.
+    expect(slugs).toEqual(["typography", "color"]);
   });
 
   it("shallower dependency depth first within a tier", () => {
@@ -382,14 +382,50 @@ describe("ordering rules", () => {
     expect(slugs).toEqual(["deep-a", "deep-b", "deep-c"]);
   });
 
-  it("ties break alphabetically by slug", () => {
-    // Both explicit, same depth → alphabetical
+  it("ties break by the order slugs were requested", () => {
+    // Both explicit and at the same depth: the request is the user's priority order.
     const all = sections("motion", "color", "spacing", "typography");
-    const result = resolveSections(["motion", "color", "spacing", "typography"], all);
+    const result = resolveSections(["spacing", "motion"], all);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const slugs = result.order.map((s) => s.slug);
-    expect(slugs).toEqual(["color", "motion", "spacing", "typography"]);
+    expect(slugs).toEqual(["spacing", "motion", "color"]);
+
+    const reversed = resolveSections(["motion", "spacing"], all);
+    expect(reversed.ok).toBe(true);
+    if (!reversed.ok) return;
+    expect(reversed.order.map((s) => s.slug)).toEqual(["motion", "spacing", "color"]);
+  });
+
+  it("uses alphabetical order for equal-depth dependencies absent from the request", () => {
+    const root = makeSection("root", "Root", "root", ["zeta", "alpha"]);
+    const zeta = makeSection("zeta", "Zeta", "zeta");
+    const alpha = makeSection("alpha", "Alpha", "alpha");
+    const result = resolveSections(["root"], [root, zeta, alpha]);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.order.map((section) => section.slug)).toEqual(["root", "alpha", "zeta"]);
+  });
+
+  it("uses requested ranking when composition must drop a section", () => {
+    const slugs = ["zeta", "beta", "alpha"] as const;
+    const targetBlockLength = Math.floor(
+      (DOCTRINE_CEILING_CHARS - TRUNCATION_NOTICE.length - 2 * SECTION_SEPARATOR.length) / 2,
+    );
+    const all = slugs.map((slug) => {
+      const title = slug;
+      const headerLength = `## ${title}\n\n`.length;
+      return makeSection(slug, title, "x".repeat(targetBlockLength - headerLength));
+    });
+    const resolved = resolveSections(slugs, all);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+
+    const result = composeSections(resolved.order);
+    expect(result.dropped).toEqual([slugs[2]]);
+    expect(result.text).toContain(`## ${slugs[0]}`);
+    expect(result.text).toContain(`## ${slugs[1]}`);
   });
 
   it("ordering is stable across input permutations", () => {

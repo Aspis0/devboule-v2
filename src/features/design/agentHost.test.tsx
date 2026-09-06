@@ -73,6 +73,8 @@ import {
   extractFencedHtml,
   groundedPrompt,
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
+  MAX_AUTOMATIC_SKILL_SECTIONS,
+  parseAutomaticSkillReply,
   MAX_ARTIFACT_BYTES,
 } from "./agentHost";
 
@@ -244,6 +246,8 @@ describe("ACP design host", () => {
     expect(preflight).toContain(selected.description);
     expect(preflight).toContain("Do not investigate");
     expect(preflight).toContain("one line");
+    expect(preflight).toContain(`at most ${MAX_AUTOMATIC_SKILL_SECTIONS}`);
+    expect(preflight).toContain("most important first");
 
     channelHarness.active?.({
       type: "agent_message",
@@ -302,7 +306,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("parses a chatty automatic answer in deterministic index order", async () => {
+  it("preserves the agent's automatic ranking in a chatty answer", async () => {
     const index = builtInSkillIndex();
     const first = index[0];
     const second = index[1];
@@ -320,8 +324,28 @@ describe("ACP design host", () => {
     finishRun();
 
     const result = await run;
-    expect(result.appliedSkillSlugs).toEqual([first.slug, second.slug]);
+    expect(result.appliedSkillSlugs).toEqual([second.slug, first.slug]);
     await disposeAgentHost(host);
+  });
+
+  it("caps automatic choices, deduplicates them, and ignores unknown slugs", () => {
+    const index = ["one", "two", "three", "four", "five"].map((slug) => ({
+      slug,
+      title: slug,
+      description: `${slug} description`,
+    }));
+    const replyOrder = [index[4]!, index[2]!, index[4]!, "unknown", index[0]!, index[1]!];
+    const expected = [index[4]!, index[2]!, index[0]!]
+      .slice(0, MAX_AUTOMATIC_SKILL_SECTIONS)
+      .map((entry) => entry.slug);
+
+    expect(
+      parseAutomaticSkillReply(
+        replyOrder.map((entry) => (typeof entry === "string" ? entry : entry.slug)).join(", "),
+        index,
+      ),
+    ).toEqual(expected);
+    expect(parseAutomaticSkillReply(`unknown, ${index[3]!.slug}`, index)).toEqual([index[3]!.slug]);
   });
 
   it("falls back after the automatic preflight timeout", async () => {

@@ -49,6 +49,9 @@ export const MAX_ARTIFACT_BYTES = 256 * 1024;
 export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
 // This is a real ACP turn, so eight seconds bounds a missing answer without pretending it is instant.
 export const AUTO_SKILL_PREFLIGHT_TIMEOUT_MS = 8_000;
+// Three current sections compose to 6,713 of the 8,000-character ceiling. Keeping the
+// automatic choice to three leaves room for the corpus to grow without routine truncation.
+export const MAX_AUTOMATIC_SKILL_SECTIONS = 3;
 
 const hostDisposers = new WeakMap<DesignHost, () => Promise<void>>();
 
@@ -72,22 +75,29 @@ function automaticSkillPrompt(
     `User request: ${prompt}`,
     "Available sections:",
     choices,
-    "Reply with only a comma-separated list of section slugs, in one line.",
+    `Reply with at most ${MAX_AUTOMATIC_SKILL_SECTIONS} section slugs, most important first, as a comma-separated list in one line.`,
     "Do not investigate, read files, use tools, or modify anything.",
   ].join("\n");
 }
 
-function parseAutomaticSkillReply(
+export function parseAutomaticSkillReply(
   reply: string,
   index: readonly { slug: string; title: string; description: string }[],
 ): readonly string[] {
-  const words = new Set(
-    reply
-      .toLowerCase()
-      .split(/[^a-z0-9-]+/)
-      .filter(Boolean),
-  );
-  return index.filter((entry) => words.has(entry.slug.toLowerCase())).map((entry) => entry.slug);
+  const known = new Map(index.map((entry) => [entry.slug.toLowerCase(), entry.slug]));
+  const seen = new Set<string>();
+  const selected: string[] = [];
+  for (const word of reply
+    .toLowerCase()
+    .split(/[^a-z0-9-]+/)
+    .filter(Boolean)) {
+    const slug = known.get(word);
+    if (slug === undefined || seen.has(slug)) continue;
+    seen.add(slug);
+    selected.push(slug);
+    if (selected.length === MAX_AUTOMATIC_SKILL_SECTIONS) break;
+  }
+  return selected;
 }
 
 export function extractFencedHtml(text: string): string | undefined {

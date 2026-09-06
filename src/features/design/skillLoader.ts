@@ -278,7 +278,8 @@ class CycleError extends Error {
  * Ordering (derived, no priority field):
  *   1. Explicitly requested slugs outrank pulled-in dependencies.
  *   2. Within a tier, shallower dependency depth first.
- *   3. Ties break alphabetically by slug.
+ *   3. Ties break by the order the slugs were requested. Dependencies that
+ *      were not requested use alphabetical order as their deterministic fallback.
  *
  * Unknown `requires` slugs are tolerated (skipped). Cycles are detected
  * and returned as a `cycle` error with the path found.
@@ -357,6 +358,10 @@ export function resolveSections(
   }
 
   // Build and sort.
+  const requestedOrder = new Map<string, number>();
+  requested.forEach((slug, index) => {
+    if (!requestedOrder.has(slug)) requestedOrder.set(slug, index);
+  });
   const nodes = [...closure.entries()].map(([slug, info]) => ({
     slug,
     section: bySlug.get(slug)!,
@@ -367,6 +372,9 @@ export function resolveSections(
   nodes.sort((a, b) => {
     if (a.explicit !== b.explicit) return a.explicit ? -1 : 1;
     if (a.depth !== b.depth) return a.depth - b.depth;
+    const aRequested = requestedOrder.get(a.slug);
+    const bRequested = requestedOrder.get(b.slug);
+    if (aRequested !== undefined && bRequested !== undefined) return aRequested - bRequested;
     return a.slug.localeCompare(b.slug);
   });
 
