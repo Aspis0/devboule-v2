@@ -805,6 +805,45 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows missing artifact tokens without calling the artifact broken", async () => {
+    const generate = vi.fn(async () => ({
+      ...GENERATION_RESULT,
+      artifactHtml: "<style>.card { color: var(--missing-ink); }</style><main>Generated</main>",
+    }));
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Create a token-aware first pass.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const warning = container.querySelector<HTMLElement>(
+      '[role="status"].design-canvas-artifact-token-warning',
+    );
+    if (warning === null) throw new Error("Missing-token warning missing");
+    expect(warning.textContent).toContain("references a token it does not define: --missing-ink");
+    expect(container.textContent).not.toContain("artifact is broken");
+    await act(async () => root.unmount());
+  });
+
+  it("does not render an empty missing-token notice for a complete artifact", async () => {
+    const generate = vi.fn(async () => ({
+      ...GENERATION_RESULT,
+      artifactHtml: "<style>.card { color: red; }</style><main>Generated</main>",
+    }));
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Create a complete first pass.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(container.querySelector(".design-canvas-artifact-token-warning")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
   it("aborts a pending generation and reports an actual cancellation", async () => {
     let generationSignal: AbortSignal | undefined;
     const generate = vi.fn(

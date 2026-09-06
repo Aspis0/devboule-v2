@@ -434,6 +434,19 @@
   text-align: center;
 }
 
+.design-canvas-artifact-token-warning {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  padding: 10px 14px;
+  color: var(--ink-soft);
+  background: var(--white);
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  pointer-events: none;
+}
+
 .design-ai-region {
   position: absolute;
   border: 1.5px dashed var(--terracotta);

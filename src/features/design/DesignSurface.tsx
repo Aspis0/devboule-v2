@@ -16,6 +16,7 @@ import type {
   DesignRadiusOption,
   DesignTool,
 } from "./designHost";
+import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
 import type { NodeRect } from "../../types/geometry";
@@ -102,6 +103,7 @@ interface CanvasProps {
   layerNotice?: string;
   artifactHtml?: string;
   artifactError?: string;
+  artifactMissingTokens: readonly string[];
   onSelectLayer: (layerId: string) => void;
   onViewportChange: (viewport: DesignViewport) => void;
 }
@@ -537,6 +539,7 @@ const DesignCanvas = memo(function DesignCanvas({
   layerNotice,
   artifactHtml,
   artifactError,
+  artifactMissingTokens,
   onSelectLayer,
   onViewportChange,
 }: CanvasProps) {
@@ -809,6 +812,12 @@ const DesignCanvas = memo(function DesignCanvas({
                 />
               </div>
             )}
+            {artifactMissingTokens.length > 0 ? (
+              <div className="design-canvas-artifact-token-warning" role="status">
+                This artifact references {artifactMissingTokens.length === 1 ? "a token" : "tokens"}{" "}
+                it does not define: {artifactMissingTokens.join(", ")}.
+              </div>
+            ) : null}
           </div>
         ) : null}
         {tool === "ai" ? (
@@ -1262,6 +1271,13 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const artifact = latestArtifact(messages);
   const artifactHtml = artifact?.html;
   const artifactError = artifact?.error;
+  const artifactMissingTokens = useMemo(
+    () =>
+      artifactHtml !== undefined && artifactError === undefined
+        ? findUndefinedCustomProperties(artifactHtml)
+        : [],
+    [artifactError, artifactHtml],
+  );
   const artifactRect = useMemo(
     () =>
       artifactHtml !== undefined || artifactError !== undefined ? artifactNodeRect(layers) : null,
@@ -1776,6 +1792,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             layerNotice={document.layerNotice}
             artifactHtml={artifactHtml}
             artifactError={artifactError}
+            artifactMissingTokens={artifactMissingTokens}
             onSelectLayer={selectLayer}
             onViewportChange={setViewport}
           />
