@@ -15,6 +15,7 @@ use serde_json::Value;
 pub(crate) struct ClaudeView {
     streamed: HashMap<u64, usize>,
     current_model: Option<String>,
+    last_manifest_model: Option<String>,
     current_message_id: Option<String>,
     peer_session_id: Option<String>,
     cwd: Option<PathBuf>,
@@ -25,6 +26,7 @@ impl ClaudeView {
         Self {
             streamed: HashMap::new(),
             current_model: None,
+            last_manifest_model: None,
             current_message_id: None,
             peer_session_id: None,
             cwd,
@@ -67,6 +69,7 @@ impl ClaudeView {
         if let Some(model) = model.clone() {
             self.current_model = Some(model);
         }
+        self.last_manifest_model = model.clone();
         let models = match &model {
             Some(model) => vec![SessionModel {
                 model_id: model.clone(),
@@ -91,6 +94,9 @@ impl ClaudeView {
             Some(event) => event,
             None => return Vec::new(),
         };
+        let is_subagent = envelope
+            .get("parent_tool_use_id")
+            .is_some_and(|value| !value.is_null());
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 let message = event.get("message");
@@ -100,7 +106,9 @@ impl ClaudeView {
                 let model = message
                     .and_then(|message| message.get("model"))
                     .and_then(Value::as_str);
-                self.note_message(id, model);
+                if !is_subagent {
+                    self.note_message(id, model);
+                }
                 Vec::new()
             }
             Some("content_block_delta") => {
@@ -148,14 +156,44 @@ impl ClaudeView {
             Some(message) => message,
             None => return Vec::new(),
         };
-        self.note_message(
-            message.get("id").and_then(Value::as_str),
-            message.get("model").and_then(Value::as_str),
-        );
-        let Some(content) = message.get("content").and_then(Value::as_array) else {
-            return Vec::new();
+        let is_subagent = envelope
+            .get("parent_tool_use_id")
+            .is_some_and(|value| !value.is_null());
+        let model = if is_subagent {
+            None
+        } else {
+            message.get("model").and_then(Value::as_str)
         };
+        let model_changed = model.is_some_and(|model| {
+            !model.is_empty()
+                && self.last_manifest_model.is_some()
+                && self.last_manifest_model.as_deref() != Some(model)
+        });
+        if !is_subagent {
+            self.note_message(message.get("id").and_then(Value::as_str), model);
+        }
         let mut events = Vec::new();
+        if model_changed {
+            self.last_manifest_model = self.current_model.clone();
+            if let Some(model) = self.current_model.clone() {
+                events.push(SessionEvent::SessionManifest {
+                    provider_id: Some("claude".to_string()),
+                    current_model_id: Some(model.clone()),
+                    models: vec![SessionModel {
+                        model_id: model.clone(),
+                        name: model,
+                        description: None,
+                        context_tokens: None,
+                        current_effort: None,
+                        efforts: None,
+                    }],
+                    modes: None,
+                });
+            }
+        }
+        let Some(content) = message.get("content").and_then(Value::as_array) else {
+            return events;
+        };
         for (index, block) in content.iter().enumerate() {
             let index = index as u64;
             match block.get("type").and_then(Value::as_str) {
@@ -504,6 +542,72 @@ mod tests {
             envelope["subtype"], "init",
             "derivation must not consume the envelope"
         );
+    }
+
+    #[test]
+    fn assistant_model_change_reemits_a_session_manifest() {
+        let mut mapper = view();
+        let _ = mapper.ingest(&init_frame());
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "model": "claude-sonnet-5",
+                "id": "msg-model-change",
+                "role": "assistant",
+                "content": []
+            }
+        }));
+        assert!(matches!(
+            events.as_slice(),
+            [SessionEvent::SessionManifest {
+                current_model_id,
+                ..
+            }] if current_model_id.as_deref() == Some("claude-sonnet-5")
+        ));
+    }
+
+    #[test]
+    fn subagent_model_changes_do_not_flap_session_manifests() {
+        let mut mapper = view();
+        let _ = mapper.ingest(&init_frame());
+        let frames = [
+            json!({
+                "type": "assistant",
+                "message": {
+                    "model": "claude-opus-5",
+                    "id": "msg-top-level-1",
+                    "role": "assistant",
+                    "content": []
+                },
+                "parent_tool_use_id": null
+            }),
+            json!({
+                "type": "assistant",
+                "message": {
+                    "model": "claude-haiku-4-5",
+                    "id": "msg-subagent",
+                    "role": "assistant",
+                    "content": []
+                },
+                "parent_tool_use_id": "toolu_x"
+            }),
+            json!({
+                "type": "assistant",
+                "message": {
+                    "model": "claude-opus-5",
+                    "id": "msg-top-level-2",
+                    "role": "assistant",
+                    "content": []
+                },
+                "parent_tool_use_id": null
+            }),
+        ];
+        let manifest_count = frames
+            .iter()
+            .flat_map(|frame| mapper.ingest(frame))
+            .filter(|event| matches!(event, SessionEvent::SessionManifest { .. }))
+            .count();
+        assert_eq!(manifest_count, 1, "subagent model flapped the manifest");
     }
 
     #[test]

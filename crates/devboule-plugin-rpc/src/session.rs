@@ -232,6 +232,7 @@ impl PluginSession {
                         | DaemonMessage::JournalUsage { id, .. }
                         | DaemonMessage::JournalRetention { id, .. }
                         | DaemonMessage::Providers { id, .. }
+                        | DaemonMessage::ProviderUpdated { id, .. }
                         | DaemonMessage::Ok { id }
                         | DaemonMessage::Resume { id, .. }
                         | DaemonMessage::InvokeResult { id, .. } => Some(*id),

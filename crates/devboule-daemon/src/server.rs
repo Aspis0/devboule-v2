@@ -1,4 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(not(test))]
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
@@ -21,6 +23,7 @@ use crate::lock::SingleInstanceLock;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
+use crate::provider_update::{NpmInstallRunner, ProcessNpmInstallRunner};
 use crate::session::{ConnHandle, PendingEvent, SessionRegistry};
 use crate::transport::{self, Listener};
 use crate::IDLE_SHUTDOWN_GRACE;
@@ -50,6 +53,43 @@ pub struct ServerState {
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
     session_watchers: Mutex<HashMap<u64, SessionWatch>>,
+    /// Last measured spawn+handshake outcome per provider id. Contract for
+    /// ProviderInfo.authentication: "unknown" (never measured since daemon
+    /// start), "ok" (most recent spawn+handshake completed), or
+    /// "failed: <reason>" (most recent attempt failed; reason is the error
+    /// message collapsed to one line, max 200 chars). A measured last-start
+    /// observation, never an auth probe.
+    ///
+    /// Scoping constraint: the map is keyed by provider id only and is
+    /// correct while the daemon is single-user (pipe-peer identity). A
+    /// multi-user daemon must key it by owner, or the failure reasons leak
+    /// across users.
+    provider_health: Mutex<HashMap<String, String>>,
+    /// Version declared by the provider's most recent successful ACP
+    /// initialize handshake, keyed by provider id.
+    provider_versions: Mutex<HashMap<String, String>>,
+    /// Version obtained by an explicit native `--version` refresh probe.
+    provider_cli_versions: Mutex<HashMap<String, (String, CliVersionFingerprint)>>,
+    /// The only process-launch seam for provider updates. Tests replace this
+    /// runner so no npm or network is ever started by the test suite.
+    npm_install_runner: Arc<dyn NpmInstallRunner>,
+    #[cfg(test)]
+    provider_update_catalog: Mutex<Option<crate::provider_catalog::ProviderDiscovery>>,
+    #[cfg(test)]
+    provider_update_npm_command: Mutex<Option<ProviderUpdateNpmCommand>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+enum ProviderUpdateNpmCommand {
+    Resolved(std::path::PathBuf, Vec<String>),
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CliVersionFingerprint {
+    modified: SystemTime,
+    len: u64,
 }
 
 struct SessionWatch {
@@ -82,6 +122,18 @@ impl ServerState {
     }
 
     pub fn with_paths(instance_id: String, paths: RuntimePaths) -> Result<Arc<Self>, DaemonError> {
+        Self::with_paths_and_npm_install_runner(
+            instance_id,
+            paths,
+            Arc::new(ProcessNpmInstallRunner),
+        )
+    }
+
+    pub fn with_paths_and_npm_install_runner(
+        instance_id: String,
+        paths: RuntimePaths,
+        npm_install_runner: Arc<dyn NpmInstallRunner>,
+    ) -> Result<Arc<Self>, DaemonError> {
         let _ = paths.ensure_dir();
         let process_job = Arc::new(JobObject::new()?);
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
@@ -101,6 +153,14 @@ impl ServerState {
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
             session_watchers: Mutex::new(HashMap::new()),
+            provider_health: Mutex::new(HashMap::new()),
+            provider_versions: Mutex::new(HashMap::new()),
+            provider_cli_versions: Mutex::new(HashMap::new()),
+            npm_install_runner,
+            #[cfg(test)]
+            provider_update_catalog: Mutex::new(None),
+            #[cfg(test)]
+            provider_update_npm_command: Mutex::new(None),
         });
         let state_for_transitions = Arc::downgrade(&state);
         state.sessions.set_transition_sink(Arc::new(move |owner| {
@@ -258,6 +318,132 @@ impl ServerState {
         if let Some(generation) = generation {
             arm_idle_shutdown(Arc::clone(self), generation);
         }
+    }
+
+    /// Record the measured outcome of this provider's most recent spawn +
+    /// handshake. `Ok(())` measures "ok"; the error measures
+    /// "failed: <reason>" with the error message collapsed to one line and
+    /// capped at 200 chars. This is a last-start observation, not an auth
+    /// probe: it never contacts the provider on its own.
+    pub(crate) fn record_provider_health(
+        &self,
+        provider_id: &str,
+        outcome: Result<(), &WireError>,
+    ) {
+        let value = match outcome {
+            Ok(()) => "ok".to_string(),
+            Err(error) => {
+                // The handshake error embeds the agent stderr as
+                // "<error> Agent stderr: <lines>". The full text stays in
+                // the RPC error shown in chat; the health string lands in
+                // the Settings status line and persists across renders, so
+                // it must not carry stderr, which can echo tokens/paths.
+                let base = error
+                    .message
+                    .split(" Agent stderr:")
+                    .next()
+                    .unwrap_or(&error.message);
+                format!("failed: {}", collapse_health_reason(base))
+            }
+        };
+        self.provider_health
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(provider_id.to_string(), value);
+    }
+
+    /// The measured authentication value for this provider id, or "unknown"
+    /// when nothing was measured since daemon start.
+    pub(crate) fn provider_health(&self, provider_id: &str) -> String {
+        self.provider_health
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(provider_id)
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    pub(crate) fn record_provider_version(&self, provider_id: &str, version: &str) {
+        let Some(version) = crate::provider_catalog::cap_external_version(version) else {
+            return;
+        };
+        self.provider_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(provider_id.to_string(), version);
+    }
+
+    pub(crate) fn provider_version(&self, provider_id: &str) -> Option<String> {
+        self.provider_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(provider_id)
+            .cloned()
+    }
+
+    fn record_provider_cli_version(
+        &self,
+        provider_id: &str,
+        version: &str,
+        fingerprint: CliVersionFingerprint,
+    ) {
+        let Some(version) = crate::provider_catalog::cap_external_version(version) else {
+            return;
+        };
+        self.provider_cli_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(provider_id.to_string(), (version, fingerprint));
+    }
+
+    fn provider_cli_version(
+        &self,
+        provider_id: &str,
+        executable: &std::path::Path,
+    ) -> Option<String> {
+        let current = executable_fingerprint(executable);
+        let guard = self
+            .provider_cli_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let (version, cached) = guard.get(provider_id)?;
+        cli_version_cache_is_current(cached, current.as_ref()).then(|| version.clone())
+    }
+
+    fn invalidate_provider_update_caches(&self, provider_id: &str, package: &str) {
+        self.provider_cli_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(provider_id);
+        // The executable fingerprint and npm latest caches are both dropped:
+        // the former forces the next --version observation to be fresh, while
+        // the latter prevents a stale registry value from hiding the update.
+        crate::registry::invalidate_latest_npm_version(package);
+    }
+
+    #[cfg(test)]
+    fn set_provider_update_catalog(&self, discovery: crate::provider_catalog::ProviderDiscovery) {
+        *self
+            .provider_update_catalog
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(discovery);
+    }
+
+    #[cfg(test)]
+    fn set_provider_update_npm_command(&self, program: std::path::PathBuf, prefix: Vec<String>) {
+        *self
+            .provider_update_npm_command
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(ProviderUpdateNpmCommand::Resolved(program, prefix));
+    }
+
+    #[cfg(test)]
+    fn set_provider_update_npm_missing(&self) {
+        *self
+            .provider_update_npm_command
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(ProviderUpdateNpmCommand::Missing);
     }
 
     fn status_body(&self, request_id: u64) -> DaemonMessage {
@@ -509,12 +695,20 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .map_err(DaemonError::from)?;
     let mut pending_events = VecDeque::new();
     let mut pending_state_events = VecDeque::new();
+    let mut pending_replies = VecDeque::new();
     let loop_result = (|| -> Result<(), DaemonError> {
         loop {
             if state.stop.load(Ordering::SeqCst) {
                 break;
             }
             let observed_generation = conn.outbound.wake_generation();
+            if pending_replies.is_empty() {
+                pending_replies.extend(conn.outbound.pull_replies());
+            }
+            if let Some(reply) = pending_replies.pop_front() {
+                framed.send(&reply)?;
+                continue;
+            }
             let (request, request_channel_closed) = match request_rx.try_recv() {
                 Ok(request) => (Some(request), false),
                 Err(TryRecvError::Empty) => (None, false),
@@ -568,7 +762,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     framed.send(&DaemonMessage::Error(error))?;
                     continue;
                 }
-                let reply = dispatch(
+                let Some(reply) = dispatch(
                     &state,
                     &owner,
                     request,
@@ -576,7 +770,9 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     sessions_ok,
                     journal_ok,
                     typed_permissions_ok,
-                );
+                ) else {
+                    continue;
+                };
                 if close_request {
                     // SessionClose joins the coalescer and calls finish(),
                     // which can publish the teardown tail after the pre-drain.
@@ -599,6 +795,13 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
             }
 
             if pending_events.is_empty() && pending_state_events.is_empty() {
+                if pending_replies.is_empty() {
+                    pending_replies.extend(conn.outbound.pull_replies());
+                }
+                if let Some(reply) = pending_replies.pop_front() {
+                    framed.send(&reply)?;
+                    continue;
+                }
                 refill_pending_events(&conn, &mut pending_events);
                 refill_pending_state_events(&conn, &mut pending_state_events);
                 if pending_events.is_empty() && pending_state_events.is_empty() {
@@ -807,6 +1010,70 @@ fn dispatch(
     sessions_ok: bool,
     journal_ok: bool,
     typed_permissions_ok: bool,
+) -> Option<DaemonMessage> {
+    if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
+        let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
+        if let Some(id) = request.request_id() {
+            error = error.with_id(id);
+        }
+        return Some(DaemonMessage::Error(error));
+    }
+    if let ClientMessage::ProvidersRefresh { id } = request {
+        let worker_state = Arc::clone(state);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-providers-refresh".to_string())
+            .spawn(move || {
+                let reply = providers_reply(&worker_state, id, true);
+                outbound.enqueue_reply(reply);
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, "could not start provider refresh").with_id(id),
+            ));
+        }
+        return None;
+    }
+    // Deliberately do not serialize concurrent updates: this pipe is single-user,
+    // the frontend runs one npm update at a time, and npm's global lockfile
+    // serializes racers. Revisit if the daemon becomes multi-client.
+    if let ClientMessage::ProviderUpdate { id, provider_id } = request {
+        let worker_state = Arc::clone(state);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-provider-update".to_string())
+            .spawn(move || {
+                let reply = provider_update_reply(&worker_state, id, &provider_id);
+                outbound.enqueue_reply(reply);
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, "could not start provider update").with_id(id),
+            ));
+        }
+        return None;
+    }
+    Some(dispatch_immediate(
+        state,
+        owner,
+        request,
+        conn,
+        sessions_ok,
+        journal_ok,
+        typed_permissions_ok,
+    ))
+}
+
+fn dispatch_immediate(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+    request: ClientMessage,
+    conn: &Arc<ConnHandle>,
+    sessions_ok: bool,
+    journal_ok: bool,
+    typed_permissions_ok: bool,
 ) -> DaemonMessage {
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
         return DaemonMessage::Error({
@@ -854,6 +1121,7 @@ fn dispatch(
         | ClientMessage::SessionSend { .. }
         | ClientMessage::SessionResize { .. }
         | ClientMessage::SessionInterrupt { .. }
+        | ClientMessage::SessionSetModel { .. }
         | ClientMessage::SessionPermissionRespond { .. }
         | ClientMessage::SessionsList { .. }
         | ClientMessage::SessionsWatch { .. }
@@ -865,16 +1133,12 @@ fn dispatch(
             }
             dispatch_session(state, owner, request, conn, typed_permissions_ok)
         }
-        ClientMessage::ProvidersList { id } => {
-            let discovery = crate::provider_catalog::discover_catalog(
-                &crate::registry::CdnRegistryFetch,
-                state.sessions.runtime_dir(),
-            );
-            DaemonMessage::Providers {
-                id,
-                providers: discovery.agents.into_iter().map(wire_provider).collect(),
-                unreadable_dirs: discovery.unreadable_dirs,
-            }
+        ClientMessage::ProvidersList { id } => providers_reply(state, id, false),
+        ClientMessage::ProvidersRefresh { .. } => {
+            unreachable!("ProvidersRefresh is dispatched by the async wrapper")
+        }
+        ClientMessage::ProviderUpdate { .. } => {
+            unreachable!("ProviderUpdate is dispatched by the async wrapper")
         }
         ClientMessage::Invoke { id, method, .. } => DaemonMessage::Error(
             WireError::new(
@@ -886,19 +1150,386 @@ fn dispatch(
     }
 }
 
+fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) -> DaemonMessage {
+    let discovery = if force {
+        refresh_provider_catalog(state)
+    } else {
+        crate::provider_catalog::discover_catalog(
+            &crate::registry::CdnRegistryFetch,
+            state.sessions.runtime_dir(),
+        )
+    };
+    // ProviderInfo.authentication carries the measured last-start outcome for
+    // this provider. It is a recorded observation, not an auth probe.
+    let providers = discovery
+        .agents
+        .into_iter()
+        .map(|agent| {
+            let authentication = state.provider_health(&agent.id);
+            wire_provider(state, agent, authentication)
+        })
+        .collect();
+    DaemonMessage::Providers {
+        id,
+        providers,
+        unreadable_dirs: discovery.unreadable_dirs,
+    }
+}
+
+fn refresh_provider_catalog(
+    state: &Arc<ServerState>,
+) -> crate::provider_catalog::ProviderDiscovery {
+    let directories = crate::provider_catalog::path_directories();
+    let local = crate::provider_catalog::discover_in_paths(&directories);
+    let cache_dir = state.sessions.runtime_dir().to_path_buf();
+
+    let registry_cache_dir = cache_dir.clone();
+    let registry_refresh = std::thread::spawn(move || {
+        crate::registry::refresh_npx_entries(
+            &crate::registry::CdnRegistryFetch,
+            &registry_cache_dir,
+        );
+    });
+
+    let mut npm_packages = HashSet::new();
+    let mut latest_fetches = Vec::new();
+    for package in crate::provider_catalog::KNOWN_AGENTS
+        .iter()
+        .filter_map(|agent| agent.npm_package)
+    {
+        if !npm_packages.insert(package) {
+            continue;
+        }
+        latest_fetches.push(std::thread::spawn(move || {
+            let _ = crate::registry::load_latest_npm_version(
+                &crate::registry::CdnNpmVersionFetch,
+                package,
+                true,
+            );
+        }));
+    }
+
+    let mut version_probes = Vec::new();
+    // This fan-out is structurally bounded: native probes are at most one per
+    // fixed KNOWN_AGENTS row (plus fixed debug test rows), npm fetches are at
+    // most one per distinct const package name, plus the single registry
+    // refresh. Do not make this registry-driven without adding an explicit
+    // concurrency bound.
+    for agent in local
+        .agents
+        .iter()
+        .filter(|agent| agent.install_channel == crate::provider_catalog::InstallChannel::Native)
+    {
+        let state = Arc::clone(state);
+        let agent = agent.clone();
+        version_probes.push(std::thread::spawn(move || {
+            probe_native_version(&state, &agent)
+                .map(|(version, fingerprint)| (agent.id, version, fingerprint))
+        }));
+    }
+
+    let _ = registry_refresh.join();
+    for fetch in latest_fetches {
+        let _ = fetch.join();
+    }
+    for probe in version_probes {
+        if let Ok(Some((provider_id, version, fingerprint))) = probe.join() {
+            state.record_provider_cli_version(&provider_id, &version, fingerprint);
+        }
+    }
+
+    crate::provider_catalog::discover_catalog_in_paths(
+        &crate::registry::CdnRegistryFetch,
+        state.sessions.runtime_dir(),
+        &directories,
+    )
+}
+
 fn wire_provider(
+    state: &ServerState,
     agent: crate::provider_catalog::InstalledAgent,
+    authentication: String,
 ) -> devboule_protocol::ProviderInfo {
+    let installed_version = match agent.install_channel {
+        crate::provider_catalog::InstallChannel::Native => agent
+            .installed_version
+            .clone()
+            .or_else(|| state.provider_cli_version(&agent.id, &agent.executable)),
+        crate::provider_catalog::InstallChannel::Npm => agent.installed_version.clone(),
+        crate::provider_catalog::InstallChannel::NpxRegistry => None,
+    };
+    let latest_version = agent.latest_version.clone().or_else(|| {
+        agent
+            .npm_package
+            .and_then(crate::registry::cached_latest_npm_version)
+    });
     devboule_protocol::ProviderInfo {
         id: agent.id.to_string(),
         executable: agent.executable.to_string_lossy().into_owned(),
         acp_available: agent.acp_command.is_some(),
-        authentication: "unknown".to_string(),
+        authentication,
         protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
-        origin: Some(agent.origin.as_wire().to_string()),
+        origin: agent.installed.then(|| agent.origin.as_wire().to_string()),
         launch_args: agent.launch_args,
         pickable: agent.pickable,
+        installed_version,
+        latest_version,
+        agent_version: state.provider_version(&agent.id),
+        install_channel: Some(agent.install_channel.as_wire().to_string()),
+        installed: agent.installed,
+        npm_package: agent.npm_package.map(str::to_string),
     }
+}
+
+fn provider_update_reply(state: &Arc<ServerState>, id: u64, provider_id: &str) -> DaemonMessage {
+    #[cfg(test)]
+    let discovery_override = state
+        .provider_update_catalog
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let agents: Vec<crate::provider_catalog::InstalledAgent> = if let Some(discovery) = {
+        #[cfg(test)]
+        {
+            discovery_override
+        }
+        #[cfg(not(test))]
+        {
+            None::<crate::provider_catalog::ProviderDiscovery>
+        }
+    } {
+        discovery.agents
+    } else {
+        crate::provider_catalog::discover_catalog(
+            &crate::registry::CdnRegistryFetch,
+            state.sessions.runtime_dir(),
+        )
+        .agents
+    };
+    let agent = agents.into_iter().find(|agent| agent.id == provider_id);
+    let Some(agent) = agent else {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Unknown provider '{provider_id}'."),
+            )
+            .with_id(id),
+        );
+    };
+
+    match agent.install_channel {
+        crate::provider_catalog::InstallChannel::Native => {
+            return DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "Provider '{provider_id}' uses a native installation; npm updates are unavailable for native providers."
+                    ),
+                )
+                .with_id(id),
+            );
+        }
+        crate::provider_catalog::InstallChannel::NpxRegistry => {
+            return DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "Provider '{provider_id}' is an npx-registry wrapper; update its registry entry instead of installing it globally."
+                    ),
+                )
+                .with_id(id),
+            );
+        }
+        crate::provider_catalog::InstallChannel::Npm => {}
+    }
+    let Some(package) = agent.npm_package else {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "Provider '{provider_id}' has no known npm package and cannot be updated with npm."
+                ),
+            )
+            .with_id(id),
+        );
+    };
+    if crate::provider_catalog::known_npm_package(provider_id) != Some(package) {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Provider '{provider_id}' is not a known npm provider row."),
+            )
+            .with_id(id),
+        );
+    }
+
+    let npm_command = {
+        #[cfg(test)]
+        {
+            match state
+                .provider_update_npm_command
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+            {
+                Some(ProviderUpdateNpmCommand::Resolved(program, prefix_args)) => {
+                    Some((program, prefix_args))
+                }
+                Some(ProviderUpdateNpmCommand::Missing) => None,
+                None => crate::provider_catalog::resolve_npm_command(
+                    &crate::provider_catalog::path_directories(),
+                ),
+            }
+        }
+        #[cfg(not(test))]
+        {
+            crate::provider_catalog::resolve_npm_command(
+                &crate::provider_catalog::path_directories(),
+            )
+        }
+    };
+    let Some((program, prefix_args)) = npm_command else {
+        return DaemonMessage::ProviderUpdated {
+            id,
+            ok: false,
+            exit_code: None,
+            log: "npm was not found on PATH; install Node.js/npm and try again.".to_string(),
+        };
+    };
+    let args = vec![
+        "install".to_string(),
+        "-g".to_string(),
+        format!("{package}@latest"),
+    ];
+    let result = state
+        .npm_install_runner
+        .run(&program, &prefix_args, &args, &state.process_job);
+    let ok = result.exit_code == Some(0);
+    if ok {
+        state.invalidate_provider_update_caches(provider_id, package);
+    }
+    DaemonMessage::ProviderUpdated {
+        id,
+        ok,
+        exit_code: result.exit_code,
+        log: crate::provider_update::bounded_log(result.log.as_bytes()),
+    }
+}
+
+fn probe_native_version(
+    state: &ServerState,
+    agent: &crate::provider_catalog::InstalledAgent,
+) -> Option<(String, CliVersionFingerprint)> {
+    #[cfg(test)]
+    {
+        let _ = state;
+        let _ = agent;
+        None
+    }
+    #[cfg(not(test))]
+    {
+        #[cfg(not(windows))]
+        let _ = state;
+        let fingerprint = executable_fingerprint(&agent.executable)?;
+        let mut command = Command::new(&agent.executable);
+        command
+            .args(&agent.prefix_args)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let mut child = command.spawn().ok()?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            if state.process_job.assign(child.as_raw_handle()).is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+        let output = child.wait_with_output().ok()?;
+        let version = parse_version_token(&output.stdout)?;
+        Some((version, fingerprint))
+    }
+}
+
+fn executable_fingerprint(path: &std::path::Path) -> Option<CliVersionFingerprint> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(CliVersionFingerprint {
+        modified: metadata.modified().ok()?,
+        len: metadata.len(),
+    })
+}
+
+fn cli_version_cache_is_current(
+    cached: &CliVersionFingerprint,
+    current: Option<&CliVersionFingerprint>,
+) -> bool {
+    current == Some(cached)
+}
+
+fn parse_version_token(output: &[u8]) -> Option<String> {
+    let mut run = String::new();
+    let inspect = |run: &mut String| {
+        let candidate = std::mem::take(run);
+        let components: Vec<&str> = candidate.split('.').collect();
+        (components.len() >= 3
+            && components.iter().all(|component| {
+                !component.is_empty() && component.bytes().all(|b| b.is_ascii_digit())
+            }))
+        .then_some(candidate)
+    };
+    for byte in output {
+        if byte.is_ascii_digit() || *byte == b'.' {
+            run.push(*byte as char);
+        } else if let Some(version) = inspect(&mut run) {
+            return crate::provider_catalog::cap_external_version(&version);
+        }
+    }
+    inspect(&mut run).and_then(|version| crate::provider_catalog::cap_external_version(&version))
+}
+
+/// Collapse an error message to a single line for the provider-health
+/// string: newlines, tabs and repeated spaces become single spaces, then
+/// the result is truncated to 200 chars.
+fn collapse_health_reason(message: &str) -> String {
+    let mut reason = String::with_capacity(message.len());
+    let mut pending_space = false;
+    for ch in message.chars() {
+        if ch.is_whitespace() {
+            pending_space = !reason.is_empty();
+        } else {
+            if pending_space {
+                reason.push(' ');
+                pending_space = false;
+            }
+            reason.push(ch);
+        }
+    }
+    if reason.chars().count() > 200 {
+        reason = reason.chars().take(200).collect();
+    }
+    reason
 }
 
 fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage {
@@ -1187,8 +1818,24 @@ fn dispatch_session(
                 }
             }
         },
-        ClientMessage::SessionInterrupt { id, .. } => DaemonMessage::Error(
-            WireError::new(ErrorCode::Unimplemented, "not implemented in M3b").with_id(id),
+        ClientMessage::SessionInterrupt { id, session_id } => reply_result(
+            id,
+            state
+                .sessions
+                .interrupt(&session_id, owner)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
+        ClientMessage::SessionSetModel {
+            id,
+            session_id,
+            model_id,
+            effort,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .set_model(&session_id, owner, model_id.as_deref(), effort.as_deref())
+                .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionPermissionRespond {
             id,
@@ -1373,6 +2020,14 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
         DaemonMessage::JournalRetention { retention, .. } => {
             DaemonMessage::JournalRetention { id, retention }
         }
+        DaemonMessage::ProviderUpdated {
+            ok, exit_code, log, ..
+        } => DaemonMessage::ProviderUpdated {
+            id,
+            ok,
+            exit_code,
+            log,
+        },
         DaemonMessage::Error(error) => DaemonMessage::Error(error.with_id(id)),
         other => other,
     }
@@ -1409,6 +2064,42 @@ mod tests {
 
     fn state() -> Arc<ServerState> {
         ServerState::new("test-instance".to_string())
+    }
+
+    #[test]
+    fn record_provider_health_strips_agent_stderr_from_the_reason() {
+        let state = state();
+        let error = WireError::new(
+            ErrorCode::Io,
+            "ACP request failed: {\"code\":-32000} Agent stderr: SECRET-TOKEN leaked | C:\\Users",
+        );
+        state.record_provider_health("stub", Err(&error));
+        let value = state.provider_health("stub");
+        assert!(
+            value.starts_with("failed: ") && value.contains("ACP request failed"),
+            "the pre-stderr part of the message must survive: {value:?}"
+        );
+        assert!(
+            !value.contains("SECRET-TOKEN"),
+            "health must not carry agent stderr: {value:?}"
+        );
+    }
+
+    #[test]
+    fn collapse_health_reason_cases() {
+        assert_eq!(collapse_health_reason(""), "");
+        assert_eq!(collapse_health_reason("  \n\t "), "");
+        let exactly_200 = "x".repeat(200);
+        assert_eq!(collapse_health_reason(&exactly_200), exactly_200);
+        assert_eq!(
+            collapse_health_reason(&"y".repeat(201)).chars().count(),
+            200
+        );
+        // Char-boundary-safe truncation: 300 two-byte characters must yield
+        // exactly 200 valid characters, not a byte slice mid-character.
+        let collapsed = collapse_health_reason(&"\u{e8}".repeat(300));
+        assert_eq!(collapsed, "\u{e8}".repeat(200));
+        assert_eq!(collapse_health_reason("a\n\tb   c"), "a b c");
     }
 
     fn wait_for_shutdown(state: &ServerState) {
@@ -1474,7 +2165,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             reply,
             DaemonMessage::Error(WireError {
@@ -1504,7 +2196,8 @@ mod tests {
             true,
             true,
             false,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             reply,
             DaemonMessage::Error(WireError {
@@ -1537,7 +2230,8 @@ mod tests {
             false,
             false,
             false,
-        );
+        )
+        .expect("immediate dispatch reply");
         let _ = std::fs::remove_dir_all(&path);
         let DaemonMessage::Providers {
             id,
@@ -1550,9 +2244,438 @@ mod tests {
         assert_eq!(id, 11);
         for provider in &providers {
             assert!(!provider.id.is_empty());
-            assert!(!provider.executable.is_empty());
             assert_eq!(provider.authentication, "unknown");
+            if provider.installed {
+                assert!(!provider.executable.is_empty());
+            } else {
+                assert!(provider.executable.is_empty());
+                assert!(!provider.acp_available);
+                assert_eq!(provider.protocol, None);
+                assert_eq!(provider.pickable, Some(false));
+                assert!(provider.npm_package.is_some());
+            }
         }
+    }
+
+    struct RecordingNpmRunner {
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+        result: crate::provider_update::NpmInstallResult,
+    }
+
+    impl NpmInstallRunner for RecordingNpmRunner {
+        fn run(
+            &self,
+            _program: &std::path::Path,
+            _prefix_args: &[String],
+            args: &[String],
+            _job: &JobObject,
+        ) -> crate::provider_update::NpmInstallResult {
+            self.calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(args.to_vec());
+            self.result.clone()
+        }
+    }
+
+    fn update_test_agent(
+        id: &str,
+        package: Option<&'static str>,
+        installed: bool,
+        install_channel: crate::provider_catalog::InstallChannel,
+        executable: std::path::PathBuf,
+    ) -> crate::provider_catalog::InstalledAgent {
+        crate::provider_catalog::InstalledAgent {
+            id: id.to_string(),
+            aliases: &[],
+            installed,
+            executable,
+            prefix_args: Vec::new(),
+            acp_command: None,
+            stream_json_command: None,
+            authentication: crate::provider_catalog::AuthenticationStatus::Unknown,
+            origin: crate::provider_catalog::ProviderOrigin::UserBinary,
+            launch_args: None,
+            pickable: None,
+            installed_version: None,
+            latest_version: None,
+            install_channel,
+            npm_package: package,
+        }
+    }
+
+    fn wait_for_update_reply(conn: &ConnHandle) -> DaemonMessage {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(reply) = conn.outbound.pull_replies().pop_front() {
+                return reply;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "provider update worker did not reply"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn provider_update_dispatches_to_fake_runner_and_invalidates_both_version_caches() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-provider-update-test-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        std::fs::create_dir_all(&path).expect("runtime directory");
+        let executable = path.join("codex.cmd");
+        std::fs::write(&executable, b"shim").expect("fake executable");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = Arc::new(RecordingNpmRunner {
+            calls: Arc::clone(&calls),
+            result: crate::provider_update::NpmInstallResult {
+                exit_code: Some(0),
+                log: "npm stdout\nnpm stderr".to_string(),
+            },
+        });
+        let state = ServerState::with_paths_and_npm_install_runner(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+            runner,
+        )
+        .expect("state");
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "codex",
+                Some("@openai/codex"),
+                true,
+                crate::provider_catalog::InstallChannel::Npm,
+                executable.clone(),
+            )],
+            unreadable_dirs: 0,
+        });
+        state.set_provider_update_npm_command(std::path::PathBuf::from(r"C:\fake\npm.cmd"), vec![]);
+        let fingerprint = executable_fingerprint(&executable).expect("fingerprint");
+        state.record_provider_cli_version("codex", "1.0.0", fingerprint);
+        crate::registry::invalidate_latest_npm_version("@openai/codex");
+        struct FakeNpmVersion;
+        impl crate::registry::NpmVersionFetch for FakeNpmVersion {
+            fn latest(&self, _package: &str) -> Result<String, String> {
+                Ok("9.9.9".to_string())
+            }
+        }
+        assert_eq!(
+            crate::registry::load_latest_npm_version(&FakeNpmVersion, "@openai/codex", true),
+            Some("9.9.9".to_string())
+        );
+        assert_eq!(
+            state.provider_cli_version("codex", &executable),
+            Some("1.0.0".to_string())
+        );
+
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(42);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 43,
+                provider_id: "codex".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        assert_eq!(
+            wait_for_update_reply(&conn),
+            DaemonMessage::ProviderUpdated {
+                id: 43,
+                ok: true,
+                exit_code: Some(0),
+                log: "npm stdout\nnpm stderr".to_string(),
+            }
+        );
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            &[vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "@openai/codex@latest".to_string()
+            ]]
+        );
+        assert_eq!(
+            state.provider_cli_version("codex", &executable),
+            None,
+            "successful update must drop the native --version cache entry"
+        );
+        assert_eq!(
+            crate::registry::cached_latest_npm_version("@openai/codex"),
+            None,
+            "successful update must drop the npm latest cache entry"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn provider_update_failure_preserves_both_version_caches() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-provider-update-failure-test-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        std::fs::create_dir_all(&path).expect("runtime directory");
+        let package = "@qwen-code/qwen-code";
+        crate::registry::reset_npm_version_cache(package);
+        let executable = path.join("qwen.cmd");
+        std::fs::write(&executable, b"shim").expect("fake executable");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = Arc::new(RecordingNpmRunner {
+            calls: Arc::clone(&calls),
+            result: crate::provider_update::NpmInstallResult {
+                exit_code: Some(1),
+                log: "npm failed".to_string(),
+            },
+        });
+        let state = ServerState::with_paths_and_npm_install_runner(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+            runner,
+        )
+        .expect("state");
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "qwen",
+                Some(package),
+                true,
+                crate::provider_catalog::InstallChannel::Npm,
+                executable.clone(),
+            )],
+            unreadable_dirs: 0,
+        });
+        state.set_provider_update_npm_command(std::path::PathBuf::from(r"C:\fake\npm.cmd"), vec![]);
+        let fingerprint = executable_fingerprint(&executable).expect("fingerprint");
+        state.record_provider_cli_version("qwen", "2.0.0", fingerprint);
+        struct FakeNpmVersion;
+        impl crate::registry::NpmVersionFetch for FakeNpmVersion {
+            fn latest(&self, _package: &str) -> Result<String, String> {
+                Ok("8.8.8".to_string())
+            }
+        }
+        assert_eq!(
+            crate::registry::load_latest_npm_version(&FakeNpmVersion, package, true),
+            Some("8.8.8".to_string())
+        );
+
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(50);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 51,
+                provider_id: "qwen".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        assert_eq!(
+            wait_for_update_reply(&conn),
+            DaemonMessage::ProviderUpdated {
+                id: 51,
+                ok: false,
+                exit_code: Some(1),
+                log: "npm failed".to_string(),
+            }
+        );
+        assert_eq!(
+            state.provider_cli_version("qwen", &executable),
+            Some("2.0.0".to_string()),
+            "failed update must preserve the --version cache entry"
+        );
+        assert_eq!(
+            crate::registry::cached_latest_npm_version(package),
+            Some("8.8.8".to_string()),
+            "failed update must preserve the npm latest cache entry"
+        );
+        crate::registry::reset_npm_version_cache(package);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn provider_update_refuses_native_even_when_a_package_is_known() {
+        let state = state();
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "claude",
+                Some("@anthropic-ai/claude-code"),
+                true,
+                crate::provider_catalog::InstallChannel::Native,
+                std::path::PathBuf::from(r"C:\Program Files\claude.exe"),
+            )],
+            unreadable_dirs: 0,
+        });
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(44);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 45,
+                provider_id: "claude".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        let DaemonMessage::Error(error) = wait_for_update_reply(&conn) else {
+            panic!("native provider update must return an InvalidRequest");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("native installation"));
+    }
+
+    #[test]
+    fn provider_update_refuses_the_native_debug_stub_before_package_lookup() {
+        let state = state();
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "devboule-acp-stub",
+                None,
+                true,
+                crate::provider_catalog::InstallChannel::Native,
+                std::path::PathBuf::from(r"C:\devboule-acp-stub.exe"),
+            )],
+            unreadable_dirs: 0,
+        });
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(46);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 47,
+                provider_id: "devboule-acp-stub".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        let DaemonMessage::Error(error) = wait_for_update_reply(&conn) else {
+            panic!("native debug stub update must return an InvalidRequest");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("native installation"));
+    }
+
+    #[test]
+    fn provider_update_reports_missing_npm_without_invoking_the_runner() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-provider-update-missing-npm-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = Arc::new(RecordingNpmRunner {
+            calls: Arc::clone(&calls),
+            result: crate::provider_update::NpmInstallResult {
+                exit_code: Some(0),
+                log: "must not run".to_string(),
+            },
+        });
+        let state = ServerState::with_paths_and_npm_install_runner(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+            runner,
+        )
+        .expect("state");
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "codex",
+                Some("@openai/codex"),
+                false,
+                crate::provider_catalog::InstallChannel::Npm,
+                std::path::PathBuf::new(),
+            )],
+            unreadable_dirs: 0,
+        });
+        state.set_provider_update_npm_missing();
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(48);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 49,
+                provider_id: "codex".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        assert_eq!(
+            wait_for_update_reply(&conn),
+            DaemonMessage::ProviderUpdated {
+                id: 49,
+                ok: false,
+                exit_code: None,
+                log: "npm was not found on PATH; install Node.js/npm and try again.".to_string(),
+            }
+        );
+        assert!(calls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty());
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn version_token_parser_finds_first_semver_like_token() {
+        assert_eq!(
+            parse_version_token(b"grok version 1.2.3\n"),
+            Some("1.2.3".to_string())
+        );
+        assert_eq!(
+            parse_version_token(b"v2.10.0-beta.1"),
+            Some("2.10.0".to_string())
+        );
+        assert_eq!(parse_version_token(b"build 2026-09-06"), None);
+        assert_eq!(parse_version_token(b"no version here"), None);
+    }
+
+    #[test]
+    fn cli_version_cache_is_invalidated_when_executable_metadata_changes() {
+        let cached = CliVersionFingerprint {
+            modified: UNIX_EPOCH + Duration::from_secs(10),
+            len: 100,
+        };
+        assert!(cli_version_cache_is_current(&cached, Some(&cached)));
+        assert!(!cli_version_cache_is_current(
+            &cached,
+            Some(&CliVersionFingerprint {
+                modified: UNIX_EPOCH + Duration::from_secs(11),
+                len: 100,
+            })
+        ));
+        assert!(!cli_version_cache_is_current(
+            &cached,
+            Some(&CliVersionFingerprint {
+                modified: cached.modified,
+                len: 101,
+            })
+        ));
+        assert!(!cli_version_cache_is_current(&cached, None));
     }
 
     #[test]
@@ -1578,7 +2701,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(usage, DaemonMessage::JournalUsage { id: 1, .. }));
         let retention = dispatch(
             &state,
@@ -1588,7 +2712,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             retention,
             DaemonMessage::JournalRetention { id: 2, .. }
@@ -1647,7 +2772,8 @@ mod tests {
                 true,
                 true,
                 true,
-            );
+            )
+            .expect("immediate dispatch reply");
             assert!(matches!(
                 reply,
                 DaemonMessage::Error(WireError {
@@ -1680,7 +2806,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             delete,
             DaemonMessage::Error(WireError {
@@ -1730,7 +2857,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             first_retention,
             DaemonMessage::JournalRetention { id: 1, .. }
@@ -1750,7 +2878,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             replayed_retention,
             DaemonMessage::JournalRetention { id: 2, .. }
@@ -1770,7 +2899,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(
             conflict,
             DaemonMessage::Error(WireError {
@@ -1803,7 +2933,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(first_delete, DaemonMessage::Ok { id: 4 }));
         let replayed_delete = dispatch(
             &state,
@@ -1817,7 +2948,8 @@ mod tests {
             true,
             true,
             true,
-        );
+        )
+        .expect("immediate dispatch reply");
         assert!(matches!(replayed_delete, DaemonMessage::Ok { id: 5 }));
         drop(state);
         let _ = std::fs::remove_dir_all(path);

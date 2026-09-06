@@ -200,6 +200,68 @@ describe("workspace session controller", () => {
     expect(controller.getState().selectedSessionId).toBe("terminal-3");
   });
 
+  it("keeps the daemon's real failure message when create is rejected", async () => {
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("terminal-1")]),
+      create: vi.fn(async () => {
+        throw new Error("Authentication required: test-reason");
+      }),
+    });
+    await controller.refresh();
+
+    await controller.create();
+
+    const error = controller.getState().error;
+    expect(error).toContain("test-reason");
+    expect(error).not.toContain("unreachable");
+  });
+
+  it("reads the daemon's wire message when create rejects with a non-Error object", async () => {
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("terminal-1")]),
+      create: vi.fn(() =>
+        Promise.reject({ code: "io", message: "ACP request failed (-32000): test-reason" }),
+      ),
+    });
+    await controller.refresh();
+
+    await controller.create();
+
+    const error = controller.getState().error;
+    expect(error).toContain("test-reason");
+    expect(error).not.toContain("[object Object]");
+  });
+
+  it("falls back to a generic message when create rejects with an empty error", async () => {
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("terminal-1")]),
+      create: vi.fn(async () => {
+        throw new Error("   ");
+      }),
+    });
+    await controller.refresh();
+
+    await controller.create();
+
+    expect(controller.getState().error).toBe("Could not create the agent session.");
+  });
+
+  it("clears the create error when it is dismissed", async () => {
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("terminal-1")]),
+      create: vi.fn(async () => {
+        throw new Error("Authentication required: test-reason");
+      }),
+    });
+    await controller.refresh();
+    await controller.create();
+    expect(controller.getState().error).toContain("test-reason");
+
+    controller.dismissError();
+
+    expect(controller.getState().error).toBeNull();
+  });
+
   it("keeps a visible error when the daemon cannot list sessions", async () => {
     const controller = createWorkspaceSessionController({
       list: vi.fn(async () => {

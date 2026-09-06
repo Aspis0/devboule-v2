@@ -17,6 +17,7 @@ import type {
   PluginInventory,
   Project,
   ProviderCatalog,
+  ProviderUpdateOutcome,
   ResumeResult,
   Session,
   SessionEvent,
@@ -38,6 +39,7 @@ type CommandArgs = {
   session_attach: { id: Id; from_cursor: number | null; ch: SessionChannel };
   session_send: { id: Id; text: string };
   session_interrupt: { id: Id };
+  session_set_model: { id: Id; modelId?: string; effort?: string };
   session_permission_respond: { id: Id; requestId: Id; outcome: PermissionOutcome };
   session_resize: { id: Id; cols: number; rows: number };
   session_detach: { id: Id };
@@ -50,6 +52,8 @@ type CommandArgs = {
   sessions_watch: { ch: SessionStateChannel };
   sessions_unwatch: undefined;
   providers_list: undefined;
+  providers_refresh: undefined;
+  provider_update: { providerId: string };
   oracle_status: undefined;
   oracle_workspace_get: undefined;
   oracle_workspace_set: { path: string };
@@ -63,6 +67,8 @@ type CommandArgs = {
   oracle_watch_stop: undefined;
   oracle_files: { tab: FileTab; page: number };
   oracle_ask: { query: string };
+  surface_settings_get: { surfaceId: string };
+  surface_settings_set: { surfaceId: string; value: unknown };
   plugins_list: undefined;
   plugins_rescan: undefined;
   plugin_install: { id: string; source: string };
@@ -83,6 +89,7 @@ type CommandResults = {
   session_attach: void;
   session_send: void;
   session_interrupt: void;
+  session_set_model: void;
   session_permission_respond: void;
   session_resize: void;
   session_detach: void;
@@ -95,6 +102,8 @@ type CommandResults = {
   sessions_watch: void;
   sessions_unwatch: void;
   providers_list: ProviderCatalog;
+  providers_refresh: ProviderCatalog;
+  provider_update: ProviderUpdateOutcome;
   oracle_status: OracleIndexStatus;
   oracle_workspace_get: OracleWorkspace;
   oracle_workspace_set: OracleWorkspace;
@@ -108,6 +117,8 @@ type CommandResults = {
   oracle_watch_stop: void;
   oracle_files: IndexedFile[];
   oracle_ask: OracleSearchResponse;
+  surface_settings_get: unknown;
+  surface_settings_set: void;
   plugins_list: PluginInventory;
   plugins_rescan: PluginInventory;
   plugin_install: PluginInventory;
@@ -188,6 +199,14 @@ export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChan
   invokeTyped("session_attach", { id, from_cursor: fromCursor, ch });
 export const sessionSend = (id: Id, text: string) => invokeTyped("session_send", { id, text });
 export const sessionInterrupt = (id: Id) => invokeTyped("session_interrupt", { id });
+export const sessionSetModel = (id: Id, modelId?: string, effort?: string) =>
+  // The response is void and is not a confirmation: the runtime confirms the
+  // switch through a later session_manifest event on the attach channel.
+  invokeTyped("session_set_model", {
+    id,
+    ...(modelId === undefined ? {} : { modelId }),
+    ...(effort === undefined ? {} : { effort }),
+  });
 export const sessionPermissionRespond = (id: Id, requestId: Id, outcome: PermissionOutcome) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key here must be `requestId`, not `request_id` (the command has no
@@ -207,6 +226,15 @@ export const sessionsList = () => invokeTyped("sessions_list");
 export const sessionsWatch = (ch: SessionStateChannel) => invokeTyped("sessions_watch", { ch });
 export const sessionsUnwatch = () => invokeTyped("sessions_unwatch");
 export const providersList = () => invokeTyped("providers_list");
+/** Same catalog as `providersList`, but re-probed (up to ~10s: skips the npx-registry TTL). */
+export const providersRefresh = () => invokeTyped("providers_refresh");
+/**
+ * Runs `npm install -g <package>@latest` inside the daemon for one npm-installed
+ * provider. Minutes-long: the promise settles only when npm finishes. The
+ * daemon refuses non-npm channels with a CommandError.
+ */
+export const providerUpdate = (providerId: string) =>
+  invokeTyped("provider_update", { providerId });
 export const oracleStatus = () => invokeTyped("oracle_status");
 export const oracleWorkspaceGet = () => invokeTyped("oracle_workspace_get");
 export const oracleWorkspaceSet = (path: string) => invokeTyped("oracle_workspace_set", { path });
@@ -221,6 +249,17 @@ export const oracleWatchStop = () => invokeTyped("oracle_watch_stop");
 export const oracleFiles = (tab: FileTab, page: number) =>
   invokeTyped("oracle_files", { tab, page });
 export const oracleAsk = (query: string) => invokeTyped("oracle_ask", { query });
+/**
+ * One surface's persisted settings document, or null. The backend answers
+ * null for a missing, unreadable, or malformed file alike — "never saved" and
+ * "corrupt" are the same signal to a caller, which should fall back to its
+ * defaults.
+ */
+export const surfaceSettingsGet = (surfaceId: string) =>
+  invokeTyped("surface_settings_get", { surfaceId });
+/** Stores `value` verbatim as pretty JSON; rejects surface ids outside `^[a-z0-9-]{1,32}$` and values over the ~64 KB cap. */
+export const surfaceSettingsSet = (surfaceId: string, value: unknown) =>
+  invokeTyped("surface_settings_set", { surfaceId, value });
 export const pluginsList = () => invokeTyped("plugins_list");
 /** Look at the disk again, for someone who just installed something. */
 export const pluginsRescan = () => invokeTyped("plugins_rescan");

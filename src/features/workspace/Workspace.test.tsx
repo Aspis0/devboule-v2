@@ -230,6 +230,33 @@ describe("Workspace sessions", () => {
     );
   });
 
+  it("renders the create error as a dismissible alert while a session is selected", async () => {
+    vi.mocked(sessionCreate).mockRejectedValue(new Error("Authentication required: test-reason"));
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector("[data-testid=terminal-surface]")).not.toBeNull();
+    const banner = container.querySelector('[role="alert"]');
+    if (banner === null) throw new Error("error banner did not render");
+    expect(banner.textContent).toContain("Authentication required: test-reason");
+    expect(container.textContent).not.toContain("unreachable");
+
+    const dismiss = banner.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]');
+    if (dismiss === null) throw new Error("dismiss control did not render");
+    await act(async () => dismiss.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("starts an ACP session when a new workspace is added", async () => {
     root = createRoot(container);
     await act(async () => {

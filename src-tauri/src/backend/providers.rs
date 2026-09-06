@@ -16,6 +16,14 @@ pub struct ProviderCatalog {
     pub unreadable_dirs: u32,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUpdateResult {
+    pub ok: bool,
+    pub exit_code: Option<i32>,
+    pub log: String,
+}
+
 #[tauri::command]
 pub fn providers_list(bridge: State<'_, DaemonBridge>) -> Result<ProviderCatalog, CommandError> {
     let (providers, unreadable_dirs) = require_client(&bridge)?.providers_list()?;
@@ -23,6 +31,24 @@ pub fn providers_list(bridge: State<'_, DaemonBridge>) -> Result<ProviderCatalog
         providers,
         unreadable_dirs,
     })
+}
+
+#[tauri::command]
+pub fn providers_refresh(bridge: State<'_, DaemonBridge>) -> Result<ProviderCatalog, CommandError> {
+    let (providers, unreadable_dirs) = require_client(&bridge)?.providers_refresh()?;
+    Ok(ProviderCatalog {
+        providers,
+        unreadable_dirs,
+    })
+}
+
+#[tauri::command]
+pub fn provider_update(
+    bridge: State<'_, DaemonBridge>,
+    provider_id: String,
+) -> Result<ProviderUpdateResult, CommandError> {
+    let (ok, exit_code, log) = require_client(&bridge)?.provider_update(&provider_id)?;
+    Ok(ProviderUpdateResult { ok, exit_code, log })
 }
 
 fn require_client(

@@ -368,7 +368,12 @@ export interface ProviderInfo {
   id: string;
   executable: string;
   acpAvailable: boolean;
-  authentication: "unknown";
+  /**
+   * Wire contract set by the daemon: `"unknown"` = never measured, `"ok"` =
+   * most recent provider start completed, `"failed: <reason>"` = most recent
+   * start failed with a one-line reason.
+   */
+  authentication: string;
   /** `"acp"` or `"stream-json"` when the CLI can start a chat session. */
   protocol?: string | null;
   /** `"user-binary"` from PATH; `"npx-wrapper"` from the ACP registry. */
@@ -377,6 +382,35 @@ export interface ProviderInfo {
   launchArgs?: string[] | null;
   /** Explicit picker policy; covered wrappers remain visible in Settings. */
   pickable?: boolean | null;
+  /** Version of the CLI binary installed locally; null when it could not be probed. */
+  installedVersion?: string | null;
+  /** Newest version the daemon knows is available; null when unknown. */
+  latestVersion?: string | null;
+  /**
+   * Version the running adapter reported during its last live ACP handshake.
+   * This is the adapter's own claim and may differ from `installedVersion`.
+   */
+  agentVersion?: string | null;
+  /** How the CLI is installed; null when the daemon could not determine it. */
+  installChannel?: "npm" | "npx-registry" | "native" | null;
+  /**
+   * Whether the CLI is installed locally. ABSENT means true; `false` appears
+   * only on synthetic "known but not installed" rows the daemon builds from its
+   * npm-package table. Those rows carry no protocol, so the chat picker
+   * excludes them already.
+   */
+  installed?: boolean | null;
+  /** npm package the row maps to, when known; the update/install consent shows it verbatim. */
+  npmPackage?: string | null;
+}
+
+/** Result of `provider_update`: the daemon ran `npm install -g <package>@latest` to completion. */
+export interface ProviderUpdateOutcome {
+  ok: boolean;
+  /** npm's exit code; null when npm never ran. */
+  exitCode?: number | null;
+  /** Full npm output; the UI shows only the tail. */
+  log: string;
 }
 
 export interface ProviderCatalog {

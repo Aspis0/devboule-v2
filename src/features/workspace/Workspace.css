@@ -699,6 +699,25 @@
   border: 1px solid var(--border);
   border-radius: 999px;
 }
+.workspace-agent-manifest select {
+  padding: 1px 4px;
+  color: var(--silence);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.workspace-agent-manifest select:hover {
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+
+/* A switch is in flight: the strip still shows the last confirmed values. */
+.workspace-agent-manifest-pending {
+  opacity: 0.55;
+}
 
 .workspace-agent-modes [role="radio"][aria-checked="true"] {
   color: var(--ink);
@@ -724,6 +743,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-agent-stop {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 10px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
+.workspace-agent-stop:hover,
+.workspace-agent-stop:focus-visible {
+  color: var(--terracotta-deep);
+  border-color: var(--border-strong);
 }
 
 .workspace-chat-entry {
@@ -792,6 +830,43 @@
 
 .workspace-chat-error {
   color: var(--danger-deep);
+}
+
+.workspace-session-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 12px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--terracotta);
+  border-radius: 6px;
+  color: var(--danger-deep);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.workspace-session-error-text {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.workspace-session-error-dismiss {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--danger-deep);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.workspace-session-error-dismiss:hover {
+  background: var(--terracotta);
+  color: var(--white);
 }
 
 .workspace-chat-typing {
@@ -1539,6 +1614,16 @@
   min-height: 0;
   padding: 12px;
   overflow-y: auto;
+}
+
+.workspace-changes-mockup-note {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--ochre);
+  border-radius: 8px;
+  color: var(--ochre-deep);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .workspace-file-changes {

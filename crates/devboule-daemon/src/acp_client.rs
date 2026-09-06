@@ -4,7 +4,7 @@
 //! session module still owns the runtime, attachment queue, coalescer,
 //! journal, liveness monitor, registry and teardown order.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -31,8 +31,8 @@ use super::permission_broker::{
 };
 use super::PtyCommand;
 use super::{
-    write_child_stdin, ReaderDispatch, SessionKiller, SessionRuntime, SpawnedSession, StderrSource,
-    StdioWaitableChild,
+    write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
+    SpawnedSession, StderrSource, StdioWaitableChild,
 };
 
 const COMMAND_ENV: &str = "DEVBOULE_ACP_COMMAND";
@@ -516,7 +516,7 @@ fn spawn_process_with_load(
         }
     };
     let mut reader = BufReader::new(stdout);
-    let (deferred, handshake_manifest, peer_session_id) = match handshake(
+    let (deferred, handshake_manifest, peer_session_id, agent_version) = match handshake(
         &transport,
         &mut reader,
         &command.cwd,
@@ -555,6 +555,7 @@ fn spawn_process_with_load(
         }
     };
     let session_id = transport.session_id();
+    transport.seed_manifest_from_event(handshake_manifest.as_ref());
     let writer = AcpWriter {
         transport: Arc::clone(&transport),
         pending: Vec::new(),
@@ -567,6 +568,7 @@ fn spawn_process_with_load(
     };
     let reader_dispatch = AcpReader::new(
         transport.pending_ids(),
+        transport.model_switch_ids(),
         session_id,
         Arc::clone(&transport.permission_broker),
         Arc::clone(&transport.host),
@@ -580,6 +582,9 @@ fn spawn_process_with_load(
         process_job,
         master: None,
         killer: Box::new(killer),
+        switcher: Some(Box::new(AcpSwitcher {
+            transport: Arc::clone(&transport),
+        })),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
         reader: Box::new(reader),
@@ -588,6 +593,7 @@ fn spawn_process_with_load(
         permission_broker: Some(Arc::clone(&transport.permission_broker)),
         os_handle,
         peer_session_id: Some(peer_session_id),
+        agent_version,
     })
 }
 
@@ -603,7 +609,11 @@ struct AcpTransport {
     turn: Arc<TurnWatch>,
     next_id: AtomicU64,
     pending: Arc<Mutex<HashSet<u64>>>,
+    model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
     session_id: Mutex<Option<String>>,
+    current_model_id: Mutex<Option<String>>,
+    current_effort: Mutex<Option<String>>,
+    last_manifest: Mutex<Option<SessionEvent>>,
 }
 
 impl AcpTransport {
@@ -616,7 +626,11 @@ impl AcpTransport {
             stdin,
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashSet::new())),
+            model_switches: Arc::new(Mutex::new(HashMap::new())),
             session_id: Mutex::new(None),
+            current_model_id: Mutex::new(None),
+            current_effort: Mutex::new(None),
+            last_manifest: Mutex::new(None),
         }
     }
 
@@ -690,6 +704,10 @@ impl AcpTransport {
         Arc::clone(&self.pending)
     }
 
+    fn model_switch_ids(&self) -> Arc<Mutex<HashMap<u64, Option<String>>>> {
+        Arc::clone(&self.model_switches)
+    }
+
     fn set_session_id(&self, session_id: String) {
         if let Ok(mut current) = self.session_id.lock() {
             *current = Some(session_id);
@@ -702,6 +720,171 @@ impl AcpTransport {
             .ok()
             .and_then(|value| value.clone())
             .unwrap_or_default()
+    }
+
+    fn current_model_id(&self) -> Option<String> {
+        self.current_model_id
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+    }
+
+    fn update_current_model_id(&self, model_id: Option<String>) {
+        if let Some(model_id) = model_id.filter(|model_id| !model_id.is_empty()) {
+            if let Ok(mut current) = self.current_model_id.lock() {
+                *current = Some(model_id);
+            }
+        }
+    }
+
+    fn current_effort(&self) -> Option<String> {
+        self.current_effort
+            .lock()
+            .ok()
+            .and_then(|effort| effort.clone())
+    }
+
+    fn update_current_effort(&self, effort: Option<String>) {
+        if let Ok(mut current) = self.current_effort.lock() {
+            *current = effort.filter(|effort| !effort.is_empty());
+        }
+    }
+
+    fn update_manifest_from_sessions_changed(
+        &self,
+        model_id: Option<String>,
+        effort: Option<String>,
+    ) {
+        if let Some(model_id) = model_id {
+            self.update_current_model_id(Some(model_id));
+        }
+        // `_x.ai/sessions/changed.reasoningEffort` is the session's ACTUAL live
+        // effort, not a catalog default (measured: it reports `low`/`high` as
+        // the user set them, whereas `models/update` reports the model's default
+        // regardless). It is therefore authoritative and MUST update the tracked
+        // effort — this is what makes `override_manifest_effort` reflect a change
+        // the provider made on its own side. Do not "protect" the tracked effort
+        // from this source: that would hide a real runtime change and violate
+        // §4.3.4 (show the runtime-confirmed value, not the last click).
+        if effort.is_some() {
+            self.update_current_effort(effort);
+        }
+    }
+
+    fn seed_manifest_from_event(&self, event: Option<&SessionEvent>) {
+        if let Some(SessionEvent::SessionManifest {
+            current_model_id,
+            models,
+            ..
+        }) = event
+        {
+            self.update_current_model_id(current_model_id.clone());
+            let effort = current_model_id.as_ref().and_then(|model_id| {
+                models
+                    .iter()
+                    .find(|model| model.model_id == *model_id)
+                    .and_then(|model| model.current_effort.clone())
+            });
+            self.update_current_effort(effort);
+            if let Ok(mut last_manifest) = self.last_manifest.lock() {
+                *last_manifest = event.cloned();
+            }
+        }
+    }
+
+    fn remember_manifest(&self, event: &SessionEvent) {
+        if let SessionEvent::SessionManifest {
+            current_model_id, ..
+        } = event
+        {
+            self.update_current_model_id(current_model_id.clone());
+            if let Ok(mut last_manifest) = self.last_manifest.lock() {
+                *last_manifest = Some(event.clone());
+            }
+        }
+    }
+
+    fn override_manifest_effort(&self, event: SessionEvent) -> SessionEvent {
+        let Some(effort) = self.current_effort() else {
+            return event;
+        };
+        let SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id: Some(current_model_id),
+            models,
+            modes,
+        } = event
+        else {
+            return event;
+        };
+        let models = models
+            .into_iter()
+            .map(|mut model| {
+                if model.model_id == current_model_id {
+                    model.current_effort = Some(effort.clone());
+                }
+                model
+            })
+            .collect();
+        SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id: Some(current_model_id),
+            models,
+            modes,
+        }
+    }
+
+    fn last_manifest(&self) -> Option<SessionEvent> {
+        self.last_manifest
+            .lock()
+            .ok()
+            .and_then(|manifest| manifest.clone())
+    }
+
+    fn default_effort_for_model(&self, model_id: &str) -> Option<String> {
+        let SessionEvent::SessionManifest { models, .. } = self.last_manifest()? else {
+            return None;
+        };
+        let model = models.iter().find(|model| model.model_id == model_id)?;
+        model.current_effort.clone().or_else(|| {
+            model.efforts.as_ref().and_then(|efforts| {
+                efforts
+                    .iter()
+                    .find(|effort| effort.default == Some(true))
+                    .or_else(|| efforts.first())
+                    .map(|effort| effort.id.clone())
+            })
+        })
+    }
+
+    fn request_set_model(
+        &self,
+        params: serde_json::Value,
+        effort: Option<String>,
+    ) -> io::Result<u64> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.pending
+            .lock()
+            .map_err(|_| io::Error::other("ACP pending-id lock poisoned"))?
+            .insert(id);
+        self.model_switches
+            .lock()
+            .map_err(|_| io::Error::other("ACP model-switch lock poisoned"))?
+            .insert(id, effort);
+        if let Err(error) = self.send_line(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/set_model",
+            "params": params,
+        })) {
+            let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
+            let _ = self
+                .model_switches
+                .lock()
+                .map(|mut switches| switches.remove(&id));
+            return Err(error);
+        }
+        Ok(id)
     }
 
     fn cancel(&self) {
@@ -726,6 +909,54 @@ impl AcpTransport {
     }
 }
 
+struct AcpSwitcher {
+    transport: Arc<AcpTransport>,
+}
+
+impl ModelSwitcher for AcpSwitcher {
+    fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError> {
+        let requested_model_id = model_id
+            .filter(|model_id| !model_id.is_empty())
+            .map(str::to_string);
+        let model_id = requested_model_id
+            .clone()
+            .or_else(|| self.transport.current_model_id())
+            .ok_or_else(|| {
+                let message = if effort.is_some() {
+                    "Cannot change the effort before the provider reports its current model."
+                } else {
+                    "ACP provider has not reported a current model."
+                };
+                WireError::new(ErrorCode::InvalidRequest, message)
+            })?;
+        let effort = effort.map(str::to_string).or_else(|| {
+            requested_model_id
+                .as_deref()
+                .and_then(|model_id| self.transport.default_effort_for_model(model_id))
+        });
+        let mut params = serde_json::json!({
+            "sessionId": self.transport.session_id(),
+            "modelId": model_id,
+        });
+        if let Some(effort) = &effort {
+            // Grok intermittently acknowledges model-only switches without
+            // applying them. Carrying the target model's default effort makes
+            // the switch deterministic and is the honest neutral value for it.
+            params["_meta"] = serde_json::json!({ "reasoningEffort": effort });
+        }
+        self.transport
+            .request_set_model(params, effort)
+            .map_err(acp_io_error)?;
+        Ok(())
+    }
+
+    fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
+        Box::new(Self {
+            transport: Arc::clone(&self.transport),
+        })
+    }
+}
+
 impl Drop for AcpTransport {
     fn drop(&mut self) {
         self.turn.shutdown();
@@ -734,13 +965,20 @@ impl Drop for AcpTransport {
     }
 }
 
+type HandshakeResult = (
+    Vec<serde_json::Value>,
+    Option<SessionEvent>,
+    String,
+    Option<String>,
+);
+
 fn handshake(
     transport: &AcpTransport,
     reader: &mut BufReader<ChildStdout>,
     cwd: &std::path::Path,
     provider_id: Option<String>,
     load_session_id: Option<&str>,
-) -> Result<(Vec<serde_json::Value>, Option<SessionEvent>, String), WireError> {
+) -> Result<HandshakeResult, WireError> {
     let mut deferred = Vec::new();
     let initialize_id = transport
         .request("initialize", advertised_initialize_params()?)
@@ -762,6 +1000,12 @@ fn handshake(
             format!("ACP peer negotiated unsupported protocol version {negotiated}."),
         ));
     }
+    let agent_version = initialize
+        .get("result")
+        .and_then(|result| result.get("agentInfo"))
+        .and_then(|agent_info| agent_info.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::provider_catalog::cap_external_version);
     let (method, params) = match load_session_id {
         Some(session_id) => (
             "session/load",
@@ -800,7 +1044,7 @@ fn handshake(
         session.get("result").unwrap_or(&serde_json::Value::Null),
         provider_id,
     );
-    Ok((deferred, manifest, session_id.to_string()))
+    Ok((deferred, manifest, session_id.to_string(), agent_version))
 }
 
 fn read_response(
@@ -837,10 +1081,31 @@ fn read_response(
         if let Some(error) = value.get("error") {
             return Err(WireError::new(
                 ErrorCode::Io,
-                format!("ACP request failed: {error}"),
+                acp_request_error_message(error),
             ));
         }
         return Ok(value);
+    }
+}
+
+/// Format a JSON-RPC error object for a user-facing message. Agents embed
+/// structured payloads in the error object (qwen carries `authMethods`);
+/// the string `message` field is what belongs in a chat banner. Without a
+/// string message the code is reported bare — the object itself is never
+/// serialized into the text.
+fn acp_request_error_message(error: &serde_json::Value) -> String {
+    let message = error.get("message").and_then(serde_json::Value::as_str);
+    match (
+        error.get("code").and_then(serde_json::Value::as_i64),
+        message,
+    ) {
+        (Some(code), Some(message)) => format!("ACP request failed ({code}): {message}"),
+        (None, Some(message)) => format!("ACP request failed: {message}"),
+        // A structured payload (tokens, authMethods) belongs to provider
+        // plumbing, never to a chat banner or the Settings health line, so
+        // the object itself is never serialized here.
+        (Some(code), None) => format!("ACP request failed ({code})."),
+        (None, None) => "ACP request failed.".to_string(),
     }
 }
 
@@ -885,6 +1150,19 @@ struct AcpKiller {
 }
 
 impl SessionKiller for AcpKiller {
+    /// Soft interrupt: ask the agent to cancel the current turn and release
+    /// pending permission prompts. The process, the turn watch, and the
+    /// kill guard stay untouched so later turns keep working.
+    fn interrupt(&mut self) {
+        // A kill already sent its own cancel and is tearing the peer down;
+        // a late interrupt would only re-cancel a closing transport.
+        if self.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        self.transport.cancel();
+        self.permission_broker.cancel_all();
+    }
+
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             let watchdog = Arc::clone(&self.process);
@@ -926,6 +1204,7 @@ struct AcpReader {
     buffer: Vec<u8>,
     discarding_oversized_line: bool,
     pending: Arc<Mutex<HashSet<u64>>>,
+    model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
     session_id: String,
     permission_broker: Arc<PermissionBroker>,
     host: Arc<AcpHost>,
@@ -941,6 +1220,7 @@ impl AcpReader {
     #[allow(clippy::too_many_arguments)]
     fn new(
         pending: Arc<Mutex<HashSet<u64>>>,
+        model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
         session_id: String,
         permission_broker: Arc<PermissionBroker>,
         host: Arc<AcpHost>,
@@ -954,6 +1234,7 @@ impl AcpReader {
             buffer: Vec::new(),
             discarding_oversized_line: false,
             pending,
+            model_switches,
             session_id,
             permission_broker,
             host,
@@ -993,6 +1274,7 @@ impl AcpReader {
     ) -> Self {
         Self::new(
             pending,
+            Arc::new(Mutex::new(HashMap::new())),
             session_id,
             permission_broker,
             host,
@@ -1014,6 +1296,7 @@ impl AcpReader {
     ) -> Self {
         Self::new(
             pending,
+            transport.model_switch_ids(),
             session_id,
             permission_broker,
             host,
@@ -1026,6 +1309,17 @@ impl AcpReader {
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
+        let event = if let Some(transport) = &self.transport {
+            transport.override_manifest_effort(event)
+        } else {
+            event
+        };
+        if matches!(&event, SessionEvent::SessionManifest { .. }) {
+            if let Some(transport) = &self.transport {
+                transport.remember_manifest(&event);
+            }
+            runtime.store_session_manifest(event.clone());
+        }
         let _ = runtime.publish_agent_event(event, None);
     }
 
@@ -1053,7 +1347,6 @@ impl ReaderDispatch for AcpReader {
         self.host
             .bind_permission_gate(&self.permission_broker, runtime);
         if let Some(manifest) = self.handshake_manifest.take() {
-            runtime.store_session_manifest(manifest.clone());
             self.publish(runtime, manifest);
         }
         if !self.deferred.is_empty() {
@@ -1213,18 +1506,71 @@ impl AcpReader {
                 }
             }
             Some(AcpLineKind::Notification { .. }) => {
+                if value.get("method").and_then(serde_json::Value::as_str)
+                    == Some("_x.ai/sessions/changed")
+                {
+                    self.dispatch_sessions_changed(value, runtime);
+                    return;
+                }
                 if let Some(view) =
                     view_from_envelope_in(value, &self.session_id, Some(self.host.cwd()))
                 {
                     let view = self.with_provider(view);
-                    if matches!(view, SessionEvent::SessionManifest { .. }) {
-                        runtime.store_session_manifest(view.clone());
-                    }
                     self.publish(runtime, view);
                 }
             }
             None => {}
         }
+    }
+
+    fn dispatch_sessions_changed(&self, value: &serde_json::Value, runtime: &SessionRuntime) {
+        let Some(upserted) = value
+            .pointer("/params/upserted")
+            .and_then(serde_json::Value::as_array)
+        else {
+            return;
+        };
+        let Some(update) = upserted.iter().find(|entry| {
+            entry.get("sessionId").and_then(serde_json::Value::as_str)
+                == Some(self.session_id.as_str())
+        }) else {
+            return;
+        };
+        let model_id = update
+            .get("modelId")
+            .and_then(serde_json::Value::as_str)
+            .filter(|model_id| !model_id.is_empty())
+            .map(str::to_string);
+        let effort = update
+            .get("reasoningEffort")
+            .and_then(serde_json::Value::as_str)
+            .filter(|effort| !effort.is_empty())
+            .map(str::to_string);
+        if model_id.is_none() && effort.is_none() {
+            return;
+        }
+        let Some(transport) = &self.transport else {
+            return;
+        };
+        transport.update_manifest_from_sessions_changed(model_id.clone(), effort);
+        let Some(SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        }) = transport.last_manifest()
+        else {
+            return;
+        };
+        self.publish(
+            runtime,
+            SessionEvent::SessionManifest {
+                provider_id,
+                current_model_id: model_id.or(current_model_id),
+                models,
+                modes,
+            },
+        );
     }
 
     fn dispatch_client_request(
@@ -1269,6 +1615,66 @@ impl AcpReader {
             eprintln!("skipping ACP response with unknown id {id}");
             return;
         }
+        let requested_effort = self
+            .model_switches
+            .lock()
+            .map(|mut switches| switches.remove(&id))
+            .unwrap_or(None);
+        if let Some(requested_effort) = requested_effort {
+            if let Some(error) = value.get("error") {
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: acp_request_error_message(error),
+                    },
+                );
+            } else if let Some(model_id) = value
+                .pointer("/result/_meta/model/Ok")
+                .and_then(serde_json::Value::as_str)
+                .filter(|model_id| !model_id.is_empty())
+            {
+                if let Some(transport) = &self.transport {
+                    // The successful reply is the provider's runtime
+                    // confirmation. A later push supersedes the model and
+                    // catalog, but grok reports the catalog-default effort,
+                    // so the tracked current effort remains authoritative.
+                    transport.update_current_model_id(Some(model_id.to_string()));
+                    if requested_effort.is_some() {
+                        transport.update_current_effort(requested_effort.clone());
+                    }
+                    if let Some(SessionEvent::SessionManifest {
+                        provider_id,
+                        models,
+                        modes,
+                        ..
+                    }) = transport.last_manifest()
+                    {
+                        let current_effort = transport.current_effort();
+                        let models = models
+                            .into_iter()
+                            .map(|mut model| {
+                                if model.model_id == model_id {
+                                    if let Some(effort) = &current_effort {
+                                        model.current_effort = Some(effort.clone());
+                                    }
+                                }
+                                model
+                            })
+                            .collect();
+                        self.publish(
+                            runtime,
+                            SessionEvent::SessionManifest {
+                                provider_id,
+                                current_model_id: Some(model_id.to_string()),
+                                models,
+                                modes,
+                            },
+                        );
+                    }
+                }
+            }
+            return;
+        }
         if !self.turn.finish_prompt(id) {
             return;
         }
@@ -1276,7 +1682,10 @@ impl AcpReader {
             self.publish(
                 runtime,
                 SessionEvent::AgentError {
-                    message: format!("ACP request {id} failed: {error}"),
+                    message: format!(
+                        "ACP request {id} failed: {}",
+                        acp_request_error_message(error)
+                    ),
                 },
             );
             return;
@@ -1591,7 +2000,9 @@ mod tests {
     use super::super::permission_broker::{
         permission, permission_path, test_broker, PermissionBroker, MAX_ACP_PERMISSION_FIELD_BYTES,
     };
-    use super::{complete_lines, AcpReader, MAX_ACP_PERMISSION_LINE_BYTES};
+    use super::{
+        acp_request_error_message, complete_lines, AcpReader, MAX_ACP_PERMISSION_LINE_BYTES,
+    };
     use crate::journal::Journal;
     use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
     use devboule_protocol::{PermissionOutcome, SessionEvent};
@@ -1600,6 +2011,78 @@ mod tests {
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    #[test]
+    fn request_error_without_a_message_never_serializes_the_object() {
+        let error = serde_json::json!({
+            "code": -32000,
+            "data": {"token": "sk-LEAK"}
+        });
+        let text = acp_request_error_message(&error);
+        assert!(
+            !text.contains("sk-LEAK"),
+            "structured error data must not reach a user-facing banner: {text}"
+        );
+        assert!(text.contains("(-32000)"), "code must stay visible: {text}");
+    }
+
+    #[test]
+    fn turn_error_does_not_publish_structured_error_data() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let mut reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::from([9u64]))),
+            "stub-session".to_string(),
+            broker,
+        );
+        reader.turn.start_prompt(9);
+        reader
+            .feed(
+                br#"{"jsonrpc":"2.0","id":9,"error":{"code":-32602,"message":"unknown model","data":{"secret":"do-not-publish"}}}
+"#,
+                &runtime,
+            )
+            .expect("feed");
+        let message = conn
+            .pull_events()
+            .into_iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::AgentError { message } => Some(message),
+                _ => None,
+            })
+            .expect("turn error event");
+        assert_eq!(
+            message,
+            "ACP request 9 failed: ACP request failed (-32602): unknown model"
+        );
+        assert!(!message.contains("do-not-publish"));
+    }
+
+    #[test]
+    fn model_switch_response_does_not_finish_a_live_prompt() {
+        let (broker, _) = test_broker();
+        let (runtime, _conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let pending = Arc::new(Mutex::new(HashSet::from([42u64])));
+        let reader = AcpReader::for_test(Arc::clone(&pending), "stub-session".to_string(), broker);
+        reader
+            .model_switches
+            .lock()
+            .expect("model-switch lock")
+            .insert(42, None);
+        reader.turn.start_prompt(42);
+        let mut reader = reader;
+        reader
+            .feed(
+                br#"{"jsonrpc":"2.0","id":42,"result":{"_meta":{"model":{"Ok":"new-model"}}}}
+"#,
+                &runtime,
+            )
+            .expect("feed");
+        assert!(
+            reader.turn.prompt_is_live(),
+            "a model-switch response must not finish a live prompt"
+        );
+    }
+
     #[test]
     fn journal_keeps_raw_envelope_and_replay_derives_the_view() {
         let path = permission_path("envelope");

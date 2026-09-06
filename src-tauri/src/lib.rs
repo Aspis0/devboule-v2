@@ -2,6 +2,7 @@ mod backend;
 mod client;
 mod oracle;
 mod plugins;
+mod surface_settings;
 
 use tauri::Manager;
 
@@ -53,6 +54,8 @@ pub fn run() {
             backend::session::session_attach,
             backend::session::session_detach,
             backend::session::session_send,
+            backend::session::session_interrupt,
+            backend::session::session_set_model,
             backend::session::session_permission_respond,
             backend::session::session_resize,
             backend::session::session_close,
@@ -64,6 +67,8 @@ pub fn run() {
             backend::session::sessions_watch,
             backend::session::sessions_unwatch,
             backend::providers::providers_list,
+            backend::providers::providers_refresh,
+            backend::providers::provider_update,
             oracle::oracle_workspace_get,
             oracle::oracle_workspace_set,
             oracle::oracle_model_download_start,
@@ -77,6 +82,8 @@ pub fn run() {
             oracle::oracle_watch_stop,
             oracle::oracle_files,
             oracle::oracle_ask,
+            surface_settings::surface_settings_get,
+            surface_settings::surface_settings_set,
             plugins::plugins_list,
             plugins::plugins_rescan,
             plugins::plugin_install,

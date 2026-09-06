@@ -3,11 +3,19 @@ import {
   createSessionChannel,
   sessionAttach,
   sessionDetach,
+  sessionInterrupt,
   sessionSend,
+  sessionSetModel,
   type SessionChannel,
 } from "../../lib/tauri";
-import type { PermissionRequest, SessionManifest, SessionState } from "../../types/ipc";
+import type {
+  PermissionRequest,
+  SessionManifest,
+  SessionModel,
+  SessionState,
+} from "../../types/ipc";
 import { AgentSession, type AgentChatItem, type AgentSessionState } from "../../lib/agentSession";
+import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
 interface AgentChatSurfaceProps {
@@ -37,6 +45,14 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
   if (command === "session_send") {
     return sessionSend(id, typeof args?.text === "string" ? args.text : "") as Promise<T>;
   }
+  if (command === "session_set_model") {
+    return sessionSetModel(
+      id,
+      typeof args?.modelId === "string" ? args.modelId : undefined,
+      typeof args?.effort === "string" ? args.effort : undefined,
+    ) as Promise<T>;
+  }
+  if (command === "session_interrupt") return sessionInterrupt(id) as Promise<T>;
   if (command === "session_detach") return sessionDetach(id) as Promise<T>;
   return Promise.reject(new Error(`Unsupported agent command: ${command}`));
 }
@@ -104,21 +120,34 @@ function usageCopy(state: AgentSessionState): string | null {
   return details.length > 0 ? details.join(" · ") : null;
 }
 
-function manifestStrip(manifest: SessionManifest): {
-  provider: string | null;
-  model: string | null;
-  effort: string | null;
-} {
-  const current = manifest.models.find((model) => model.modelId === manifest.currentModelId);
-  const effort =
-    current?.currentEffort && current.efforts?.some((entry) => entry.id === current.currentEffort)
-      ? current.currentEffort
-      : null;
-  return {
-    provider: manifest.providerId ?? null,
-    model: current?.name ?? manifest.currentModelId ?? null,
-    effort,
-  };
+function manifestModel(manifest: SessionManifest): SessionModel | null {
+  return manifest.models.find((model) => model.modelId === manifest.currentModelId) ?? null;
+}
+
+/** The effort the runtime confirmed, only when the model actually declares it. */
+function confirmedEffort(model: SessionModel | null): string | null {
+  if (
+    model?.currentEffort !== undefined &&
+    model.efforts?.some((entry) => entry.id === model.currentEffort)
+  ) {
+    return model.currentEffort;
+  }
+  return null;
+}
+
+/** What the strip says a pending switch is heading toward, or null. */
+function pendingTargetCopy(
+  manifest: SessionManifest,
+  pending: { modelId?: string; effort?: string; at: number } | null,
+): string | null {
+  if (pending === null) return null;
+  if (pending.modelId !== undefined) {
+    const model = manifest.models.find((entry) => entry.modelId === pending.modelId);
+    return `switching to ${model?.name ?? pending.modelId}…`;
+  }
+  const model = manifestModel(manifest);
+  const effort = model?.efforts?.find((entry) => entry.id === pending.effort);
+  return effort === undefined ? null : `switching to ${effort.label}…`;
 }
 
 function renderItem(item: AgentChatItem) {
@@ -150,6 +179,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   onPermissionResolved,
 }: AgentChatSurfaceProps) {
   const sessionRef = useRef<AgentSession | null>(null);
+  const appliedEffortPrefRef = useRef(false);
   const [state, setState] = useState<AgentSessionState>({
     items: [],
     status: "initializing",
@@ -157,6 +187,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     availableCommands: [],
     lastFinished: null,
     manifest: null,
+    pendingSwitch: null,
   });
   const conversationRef = useRef<HTMLDivElement>(null);
 
@@ -177,6 +208,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       },
     });
     sessionRef.current = session;
+    appliedEffortPrefRef.current = false;
     const unsubscribe = session.subscribe(() => setState(session.getState()));
     void session.start();
     return () => {
@@ -186,6 +218,27 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     };
   }, [onPermissionRequest, onPermissionResolved, sessionId]);
 
+  // Zed's pattern: re-apply the remembered effort once, on the first manifest
+  // of the session. The confirmation manifest is just another manifest here —
+  // the ref guard keeps the auto-switch from re-triggering. The preference is
+  // a localStorage/product concern, so it lives on the surface next to the
+  // manual onChange handler, not inside the headless session controller.
+  useEffect(() => {
+    const manifest = state.manifest;
+    if (manifest === null || appliedEffortPrefRef.current) return;
+    appliedEffortPrefRef.current = true;
+    const { providerId, currentModelId } = manifest;
+    if (providerId === undefined || currentModelId === undefined) return;
+    const model = manifestModel(manifest);
+    if (model === null || !model.efforts || model.efforts.length === 0) return;
+    const stored = getPreferredEffort(providerId, currentModelId);
+    if (stored === null || stored === model.currentEffort) return;
+    // A stale preference (a model that no longer offers that effort) must not
+    // produce a doomed switch; skip it without surfacing an error.
+    if (!model.efforts.some((entry) => entry.id === stored)) return;
+    void sessionRef.current?.setModel(currentModelId, stored);
+  }, [state.manifest]);
+
   useEffect(() => {
     const conversation = conversationRef.current;
     if (conversation === null) return;
@@ -193,7 +246,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   }, [state.items, state.streaming]);
 
   const finishCopy = usageCopy(state);
-  const strip = state.manifest === null ? null : manifestStrip(state.manifest);
+  const manifest = state.manifest;
+  const stripModel = manifest === null ? null : manifestModel(manifest);
+  const efforts = stripModel?.efforts ?? [];
+  const pendingSwitch = state.pendingSwitch !== null;
+  const pendingCopy = manifest === null ? null : pendingTargetCopy(manifest, state.pendingSwitch);
   const osGone =
     observedType(observedState) === "ended" || observedType(observedState) === "recovered";
   const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
@@ -211,12 +268,63 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         <span className="workspace-agent-status" role="status">
           {statusLabel}
         </span>
+        {state.status === "running" ? (
+          <button
+            type="button"
+            className="workspace-agent-stop"
+            aria-label="Stop the current turn"
+            onClick={() => void sessionRef.current?.interrupt()}
+          >
+            Stop
+          </button>
+        ) : null}
       </div>
-      {strip !== null && (strip.provider !== null || strip.model !== null) ? (
-        <div className="workspace-agent-manifest" data-testid="session-manifest">
-          {strip.provider !== null ? <span>{strip.provider}</span> : null}
-          {strip.model !== null ? <span>{strip.model}</span> : null}
-          {strip.effort !== null ? <span>{strip.effort}</span> : null}
+      {manifest !== null && (manifest.providerId !== undefined || manifest.models.length > 0) ? (
+        <div
+          className={`workspace-agent-manifest${pendingSwitch ? " workspace-agent-manifest-pending" : ""}`}
+          data-testid="session-manifest"
+          aria-busy={pendingSwitch}
+        >
+          {manifest.providerId !== undefined ? <span>{manifest.providerId}</span> : null}
+          {manifest.models.length > 1 ? (
+            <select
+              data-testid="session-model-select"
+              aria-label="Model"
+              value={manifest.currentModelId ?? ""}
+              onChange={(event) => void sessionRef.current?.setModel(event.target.value)}
+            >
+              {manifest.models.map((model) => (
+                <option key={model.modelId} value={model.modelId}>
+                  {model.name}
+                </option>
+              ))}
+            </select>
+          ) : stripModel !== null ? (
+            <span>{stripModel.name}</span>
+          ) : null}
+          {efforts.length > 0 ? (
+            <select
+              data-testid="session-effort-select"
+              aria-label="Thinking effort"
+              value={confirmedEffort(stripModel) ?? ""}
+              onChange={(event) => {
+                const effort = event.target.value;
+                if (manifest.providerId !== undefined && manifest.currentModelId !== undefined) {
+                  setPreferredEffort(manifest.providerId, manifest.currentModelId, effort);
+                }
+                void sessionRef.current?.setModel(undefined, effort);
+              }}
+            >
+              {efforts.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {pendingCopy !== null ? (
+            <span data-testid="session-pending-label">{pendingCopy}</span>
+          ) : null}
         </div>
       ) : null}
       {state.manifest?.modes && state.manifest.modes.availableModes.length > 0 ? (

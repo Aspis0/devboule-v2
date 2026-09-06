@@ -16,7 +16,7 @@ use devboule_daemon::{
     connect, current_user_sid, spawn_daemon, DaemonClient, EventHandler, RuntimePaths,
 };
 use devboule_protocol::{
-    ClientHello, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
+    ClientHello, ErrorCode, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
     SessionEvent, SessionKind,
 };
 use rusqlite::Connection;
@@ -157,6 +157,38 @@ where
         "timed out waiting for ACP event: {:?}",
         events.lock().unwrap()
     );
+}
+
+/// Make the stub's build directory resolvable by the daemon-side provider
+/// catalog, which scans PATH. The guard restores the original PATH on drop.
+struct PathGuard {
+    original: std::ffi::OsString,
+}
+
+impl Drop for PathGuard {
+    fn drop(&mut self) {
+        std::env::set_var("PATH", &self.original);
+    }
+}
+
+fn prepend_stub_dir_to_path() -> PathGuard {
+    let original = std::env::var_os("PATH").unwrap_or_default();
+    let mut entries = std::env::split_paths(&original).collect::<Vec<_>>();
+    entries.insert(
+        0,
+        stub_bin().parent().expect("stub build dir").to_path_buf(),
+    );
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(&entries).expect("joinable PATH"),
+    );
+    PathGuard { original }
+}
+
+fn stub_only_path() -> PathGuard {
+    let original = std::env::var_os("PATH").unwrap_or_default();
+    std::env::set_var("PATH", stub_bin().parent().expect("stub build dir"));
+    PathGuard { original }
 }
 
 fn wait_for_file(path: &Path) -> String {
@@ -352,6 +384,150 @@ fn acp_startup_failure_includes_agent_stderr() {
 }
 
 #[test]
+fn acp_handshake_failure_ends_the_journal_row_and_records_provider_failure() {
+    let _test_lock = lock_tests();
+    let _path = prepend_stub_dir_to_path();
+    std::env::set_var("DEVBOULE_STUB_FAIL_SESSION_NEW", "1");
+    struct ClearFailEnv;
+    impl Drop for ClearFailEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("DEVBOULE_STUB_FAIL_SESSION_NEW");
+        }
+    }
+    let _clear = ClearFailEnv;
+    let test = AcpTest::new(&[]);
+
+    let error = test
+        .client
+        .session_create(None, SessionKind::Acp, None)
+        .expect_err("a session/new handshake error must reject the create");
+    assert!(
+        error.to_string().contains("stub credentials expired"),
+        "create error did not surface the stub error: {error}"
+    );
+    // The JSON-RPC error's string message must reach the user, not the
+    // serialized error object: auth payloads are noise in a chat banner.
+    assert!(
+        !error.to_string().contains("authMethods"),
+        "create error must not carry the raw error object: {error}"
+    );
+    assert!(
+        error.to_string().contains("(-32000)"),
+        "create error must carry the numeric JSON-RPC code: {error}"
+    );
+
+    // The journal row was upserted before spawn; a failed spawn must end it,
+    // or the roster renders a phantom recovered session with zero events.
+    // The journal writer is asynchronous, so poll with a deadline.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let state = loop {
+        let sessions = test.client.sessions_list().expect("sessions list");
+        if let Some(session) = sessions
+            .iter()
+            .find(|session| session.kind == SessionKind::Acp)
+        {
+            break session.state.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the failed session never appeared in sessions_list"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        matches!(state, devboule_protocol::SessionState::Ended { .. }),
+        "the failed-handshake session must render as ended, got {state:?}"
+    );
+
+    let (providers, _) = test.client.providers_list().expect("providers list");
+    let stub = providers
+        .iter()
+        .find(|provider| provider.id == "devboule-acp-stub")
+        .expect("stub provider present in providers_list");
+    assert!(
+        stub.authentication.starts_with("failed:")
+            && stub.authentication.contains("stub credentials expired"),
+        "stub authentication must carry the failed handshake, got {:?}",
+        stub.authentication
+    );
+    assert!(
+        !stub.authentication.contains("authMethods"),
+        "the health line must not carry the raw error object, got {:?}",
+        stub.authentication
+    );
+}
+
+#[test]
+fn acp_successful_handshake_records_provider_ok() {
+    let _test_lock = lock_tests();
+    let _path = prepend_stub_dir_to_path();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let (providers, _) = test.client.providers_list().expect("providers list");
+    let stub = providers
+        .iter()
+        .find(|provider| provider.id == "devboule-acp-stub")
+        .expect("stub provider present in providers_list");
+    assert_eq!(
+        stub.authentication, "ok",
+        "a completed ACP handshake must measure the provider as ok"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_handshake_agent_info_version_is_visible_in_providers_list() {
+    let _test_lock = lock_tests();
+    let _path = prepend_stub_dir_to_path();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let (providers, _) = test.client.providers_list().expect("providers list");
+    let stub = providers
+        .iter()
+        .find(|provider| provider.id == "devboule-acp-stub")
+        .expect("stub provider present in providers_list");
+    assert_eq!(stub.agent_version.as_deref(), Some("1"));
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn providers_refresh_probes_stub_version_without_blocking_status() {
+    let _test_lock = lock_tests();
+    let _path = stub_only_path();
+    let version_dir = unique_dir();
+    let version_started = version_dir.join("version started.txt");
+    std::env::set_var("DEVBOULE_ACP_STUB_VERSION_DELAY_MS", "1500");
+    std::env::set_var("DEVBOULE_ACP_STUB_VERSION_FILE", &version_started);
+    let mut test = AcpTest::new(&[]);
+    test._env.names.push("DEVBOULE_ACP_STUB_VERSION_DELAY_MS");
+    test._env.names.push("DEVBOULE_ACP_STUB_VERSION_FILE");
+    let client = Arc::clone(&test.client);
+
+    let refresh_client = Arc::clone(&client);
+    let refresh = std::thread::spawn(move || refresh_client.providers_refresh());
+    let _ = wait_for_file(&version_started);
+    let status_started = Instant::now();
+    client.status().expect("status during provider refresh");
+    assert!(
+        status_started.elapsed() < Duration::from_millis(500),
+        "status was queued behind refresh: {:?}",
+        status_started.elapsed()
+    );
+
+    let (providers, _) = refresh.join().expect("refresh thread").expect("refresh");
+    let stub = providers
+        .iter()
+        .find(|provider| provider.id == "devboule-acp-stub")
+        .expect("stub provider present in providers_refresh");
+    assert_eq!(stub.installed_version.as_deref(), Some("9.9.9"));
+    let _ = std::fs::remove_dir_all(version_dir);
+}
+
+#[test]
 fn acp_session_cancel_reports_cancelled_stop_reason() {
     let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
@@ -372,6 +548,381 @@ fn acp_session_cancel_reports_cancelled_stop_reason() {
         .session_close(&session.id)
         .expect("close cancelled ACP session");
     wait_until_gone(pid);
+}
+
+#[test]
+fn acp_session_interrupt_cancels_the_turn_but_keeps_the_session_alive() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_send(&session.id, "block until cancelled")
+        .expect("blocked prompt");
+    test.client
+        .session_interrupt(&session.id)
+        .expect("interrupt the running turn");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "cancelled")
+        })
+    });
+    // The distinction from stop: the session survives the interrupt, so a
+    // second prompt must round-trip normally on the same process.
+    test.client
+        .session_send(&session.id, "after interrupt")
+        .expect("prompt after interrupt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let still_live = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .iter()
+        .any(|listed| {
+            listed.id == session.id
+                && matches!(listed.state, devboule_protocol::SessionState::Live { .. })
+        });
+    assert!(
+        still_live,
+        "the interrupted session must still list as live"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close interrupted ACP session");
+    wait_until_gone(pid);
+}
+
+#[test]
+fn acp_set_model_waits_for_manifest_confirmation() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), Some("low"))
+        .expect("set model");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    ..
+                } if current_model_id.as_deref() == Some("stub-model-new")
+            )
+        })
+    });
+    let manifest_models: Vec<String> = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::SessionManifest {
+                current_model_id: Some(model_id),
+                ..
+            } => Some(model_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        manifest_models.last().map(String::as_str),
+        Some("stub-model-new")
+    );
+    assert!(
+        manifest_models
+            .iter()
+            .skip(1)
+            .all(|model_id| model_id == "stub-model-new"),
+        "model switch confirmation regressed after the initial manifest: {manifest_models:?}"
+    );
+    let confirmed_efforts: Vec<String> = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::SessionManifest {
+                current_model_id: Some(model_id),
+                models,
+                ..
+            } if model_id == "stub-model-new" => models
+                .iter()
+                .find(|model| model.model_id == "stub-model-new")
+                .and_then(|model| model.current_effort.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !confirmed_efforts.is_empty() && confirmed_efforts.iter().all(|effort| effort == "low"),
+        "model+effort confirmation regressed: {confirmed_efforts:?}"
+    );
+    assert!(
+        !events
+            .lock()
+            .expect("events lock")
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. })),
+        "set_model response must not close a prompt turn"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_set_model_without_provider_push_uses_reply_confirmation() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_without_set_model_push();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), None)
+        .expect("set model");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    models,
+                    ..
+                } if current_model_id.as_deref() == Some("stub-model-new")
+                    && models.iter().any(|model| {
+                        model.model_id == "stub-model-new"
+                            && model.current_effort.as_deref() == Some("high")
+                    })
+            )
+        })
+    });
+    test.client
+        .session_set_model(&session.id, Some("stub-model-no-push-again"), None)
+        .expect("set model again");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    ..
+                } if current_model_id.as_deref() == Some("stub-model-no-push-again")
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_effort_only_set_model_uses_the_current_model_id() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_without_set_model_push();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, None, Some("low"))
+        .expect("set effort");
+    assert_eq!(wait_for_file(&test.set_model_file()), "stub-model");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    models,
+                    ..
+                } if current_model_id.as_deref() == Some("stub-model")
+                    && models.iter().any(|model| model.current_effort.as_deref() == Some("low"))
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_model_only_set_model_carries_target_default_effort() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_without_set_model_push();
+    let (session, _events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), None)
+        .expect("set model");
+    assert_eq!(wait_for_file(&test.set_model_effort_file()), "high");
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_model_only_without_target_efforts_omits_effort() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_without_target_efforts();
+    let (session, _events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), None)
+        .expect("set model");
+    assert_eq!(wait_for_file(&test.set_model_effort_file()), "<none>");
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_explicit_set_model_effort_wins_target_default() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_without_set_model_push();
+    let (session, _events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), Some("low"))
+        .expect("set model and effort");
+    assert_eq!(wait_for_file(&test.set_model_effort_file()), "low");
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_model_and_effort_reply_confirmation_carries_both_values() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_without_set_model_push();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), Some("low"))
+        .expect("set model and effort");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    models,
+                    ..
+                } if current_model_id.as_deref() == Some("stub-model-new")
+                    && models.iter().any(|model| {
+                        model.model_id == "stub-model-new"
+                            && model.current_effort.as_deref() == Some("low")
+                    })
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_catalog_default_push_does_not_clobber_confirmed_effort() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_with_catalog_default_push();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), Some("low"))
+        .expect("set model and effort");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        let manifests = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::SessionManifest {
+                    current_model_id: Some(model_id),
+                    models,
+                    ..
+                } if model_id == "stub-model-new" => models
+                    .iter()
+                    .find(|model| model.model_id == "stub-model-new")
+                    .and_then(|model| model.current_effort.as_deref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        manifests.len() >= 2 && manifests.last() == Some(&"low")
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_sessions_changed_updates_confirmed_effort() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_with_sessions_changed();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), None)
+        .expect("set model");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    models,
+                    ..
+                } if current_model_id.as_deref() == Some("stub-model-new")
+                    && models.iter().any(|model| {
+                        model.model_id == "stub-model-new"
+                            && model.current_effort.as_deref() == Some("medium")
+                    })
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_set_model_error_is_an_agent_error_without_manifest_change() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_rejecting_set_model();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("unknown-model"), None)
+        .expect("daemon accepted the set-model request");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentError { message } if message.contains("unknown model"))
+        })
+    });
+    assert!(!events.lock().expect("events lock").iter().any(|event| {
+        matches!(
+            event,
+            SessionEvent::SessionManifest {
+                current_model_id,
+                ..
+            } if current_model_id.as_deref() == Some("unknown-model")
+        )
+    }));
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn set_model_on_terminal_session_is_rejected() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test
+        .client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create terminal session");
+    let error = test
+        .client
+        .session_set_model(&session.id, Some("stub-model-new"), None)
+        .expect_err("terminal sessions must reject model switching");
+    match error {
+        devboule_daemon::DaemonError::Handshake(wire) => {
+            assert_eq!(wire.code, ErrorCode::InvalidRequest);
+            assert_eq!(
+                wire.message,
+                "Only agent sessions support switching the model or effort."
+            );
+        }
+        other => panic!("expected InvalidRequest, got {other:?}"),
+    }
+    test.client
+        .session_close(&session.id)
+        .expect("close terminal session");
 }
 
 #[test]
@@ -465,32 +1016,92 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
 struct AcpTest {
     observation_dir: PathBuf,
     _harness: Harness,
-    client: DaemonClient,
+    client: Arc<DaemonClient>,
     _env: EnvGuard,
 }
 
 impl AcpTest {
     fn new(extra_args: &[&str]) -> Self {
+        Self::new_with_reject(extra_args, false)
+    }
+
+    fn new_rejecting_set_model() -> Self {
+        Self::new_with_reject(&[], true)
+    }
+
+    fn new_without_set_model_push() -> Self {
+        Self::new_with_options(&[], false, true, false, false)
+    }
+
+    fn new_without_target_efforts() -> Self {
+        Self::new_with_options(&["--no-target-efforts"], false, true, false, false)
+    }
+
+    fn new_with_catalog_default_push() -> Self {
+        Self::new_with_options(&[], false, false, true, false)
+    }
+
+    fn new_with_sessions_changed() -> Self {
+        Self::new_with_options(&[], false, true, false, true)
+    }
+
+    fn new_with_reject(extra_args: &[&str], reject_set_model: bool) -> Self {
+        Self::new_with_options(extra_args, reject_set_model, false, false, false)
+    }
+
+    fn new_with_options(
+        extra_args: &[&str],
+        reject_set_model: bool,
+        no_set_model_push: bool,
+        catalog_default_push: bool,
+        sessions_changed: bool,
+    ) -> Self {
         let observation_dir = unique_dir();
         let pid_file = observation_dir.join("stub pid.txt");
         let console_file = observation_dir.join("stub console.txt");
+        let set_model_file = observation_dir.join("stub set model.txt");
+        let set_model_effort_file = observation_dir.join("stub set model effort.txt");
         let mut argv = vec![stub_bin().to_string_lossy().into_owned()];
         argv.extend(extra_args.iter().map(|arg| (*arg).to_string()));
         let command = serde_json::to_string(&argv).expect("ACP argv");
         std::env::set_var("DEVBOULE_ACP_COMMAND", command);
         std::env::set_var("DEVBOULE_ACP_PROVIDER_ID", "devboule-acp-stub");
+        std::env::set_var("DEVBOULE_TEST_NO_NETWORK", "1");
         std::env::set_var("DEVBOULE_ACP_STUB_PID_FILE", &pid_file);
         std::env::set_var("DEVBOULE_ACP_STUB_CONSOLE_FILE", &console_file);
-        let env = EnvGuard {
-            names: vec![
-                "DEVBOULE_ACP_COMMAND",
-                "DEVBOULE_ACP_PROVIDER_ID",
-                "DEVBOULE_ACP_STUB_PID_FILE",
-                "DEVBOULE_ACP_STUB_CONSOLE_FILE",
-            ],
-        };
+        std::env::set_var("DEVBOULE_ACP_STUB_SET_MODEL_FILE", &set_model_file);
+        std::env::set_var(
+            "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
+            &set_model_effort_file,
+        );
+        let mut env_names = vec![
+            "DEVBOULE_ACP_COMMAND",
+            "DEVBOULE_ACP_PROVIDER_ID",
+            "DEVBOULE_TEST_NO_NETWORK",
+            "DEVBOULE_ACP_STUB_PID_FILE",
+            "DEVBOULE_ACP_STUB_CONSOLE_FILE",
+            "DEVBOULE_ACP_STUB_SET_MODEL_FILE",
+            "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
+        ];
+        if reject_set_model {
+            std::env::set_var("DEVBOULE_STUB_REJECT_SET_MODEL", "1");
+            env_names.push("DEVBOULE_STUB_REJECT_SET_MODEL");
+        }
+        if no_set_model_push {
+            std::env::set_var("DEVBOULE_STUB_SET_MODEL_NO_PUSH", "1");
+            env_names.push("DEVBOULE_STUB_SET_MODEL_NO_PUSH");
+        }
+        if catalog_default_push {
+            std::env::set_var("DEVBOULE_STUB_SET_MODEL_CATALOG_DEFAULT_PUSH", "1");
+            env_names.push("DEVBOULE_STUB_SET_MODEL_CATALOG_DEFAULT_PUSH");
+        }
+        if sessions_changed {
+            std::env::set_var("DEVBOULE_STUB_SET_MODEL_SESSIONS_CHANGED", "1");
+            env_names.push("DEVBOULE_STUB_SET_MODEL_SESSIONS_CHANGED");
+        }
+        let env = EnvGuard { names: env_names };
         let harness = Harness::spawn();
-        let client = harness.client();
+        let client = Arc::new(harness.client());
         Self {
             observation_dir,
             _harness: harness,
@@ -528,6 +1139,14 @@ impl AcpTest {
 
     fn console_file(&self) -> PathBuf {
         self.observation_dir.join("stub console.txt")
+    }
+
+    fn set_model_file(&self) -> PathBuf {
+        self.observation_dir.join("stub set model.txt")
+    }
+
+    fn set_model_effort_file(&self) -> PathBuf {
+        self.observation_dir.join("stub set model effort.txt")
     }
 
     fn journal_event_count(&self, session_id: &str) -> i64 {

@@ -57,6 +57,13 @@ pub fn dispatch(
             method,
             payload,
         } => dispatch_invoke(grants, granted, id, &method, payload),
+        ClientMessage::ProviderUpdate { id, .. } => DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "provider updates are only supported by the Devboule daemon",
+            )
+            .with_id(id),
+        ),
         other => {
             let id = other.request_id();
             let mut error = WireError::new(

@@ -20,6 +20,9 @@ export const ChangesSurface = memo(function ChangesSurface({
 }: ChangesSurfaceProps) {
   return (
     <div>
+      <div className="workspace-changes-mockup-note" role="note">
+        Mockup — these rows are hardcoded examples. Real git integration is not built yet.
+      </div>
       <div className="workspace-file-changes">
         <button type="button" className="workspace-file-change workspace-file-change-selected">
           <span>index_writer.rs</span>

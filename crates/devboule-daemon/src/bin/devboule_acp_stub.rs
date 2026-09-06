@@ -10,9 +10,26 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 fn main() -> io::Result<()> {
+    if std::env::args().any(|arg| arg == "--version") {
+        if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_VERSION_FILE") {
+            let _ = std::fs::write(path, "started");
+        }
+        if let Some(delay_ms) = std::env::var("DEVBOULE_ACP_STUB_VERSION_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+        println!("9.9.9");
+        return Ok(());
+    }
     write_observation_files();
     eprintln!("stub-agent handshake stderr marker");
     let fail_initialize = std::env::args().any(|arg| arg == "--fail-initialize");
+    // Emulate an expired-credentials peer: session/new answers with a
+    // JSON-RPC error and the process keeps reading instead of exiting, so
+    // the daemon observes a handshake failure against a live process.
+    let fail_session_new = std::env::var_os("DEVBOULE_STUB_FAIL_SESSION_NEW").is_some();
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
     let stdout = io::stdout();
@@ -64,6 +81,21 @@ fn main() -> io::Result<()> {
                 )?;
             }
             "session/new" => {
+                if fail_session_new {
+                    respond_error(
+                        &mut stdout,
+                        request.get("id").cloned(),
+                        json!({
+                            "code": -32000,
+                            "message": "Authentication required: stub credentials expired",
+                            // Mirror real peers (qwen): error objects carry
+                            // structured auth payloads the user never needs
+                            // in an error banner.
+                            "data": {"authMethods": [{"id": "oauth"}]}
+                        }),
+                    )?;
+                    continue;
+                }
                 emit(
                     &mut stdout,
                     json!({
@@ -85,7 +117,38 @@ fn main() -> io::Result<()> {
                 respond(
                     &mut stdout,
                     request.get("id").cloned(),
-                    json!({"sessionId": "stub-session"}),
+                    json!({
+                        "sessionId": "stub-session",
+                        "models": {
+                            "currentModelId": "stub-model",
+                            "availableModels": [{
+                                "modelId": "stub-model",
+                                "name": "Stub Model",
+                                "_meta": {
+                                    "supportsReasoningEffort": true,
+                                    "reasoningEffort": "high",
+                                    "reasoningEfforts": [
+                                        {"id": "high", "label": "High"},
+                                        {"id": "low", "label": "Low"}
+                                    ]
+                                }
+                            }, {
+                                "modelId": "stub-model-new",
+                                "name": "stub-model-new",
+                                "_meta": if std::env::args().any(|arg| arg == "--no-target-efforts") {
+                                    json!({"supportsReasoningEffort": false})
+                                } else {
+                                    json!({
+                                        "supportsReasoningEffort": true,
+                                        "reasoningEfforts": [
+                                            {"id": "high", "label": "High", "default": true},
+                                            {"id": "low", "label": "Low"}
+                                        ]
+                                    })
+                                }
+                            }]
+                        }
+                    }),
                 )?;
             }
             "session/load" => {
@@ -129,6 +192,90 @@ fn main() -> io::Result<()> {
                                 "_meta": {
                                     "supportsReasoningEffort": true,
                                     "reasoningEfforts": [{"id": "high", "label": "High"}]
+                                }
+                            }]
+                        }
+                    }),
+                )?;
+            }
+            "session/set_model" => {
+                let model_id = request
+                    .get("params")
+                    .and_then(|params| params.get("modelId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("stub-model");
+                if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE") {
+                    let effort = request
+                        .get("params")
+                        .and_then(|params| params.get("_meta"))
+                        .and_then(|meta| meta.get("reasoningEffort"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("<none>");
+                    std::fs::write(path, effort).ok();
+                }
+                if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_SET_MODEL_FILE") {
+                    std::fs::write(path, model_id).ok();
+                }
+                if std::env::var_os("DEVBOULE_STUB_REJECT_SET_MODEL").is_some() {
+                    respond_error(
+                        &mut stdout,
+                        request.get("id").cloned(),
+                        json!({"code": -32602, "message": "unknown model"}),
+                    )?;
+                    continue;
+                }
+                respond(
+                    &mut stdout,
+                    request.get("id").cloned(),
+                    json!({"_meta": {"model": {"Ok": model_id}}}),
+                )?;
+                if std::env::var_os("DEVBOULE_STUB_SET_MODEL_SESSIONS_CHANGED").is_some() {
+                    emit(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "_x.ai/sessions/changed",
+                            "params": {
+                                "upserted": [{
+                                    "sessionId": "stub-session",
+                                    "modelId": model_id,
+                                    "reasoningEffort": "medium"
+                                }]
+                            }
+                        }),
+                    )?;
+                }
+                if std::env::var_os("DEVBOULE_STUB_SET_MODEL_NO_PUSH").is_some() {
+                    continue;
+                }
+                let catalog_effort =
+                    if std::env::var_os("DEVBOULE_STUB_SET_MODEL_CATALOG_DEFAULT_PUSH").is_some() {
+                        "xhigh"
+                    } else {
+                        request
+                            .get("params")
+                            .and_then(|params| params.get("_meta"))
+                            .and_then(|meta| meta.get("reasoningEffort"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("high")
+                    };
+                emit(
+                    &mut stdout,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "_x.ai/models/update",
+                        "params": {
+                            "currentModelId": model_id,
+                            "availableModels": [{
+                                "modelId": model_id,
+                                "name": model_id,
+                                "_meta": {
+                                    "supportsReasoningEffort": true,
+                                    "reasoningEffort": catalog_effort,
+                                    "reasoningEfforts": [
+                                        {"id": "high", "label": "High"},
+                                        {"id": "low", "label": "Low"}
+                                    ]
                                 }
                             }]
                         }
@@ -253,6 +400,10 @@ fn main() -> io::Result<()> {
             _ => {}
         }
     }
+}
+
+fn respond_error(stdout: &mut impl Write, id: Option<Value>, error: Value) -> io::Result<()> {
+    emit(stdout, json!({"jsonrpc": "2.0", "id": id, "error": error}))
 }
 
 fn respond(stdout: &mut impl Write, id: Option<Value>, result: Value) -> io::Result<()> {

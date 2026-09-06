@@ -682,6 +682,7 @@ describe("ACP design host", () => {
           availableCommands: [],
           lastFinished: null,
           manifest: null,
+          pendingSwitch: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Final</div>");
       });
@@ -701,6 +702,7 @@ describe("ACP design host", () => {
           availableCommands: [],
           lastFinished: null,
           manifest: null,
+          pendingSwitch: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
       });
@@ -726,6 +728,7 @@ describe("ACP design host", () => {
           availableCommands: [],
           lastFinished: null,
           manifest: null,
+          pendingSwitch: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
       });
@@ -751,6 +754,7 @@ describe("ACP design host", () => {
           availableCommands: [],
           lastFinished: null,
           manifest: null,
+          pendingSwitch: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Second</div>");
       });

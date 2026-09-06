@@ -171,7 +171,15 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// the registry, runtime, coalescer, journal and attachment code stay shared.
 pub(super) trait SessionKiller: Send + Sync {
     fn kill(&mut self);
+    /// Interrupt the current turn without killing the session. The default
+    /// no-op covers killers whose transport has no turn concept (pty).
+    fn interrupt(&mut self) {}
     fn clone_killer(&self) -> Box<dyn SessionKiller>;
+}
+
+pub(super) trait ModelSwitcher: Send + Sync {
+    fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError>;
+    fn clone_switcher(&self) -> Box<dyn ModelSwitcher>;
 }
 
 pub(super) trait WaitableChild: Send {
@@ -229,6 +237,7 @@ struct PtySession {
     process_job: Arc<JobObject>,
     master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     killer: Box<dyn SessionKiller>,
+    switcher: Option<Box<dyn ModelSwitcher>>,
     /// This is separate from the stdout reader: stderr must never be able to
     /// fill its pipe and stop the ACP child from producing responses.
     stderr_handle: Option<JoinHandle<()>>,
@@ -247,6 +256,7 @@ struct SpawnedSession {
     process_job: JobObject,
     master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     killer: Box<dyn SessionKiller>,
+    switcher: Option<Box<dyn ModelSwitcher>>,
     child: Box<dyn WaitableChild>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     reader: Box<dyn Read + Send>,
@@ -257,6 +267,7 @@ struct SpawnedSession {
     permission_broker: Option<Arc<permission_broker::PermissionBroker>>,
     os_handle: Option<ProcessHandle>,
     peer_session_id: Option<String>,
+    agent_version: Option<String>,
 }
 
 struct PtyKiller {
@@ -763,6 +774,7 @@ impl SessionRegistry {
         // can EOF and enqueue MarkEnded before this function would otherwise
         // reach try_upsert, and the journal thread would then see a missing
         // session and leave status=live — recovered-as-killed on reopen.
+        let mut record_generation = 1;
         if let Some(journal) = &self.journal {
             let mut record = new_session_record(
                 metadata.id.clone(),
@@ -773,9 +785,48 @@ impl SessionRegistry {
             );
             record.provider = session_provider;
             record.status = PersistStatus::Live;
+            record_generation = record.generation;
             journal.try_upsert(record);
         }
-        spawn_session(state, self, metadata.clone(), owner.clone(), command)?;
+        // The journal row above is the durable product boundary. A failed
+        // spawn must end that row, or the next roster render resurrects a
+        // phantom recovered session with zero events.
+        match spawn_session(state, self, metadata.clone(), owner.clone(), command) {
+            Ok(()) => {
+                // A completed ACP handshake proves the provider started and
+                // accepted a session, so it measures provider health. A
+                // claude process spawn proves nothing about the provider,
+                // so claude only records failures (below).
+                if kind == SessionKind::Acp {
+                    if let Some(provider_id) = &metadata.provider {
+                        state.record_provider_health(provider_id, Ok(()));
+                    }
+                }
+            }
+            Err(error) => {
+                if let Some(journal) = &self.journal {
+                    // Trade, made deliberately: the end marker must not be
+                    // silently lost (try_send drops on a saturated queue)
+                    // and must not freeze this dispatch thread either — the
+                    // blocking send is an unbounded 5 ms busy-loop with no
+                    // timeout. A rare failure path affords a throwaway
+                    // thread, and the row still ends once the queue drains,
+                    // so the integration test's sessions_list deadline-poll
+                    // stays valid.
+                    let journal = Arc::clone(journal);
+                    let id = metadata.id.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("journal-end-marker".into())
+                        .spawn(move || {
+                            let _ = journal.mark_ended_blocking(&id, record_generation, None);
+                        });
+                }
+                if let Some(provider_id) = &metadata.provider {
+                    state.record_provider_health(provider_id, Err(&error));
+                }
+                return Err(error);
+            }
+        }
         Ok(metadata)
     }
 
@@ -892,6 +943,9 @@ impl SessionRegistry {
             state.session_finished();
             return Err(error.into());
         }
+        // Health is measured per provider id; `provider` is moved into the
+        // metadata below, so keep a copy for the spawn outcome recording.
+        let health_provider = provider.clone();
         let metadata = Session {
             id: session_id.to_string(),
             workspace_id: record.workspace_id,
@@ -902,7 +956,7 @@ impl SessionRegistry {
             state: SessionState::Live { generation },
             elapsed_ms: Some(0),
         };
-        if let Err(error) = spawn_resumed_session(
+        match spawn_resumed_session(
             state,
             self,
             metadata,
@@ -911,8 +965,27 @@ impl SessionRegistry {
             peer_session_id,
             generation,
         ) {
-            state.session_finished();
-            return Err(error);
+            Ok(()) => state.record_provider_health(&health_provider, Ok(())),
+            Err(error) => {
+                state.session_finished();
+                // The generation was already started on the journal row; a
+                // failed respawn must end it, or the row stays live and the
+                // roster renders a phantom recovered session. The end marker
+                // must not be silently lost (try_send drops on a saturated
+                // queue) and must not freeze this dispatch thread (the
+                // blocking send is an unbounded 5 ms busy-loop with no
+                // timeout), so this rare failure path gets a throwaway
+                // thread; the row still ends once the queue drains.
+                let journal = Arc::clone(journal);
+                let id = session_id.to_string();
+                let _ = std::thread::Builder::new()
+                    .name("journal-end-marker".into())
+                    .spawn(move || {
+                        let _ = journal.mark_ended_blocking(&id, generation, None);
+                    });
+                state.record_provider_health(&health_provider, Err(&error));
+                return Err(error);
+            }
         }
         let map = self
             .inner
@@ -1146,6 +1219,75 @@ impl SessionRegistry {
         };
         killer.kill();
         Ok(())
+    }
+
+    /// Interrupt the current turn of an agent session without killing the
+    /// process. Unlike `stop`, the registry entry stays live and later
+    /// turns keep working.
+    pub fn interrupt(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let mut killer = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get_mut(session_id).ok_or_else(not_found)?;
+            check_user_owner(entry, owner)?;
+            let session = entry.as_live_mut().ok_or_else(process_gone)?;
+            if !session.metadata.kind.is_agent() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Only agent sessions support interrupting a turn.",
+                ));
+            }
+            session.killer.clone_killer()
+        };
+        killer.interrupt();
+        Ok(())
+    }
+
+    pub fn set_model(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        if model_id.is_none() && effort.is_none() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "A model or effort is required.",
+            ));
+        }
+        let switcher = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get_mut(session_id).ok_or_else(not_found)?;
+            check_user_owner(entry, owner)?;
+            let session = entry.as_live_mut().ok_or_else(process_gone)?;
+            if !session.metadata.kind.is_agent() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Only agent sessions support switching the model or effort.",
+                ));
+            }
+            session
+                .switcher
+                .as_ref()
+                .map(|switcher| switcher.clone_switcher())
+                .ok_or_else(|| {
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "This provider does not support switching the model or effort.",
+                    )
+                })?
+        };
+        switcher.set_model(model_id, effort)
     }
 
     pub fn send(&self, session_id: &str, text: &str, owner: &OwnerId) -> Result<(), WireError> {
@@ -1569,6 +1711,7 @@ pub fn spawn_session(
         process_job,
         master: Some(Arc::new(Mutex::new(pair.master))),
         killer: Box::new(PtyKiller { inner: killer }),
+        switcher: None,
         child: Box::new(PtyWaitableChild { child }),
         writer: Arc::new(Mutex::new(writer)),
         reader,
@@ -1577,6 +1720,7 @@ pub fn spawn_session(
         permission_broker: None,
         os_handle,
         peer_session_id: None,
+        agent_version: None,
     };
     start_spawned_session(state, registry, metadata, owner, None, spawned)
 }
@@ -1612,6 +1756,7 @@ fn start_spawned_session(
         process_job,
         master,
         killer,
+        switcher,
         child,
         writer,
         reader,
@@ -1620,7 +1765,11 @@ fn start_spawned_session(
         permission_broker,
         os_handle,
         peer_session_id,
+        agent_version,
     } = spawned;
+    if let (Some(provider_id), Some(version)) = (&metadata.provider, agent_version.as_deref()) {
+        state.record_provider_version(provider_id, version);
+    }
     let runtime = if metadata.kind.is_agent() {
         SessionRuntime::for_acp(
             metadata.id.clone(),
@@ -1694,6 +1843,7 @@ fn start_spawned_session(
         process_job,
         master,
         killer,
+        switcher,
         child_wait,
         writer,
         reader_handle: None,
@@ -2022,6 +2172,7 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
         process_job,
         master,
         mut killer,
+        switcher: _,
         child_wait,
         writer,
         reader_handle,
@@ -2972,6 +3123,7 @@ mod tests {
             process_job: Arc::new(JobObject::new().expect("job")),
             master: None,
             killer: Box::new(NoopKiller),
+            switcher: None,
             stderr_handle: None,
             child_wait: None,
             writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),

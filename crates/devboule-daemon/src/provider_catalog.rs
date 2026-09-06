@@ -23,6 +23,14 @@ use std::process::{Command, Output};
 
 #[cfg(windows)]
 const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+pub(crate) const MAX_EXTERNAL_VERSION_CHARS: usize = 64;
+
+/// Keep externally supplied version labels bounded before they enter the wire
+/// contract or an in-process cache.
+pub(crate) fn cap_external_version(value: &str) -> Option<String> {
+    let capped: String = value.chars().take(MAX_EXTERNAL_VERSION_CHARS).collect();
+    (!capped.is_empty()).then_some(capped)
+}
 
 /// A known CLI name and its aliases, with the ACP invocation when supported.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +41,7 @@ pub struct KnownAgent {
     /// Native stream-json argv, used only by the Claude adapter. Other
     /// agents stay on ACP; this field is None for them.
     pub stream_json_args: Option<&'static [&'static str]>,
+    pub npm_package: Option<&'static str>,
 }
 
 /// Agents currently relevant to the first provider catalog slice.
@@ -64,24 +73,28 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         aliases: &["claude", "claude-code"],
         acp_args: None,
         stream_json_args: Some(CLAUDE_STREAM_JSON_ARGS),
+        npm_package: Some("@anthropic-ai/claude-code"),
     },
     KnownAgent {
         id: "codex",
         aliases: &["codex"],
         acp_args: None,
         stream_json_args: None,
+        npm_package: Some("@openai/codex"),
     },
     KnownAgent {
         id: "grok",
         aliases: &["grok", "grok-build"],
         acp_args: Some(&["agent", "stdio"]),
         stream_json_args: None,
+        npm_package: None,
     },
     KnownAgent {
         id: "pi",
         aliases: &["pi"],
         acp_args: None,
         stream_json_args: None,
+        npm_package: None,
     },
     KnownAgent {
         id: "qwen",
@@ -91,14 +104,40 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         // removed in a future release. Please use --acp instead."
         acp_args: Some(&["--acp"]),
         stream_json_args: None,
+        npm_package: Some("@qwen-code/qwen-code"),
     },
     KnownAgent {
         id: "gemini",
         aliases: &["gemini"],
         acp_args: Some(&["--acp"]),
         stream_json_args: None,
+        npm_package: Some("@google/gemini-cli"),
     },
 ];
+
+pub(crate) fn known_npm_package(id: &str) -> Option<&'static str> {
+    KNOWN_AGENTS
+        .iter()
+        .find(|agent| agent.id == id)
+        .and_then(|agent| agent.npm_package)
+}
+
+// Test-only provider: the integration stub binary. It resolves only when its
+// build directory is on PATH, so end-user machines never list it; release
+// builds drop the row entirely so a shipped daemon cannot discover it. The
+// row exists so provider health measured against the stub (spawn + handshake
+// outcomes) is visible through ProvidersList in integration tests, mirroring
+// how real providers are surfaced.
+#[cfg(debug_assertions)]
+const TEST_ONLY_AGENTS: &[KnownAgent] = &[KnownAgent {
+    id: "devboule-acp-stub",
+    aliases: &["devboule-acp-stub"],
+    acp_args: None,
+    stream_json_args: None,
+    npm_package: None,
+}];
+#[cfg(not(debug_assertions))]
+const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
 
 /// Registry wrappers that a better native chat-capable provider covers in the
 /// workspace picker. This is an explicit product-policy map from §1.1:
@@ -140,6 +179,23 @@ impl ProviderOrigin {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallChannel {
+    Npm,
+    NpxRegistry,
+    Native,
+}
+
+impl InstallChannel {
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::NpxRegistry => "npx-registry",
+            Self::Native => "native",
+        }
+    }
+}
+
 /// Direct CreateProcess program plus arguments that must precede ACP/user args.
 ///
 /// A native CLI (`claude.exe`, `grok.exe`) has an empty `prefix_args`. An
@@ -164,6 +220,9 @@ impl ResolvedLaunch {
 pub struct InstalledAgent {
     pub id: String,
     pub aliases: &'static [&'static str],
+    /// A synthetic known npm row is visible to provider settings but must
+    /// never be treated as a launchable session provider.
+    pub installed: bool,
     pub executable: PathBuf,
     /// Arguments inserted between `executable` and ACP/user args.
     /// Empty for a native binary; the package script for an npm cmd-shim.
@@ -183,6 +242,10 @@ pub struct InstalledAgent {
     /// Explicit picker policy. Covered wrappers are kept in Settings but are
     /// omitted from the workspace provider picker.
     pub pickable: Option<bool>,
+    pub installed_version: Option<String>,
+    pub latest_version: Option<String>,
+    pub install_channel: InstallChannel,
+    pub npm_package: Option<&'static str>,
 }
 
 /// PATH scan result. `unreadable_dirs` is the number of unique PATH entries
@@ -205,6 +268,10 @@ pub fn discover() -> ProviderDiscovery {
 pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
     let agents = KNOWN_AGENTS
         .iter()
+        // Chained here (the only KNOWN_AGENTS consumption in this module) so
+        // every discovery path — ProvidersList, find_in_catalog,
+        // find_available — sees the test-only row in debug builds.
+        .chain(TEST_ONLY_AGENTS.iter())
         .filter_map(|spec| {
             let launch = spec
                 .aliases
@@ -216,9 +283,20 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
             let stream_json_command = spec
                 .stream_json_args
                 .map(|args| protocol_argv(&launch.program, &launch.prefix_args, args));
+            let install_channel = if launch.prefix_args.is_empty() {
+                InstallChannel::Native
+            } else {
+                InstallChannel::Npm
+            };
+            let installed_version = launch
+                .prefix_args
+                .first()
+                .map(PathBuf::from)
+                .and_then(|script| package_json_version_from_script(&script));
             Some(InstalledAgent {
                 id: spec.id.to_string(),
                 aliases: spec.aliases,
+                installed: true,
                 executable: launch.program,
                 prefix_args: launch.prefix_args,
                 acp_command,
@@ -227,6 +305,10 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 origin: ProviderOrigin::UserBinary,
                 launch_args: None,
                 pickable: None,
+                installed_version,
+                latest_version: None,
+                install_channel,
+                npm_package: spec.npm_package,
             })
         })
         .collect();
@@ -242,6 +324,45 @@ fn protocol_argv(executable: &Path, prefix_args: &[String], extra: &[&str]) -> V
     command.extend(prefix_args.iter().cloned());
     command.extend(extra.iter().map(|arg| (*arg).to_string()));
     command
+}
+
+const MAX_PACKAGE_JSON_BYTES: u64 = 1024 * 1024;
+
+/// Read the nearest npm package version above an unwrapped cmd-shim script.
+/// The walk is bounded and stops at the containing node_modules directory.
+pub(crate) fn package_json_version_from_script(script: &Path) -> Option<String> {
+    let mut directory = script.parent()?.to_path_buf();
+    if !directory.ancestors().any(|ancestor| {
+        ancestor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("node_modules"))
+    }) {
+        return None;
+    }
+    for _ in 0..32 {
+        if directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("node_modules"))
+        {
+            break;
+        }
+        let package_json = directory.join("package.json");
+        if let Ok(metadata) = std::fs::metadata(&package_json) {
+            if metadata.is_file() && metadata.len() <= MAX_PACKAGE_JSON_BYTES {
+                let body = std::fs::read_to_string(package_json).ok()?;
+                return serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|value| value.get("version")?.as_str().map(str::to_string))
+                    .and_then(|version| crate::provider_catalog::cap_external_version(&version));
+            }
+        }
+        if !directory.pop() {
+            break;
+        }
+    }
+    None
 }
 
 fn count_unreadable_dirs(directories: &[PathBuf]) -> u32 {
@@ -263,6 +384,9 @@ fn count_unreadable_dirs(directories: &[PathBuf]) -> u32 {
 /// Chat dialect this installed agent can speak, if any.
 /// An agent with both launches is offered as ACP: ACP is the road, stream-json the exception.
 pub fn chat_protocol(agent: &InstalledAgent) -> Option<&'static str> {
+    if !agent.installed {
+        return None;
+    }
     if agent.acp_command.is_some() {
         Some("acp")
     } else if agent.stream_json_command.is_some() {
@@ -286,11 +410,25 @@ pub fn first_acp_available() -> Option<InstalledAgent> {
 
 /// Return the discovered provider with this catalog id, if it is on PATH.
 pub fn find_available(id: &str) -> Option<InstalledAgent> {
-    discover().agents.into_iter().find(|agent| agent.id == id)
+    find_available_in_paths(id, &path_directories_for_available())
+}
+
+fn path_directories_for_available() -> Vec<PathBuf> {
+    match std::env::var_os("PATH") {
+        Some(paths) => std::env::split_paths(&paths).collect(),
+        None => Vec::new(),
+    }
+}
+
+pub(crate) fn find_available_in_paths(id: &str, directories: &[PathBuf]) -> Option<InstalledAgent> {
+    discover_in_paths(directories)
+        .agents
+        .into_iter()
+        .find(|agent| agent.installed && agent.id == id)
 }
 
 #[cfg(feature = "server")]
-fn path_directories() -> Vec<PathBuf> {
+pub(crate) fn path_directories() -> Vec<PathBuf> {
     match std::env::var_os("PATH") {
         Some(paths) => std::env::split_paths(&paths).collect(),
         None => Vec::new(),
@@ -313,11 +451,55 @@ pub(crate) fn discover_catalog_in_paths(
     directories: &[PathBuf],
 ) -> ProviderDiscovery {
     let local = discover_in_paths(directories);
-    let registry = crate::registry::load_npx_entries(fetch, cache_dir)
+    let registry_entries = crate::registry::load_npx_entries(fetch, cache_dir);
+    let local = add_missing_npm_rows(local, &registry_entries);
+    let registry = registry_entries
         .into_iter()
         .map(|entry| registry_agent(directories, &local, entry))
         .collect();
     merge_native_beats_registry(local, registry)
+}
+
+#[cfg(feature = "server")]
+fn add_missing_npm_rows(
+    mut local: ProviderDiscovery,
+    registry: &[crate::registry::RegistryNpxEntry],
+) -> ProviderDiscovery {
+    for spec in KNOWN_AGENTS
+        .iter()
+        .filter(|spec| spec.npm_package.is_some())
+    {
+        let local_has_row = local.agents.iter().any(|agent| agent.id == spec.id);
+        let registry_covers_row = registry.iter().any(|entry| {
+            entry.id.eq_ignore_ascii_case(spec.id)
+                || spec
+                    .aliases
+                    .iter()
+                    .any(|alias| entry.id.eq_ignore_ascii_case(alias))
+        });
+        if local_has_row || registry_covers_row {
+            continue;
+        }
+        let package = spec.npm_package.expect("filtered npm package");
+        local.agents.push(InstalledAgent {
+            id: spec.id.to_string(),
+            aliases: spec.aliases,
+            installed: false,
+            executable: PathBuf::new(),
+            prefix_args: Vec::new(),
+            acp_command: None,
+            stream_json_command: None,
+            authentication: AuthenticationStatus::Unknown,
+            origin: ProviderOrigin::UserBinary,
+            launch_args: None,
+            pickable: Some(false),
+            installed_version: None,
+            latest_version: crate::registry::cached_latest_npm_version(package),
+            install_channel: InstallChannel::Npm,
+            npm_package: Some(package),
+        });
+    }
+    local
 }
 
 #[cfg(feature = "server")]
@@ -332,6 +514,7 @@ fn registry_agent(
     InstalledAgent {
         id,
         aliases: &[],
+        installed: true,
         executable: PathBuf::from(&package),
         prefix_args: Vec::new(),
         acp_command,
@@ -340,6 +523,11 @@ fn registry_agent(
         origin: ProviderOrigin::NpxWrapper,
         launch_args: Some(args),
         pickable,
+        installed_version: None,
+        latest_version: crate::registry::split_package_version(&package)
+            .and_then(crate::provider_catalog::cap_external_version),
+        install_channel: InstallChannel::NpxRegistry,
+        npm_package: None,
     }
 }
 
@@ -416,10 +604,20 @@ pub fn find_in_catalog(
     fetch: &dyn crate::registry::RegistryFetch,
     cache_dir: &Path,
 ) -> Option<InstalledAgent> {
-    discover_catalog(fetch, cache_dir)
+    find_in_catalog_in_paths(id, fetch, cache_dir, &path_directories())
+}
+
+#[cfg(feature = "server")]
+pub(crate) fn find_in_catalog_in_paths(
+    id: &str,
+    fetch: &dyn crate::registry::RegistryFetch,
+    cache_dir: &Path,
+    directories: &[PathBuf],
+) -> Option<InstalledAgent> {
+    discover_catalog_in_paths(fetch, cache_dir, directories)
         .agents
         .into_iter()
-        .find(|agent| agent.id == id)
+        .find(|agent| agent.installed && agent.id == id)
 }
 
 pub(crate) fn executable_file_exists(path: &Path) -> bool {
@@ -522,6 +720,14 @@ fn resolve_launch_command_in_paths(paths: &[PathBuf], command: &str) -> Option<R
         return Some(unwrapped);
     }
     Some(ResolvedLaunch::program(program))
+}
+
+/// Resolve npm through the same direct PATH/shim path used for provider
+/// commands. The returned pair is CreateProcess's program and argv prefix;
+/// no shell receives the update command.
+#[cfg(feature = "server")]
+pub(crate) fn resolve_npm_command(paths: &[PathBuf]) -> Option<(PathBuf, Vec<String>)> {
+    resolve_launch_command_in_paths(paths, "npm").map(|launch| (launch.program, launch.prefix_args))
 }
 
 /// npm's `cmd-shim` writes a batch that assigns `_prog` to `node` (or a
@@ -786,8 +992,9 @@ mod tests {
         executable_file_exists, launch_path_candidates_for_pathext,
         resolve_launch_command_in_paths, ResolvedLaunch,
     };
+    use std::fs;
     #[cfg(windows)]
-    use std::fs::{self, File};
+    use std::fs::File;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1434,6 +1641,46 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
     }
 
     #[test]
+    fn npm_package_version_walk_stays_inside_node_modules() {
+        let dir = temporary_directory("package-version-walk");
+        let script = dir
+            .join("node_modules")
+            .join("@scope")
+            .join("pkg")
+            .join("dist")
+            .join("cli.js");
+        fs::create_dir_all(script.parent().expect("script parent")).expect("fixture dirs");
+        fs::write(
+            script
+                .parent()
+                .expect("dist")
+                .parent()
+                .expect("package")
+                .join("package.json"),
+            r#"{"version":"3.4.5"}"#,
+        )
+        .expect("package json");
+        assert_eq!(
+            super::package_json_version_from_script(&script),
+            Some("3.4.5".to_string())
+        );
+
+        fs::write(dir.join("package.json"), r#"{"version":"9.9.9"}"#).expect("outer package");
+        let no_inner_version = dir
+            .join("node_modules")
+            .join("other")
+            .join("dist")
+            .join("cli.js");
+        fs::create_dir_all(no_inner_version.parent().expect("other parent")).expect("other dirs");
+        assert_eq!(
+            super::package_json_version_from_script(&no_inner_version),
+            None,
+            "the walk must reject leaving node_modules"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     #[ignore = "measurement, not an assertion; run by hand with --ignored --nocapture"]
     fn reports_installed_cli_agents() {
         let agents = discover().agents;
@@ -1608,6 +1855,47 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
 }"#
             .to_string())
         }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn missing_known_npm_rows_are_settings_only_and_never_session_resolvable() {
+        let cache = temporary_directory("synthetic-npm-cache");
+        let empty_path = temporary_directory("synthetic-npm-path");
+        fs::create_dir_all(&empty_path).expect("empty PATH directory");
+        let catalog = super::discover_catalog_in_paths(
+            &FixtureFetch,
+            &cache,
+            std::slice::from_ref(&empty_path),
+        );
+        let codex = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex")
+            .expect("known codex npm row");
+        assert!(!codex.installed);
+        assert!(codex.executable.as_os_str().is_empty());
+        assert!(codex.acp_command.is_none());
+        assert_eq!(super::chat_protocol(codex), None);
+        assert_eq!(codex.pickable, Some(false));
+        assert_eq!(codex.install_channel, super::InstallChannel::Npm);
+        assert_eq!(codex.npm_package, Some("@openai/codex"));
+        assert!(
+            super::find_available_in_paths("codex", std::slice::from_ref(&empty_path)).is_none(),
+            "find_available must not return a synthetic row"
+        );
+        assert!(
+            super::find_in_catalog_in_paths(
+                "codex",
+                &FixtureFetch,
+                &cache,
+                std::slice::from_ref(&empty_path)
+            )
+            .is_none(),
+            "find_in_catalog must not return a synthetic row to session creation"
+        );
+        let _ = fs::remove_dir_all(cache);
+        let _ = fs::remove_dir_all(empty_path);
     }
 
     #[cfg(feature = "server")]

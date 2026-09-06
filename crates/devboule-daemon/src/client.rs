@@ -22,6 +22,7 @@ use crate::transport;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
+const PROVIDER_UPDATE_RPC_TIMEOUT: Duration = Duration::from_secs(240);
 const SPAWN_ATTEMPTS: u32 = 50;
 const SPAWN_SLEEP: Duration = Duration::from_millis(100);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
@@ -182,6 +183,37 @@ impl DaemonClient {
         }
     }
 
+    pub fn session_interrupt(&self, session_id: &str) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionInterrupt {
+            id,
+            session_id: session_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn session_set_model(
+        &self,
+        session_id: &str,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionSetModel {
+            id,
+            session_id: session_id.to_string(),
+            model_id: model_id.map(str::to_string),
+            effort: effort.map(str::to_string),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {
@@ -315,6 +347,39 @@ impl DaemonClient {
         }
     }
 
+    pub fn providers_refresh(&self) -> Result<(Vec<ProviderInfo>, u32), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProvidersRefresh { id })? {
+            DaemonMessage::Providers {
+                providers,
+                unreadable_dirs,
+                ..
+            } => Ok((providers, unreadable_dirs)),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn provider_update(
+        &self,
+        provider_id: &str,
+    ) -> Result<(bool, Option<i32>, String), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip_with_deadline(
+            ClientMessage::ProviderUpdate {
+                id,
+                provider_id: provider_id.to_string(),
+            },
+            PROVIDER_UPDATE_RPC_TIMEOUT,
+        )? {
+            DaemonMessage::ProviderUpdated {
+                ok, exit_code, log, ..
+            } => Ok((ok, exit_code, log)),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn journal_retention_get(&self) -> Result<JournalRetention, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalRetentionGet { id })? {
@@ -398,6 +463,14 @@ impl DaemonClient {
     }
 
     pub fn roundtrip(&self, message: ClientMessage) -> Result<DaemonMessage, DaemonError> {
+        self.roundtrip_with_deadline(message, RPC_TIMEOUT)
+    }
+
+    pub fn roundtrip_with_deadline(
+        &self,
+        message: ClientMessage,
+        timeout: Duration,
+    ) -> Result<DaemonMessage, DaemonError> {
         let Some(id) = message.request_id() else {
             self.write_frame(&message)?;
             return Err(DaemonError::Protocol(
@@ -413,7 +486,7 @@ impl DaemonClient {
                 .unwrap_or_else(|err| err.into_inner());
             pending.insert(id, tx);
         }
-        let deadline = Instant::now() + RPC_TIMEOUT;
+        let deadline = Instant::now() + timeout;
         if let Err(error) = self.inner.framed.send_until(&message, deadline) {
             self.inner
                 .pending
@@ -687,6 +760,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }
         | DaemonMessage::Providers { id, .. }
+        | DaemonMessage::ProviderUpdated { id, .. }
         | DaemonMessage::Ok { id }
         | DaemonMessage::Resume { id, .. }
         | DaemonMessage::InvokeResult { id, .. } => Some(*id),

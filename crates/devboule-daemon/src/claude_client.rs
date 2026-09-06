@@ -21,8 +21,8 @@ use serde_json::Value;
 use super::permission_broker::{PermissionBroker, PermissionSender};
 use super::PtyCommand;
 use super::{
-    write_child_stdin, ReaderDispatch, SessionKiller, SessionRuntime, SpawnedSession, StderrSource,
-    StdioWaitableChild,
+    write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
+    SpawnedSession, StderrSource, StdioWaitableChild,
 };
 use crate::claude_view::ClaudeView;
 use crate::paths::RuntimePaths;
@@ -203,6 +203,10 @@ pub(super) fn spawn_process(
         process_job,
         master: None,
         killer: Box::new(killer),
+        switcher: Some(Box::new(ClaudeSwitcher {
+            stdin: Arc::clone(&stdin),
+            next_id: Arc::clone(&next_id),
+        })),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
         reader: Box::new(BufReader::new(stdout)),
@@ -211,6 +215,7 @@ pub(super) fn spawn_process(
         permission_broker: Some(permission_broker),
         os_handle,
         peer_session_id: None,
+        agent_version: None,
     })
 }
 
@@ -319,24 +324,110 @@ struct ClaudeKiller {
     cancelled: Arc<AtomicBool>,
 }
 
+struct ClaudeSwitcher {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+}
+
+/// The single control_request interrupt frame builder shared by the hard
+/// stop and the soft turn interrupt, so the wire format cannot drift apart.
+fn interrupt_frame_bytes(request_id: &str) -> Option<Vec<u8>> {
+    control_request_frame_bytes(request_id, serde_json::json!({"subtype": "interrupt"}))
+}
+
+fn control_request_frame_bytes(request_id: &str, request: Value) -> Option<Vec<u8>> {
+    let frame = serde_json::json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": request,
+    });
+    let mut bytes = serde_json::to_vec(&frame).ok()?;
+    bytes.push(b'\n');
+    Some(bytes)
+}
+
+/// The frame write happens on a spawned thread because a full stdin pipe
+/// would otherwise block the caller holding the session lock path.
+fn send_interrupt_frame(stdin: Arc<Mutex<Option<ChildStdin>>>, request_id: String) {
+    let _ = std::thread::Builder::new()
+        .name("claude-interrupt".to_string())
+        .spawn(move || {
+            if let Some(bytes) = interrupt_frame_bytes(&request_id) {
+                let _ = write_child_stdin(&stdin, &bytes, "Claude");
+            }
+        });
+}
+
+fn send_control_request_frame(
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    request_id: String,
+    request: Value,
+) {
+    let _ = std::thread::Builder::new()
+        .name("claude-set-model".to_string())
+        .spawn(move || {
+            if let Some(bytes) = control_request_frame_bytes(&request_id, request) {
+                let _ = write_child_stdin(&stdin, &bytes, "Claude");
+            }
+        });
+}
+
+impl ModelSwitcher for ClaudeSwitcher {
+    fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError> {
+        if let Some(model_id) = model_id {
+            let request_id = format!("set-model-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+            send_control_request_frame(
+                Arc::clone(&self.stdin),
+                request_id,
+                serde_json::json!({
+                    "subtype": "set_model",
+                    "model": model_id,
+                }),
+            );
+        }
+        if let Some(effort) = effort {
+            let request_id = format!(
+                "set-effort-{}",
+                self.next_id.fetch_add(1, Ordering::Relaxed)
+            );
+            send_control_request_frame(
+                Arc::clone(&self.stdin),
+                request_id,
+                serde_json::json!({
+                    "subtype": "apply_flag_settings",
+                    "settings": {"effortLevel": effort},
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
+        Box::new(Self {
+            stdin: Arc::clone(&self.stdin),
+            next_id: Arc::clone(&self.next_id),
+        })
+    }
+}
+
 impl SessionKiller for ClaudeKiller {
+    /// Soft interrupt: ask the CLI to abort the current turn. The process,
+    /// stdin, and the kill guard stay untouched so later turns keep working.
+    fn interrupt(&mut self) {
+        // A kill already closed stdin and drained the broker; a late
+        // interrupt would only spawn a thread doomed to BrokenPipe.
+        if self.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        send_interrupt_frame(Arc::clone(&self.stdin), request_id);
+        self.permission_broker.cancel_all();
+    }
+
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
-            let stdin = Arc::clone(&self.stdin);
             let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-            let _ = std::thread::Builder::new()
-                .name("claude-interrupt".to_string())
-                .spawn(move || {
-                    let frame = serde_json::json!({
-                        "type": "control_request",
-                        "request_id": request_id,
-                        "request": {"subtype": "interrupt"}
-                    });
-                    if let Ok(mut bytes) = serde_json::to_vec(&frame) {
-                        bytes.push(b'\n');
-                        let _ = write_child_stdin(&stdin, &bytes, "Claude");
-                    }
-                });
+            send_interrupt_frame(Arc::clone(&self.stdin), request_id);
             self.permission_broker.cancel_all();
         }
         if let Ok(mut process) = self.process.lock() {
@@ -727,6 +818,17 @@ mod tests {
             generation,
         );
         (runtime, conn)
+    }
+
+    #[test]
+    fn interrupt_frame_matches_the_measured_control_request_wire() {
+        let bytes = interrupt_frame_bytes("interrupt-7").expect("frame");
+        let line = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(line.ends_with('\n'));
+        let value: Value = serde_json::from_str(line.trim_end()).expect("json");
+        assert_eq!(value["type"], "control_request");
+        assert_eq!(value["request_id"], "interrupt-7");
+        assert_eq!(value["request"]["subtype"], "interrupt");
     }
 
     #[test]
