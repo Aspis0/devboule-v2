@@ -123,11 +123,13 @@ about craft travel; a brand does not. Where the user's own tokens should ground 
 generation, they come from their repository through the Oracle, and when there are none the
 agent has to say what it chose rather than invent a palette in silence.
 
-**Two ceilings, both measured.** The three craft sections weigh 2,406, 2,332 and 1,902
+**Two ceilings, both measured.** The three craft sections weigh 2,406, 2,332 and 2,413
 characters, so `DOCTRINE_SECTION_CEILING_CHARS` (2,500) forces first-party content to
 condense — it is binding, and a section that outgrows it becomes two sections rather than a
-bigger number. `DOCTRINE_CEILING_CHARS` (8,000, roughly 2,000 tokens) bounds the composed
-block. They are
+bigger number. `DOCTRINE_CEILING_CHARS` (16,000, roughly 4,000 tokens) bounds the composed
+block at about six sections. It was 8,000, which three full sections could not have
+outgrown at all — the truncation path was unreachable until a fourth section existed, and
+would then have fired on the first `all`-mode generation. They are
 deliberately different numbers: one constant serving both would let a single section pass
 the strict check and then consume the whole block, silently dropping every other section.
 Characters are a conservative proxy for tokens and no tokeniser is added for this.

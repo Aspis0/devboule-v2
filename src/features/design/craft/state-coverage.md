@@ -9,6 +9,13 @@ The most reliable failure in a generated interface is drawing only the state whe
 worked. Anything that fetches, transforms or accepts data has five states, and four of them
 are usually missing.
 
+**How many of these to draw.** All five have to be handled; a panel that breaks when the list
+is empty is broken whether or not anyone drew it. Drawing them as separate variants is a
+different question. When the brief is a screen, a flow or an exploration, draw them — seeing
+empty and error beside populated is most of the value. When it names one component going into
+an interface that already exists, deliver the populated state, handle the rest, and say in one
+line which states are handled but not drawn.
+
 **Loading.** A skeleton shaped like the content that is coming, not a spinner centred in a
 blank panel. Matching the shape is what stops the page jumping when the data lands.
 

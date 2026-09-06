@@ -19,10 +19,16 @@
 //
 // Characters are a proxy for tokens, deliberately conservative.  No tokeniser
 // is added for this — ~4 chars/token is a safe estimate for English prose. The
-// 8000-character composed ceiling is about 2000 tokens, enough for roughly four
+// 16000-character composed ceiling is about 4000 tokens, enough for roughly six
 // condensed sections; the 2500-character section ceiling keeps one section from
 // monopolising the block, and is binding rather than generous — the shipped sections sit
-// between 1900 and 2410 characters, so it forces condensation instead of permitting it.
+// between 2330 and 2415 characters, so it forces condensation instead of permitting it.
+//
+// Instruction count is what the density literature actually measures (arXiv 2507.11538),
+// and it is deliberately not the unit here. Those instructions are atomic keyword
+// inclusions while these are interdependent principles, so the two do not share a scale;
+// and counting directives in prose needs a heuristic that misfires in both directions.
+// Characters are exact, and they are what the block costs on every request.
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -76,10 +82,10 @@ export interface ValidationError {
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-/** Character ceiling for the composed doctrine block (~2000 tokens). */
-export const DOCTRINE_CEILING_CHARS = 8000;
+/** Character ceiling for the composed doctrine block (~4000 tokens, about six sections). */
+export const DOCTRINE_CEILING_CHARS = 16000;
 
-/** Strict character ceiling for each first-party doctrine section. */
+/** Strict per-section ceiling: a section outgrowing it is two sections, not a bigger number. */
 export const DOCTRINE_SECTION_CEILING_CHARS = 2500;
 
 /** Strict character ceiling for relevance metadata; real descriptions are about 270 chars. */

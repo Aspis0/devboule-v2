@@ -49,8 +49,9 @@ export const MAX_ARTIFACT_BYTES = 256 * 1024;
 export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
 // This is a real ACP turn, so eight seconds bounds a missing answer without pretending it is instant.
 export const AUTO_SKILL_PREFLIGHT_TIMEOUT_MS = 8_000;
-// Three current sections compose to 6,713 of the 8,000-character ceiling. Keeping the
-// automatic choice to three leaves room for the corpus to grow without routine truncation.
+// Three current sections compose to 7,211 of the 16,000-character ceiling. Three is also
+// the only count an end-to-end comparison has covered; raising it changes the shape of
+// every generation, so it wants evidence rather than merely room in the budget.
 export const MAX_AUTOMATIC_SKILL_SECTIONS = 3;
 
 const hostDisposers = new WeakMap<DesignHost, () => Promise<void>>();
