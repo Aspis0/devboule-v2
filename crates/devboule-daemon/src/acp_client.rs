@@ -846,8 +846,9 @@ fn read_response(
 
 /// Format a JSON-RPC error object for a user-facing message. Agents embed
 /// structured payloads in the error object (qwen carries `authMethods`);
-/// the string `message` field is what belongs in a chat banner, so the raw
-/// serialized object is only the fallback when no string message exists.
+/// the string `message` field is what belongs in a chat banner. Without a
+/// string message the code is reported bare — the object itself is never
+/// serialized into the text.
 fn acp_request_error_message(error: &serde_json::Value) -> String {
     let message = error.get("message").and_then(serde_json::Value::as_str);
     match (
@@ -856,7 +857,11 @@ fn acp_request_error_message(error: &serde_json::Value) -> String {
     ) {
         (Some(code), Some(message)) => format!("ACP request failed ({code}): {message}"),
         (None, Some(message)) => format!("ACP request failed: {message}"),
-        _ => format!("ACP request failed: {error}"),
+        // A structured payload (tokens, authMethods) belongs to provider
+        // plumbing, never to a chat banner or the Settings health line, so
+        // the object itself is never serialized here.
+        (Some(code), None) => format!("ACP request failed ({code})."),
+        (None, None) => "ACP request failed.".to_string(),
     }
 }
 
@@ -1620,7 +1625,9 @@ mod tests {
     use super::super::permission_broker::{
         permission, permission_path, test_broker, PermissionBroker, MAX_ACP_PERMISSION_FIELD_BYTES,
     };
-    use super::{complete_lines, AcpReader, MAX_ACP_PERMISSION_LINE_BYTES};
+    use super::{
+        acp_request_error_message, complete_lines, AcpReader, MAX_ACP_PERMISSION_LINE_BYTES,
+    };
     use crate::journal::Journal;
     use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
     use devboule_protocol::{PermissionOutcome, SessionEvent};
@@ -1629,6 +1636,19 @@ mod tests {
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    #[test]
+    fn request_error_without_a_message_never_serializes_the_object() {
+        let error = serde_json::json!({
+            "code": -32000,
+            "data": {"token": "sk-LEAK"}
+        });
+        let text = acp_request_error_message(&error);
+        assert!(
+            !text.contains("sk-LEAK"),
+            "structured error data must not reach a user-facing banner: {text}"
+        );
+        assert!(text.contains("(-32000)"), "code must stay visible: {text}");
+    }
     #[test]
     fn journal_keeps_raw_envelope_and_replay_derives_the_view() {
         let path = permission_path("envelope");

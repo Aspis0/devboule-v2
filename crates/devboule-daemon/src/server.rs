@@ -56,6 +56,11 @@ pub struct ServerState {
     /// "failed: <reason>" (most recent attempt failed; reason is the error
     /// message collapsed to one line, max 200 chars). A measured last-start
     /// observation, never an auth probe.
+    ///
+    /// Scoping constraint: the map is keyed by provider id only and is
+    /// correct while the daemon is single-user (pipe-peer identity). A
+    /// multi-user daemon must key it by owner, or the failure reasons leak
+    /// across users.
     provider_health: Mutex<HashMap<String, String>>,
 }
 

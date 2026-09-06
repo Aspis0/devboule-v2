@@ -797,10 +797,21 @@ impl SessionRegistry {
             }
             Err(error) => {
                 if let Some(journal) = &self.journal {
-                    // try_send drops on a saturated queue, and the end marker
-                    // is the durable product boundary: this rare failure path
-                    // may block briefly, a phantom live row may not exist.
-                    let _ = journal.mark_ended_blocking(&metadata.id, record_generation, None);
+                    // Trade, made deliberately: the end marker must not be
+                    // silently lost (try_send drops on a saturated queue)
+                    // and must not freeze this dispatch thread either — the
+                    // blocking send is an unbounded 5 ms busy-loop with no
+                    // timeout. A rare failure path affords a throwaway
+                    // thread, and the row still ends once the queue drains,
+                    // so the integration test's sessions_list deadline-poll
+                    // stays valid.
+                    let journal = Arc::clone(journal);
+                    let id = metadata.id.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("journal-end-marker".into())
+                        .spawn(move || {
+                            let _ = journal.mark_ended_blocking(&id, record_generation, None);
+                        });
                 }
                 if let Some(provider_id) = &metadata.provider {
                     state.record_provider_health(provider_id, Err(&error));
@@ -951,11 +962,19 @@ impl SessionRegistry {
                 state.session_finished();
                 // The generation was already started on the journal row; a
                 // failed respawn must end it, or the row stays live and the
-                // roster renders a phantom recovered session. try_send drops
-                // on a saturated queue and the end marker is the durable
-                // product boundary, so this rare failure path blocks on the
-                // blocking variant instead of risking a phantom row.
-                let _ = journal.mark_ended_blocking(session_id, generation, None);
+                // roster renders a phantom recovered session. The end marker
+                // must not be silently lost (try_send drops on a saturated
+                // queue) and must not freeze this dispatch thread (the
+                // blocking send is an unbounded 5 ms busy-loop with no
+                // timeout), so this rare failure path gets a throwaway
+                // thread; the row still ends once the queue drains.
+                let journal = Arc::clone(journal);
+                let id = session_id.to_string();
+                let _ = std::thread::Builder::new()
+                    .name("journal-end-marker".into())
+                    .spawn(move || {
+                        let _ = journal.mark_ended_blocking(&id, generation, None);
+                    });
                 state.record_provider_health(&health_provider, Err(&error));
                 return Err(error);
             }
