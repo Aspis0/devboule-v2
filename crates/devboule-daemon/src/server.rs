@@ -410,15 +410,14 @@ impl ServerState {
         cli_version_cache_is_current(cached, current.as_ref()).then(|| version.clone())
     }
 
-    fn invalidate_provider_update_caches(&self, provider_id: &str, package: &str) {
+    fn invalidate_provider_update_caches(&self, provider_id: &str) {
         self.provider_cli_versions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(provider_id);
-        // The executable fingerprint and npm latest caches are both dropped:
-        // the former forces the next --version observation to be fresh, while
-        // the latter prevents a stale registry value from hiding the update.
-        crate::registry::invalidate_latest_npm_version(package);
+        // Only the installed state changed: dropping the executable fingerprint
+        // forces the next --version observation to be fresh. npm latest is a
+        // registry property, so it remains valid under its six-hour TTL.
     }
 
     #[cfg(test)]
@@ -1406,7 +1405,7 @@ fn provider_update_reply(state: &Arc<ServerState>, id: u64, provider_id: &str) -
         .run(&program, &prefix_args, &args, &state.process_job);
     let ok = result.exit_code == Some(0);
     if ok {
-        state.invalidate_provider_update_caches(provider_id, package);
+        state.invalidate_provider_update_caches(provider_id);
     }
     DaemonMessage::ProviderUpdated {
         id,
@@ -2319,7 +2318,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_update_dispatches_to_fake_runner_and_invalidates_both_version_caches() {
+    fn provider_update_drops_fingerprint_but_preserves_latest_version_cache() {
         let path = std::env::temp_dir().join(format!(
             "devboule-provider-update-test-{}-{}",
             std::process::id(),
@@ -2355,7 +2354,7 @@ mod tests {
         state.set_provider_update_npm_command(std::path::PathBuf::from(r"C:\fake\npm.cmd"), vec![]);
         let fingerprint = executable_fingerprint(&executable).expect("fingerprint");
         state.record_provider_cli_version("codex", "1.0.0", fingerprint);
-        crate::registry::invalidate_latest_npm_version("@openai/codex");
+        crate::registry::reset_npm_version_cache("@openai/codex");
         struct FakeNpmVersion;
         impl crate::registry::NpmVersionFetch for FakeNpmVersion {
             fn latest(&self, _package: &str) -> Result<String, String> {
@@ -2413,8 +2412,8 @@ mod tests {
         );
         assert_eq!(
             crate::registry::cached_latest_npm_version("@openai/codex"),
-            None,
-            "successful update must drop the npm latest cache entry"
+            Some("9.9.9".to_string()),
+            "successful update must preserve the npm latest cache entry"
         );
         let _ = std::fs::remove_dir_all(path);
     }

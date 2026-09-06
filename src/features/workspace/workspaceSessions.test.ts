@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { Session, SessionStateSnapshot } from "../../types/ipc";
+import type { ProviderInfo, Session, SessionStateSnapshot } from "../../types/ipc";
 import {
   chatCapableProviders,
   createWorkspaceSessionController,
@@ -110,6 +110,22 @@ describe("workspace session controller", () => {
         },
       ]).map((provider) => provider.id),
     ).toEqual(["grok"]);
+  });
+
+  it("keeps a synthetic not-installed row out of the chat picker", () => {
+    // Shape of the daemon's "known but not installed" rows: no protocol field
+    // at all, npmPackage instead of a usable executable path. Defense here is
+    // the frontend half; the daemon refuses these rows for chat separately.
+    const synthetic: ProviderInfo = {
+      id: "claude",
+      executable: "",
+      acpAvailable: false,
+      authentication: "unknown",
+      installed: false,
+      npmPackage: "@anthropic-ai/claude-code",
+      latestVersion: "2.0.0",
+    };
+    expect(chatCapableProviders([synthetic])).toEqual([]);
   });
 
   it("excludes only registry wrappers covered by a better native provider", () => {

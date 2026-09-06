@@ -772,3 +772,20 @@ fn unexpected<T>(message: DaemonMessage) -> Result<T, DaemonError> {
         "unexpected daemon frame: {message:?}"
     )))
 }
+
+#[cfg(all(test, feature = "server"))]
+mod tests {
+    use super::{PROVIDER_UPDATE_RPC_TIMEOUT, RPC_TIMEOUT};
+    use crate::provider_update::UPDATE_TIMEOUT;
+    use std::time::Duration;
+
+    #[test]
+    fn provider_update_deadline_has_install_headroom() {
+        // Keep the RPC deadline above the runner timeout plus 30 seconds: reverting
+        // provider_update to the normal 30-second RPC default would silently cut
+        // off long installs. The complete wiring needs a fake pipe to test; these
+        // constants protect the deadline relationship directly.
+        assert!(PROVIDER_UPDATE_RPC_TIMEOUT > UPDATE_TIMEOUT + Duration::from_secs(30));
+        assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
+    }
+}

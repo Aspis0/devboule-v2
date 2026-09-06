@@ -25,10 +25,22 @@ use std::process::{Command, Output};
 const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
 pub(crate) const MAX_EXTERNAL_VERSION_CHARS: usize = 64;
 
-/// Keep externally supplied version labels bounded before they enter the wire
-/// contract or an in-process cache.
+/// Keep externally supplied version labels safe and bounded before they enter
+/// the wire contract or an in-process cache. Control and bidi characters are
+/// stripped rather than replaced because version labels have no legitimate
+/// control characters, and replacement could change the apparent version.
 pub(crate) fn cap_external_version(value: &str) -> Option<String> {
-    let capped: String = value.chars().take(MAX_EXTERNAL_VERSION_CHARS).collect();
+    let capped: String = value
+        .chars()
+        .filter(|character| {
+            !character.is_control()
+                && !matches!(
+                    *character,
+                    '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                )
+        })
+        .take(MAX_EXTERNAL_VERSION_CHARS)
+        .collect();
     (!capped.is_empty()).then_some(capped)
 }
 
@@ -1022,6 +1034,27 @@ mod tests {
         );
         #[cfg(not(windows))]
         assert_eq!(candidates, vec![dir.join("agent")]);
+    }
+
+    #[test]
+    fn external_versions_strip_controls_and_bidi_overrides() {
+        assert_eq!(
+            super::cap_external_version("1.2.3\nevil"),
+            Some("1.2.3evil".to_string())
+        );
+        assert_eq!(
+            super::cap_external_version("1.2.3\x1bevil"),
+            Some("1.2.3evil".to_string())
+        );
+        assert_eq!(
+            super::cap_external_version("1.2.3\u{202e}evil"),
+            Some("1.2.3evil".to_string())
+        );
+        assert_eq!(
+            super::cap_external_version("1.0.0-beta.1+終"),
+            Some("1.0.0-beta.1+終".to_string())
+        );
+        assert_eq!(super::cap_external_version("\n\x1b\u{202e}"), None);
     }
 
     #[cfg(windows)]

@@ -1200,4 +1200,32 @@ mod tests {
         assert!(installed.installed);
         assert_eq!(installed.npm_package, None);
     }
+
+    #[test]
+    fn synthetic_provider_info_round_trips_installed_package_and_latest_version() {
+        let synthetic = ProviderInfo {
+            id: "qwen".to_string(),
+            executable: String::new(),
+            acp_available: false,
+            authentication: "unknown".to_string(),
+            protocol: None,
+            origin: None,
+            launch_args: None,
+            pickable: Some(false),
+            installed_version: None,
+            latest_version: Some("0.23.0".to_string()),
+            agent_version: None,
+            install_channel: Some("npm".to_string()),
+            installed: false,
+            npm_package: Some("@qwen-code/qwen-code".to_string()),
+        };
+        let encoded = serde_json::to_value(&synthetic).expect("synthetic json");
+        assert_eq!(encoded["installed"], false);
+        assert_eq!(encoded["npmPackage"], "@qwen-code/qwen-code");
+        assert_eq!(encoded["latestVersion"], "0.23.0");
+        assert_eq!(
+            serde_json::from_value::<ProviderInfo>(encoded).expect("synthetic round trip"),
+            synthetic
+        );
+    }
 }
