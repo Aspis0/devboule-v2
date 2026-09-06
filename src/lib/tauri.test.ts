@@ -9,6 +9,8 @@ import {
   providersRefresh,
   sessionDelete,
   sessionResume,
+  surfaceSettingsGet,
+  surfaceSettingsSet,
 } from "./tauri";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -82,6 +84,23 @@ describe("retention command wrappers", () => {
       maxAgeMs: 0,
     });
     expect(invoke).toHaveBeenNthCalledWith(4, "session_delete", { id: "s.owner.1" });
+  });
+});
+
+describe("surface settings wrappers", () => {
+  it("passes the surfaceId and opaque value payloads through", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(null as never);
+    await surfaceSettingsGet("design");
+    await surfaceSettingsSet("design", { split: true, count: 3 });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "surface_settings_get", {
+      surfaceId: "design",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "surface_settings_set", {
+      surfaceId: "design",
+      value: { split: true, count: 3 },
+    });
   });
 });
 

@@ -65,6 +65,8 @@ type CommandArgs = {
   oracle_watch_stop: undefined;
   oracle_files: { tab: FileTab; page: number };
   oracle_ask: { query: string };
+  surface_settings_get: { surfaceId: string };
+  surface_settings_set: { surfaceId: string; value: unknown };
   plugins_list: undefined;
   plugins_rescan: undefined;
   plugin_install: { id: string; source: string };
@@ -112,6 +114,8 @@ type CommandResults = {
   oracle_watch_stop: void;
   oracle_files: IndexedFile[];
   oracle_ask: OracleSearchResponse;
+  surface_settings_get: unknown;
+  surface_settings_set: void;
   plugins_list: PluginInventory;
   plugins_rescan: PluginInventory;
   plugin_install: PluginInventory;
@@ -235,6 +239,17 @@ export const oracleWatchStop = () => invokeTyped("oracle_watch_stop");
 export const oracleFiles = (tab: FileTab, page: number) =>
   invokeTyped("oracle_files", { tab, page });
 export const oracleAsk = (query: string) => invokeTyped("oracle_ask", { query });
+/**
+ * One surface's persisted settings document, or null. The backend answers
+ * null for a missing, unreadable, or malformed file alike — "never saved" and
+ * "corrupt" are the same signal to a caller, which should fall back to its
+ * defaults.
+ */
+export const surfaceSettingsGet = (surfaceId: string) =>
+  invokeTyped("surface_settings_get", { surfaceId });
+/** Stores `value` verbatim as pretty JSON; rejects surface ids outside `^[a-z0-9-]{1,32}$` and values over the ~64 KB cap. */
+export const surfaceSettingsSet = (surfaceId: string, value: unknown) =>
+  invokeTyped("surface_settings_set", { surfaceId, value });
 export const pluginsList = () => invokeTyped("plugins_list");
 /** Look at the disk again, for someone who just installed something. */
 export const pluginsRescan = () => invokeTyped("plugins_rescan");

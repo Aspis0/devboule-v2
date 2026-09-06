@@ -2,6 +2,7 @@ mod backend;
 mod client;
 mod oracle;
 mod plugins;
+mod surface_settings;
 
 use tauri::Manager;
 
@@ -80,6 +81,8 @@ pub fn run() {
             oracle::oracle_watch_stop,
             oracle::oracle_files,
             oracle::oracle_ask,
+            surface_settings::surface_settings_get,
+            surface_settings::surface_settings_set,
             plugins::plugins_list,
             plugins::plugins_rescan,
             plugins::plugin_install,
