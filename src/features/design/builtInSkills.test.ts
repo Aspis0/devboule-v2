@@ -24,9 +24,9 @@ describe("built-in design skills", () => {
     expect(validateSections(builtInSkillSources())).toEqual([]);
   });
 
-  it("contains exactly the two current built-in skill slugs", () => {
+  it("contains exactly the current built-in skill slugs", () => {
     expect(new Set(builtInSkillIndex().map((entry) => entry.slug))).toEqual(
-      new Set(["anti-ai-slop", "color"]),
+      new Set(["anti-ai-slop", "color", "state-coverage"]),
     );
   });
 
@@ -51,13 +51,19 @@ describe("built-in design skills", () => {
     expect(index.every((entry) => entry.description.length > 0)).toBe(true);
   });
 
-  it("composes both built-in skills without dropping either", () => {
-    const result = buildSkillBlock(builtInSkillSources(), ["anti-ai-slop", "color"]);
+  // Every built-in section has to fit together, because "all" is the default mode
+  // and truncation there would drop sections in derived order rather than by
+  // relevance.  When this fails, the doctrine has outgrown the ceiling and the
+  // answer is a selection mechanism, not a bigger number.
+  it("composes every built-in skill without dropping any", () => {
+    const slugs = builtInSkillIndex().map((entry) => entry.slug);
+    const result = buildSkillBlock(builtInSkillSources(), slugs);
 
     expect(result.dropped).toEqual([]);
     expect(result.totalChars).toBeLessThan(DOCTRINE_CEILING_CHARS);
-    expect(result.text).toContain(`## ${sectionForSlug("anti-ai-slop").title}`);
-    expect(result.text).toContain(`## ${sectionForSlug("color").title}`);
+    for (const slug of slugs) {
+      expect(result.text).toContain(`## ${sectionForSlug(slug).title}`);
+    }
   });
 
   it("composes only the requested built-in skill", () => {
