@@ -5,7 +5,7 @@ import {
   parseSkillFile,
   validateSections,
 } from "./skillLoader";
-import { builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
+import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
 
 function slugForPath(path: string): string {
   return path.split("/").pop()?.split(".")[0] ?? "";
@@ -25,7 +25,30 @@ describe("built-in design skills", () => {
   });
 
   it("contains exactly the two current built-in skill slugs", () => {
-    expect(new Set(builtInSkillSlugs())).toEqual(new Set(["anti-ai-slop", "color"]));
+    expect(new Set(builtInSkillIndex().map((entry) => entry.slug))).toEqual(
+      new Set(["anti-ai-slop", "color"]),
+    );
+  });
+
+  it("indexes each parseable craft file with its front-matter metadata", () => {
+    const sources = builtInSkillSources();
+    const expected = sources.flatMap((source) => {
+      const result = parseSkillFile(source.path, source.text);
+      return result.ok
+        ? [
+            {
+              slug: result.section.slug,
+              title: result.section.title,
+              description: result.section.description,
+            },
+          ]
+        : [];
+    });
+    const index = builtInSkillIndex();
+
+    expect(index).toEqual(expected);
+    expect(index).toHaveLength(sources.length);
+    expect(index.every((entry) => entry.description.length > 0)).toBe(true);
   });
 
   it("composes both built-in skills without dropping either", () => {

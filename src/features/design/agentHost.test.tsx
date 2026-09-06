@@ -66,6 +66,7 @@ import { parseSkillFile } from "./skillLoader";
 import {
   DESIGN_DOCTRINE_BEGIN,
   DESIGN_DOCTRINE_END,
+  DESIGN_DOCTRINE_RESTATEMENT,
   createAgentHost,
   disposeAgentHost,
   extractArtifactHtml,
@@ -824,7 +825,7 @@ describe("ACP design host", () => {
         await disposeAgentHost(host);
       });
 
-      it("includes the built-in doctrine after grounding and before output constraints", async () => {
+      it("places output constraints before the doctrine block and the restatement after it", async () => {
         const source = builtInSkillSources()[0];
         if (source === undefined) throw new Error("No built-in doctrine source was loaded");
         const parsed = parseSkillFile(source.path, source.text);
@@ -838,17 +839,25 @@ describe("ACP design host", () => {
         const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
         const doctrineStart = sentText.indexOf(DESIGN_DOCTRINE_BEGIN);
         const doctrineEnd = sentText.indexOf(DESIGN_DOCTRINE_END);
+        const restatementPos = sentText.indexOf(DESIGN_DOCTRINE_RESTATEMENT);
+
         expect(sentText).toContain(`## ${parsed.section.title}`);
         expect(doctrineStart).toBeGreaterThan(-1);
         expect(doctrineEnd).toBeGreaterThan(doctrineStart);
+
+        // Each output constraint appears before the doctrine block.
         for (const constraint of [
           "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
           "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
           "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
           "If you produce more than one block, only the last one is used.",
         ]) {
-          expect(sentText.indexOf(constraint)).toBeGreaterThan(doctrineEnd);
+          expect(sentText.indexOf(constraint)).toBeGreaterThan(-1);
+          expect(sentText.indexOf(constraint)).toBeLessThan(doctrineStart);
         }
+
+        // The restatement appears after the doctrine block.
+        expect(restatementPos).toBeGreaterThan(doctrineEnd);
 
         await disposeAgentHost(host);
       });
@@ -863,11 +872,12 @@ describe("ACP design host", () => {
         expect(prompt.split(DESIGN_DOCTRINE_END)).toHaveLength(2);
       });
 
-      it("omits the doctrine fence when the composed block is empty", () => {
+      it("omits the doctrine fence and restatement when the composed block is empty", () => {
         const prompt = groundedPrompt("Update the design", [], "");
 
         expect(prompt).not.toContain(DESIGN_DOCTRINE_BEGIN);
         expect(prompt).not.toContain(DESIGN_DOCTRINE_END);
+        expect(prompt).not.toContain(DESIGN_DOCTRINE_RESTATEMENT);
       });
     });
 

@@ -102,9 +102,13 @@ and a JSON document under `<app_config_dir>` behind an IPC command pair, which
 feeds prompt composition rather than UI appearance — it is product configuration, and it
 should outlive a cleared webview store.
 
-**A skill is a file, not a feature**: the sections live in `craft/` as markdown with three
-front-matter fields — `slug` (must match the filename), `title`, `requires` — discovered
-with a glob. Adding one is dropping in a file, which is the shape the marketplace will need
+**A skill is a file, not a feature**: the sections live in `craft/` as markdown with four
+front-matter fields — `slug` (must match the filename), `title`, `description`, `requires`
+— discovered with a glob. `description` is the field that will decide relevance when there
+are more sections than a prompt can carry; it is capped at 300 characters and it is the
+same field Cursor's agent-requested rules and the Agent Skills standard use for that job,
+both of which chose a sentence over a category taxonomy. Every value has to stay on one
+line: the parser wants a key per line and says so when it does not get one. Adding one is dropping in a file, which is the shape the marketplace will need
 to distribute them. Nothing is ever executed: doctrine is markdown that becomes prompt
 text.
 
@@ -131,18 +135,33 @@ after it: otherwise announcing the truncation would cause more of it.
 **Doctrine is reference material, and the prompt is built so that it cannot be anything
 else.** The block is fenced between `===== BEGIN DESIGN DOCTRINE (reference material) =====`
 and its closing delimiter, with a line saying it is not a request from the user. Two
-properties carry the weight. The fence sits **after** the grounding and **before** the
-output constraints — the single fenced block, "scripts will not run", "only the last block
-is used" — so our constraints have the last word in the prompt and no text inside the block
-can read as replacing them; a test asserts the index ordering, not just the presence.
-And any occurrence of either delimiter inside the composed text is replaced before
-embedding, because a bundle able to print the closing delimiter could make the rest of its
-text read as instructions to the host.
+properties carry the weight. **The output constraints come first, before the fence, and are
+restated once after it.** That ordering was originally the other way round, on the
+reasoning that constraints coming last have the last word. A 2026 study of 402 real agent
+skills measured the opposite and named it: constraints deferred to a late section are
+routinely skipped, because agents act on the first actionable instruction they meet and
+reach the later advisory text only after acting (arXiv 2605.13044, pitfall F5, "Detached
+Safety Constraints"). Our constraints were sitting exactly where that study found
+constraints get ignored. They are now first, and restated after the block so recency does
+not favour the untrusted half either; a test asserts the index ordering in the emitted
+string, not mere presence. And any occurrence of either delimiter inside the composed text
+is replaced before embedding, because a bundle able to print the closing delimiter could
+make the rest of its text read as instructions to the host.
 
 That neutralisation matches the delimiters exactly. An imitation with different spacing or
 casing is not caught, and no textual fence can be made airtight — the defences that do not
 depend on a model's reading are that the block is bounded by the ceiling, that the section
 is omitted entirely when it would be empty, and that nothing in a bundle is ever executed.
+
+**Why a fence is worth anything here when the literature says it is not.** The same
+survey of Agent Skills concludes that instruction-hierarchy and structured-query defences
+are architecturally inapplicable there, because a `SKILL.md` body already occupies the
+operator layer — it is _meant_ to direct the agent, so nothing distinguishes an injected
+directive from an intended one without a specification of what the skill should do, and no
+such specification exists (arXiv 2604.02837). Doctrine is not that. It has a stated role
+and it is one sentence: **it describes design, it never directs the agent.** That makes it
+data by construction rather than by convention, which is the property the fence needs and
+the one Agent Skills cannot have.
 
 **The runtime is tolerant and the repository is strict**, and both halves are needed. A
 downloaded bundle referencing a section this build does not have must not take the surface

@@ -5,11 +5,13 @@
 //   ---
 //   slug: typography
 //   title: Typography
+//   description: Rules for making type feel deliberate.
 //   requires: [color]
 //   ---
 //
-// Three fields only: slug (identifier, matches filename), title (display),
-// requires (other slugs this section assumes, optional = none).
+// Four fields only: slug (identifier, matches filename), title (display),
+// description (short relevance guidance), and requires (other slugs this
+// section assumes, optional = none).
 //
 // Two entry points over the same machinery:
 //   buildSkillBlock  — tolerant runtime, skips failures, always returns a block
@@ -26,6 +28,8 @@
 export interface SkillSection {
   slug: string;
   title: string;
+  description: string;
+  unknownKeys: readonly string[];
   requires: readonly string[];
   body: string;
 }
@@ -53,7 +57,9 @@ export type ResolveResult =
 
 export type SectionError =
   | { kind: "section_too_large"; slug: string; length: number }
-  | { kind: "section_empty"; slug: string };
+  | { kind: "section_empty"; slug: string }
+  | { kind: "description_too_long"; slug: string; length: number }
+  | { kind: "unknown_front_matter_key"; slug: string; key: string };
 
 export interface ComposedBlock {
   text: string;
@@ -74,6 +80,9 @@ export const DOCTRINE_CEILING_CHARS = 8000;
 
 /** Strict character ceiling for each first-party doctrine section. */
 export const DOCTRINE_SECTION_CEILING_CHARS = 2500;
+
+/** Strict character ceiling for relevance metadata; real descriptions are about 270 chars. */
+export const DOCTRINE_DESCRIPTION_CEILING_CHARS = 300;
 
 const SLUG_PATTERN = /^[a-z][a-z0-9-]*$/;
 
@@ -135,6 +144,8 @@ export function parseSkillFile(path: string, text: string): ParseResult {
 
   let slug: string | null = null;
   let title: string | null = null;
+  let description: string | null = null;
+  const unknownKeys: string[] = [];
   let requires: string[] | null = null;
   const seen = new Set<string>();
 
@@ -146,7 +157,13 @@ export function parseSkillFile(path: string, text: string): ParseResult {
     if (colonIndex === -1) {
       return {
         ok: false,
-        error: { kind: "malformed_front_matter", detail: `Unparseable line: ${trimmed}` },
+        error: {
+          kind: "malformed_front_matter",
+          // Every front-matter line must carry its own key, so a value that
+          // wraps onto a second line lands here.  Say so: the ceiling allows a
+          // 300-character description, which invites exactly that wrap.
+          detail: `Unparseable line, a front-matter value must stay on one line: ${trimmed}`,
+        },
       };
     }
 
@@ -166,10 +183,15 @@ export function parseSkillFile(path: string, text: string): ParseResult {
       slug = parsed;
     } else if (key === "title") {
       title = value;
+    } else if (key === "description") {
+      description = value;
     } else if (key === "requires") {
       requires = parseRequiresValue(value);
+    } else {
+      // Retain unknown keys deliberately: the tolerant runtime ignores them,
+      // while validateSections consumes them for strict first-party checks.
+      unknownKeys.push(key);
     }
-    // Unknown keys are silently ignored (forward compatibility).
   }
 
   if (slug === null) {
@@ -184,6 +206,12 @@ export function parseSkillFile(path: string, text: string): ParseResult {
       error: { kind: "malformed_front_matter", detail: "Missing title field" },
     };
   }
+  if (description === null) {
+    return {
+      ok: false,
+      error: { kind: "malformed_front_matter", detail: "Missing description field" },
+    };
+  }
 
   // Check slug matches the filename stem.
   const filename = path.split("/").pop()?.split(".")[0];
@@ -196,7 +224,7 @@ export function parseSkillFile(path: string, text: string): ParseResult {
 
   return {
     ok: true,
-    section: { slug, title, requires: requires ?? [], body },
+    section: { slug, title, description, unknownKeys, requires: requires ?? [], body },
   };
 }
 
@@ -510,6 +538,22 @@ export function validateSections(sources: readonly SkillSource[]): readonly Vali
           slug: section.slug,
           length: section.body.length,
         },
+      });
+    }
+    if (section.description.length > DOCTRINE_DESCRIPTION_CEILING_CHARS) {
+      errors.push({
+        path: section.slug,
+        error: {
+          kind: "description_too_long",
+          slug: section.slug,
+          length: section.description.length,
+        },
+      });
+    }
+    for (const key of section.unknownKeys) {
+      errors.push({
+        path: section.slug,
+        error: { kind: "unknown_front_matter_key", slug: section.slug, key },
       });
     }
   }

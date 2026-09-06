@@ -1,5 +1,6 @@
 ---
 slug: anti-ai-slop
+description: The defaults a model reaches for when nothing in the brief pushes back: indigo accents, cards around everything, dark by default, editorial serif on autopilot, emoji icons, unmeasured numbers, imagery faked in CSS. Apply whenever the output should not read as generated.
 title: Anti-AI-slop
 requires: []
 ---

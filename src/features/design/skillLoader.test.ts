@@ -3,6 +3,7 @@ import {
   buildSkillBlock,
   composeSections,
   DOCTRINE_CEILING_CHARS,
+  DOCTRINE_DESCRIPTION_CEILING_CHARS,
   DOCTRINE_SECTION_CEILING_CHARS,
   parseSkillFile,
   resolveSections,
@@ -19,6 +20,7 @@ const FIXTURES: Record<string, string> = {
   "typography.md": `---
 slug: typography
 title: Typography
+description: Typography guidance for the test fixture.
 requires: [color]
 ---
 
@@ -29,6 +31,7 @@ Keep measure between 45 and 75 characters.
   "color.md": `---
 slug: color
 title: Color
+description: Color guidance for the test fixture.
 ---
 
 Never signal state by colour alone.
@@ -37,6 +40,7 @@ Provide sufficient contrast.
   "motion.md": `---
 slug: motion
 title: Motion
+description: Motion guidance for the test fixture.
 requires: [color]
 ---
 
@@ -45,6 +49,7 @@ Use consistent easing curves.
   "spacing.md": `---
 slug: spacing
 title: Spacing
+description: Spacing guidance for the test fixture.
 requires: []
 ---
 
@@ -53,6 +58,7 @@ Use an 8px grid.
   "standalone.md": `---
 slug: standalone
 title: Standalone
+description: Standalone guidance for the test fixture.
 ---
 
 This section has no requires.
@@ -60,6 +66,7 @@ This section has no requires.
   "cycles-a.md": `---
 slug: cycles-a
 title: Cycles A
+description: Cycle A guidance for the test fixture.
 requires: [cycles-b]
 ---
 
@@ -68,6 +75,7 @@ A depends on B.
   "cycles-b.md": `---
 slug: cycles-b
 title: Cycles B
+description: Cycle B guidance for the test fixture.
 requires: [cycles-a]
 ---
 
@@ -76,6 +84,7 @@ B depends on A.
   "unknown-dep.md": `---
 slug: unknown-dep
 title: Unknown Dep
+description: Unknown dependency guidance for the test fixture.
 requires: [nonexistent]
 ---
 
@@ -90,6 +99,7 @@ No slug field here.
   "bad-slug.md": `---
 slug: Bad-Slug
 title: Bad Slug
+description: Invalid slug guidance for the test fixture.
 ---
 
 Uppercase slug.
@@ -106,6 +116,7 @@ Two slugs declared.
   "unclosed.md": `---
 slug: unclosed
 title: Unclosed
+description: Unclosed guidance for the test fixture.
 requires: []
 
 This fence never closes.
@@ -113,6 +124,7 @@ This fence never closes.
   "mismatch.md": `---
 slug: mismatch-slug
 title: Mismatch
+description: Mismatch guidance for the test fixture.
 ---
 
 Filename would be mismatch.md, not mismatch-slug.
@@ -130,8 +142,10 @@ function makeSection(
   title: string,
   body: string,
   requires: readonly string[] = [],
+  description = "Test section description.",
+  unknownKeys: readonly string[] = [],
 ): SkillSection {
-  return { slug, title, requires, body };
+  return { slug, title, description, unknownKeys, requires, body };
 }
 
 // ── Parse ──────────────────────────────────────────────────────────────
@@ -205,6 +219,58 @@ describe("parseSkillFile", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.kind).toBe("malformed_front_matter");
+  });
+
+  it("fails distinctly on missing description and missing title fields", () => {
+    const missingDescription = parseSkillFile(
+      "missing-description.md",
+      "---\nslug: missing-description\ntitle: Missing Description\nrequires: []\n---\n\ncontent",
+    );
+    const missingTitle = parseSkillFile(
+      "missing-title.md",
+      "---\nslug: missing-title\ndescription: Missing title\nrequires: []\n---\n\ncontent",
+    );
+
+    expect(missingDescription).toEqual({
+      ok: false,
+      error: { kind: "malformed_front_matter", detail: "Missing description field" },
+    });
+    expect(missingTitle).toEqual({
+      ok: false,
+      error: { kind: "malformed_front_matter", detail: "Missing title field" },
+    });
+  });
+
+  it("retains an unknown key from a wrapped description for strict validation", () => {
+    const description = "A long description that";
+    const unknownKey = "wraps";
+    const wrapped = {
+      path: "my-skill.md",
+      text: `---\nslug: my-skill\ntitle: My Skill\ndescription: ${description}\n${unknownKey}: onto a second line with a colon\nrequires: []\n---\n\ncontent`,
+    };
+    const parsed = parseSkillFile(wrapped.path, wrapped.text);
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.section.description).toBe(description);
+    expect(parsed.section.unknownKeys).toEqual(["wraps"]);
+
+    expect(validateSections([wrapped])).toEqual([
+      {
+        path: parsed.section.slug,
+        error: { kind: "unknown_front_matter_key", slug: parsed.section.slug, key: unknownKey },
+      },
+    ]);
+  });
+
+  it("still rejects a front-matter line without a colon", () => {
+    const result = parseSkillFile(
+      "malformed-continuation.md",
+      "---\nslug: malformed-continuation\ntitle: Malformed Continuation\ndescription: A description\nwrapped text without a colon\nrequires: []\n---\n\ncontent",
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe("malformed_front_matter");
   });
 
   it("each parse failure kind is distinguishable", () => {
@@ -469,6 +535,20 @@ describe("buildSkillBlock", () => {
     expect(result.text).toContain("Color");
   });
 
+  it("tolerates unknown front-matter keys at runtime", () => {
+    const source: SkillSource = {
+      path: "my-skill.md",
+      text: "---\nslug: my-skill\ntitle: My Skill\ndescription: A description\nwraps: onto a second line with a colon\nrequires: []\n---\n\ncontent",
+    };
+    const parsed = parseSkillFile(source.path, source.text);
+    if (!parsed.ok) throw new Error("Wrapped description fixture did not parse");
+
+    const result = buildSkillBlock([source], [parsed.section.slug]);
+
+    expect(result.text).toContain(`## ${parsed.section.title}`);
+    expect(result.text).toContain(parsed.section.body);
+  });
+
   it("skips malformed sources and still returns a block", () => {
     const sources = [
       source("typography.md"),
@@ -500,7 +580,7 @@ describe("buildSkillBlock", () => {
     const all = [cycleA, cycleB, cycleC, cycleD, valid];
     const sources: SkillSource[] = all.map((s) => ({
       path: `${s.slug}.md`,
-      text: `---\nslug: ${s.slug}\ntitle: ${s.title}\nrequires: [${s.requires.join(", ")}]\n---\n\n${s.body}`,
+      text: `---\nslug: ${s.slug}\ntitle: ${s.title}\ndescription: ${s.description}\nrequires: [${s.requires.join(", ")}]\n---\n\n${s.body}`,
     }));
     const result = buildSkillBlock(sources, ["valid-e", "cycle-a", "cycle-c"]);
     // valid-e has no cycle and should survive.
@@ -516,7 +596,7 @@ describe("buildSkillBlock", () => {
     const sources: SkillSource[] = [
       {
         path: "valid.md",
-        text: `---\nslug: valid\ntitle: Valid\nrequires: []\n---\n\ncontent`,
+        text: `---\nslug: valid\ntitle: Valid\ndescription: Valid test section.\nrequires: []\n---\n\ncontent`,
       },
     ];
     // Request a slug that does not exist, which is an unknown_slug error
@@ -533,7 +613,7 @@ describe("buildSkillBlock", () => {
     const sources: SkillSource[] = [
       {
         path: "self.md",
-        text: `---\nslug: self\ntitle: Self\nrequires: [self]\n---\n\ncontent`,
+        text: `---\nslug: self\ntitle: Self\ndescription: Self test section.\nrequires: [self]\n---\n\ncontent`,
       },
     ];
     const result = buildSkillBlock(sources, ["self"]);
@@ -630,7 +710,7 @@ describe("validateSections", () => {
     const sources: SkillSource[] = [
       {
         path: "oversized.md",
-        text: `---\nslug: oversized\ntitle: Oversized\nrequires: []\n---\n\n${oversized.body}`,
+        text: `---\nslug: oversized\ntitle: Oversized\ndescription: Oversized test section.\nrequires: []\n---\n\n${oversized.body}`,
       },
     ];
     const errors = validateSections(sources);
@@ -646,7 +726,7 @@ describe("validateSections", () => {
     const errors = validateSections([
       {
         path: "empty.md",
-        text: "---\nslug: empty\ntitle: Empty\nrequires: []\n---\n",
+        text: "---\nslug: empty\ntitle: Empty\ndescription: Empty test section.\nrequires: []\n---\n",
       },
     ]);
 
@@ -658,7 +738,7 @@ describe("validateSections", () => {
     const errors = validateSections([
       {
         path: "whitespace.md",
-        text: "---\nslug: whitespace\ntitle: Whitespace\nrequires: []\n---\n \n \t\n",
+        text: "---\nslug: whitespace\ntitle: Whitespace\ndescription: Whitespace test section.\nrequires: []\n---\n \n \t\n",
       },
     ]);
 
@@ -666,12 +746,41 @@ describe("validateSections", () => {
     expect(errors[0]!.error).toEqual({ kind: "section_empty", slug: "whitespace" });
   });
 
+  it("accepts a description exactly at the metadata ceiling", () => {
+    const description = "x".repeat(DOCTRINE_DESCRIPTION_CEILING_CHARS);
+    const errors = validateSections([
+      {
+        path: "description-exact.md",
+        text: `---\nslug: description-exact\ntitle: Exact Description\ndescription: ${description}\nrequires: []\n---\n\ncontent`,
+      },
+    ]);
+
+    expect(errors).toEqual([]);
+  });
+
+  it("rejects a description above the metadata ceiling", () => {
+    const description = "x".repeat(DOCTRINE_DESCRIPTION_CEILING_CHARS + 1);
+    const errors = validateSections([
+      {
+        path: "description-long.md",
+        text: `---\nslug: description-long\ntitle: Long Description\ndescription: ${description}\nrequires: []\n---\n\ncontent`,
+      },
+    ]);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.error).toEqual({
+      kind: "description_too_long",
+      slug: "description-long",
+      length: description.length,
+    });
+  });
+
   it("accepts a section whose body exactly fits the ceiling", () => {
     const exact = makeSection("exact", "Exact", "x".repeat(DOCTRINE_SECTION_CEILING_CHARS));
     const sources: SkillSource[] = [
       {
         path: "exact.md",
-        text: `---\nslug: exact\ntitle: Exact\nrequires: []\n---\n\n${exact.body}`,
+        text: `---\nslug: exact\ntitle: Exact\ndescription: Exact test section.\nrequires: []\n---\n\n${exact.body}`,
       },
     ];
     const errors = validateSections(sources);
