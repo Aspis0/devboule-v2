@@ -313,6 +313,31 @@ fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id()
     test.client
         .session_send(&session.id, "please request permission")
         .expect("prompt");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        test.client
+            .journal_usage()
+            .expect("flush permission request journal row before attach");
+        let connection =
+            Connection::open(test._harness.paths.journal_file()).expect("open journal");
+        let request_rows = connection
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE session_id = ?1 AND kind = 'acp_envelope'
+                   AND instr(CAST(payload AS TEXT), 'session/request_permission') > 0",
+                [&session.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("find permission request journal row");
+        if request_rows > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "permission request was not journaled before reattach"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
     let received = Arc::clone(&events);
@@ -338,6 +363,76 @@ fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id()
     test.client
         .session_close(&session.id)
         .expect("close ACP session");
+}
+
+#[test]
+fn acp_resolved_permission_is_not_reopened_after_live_reattach() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_send(&session.id, "initial replay")
+        .expect("initial prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    test.client
+        .session_send(&session.id, "please request permission")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm")
+        })
+    });
+    test.client
+        .session_permission_respond(&session.id, "tool-perm", PermissionOutcome::AllowOnce)
+        .expect("allow once");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::PermissionResolved { tool_call_id } if tool_call_id == "tool-perm")
+        })
+    });
+    test.client
+        .session_detach(&session.id)
+        .expect("detach resolved session");
+
+    let reattached = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&reattached);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received
+            .lock()
+            .expect("reattached events lock")
+            .push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, handler)
+        .expect("reattach resolved session");
+    wait_for(&reattached, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply"))
+    });
+    let reattached = reattached.lock().expect("reattached events lock");
+    assert!(reattached.iter().any(|event| {
+        matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+    }));
+    assert_eq!(
+        reattached
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::SessionManifest { .. }))
+            .count(),
+        1,
+        "reattach must deliver the stored/journaled manifest exactly once"
+    );
+    assert!(!reattached.iter().any(|event| {
+        matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm")
+    }));
+    drop(reattached);
+    test.client
+        .session_close(&session.id)
+        .expect("close resolved session");
 }
 
 #[test]
@@ -1011,6 +1106,85 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
     test.client
         .session_close(&session.id)
         .expect("close resumed ACP session");
+}
+
+#[test]
+fn live_acp_session_journals_conversation_before_termination() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, initial_events) = test.attached_session();
+    test.client
+        .session_send(&session.id, "measure live journal")
+        .expect("prompt");
+    wait_for(&initial_events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        test.client.journal_usage().expect("flush journal");
+        let connection =
+            Connection::open(test._harness.paths.journal_file()).expect("open journal");
+        let reply_rows = connection
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE session_id = ?1 AND kind = 'acp_envelope'
+                   AND instr(CAST(payload AS TEXT), 'stub reply') > 0",
+                [&session.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("find live ACP journal row");
+        let live = test
+            .client
+            .sessions_list()
+            .expect("sessions list")
+            .into_iter()
+            .find(|row| row.id == session.id)
+            .is_some_and(|row| matches!(row.state, devboule_protocol::SessionState::Live { .. }));
+        if reply_rows > 0 && live {
+            eprintln!(
+                "premise measurement: live session {} has {} journaled stub-reply ACP row(s)",
+                session.id, reply_rows
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "live ACP conversation was not journaled while session remained live"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    test.client
+        .session_detach(&session.id)
+        .expect("detach before live reattach");
+    let reattached_events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let reattached_received = Arc::clone(&reattached_events);
+    let reattached_handler: EventHandler = Arc::new(move |envelope| {
+        reattached_received
+            .lock()
+            .expect("reattached events lock")
+            .push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, reattached_handler)
+        .expect("reattach live session");
+    wait_for(&reattached_events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+        })
+    });
+    let reattached_events = reattached_events.lock().expect("reattached events lock");
+    assert!(reattached_events.iter().any(|event| {
+        matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "measure live journal")
+    }));
+    drop(reattached_events);
+
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
 }
 
 struct AcpTest {

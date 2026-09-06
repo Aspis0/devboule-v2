@@ -1309,6 +1309,15 @@ impl AcpReader {
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
+        self.publish_at_seq(runtime, event, None);
+    }
+
+    fn publish_at_seq(
+        &self,
+        runtime: &SessionRuntime,
+        event: SessionEvent,
+        event_seq: Option<u64>,
+    ) {
         let event = if let Some(transport) = &self.transport {
             transport.override_manifest_effort(event)
         } else {
@@ -1320,7 +1329,7 @@ impl AcpReader {
             }
             runtime.store_session_manifest(event.clone());
         }
-        let _ = runtime.publish_agent_event(event, None);
+        let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
     }
 
     fn with_provider(&self, event: SessionEvent) -> SessionEvent {
@@ -1491,39 +1500,44 @@ impl AcpReader {
             return;
         }
         self.turn.note_activity();
-        runtime.journal_agent_envelope(value);
+        let event_seq = runtime.journal_agent_envelope(value);
         match classify_line(value) {
             Some(AcpLineKind::Request { method }) => {
                 if method == "session/request_permission" {
-                    self.dispatch_permission(value, runtime);
+                    self.dispatch_permission(value, runtime, event_seq);
                     return;
                 }
                 self.dispatch_client_request(&method, value, runtime);
             }
             Some(AcpLineKind::Response) => {
                 if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
-                    self.dispatch_response(id, value, runtime);
+                    self.dispatch_response(id, value, runtime, event_seq);
                 }
             }
             Some(AcpLineKind::Notification { .. }) => {
                 if value.get("method").and_then(serde_json::Value::as_str)
                     == Some("_x.ai/sessions/changed")
                 {
-                    self.dispatch_sessions_changed(value, runtime);
+                    self.dispatch_sessions_changed(value, runtime, event_seq);
                     return;
                 }
                 if let Some(view) =
                     view_from_envelope_in(value, &self.session_id, Some(self.host.cwd()))
                 {
                     let view = self.with_provider(view);
-                    self.publish(runtime, view);
+                    self.publish_at_seq(runtime, view, event_seq);
                 }
             }
             None => {}
         }
     }
 
-    fn dispatch_sessions_changed(&self, value: &serde_json::Value, runtime: &SessionRuntime) {
+    fn dispatch_sessions_changed(
+        &self,
+        value: &serde_json::Value,
+        runtime: &SessionRuntime,
+        event_seq: Option<u64>,
+    ) {
         let Some(upserted) = value
             .pointer("/params/upserted")
             .and_then(serde_json::Value::as_array)
@@ -1562,7 +1576,7 @@ impl AcpReader {
         else {
             return;
         };
-        self.publish(
+        self.publish_at_seq(
             runtime,
             SessionEvent::SessionManifest {
                 provider_id,
@@ -1570,6 +1584,7 @@ impl AcpReader {
                 models,
                 modes,
             },
+            event_seq,
         );
     }
 
@@ -1605,7 +1620,13 @@ impl AcpReader {
         self.host.dispatch(method, id, params, respond);
     }
 
-    fn dispatch_response(&self, id: u64, value: &serde_json::Value, runtime: &SessionRuntime) {
+    fn dispatch_response(
+        &self,
+        id: u64,
+        value: &serde_json::Value,
+        runtime: &SessionRuntime,
+        event_seq: Option<u64>,
+    ) {
         let response_was_pending = self
             .pending
             .lock()
@@ -1691,7 +1712,7 @@ impl AcpReader {
             return;
         }
         if let Some(view) = view_from_envelope_in(value, &self.session_id, Some(self.host.cwd())) {
-            self.publish(runtime, view);
+            self.publish_at_seq(runtime, view, event_seq);
         }
     }
 
@@ -1703,7 +1724,12 @@ impl AcpReader {
         self.publish(runtime, SessionEvent::AgentError { message: reason });
     }
 
-    fn dispatch_permission(&self, value: &serde_json::Value, runtime: &Arc<SessionRuntime>) {
+    fn dispatch_permission(
+        &self,
+        value: &serde_json::Value,
+        runtime: &Arc<SessionRuntime>,
+        event_seq: Option<u64>,
+    ) {
         let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
             self.publish(
                 runtime,
@@ -1879,7 +1905,7 @@ impl AcpReader {
             }
         };
         if timeout_started {
-            let _ = runtime.publish_agent_event(event, None);
+            let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
         }
     }
 }
@@ -2187,6 +2213,7 @@ mod tests {
                 }
             }),
             &runtime,
+            None,
         );
         let sent = sent.lock().expect("sent lock");
         assert_eq!(sent.len(), 1);
@@ -2217,6 +2244,7 @@ mod tests {
                 }
             }),
             &runtime,
+            None,
         );
         let sent = sent.lock().expect("sent lock");
         assert_eq!(sent.len(), 1);
@@ -2249,15 +2277,16 @@ mod tests {
             Arc::clone(&broker),
         ));
         let first = ConnHandle::new(1);
-        let generation = runtime
-            .try_attach(None, &first, true)
+        let outcome = runtime
+            .try_attach_with_replay(None, &first, true)
             .expect("first attach");
-        first.track(
+        first.track_with_agent_replay(
             "s.permission.queue",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         runtime.detach_if_conn(first.id);
 
@@ -2268,13 +2297,16 @@ mod tests {
         runtime.publish_agent_event(request, None);
 
         let second = ConnHandle::new(2);
-        let generation = runtime.try_attach(None, &second, true).expect("reattach");
-        second.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &second, true)
+            .expect("reattach");
+        second.track_with_agent_replay(
             "s.permission.queue",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         assert!(second.pull_events().iter().any(|event| matches!(
             event.envelope.event,
@@ -2315,13 +2347,16 @@ mod tests {
         assert!(broker.expire("expired-detached", &pending));
 
         let conn = ConnHandle::new(3);
-        let generation = runtime.try_attach(None, &conn, true).expect("reattach");
-        conn.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("reattach");
+        conn.track_with_agent_replay(
             "s.permission.expired",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let events = conn.pull_events();
         assert!(
@@ -2346,13 +2381,16 @@ mod tests {
         });
 
         let first = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &first, true).expect("attach");
-        first.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &first, true)
+            .expect("attach");
+        first.track_with_agent_replay(
             "s.manifest.reattach",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let first_events = first.pull_events();
         assert!(
@@ -2368,13 +2406,16 @@ mod tests {
 
         runtime.detach_if_conn(first.id);
         let second = ConnHandle::new(2);
-        let generation = runtime.try_attach(None, &second, true).expect("reattach");
-        second.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &second, true)
+            .expect("reattach");
+        second.track_with_agent_replay(
             "s.manifest.reattach",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let second_events = second.pull_events();
         assert!(
@@ -2616,8 +2657,17 @@ mod tests {
     ) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
         let runtime = SessionRuntime::for_acp(session_id.to_string(), None, Arc::clone(&broker));
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn, true).expect("attach");
-        conn.track(session_id, Arc::clone(&runtime), false, None, generation);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
         (runtime, conn)
     }
 
@@ -2692,6 +2742,7 @@ mod tests {
                 }
             }),
             &runtime,
+            None,
         );
         let kinds = event_kinds(&conn);
         assert_eq!(broker.pending_len(), 0, "late permission stayed pending");

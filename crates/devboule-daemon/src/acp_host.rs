@@ -2100,13 +2100,16 @@ mod tests {
         let test = host();
         let (broker, runtime) = bind_gate(&test.host);
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn, true).expect("attach");
-        conn.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
             "stub-session",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let line = "cmd /c echo devboule-gate-marker";
         let thread = spawn_create(
@@ -2181,13 +2184,16 @@ mod tests {
         let test = host();
         let (broker, runtime) = bind_gate(&test.host);
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn, true).expect("attach");
-        conn.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
             "stub-session",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         broker.cancel_all();
         let started = Instant::now();
@@ -2220,15 +2226,16 @@ mod tests {
         let test = host();
         let (_broker, runtime) = bind_gate(&test.host);
         let conn = ConnHandle::new(1);
-        let generation = runtime
-            .try_attach(None, &conn, false)
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
             .expect("attach without typed_permissions");
-        conn.track(
+        conn.track_with_agent_replay(
             "stub-session",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let started = Instant::now();
         let error = test
@@ -2259,13 +2266,16 @@ mod tests {
         let test = host();
         let (broker, runtime) = bind_gate(&test.host);
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn, true).expect("attach");
-        conn.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
             "stub-session",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let thread = spawn_create(
             Arc::clone(&test.host),

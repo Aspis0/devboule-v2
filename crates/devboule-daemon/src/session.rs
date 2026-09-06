@@ -845,23 +845,25 @@ impl SessionRegistry {
             }
             Err(error) => return Err(error),
         };
-        let generation = runtime.try_attach(from_cursor, conn, typed_permissions)?;
-        // A live attach synchronises the screen (snapshot first, live after)
-        // and keeps no replay cursor. A transcript attach replays the journal
-        // from the cursor. These are different products and must not share a
-        // replay state machine.
+        let outcome = runtime.try_attach_with_replay(from_cursor, conn, typed_permissions)?;
+        // A terminal attach synchronises the screen (snapshot first, live
+        // after). A transcript attach replays its journal. A live headless
+        // agent needs the third contract: durable replay through a locked
+        // watermark, then the live queue. Keeping these states explicit avoids
+        // letting an agent's bounded backlog masquerade as history.
         let transcript = runtime.is_transcript();
         let transcript_cursor = if transcript {
             Some(from_cursor.map(|cursor| cursor.seq).unwrap_or(0))
         } else {
             None
         };
-        conn.track(
+        conn.track_with_agent_replay(
             session_id,
             Arc::clone(&runtime),
             transcript,
             transcript_cursor,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         // The journal writer records asynchronous failures in shared state;
         // attach must import that fact before returning even when the PTY is
@@ -2408,16 +2410,19 @@ mod tests {
     }
 
     fn attach_tracked(runtime: &Arc<SessionRuntime>, conn: &Arc<ConnHandle>) -> u64 {
-        let generation = runtime.try_attach(None, conn, false).expect("attach");
+        let outcome = runtime
+            .try_attach_with_replay(None, conn, false)
+            .expect("attach");
         let transcript = runtime.is_transcript();
-        conn.track(
+        conn.track_with_agent_replay(
             "s.a.1",
             Arc::clone(runtime),
             transcript,
             Some(0),
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
-        generation
+        outcome.generation
     }
 
     #[test]
@@ -2881,7 +2886,7 @@ mod tests {
             let started = Instant::now();
             let conn = ConnHandle::new(epoch + 1);
             runtime
-                .try_attach(None, &conn, false)
+                .try_attach_with_replay(None, &conn, false)
                 .expect("attach under flood");
             runtime.detach_if_conn(conn.id);
             worst = worst.max(started.elapsed());
@@ -2904,8 +2909,13 @@ mod tests {
         let runtime = SessionRuntime::new();
         let first = ConnHandle::new(1);
         let second = ConnHandle::new(2);
-        runtime.try_attach(None, &first, false).expect("first");
-        let err = runtime.try_attach(None, &second, false).unwrap_err();
+        runtime
+            .try_attach_with_replay(None, &first, false)
+            .expect("first");
+        let err = runtime
+            .try_attach_with_replay(None, &second, false)
+            .err()
+            .expect("second connection must be rejected");
         assert_eq!(err.code, ErrorCode::InvalidRequest);
         assert!(err.message.contains("already attached"));
         assert_eq!(runtime.attached_conn_id(), Some(1));
@@ -2915,9 +2925,11 @@ mod tests {
     fn same_connection_can_reattach() {
         let runtime = SessionRuntime::new();
         let conn = ConnHandle::new(7);
-        runtime.try_attach(None, &conn, false).expect("first");
         runtime
-            .try_attach(
+            .try_attach_with_replay(None, &conn, false)
+            .expect("first");
+        runtime
+            .try_attach_with_replay(
                 Some(Cursor {
                     generation: 1,
                     seq: 0,
@@ -2935,7 +2947,7 @@ mod tests {
         runtime.bump_generation();
         let conn = ConnHandle::new(1);
         let err = runtime
-            .try_attach(
+            .try_attach_with_replay(
                 Some(Cursor {
                     generation: 1,
                     seq: 0,
@@ -2943,7 +2955,8 @@ mod tests {
                 &conn,
                 false,
             )
-            .unwrap_err();
+            .err()
+            .expect("stale generation must be rejected");
         assert_eq!(err.code, ErrorCode::SessionGenerationMismatch);
     }
 
@@ -2951,7 +2964,9 @@ mod tests {
     fn detach_clears_only_this_connection() {
         let runtime = SessionRuntime::new();
         let conn = ConnHandle::new(3);
-        runtime.try_attach(None, &conn, false).expect("attach");
+        runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
         runtime.detach_if_conn(3);
         assert_eq!(runtime.attached_conn_id(), None);
     }

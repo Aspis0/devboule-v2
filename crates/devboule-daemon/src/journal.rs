@@ -40,7 +40,8 @@ mod journal_retention;
 #[path = "journal_schema.rs"]
 mod journal_schema;
 
-use journal_replay::{list_sessions, replay_session};
+pub(crate) use journal_replay::AgentReplayPage;
+use journal_replay::{list_sessions, replay_agent_page, replay_session};
 use journal_retention::{
     delete_session_user, effective_limits, journal_retention, journal_usage, retain,
     set_journal_retention, RetentionState,
@@ -459,6 +460,14 @@ enum JournalCmd {
         from_seq: u64,
         reply: mpsc::Sender<Result<Replay, JournalError>>,
     },
+    ReplayAgentPage {
+        session_id: String,
+        generation: u64,
+        from_seq: u64,
+        through_seq: u64,
+        limit: usize,
+        reply: mpsc::Sender<Result<AgentReplayPage, JournalError>>,
+    },
     DeleteSession {
         session_id: String,
         reply: mpsc::Sender<Result<(), JournalError>>,
@@ -707,6 +716,24 @@ impl Journal {
         self.rpc(|reply| JournalCmd::Replay {
             session_id: session_id.to_string(),
             from_seq,
+            reply,
+        })
+    }
+
+    pub(crate) fn replay_agent_page(
+        &self,
+        session_id: &str,
+        generation: u64,
+        from_seq: u64,
+        through_seq: u64,
+        limit: usize,
+    ) -> Result<AgentReplayPage, JournalError> {
+        self.rpc(|reply| JournalCmd::ReplayAgentPage {
+            session_id: session_id.to_string(),
+            generation,
+            from_seq,
+            through_seq,
+            limit,
             reply,
         })
     }
@@ -1086,6 +1113,23 @@ fn journal_loop(
                 reply,
             } => {
                 let _ = reply.send(replay_session(&conn, &session_id, from_seq));
+            }
+            JournalCmd::ReplayAgentPage {
+                session_id,
+                generation,
+                from_seq,
+                through_seq,
+                limit,
+                reply,
+            } => {
+                let _ = reply.send(replay_agent_page(
+                    &conn,
+                    &session_id,
+                    generation,
+                    from_seq,
+                    through_seq,
+                    limit,
+                ));
             }
             JournalCmd::DeleteSession { session_id, reply } => {
                 let result = delete_session_user(&conn, &session_id);

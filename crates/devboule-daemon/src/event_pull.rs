@@ -9,7 +9,35 @@ use crate::agent_report::PeerIdentity;
 use crate::outbound::ConnOut;
 use crate::screen::{ScreenSnapshot, SnapshotCursorShape};
 
+use super::session_runtime::LiveAgentReplay;
+use super::session_types::AgentReplay;
 use super::{Disposition, PendingEvent, PendingItem, PullState, SessionRuntime};
+
+/// A live agent may keep publishing while SQLite is being paged. Eight page
+/// boundary extensions give the journal a bounded chance to catch that tail;
+/// after that point the client receives JournalDegraded instead of an
+/// unbounded replay loop.
+const LIVE_AGENT_REPLAY_MAX_CATCH_UPS: u8 = 8;
+
+fn extend_live_agent_watermark(runtime: &SessionRuntime, replay: &mut AgentReplay) -> bool {
+    let current_seq = runtime.current_agent_seq();
+    if current_seq <= replay.watermark {
+        return false;
+    }
+    if replay.catch_up_extensions < LIVE_AGENT_REPLAY_MAX_CATCH_UPS {
+        replay.watermark = current_seq;
+        replay.catch_up_extensions = replay.catch_up_extensions.saturating_add(1);
+        return true;
+    }
+    // A producer that outruns the bounded catch-up window may have had older
+    // pending items evicted. The journal is the recovery source, so report
+    // the bounded hole explicitly instead of pretending the live tail is
+    // complete.
+    runtime.mark_journal_degraded();
+    replay.journal_lagged = true;
+    replay.force_finish = true;
+    false
+}
 
 fn wire_event(
     session_id: &str,
@@ -83,13 +111,14 @@ impl ConnHandle {
         })
     }
 
-    pub(super) fn track(
+    pub(super) fn track_with_agent_replay(
         &self,
         session_id: &str,
         runtime: Arc<SessionRuntime>,
         transcript: bool,
         transcript_cursor: Option<u64>,
         generation: u64,
+        live_agent_replay: Option<LiveAgentReplay>,
     ) {
         let attachment_generation = self
             .next_attachment_generation
@@ -104,6 +133,21 @@ impl ConnHandle {
                 runtime,
                 transcript,
                 transcript_cursor,
+                agent_replay: live_agent_replay.map(|replay| AgentReplay {
+                    from_seq: replay.from_seq,
+                    cursor: replay.from_seq,
+                    watermark: replay.watermark,
+                    generation,
+                    pending: VecDeque::new(),
+                    replayed_seqs: std::collections::HashSet::new(),
+                    claude_view: None,
+                    manifest_emitted: false,
+                    catch_up_extensions: 0,
+                    durable_done: false,
+                    journal_lagged: false,
+                    force_finish: false,
+                }),
+                agent_backlog_after_replay: false,
                 exit_sent: false,
                 journal_degraded_sent: false,
                 generation,
@@ -272,17 +316,230 @@ impl ConnHandle {
     }
 }
 
+/// Live-agent replay pull: read at most one bounded journal page at a time,
+/// derive its view events, and keep them in a connection-local page-sized
+/// queue. The live attachment queue is not touched until the durable
+/// watermark is complete, which makes the replay/live boundary strict.
+fn pull_live_agent_replay_events(
+    session_id: &str,
+    pull: &mut PullState,
+    events: &mut Vec<PendingEvent>,
+) {
+    let budget = super::PULL_BATCH.saturating_sub(events.len());
+    if budget == 0 {
+        return;
+    }
+    loop {
+        let Some(replay) = pull.agent_replay.as_mut() else {
+            return;
+        };
+
+        if let Some((seq, event)) = replay.pending.pop_front() {
+            events.push(wire_event(session_id, pull, event, Some(seq)));
+            if events.len() >= super::PULL_BATCH {
+                return;
+            }
+            continue;
+        }
+
+        if replay.durable_done {
+            if !replay.force_finish && extend_live_agent_watermark(pull.runtime.as_ref(), replay) {
+                replay.durable_done = false;
+                continue;
+            }
+
+            if !replay.manifest_emitted {
+                // Manifests are current runtime state, not replay history:
+                // drop their journal-derived views and append the enriched
+                // stored manifest exactly once after durable conversation
+                // replay. This preserves provider and selected effort.
+                let current_seq = pull
+                    .runtime
+                    .finish_live_agent_replay(replay.from_seq, &replay.replayed_seqs);
+                if current_seq > replay.watermark && !replay.force_finish {
+                    if replay.catch_up_extensions < LIVE_AGENT_REPLAY_MAX_CATCH_UPS {
+                        replay.watermark = current_seq;
+                        replay.catch_up_extensions = replay.catch_up_extensions.saturating_add(1);
+                        continue;
+                    }
+                    pull.runtime.mark_journal_degraded();
+                    replay.journal_lagged = true;
+                    replay.force_finish = true;
+                }
+                pull.agent_backlog_after_replay = true;
+                if let Some(manifest) = pull.runtime.session_manifest() {
+                    replay.pending.push_back((replay.watermark, manifest));
+                }
+                replay.manifest_emitted = true;
+                continue;
+            }
+
+            let needs_degraded = replay.journal_lagged
+                || (!pull.journal_degraded_sent && pull.runtime.journal_degraded());
+            if needs_degraded && events.len() + 1 >= super::PULL_BATCH {
+                return;
+            }
+            if needs_degraded {
+                events.push(wire_event(
+                    session_id,
+                    pull,
+                    pull.runtime.journal_degraded_event(),
+                    None,
+                ));
+                pull.journal_degraded_sent = true;
+            }
+            pull.agent_replay = None;
+            return;
+        }
+
+        if replay.cursor >= replay.watermark {
+            replay.durable_done = true;
+            continue;
+        }
+
+        let from_seq = replay.cursor;
+        let page_result = pull.runtime.replay_journal_agent_page(
+            replay.generation,
+            from_seq,
+            replay.watermark,
+            super::PULL_BATCH,
+        );
+        let page = match page_result {
+            Ok(Some(page)) => page,
+            Ok(None) => {
+                // No Journal means this runtime never promised durable
+                // replay. A configured journal returning no page, however,
+                // is a missing-history signal and must be loud.
+                if pull.runtime.has_journal() {
+                    pull.runtime.mark_journal_degraded();
+                    replay.journal_lagged = true;
+                }
+                replay.durable_done = true;
+                replay.force_finish = true;
+                continue;
+            }
+            Err(error) => {
+                pull.runtime.mark_journal_degraded();
+                eprintln!(
+                    "journal replay failed for live agent session {} from seq {}: {error}",
+                    pull.runtime.session_id, from_seq
+                );
+                replay.durable_done = true;
+                replay.journal_lagged = true;
+                continue;
+            }
+        };
+        if page.generation != replay.generation {
+            pull.runtime.mark_journal_degraded();
+            replay.durable_done = true;
+            replay.journal_lagged = true;
+            continue;
+        }
+        if page.records.is_empty() {
+            if extend_live_agent_watermark(pull.runtime.as_ref(), replay) {
+                continue;
+            }
+            replay.durable_done = true;
+            if page.last_seq < replay.watermark {
+                pull.runtime.mark_journal_degraded();
+                replay.journal_lagged = true;
+                replay.force_finish = true;
+            }
+            continue;
+        }
+
+        for record in page.records {
+            replay.cursor = replay.cursor.max(record.seq);
+            let derived = match record.kind {
+                crate::journal::EventKind::AgentReport => {
+                    serde_json::from_slice::<SessionEvent>(&record.payload)
+                        .ok()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                }
+                crate::journal::EventKind::AcpEnvelope => {
+                    match serde_json::from_slice::<serde_json::Value>(&record.payload) {
+                        Ok(value) => {
+                            if let Some(event) = crate::acp_view::view_from_envelope(&value, "") {
+                                vec![event]
+                            } else {
+                                let view = replay.claude_view.get_or_insert_with(|| {
+                                    crate::claude_view::ClaudeView::new(None)
+                                });
+                                view.ingest(&value)
+                            }
+                        }
+                        Err(_) => Vec::new(),
+                    }
+                }
+                crate::journal::EventKind::Output | crate::journal::EventKind::Exit => Vec::new(),
+            };
+            // A journal row is not proof that replay emitted a view. ACP
+            // request envelopes (notably permission requests) are retained
+            // in the detached backlog because `acp_view` deliberately leaves
+            // those protocol requests to the live permission broker. Only
+            // rows that produced at least one replay event are eligible for
+            // backlog de-duplication at the replay/live seam.
+            if !derived.is_empty() {
+                replay.replayed_seqs.insert(record.seq);
+            }
+            for event in derived {
+                // A journaled manifest is historical catalog state and can
+                // clobber the live provider/effort enrichment. The stored
+                // runtime manifest is emitted at the replay seam instead.
+                if matches!(event, SessionEvent::SessionManifest { .. }) {
+                    continue;
+                }
+                replay.pending.push_back((record.seq, event));
+            }
+        }
+        let watermark_extended = extend_live_agent_watermark(pull.runtime.as_ref(), replay);
+        if replay.force_finish || (!watermark_extended && replay.cursor >= replay.watermark) {
+            replay.durable_done = true;
+            // `try_append` is intentionally asynchronous. If the journal
+            // writer has not reached the attach watermark yet, the rows
+            // below are only a prefix; keep that hole loud through the
+            // existing JournalDegraded signal rather than claiming a
+            // complete replay.
+            replay.journal_lagged = page.last_seq < replay.watermark;
+        }
+        // A page can contain more derived events than its row count (Claude
+        // assistant frames may yield several views). Let the next loop drain
+        // only the bounded local page before asking SQLite for another page.
+    }
+}
+
 /// Live pull: drain a bounded batch from the attachment's pending queue and
 /// convert it to wire events. Snapshot ANSI is rendered HERE, with no locks
 /// held — never inside the state mutex. Only when the queue is fully empty
 /// may JournalDegraded or the exit event be appended, so neither can
 /// overtake output that is still queued.
 fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<PendingEvent>) {
+    if pull.agent_replay.is_some() {
+        pull_live_agent_replay_events(session_id, pull, events);
+        if pull.agent_replay.is_some() || events.len() >= super::PULL_BATCH {
+            return;
+        }
+    }
     if pull.runtime.terminal_dead.load(Ordering::Acquire) {
         push_dead_events(session_id, pull, events);
         return;
     }
-    let mut drained = Vec::with_capacity(super::PULL_BATCH);
+    let budget = super::PULL_BATCH.saturating_sub(events.len());
+    let mut drained: Vec<PendingItem> = Vec::with_capacity(budget);
+    if pull.agent_backlog_after_replay {
+        while drained.len() < budget {
+            let Some(item) = pull.runtime.pop_replay_backlog_item() else {
+                pull.agent_backlog_after_replay = false;
+                break;
+            };
+            drained.push(item);
+        }
+        if drained.len() >= budget {
+            emit_live_items(session_id, pull, events, drained);
+            return;
+        }
+    }
     let degraded;
     let silent_event;
     let mut exit_event = None;
@@ -291,7 +548,7 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
             push_dead_events(session_id, pull, events);
             return;
         };
-        while drained.len() < super::PULL_BATCH {
+        while drained.len() < budget {
             let Some(item) = stream.pending.pop_front() else {
                 break;
             };
@@ -328,14 +585,7 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
             pull.exit_sent = true;
         }
     }
-    for item in drained {
-        let event = match item {
-            PendingItem::Snapshot { as_of_seq, screen } => snapshot_event(as_of_seq, screen),
-            PendingItem::Output { seq, data } => SessionEvent::Output { seq, data },
-            PendingItem::Agent { event, .. } => event,
-        };
-        events.push(wire_event(session_id, pull, event, None));
-    }
+    emit_live_items(session_id, pull, events, drained);
     if degraded {
         events.push(wire_event(
             session_id,
@@ -348,6 +598,22 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         events.push(wire_event(session_id, pull, event, None));
     }
     if let Some(event) = exit_event {
+        events.push(wire_event(session_id, pull, event, None));
+    }
+}
+
+fn emit_live_items(
+    session_id: &str,
+    pull: &PullState,
+    events: &mut Vec<PendingEvent>,
+    drained: Vec<PendingItem>,
+) {
+    for item in drained {
+        let event = match item {
+            PendingItem::Snapshot { as_of_seq, screen } => snapshot_event(as_of_seq, screen),
+            PendingItem::Output { seq, data } => SessionEvent::Output { seq, data },
+            PendingItem::Agent { event, .. } => event,
+        };
         events.push(wire_event(session_id, pull, event, None));
     }
 }
@@ -455,6 +721,7 @@ fn pull_transcript_events(session_id: &str, pull: &mut PullState, events: &mut V
 mod tests {
     use super::super::*;
     use super::*;
+    use serde_json::json;
 
     /// Pull until the session queue is empty, recording delivery like the
     /// connection writer does.
@@ -473,16 +740,751 @@ mod tests {
     }
 
     fn attach_tracked(runtime: &Arc<SessionRuntime>, conn: &Arc<ConnHandle>) -> u64 {
-        let generation = runtime.try_attach(None, conn, false).expect("attach");
+        let outcome = runtime
+            .try_attach_with_replay(None, conn, false)
+            .expect("attach");
         let transcript = runtime.is_transcript();
-        conn.track(
+        conn.track_with_agent_replay(
             "s.a.1",
             Arc::clone(runtime),
             transcript,
             Some(0),
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
-        generation
+        outcome.generation
+    }
+
+    #[test]
+    fn live_agent_replay_is_complete_ordered_deduplicated_and_not_pending() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-replay-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.live.agent.replay";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        let first_envelope = json!({
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "messageId": "m1",
+                    "content": {"type": "text", "text": "first"}
+                }
+            }
+        });
+        let second_envelope = json!({
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "second"}
+                }
+            }
+        });
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record(session_id, 1, 1, &first_envelope).unwrap(),
+            )
+            .unwrap();
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record(session_id, 1, 2, &second_envelope).unwrap(),
+            )
+            .unwrap();
+
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        runtime.publish_agent_event_with_seq(
+            SessionEvent::AgentMessage {
+                message_id: Some("m1".to_string()),
+                text: "first".to_string(),
+            },
+            None,
+            Some(1),
+        );
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = 3;
+        }
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach live agent");
+        assert_eq!(
+            outcome
+                .live_agent_replay
+                .as_ref()
+                .map(|replay| replay.watermark),
+            Some(2)
+        );
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        assert_eq!(runtime.stream.lock().unwrap().pending.len(), 0);
+
+        runtime.publish_agent_event(
+            SessionEvent::AgentMessage {
+                message_id: Some("m2".to_string()),
+                text: "live".to_string(),
+            },
+            None,
+        );
+        let events = drain(&conn);
+        assert_eq!(
+            events,
+            vec![
+                SessionEvent::AgentMessage {
+                    message_id: Some("m1".to_string()),
+                    text: "first".to_string(),
+                },
+                SessionEvent::AgentThought {
+                    message_id: None,
+                    text: "second".to_string(),
+                },
+                SessionEvent::AgentMessage {
+                    message_id: Some("m2".to_string()),
+                    text: "live".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    SessionEvent::AgentMessage { text, .. } if text == "first"
+                ))
+                .count(),
+            1
+        );
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_connection_reattach_preserves_agent_pending_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-same-connection-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.live.agent.same-connection";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+        }
+        let conn = ConnHandle::new(1);
+        let first = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("first attach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            first.generation,
+            first.live_agent_replay,
+        );
+
+        for (message_id, text) in [("m1", "first"), ("m2", "second")] {
+            let envelope = json!({
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "messageId": message_id,
+                        "content": {"type": "text", "text": text}
+                    }
+                }
+            });
+            let seq = runtime
+                .journal_agent_envelope(&envelope)
+                .expect("journal pending event");
+            runtime.publish_agent_event_with_seq(
+                SessionEvent::AgentMessage {
+                    message_id: Some(message_id.to_string()),
+                    text: text.to_string(),
+                },
+                None,
+                Some(seq),
+            );
+        }
+        journal.flush().expect("flush pending events");
+
+        let second = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("same-connection reattach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            second.generation,
+            second.live_agent_replay,
+        );
+        let events = drain(&conn);
+        let texts = events
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentMessage { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(texts, vec!["first", "second"]);
+        assert!(runtime.stream.lock().unwrap().agent_backlog.is_empty());
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_agent_replay_pages_without_filling_any_stream_queue() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-replay-pages-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.live.agent.replay.pages";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        let total = PULL_BATCH as u64 * 2 + 1;
+        for seq in 1..=total {
+            let envelope = json!({
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "messageId": format!("m-{seq}"),
+                        "content": {"type": "text", "text": format!("history-{seq}")}
+                    }
+                }
+            });
+            journal
+                .append_blocking(
+                    crate::journal::acp_envelope_record(session_id, 1, seq, &envelope).unwrap(),
+                )
+                .unwrap();
+        }
+
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = total + 1;
+        }
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach live agent");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        assert_eq!(runtime.stream.lock().unwrap().pending.len(), 0);
+
+        let first = conn.pull_events();
+        assert!(!first.is_empty());
+        assert!(first.len() <= PULL_BATCH);
+        assert_eq!(runtime.stream.lock().unwrap().pending.len(), 0);
+        let replay_pending = conn
+            .attached
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|pull| pull.agent_replay.as_ref())
+            .map(|replay| replay.pending.len())
+            .unwrap_or(0);
+        assert!(
+            replay_pending <= PULL_BATCH,
+            "replay page exceeded pull budget: {replay_pending}"
+        );
+
+        let mut events = Vec::new();
+        for event in &first {
+            conn.event_sent(event);
+        }
+        events.extend(first.into_iter().map(|pending| pending.envelope.event));
+        events.extend(drain(&conn));
+        let texts: Vec<String> = events
+            .into_iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), total as usize);
+        for (index, text) in texts.into_iter().enumerate() {
+            assert_eq!(text, format!("history-{}", index + 1));
+        }
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_agent_replay_recovers_live_tail_after_pending_overflow() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-replay-tail-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.live.agent.replay.tail";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        let history = 80_u64;
+        for seq in 1..=history {
+            let envelope = json!({
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "messageId": format!("history-{seq}"),
+                        "content": {"type": "text", "text": format!("history-{seq}")}
+                    }
+                }
+            });
+            journal
+                .append_blocking(
+                    crate::journal::acp_envelope_record(session_id, 1, seq, &envelope).unwrap(),
+                )
+                .unwrap();
+        }
+
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = history + 1;
+        }
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach live agent");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+
+        let first = conn.pull_events();
+        for event in &first {
+            conn.event_sent(event);
+        }
+        let mut events = first
+            .into_iter()
+            .map(|pending| pending.envelope.event)
+            .collect::<Vec<_>>();
+
+        for seq in 1..=80_u64 {
+            let envelope = json!({
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "messageId": format!("live-{seq}"),
+                        "content": {"type": "text", "text": format!("live-{seq}")}
+                    }
+                }
+            });
+            let journal_seq = runtime
+                .journal_agent_envelope(&envelope)
+                .expect("journal live tail envelope");
+            assert_eq!(journal_seq, history + seq);
+            runtime.publish_agent_event_with_seq(
+                SessionEvent::AgentMessage {
+                    message_id: Some(format!("live-{seq}")),
+                    text: format!("live-{seq}"),
+                },
+                None,
+                Some(journal_seq),
+            );
+        }
+        journal.flush().expect("flush live tail envelopes");
+        events.extend(drain(&conn));
+
+        let texts: Vec<String> = events
+            .into_iter()
+            .filter_map(|event| match event {
+                SessionEvent::AgentMessage { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<String> = (1..=history)
+            .map(|seq| format!("history-{seq}"))
+            .chain((1..=80).map(|seq| format!("live-{seq}")))
+            .collect();
+        assert_eq!(texts, expected);
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_agent_replay_uses_stored_manifest_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-replay-manifest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.live.agent.replay.manifest";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        let journal_manifest = json!({
+            "method": "_x.ai/models/update",
+            "params": {
+                "currentModelId": "grok-live",
+                "availableModels": [{
+                    "modelId": "grok-live",
+                    "name": "Grok Live",
+                    "_meta": {
+                        "supportsReasoningEffort": true,
+                        "reasoningEffort": "low",
+                        "reasoningEfforts": [{"id": "low", "label": "Low"}, {"id": "high", "label": "High"}]
+                    }
+                }]
+            }
+        });
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record(session_id, 1, 1, &journal_manifest).unwrap(),
+            )
+            .unwrap();
+
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("grok".to_string()),
+            current_model_id: Some("grok-live".to_string()),
+            models: vec![devboule_protocol::SessionModel {
+                model_id: "grok-live".to_string(),
+                name: "Grok Live".to_string(),
+                description: None,
+                context_tokens: None,
+                current_effort: Some("high".to_string()),
+                efforts: None,
+            }],
+            modes: None,
+        });
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = 2;
+        }
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach live agent");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn);
+        let manifests: Vec<&SessionEvent> = events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::SessionManifest { .. }))
+            .collect();
+        assert_eq!(manifests.len(), 1, "manifest must arrive exactly once");
+        let SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            ..
+        } = manifests[0]
+        else {
+            unreachable!();
+        };
+        assert_eq!(provider_id.as_deref(), Some("grok"));
+        assert_eq!(current_model_id.as_deref(), Some("grok-live"));
+        assert_eq!(models[0].current_effort.as_deref(), Some("high"));
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_agent_replay_marks_an_empty_journal_prefix_degraded() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-replay-empty-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.live.agent.replay.empty";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .unwrap();
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = 2;
+        }
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach live agent");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::JournalDegraded { .. })));
+        assert!(runtime.journal_degraded());
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_agent_attach_keeps_generation_mismatch_loud() {
+        let runtime = Arc::new(SessionRuntime::new());
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.generation = 2;
+        }
+        runtime.generation.store(2, Ordering::Release);
+        let conn = ConnHandle::new(1);
+        let error = match runtime.try_attach_with_replay(
+            Some(Cursor {
+                generation: 1,
+                seq: 0,
+            }),
+            &conn,
+            true,
+        ) {
+            Ok(_) => panic!("stale live-agent cursor was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::SessionGenerationMismatch);
+    }
+
+    #[test]
+    fn live_claude_replay_derives_journaled_views() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-claude-replay-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let session_id = "s.live.claude.replay";
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                "S-1-5-21-1",
+                None,
+                SessionKind::Claude,
+                "Claude",
+            ))
+            .unwrap();
+        let init = json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "claude-peer",
+            "model": "claude-test"
+        });
+        let assistant = json!({
+            "type": "assistant",
+            "message": {
+                "id": "message-1",
+                "model": "claude-test",
+                "content": [{"type": "text", "text": "claude replay"}]
+            }
+        });
+        journal
+            .append_blocking(crate::journal::acp_envelope_record(session_id, 1, 1, &init).unwrap())
+            .unwrap();
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record(session_id, 1, 2, &assistant).unwrap(),
+            )
+            .unwrap();
+
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: Some("claude-test".to_string()),
+            models: vec![devboule_protocol::SessionModel {
+                model_id: "claude-test".to_string(),
+                name: "Claude Test".to_string(),
+                description: None,
+                context_tokens: None,
+                current_effort: None,
+                efforts: None,
+            }],
+            modes: None,
+        });
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = 3;
+        }
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach live Claude session");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let events = drain(&conn);
+        assert!(events.iter().any(|event| {
+            matches!(event, SessionEvent::SessionManifest { current_model_id, .. } if current_model_id.as_deref() == Some("claude-test"))
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "claude replay")
+        }));
+
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -510,7 +1512,10 @@ mod tests {
                 SessionEvent::Exit { code: None }
             ]
         ));
-        assert_eq!(runtime.try_attach(None, &conn, false), Err(process_gone()));
+        assert!(matches!(
+            runtime.try_attach_with_replay(None, &conn, false),
+            Err(error) if error == process_gone()
+        ));
     }
 
     #[test]
@@ -518,8 +1523,8 @@ mod tests {
         let runtime = Arc::new(SessionRuntime::new());
         runtime.bump_generation();
         let conn = ConnHandle::new(1);
-        let generation = runtime
-            .try_attach(
+        let outcome = runtime
+            .try_attach_with_replay(
                 Some(Cursor {
                     generation: 2,
                     seq: 1,
@@ -528,7 +1533,14 @@ mod tests {
                 false,
             )
             .unwrap();
-        conn.track("s.a.1", Arc::clone(&runtime), true, Some(1), generation);
+        conn.track_with_agent_replay(
+            "s.a.1",
+            Arc::clone(&runtime),
+            true,
+            Some(1),
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
         runtime.stream.lock().unwrap().scrollback.push(2, b"two");
         runtime.finish(Some(0));
         let events = drain(&conn);
@@ -574,13 +1586,16 @@ mod tests {
         };
         let runtime = SessionRuntime::from_replay("s.acp.replay".to_string(), None, replay);
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn, false).expect("attach");
-        conn.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
+        conn.track_with_agent_replay(
             "s.acp.replay",
             Arc::clone(&runtime),
             true,
             Some(10),
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let events = drain(&conn);
         assert!(
@@ -621,13 +1636,16 @@ mod tests {
         };
         let runtime = SessionRuntime::from_replay("s.report.cursor".to_string(), None, replay);
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn, false).expect("attach");
-        conn.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
+        conn.track_with_agent_replay(
             "s.report.cursor",
             Arc::clone(&runtime),
             true,
             Some(0),
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let first = {
             let batch = conn.pull_events();
@@ -659,13 +1677,16 @@ mod tests {
         );
         runtime.detach_if_conn(conn.id);
         let conn2 = ConnHandle::new(2);
-        let generation = runtime.try_attach(None, &conn2, false).expect("reattach");
-        conn2.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn2, false)
+            .expect("reattach");
+        conn2.track_with_agent_replay(
             "s.report.cursor",
             Arc::clone(&runtime),
             true,
             cursor,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let second = conn2.pull_events();
         assert!(
@@ -802,8 +1823,15 @@ mod tests {
     fn next_exit_wake_is_zero_once_the_drain_has_elapsed() {
         let runtime = Arc::new(SessionRuntime::new());
         let conn = ConnHandle::new(1);
-        runtime.try_attach(None, &conn, false).unwrap();
-        conn.track("s.a.1", Arc::clone(&runtime), false, None, 1);
+        let outcome = runtime.try_attach_with_replay(None, &conn, false).unwrap();
+        conn.track_with_agent_replay(
+            "s.a.1",
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
         assert_eq!(conn.next_exit_wake(), None);
         runtime.mark_exited(Some(0));
         let wake = conn.next_exit_wake().expect("drain timer");

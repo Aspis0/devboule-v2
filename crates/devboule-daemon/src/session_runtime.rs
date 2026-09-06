@@ -1,6 +1,6 @@
 //! Session stream runtime: emulator, attach, journal, permission delivery.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -38,6 +38,39 @@ fn integrity_counters(integrity: TranscriptIntegrity) -> (u64, u64) {
             ..
         } => (dropped_frames, dropped_bytes),
     }
+}
+
+fn remove_replayed_agent_items(
+    queue: &mut VecDeque<PendingItem>,
+    from_seq: u64,
+    replayed_seqs: &HashSet<u64>,
+    drop_unsequenced_manifests: bool,
+) {
+    queue.retain(|item| match item {
+        PendingItem::Agent { seq, event, .. } => {
+            let replayed = seq.is_some_and(|seq| seq <= from_seq || replayed_seqs.contains(&seq));
+            let drop_manifest = matches!(event, SessionEvent::SessionManifest { .. })
+                && (drop_unsequenced_manifests || replayed);
+            !replayed && !drop_manifest
+        }
+        PendingItem::Output { .. } | PendingItem::Snapshot { .. } => true,
+    });
+}
+
+fn agent_queue_extent(queue: &VecDeque<PendingItem>) -> (usize, u64) {
+    let bytes = queue
+        .iter()
+        .filter_map(|item| match item {
+            PendingItem::Agent { bytes, .. } => Some(*bytes),
+            PendingItem::Output { data, .. } => Some(data.len()),
+            PendingItem::Snapshot { .. } => None,
+        })
+        .sum();
+    let frames = queue
+        .iter()
+        .filter(|item| !matches!(item, PendingItem::Snapshot { .. }))
+        .count() as u64;
+    (bytes, frames)
 }
 
 /// Stream state is one mutex on purpose. Every step that must be atomic
@@ -100,6 +133,16 @@ pub(crate) struct SessionRuntime {
     /// Provider-side session id (ACP `sessionId`, Claude `system/init`
     /// `session_id`). Stored for resume; not the Devboule session id.
     pub(crate) peer_session_id: Mutex<Option<String>>,
+}
+
+pub(crate) struct LiveAgentReplay {
+    pub(crate) from_seq: u64,
+    pub(crate) watermark: u64,
+}
+
+pub(crate) struct AttachOutcome {
+    pub(crate) generation: u64,
+    pub(crate) live_agent_replay: Option<LiveAgentReplay>,
 }
 
 impl SessionRuntime {
@@ -441,12 +484,12 @@ impl SessionRuntime {
         was_silent
     }
 
-    pub(crate) fn journal_agent_envelope(&self, envelope: &serde_json::Value) {
+    pub(crate) fn journal_agent_envelope(&self, envelope: &serde_json::Value) -> Option<u64> {
         let Ok(mut stream) = self.lock_stream() else {
-            return;
+            return None;
         };
         if stream.output_closed {
-            return;
+            return None;
         }
         let generation = stream.generation;
         let seq = stream.next_seq;
@@ -465,6 +508,7 @@ impl SessionRuntime {
                 }
             }
         }
+        Some(seq)
     }
 
     pub(crate) fn store_session_manifest(&self, event: SessionEvent) {
@@ -513,6 +557,15 @@ impl SessionRuntime {
         event: SessionEvent,
         journal_text: Option<&str>,
     ) -> bool {
+        self.publish_agent_event_with_seq(event, journal_text, None)
+    }
+
+    pub(crate) fn publish_agent_event_with_seq(
+        &self,
+        event: SessionEvent,
+        journal_text: Option<&str>,
+        event_seq: Option<u64>,
+    ) -> bool {
         let was_silent;
         let journal_output;
         {
@@ -536,7 +589,8 @@ impl SessionRuntime {
                 stream.next_seq = stream.next_seq.saturating_add(1);
                 (stream.generation, seq, text.to_string())
             });
-            enqueue_agent(&mut stream, event.clone());
+            let event_seq = event_seq.or_else(|| journal_output.as_ref().map(|(_, seq, _)| *seq));
+            enqueue_agent(&mut stream, event.clone(), event_seq);
             self.published_frames.fetch_add(1, Ordering::Relaxed);
             self.published_bytes.fetch_add(
                 serde_json::to_vec(&event)
@@ -593,7 +647,7 @@ impl SessionRuntime {
                 agent_session_path: report.agent_session_path,
                 session_start_source: report.session_start_source,
             };
-            enqueue_agent(&mut stream, event.clone());
+            enqueue_agent(&mut stream, event.clone(), Some(seq));
             if let Some(attached) = &stream.attached {
                 attached.outbound.notify();
             }
@@ -869,6 +923,89 @@ impl SessionRuntime {
         }
     }
 
+    pub(crate) fn session_manifest(&self) -> Option<SessionEvent> {
+        self.session_manifest
+            .lock()
+            .ok()
+            .and_then(|stored| stored.clone())
+    }
+
+    pub(crate) fn has_journal(&self) -> bool {
+        self.journal.is_some()
+    }
+
+    pub(crate) fn current_agent_seq(&self) -> u64 {
+        self.lock_stream()
+            .map(|stream| stream.next_seq.saturating_sub(1))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn finish_live_agent_replay(
+        &self,
+        from_seq: u64,
+        replayed_seqs: &HashSet<u64>,
+    ) -> u64 {
+        let Ok(mut stream) = self.lock_stream() else {
+            return 0;
+        };
+        let current_seq = stream.next_seq.saturating_sub(1);
+        // The journal recovers agent frames evicted by the bounded live
+        // queue. Remove matching survivors from BOTH queues at the seam, so
+        // a frame that happened to survive eviction is not delivered twice.
+        // An evicted frame is intentionally not reinserted out of order: it
+        // is recovered lazily from SQLite, while the remaining pending tail
+        // stays behind the replay boundary.
+        remove_replayed_agent_items(&mut stream.agent_backlog, from_seq, replayed_seqs, true);
+        remove_replayed_agent_items(&mut stream.pending, from_seq, replayed_seqs, false);
+        let (backlog_bytes, backlog_frames) = agent_queue_extent(&stream.agent_backlog);
+        stream.agent_backlog_bytes = backlog_bytes;
+        stream.agent_backlog_frames = backlog_frames;
+        let (pending_bytes, pending_frames) = agent_queue_extent(&stream.pending);
+        stream.pending_bytes = pending_bytes;
+        stream.pending_frames = pending_frames;
+        current_seq
+    }
+
+    pub(super) fn pop_replay_backlog_item(&self) -> Option<PendingItem> {
+        let mut stream = self.lock_stream().ok()?;
+        let position = stream.agent_backlog.iter().position(|item| {
+            !matches!(
+                item,
+                PendingItem::Agent {
+                    event: SessionEvent::PermissionRequest { .. },
+                    ..
+                }
+            ) || stream.typed_permissions
+        })?;
+        let item = stream.agent_backlog.remove(position)?;
+        if let PendingItem::Agent { bytes, .. } = &item {
+            stream.agent_backlog_bytes = stream.agent_backlog_bytes.saturating_sub(*bytes);
+            stream.agent_backlog_frames = stream.agent_backlog_frames.saturating_sub(1);
+        }
+        Some(item)
+    }
+
+    pub(crate) fn replay_journal_agent_page(
+        &self,
+        generation: u64,
+        from_seq: u64,
+        through_seq: u64,
+        limit: usize,
+    ) -> Result<Option<crate::journal::AgentReplayPage>, crate::journal::JournalError> {
+        let Some(journal) = &self.journal else {
+            return Ok(None);
+        };
+        let page = journal.replay_agent_page(
+            &self.session_id,
+            generation,
+            from_seq,
+            through_seq,
+            limit,
+        )?;
+        self.journal_replays.fetch_add(1, Ordering::Relaxed);
+        Ok(Some(page))
+    }
+
     pub(crate) fn replay_journal_outputs(
         &self,
         from_seq: u64,
@@ -932,25 +1069,24 @@ impl SessionRuntime {
         self.journal_replays.load(Ordering::Relaxed)
     }
 
-    /// Register this connection as the single attached viewer and synchronise
-    /// it with the current screen state.
-    ///
-    /// A second different connection is rejected. The same connection
-    /// re-attaching replaces its stream with a fresh snapshot.
-    ///
-    /// THE LOAD-BEARING SECTION: screen capture and attachment registration
-    /// happen under ONE hold of the state lock. Building the copy first and
-    /// registering afterwards would let output fall into the interval and
-    /// land in neither the snapshot nor the queue — the exact bug class M3
-    /// shipped. After this function returns, the attachment's first outbound
-    /// item is `Snapshot(as_of_seq)` and every subsequent publish enqueues an
-    /// Output with a strictly greater sequence.
-    pub(crate) fn try_attach(
+    /// Attach through the same wire path used by the session registry. A
+    /// headless live agent captures a journal replay watermark while holding
+    /// the stream lock; terminals retain their snapshot-first contract.
+    pub(crate) fn try_attach_with_replay(
         &self,
         from_cursor: Option<Cursor>,
         conn: &ConnHandle,
         typed_permissions: bool,
-    ) -> Result<u64, WireError> {
+    ) -> Result<AttachOutcome, WireError> {
+        self.try_attach_inner(from_cursor, conn, typed_permissions)
+    }
+
+    fn try_attach_inner(
+        &self,
+        from_cursor: Option<Cursor>,
+        conn: &ConnHandle,
+        typed_permissions: bool,
+    ) -> Result<AttachOutcome, WireError> {
         if self.terminal_dead.load(Ordering::Acquire) {
             return Err(process_gone());
         }
@@ -965,13 +1101,25 @@ impl SessionRuntime {
                 ));
             }
         }
-        // A live attach starts at the current screen snapshot: the cursor's
-        // sequence is ignored, but its generation must still match so a
-        // client holding a cursor from a recreated process gets a loud error
-        // instead of a silently different stream.
+        // Terminal attaches start at the current screen snapshot. Headless
+        // live agents instead use the cursor as the start of a journal
+        // replay, but both paths still validate generation here so a cursor
+        // from a recreated process fails loudly.
         if let Some(cursor) = from_cursor {
             cursor_replay_ok(stream.generation, cursor)?;
         }
+        let live_agent = !stream.transcript && stream.screen.is_none();
+        // A runtime without a journal has made no durability promise. Keep
+        // its ordinary live queue contract; a configured journal gets the
+        // lazy history replay and stored-manifest seam below.
+        let live_agent_replay = if live_agent && self.journal.is_some() {
+            Some(LiveAgentReplay {
+                from_seq: from_cursor.map(|cursor| cursor.seq).unwrap_or(0),
+                watermark: stream.next_seq.saturating_sub(1),
+            })
+        } else {
+            None
+        };
         let preserve_agent_pending = stream
             .attached
             .as_ref()
@@ -997,7 +1145,7 @@ impl SessionRuntime {
             stream
                 .pending
                 .push_back(PendingItem::Snapshot { as_of_seq, screen });
-        } else if !stream.transcript {
+        } else if !stream.transcript && live_agent_replay.is_none() {
             let agent_backlog = std::mem::take(&mut stream.agent_backlog);
             stream.agent_backlog_bytes = 0;
             stream.agent_backlog_frames = 0;
@@ -1035,7 +1183,8 @@ impl SessionRuntime {
                 .filter(|item| !matches!(item, PendingItem::Snapshot { .. }))
                 .count() as u64;
         }
-        if !stream.transcript
+        if live_agent_replay.is_none()
+            && !stream.transcript
             && !stream.pending.iter().any(|item| {
                 matches!(
                     item,
@@ -1061,10 +1210,13 @@ impl SessionRuntime {
                 .ok()
                 .and_then(|guard| guard.clone())
             {
-                enqueue_agent(&mut stream, event);
+                enqueue_agent(&mut stream, event, None);
             }
         }
-        Ok(stream.generation)
+        Ok(AttachOutcome {
+            generation: stream.generation,
+            live_agent_replay,
+        })
     }
 
     pub(crate) fn detach_if_conn(&self, conn_id: u64) {
@@ -1265,7 +1417,7 @@ fn enqueue_output(stream: &mut StreamState, seq: u64, data: &str) -> (u64, u64) 
     (discarded_bytes, discarded_frames)
 }
 
-fn enqueue_agent(stream: &mut StreamState, event: SessionEvent) {
+fn enqueue_agent(stream: &mut StreamState, event: SessionEvent, seq: Option<u64>) {
     let permission = matches!(&event, SessionEvent::PermissionRequest { .. });
     if stream.attached.is_some() && (!permission || stream.typed_permissions) {
         push_bounded_agent(
@@ -1273,6 +1425,7 @@ fn enqueue_agent(stream: &mut StreamState, event: SessionEvent) {
             &mut stream.pending_bytes,
             &mut stream.pending_frames,
             event,
+            seq,
         );
     } else {
         push_bounded_agent(
@@ -1280,6 +1433,7 @@ fn enqueue_agent(stream: &mut StreamState, event: SessionEvent) {
             &mut stream.agent_backlog_bytes,
             &mut stream.agent_backlog_frames,
             event,
+            seq,
         );
     }
 }
@@ -1316,11 +1470,12 @@ fn push_bounded_agent(
     bytes_total: &mut usize,
     frames_total: &mut u64,
     event: SessionEvent,
+    seq: Option<u64>,
 ) {
     let bytes = serde_json::to_vec(&event)
         .map(|value| value.len())
         .unwrap_or(0);
-    queue.push_back(PendingItem::Agent { event, bytes });
+    queue.push_back(PendingItem::Agent { seq, event, bytes });
     *bytes_total = bytes_total.saturating_add(bytes);
     *frames_total = frames_total.saturating_add(1);
     if *bytes_total <= PENDING_OUTPUT_BUDGET_BYTES && *frames_total <= PENDING_OUTPUT_BUDGET_FRAMES
