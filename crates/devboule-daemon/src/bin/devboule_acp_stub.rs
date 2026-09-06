@@ -26,6 +26,8 @@ fn main() -> io::Result<()> {
     write_observation_files();
     eprintln!("stub-agent handshake stderr marker");
     let fail_initialize = std::env::args().any(|arg| arg == "--fail-initialize");
+    let echo_user = !std::env::args().any(|arg| arg == "--no-user-echo");
+    let stream_first = std::env::args().any(|arg| arg == "--stream-first");
     // Emulate an expired-credentials peer: session/new answers with a
     // JSON-RPC error and the process keeps reading instead of exiting, so
     // the daemon observes a handshake failure against a live process.
@@ -323,20 +325,22 @@ fn main() -> io::Result<()> {
                 }
                 eprintln!("stub-agent stderr marker");
                 stdout.write_all(b"not-json\r\n")?;
-                emit(
-                    &mut stdout,
-                    json!({
-                        "jsonrpc": "2.0",
-                        "method": "session/update",
-                        "params": {
-                            "sessionId": "stub-session",
-                            "update": {
-                                "sessionUpdate": "user_message_chunk",
-                                "content": {"type": "text", "text": prompt_text}
+                if echo_user {
+                    emit(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": "stub-session",
+                                "update": {
+                                    "sessionUpdate": "user_message_chunk",
+                                    "content": {"type": "text", "text": prompt_text}
+                                }
                             }
-                        }
-                    }),
-                )?;
+                        }),
+                    )?;
+                }
                 emit(
                     &mut stdout,
                     json!({
@@ -351,6 +355,9 @@ fn main() -> io::Result<()> {
                         }
                     }),
                 )?;
+                if stream_first {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
                 emit(
                     &mut stdout,
                     json!({

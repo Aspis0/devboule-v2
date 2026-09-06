@@ -560,6 +560,76 @@ impl SessionRuntime {
         self.publish_agent_event_with_seq(event, journal_text, None)
     }
 
+    /// Publish a daemon-owned agent event as an AgentReport row rather than an
+    /// ACP envelope. Provider echo envelopes remain replayable for history
+    /// written before the echo was suppressed.
+    pub(crate) fn publish_agent_user_message(&self, text: String) -> bool {
+        self.publish_journaled_agent_event(|generation, seq| SessionEvent::AgentUserMessage {
+            message_id: Some(format!("devboule-user-{generation}-{seq}")),
+            text,
+        })
+    }
+
+    pub(crate) fn publish_agent_error(&self, message: String) -> bool {
+        self.publish_journaled_agent_event(|_, _| SessionEvent::AgentError { message })
+    }
+
+    fn publish_journaled_agent_event<F>(&self, build: F) -> bool
+    where
+        F: FnOnce(u64, u64) -> SessionEvent,
+    {
+        let (event, generation, seq, was_silent) = {
+            let Ok(mut stream) = self.lock_stream() else {
+                // This is the transcript commit point for agent input. A
+                // false result means the stream cannot accept the event
+                // (poisoned or already closed); callers must refuse child I/O
+                // rather than create a prompt/transcript divergence.
+                return false;
+            };
+            if stream.output_closed {
+                return false;
+            }
+            let was_silent = matches!(stream.disposition, Disposition::Silent);
+            if !stream.process_exited {
+                stream.disposition = Disposition::Running;
+            }
+            let generation = stream.generation;
+            let seq = stream.next_seq;
+            stream.next_seq = stream.next_seq.saturating_add(1);
+            let event = build(generation, seq);
+            stream.last_publish = Some(Instant::now());
+            enqueue_agent(&mut stream, event.clone(), Some(seq));
+            self.published_frames.fetch_add(1, Ordering::Relaxed);
+            self.published_bytes.fetch_add(
+                serde_json::to_vec(&event)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(0),
+                Ordering::Relaxed,
+            );
+            if let Some(attached) = &stream.attached {
+                attached.outbound.notify();
+            }
+            (event, generation, seq, was_silent)
+        };
+        if let Some(journal) = &self.journal {
+            if let Some(record) = crate::journal::agent_report_record(
+                self.session_id.clone(),
+                generation,
+                seq,
+                &event,
+            ) {
+                let accepted = journal.try_append(record);
+                if !accepted || journal.is_session_degraded(&self.session_id) {
+                    self.mark_journal_degraded();
+                }
+            }
+        }
+        if was_silent {
+            self.notify_roster();
+        }
+        true
+    }
+
     pub(crate) fn publish_agent_event_with_seq(
         &self,
         event: SessionEvent,

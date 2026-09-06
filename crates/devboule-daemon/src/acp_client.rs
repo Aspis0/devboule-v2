@@ -1113,6 +1113,24 @@ fn acp_io_error(error: io::Error) -> WireError {
     WireError::new(ErrorCode::Io, format!("ACP stdio failed: {error}"))
 }
 
+fn is_user_message_chunk(value: &serde_json::Value, session_id: &str) -> bool {
+    let session_matches = match value.pointer("/params/sessionId") {
+        Some(value) => value.as_str() == Some(session_id),
+        None => {
+            // This daemon starts one ACP child per session, and ACP
+            // notifications may omit sessionId; an absent field is therefore
+            // treated as belonging to this reader.
+            true
+        }
+    };
+    value.get("method").and_then(serde_json::Value::as_str) == Some("session/update")
+        && value
+            .pointer("/params/update/sessionUpdate")
+            .and_then(serde_json::Value::as_str)
+            == Some("user_message_chunk")
+        && session_matches
+}
+
 struct AcpWriter {
     transport: Arc<AcpTransport>,
     pending: Vec<u8>,
@@ -1500,6 +1518,14 @@ impl AcpReader {
             return;
         }
         self.turn.note_activity();
+        if is_user_message_chunk(value, &self.session_id) {
+            // The daemon records the outbound prompt before writing. Never
+            // allocate a sequence or journal grok's redundant
+            // echo: burning a sequence without a row would look like a
+            // durable journal hole during live replay. `acp_view` continues
+            // to map historical echo envelopes for backward compatibility.
+            return;
+        }
         let event_seq = runtime.journal_agent_envelope(value);
         match classify_line(value) {
             Some(AcpLineKind::Request { method }) => {
@@ -2031,7 +2057,7 @@ mod tests {
     };
     use crate::journal::Journal;
     use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
-    use devboule_protocol::{PermissionOutcome, SessionEvent};
+    use devboule_protocol::{PermissionOutcome, SessionEvent, SessionKind};
     use std::collections::HashSet;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Barrier, Mutex};
@@ -2081,6 +2107,56 @@ mod tests {
             "ACP request 9 failed: ACP request failed (-32602): unknown model"
         );
         assert!(!message.contains("do-not-publish"));
+    }
+
+    #[test]
+    fn skipped_user_echo_does_not_burn_a_stream_sequence() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+        );
+        reader.dispatch_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"echo"}}}}
+"#,
+            &runtime,
+        );
+        assert_eq!(
+            runtime.current_agent_seq(),
+            0,
+            "skipped echo consumed a seq"
+        );
+        reader.dispatch_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"reply"}}}}
+"#,
+            &runtime,
+        );
+        let _event = conn
+            .pull_events()
+            .into_iter()
+            .find(|event| matches!(event.envelope.event, SessionEvent::AgentMessage { .. }))
+            .expect("reply event");
+        assert_eq!(runtime.current_agent_seq(), 1);
+    }
+
+    #[test]
+    fn foreign_user_echo_is_not_silently_dropped() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+        );
+        reader.dispatch_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"foreign echo"}}}}
+"#,
+            &runtime,
+        );
+        assert_eq!(runtime.current_agent_seq(), 1);
+        assert!(conn.pull_events().is_empty());
     }
 
     #[test]
@@ -2164,6 +2240,45 @@ mod tests {
             stored["params"]["update"]["sessionUpdate"],
             "agent_thought_chunk"
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn old_journaled_user_echo_still_replays_as_a_user_message() {
+        let path = permission_path("old-user-echo-replay");
+        let journal = Journal::open(&path).expect("journal");
+        journal
+            .upsert_blocking(crate::journal::new_session_record(
+                "s.old-user-echo",
+                "owner",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("upsert");
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "stub-session",
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "old prompt"}
+                }
+            }
+        });
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record("s.old-user-echo", 1, 1, &envelope)
+                    .expect("record"),
+            )
+            .expect("append");
+        let replay = journal.replay("s.old-user-echo", 0).expect("replay");
+        assert!(replay.events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentUserMessage { text, .. } if text == "old prompt"
+        )));
+        journal.shutdown();
         let _ = std::fs::remove_file(path);
     }
 

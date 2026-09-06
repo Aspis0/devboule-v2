@@ -1187,6 +1187,188 @@ fn live_acp_session_journals_conversation_before_termination() {
         .expect("close ACP session");
 }
 
+#[test]
+fn acp_non_echo_provider_gets_prompt_recorded_and_replayed_in_order() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&["--no-user-echo"]);
+    let (session, events) = test.attached_session();
+    let prompt = "the provider does not echo this";
+    test.client
+        .session_send(&session.id, prompt)
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let live = events.lock().expect("events lock").clone();
+    let user_index = live
+        .iter()
+        .position(
+            |event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == prompt),
+        )
+        .expect("daemon must publish the prompt even when the provider does not echo");
+    let reply_index = live
+        .iter()
+        .position(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply"))
+        .expect("stub reply");
+    assert!(
+        user_index < reply_index,
+        "prompt must precede its reply: {live:?}"
+    );
+
+    test.client.journal_usage().expect("flush journal");
+    test.client
+        .session_detach(&session.id)
+        .expect("detach before replay");
+    let replayed = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&replayed);
+    test.client
+        .session_attach(
+            &session.id,
+            None,
+            Arc::new(move |envelope| {
+                received
+                    .lock()
+                    .expect("replayed events lock")
+                    .push(envelope.event);
+            }),
+        )
+        .expect("reattach");
+    wait_for(&replayed, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+        })
+    });
+    let replayed = replayed.lock().expect("replayed events lock").clone();
+    let user_index = replayed
+        .iter()
+        .position(
+            |event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == prompt),
+        )
+        .expect("prompt must be journaled for replay");
+    let reply_index = replayed
+        .iter()
+        .position(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply"))
+        .expect("replayed stub reply");
+    assert!(
+        user_index < reply_index,
+        "replayed prompt must precede reply: {replayed:?}"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_echoing_provider_gets_one_synthesized_user_message_without_echo_row() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let prompt = "the provider echoes this";
+    test.client
+        .session_send(&session.id, prompt)
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let users = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentUserMessage { message_id, text } if text == prompt => {
+                Some(message_id.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        users.len(),
+        1,
+        "exactly one user bubble must reach the client"
+    );
+    assert!(
+        users[0].is_some(),
+        "the daemon-owned bubble needs a stable id"
+    );
+
+    test.client.journal_usage().expect("flush journal");
+    let connection = Connection::open(test._harness.paths.journal_file()).expect("open journal");
+    let echoed_rows = connection
+        .query_row(
+            "SELECT COUNT(*) FROM events
+             WHERE session_id = ?1 AND kind = 'acp_envelope'
+               AND instr(CAST(payload AS TEXT), 'user_message_chunk') > 0",
+            [&session.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count echo rows");
+    assert_eq!(
+        echoed_rows, 0,
+        "the redundant provider echo must not be journaled"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_second_prompt_while_first_streams_precedes_both_replies() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&["--stream-first"]);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_send(&session.id, "first queued prompt")
+        .expect("first prompt");
+    wait_for(&events, Duration::from_secs(2), |events| {
+        events.iter().any(
+            |event| matches!(event, SessionEvent::AgentThought { text, .. } if text == "thinking"),
+        )
+    });
+    test.client
+        .session_send(&session.id, "second queued prompt")
+        .expect("second prompt while first streams");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply"))
+            .count()
+            >= 2
+    });
+    let events = events.lock().expect("events lock").clone();
+    let first_user = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "first queued prompt"))
+        .expect("first prompt event");
+    let second_user = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "second queued prompt"))
+        .expect("second prompt event");
+    let replies = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replies.len(),
+        2,
+        "expected one reply per prompt: {events:?}"
+    );
+    assert!(
+        first_user < second_user && second_user < replies[0] && replies[0] < replies[1],
+        "queued turn order was not prompt1 < prompt2 < reply1 < reply2: {events:?}"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
 struct AcpTest {
     observation_dir: PathBuf,
     _harness: Harness,

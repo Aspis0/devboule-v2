@@ -1301,7 +1301,7 @@ impl SessionRegistry {
                 "Session input is too large.",
             ));
         }
-        let writer = {
+        let (writer, agent_runtime) = {
             let map = self
                 .inner
                 .lock()
@@ -1309,23 +1309,65 @@ impl SessionRegistry {
             let entry = map.get(session_id).ok_or_else(not_found)?;
             check_owner(entry, owner)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
-            Arc::clone(&session.writer)
+            (
+                Arc::clone(&session.writer),
+                session
+                    .metadata
+                    .kind
+                    .is_agent()
+                    .then(|| Arc::clone(&session.runtime)),
+            )
         };
-        let mut writer = writer
-            .lock()
-            .map_err(|_| internal("Session state is unavailable."))?;
-        writer.write_all(text.as_bytes()).map_err(|error| {
+        if !text.is_empty() {
+            if let Some(runtime) = agent_runtime.as_ref() {
+                // Publish before writing: the provider cannot reply before it
+                // receives this prompt. If the write fails, the error event
+                // below makes the transcript honest instead of leaving a
+                // silent prompt that never reached the child.
+                // Recording is also the send precondition: a poisoned stream
+                // or closed output cannot accept the corresponding transcript
+                // event, so do not send an unrecordable prompt to the child.
+                if !runtime.publish_agent_user_message(text.to_string()) {
+                    return Err(internal("Agent input could not be recorded."));
+                }
+            }
+        }
+        let mut writer = match writer.lock() {
+            Ok(writer) => writer,
+            Err(_) => {
+                let error = internal("Session state is unavailable.");
+                if let Some(runtime) = agent_runtime.as_ref() {
+                    runtime.publish_agent_error(error.message.clone());
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = writer.write_all(text.as_bytes()).map_err(|error| {
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not send input to the terminal: {error}"),
             )
-        })?;
-        writer.flush().map_err(|error| {
+        }) {
+            drop(writer);
+            if let Some(runtime) = agent_runtime.as_ref() {
+                runtime.publish_agent_error(error.message.clone());
+            }
+            return Err(error);
+        }
+        if let Err(error) = writer.flush().map_err(|error| {
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not flush input to the terminal: {error}"),
             )
-        })
+        }) {
+            drop(writer);
+            if let Some(runtime) = agent_runtime.as_ref() {
+                runtime.publish_agent_error(error.message.clone());
+            }
+            return Err(error);
+        }
+        drop(writer);
+        Ok(())
     }
 
     pub fn report_agent(
@@ -3117,6 +3159,112 @@ mod tests {
         }
     }
 
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "forced writer failure",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct RecordingWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("recording writer lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn insert_live_agent(
+        registry: &SessionRegistry,
+        id: &str,
+        owner: OwnerId,
+    ) -> Arc<SessionRuntime> {
+        insert_live_agent_with_writer(
+            registry,
+            id,
+            owner,
+            Box::new(FailingWriter) as Box<dyn Write + Send>,
+        )
+    }
+
+    fn insert_live_agent_with_writer(
+        registry: &SessionRegistry,
+        id: &str,
+        owner: OwnerId,
+        writer: Box<dyn Write + Send>,
+    ) -> Arc<SessionRuntime> {
+        let metadata = Session {
+            id: id.to_string(),
+            workspace_id: None,
+            kind: SessionKind::Acp,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            provider: Some("test-agent".to_string()),
+            peer_session_id: None,
+        };
+        let (broker, _) = permission_broker::test_broker();
+        let runtime = SessionRuntime::for_acp(id.to_string(), registry.journal.clone(), broker);
+        let session = PtySession {
+            metadata,
+            owner,
+            process_job: Arc::new(JobObject::new().expect("job")),
+            master: None,
+            killer: Box::new(NoopKiller),
+            switcher: None,
+            stderr_handle: None,
+            child_wait: None,
+            writer: Arc::new(Mutex::new(writer)),
+            reader_handle: None,
+            coalesce_handle: None,
+            runtime: Arc::clone(&runtime),
+            exited: Arc::new(AtomicBool::new(false)),
+            preserve_on_exit: Arc::new(AtomicBool::new(false)),
+        };
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .insert(id.to_string(), RegistryEntry::Live(session));
+        runtime
+    }
+
+    fn attach_live_agent_for_test(
+        runtime: &Arc<SessionRuntime>,
+        session_id: &str,
+        conn_id: u64,
+    ) -> Arc<ConnHandle> {
+        let conn = ConnHandle::new(conn_id);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        conn
+    }
+
     fn insert_live(registry: &SessionRegistry, id: &str, owner: OwnerId) {
         let metadata = Session {
             id: id.to_string(),
@@ -3153,6 +3301,290 @@ mod tests {
             .lock()
             .expect("registry")
             .insert(id.to_string(), RegistryEntry::Live(session));
+    }
+
+    #[test]
+    fn terminal_send_does_not_publish_an_agent_user_message() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-terminal", "process-terminal");
+        insert_live(&registry, "terminal-send", owner.clone());
+        registry
+            .send("terminal-send", "typed terminal input", &owner)
+            .expect("terminal send");
+        let runtime = registry.runtime("terminal-send").expect("runtime");
+        assert_eq!(runtime.current_agent_seq(), 0);
+        assert!(runtime.stream.lock().expect("stream").pending.is_empty());
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_agent_send_replays_prompt_then_error() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-agent", "process-agent");
+        let runtime = insert_live_agent(&registry, "agent-send-failure", owner.clone());
+        journal
+            .upsert_blocking(new_session_record(
+                "agent-send-failure",
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("agent session row");
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            "agent-send-failure",
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+
+        let error = registry
+            .send("agent-send-failure", "prompt that cannot be sent", &owner)
+            .expect_err("writer must fail");
+        assert_eq!(error.code, ErrorCode::Io);
+        journal.flush().expect("flush prompt and error");
+
+        let live = conn
+            .pull_events()
+            .into_iter()
+            .map(|event| event.envelope.event)
+            .collect::<Vec<_>>();
+        let user_index = live
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
+            })
+            .expect("failed send prompt must reach the live client");
+        let error_index = live
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentError { message } if message.contains("forced writer failure"))
+            })
+            .expect("failed send error must reach the live client");
+        assert!(user_index < error_index, "live failed send order: {live:?}");
+
+        runtime.detach_if_conn(conn.id);
+        conn.untrack("agent-send-failure");
+        let reattached = ConnHandle::new(2);
+        let outcome = runtime
+            .try_attach_with_replay(None, &reattached, true)
+            .expect("reattach");
+        reattached.track_with_agent_replay(
+            "agent-send-failure",
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let replayed = reattached
+            .pull_events()
+            .into_iter()
+            .map(|event| event.envelope.event)
+            .collect::<Vec<_>>();
+        let user_index = replayed
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
+            })
+            .expect("failed send prompt must replay");
+        let error_index = replayed
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentError { message } if message.contains("forced writer failure"))
+            })
+            .expect("failed send error must replay");
+        assert!(
+            user_index < error_index,
+            "replayed failed send order: {replayed:?}"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn poisoned_agent_writer_publishes_prompt_then_error() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-poisoned-writer", "process-agent");
+        let runtime = insert_live_agent(&registry, "agent-poisoned-writer", owner.clone());
+        journal
+            .upsert_blocking(new_session_record(
+                "agent-poisoned-writer",
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("agent session row");
+        let conn = attach_live_agent_for_test(&runtime, "agent-poisoned-writer", 3);
+        let writer = {
+            let map = registry.inner.lock().expect("registry");
+            match map.get("agent-poisoned-writer").expect("session") {
+                RegistryEntry::Live(session) => Arc::clone(&session.writer),
+                RegistryEntry::Transcript(_) => panic!("expected live session"),
+            }
+        };
+        std::thread::spawn(move || {
+            let _guard = writer.lock().expect("writer lock");
+            panic!("poison writer for test");
+        })
+        .join()
+        .expect_err("writer lock must be poisoned");
+
+        let error = registry
+            .send(
+                "agent-poisoned-writer",
+                "prompt with poisoned writer",
+                &owner,
+            )
+            .expect_err("poisoned writer must reject the send");
+        assert_eq!(error.code, ErrorCode::Internal);
+        journal.flush().expect("flush prompt and writer error");
+
+        let live = conn
+            .pull_events()
+            .into_iter()
+            .map(|event| event.envelope.event)
+            .collect::<Vec<_>>();
+        let user_index = live
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
+            })
+            .expect("poisoned writer prompt must reach the client");
+        let error_index = live
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentError { message } if message == "Session state is unavailable.")
+            })
+            .expect("poisoned writer error must reach the client");
+        assert!(
+            user_index < error_index,
+            "live poisoned writer order: {live:?}"
+        );
+
+        let replay = journal
+            .replay("agent-poisoned-writer", 0)
+            .expect("replay poisoned writer");
+        let replayed = replay.events;
+        let user_index = replayed
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
+            })
+            .expect("poisoned writer prompt must replay");
+        let error_index = replayed
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentError { message } if message == "Session state is unavailable.")
+            })
+            .expect("poisoned writer error must replay");
+        assert!(
+            user_index < error_index,
+            "replayed poisoned writer order: {replayed:?}"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn closed_agent_output_refuses_unrecordable_prompt() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-closed-agent", "process-agent");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "agent-closed-output",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&written))),
+        );
+        journal
+            .upsert_blocking(new_session_record(
+                "agent-closed-output",
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("agent session row");
+        runtime.close_output();
+
+        let error = registry
+            .send("agent-closed-output", "prompt after output closed", &owner)
+            .expect_err("closed output must reject an unrecordable prompt");
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert_eq!(error.message, "Agent input could not be recorded.");
+        assert!(written.lock().expect("written lock").is_empty());
+        assert_eq!(runtime.current_agent_seq(), 0);
+        journal.flush().expect("flush closed-output journal");
+        let replayed = journal
+            .replay("agent-closed-output", 0)
+            .expect("replay closed output")
+            .events;
+        assert!(!replayed.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentUserMessage { text, .. } if text == "prompt after output closed"
+        )));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn poisoned_agent_stream_refuses_unrecordable_prompt() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-poisoned-stream", "process-agent");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "agent-poisoned-stream",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&written))),
+        );
+        journal
+            .upsert_blocking(new_session_record(
+                "agent-poisoned-stream",
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("agent session row");
+        let poisoned_runtime = Arc::clone(&runtime);
+        std::thread::spawn(move || {
+            let _guard = poisoned_runtime.stream.lock().expect("stream lock");
+            panic!("poison stream for test");
+        })
+        .join()
+        .expect_err("stream lock must be poisoned");
+
+        let error = registry
+            .send(
+                "agent-poisoned-stream",
+                "prompt after stream poison",
+                &owner,
+            )
+            .expect_err("poisoned stream must reject an unrecordable prompt");
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert_eq!(error.message, "Agent input could not be recorded.");
+        assert!(written.lock().expect("written lock").is_empty());
+        journal.flush().expect("flush poisoned-stream journal");
+        let replayed = journal
+            .replay("agent-poisoned-stream", 0)
+            .expect("replay poisoned stream")
+            .events;
+        assert!(!replayed.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentUserMessage { text, .. } if text == "prompt after stream poison"
+        )));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
