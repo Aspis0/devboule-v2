@@ -1275,8 +1275,12 @@ fn dispatch_session(
                 }
             }
         },
-        ClientMessage::SessionInterrupt { id, .. } => DaemonMessage::Error(
-            WireError::new(ErrorCode::Unimplemented, "not implemented in M3b").with_id(id),
+        ClientMessage::SessionInterrupt { id, session_id } => reply_result(
+            id,
+            state
+                .sessions
+                .interrupt(&session_id, owner)
+                .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionPermissionRespond {
             id,

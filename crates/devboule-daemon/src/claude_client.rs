@@ -319,24 +319,49 @@ struct ClaudeKiller {
     cancelled: Arc<AtomicBool>,
 }
 
+/// The single control_request interrupt frame builder shared by the hard
+/// stop and the soft turn interrupt, so the wire format cannot drift apart.
+fn interrupt_frame_bytes(request_id: &str) -> Option<Vec<u8>> {
+    let frame = serde_json::json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": {"subtype": "interrupt"}
+    });
+    let mut bytes = serde_json::to_vec(&frame).ok()?;
+    bytes.push(b'\n');
+    Some(bytes)
+}
+
+/// The frame write happens on a spawned thread because a full stdin pipe
+/// would otherwise block the caller holding the session lock path.
+fn send_interrupt_frame(stdin: Arc<Mutex<Option<ChildStdin>>>, request_id: String) {
+    let _ = std::thread::Builder::new()
+        .name("claude-interrupt".to_string())
+        .spawn(move || {
+            if let Some(bytes) = interrupt_frame_bytes(&request_id) {
+                let _ = write_child_stdin(&stdin, &bytes, "Claude");
+            }
+        });
+}
+
 impl SessionKiller for ClaudeKiller {
+    /// Soft interrupt: ask the CLI to abort the current turn. The process,
+    /// stdin, and the kill guard stay untouched so later turns keep working.
+    fn interrupt(&mut self) {
+        // A kill already closed stdin and drained the broker; a late
+        // interrupt would only spawn a thread doomed to BrokenPipe.
+        if self.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        send_interrupt_frame(Arc::clone(&self.stdin), request_id);
+        self.permission_broker.cancel_all();
+    }
+
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
-            let stdin = Arc::clone(&self.stdin);
             let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
-            let _ = std::thread::Builder::new()
-                .name("claude-interrupt".to_string())
-                .spawn(move || {
-                    let frame = serde_json::json!({
-                        "type": "control_request",
-                        "request_id": request_id,
-                        "request": {"subtype": "interrupt"}
-                    });
-                    if let Ok(mut bytes) = serde_json::to_vec(&frame) {
-                        bytes.push(b'\n');
-                        let _ = write_child_stdin(&stdin, &bytes, "Claude");
-                    }
-                });
+            send_interrupt_frame(Arc::clone(&self.stdin), request_id);
             self.permission_broker.cancel_all();
         }
         if let Ok(mut process) = self.process.lock() {
@@ -727,6 +752,17 @@ mod tests {
             generation,
         );
         (runtime, conn)
+    }
+
+    #[test]
+    fn interrupt_frame_matches_the_measured_control_request_wire() {
+        let bytes = interrupt_frame_bytes("interrupt-7").expect("frame");
+        let line = std::str::from_utf8(&bytes).expect("utf8");
+        assert!(line.ends_with('\n'));
+        let value: Value = serde_json::from_str(line.trim_end()).expect("json");
+        assert_eq!(value["type"], "control_request");
+        assert_eq!(value["request_id"], "interrupt-7");
+        assert_eq!(value["request"]["subtype"], "interrupt");
     }
 
     #[test]

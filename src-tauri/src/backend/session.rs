@@ -123,6 +123,12 @@ pub fn session_resize(
 }
 
 #[tauri::command]
+pub fn session_interrupt(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    Ok(require_client(&bridge)?.session_interrupt(&id)?)
+}
+
+#[tauri::command]
 pub fn session_close(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
     require_session_id(&id)?;
     bridge.forget_generation(&id);

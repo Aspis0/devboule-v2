@@ -105,9 +105,10 @@ vi.mock("../../lib/tauri", () => ({
     channelHarness.active = null;
   }),
   sessionSend: vi.fn(async () => undefined),
+  sessionInterrupt: vi.fn(async () => undefined),
 }));
 
-import { sessionAttach, sessionDetach, sessionSend } from "../../lib/tauri";
+import { sessionAttach, sessionDetach, sessionInterrupt, sessionSend } from "../../lib/tauri";
 import { AgentChatSurface } from "./AgentChatSurface";
 
 const LIVE_OBSERVED: SessionState = { type: "live", generation: 1 };
@@ -433,6 +434,44 @@ describe("AgentChatSurface", () => {
     await act(async () => undefined);
 
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Silent for 12 seconds");
+  });
+
+  it("shows the Stop button only while the turn is running and interrupts on click", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <AgentChatSurface sessionId="stop-agent" title="Agent" observedState={LIVE_OBSERVED} />
+        </StrictMode>,
+      );
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelector('button[aria-label="Stop the current turn"]')).toBeNull();
+
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    setValue.call(textarea, "Long running task");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+
+    const stop = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Stop the current turn"]',
+    );
+    expect(stop).not.toBeNull();
+    expect(stop?.getAttribute("type")).toBe("button");
+    await act(async () => stop?.click());
+    expect(sessionInterrupt).toHaveBeenCalledWith("stop-agent");
+
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_finished", stopReason: "cancelled" });
+    });
+    expect(container.querySelector('button[aria-label="Stop the current turn"]')).toBeNull();
   });
 
   it("does not infer Ready from attach alone without observed OS state", async () => {

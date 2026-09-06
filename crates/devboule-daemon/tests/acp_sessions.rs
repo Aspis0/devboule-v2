@@ -495,6 +495,52 @@ fn acp_session_cancel_reports_cancelled_stop_reason() {
 }
 
 #[test]
+fn acp_session_interrupt_cancels_the_turn_but_keeps_the_session_alive() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_send(&session.id, "block until cancelled")
+        .expect("blocked prompt");
+    test.client
+        .session_interrupt(&session.id)
+        .expect("interrupt the running turn");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "cancelled")
+        })
+    });
+    // The distinction from stop: the session survives the interrupt, so a
+    // second prompt must round-trip normally on the same process.
+    test.client
+        .session_send(&session.id, "after interrupt")
+        .expect("prompt after interrupt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let still_live = test
+        .client
+        .sessions_list()
+        .expect("list sessions")
+        .iter()
+        .any(|listed| {
+            listed.id == session.id
+                && matches!(listed.state, devboule_protocol::SessionState::Live { .. })
+        });
+    assert!(
+        still_live,
+        "the interrupted session must still list as live"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close interrupted ACP session");
+    wait_until_gone(pid);
+}
+
+#[test]
 fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
     let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);

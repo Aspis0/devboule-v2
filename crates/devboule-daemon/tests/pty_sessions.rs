@@ -461,6 +461,33 @@ fn real_pty_spawn_read_resize_and_teardown() {
 
 #[test]
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
+fn pty_session_interrupt_is_rejected_for_terminal_sessions() {
+    let harness = Harness::spawn();
+    queue_command(&harness.paths, cmd_keep());
+    let client = harness.client("interrupt");
+    let session = client
+        .session_create(None, SessionKind::Terminal, None)
+        .expect("create terminal session");
+    let error = client
+        .session_interrupt(&session.id)
+        .expect_err("terminal sessions must reject interrupt");
+    match error {
+        devboule_daemon::DaemonError::Handshake(wire) => {
+            assert_eq!(wire.code, ErrorCode::InvalidRequest);
+            assert_eq!(
+                wire.message,
+                "Only agent sessions support interrupting a turn."
+            );
+        }
+        other => panic!("expected InvalidRequest, got {other:?}"),
+    }
+    client
+        .session_close(&session.id)
+        .expect("close terminal session");
+}
+
+#[test]
+#[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
 fn real_pty_detach_keeps_screen_state_and_close_reaps_child() {
     const MARKER: &str = "DEVBOULE_DETACH_BUFFER";
     let harness = Harness::spawn();

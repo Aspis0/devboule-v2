@@ -901,6 +901,19 @@ struct AcpKiller {
 }
 
 impl SessionKiller for AcpKiller {
+    /// Soft interrupt: ask the agent to cancel the current turn and release
+    /// pending permission prompts. The process, the turn watch, and the
+    /// kill guard stay untouched so later turns keep working.
+    fn interrupt(&mut self) {
+        // A kill already sent its own cancel and is tearing the peer down;
+        // a late interrupt would only re-cancel a closing transport.
+        if self.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        self.transport.cancel();
+        self.permission_broker.cancel_all();
+    }
+
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             let watchdog = Arc::clone(&self.process);

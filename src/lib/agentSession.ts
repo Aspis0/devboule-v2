@@ -117,6 +117,20 @@ export class AgentSession {
     }
   }
 
+  /**
+   * Interrupt the current turn without closing the session. The daemon
+   * answers Ok even if the agent had no turn in flight; an error is
+   * swallowed because a lost interrupt must not fail the chat view.
+   */
+  async interrupt(): Promise<void> {
+    if (this.disposed || !this.started || !this.attached) return;
+    try {
+      await this.deps.invoke("session_interrupt", { id: this.deps.sessionId });
+    } catch {
+      // The turn keeps running; the status strip already reflects reality.
+    }
+  }
+
   handleEvent(event: SessionEvent): void {
     if (this.disposed) return;
 

@@ -182,6 +182,18 @@ impl DaemonClient {
         }
     }
 
+    pub fn session_interrupt(&self, session_id: &str) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionInterrupt {
+            id,
+            session_id: session_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {

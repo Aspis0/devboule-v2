@@ -171,6 +171,9 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// the registry, runtime, coalescer, journal and attachment code stay shared.
 pub(super) trait SessionKiller: Send + Sync {
     fn kill(&mut self);
+    /// Interrupt the current turn without killing the session. The default
+    /// no-op covers killers whose transport has no turn concept (pty).
+    fn interrupt(&mut self) {}
     fn clone_killer(&self) -> Box<dyn SessionKiller>;
 }
 
@@ -1188,6 +1191,32 @@ impl SessionRegistry {
             session.killer.clone_killer()
         };
         killer.kill();
+        Ok(())
+    }
+
+    /// Interrupt the current turn of an agent session without killing the
+    /// process. Unlike `stop`, the registry entry stays live and later
+    /// turns keep working.
+    pub fn interrupt(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let mut killer = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get_mut(session_id).ok_or_else(not_found)?;
+            check_user_owner(entry, owner)?;
+            let session = entry.as_live_mut().ok_or_else(process_gone)?;
+            if !session.metadata.kind.is_agent() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Only agent sessions support interrupting a turn.",
+                ));
+            }
+            session.killer.clone_killer()
+        };
+        killer.interrupt();
         Ok(())
     }
 

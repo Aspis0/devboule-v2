@@ -3,6 +3,7 @@ import {
   createSessionChannel,
   sessionAttach,
   sessionDetach,
+  sessionInterrupt,
   sessionSend,
   type SessionChannel,
 } from "../../lib/tauri";
@@ -37,6 +38,7 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
   if (command === "session_send") {
     return sessionSend(id, typeof args?.text === "string" ? args.text : "") as Promise<T>;
   }
+  if (command === "session_interrupt") return sessionInterrupt(id) as Promise<T>;
   if (command === "session_detach") return sessionDetach(id) as Promise<T>;
   return Promise.reject(new Error(`Unsupported agent command: ${command}`));
 }
@@ -211,6 +213,16 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         <span className="workspace-agent-status" role="status">
           {statusLabel}
         </span>
+        {state.status === "running" ? (
+          <button
+            type="button"
+            className="workspace-agent-stop"
+            aria-label="Stop the current turn"
+            onClick={() => void sessionRef.current?.interrupt()}
+          >
+            Stop
+          </button>
+        ) : null}
       </div>
       {strip !== null && (strip.provider !== null || strip.model !== null) ? (
         <div className="workspace-agent-manifest" data-testid="session-manifest">
