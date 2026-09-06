@@ -1439,6 +1439,7 @@ impl SessionRuntime {
         self.stream.lock().unwrap().last_applied_seq
     }
 
+    #[cfg(test)]
     pub(crate) fn attached_conn_id(&self) -> Option<u64> {
         self.stream
             .lock()

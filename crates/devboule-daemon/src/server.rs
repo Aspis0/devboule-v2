@@ -1751,7 +1751,7 @@ fn dispatch_session(
             session_id,
             text,
             idempotency_key,
-        } => session_send(state, owner, id, session_id, text, idempotency_key),
+        } => session_send(state, owner, conn, id, session_id, text, idempotency_key),
         ClientMessage::SessionResize {
             id,
             session_id,
@@ -1761,7 +1761,7 @@ fn dispatch_session(
             id,
             state
                 .sessions
-                .resize(&session_id, cols, rows, owner)
+                .resize(&session_id, cols, rows, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionsList { id } => match state.sessions.list(owner) {
@@ -1927,6 +1927,7 @@ fn session_create(
 fn session_send(
     state: &Arc<ServerState>,
     owner: &OwnerId,
+    conn: &ConnHandle,
     id: u64,
     session_id: String,
     text: String,
@@ -1937,7 +1938,7 @@ fn session_send(
     {
         return reply;
     }
-    match state.sessions.send(&session_id, &text, owner) {
+    match state.sessions.send(&session_id, &text, owner, conn) {
         Ok(()) => {
             let reply = DaemonMessage::Ok { id };
             remember(

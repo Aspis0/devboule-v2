@@ -298,6 +298,12 @@ fn main() -> io::Result<()> {
                     continue;
                 }
                 if prompt_text.contains("permission") {
+                    if let Some(delay_ms) = std::env::var("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS")
+                        .ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                    {
+                        std::thread::sleep(Duration::from_millis(delay_ms));
+                    }
                     permission_request_id = Some(99);
                     emit(
                         &mut stdout,

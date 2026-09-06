@@ -389,6 +389,13 @@ fn unauthorized() -> WireError {
     )
 }
 
+fn not_attached() -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        "Session is not attached to this client.",
+    )
+}
+
 fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireError> {
     let mut parts = session_id.splitn(3, '.');
     if parts.next() != Some("s") {
@@ -401,11 +408,13 @@ fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireEr
     OwnerId::new(user, client).map_err(|_| unauthorized())
 }
 
-// Full-owner checks remain on client-scoped operations (send, resize, and
-// permission_respond). A live process must not be driven by a new app process;
-// pass A relaxed read-only reattach and lifecycle paths, while pass B's resume
-// is the deliberate ownership-transfer boundary that installs a new live
-// process under the resuming client's OwnerId.
+// The client token embedded in a session id is not the live-driver authority.
+// For input and control, same-user ownership plus exclusive attachment is the
+// real invariant: try_attach rejects a second connection and detach_conn
+// releases the only driver. The token was only a proxy for "same client" and
+// changes on an app restart, while the newly attached connection is the only
+// legitimate driver left. Full-owner checks remain only for operations that
+// deliberately retain client-token ownership semantics, currently detach.
 fn check_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> {
     if entry.owner() == owner {
         Ok(())
@@ -419,6 +428,21 @@ fn check_user_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireEr
         Ok(())
     } else {
         Err(unauthorized())
+    }
+}
+
+fn check_attached(runtime: &SessionRuntime, conn: &ConnHandle) -> Result<(), WireError> {
+    let attached_conn_id = runtime
+        .stream
+        .lock()
+        .map_err(|_| internal("Session state is unavailable."))?
+        .attached
+        .as_ref()
+        .map(|attached| attached.conn_id);
+    if attached_conn_id == Some(conn.id) {
+        Ok(())
+    } else {
+        Err(not_attached())
     }
 }
 
@@ -1088,13 +1112,8 @@ impl SessionRegistry {
                 "Permission request id is required.",
             ));
         }
-        let runtime = self.runtime_for_owner(session_id, owner)?;
-        if runtime.attached_conn_id() != Some(conn.id) {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                "Session is not attached to this client.",
-            ));
-        }
+        let runtime = self.runtime_for_user(session_id, owner)?;
+        check_attached(&runtime, conn)?;
         let broker = runtime.permission_broker().ok_or_else(|| {
             WireError::new(
                 ErrorCode::InvalidRequest,
@@ -1292,7 +1311,13 @@ impl SessionRegistry {
         switcher.set_model(model_id, effort)
     }
 
-    pub fn send(&self, session_id: &str, text: &str, owner: &OwnerId) -> Result<(), WireError> {
+    pub fn send(
+        &self,
+        session_id: &str,
+        text: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         if text.len() > MAX_WRITE_BYTES {
@@ -1301,23 +1326,22 @@ impl SessionRegistry {
                 "Session input is too large.",
             ));
         }
-        let (writer, agent_runtime) = {
+        let (writer, runtime, is_agent) = {
             let map = self
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
-            check_owner(entry, owner)?;
+            check_user_owner(entry, owner)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
             (
                 Arc::clone(&session.writer),
-                session
-                    .metadata
-                    .kind
-                    .is_agent()
-                    .then(|| Arc::clone(&session.runtime)),
+                Arc::clone(&session.runtime),
+                session.metadata.kind.is_agent(),
             )
         };
+        check_attached(&runtime, conn)?;
+        let agent_runtime = is_agent.then_some(runtime);
         if !text.is_empty() {
             if let Some(runtime) = agent_runtime.as_ref() {
                 // Publish before writing: the provider cannot reply before it
@@ -1412,6 +1436,7 @@ impl SessionRegistry {
         cols: u16,
         rows: u16,
         owner: &OwnerId,
+        conn: &ConnHandle,
     ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -1421,10 +1446,11 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
-            check_owner(entry, owner)?;
+            check_user_owner(entry, owner)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
             (Arc::clone(&session.runtime), session.master.clone())
         };
+        check_attached(&runtime, conn)?;
         // Resize is serialized with emulator parsing under the SAME state
         // lock as publish_output, in one defined order: emulator dimensions
         // first, then the PTY. A snapshot therefore sees the resize as wholly
@@ -3308,12 +3334,250 @@ mod tests {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-terminal", "process-terminal");
         insert_live(&registry, "terminal-send", owner.clone());
+        let conn = ConnHandle::new(108);
         registry
-            .send("terminal-send", "typed terminal input", &owner)
+            .attach("terminal-send", None, &conn, &owner, false)
+            .expect("terminal attaches");
+        registry
+            .send("terminal-send", "typed terminal input", &owner, &conn)
             .expect("terminal send");
         let runtime = registry.runtime("terminal-send").expect("runtime");
         assert_eq!(runtime.current_agent_seq(), 0);
-        assert!(runtime.stream.lock().expect("stream").pending.is_empty());
+        assert!(!runtime
+            .stream
+            .lock()
+            .expect("stream")
+            .pending
+            .iter()
+            .any(|item| matches!(
+                item,
+                PendingItem::Agent {
+                    event: SessionEvent::AgentUserMessage { .. },
+                    ..
+                }
+            )));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_attached_restarted_client_can_send() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-reconnect-send", "process-1111");
+        let restarted = test_owner("S-1-5-21-reconnect-send", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "send01").expect("id");
+        insert_live(&registry, &session_id, original);
+        let conn = ConnHandle::new(101);
+        registry
+            .attach(&session_id, None, &conn, &restarted, false)
+            .expect("restarted same-user client attaches");
+        registry
+            .send(&session_id, "restart input", &restarted, &conn)
+            .expect("attached restarted client can send");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_unattached_client_cannot_send() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-unattached-send", "process-1111");
+        let caller = test_owner("S-1-5-21-unattached-send", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "send02").expect("id");
+        insert_live(&registry, &session_id, owner);
+        let attached = ConnHandle::new(113);
+        registry
+            .attach(&session_id, None, &attached, &caller, false)
+            .expect("a same-user connection attaches");
+        let conn = ConnHandle::new(111);
+        let error = registry
+            .send(&session_id, "unattached input", &caller, &conn)
+            .expect_err("unattached client must not send");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not attached"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_attached_restarted_client_can_resize_terminal() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-reconnect-resize", "process-1111");
+        let restarted = test_owner("S-1-5-21-reconnect-resize", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "resize01").expect("id");
+        insert_live(&registry, &session_id, original);
+        let conn = ConnHandle::new(102);
+        registry
+            .attach(&session_id, None, &conn, &restarted, false)
+            .expect("restarted same-user client attaches");
+        registry
+            .resize(&session_id, 100, 30, &restarted, &conn)
+            .expect("attached restarted client can resize");
+        let runtime = registry.runtime(&session_id).expect("runtime");
+        assert_eq!(
+            runtime
+                .stream
+                .lock()
+                .expect("stream")
+                .screen
+                .as_ref()
+                .expect("terminal screen")
+                .dimensions(),
+            (100, 30)
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_unattached_client_cannot_resize_terminal() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-unattached-resize", "process-1111");
+        let caller = test_owner("S-1-5-21-unattached-resize", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "resize02").expect("id");
+        insert_live(&registry, &session_id, owner);
+        let attached = ConnHandle::new(114);
+        registry
+            .attach(&session_id, None, &attached, &caller, false)
+            .expect("a same-user connection attaches");
+        let conn = ConnHandle::new(112);
+        let error = registry
+            .resize(&session_id, 100, 30, &caller, &conn)
+            .expect_err("unattached client must not resize");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not attached"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_attached_restarted_client_can_respond_to_permission() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-reconnect-permission", "process-1111");
+        let restarted = test_owner("S-1-5-21-reconnect-permission", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "perm01").expect("id");
+        let runtime = insert_live_agent(&registry, &session_id, original);
+        let conn = ConnHandle::new(103);
+        registry
+            .attach(&session_id, None, &conn, &restarted, false)
+            .expect("restarted same-user client attaches");
+        runtime
+            .permission_broker()
+            .expect("permission broker")
+            .register(
+                7,
+                permission_broker::permission("restart-permission"),
+                &runtime,
+            )
+            .expect("permission request");
+        registry
+            .permission_respond(
+                &session_id,
+                "restart-permission",
+                PermissionOutcome::AllowOnce,
+                &conn,
+                &restarted,
+            )
+            .expect("attached restarted client can respond");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_unattached_client_cannot_respond_to_permission() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-unattached-permission", "process-1111");
+        let caller = test_owner("S-1-5-21-unattached-permission", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "perm02").expect("id");
+        let runtime = insert_live_agent(&registry, &session_id, owner.clone());
+        let attached = ConnHandle::new(104);
+        registry
+            .attach(&session_id, None, &attached, &owner, false)
+            .expect("owner attaches");
+        runtime
+            .permission_broker()
+            .expect("permission broker")
+            .register(
+                8,
+                permission_broker::permission("unattached-permission"),
+                &runtime,
+            )
+            .expect("permission request");
+        let unattached = ConnHandle::new(105);
+        let error = registry
+            .permission_respond(
+                &session_id,
+                "unattached-permission",
+                PermissionOutcome::AllowOnce,
+                &unattached,
+                &caller,
+            )
+            .expect_err("unattached client must not respond");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not attached"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn different_user_cannot_send_or_resize() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-security-terminal", "process-1111");
+        let stranger = test_owner("S-1-5-21-security-stranger", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "secure01").expect("id");
+        insert_live(&registry, &session_id, owner.clone());
+        let conn = ConnHandle::new(106);
+        registry
+            .attach(&session_id, None, &conn, &owner, false)
+            .expect("owner attaches");
+        assert_eq!(
+            registry
+                .send(&session_id, "hostile input", &stranger, &conn)
+                .expect_err("different user must not send")
+                .code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            registry
+                .resize(&session_id, 100, 30, &stranger, &conn)
+                .expect_err("different user must not resize")
+                .code,
+            ErrorCode::Unauthorized
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn different_user_cannot_respond_to_permission() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-security-permission", "process-1111");
+        let stranger = test_owner("S-1-5-21-security-stranger-2", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "secure02").expect("id");
+        let runtime = insert_live_agent(&registry, &session_id, owner.clone());
+        let conn = ConnHandle::new(107);
+        registry
+            .attach(&session_id, None, &conn, &owner, false)
+            .expect("owner attaches");
+        runtime
+            .permission_broker()
+            .expect("permission broker")
+            .register(
+                9,
+                permission_broker::permission("foreign-permission"),
+                &runtime,
+            )
+            .expect("permission request");
+        let error = registry
+            .permission_respond(
+                &session_id,
+                "foreign-permission",
+                PermissionOutcome::AllowOnce,
+                &conn,
+                &stranger,
+            )
+            .expect_err("different user must not respond");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3346,7 +3610,12 @@ mod tests {
         );
 
         let error = registry
-            .send("agent-send-failure", "prompt that cannot be sent", &owner)
+            .send(
+                "agent-send-failure",
+                "prompt that cannot be sent",
+                &owner,
+                &conn,
+            )
             .expect_err("writer must fail");
         assert_eq!(error.code, ErrorCode::Io);
         journal.flush().expect("flush prompt and error");
@@ -3443,6 +3712,7 @@ mod tests {
                 "agent-poisoned-writer",
                 "prompt with poisoned writer",
                 &owner,
+                &conn,
             )
             .expect_err("poisoned writer must reject the send");
         assert_eq!(error.code, ErrorCode::Internal);
@@ -3514,10 +3784,16 @@ mod tests {
                 "Agent",
             ))
             .expect("agent session row");
+        let conn = attach_live_agent_for_test(&runtime, "agent-closed-output", 109);
         runtime.close_output();
 
         let error = registry
-            .send("agent-closed-output", "prompt after output closed", &owner)
+            .send(
+                "agent-closed-output",
+                "prompt after output closed",
+                &owner,
+                &conn,
+            )
             .expect_err("closed output must reject an unrecordable prompt");
         assert_eq!(error.code, ErrorCode::Internal);
         assert_eq!(error.message, "Agent input could not be recorded.");
@@ -3556,6 +3832,7 @@ mod tests {
                 "Agent",
             ))
             .expect("agent session row");
+        let conn = attach_live_agent_for_test(&runtime, "agent-poisoned-stream", 110);
         let poisoned_runtime = Arc::clone(&runtime);
         std::thread::spawn(move || {
             let _guard = poisoned_runtime.stream.lock().expect("stream lock");
@@ -3569,10 +3846,11 @@ mod tests {
                 "agent-poisoned-stream",
                 "prompt after stream poison",
                 &owner,
+                &conn,
             )
             .expect_err("poisoned stream must reject an unrecordable prompt");
         assert_eq!(error.code, ErrorCode::Internal);
-        assert_eq!(error.message, "Agent input could not be recorded.");
+        assert_eq!(error.message, "Session state is unavailable.");
         assert!(written.lock().expect("written lock").is_empty());
         journal.flush().expect("flush poisoned-stream journal");
         let replayed = journal

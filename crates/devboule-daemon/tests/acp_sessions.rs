@@ -308,11 +308,18 @@ fn acp_framing_handles_partial_crlf_and_skips_malformed_lines() {
 #[test]
 fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id() {
     let _test_lock = lock_tests();
-    let test = AcpTest::new(&[]);
-    let session = test.create_session();
+    std::env::set_var("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS", "200");
+    let mut test = AcpTest::new(&[]);
+    test._env
+        .names
+        .push("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS");
+    let (session, _) = test.attached_session();
     test.client
         .session_send(&session.id, "please request permission")
         .expect("prompt");
+    test.client
+        .session_detach(&session.id)
+        .expect("detach before permission request arrives");
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         test.client
