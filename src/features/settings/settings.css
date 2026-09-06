@@ -221,9 +221,58 @@
 
 .provider-card {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 13px;
   padding: 13px 15px;
+}
+
+/* Consent and error blocks wrap to their own row under the card's main line. */
+.provider-card-block {
+  flex-basis: 100%;
+}
+
+.provider-consent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.provider-consent-command {
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+}
+
+.provider-consent-notice {
+  margin: 0;
+  color: var(--silence);
+  font-size: 12px;
+}
+
+.provider-consent-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.provider-consent-actions .provider-refresh,
+.provider-update-error .provider-refresh {
+  margin-top: 0;
+}
+
+.provider-update-error pre {
+  max-height: 160px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  color: var(--ochre-deep);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
 }
 
 .provider-mark {

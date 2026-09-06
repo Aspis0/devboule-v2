@@ -177,6 +177,10 @@ pub enum ClientMessage {
     ProvidersRefresh {
         id: u64,
     },
+    ProviderUpdate {
+        id: u64,
+        provider_id: String,
+    },
     /// Plugin-backend tenant. `method` is a capability name (`workspace.root`
     /// today). The daemon returns [`ErrorCode::Unimplemented`]; it is not a
     /// plugin backend.
@@ -216,6 +220,7 @@ impl ClientMessage {
             | Self::SessionDelete { id, .. }
             | Self::ProvidersList { id }
             | Self::ProvidersRefresh { id }
+            | Self::ProviderUpdate { id, .. }
             | Self::Invoke { id, .. } => Some(*id),
         }
     }
@@ -261,6 +266,7 @@ impl ClientMessage {
             | Self::JournalRetentionGet { .. }
             | Self::ProvidersList { .. }
             | Self::ProvidersRefresh { .. }
+            | Self::ProviderUpdate { .. }
             | Self::Invoke { .. } => None,
         }
     }
@@ -326,6 +332,13 @@ pub enum DaemonMessage {
         #[serde(default)]
         unreadable_dirs: u32,
     },
+    ProviderUpdated {
+        id: u64,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        log: String,
+    },
     Event(SessionEventEnvelope),
 }
 
@@ -372,6 +385,25 @@ pub struct ProviderInfo {
     /// Installation source: `npm`, `npx-registry`, or `native`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_channel: Option<String>,
+    /// False only for a known npm provider that is not currently installed.
+    /// The field is omitted for installed rows so older clients keep their
+    /// existing absent-means-installed interpretation.
+    #[serde(
+        default = "default_provider_installed",
+        skip_serializing_if = "is_true"
+    )]
+    pub installed: bool,
+    /// Known npm package for this provider, including not-installed rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub npm_package: Option<String>,
+}
+
+fn default_provider_installed() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -917,6 +949,8 @@ mod tests {
                 latest_version: None,
                 agent_version: None,
                 install_channel: None,
+                installed: true,
+                npm_package: None,
             }],
             unreadable_dirs: 2,
         };
@@ -957,6 +991,8 @@ mod tests {
                     latest_version: Some("1.2.4".to_string()),
                     agent_version: Some("adapter-1".to_string()),
                     install_channel: Some("native".to_string()),
+                    installed: true,
+                    npm_package: None,
                 },
                 ProviderInfo {
                     id: "pi".to_string(),
@@ -971,6 +1007,8 @@ mod tests {
                     latest_version: None,
                     agent_version: None,
                     install_channel: Some("native".to_string()),
+                    installed: true,
+                    npm_package: None,
                 },
             ],
             unreadable_dirs: 0,
@@ -1006,6 +1044,8 @@ mod tests {
                 latest_version: None,
                 agent_version: None,
                 install_channel: None,
+                installed: true,
+                npm_package: None,
             }],
             unreadable_dirs: 0,
         };
@@ -1025,6 +1065,8 @@ mod tests {
             latest_version: None,
             agent_version: None,
             install_channel: None,
+            installed: true,
+            npm_package: None,
         };
         let native_json = serde_json::to_value(&native).expect("json");
         assert_eq!(native_json["origin"], "user-binary");
@@ -1049,6 +1091,8 @@ mod tests {
             latest_version: None,
             agent_version: None,
             install_channel: None,
+            installed: true,
+            npm_package: None,
         };
         let encoded = serde_json::to_value(&wrapper).expect("json");
         assert_eq!(encoded["launchArgs"][0], "--registry=https://evil");
@@ -1066,5 +1110,94 @@ mod tests {
         let native_json = serde_json::to_value(native).expect("json");
         assert!(native_json.get("launchArgs").is_none());
         assert!(native_json.get("pickable").is_none());
+    }
+
+    #[test]
+    fn provider_update_request_and_reply_round_trip_with_camel_case_fields() {
+        let request = ClientMessage::ProviderUpdate {
+            id: 41,
+            provider_id: "codex".to_string(),
+        };
+        let request_json = serde_json::to_value(&request).expect("json");
+        assert_eq!(request_json["type"], "provider_update");
+        assert_eq!(request_json["providerId"], "codex");
+
+        let reply = DaemonMessage::ProviderUpdated {
+            id: 41,
+            ok: false,
+            exit_code: Some(7),
+            log: "npm output\nlast line".to_string(),
+        };
+        let reply_json = serde_json::to_value(&reply).expect("json");
+        assert_eq!(reply_json["type"], "provider_updated");
+        assert_eq!(reply_json["exitCode"], 7);
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(reply_json).expect("round trip"),
+            reply
+        );
+
+        let no_exit_code = serde_json::json!({
+            "type": "provider_updated",
+            "id": 42,
+            "ok": false,
+            "log": "npm was not found on PATH"
+        });
+        assert!(serde_json::to_value(DaemonMessage::ProviderUpdated {
+            id: 42,
+            ok: false,
+            exit_code: None,
+            log: "npm was not found on PATH".to_string(),
+        })
+        .expect("missing exit code json")
+        .get("exitCode")
+        .is_none());
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(no_exit_code).expect("missing exit code"),
+            DaemonMessage::ProviderUpdated {
+                id: 42,
+                ok: false,
+                exit_code: None,
+                log: "npm was not found on PATH".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn provider_info_installed_false_is_emitted_and_missing_means_true() {
+        let not_installed = ProviderInfo {
+            id: "codex".to_string(),
+            executable: String::new(),
+            acp_available: false,
+            authentication: "unknown".to_string(),
+            protocol: None,
+            origin: Some("user-binary".to_string()),
+            launch_args: None,
+            pickable: Some(false),
+            installed_version: None,
+            latest_version: Some("1.2.3".to_string()),
+            agent_version: None,
+            install_channel: Some("npm".to_string()),
+            installed: false,
+            npm_package: Some("@openai/codex".to_string()),
+        };
+        let encoded = serde_json::to_value(&not_installed).expect("json");
+        assert_eq!(encoded["installed"], false);
+        assert_eq!(encoded["npmPackage"], "@openai/codex");
+        let installed_wire = serde_json::to_value(ProviderInfo {
+            installed: true,
+            ..not_installed.clone()
+        })
+        .expect("installed json");
+        assert!(installed_wire.get("installed").is_none());
+
+        let installed: ProviderInfo = serde_json::from_value(serde_json::json!({
+            "id": "codex",
+            "executable": "codex.exe",
+            "acpAvailable": false,
+            "authentication": "unknown"
+        }))
+        .expect("older provider row");
+        assert!(installed.installed);
+        assert_eq!(installed.npm_package, None);
     }
 }

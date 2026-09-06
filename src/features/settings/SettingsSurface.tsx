@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { providersList, providersRefresh, reasonFromCause } from "../../lib/tauri";
+import { providerUpdate, providersList, providersRefresh, reasonFromCause } from "../../lib/tauri";
 import type { ProviderCatalog, ProviderInfo } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
@@ -186,6 +186,33 @@ function ProviderVersionLine({ provider }: { provider: ProviderInfo }) {
   );
 }
 
+/** A pending npm run on one provider card: what the daemon is doing right now. */
+interface ProviderNpmRun {
+  providerId: string;
+  verb: "update" | "install";
+}
+
+/** A provider held open in the consent panel, waiting for the user's Confirm. */
+interface ProviderConsent {
+  provider: ProviderInfo;
+  verb: "update" | "install";
+}
+
+/**
+ * Update applies only to npm-installed CLIs whose package is known and whose
+ * latest version differs from the installed one.
+ */
+function providerCanUpdate(provider: ProviderInfo): boolean {
+  if (provider.installChannel !== "npm") return false;
+  if (!provider.npmPackage || !provider.latestVersion) return false;
+  return provider.latestVersion !== provider.installedVersion;
+}
+
+/** Last 500 characters of an npm log; the head is noise for a failed install. */
+function logTail(log: string): string {
+  return log.length > 500 ? log.slice(-500) : log;
+}
+
 function ProvidersPanel() {
   const [catalog, setCatalog] = useState<ProviderCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -195,6 +222,36 @@ function ProvidersPanel() {
   const fetchSeqRef = useRef(0);
   // Set synchronously on click so a second click before the re-render is a no-op.
   const refreshInFlightRef = useRef(false);
+  // The one npm run the daemon is executing on this client's behalf.
+  const [npmRun, setNpmRun] = useState<ProviderNpmRun | null>(null);
+  // Per-card, dismissible failure from the last npm run.
+  const [npmFailure, setNpmFailure] = useState<{ providerId: string; text: string } | null>(null);
+  const [consent, setConsent] = useState<ProviderConsent | null>(null);
+  // Cleared in the consent effect (not at the end of confirm): a second
+  // synchronous click still sees the stale non-null consent, so the ref must
+  // stay armed until that re-render.
+  const consentInFlightRef = useRef(false);
+  const consentConfirmRef = useRef<HTMLButtonElement>(null);
+  const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    consentInFlightRef.current = false;
+    if (consent !== null) {
+      consentConfirmRef.current?.focus();
+    } else {
+      consentRestoreRef.current?.focus();
+      consentRestoreRef.current = null;
+    }
+  }, [consent]);
+
+  useEffect(() => {
+    if (consent === null) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setConsent(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [consent]);
 
   useEffect(() => {
     let cancelled = false;
@@ -239,6 +296,50 @@ function ProvidersPanel() {
       });
   }
 
+  function openConsent(
+    provider: ProviderInfo,
+    verb: "update" | "install",
+    trigger: HTMLButtonElement,
+  ) {
+    consentRestoreRef.current = trigger;
+    setConsent({ provider, verb });
+  }
+
+  function confirmConsent() {
+    if (consent === null || consentInFlightRef.current) return;
+    consentInFlightRef.current = true;
+    const { provider, verb } = consent;
+    setConsent(null);
+    setNpmFailure(null);
+    setNpmRun({ providerId: provider.id, verb });
+    // Sequence for the post-success refetch; a concurrent refresh supersedes it.
+    const seq = ++fetchSeqRef.current;
+    void providerUpdate(provider.id)
+      .then((outcome) => {
+        if (!outcome.ok) {
+          setNpmFailure({ providerId: provider.id, text: logTail(outcome.log) });
+          return;
+        }
+        // The refetch is the proof: the fresh catalog carries the new version.
+        void providersList()
+          .then((fresh) => {
+            if (seq === fetchSeqRef.current) setCatalog(fresh);
+          })
+          .catch((cause: unknown) => {
+            if (seq === fetchSeqRef.current) setError(reasonFromCause(cause));
+          });
+      })
+      .catch((cause: unknown) => {
+        setNpmFailure({ providerId: provider.id, text: reasonFromCause(cause) });
+      })
+      // Unconditional: setState on an unmounted component is a safe no-op in
+      // React 18+, and an unmount guard wedged the Refresh button once under
+      // StrictMode (see refresh() above).
+      .finally(() => {
+        setNpmRun(null);
+      });
+  }
+
   const providers = catalog?.providers ?? null;
   const unreadableDirs = catalog?.unreadableDirs ?? 0;
   return (
@@ -267,37 +368,140 @@ function ProvidersPanel() {
         </div>
       ) : (
         <>
-          <div className="provider-list" aria-busy={refreshing}>
-            {providers.map((provider) => (
-              <div className="provider-card" key={provider.id}>
-                <span className="provider-copy">
-                  <span className="provider-name">{provider.id}</span>
-                  <span className="provider-detail">{provider.executable}</span>
-                  <ProviderVersionLine provider={provider} />
-                </span>
-                <span className="provider-controls">
-                  {provider.origin === "npx-wrapper" ? (
-                    <span className="provider-status provider-status-ready">npx</span>
-                  ) : null}
-                  {provider.protocol === "acp" ? (
-                    <span className="provider-status provider-status-ready">ACP</span>
-                  ) : provider.protocol === "stream-json" ? (
-                    <span className="provider-status provider-status-ready">stream-json</span>
-                  ) : null}
-                  <span
-                    className={`provider-status ${
-                      provider.authentication === "ok"
-                        ? "provider-status-ready"
-                        : provider.authentication.startsWith("failed:")
-                          ? "provider-status-missing"
-                          : "provider-status-idle"
-                    }`}
-                  >
-                    {providerStatusText(provider)}
+          <div className="provider-list" aria-busy={refreshing || npmRun !== null}>
+            {providers.map((provider) => {
+              const isNotInstalled = provider.installed === false;
+              const runHere = npmRun?.providerId === provider.id;
+              const consentHere = consent?.provider.id === provider.id;
+              const failureHere = npmFailure?.providerId === provider.id;
+              const detail = isNotInstalled
+                ? (provider.npmPackage ?? provider.executable)
+                : provider.executable;
+              const npmCommand =
+                consent !== null && consent.provider.npmPackage
+                  ? `npm install -g ${consent.provider.npmPackage}@latest`
+                  : null;
+              return (
+                <div
+                  className="provider-card"
+                  key={provider.id}
+                  aria-busy={runHere ? "true" : undefined}
+                >
+                  <span className="provider-copy">
+                    <span className="provider-name">{provider.id}</span>
+                    {detail ? <span className="provider-detail">{detail}</span> : null}
+                    <ProviderVersionLine provider={provider} />
                   </span>
-                </span>
-              </div>
-            ))}
+                  <span className="provider-controls">
+                    {isNotInstalled ? (
+                      <span className="provider-status provider-status-idle">not installed</span>
+                    ) : (
+                      <>
+                        {provider.origin === "npx-wrapper" ? (
+                          <span className="provider-status provider-status-ready">npx</span>
+                        ) : null}
+                        {provider.protocol === "acp" ? (
+                          <span className="provider-status provider-status-ready">ACP</span>
+                        ) : provider.protocol === "stream-json" ? (
+                          <span className="provider-status provider-status-ready">stream-json</span>
+                        ) : null}
+                        <span
+                          className={`provider-status ${
+                            provider.authentication === "ok"
+                              ? "provider-status-ready"
+                              : provider.authentication.startsWith("failed:")
+                                ? "provider-status-missing"
+                                : "provider-status-idle"
+                          }`}
+                        >
+                          {providerStatusText(provider)}
+                        </span>
+                      </>
+                    )}
+                    {runHere ? (
+                      <button
+                        className={`provider-refresh ${
+                          npmRun.verb === "install" ? "provider-install" : "provider-update"
+                        }`}
+                        type="button"
+                        disabled
+                      >
+                        {npmRun.verb === "install" ? "Installing…" : "Updating…"}
+                      </button>
+                    ) : (
+                      <>
+                        {!isNotInstalled && providerCanUpdate(provider) ? (
+                          <button
+                            className="provider-refresh provider-update"
+                            type="button"
+                            disabled={npmRun !== null}
+                            onClick={(event) =>
+                              openConsent(provider, "update", event.currentTarget)
+                            }
+                          >
+                            Update
+                          </button>
+                        ) : null}
+                        {isNotInstalled && provider.npmPackage ? (
+                          <button
+                            className="provider-refresh provider-install"
+                            type="button"
+                            disabled={npmRun !== null}
+                            onClick={(event) =>
+                              openConsent(provider, "install", event.currentTarget)
+                            }
+                          >
+                            Install
+                          </button>
+                        ) : null}
+                      </>
+                    )}
+                  </span>
+                  {consentHere ? (
+                    <div
+                      className="provider-card-block provider-consent"
+                      role="group"
+                      aria-label={`Confirm ${consent.verb} for ${provider.id}`}
+                    >
+                      <div className="provider-consent-command">{npmCommand}</div>
+                      <p className="provider-consent-notice">
+                        This changes your global npm installation; running sessions keep the old
+                        version until they are restarted.
+                      </p>
+                      <div className="provider-consent-actions">
+                        <button
+                          type="button"
+                          className="provider-refresh provider-consent-cancel"
+                          onClick={() => setConsent(null)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          ref={consentConfirmRef}
+                          type="button"
+                          className="provider-refresh provider-consent-confirm"
+                          onClick={confirmConsent}
+                        >
+                          Confirm
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {failureHere ? (
+                    <div className="provider-card-block provider-update-error">
+                      <pre>{npmFailure.text}</pre>
+                      <button
+                        type="button"
+                        className="provider-refresh provider-update-error-dismiss"
+                        onClick={() => setNpmFailure(null)}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
           {unreadableDirs > 0 ? (
             <p className="provider-empty" role="status">

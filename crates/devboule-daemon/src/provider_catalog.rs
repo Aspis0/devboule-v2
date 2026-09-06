@@ -115,6 +115,13 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
     },
 ];
 
+pub(crate) fn known_npm_package(id: &str) -> Option<&'static str> {
+    KNOWN_AGENTS
+        .iter()
+        .find(|agent| agent.id == id)
+        .and_then(|agent| agent.npm_package)
+}
+
 // Test-only provider: the integration stub binary. It resolves only when its
 // build directory is on PATH, so end-user machines never list it; release
 // builds drop the row entirely so a shipped daemon cannot discover it. The
@@ -213,6 +220,9 @@ impl ResolvedLaunch {
 pub struct InstalledAgent {
     pub id: String,
     pub aliases: &'static [&'static str],
+    /// A synthetic known npm row is visible to provider settings but must
+    /// never be treated as a launchable session provider.
+    pub installed: bool,
     pub executable: PathBuf,
     /// Arguments inserted between `executable` and ACP/user args.
     /// Empty for a native binary; the package script for an npm cmd-shim.
@@ -286,6 +296,7 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
             Some(InstalledAgent {
                 id: spec.id.to_string(),
                 aliases: spec.aliases,
+                installed: true,
                 executable: launch.program,
                 prefix_args: launch.prefix_args,
                 acp_command,
@@ -373,6 +384,9 @@ fn count_unreadable_dirs(directories: &[PathBuf]) -> u32 {
 /// Chat dialect this installed agent can speak, if any.
 /// An agent with both launches is offered as ACP: ACP is the road, stream-json the exception.
 pub fn chat_protocol(agent: &InstalledAgent) -> Option<&'static str> {
+    if !agent.installed {
+        return None;
+    }
     if agent.acp_command.is_some() {
         Some("acp")
     } else if agent.stream_json_command.is_some() {
@@ -396,7 +410,21 @@ pub fn first_acp_available() -> Option<InstalledAgent> {
 
 /// Return the discovered provider with this catalog id, if it is on PATH.
 pub fn find_available(id: &str) -> Option<InstalledAgent> {
-    discover().agents.into_iter().find(|agent| agent.id == id)
+    find_available_in_paths(id, &path_directories_for_available())
+}
+
+fn path_directories_for_available() -> Vec<PathBuf> {
+    match std::env::var_os("PATH") {
+        Some(paths) => std::env::split_paths(&paths).collect(),
+        None => Vec::new(),
+    }
+}
+
+pub(crate) fn find_available_in_paths(id: &str, directories: &[PathBuf]) -> Option<InstalledAgent> {
+    discover_in_paths(directories)
+        .agents
+        .into_iter()
+        .find(|agent| agent.installed && agent.id == id)
 }
 
 #[cfg(feature = "server")]
@@ -423,11 +451,55 @@ pub(crate) fn discover_catalog_in_paths(
     directories: &[PathBuf],
 ) -> ProviderDiscovery {
     let local = discover_in_paths(directories);
-    let registry = crate::registry::load_npx_entries(fetch, cache_dir)
+    let registry_entries = crate::registry::load_npx_entries(fetch, cache_dir);
+    let local = add_missing_npm_rows(local, &registry_entries);
+    let registry = registry_entries
         .into_iter()
         .map(|entry| registry_agent(directories, &local, entry))
         .collect();
     merge_native_beats_registry(local, registry)
+}
+
+#[cfg(feature = "server")]
+fn add_missing_npm_rows(
+    mut local: ProviderDiscovery,
+    registry: &[crate::registry::RegistryNpxEntry],
+) -> ProviderDiscovery {
+    for spec in KNOWN_AGENTS
+        .iter()
+        .filter(|spec| spec.npm_package.is_some())
+    {
+        let local_has_row = local.agents.iter().any(|agent| agent.id == spec.id);
+        let registry_covers_row = registry.iter().any(|entry| {
+            entry.id.eq_ignore_ascii_case(spec.id)
+                || spec
+                    .aliases
+                    .iter()
+                    .any(|alias| entry.id.eq_ignore_ascii_case(alias))
+        });
+        if local_has_row || registry_covers_row {
+            continue;
+        }
+        let package = spec.npm_package.expect("filtered npm package");
+        local.agents.push(InstalledAgent {
+            id: spec.id.to_string(),
+            aliases: spec.aliases,
+            installed: false,
+            executable: PathBuf::new(),
+            prefix_args: Vec::new(),
+            acp_command: None,
+            stream_json_command: None,
+            authentication: AuthenticationStatus::Unknown,
+            origin: ProviderOrigin::UserBinary,
+            launch_args: None,
+            pickable: Some(false),
+            installed_version: None,
+            latest_version: crate::registry::cached_latest_npm_version(package),
+            install_channel: InstallChannel::Npm,
+            npm_package: Some(package),
+        });
+    }
+    local
 }
 
 #[cfg(feature = "server")]
@@ -442,6 +514,7 @@ fn registry_agent(
     InstalledAgent {
         id,
         aliases: &[],
+        installed: true,
         executable: PathBuf::from(&package),
         prefix_args: Vec::new(),
         acp_command,
@@ -531,10 +604,20 @@ pub fn find_in_catalog(
     fetch: &dyn crate::registry::RegistryFetch,
     cache_dir: &Path,
 ) -> Option<InstalledAgent> {
-    discover_catalog(fetch, cache_dir)
+    find_in_catalog_in_paths(id, fetch, cache_dir, &path_directories())
+}
+
+#[cfg(feature = "server")]
+pub(crate) fn find_in_catalog_in_paths(
+    id: &str,
+    fetch: &dyn crate::registry::RegistryFetch,
+    cache_dir: &Path,
+    directories: &[PathBuf],
+) -> Option<InstalledAgent> {
+    discover_catalog_in_paths(fetch, cache_dir, directories)
         .agents
         .into_iter()
-        .find(|agent| agent.id == id)
+        .find(|agent| agent.installed && agent.id == id)
 }
 
 pub(crate) fn executable_file_exists(path: &Path) -> bool {
@@ -637,6 +720,14 @@ fn resolve_launch_command_in_paths(paths: &[PathBuf], command: &str) -> Option<R
         return Some(unwrapped);
     }
     Some(ResolvedLaunch::program(program))
+}
+
+/// Resolve npm through the same direct PATH/shim path used for provider
+/// commands. The returned pair is CreateProcess's program and argv prefix;
+/// no shell receives the update command.
+#[cfg(feature = "server")]
+pub(crate) fn resolve_npm_command(paths: &[PathBuf]) -> Option<(PathBuf, Vec<String>)> {
+    resolve_launch_command_in_paths(paths, "npm").map(|launch| (launch.program, launch.prefix_args))
 }
 
 /// npm's `cmd-shim` writes a batch that assigns `_prog` to `node` (or a
@@ -1764,6 +1855,47 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
 }"#
             .to_string())
         }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn missing_known_npm_rows_are_settings_only_and_never_session_resolvable() {
+        let cache = temporary_directory("synthetic-npm-cache");
+        let empty_path = temporary_directory("synthetic-npm-path");
+        fs::create_dir_all(&empty_path).expect("empty PATH directory");
+        let catalog = super::discover_catalog_in_paths(
+            &FixtureFetch,
+            &cache,
+            std::slice::from_ref(&empty_path),
+        );
+        let codex = catalog
+            .agents
+            .iter()
+            .find(|agent| agent.id == "codex")
+            .expect("known codex npm row");
+        assert!(!codex.installed);
+        assert!(codex.executable.as_os_str().is_empty());
+        assert!(codex.acp_command.is_none());
+        assert_eq!(super::chat_protocol(codex), None);
+        assert_eq!(codex.pickable, Some(false));
+        assert_eq!(codex.install_channel, super::InstallChannel::Npm);
+        assert_eq!(codex.npm_package, Some("@openai/codex"));
+        assert!(
+            super::find_available_in_paths("codex", std::slice::from_ref(&empty_path)).is_none(),
+            "find_available must not return a synthetic row"
+        );
+        assert!(
+            super::find_in_catalog_in_paths(
+                "codex",
+                &FixtureFetch,
+                &cache,
+                std::slice::from_ref(&empty_path)
+            )
+            .is_none(),
+            "find_in_catalog must not return a synthetic row to session creation"
+        );
+        let _ = fs::remove_dir_all(cache);
+        let _ = fs::remove_dir_all(empty_path);
     }
 
     #[cfg(feature = "server")]

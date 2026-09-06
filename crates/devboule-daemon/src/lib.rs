@@ -28,6 +28,8 @@ mod paths;
 mod process_tree;
 pub mod provider_catalog;
 #[cfg(feature = "server")]
+mod provider_update;
+#[cfg(feature = "server")]
 mod registry;
 #[cfg(feature = "server")]
 mod screen;
@@ -64,11 +66,13 @@ pub use journal::{
 pub use paths::RuntimePaths;
 pub use process_tree::JobObject;
 #[cfg(feature = "server")]
+pub use provider_update::{NpmInstallResult, NpmInstallRunner, ProcessNpmInstallRunner};
+#[cfg(feature = "server")]
 pub use screen::{
     render_ansi, Screen, ScreenSnapshot, SnapshotCursor, SnapshotCursorShape, MAX_TITLE_CHARS,
 };
 #[cfg(feature = "server")]
-pub use server::run;
+pub use server::{run, ServerState};
 #[cfg(feature = "server")]
 pub use session::{
     write_test_pty_command, PtyCommand, COALESCE_FLUSH, COALESCE_MAX_BYTES,

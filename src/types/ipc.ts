@@ -393,6 +393,24 @@ export interface ProviderInfo {
   agentVersion?: string | null;
   /** How the CLI is installed; null when the daemon could not determine it. */
   installChannel?: "npm" | "npx-registry" | "native" | null;
+  /**
+   * Whether the CLI is installed locally. ABSENT means true; `false` appears
+   * only on synthetic "known but not installed" rows the daemon builds from its
+   * npm-package table. Those rows carry no protocol, so the chat picker
+   * excludes them already.
+   */
+  installed?: boolean | null;
+  /** npm package the row maps to, when known; the update/install consent shows it verbatim. */
+  npmPackage?: string | null;
+}
+
+/** Result of `provider_update`: the daemon ran `npm install -g <package>@latest` to completion. */
+export interface ProviderUpdateOutcome {
+  ok: boolean;
+  /** npm's exit code; null when npm never ran. */
+  exitCode?: number | null;
+  /** Full npm output; the UI shows only the tail. */
+  log: string;
 }
 
 export interface ProviderCatalog {

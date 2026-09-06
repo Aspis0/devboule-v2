@@ -23,6 +23,7 @@ use crate::lock::SingleInstanceLock;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
+use crate::provider_update::{NpmInstallRunner, ProcessNpmInstallRunner};
 use crate::session::{ConnHandle, PendingEvent, SessionRegistry};
 use crate::transport::{self, Listener};
 use crate::IDLE_SHUTDOWN_GRACE;
@@ -69,6 +70,20 @@ pub struct ServerState {
     provider_versions: Mutex<HashMap<String, String>>,
     /// Version obtained by an explicit native `--version` refresh probe.
     provider_cli_versions: Mutex<HashMap<String, (String, CliVersionFingerprint)>>,
+    /// The only process-launch seam for provider updates. Tests replace this
+    /// runner so no npm or network is ever started by the test suite.
+    npm_install_runner: Arc<dyn NpmInstallRunner>,
+    #[cfg(test)]
+    provider_update_catalog: Mutex<Option<crate::provider_catalog::ProviderDiscovery>>,
+    #[cfg(test)]
+    provider_update_npm_command: Mutex<Option<ProviderUpdateNpmCommand>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+enum ProviderUpdateNpmCommand {
+    Resolved(std::path::PathBuf, Vec<String>),
+    Missing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +122,18 @@ impl ServerState {
     }
 
     pub fn with_paths(instance_id: String, paths: RuntimePaths) -> Result<Arc<Self>, DaemonError> {
+        Self::with_paths_and_npm_install_runner(
+            instance_id,
+            paths,
+            Arc::new(ProcessNpmInstallRunner),
+        )
+    }
+
+    pub fn with_paths_and_npm_install_runner(
+        instance_id: String,
+        paths: RuntimePaths,
+        npm_install_runner: Arc<dyn NpmInstallRunner>,
+    ) -> Result<Arc<Self>, DaemonError> {
         let _ = paths.ensure_dir();
         let process_job = Arc::new(JobObject::new()?);
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
@@ -129,6 +156,11 @@ impl ServerState {
             provider_health: Mutex::new(HashMap::new()),
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
+            npm_install_runner,
+            #[cfg(test)]
+            provider_update_catalog: Mutex::new(None),
+            #[cfg(test)]
+            provider_update_npm_command: Mutex::new(None),
         });
         let state_for_transitions = Arc::downgrade(&state);
         state.sessions.set_transition_sink(Arc::new(move |owner| {
@@ -376,6 +408,42 @@ impl ServerState {
             .unwrap_or_else(|error| error.into_inner());
         let (version, cached) = guard.get(provider_id)?;
         cli_version_cache_is_current(cached, current.as_ref()).then(|| version.clone())
+    }
+
+    fn invalidate_provider_update_caches(&self, provider_id: &str, package: &str) {
+        self.provider_cli_versions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(provider_id);
+        // The executable fingerprint and npm latest caches are both dropped:
+        // the former forces the next --version observation to be fresh, while
+        // the latter prevents a stale registry value from hiding the update.
+        crate::registry::invalidate_latest_npm_version(package);
+    }
+
+    #[cfg(test)]
+    fn set_provider_update_catalog(&self, discovery: crate::provider_catalog::ProviderDiscovery) {
+        *self
+            .provider_update_catalog
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(discovery);
+    }
+
+    #[cfg(test)]
+    fn set_provider_update_npm_command(&self, program: std::path::PathBuf, prefix: Vec<String>) {
+        *self
+            .provider_update_npm_command
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(ProviderUpdateNpmCommand::Resolved(program, prefix));
+    }
+
+    #[cfg(test)]
+    fn set_provider_update_npm_missing(&self) {
+        *self
+            .provider_update_npm_command
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(ProviderUpdateNpmCommand::Missing);
     }
 
     fn status_body(&self, request_id: u64) -> DaemonMessage {
@@ -967,6 +1035,26 @@ fn dispatch(
         }
         return None;
     }
+    // Deliberately do not serialize concurrent updates: this pipe is single-user,
+    // the frontend runs one npm update at a time, and npm's global lockfile
+    // serializes racers. Revisit if the daemon becomes multi-client.
+    if let ClientMessage::ProviderUpdate { id, provider_id } = request {
+        let worker_state = Arc::clone(state);
+        let outbound = Arc::clone(&conn.outbound);
+        let failure_outbound = Arc::clone(&outbound);
+        let spawn = std::thread::Builder::new()
+            .name("daemon-provider-update".to_string())
+            .spawn(move || {
+                let reply = provider_update_reply(&worker_state, id, &provider_id);
+                outbound.enqueue_reply(reply);
+            });
+        if spawn.is_err() {
+            failure_outbound.enqueue_reply(DaemonMessage::Error(
+                WireError::new(ErrorCode::Io, "could not start provider update").with_id(id),
+            ));
+        }
+        return None;
+    }
     Some(dispatch_immediate(
         state,
         owner,
@@ -1049,6 +1137,9 @@ fn dispatch_immediate(
         ClientMessage::ProvidersRefresh { .. } => {
             unreachable!("ProvidersRefresh is dispatched by the async wrapper")
         }
+        ClientMessage::ProviderUpdate { .. } => {
+            unreachable!("ProviderUpdate is dispatched by the async wrapper")
+        }
         ClientMessage::Invoke { id, method, .. } => DaemonMessage::Error(
             WireError::new(
                 ErrorCode::Unimplemented,
@@ -1102,10 +1193,10 @@ fn refresh_provider_catalog(
 
     let mut npm_packages = HashSet::new();
     let mut latest_fetches = Vec::new();
-    for agent in &local.agents {
-        let Some(package) = agent.npm_package else {
-            continue;
-        };
+    for package in crate::provider_catalog::KNOWN_AGENTS
+        .iter()
+        .filter_map(|agent| agent.npm_package)
+    {
         if !npm_packages.insert(package) {
             continue;
         }
@@ -1178,13 +1269,150 @@ fn wire_provider(
         acp_available: agent.acp_command.is_some(),
         authentication,
         protocol: crate::provider_catalog::chat_protocol(&agent).map(str::to_string),
-        origin: Some(agent.origin.as_wire().to_string()),
+        origin: agent.installed.then(|| agent.origin.as_wire().to_string()),
         launch_args: agent.launch_args,
         pickable: agent.pickable,
         installed_version,
         latest_version,
         agent_version: state.provider_version(&agent.id),
         install_channel: Some(agent.install_channel.as_wire().to_string()),
+        installed: agent.installed,
+        npm_package: agent.npm_package.map(str::to_string),
+    }
+}
+
+fn provider_update_reply(state: &Arc<ServerState>, id: u64, provider_id: &str) -> DaemonMessage {
+    #[cfg(test)]
+    let discovery_override = state
+        .provider_update_catalog
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let agents: Vec<crate::provider_catalog::InstalledAgent> = if let Some(discovery) = {
+        #[cfg(test)]
+        {
+            discovery_override
+        }
+        #[cfg(not(test))]
+        {
+            None::<crate::provider_catalog::ProviderDiscovery>
+        }
+    } {
+        discovery.agents
+    } else {
+        crate::provider_catalog::discover_catalog(
+            &crate::registry::CdnRegistryFetch,
+            state.sessions.runtime_dir(),
+        )
+        .agents
+    };
+    let agent = agents.into_iter().find(|agent| agent.id == provider_id);
+    let Some(agent) = agent else {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Unknown provider '{provider_id}'."),
+            )
+            .with_id(id),
+        );
+    };
+
+    match agent.install_channel {
+        crate::provider_catalog::InstallChannel::Native => {
+            return DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "Provider '{provider_id}' uses a native installation; npm updates are unavailable for native providers."
+                    ),
+                )
+                .with_id(id),
+            );
+        }
+        crate::provider_catalog::InstallChannel::NpxRegistry => {
+            return DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "Provider '{provider_id}' is an npx-registry wrapper; update its registry entry instead of installing it globally."
+                    ),
+                )
+                .with_id(id),
+            );
+        }
+        crate::provider_catalog::InstallChannel::Npm => {}
+    }
+    let Some(package) = agent.npm_package else {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "Provider '{provider_id}' has no known npm package and cannot be updated with npm."
+                ),
+            )
+            .with_id(id),
+        );
+    };
+    if crate::provider_catalog::known_npm_package(provider_id) != Some(package) {
+        return DaemonMessage::Error(
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Provider '{provider_id}' is not a known npm provider row."),
+            )
+            .with_id(id),
+        );
+    }
+
+    let npm_command = {
+        #[cfg(test)]
+        {
+            match state
+                .provider_update_npm_command
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+            {
+                Some(ProviderUpdateNpmCommand::Resolved(program, prefix_args)) => {
+                    Some((program, prefix_args))
+                }
+                Some(ProviderUpdateNpmCommand::Missing) => None,
+                None => crate::provider_catalog::resolve_npm_command(
+                    &crate::provider_catalog::path_directories(),
+                ),
+            }
+        }
+        #[cfg(not(test))]
+        {
+            crate::provider_catalog::resolve_npm_command(
+                &crate::provider_catalog::path_directories(),
+            )
+        }
+    };
+    let Some((program, prefix_args)) = npm_command else {
+        return DaemonMessage::ProviderUpdated {
+            id,
+            ok: false,
+            exit_code: None,
+            log: "npm was not found on PATH; install Node.js/npm and try again.".to_string(),
+        };
+    };
+    let args = vec![
+        "install".to_string(),
+        "-g".to_string(),
+        format!("{package}@latest"),
+    ];
+    let result = state
+        .npm_install_runner
+        .run(&program, &prefix_args, &args, &state.process_job);
+    let ok = result.exit_code == Some(0);
+    if ok {
+        state.invalidate_provider_update_caches(provider_id, package);
+    }
+    DaemonMessage::ProviderUpdated {
+        id,
+        ok,
+        exit_code: result.exit_code,
+        log: crate::provider_update::bounded_log(result.log.as_bytes()),
     }
 }
 
@@ -1792,6 +2020,14 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
         DaemonMessage::JournalRetention { retention, .. } => {
             DaemonMessage::JournalRetention { id, retention }
         }
+        DaemonMessage::ProviderUpdated {
+            ok, exit_code, log, ..
+        } => DaemonMessage::ProviderUpdated {
+            id,
+            ok,
+            exit_code,
+            log,
+        },
         DaemonMessage::Error(error) => DaemonMessage::Error(error.with_id(id)),
         other => other,
     }
@@ -2008,9 +2244,400 @@ mod tests {
         assert_eq!(id, 11);
         for provider in &providers {
             assert!(!provider.id.is_empty());
-            assert!(!provider.executable.is_empty());
             assert_eq!(provider.authentication, "unknown");
+            if provider.installed {
+                assert!(!provider.executable.is_empty());
+            } else {
+                assert!(provider.executable.is_empty());
+                assert!(!provider.acp_available);
+                assert_eq!(provider.protocol, None);
+                assert_eq!(provider.pickable, Some(false));
+                assert!(provider.npm_package.is_some());
+            }
         }
+    }
+
+    struct RecordingNpmRunner {
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+        result: crate::provider_update::NpmInstallResult,
+    }
+
+    impl NpmInstallRunner for RecordingNpmRunner {
+        fn run(
+            &self,
+            _program: &std::path::Path,
+            _prefix_args: &[String],
+            args: &[String],
+            _job: &JobObject,
+        ) -> crate::provider_update::NpmInstallResult {
+            self.calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(args.to_vec());
+            self.result.clone()
+        }
+    }
+
+    fn update_test_agent(
+        id: &str,
+        package: Option<&'static str>,
+        installed: bool,
+        install_channel: crate::provider_catalog::InstallChannel,
+        executable: std::path::PathBuf,
+    ) -> crate::provider_catalog::InstalledAgent {
+        crate::provider_catalog::InstalledAgent {
+            id: id.to_string(),
+            aliases: &[],
+            installed,
+            executable,
+            prefix_args: Vec::new(),
+            acp_command: None,
+            stream_json_command: None,
+            authentication: crate::provider_catalog::AuthenticationStatus::Unknown,
+            origin: crate::provider_catalog::ProviderOrigin::UserBinary,
+            launch_args: None,
+            pickable: None,
+            installed_version: None,
+            latest_version: None,
+            install_channel,
+            npm_package: package,
+        }
+    }
+
+    fn wait_for_update_reply(conn: &ConnHandle) -> DaemonMessage {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(reply) = conn.outbound.pull_replies().pop_front() {
+                return reply;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "provider update worker did not reply"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn provider_update_dispatches_to_fake_runner_and_invalidates_both_version_caches() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-provider-update-test-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        std::fs::create_dir_all(&path).expect("runtime directory");
+        let executable = path.join("codex.cmd");
+        std::fs::write(&executable, b"shim").expect("fake executable");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = Arc::new(RecordingNpmRunner {
+            calls: Arc::clone(&calls),
+            result: crate::provider_update::NpmInstallResult {
+                exit_code: Some(0),
+                log: "npm stdout\nnpm stderr".to_string(),
+            },
+        });
+        let state = ServerState::with_paths_and_npm_install_runner(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+            runner,
+        )
+        .expect("state");
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "codex",
+                Some("@openai/codex"),
+                true,
+                crate::provider_catalog::InstallChannel::Npm,
+                executable.clone(),
+            )],
+            unreadable_dirs: 0,
+        });
+        state.set_provider_update_npm_command(std::path::PathBuf::from(r"C:\fake\npm.cmd"), vec![]);
+        let fingerprint = executable_fingerprint(&executable).expect("fingerprint");
+        state.record_provider_cli_version("codex", "1.0.0", fingerprint);
+        crate::registry::invalidate_latest_npm_version("@openai/codex");
+        struct FakeNpmVersion;
+        impl crate::registry::NpmVersionFetch for FakeNpmVersion {
+            fn latest(&self, _package: &str) -> Result<String, String> {
+                Ok("9.9.9".to_string())
+            }
+        }
+        assert_eq!(
+            crate::registry::load_latest_npm_version(&FakeNpmVersion, "@openai/codex", true),
+            Some("9.9.9".to_string())
+        );
+        assert_eq!(
+            state.provider_cli_version("codex", &executable),
+            Some("1.0.0".to_string())
+        );
+
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(42);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 43,
+                provider_id: "codex".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        assert_eq!(
+            wait_for_update_reply(&conn),
+            DaemonMessage::ProviderUpdated {
+                id: 43,
+                ok: true,
+                exit_code: Some(0),
+                log: "npm stdout\nnpm stderr".to_string(),
+            }
+        );
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            &[vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "@openai/codex@latest".to_string()
+            ]]
+        );
+        assert_eq!(
+            state.provider_cli_version("codex", &executable),
+            None,
+            "successful update must drop the native --version cache entry"
+        );
+        assert_eq!(
+            crate::registry::cached_latest_npm_version("@openai/codex"),
+            None,
+            "successful update must drop the npm latest cache entry"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn provider_update_failure_preserves_both_version_caches() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-provider-update-failure-test-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        std::fs::create_dir_all(&path).expect("runtime directory");
+        let package = "@qwen-code/qwen-code";
+        crate::registry::reset_npm_version_cache(package);
+        let executable = path.join("qwen.cmd");
+        std::fs::write(&executable, b"shim").expect("fake executable");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = Arc::new(RecordingNpmRunner {
+            calls: Arc::clone(&calls),
+            result: crate::provider_update::NpmInstallResult {
+                exit_code: Some(1),
+                log: "npm failed".to_string(),
+            },
+        });
+        let state = ServerState::with_paths_and_npm_install_runner(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+            runner,
+        )
+        .expect("state");
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "qwen",
+                Some(package),
+                true,
+                crate::provider_catalog::InstallChannel::Npm,
+                executable.clone(),
+            )],
+            unreadable_dirs: 0,
+        });
+        state.set_provider_update_npm_command(std::path::PathBuf::from(r"C:\fake\npm.cmd"), vec![]);
+        let fingerprint = executable_fingerprint(&executable).expect("fingerprint");
+        state.record_provider_cli_version("qwen", "2.0.0", fingerprint);
+        struct FakeNpmVersion;
+        impl crate::registry::NpmVersionFetch for FakeNpmVersion {
+            fn latest(&self, _package: &str) -> Result<String, String> {
+                Ok("8.8.8".to_string())
+            }
+        }
+        assert_eq!(
+            crate::registry::load_latest_npm_version(&FakeNpmVersion, package, true),
+            Some("8.8.8".to_string())
+        );
+
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(50);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 51,
+                provider_id: "qwen".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        assert_eq!(
+            wait_for_update_reply(&conn),
+            DaemonMessage::ProviderUpdated {
+                id: 51,
+                ok: false,
+                exit_code: Some(1),
+                log: "npm failed".to_string(),
+            }
+        );
+        assert_eq!(
+            state.provider_cli_version("qwen", &executable),
+            Some("2.0.0".to_string()),
+            "failed update must preserve the --version cache entry"
+        );
+        assert_eq!(
+            crate::registry::cached_latest_npm_version(package),
+            Some("8.8.8".to_string()),
+            "failed update must preserve the npm latest cache entry"
+        );
+        crate::registry::reset_npm_version_cache(package);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn provider_update_refuses_native_even_when_a_package_is_known() {
+        let state = state();
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "claude",
+                Some("@anthropic-ai/claude-code"),
+                true,
+                crate::provider_catalog::InstallChannel::Native,
+                std::path::PathBuf::from(r"C:\Program Files\claude.exe"),
+            )],
+            unreadable_dirs: 0,
+        });
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(44);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 45,
+                provider_id: "claude".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        let DaemonMessage::Error(error) = wait_for_update_reply(&conn) else {
+            panic!("native provider update must return an InvalidRequest");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("native installation"));
+    }
+
+    #[test]
+    fn provider_update_refuses_the_native_debug_stub_before_package_lookup() {
+        let state = state();
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "devboule-acp-stub",
+                None,
+                true,
+                crate::provider_catalog::InstallChannel::Native,
+                std::path::PathBuf::from(r"C:\devboule-acp-stub.exe"),
+            )],
+            unreadable_dirs: 0,
+        });
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(46);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 47,
+                provider_id: "devboule-acp-stub".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        let DaemonMessage::Error(error) = wait_for_update_reply(&conn) else {
+            panic!("native debug stub update must return an InvalidRequest");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("native installation"));
+    }
+
+    #[test]
+    fn provider_update_reports_missing_npm_without_invoking_the_runner() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-provider-update-missing-npm-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = Arc::new(RecordingNpmRunner {
+            calls: Arc::clone(&calls),
+            result: crate::provider_update::NpmInstallResult {
+                exit_code: Some(0),
+                log: "must not run".to_string(),
+            },
+        });
+        let state = ServerState::with_paths_and_npm_install_runner(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+            runner,
+        )
+        .expect("state");
+        state.set_provider_update_catalog(crate::provider_catalog::ProviderDiscovery {
+            agents: vec![update_test_agent(
+                "codex",
+                Some("@openai/codex"),
+                false,
+                crate::provider_catalog::InstallChannel::Npm,
+                std::path::PathBuf::new(),
+            )],
+            unreadable_dirs: 0,
+        });
+        state.set_provider_update_npm_missing();
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(48);
+        assert!(dispatch(
+            &state,
+            &owner,
+            ClientMessage::ProviderUpdate {
+                id: 49,
+                provider_id: "codex".to_string(),
+            },
+            &conn,
+            false,
+            false,
+            false,
+        )
+        .is_none());
+        assert_eq!(
+            wait_for_update_reply(&conn),
+            DaemonMessage::ProviderUpdated {
+                id: 49,
+                ok: false,
+                exit_code: None,
+                log: "npm was not found on PATH; install Node.js/npm and try again.".to_string(),
+            }
+        );
+        assert!(calls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty());
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]

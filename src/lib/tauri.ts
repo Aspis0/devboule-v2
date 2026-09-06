@@ -17,6 +17,7 @@ import type {
   PluginInventory,
   Project,
   ProviderCatalog,
+  ProviderUpdateOutcome,
   ResumeResult,
   Session,
   SessionEvent,
@@ -52,6 +53,7 @@ type CommandArgs = {
   sessions_unwatch: undefined;
   providers_list: undefined;
   providers_refresh: undefined;
+  provider_update: { providerId: string };
   oracle_status: undefined;
   oracle_workspace_get: undefined;
   oracle_workspace_set: { path: string };
@@ -101,6 +103,7 @@ type CommandResults = {
   sessions_unwatch: void;
   providers_list: ProviderCatalog;
   providers_refresh: ProviderCatalog;
+  provider_update: ProviderUpdateOutcome;
   oracle_status: OracleIndexStatus;
   oracle_workspace_get: OracleWorkspace;
   oracle_workspace_set: OracleWorkspace;
@@ -225,6 +228,13 @@ export const sessionsUnwatch = () => invokeTyped("sessions_unwatch");
 export const providersList = () => invokeTyped("providers_list");
 /** Same catalog as `providersList`, but re-probed (up to ~10s: skips the npx-registry TTL). */
 export const providersRefresh = () => invokeTyped("providers_refresh");
+/**
+ * Runs `npm install -g <package>@latest` inside the daemon for one npm-installed
+ * provider. Minutes-long: the promise settles only when npm finishes. The
+ * daemon refuses non-npm channels with a CommandError.
+ */
+export const providerUpdate = (providerId: string) =>
+  invokeTyped("provider_update", { providerId });
 export const oracleStatus = () => invokeTyped("oracle_status");
 export const oracleWorkspaceGet = () => invokeTyped("oracle_workspace_get");
 export const oracleWorkspaceSet = (path: string) => invokeTyped("oracle_workspace_set", { path });

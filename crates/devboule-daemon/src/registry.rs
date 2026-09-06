@@ -408,6 +408,16 @@ pub(crate) fn cached_latest_npm_version(package: &str) -> Option<String> {
     (fetched_at.elapsed() < NPM_MEMORY_TTL).then(|| version.clone())
 }
 
+/// Forget the cached npm metadata for one package. Called after a
+/// successful in-app update so the next list/refresh re-reads reality
+/// instead of serving a pre-update "latest".
+pub(crate) fn invalidate_latest_npm_version(package: &str) {
+    npm_version_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(package);
+}
+
 /// Load npm metadata, optionally bypassing the six-hour in-process cache.
 pub(crate) fn load_latest_npm_version(
     fetch: &dyn NpmVersionFetch,
