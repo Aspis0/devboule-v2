@@ -99,8 +99,7 @@ export async function loadRepositoryLayers(
   loadPage: FilesPageLoader = oracleFiles,
   signal?: AbortSignal,
 ): Promise<RepositoryLayerResult> {
-  // DesignHost.loadDocument has no signal parameter yet. Cancellable callers can stop
-  // between page requests here; DesignSurface's existing active flag guards late results.
+  // oracle_files has no cancellation hook, so cancellation is observed between page requests.
   const componentFiles: Array<{ file: IndexedFile; kind: DesignLayerKind }> = [];
 
   for (let page = 1; page <= MAX_ORACLE_FILE_PAGES; page += 1) {
@@ -119,12 +118,9 @@ export async function loadRepositoryLayers(
 
     componentFiles.push(...componentFilesFrom(files));
 
-    // A full page means there may be more files. Only call the result partial when
-    // the layer cap actually truncates the list or more files may still exist.
-    if (
-      componentFiles.length > MAX_DESIGN_LAYERS ||
-      (componentFiles.length === MAX_DESIGN_LAYERS && files.length === ORACLE_FILE_PAGE_SIZE)
-    ) {
+    // A full or oversized page may have more files. Only call the result partial when
+    // the layer cap actually truncates the list.
+    if (componentFiles.length > MAX_DESIGN_LAYERS) {
       return {
         layers: componentFiles
           .slice(0, MAX_DESIGN_LAYERS)

@@ -1,7 +1,7 @@
 # Design surface
 
-A chat grounded in the repository, driving a real ACP agent that writes in the active
-worktree, with a canvas that renders what the agent produced. It is not an editor: you
+A chat grounded in the repository, driving a real ACP agent that writes in the first
+workspace it finds, with a canvas that renders what the agent produced. It is not an editor: you
 can look and point, not drag.
 
 ## The host contract
@@ -14,11 +14,11 @@ keep accurate.
 
 `App.tsx` picks a host at mount by asking what actually exists:
 
-| Host              | Chosen when                                  | Capabilities                          |
-| ----------------- | -------------------------------------------- | ------------------------------------- |
-| `agentHost`       | Oracle can answer **and** a workspace exists | load, generate                        |
-| `oracleHost`      | Oracle can answer, no workspace              | load only — view-only by construction |
-| demo (`mockData`) | otherwise                                    | load, save (of a fixture)             |
+| Host              | Chosen when                                  | Capabilities                            |
+| ----------------- | -------------------------------------------- | --------------------------------------- |
+| `agentHost`       | Oracle can answer **and** a workspace exists | load, generate (ACP; no save)           |
+| `oracleHost`      | Oracle can answer, no workspace              | load, generate (Oracle search; no save) |
+| demo (`mockData`) | otherwise                                    | load, generate, save (fixtures)         |
 
 Each announces itself with a disclosure line, so the surface never implies more than the
 host behind it can do.

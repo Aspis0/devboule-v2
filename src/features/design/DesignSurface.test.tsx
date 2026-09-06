@@ -205,6 +205,28 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("does not dirty a saved document when selecting its already-selected layer", async () => {
+    const saveDocument = vi.fn(async (_document: DesignDocument) => undefined);
+    const savedDocument: DesignDocument = {
+      ...DOCUMENT,
+      initialState: { ...DOCUMENT.initialState, saved: true },
+    };
+    const { container, root } = await renderDesign(createHost({ saveDocument }, savedDocument));
+    const selectedLayer = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Select Index header"]',
+    );
+    if (selectedLayer === null) throw new Error("Selected layer missing");
+
+    expect(container.querySelector(".design-save-status")?.textContent).toContain("Saved");
+    await act(async () => selectedLayer.click());
+
+    expect(container.querySelector(".design-save-status")?.textContent).toContain("Saved");
+    expect(container.querySelector(".design-save-status")?.textContent).not.toContain(
+      "Unsaved changes",
+    );
+    await act(async () => root.unmount());
+  });
+
   it("saves the current on-screen snapshot rather than the loaded snapshot", async () => {
     const saveDocument = vi.fn(async (_document: DesignDocument) => undefined);
     const { container, root } = await renderDesign(createHost({ saveDocument }));

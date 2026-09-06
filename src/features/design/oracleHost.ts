@@ -24,9 +24,9 @@ export function createOracleHost(): DesignHost {
   const documentHost = createDemoHost();
 
   return {
-    loadDocument: async (): Promise<DesignDocument> => {
+    loadDocument: async (signal?: AbortSignal): Promise<DesignDocument> => {
       const document = await documentHost.loadDocument();
-      const repositoryLayers = await loadRepositoryLayers();
+      const repositoryLayers = await loadRepositoryLayers(undefined, signal);
       return {
         ...document,
         layers: repositoryLayers.layers,

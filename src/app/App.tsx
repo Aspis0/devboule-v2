@@ -43,7 +43,7 @@ const DEMO_DESIGN_HOST = createDemoHost();
 const ORACLE_DESIGN_HOST = createOracleHost();
 const DEMO_DESIGN_DISCLOSURE = "Demo design — fixtures, not a live store.";
 const ORACLE_DESIGN_DISCLOSURE = "Repository index — Oracle results, no design writes.";
-const AGENT_DESIGN_DISCLOSURE = "Repository agent — ACP writes in the active worktree.";
+const AGENT_DESIGN_DISCLOSURE = "Repository agent — ACP writes in the first workspace it finds.";
 
 function oracleCanAnswer(status: OracleIndexStatus): boolean {
   return (

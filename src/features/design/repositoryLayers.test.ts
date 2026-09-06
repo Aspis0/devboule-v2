@@ -141,6 +141,40 @@ describe("repository-derived design layers", () => {
     expect(result.notice).toContain("partial");
   });
 
+  it("keeps paging when a full page reaches exactly the layer cap", async () => {
+    const exactPage = [
+      ...Array.from({ length: MAX_DESIGN_LAYERS }, (_, index) =>
+        indexedFile(`src/components/Component${index}.tsx`),
+      ),
+      ...Array.from({ length: ORACLE_FILE_PAGE_SIZE - MAX_DESIGN_LAYERS }, (_, index) =>
+        indexedFile(`docs/readme-${index}.md`),
+      ),
+    ];
+    mocks.oracleFiles.mockResolvedValueOnce(exactPage).mockResolvedValueOnce([]);
+
+    const result = await loadRepositoryLayers();
+
+    expect(mocks.oracleFiles).toHaveBeenCalledTimes(2);
+    expect(result.layers).toHaveLength(MAX_DESIGN_LAYERS);
+    expect(result.notice).toBeUndefined();
+  });
+
+  it("continues after an oversized page response", async () => {
+    mocks.oracleFiles
+      .mockResolvedValueOnce(
+        Array.from({ length: ORACLE_FILE_PAGE_SIZE + 1 }, (_, index) =>
+          indexedFile(`docs/readme-${index}.md`),
+        ),
+      )
+      .mockResolvedValueOnce([]);
+
+    const result = await loadRepositoryLayers();
+
+    expect(mocks.oracleFiles).toHaveBeenCalledTimes(2);
+    expect(result.layers).toEqual([]);
+    expect(result.notice).toContain("No TSX or SVG components");
+  });
+
   it("returns no fixture layers when file enumeration fails", async () => {
     const failingLoader = vi.fn(async () => {
       throw new Error("No workspace is available.");

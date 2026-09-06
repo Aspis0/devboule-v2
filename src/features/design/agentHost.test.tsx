@@ -538,7 +538,7 @@ describe("ACP design host", () => {
       ).not.toBeNull(),
     );
     expect(container.textContent).toContain(
-      "Repository agent — ACP writes in the active worktree.",
+      "Repository agent — ACP writes in the first workspace it finds.",
     );
 
     const draft = container.querySelector<HTMLTextAreaElement>(

@@ -98,7 +98,7 @@ export interface DesignDocument {
 }
 
 export interface DesignHost {
-  loadDocument(): Promise<DesignDocument>;
+  loadDocument(signal?: AbortSignal): Promise<DesignDocument>;
   saveDocument?(doc: DesignDocument): Promise<void>;
   generate?(prompt: string, signal: AbortSignal): Promise<DesignGenerationResult>;
 }

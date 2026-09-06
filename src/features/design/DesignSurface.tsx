@@ -415,14 +415,6 @@ const CanvasNode = memo(function CanvasNode({ layer, hidden, selected }: CanvasN
           </div>
         ) : null}
       </div>
-      {selected ? (
-        <>
-          <span className="design-selection-handle design-selection-handle-tl" aria-hidden="true" />
-          <span className="design-selection-handle design-selection-handle-tr" aria-hidden="true" />
-          <span className="design-selection-handle design-selection-handle-bl" aria-hidden="true" />
-          <span className="design-selection-handle design-selection-handle-br" aria-hidden="true" />
-        </>
-      ) : null}
     </button>
   );
 });
@@ -1145,8 +1137,9 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     void host
-      .loadDocument()
+      .loadDocument(controller.signal)
       .then((loadedDocument) => {
         if (!active) return;
         setDocument(loadedDocument);
@@ -1160,6 +1153,7 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
 
     return () => {
       active = false;
+      controller.abort();
     };
   }, [host]);
 
@@ -1221,6 +1215,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [messages, setMessages] = useState<DesignMessage[]>(() => cloneMessages(document));
 
   const savingRef = useRef(false);
+  const mountedRef = useRef(true);
   const activeGenerationRef = useRef<{
     controller: AbortController;
     delivered: boolean;
@@ -1237,7 +1232,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const { pan, selectedLayerId, tool, zoom } = viewState;
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       activeGenerationRef.current?.controller.abort();
     };
   }, []);
@@ -1351,13 +1348,14 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
 
   const selectLayer = useCallback(
     (layerId: string) => {
-      markDocumentDirty();
+      const selectionChanged = selectedLayerId !== layerId || composerContextLayerId !== layerId;
+      if (selectionChanged) markDocumentDirty();
       setViewState((current) =>
         current.selectedLayerId === layerId ? current : { ...current, selectedLayerId: layerId },
       );
-      setComposerContextLayerId(layerId);
+      setComposerContextLayerId((current) => (current === layerId ? current : layerId));
     },
-    [markDocumentDirty],
+    [composerContextLayerId, markDocumentDirty, selectedLayerId],
   );
 
   const duplicateLayer = useCallback(() => {
@@ -1556,14 +1554,20 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     try {
       await saveDocument(documentToSave);
       if (documentRevisionRef.current === revisionAtSave && !hasWorkingMessage) {
-        setHistory((current) => (current.saved ? current : { ...current, saved: true }));
+        if (mountedRef.current) {
+          setHistory((current) => (current.saved ? current : { ...current, saved: true }));
+        }
       }
     } catch (error: unknown) {
-      setHistory((current) => (current.saved ? { ...current, saved: false } : current));
-      setSaveError(error instanceof Error ? error.message : "The design document could not save.");
+      if (mountedRef.current) {
+        setHistory((current) => (current.saved ? { ...current, saved: false } : current));
+        setSaveError(
+          error instanceof Error ? error.message : "The design document could not save.",
+        );
+      }
     } finally {
       savingRef.current = false;
-      setSaving(false);
+      if (mountedRef.current) setSaving(false);
     }
   }, [document, grounded, history.present, layers, messages, saveDocument, selectedLayerId]);
   const toggleGrounding = useCallback(() => {

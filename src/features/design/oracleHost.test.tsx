@@ -20,6 +20,7 @@ vi.mock("../../lib/tauri", () => ({
 
 import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
+import type { IndexedFile } from "../../types/ipc";
 import { DesignSurface, type DesignHost } from "./DesignSurface";
 import { createOracleHost } from "./oracleHost";
 
@@ -104,6 +105,25 @@ describe("Oracle design host", () => {
 
     expect(document.layers).toEqual([]);
     expect(document.layerNotice).toContain("No TSX or SVG components");
+  });
+
+  it("passes load cancellation through the host and stops requesting later pages", async () => {
+    const controller = new AbortController();
+    let resolveFirstPage: ((files: readonly IndexedFile[]) => void) | undefined;
+    mocks.oracleFiles.mockImplementationOnce(
+      () =>
+        new Promise<readonly IndexedFile[]>((resolve) => {
+          resolveFirstPage = resolve;
+        }),
+    );
+
+    const loading = createOracleHost().loadDocument(controller.signal);
+    await vi.waitFor(() => expect(mocks.oracleFiles).toHaveBeenCalledWith("indexed", 1));
+    controller.abort();
+    resolveFirstPage?.([{ path: "README.md", chunks: 1, updated_at: "2026-09-05T00:00:00Z" }]);
+
+    await expect(loading).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.oracleFiles).toHaveBeenCalledTimes(1);
   });
 
   it("maps Oracle result paths into generation sources", async () => {
