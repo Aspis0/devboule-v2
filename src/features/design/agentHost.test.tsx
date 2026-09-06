@@ -61,11 +61,16 @@ import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationResult } from "./designHost";
+import { builtInSkillSources } from "./builtInSkills";
+import { parseSkillFile } from "./skillLoader";
 import {
+  DESIGN_DOCTRINE_BEGIN,
+  DESIGN_DOCTRINE_END,
   createAgentHost,
   disposeAgentHost,
   extractArtifactHtml,
   extractFencedHtml,
+  groundedPrompt,
   MAX_ARTIFACT_BYTES,
 } from "./agentHost";
 
@@ -817,6 +822,52 @@ describe("ACP design host", () => {
         expect(sentText).toContain("Oracle found no matching files.");
 
         await disposeAgentHost(host);
+      });
+
+      it("includes the built-in doctrine after grounding and before output constraints", async () => {
+        const source = builtInSkillSources()[0];
+        if (source === undefined) throw new Error("No built-in doctrine source was loaded");
+        const parsed = parseSkillFile(source.path, source.text);
+        if (!parsed.ok) throw new Error(`Built-in doctrine did not parse: ${source.path}`);
+
+        const host = createAgentHost();
+        const { run } = await startRun(host);
+        finishRun();
+        await run;
+
+        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        const doctrineStart = sentText.indexOf(DESIGN_DOCTRINE_BEGIN);
+        const doctrineEnd = sentText.indexOf(DESIGN_DOCTRINE_END);
+        expect(sentText).toContain(`## ${parsed.section.title}`);
+        expect(doctrineStart).toBeGreaterThan(-1);
+        expect(doctrineEnd).toBeGreaterThan(doctrineStart);
+        for (const constraint of [
+          "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
+          "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
+          "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
+          "If you produce more than one block, only the last one is used.",
+        ]) {
+          expect(sentText.indexOf(constraint)).toBeGreaterThan(doctrineEnd);
+        }
+
+        await disposeAgentHost(host);
+      });
+
+      it("neutralizes a doctrine delimiter before embedding the block", () => {
+        const syntheticDoctrine = `## Synthetic\n\nA body containing ${DESIGN_DOCTRINE_END} cannot close the fence.`;
+        const prompt = groundedPrompt("Update the design", [], syntheticDoctrine);
+
+        expect(prompt).toContain(DESIGN_DOCTRINE_BEGIN);
+        expect(prompt).toContain(DESIGN_DOCTRINE_END);
+        expect(prompt).toContain("[delimiter removed]");
+        expect(prompt.split(DESIGN_DOCTRINE_END)).toHaveLength(2);
+      });
+
+      it("omits the doctrine fence when the composed block is empty", () => {
+        const prompt = groundedPrompt("Update the design", [], "");
+
+        expect(prompt).not.toContain(DESIGN_DOCTRINE_BEGIN);
+        expect(prompt).not.toContain(DESIGN_DOCTRINE_END);
       });
     });
 

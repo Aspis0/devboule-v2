@@ -5,7 +5,7 @@ import {
   parseSkillFile,
   validateSections,
 } from "./skillLoader";
-import { builtInSkillSources } from "./builtInSkills";
+import { builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
 
 function slugForPath(path: string): string {
   return path.split("/").pop()?.split(".")[0] ?? "";
@@ -25,9 +25,7 @@ describe("built-in design skills", () => {
   });
 
   it("contains exactly the two current built-in skill slugs", () => {
-    expect(new Set(builtInSkillSources().map((source) => slugForPath(source.path)))).toEqual(
-      new Set(["anti-ai-slop", "color"]),
-    );
+    expect(new Set(builtInSkillSlugs())).toEqual(new Set(["anti-ai-slop", "color"]));
   });
 
   it("composes both built-in skills without dropping either", () => {

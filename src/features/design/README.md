@@ -92,11 +92,13 @@ says so rather than an application that stops responding.
 
 ## Design doctrine
 
-`skillLoader.ts` composes craft doctrine into one block of prompt text and
-`builtInSkills.ts` discovers the sections. **Nothing sends it yet** — no production code
-imports either module. Wiring the block into `groundedPrompt` and letting the user choose
-which sections apply is the next slice, so what follows describes a format and a loader,
-not a live path.
+`skillLoader.ts` composes craft doctrine into one block of prompt text,
+`builtInSkills.ts` discovers the sections, and `groundedPrompt` in `agentHost.ts` sends it
+with every agent generation. **There is no selection yet** — every built-in section goes, always.
+Letting the user choose is the next slice, and it needs somewhere to persist the choice:
+the app has no preference store in the frontend, and `ARCHITETTURA.md` names
+`<app_config_dir>/oracle-settings.json` as the model to copy, which is a command pair in
+`src-tauri/` rather than anything reachable from here.
 
 **A skill is a file, not a feature**: the sections live in `craft/` as markdown with three
 front-matter fields — `slug` (must match the filename), `title`, `requires` — discovered
@@ -123,6 +125,22 @@ sections, never part of a rule, and the composed text carries a notice that what
 is not the complete doctrine — silence would let the model infer it received everything.
 The notice has a length, so its budget is reserved before the fit rather than appended
 after it: otherwise announcing the truncation would cause more of it.
+
+**Doctrine is reference material, and the prompt is built so that it cannot be anything
+else.** The block is fenced between `===== BEGIN DESIGN DOCTRINE (reference material) =====`
+and its closing delimiter, with a line saying it is not a request from the user. Two
+properties carry the weight. The fence sits **after** the grounding and **before** the
+output constraints — the single fenced block, "scripts will not run", "only the last block
+is used" — so our constraints have the last word in the prompt and no text inside the block
+can read as replacing them; a test asserts the index ordering, not just the presence.
+And any occurrence of either delimiter inside the composed text is replaced before
+embedding, because a bundle able to print the closing delimiter could make the rest of its
+text read as instructions to the host.
+
+That neutralisation matches the delimiters exactly. An imitation with different spacing or
+casing is not caught, and no textual fence can be made airtight — the defences that do not
+depend on a model's reading are that the block is bounded by the ceiling, that the section
+is omitted entirely when it would be empty, and that nothing in a bundle is ever executed.
 
 **The runtime is tolerant and the repository is strict**, and both halves are needed. A
 downloaded bundle referencing a section this build does not have must not take the surface
