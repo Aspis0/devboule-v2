@@ -68,6 +68,23 @@ policy by `<meta>`, with `default-src 'none'` and every directive named explicit
 than left to a fallback. An artifact may carry its own policy meta and cannot escape ours
 — CSP policies are additive and the most restrictive wins.
 
+**That `<meta>` is load-bearing, not belt-and-braces.** Measured in WebView2 on
+2026-09-06, with a control in the same run:
+
+| Frame                              | `data:` image | remote image | request reached a local listener |
+| ---------------------------------- | ------------- | ------------ | -------------------------------- |
+| `sandbox=""` **with** our meta CSP | rendered      | blocked      | no                               |
+| `sandbox=""` **without** it        | rendered      | loaded       | yes                              |
+
+The second row is the point. **A sandbox does not block passive subresource loads** — it
+governs scripting, navigation and forms, not fetches — so without the meta policy an
+`<img src="https://…">` in agent-generated markup would be a live outbound channel from
+the user's machine. The control proves the request path was reachable and the detector
+worked, so the blocked case is a real block and not a false negative. The first row also
+shows the policy does not over-block: `img-src data:` still renders, as intended.
+
+Do not remove the meta CSP on the grounds that the sandbox already covers it. It does not.
+
 The `<iframe>` keeps `pointer-events: none` and the artifact's content wrapper is
 `inert`, so a click always belongs to the app and never to generated markup, and keyboard
 focus cannot descend into the frame. Artifacts are capped at 256 KiB, with a card that
