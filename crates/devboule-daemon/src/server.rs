@@ -850,6 +850,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     let _ = framed.flush_pipe();
     state.sessions.detach_conn(&conn);
     state.unwatch_sessions(conn.id);
+    state.sessions.clear_presence(conn.id);
     loop_result
 }
 
@@ -1125,6 +1126,7 @@ fn dispatch_immediate(
         | ClientMessage::SessionsList { .. }
         | ClientMessage::SessionsWatch { .. }
         | ClientMessage::SessionsUnwatch { .. }
+        | ClientMessage::SessionsPresence { .. }
         | ClientMessage::SessionResume { .. }
         | ClientMessage::SessionReportAgent { .. } => {
             if !sessions_ok {
@@ -1739,6 +1741,17 @@ fn dispatch_session(
             conn.clear_state_events();
             DaemonMessage::Ok { id }
         }
+        ClientMessage::SessionsPresence {
+            id,
+            focused_session_id,
+            app_visible,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .set_presence(conn.id, owner, focused_session_id, app_visible)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
         ClientMessage::SessionStop { id, session_id } => reply_result(
             id,
             state

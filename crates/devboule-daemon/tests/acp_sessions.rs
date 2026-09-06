@@ -14,10 +14,11 @@ use std::time::{Duration, Instant};
 
 use devboule_daemon::{
     connect, current_user_sid, spawn_daemon, DaemonClient, EventHandler, RuntimePaths,
+    SessionStateHandler,
 };
 use devboule_protocol::{
-    ClientHello, ErrorCode, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
-    SessionEvent, SessionKind,
+    AttentionReason, ClientHello, ErrorCode, OwnerId, PermissionOutcome, Persistence,
+    PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionStateSnapshot,
 };
 use rusqlite::Connection;
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -156,6 +157,73 @@ where
     panic!(
         "timed out waiting for ACP event: {:?}",
         events.lock().unwrap()
+    );
+}
+
+fn collect_state_handler(
+    received: Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
+) -> SessionStateHandler {
+    Arc::new(move |snapshots| {
+        received
+            .lock()
+            .expect("state snapshots lock")
+            .push(snapshots);
+    })
+}
+
+fn wait_for_attention(
+    snapshots: &Mutex<Vec<Vec<SessionStateSnapshot>>>,
+    session_id: &str,
+    reason: AttentionReason,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if snapshots
+            .lock()
+            .expect("state snapshots lock")
+            .iter()
+            .any(|snapshot| {
+                snapshot.iter().any(|session| {
+                    session.id == session_id
+                        && session
+                            .attention
+                            .is_some_and(|attention| attention.reason == reason)
+                })
+            })
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "timed out waiting for {reason:?} attention: {:?}",
+        snapshots.lock().expect("state snapshots lock")
+    );
+}
+
+fn wait_for_cleared_attention(
+    snapshots: &Mutex<Vec<Vec<SessionStateSnapshot>>>,
+    session_id: &str,
+    after_count: usize,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let snapshots_guard = snapshots.lock().expect("state snapshots lock");
+        if snapshots_guard.len() > after_count
+            && snapshots_guard.last().is_some_and(|snapshot| {
+                snapshot
+                    .iter()
+                    .any(|session| session.id == session_id && session.attention.is_none())
+            })
+        {
+            return;
+        }
+        drop(snapshots_guard);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "timed out waiting for cleared attention: {:?}",
+        snapshots.lock().expect("state snapshots lock")
     );
 }
 
@@ -1371,6 +1439,171 @@ fn acp_second_prompt_while_first_streams_precedes_both_replies() {
         first_user < second_user && second_user < replies[0] && replies[0] < replies[1],
         "queued turn order was not prompt1 < prompt2 < reply1 < reply2: {events:?}"
     );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_raises_for_finish_and_permission_transitions() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&["--no-malformed"]);
+    let (session, events) = test.attached_session();
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+
+    test.client
+        .session_send(&session.id, "normal attention turn")
+        .expect("normal prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+    });
+    wait_for_attention(&snapshots, &session.id, AttentionReason::Finished);
+
+    test.client
+        .session_send(&session.id, "permission attention turn")
+        .expect("permission prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::PermissionRequest { .. }))
+    });
+    wait_for_attention(&snapshots, &session.id, AttentionReason::Permission);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_raises_error_for_a_real_agent_error_transition() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+    test.client
+        .session_send(&session.id, "malformed error attention turn")
+        .expect("error prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentError { .. }))
+    });
+    wait_for_attention(&snapshots, &session.id, AttentionReason::Error);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_is_suppressed_by_visible_focus() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+    test.client
+        .session_presence(Some(&session.id), true)
+        .expect("visible focus");
+    test.client
+        .session_send(&session.id, "focused attention turn")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+    });
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(!snapshots
+        .lock()
+        .expect("state snapshots lock")
+        .iter()
+        .any(|snapshot| {
+            snapshot
+                .iter()
+                .any(|entry| entry.id == session.id && entry.attention.is_some())
+        }));
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_clears_on_focus_and_is_raised_when_app_is_not_visible() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&["--no-malformed"]);
+    let (session, events) = test.attached_session();
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+
+    // The frontend sends null when the document is not visible, so this is
+    // the actual payload used for the minimised/background case.
+    test.client
+        .session_presence(None, false)
+        .expect("background presence");
+    test.client
+        .session_send(&session.id, "background attention turn")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+    });
+    wait_for_attention(&snapshots, &session.id, AttentionReason::Finished);
+    let before_clear = snapshots.lock().expect("state snapshots lock").len();
+    test.client
+        .session_presence(Some(&session.id), true)
+        .expect("focus acknowledges attention");
+    wait_for_cleared_attention(&snapshots, &session.id, before_clear);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_presence_is_per_connection() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let second = test._harness.client_named("second");
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+    test.client
+        .session_presence(Some(&session.id), true)
+        .expect("first connection focus");
+    second
+        .session_presence(Some("s.other.1"), true)
+        .expect("second connection focuses elsewhere");
+    test.client
+        .session_send(&session.id, "multi connection attention turn")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+    });
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(!snapshots
+        .lock()
+        .expect("state snapshots lock")
+        .iter()
+        .any(|snapshot| {
+            snapshot
+                .iter()
+                .any(|entry| entry.id == session.id && entry.attention.is_some())
+        }));
     test.client
         .session_close(&session.id)
         .expect("close ACP session");

@@ -84,6 +84,16 @@ pub fn session_detach(bridge: State<'_, DaemonBridge>, id: String) -> Result<(),
 }
 
 #[tauri::command]
+pub fn session_presence(
+    bridge: State<'_, DaemonBridge>,
+    focused_session_id: Option<String>,
+    app_visible: bool,
+) -> Result<(), CommandError> {
+    // Presence is best-effort UI state: preserve errors for observability, while a lost hint only leaves a transiently stale badge.
+    Ok(require_client(&bridge)?.session_presence(focused_session_id.as_deref(), app_visible)?)
+}
+
+#[tauri::command]
 pub fn session_send(
     bridge: State<'_, DaemonBridge>,
     id: String,
@@ -219,6 +229,12 @@ mod tests {
         require_terminal_kind(&SessionKind::Terminal).expect("terminal");
         require_terminal_kind(&SessionKind::Acp).expect("acp");
         require_terminal_kind(&SessionKind::Claude).expect("claude");
+    }
+
+    #[test]
+    fn session_presence_forwarder_has_the_frozen_tauri_signature() {
+        let _: fn(State<'_, DaemonBridge>, Option<String>, bool) -> Result<(), CommandError> =
+            session_presence;
     }
 
     #[test]

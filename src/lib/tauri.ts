@@ -25,7 +25,12 @@ import type {
   RetentionPatch,
 } from "../types/ipc";
 
-type CommandArgs = {
+/**
+ * The typed argument shape of every Tauri command. Exported (type-only) so
+ * call sites outside this module — e.g. injected presence seams — can reference
+ * a command's payload without re-writing its keys by hand.
+ */
+export type CommandArgs = {
   app_identity: undefined;
   daemon_status: undefined;
   session_create: { workspaceId: Id | null; kind: SessionKind; provider?: string | null };
@@ -35,6 +40,7 @@ type CommandArgs = {
   session_interrupt: { id: Id };
   session_set_model: { id: Id; modelId?: string; effort?: string };
   session_permission_respond: { id: Id; requestId: Id; outcome: PermissionOutcome };
+  session_presence: { focusedSessionId: Id | null; appVisible: boolean };
   session_resize: { id: Id; cols: number; rows: number };
   session_detach: { id: Id };
   session_close: { id: Id };
@@ -81,6 +87,7 @@ type CommandResults = {
   session_interrupt: void;
   session_set_model: void;
   session_permission_respond: void;
+  session_presence: void;
   session_resize: void;
   session_detach: void;
   session_close: void;
@@ -140,6 +147,7 @@ export const COMMAND_ARG_KEYS = {
   session_interrupt: ["id"],
   session_set_model: ["id", "modelId", "effort"],
   session_permission_respond: ["id", "requestId", "outcome"],
+  session_presence: ["focusedSessionId", "appVisible"],
   session_resize: ["id", "cols", "rows"],
   session_detach: ["id"],
   session_close: ["id"],
@@ -285,6 +293,14 @@ export const sessionPermissionRespond = (id: Id, requestId: Id, outcome: Permiss
   // rename_all). Sending snake_case made the daemon reject the response with
   // "invalid args `requestId`" and the permission card hung on "Waiting on you".
   invokeTyped("session_permission_respond", { id, requestId, outcome });
+/**
+ * Reports which session this window is looking at and whether the app is
+ * visible at all. The daemon owns the attention-suppression policy; this only
+ * carries the truth. Sent on selection change, focus/blur, visibility change,
+ * and once at startup.
+ */
+export const sessionPresence = (focusedSessionId: Id | null, appVisible: boolean) =>
+  invokeTyped("session_presence", { focusedSessionId, appVisible });
 export const sessionResize = (id: Id, cols: number, rows: number) =>
   invokeTyped("session_resize", { id, cols, rows });
 export const sessionDetach = (id: Id) => invokeTyped("session_detach", { id });

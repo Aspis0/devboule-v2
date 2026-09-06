@@ -5,6 +5,12 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionRequest, Session } from "../../types/ipc";
 
+vi.mock("@tauri-apps/api/core", () => ({
+  // Presence reporting starts with the Workspace mount; keep its sends
+  // hermetic here (presence.test.ts covers the reporter itself).
+  invoke: vi.fn(async () => undefined),
+}));
+
 vi.mock("../../lib/tauri", () => ({
   daemonStatus: vi.fn(async () => ({
     state: "connected",
@@ -23,6 +29,7 @@ vi.mock("../../lib/tauri", () => ({
   ),
   sessionCreate: vi.fn(),
   providersList: vi.fn(),
+  sessionPresence: vi.fn(async () => undefined),
   sessionPermissionRespond: vi.fn(async () => undefined),
   createSessionStateChannel: vi.fn((onSnapshot: (snapshots: unknown[]) => void) => ({
     onSnapshot,
@@ -991,5 +998,69 @@ describe("Workspace sessions", () => {
     expect(sessionCreate).toHaveBeenCalledTimes(1);
     expect(sessionCreate).toHaveBeenCalledWith(null, "acp", "codex-acp");
     expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore + 1);
+  });
+
+  describe("session attention badges", () => {
+    const attentionSession = (
+      id: string,
+      title: string,
+      reason: "finished" | "error" | "permission",
+    ): Session => ({
+      ...acpSession(id, title),
+      attention: { reason, atMs: 1_000 },
+    });
+
+    it("renders an attention badge on tabs that carry attention and none on tabs without", async () => {
+      vi.mocked(sessionsList).mockResolvedValue([
+        attentionSession("session-a", "agent finished", "finished"),
+        attentionSession("session-b", "agent error", "error"),
+        attentionSession("session-c", "agent permission", "permission"),
+        acpSession("session-d", "agent quiet"),
+      ]);
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace />);
+      });
+      await act(async () => undefined);
+
+      const findTab = (title: string): HTMLButtonElement => {
+        const tab = [
+          ...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab"),
+        ].find((candidate) => candidate.textContent?.includes(title));
+        if (tab === undefined) throw new Error(`tab for ${title} did not render`);
+        return tab;
+      };
+
+      expect(findTab("agent finished").querySelector(".workspace-tab-attention")?.textContent).toBe(
+        "finished",
+      );
+      expect(findTab("agent error").querySelector(".workspace-tab-attention")?.textContent).toBe(
+        "error",
+      );
+      expect(
+        findTab("agent permission").querySelector(".workspace-tab-attention")?.textContent,
+      ).toBe("needs approval");
+      const quiet = findTab("agent quiet");
+      expect(quiet.querySelector(".workspace-tab-attention")).toBeNull();
+    });
+
+    it("says the reason in the tab's accessible name, not only by colour", async () => {
+      vi.mocked(sessionsList).mockResolvedValue([
+        attentionSession("session-a", "agent blocked", "permission"),
+      ]);
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace />);
+      });
+      await act(async () => undefined);
+
+      const tab = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")][0];
+      if (tab === undefined) throw new Error("attention tab did not render");
+      // The tab has no aria-label override, so its accessible name is built
+      // from its text content — which must carry the reason, not just a colour.
+      expect(tab.getAttribute("aria-label")).toBeNull();
+      expect(tab.textContent).toContain("agent blocked");
+      expect(tab.textContent).toContain("needs approval");
+    });
   });
 });

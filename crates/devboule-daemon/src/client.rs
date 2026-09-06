@@ -475,6 +475,26 @@ impl DaemonClient {
         }
     }
 
+    /// Report this connection's foreground presence to the daemon. The
+    /// daemon keeps it per connection so another same-user window cannot
+    /// accidentally suppress attention for this one.
+    pub fn session_presence(
+        &self,
+        focused_session_id: Option<&str>,
+        app_visible: bool,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionsPresence {
+            id,
+            focused_session_id: focused_session_id.map(str::to_string),
+            app_visible,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn roundtrip(&self, message: ClientMessage) -> Result<DaemonMessage, DaemonError> {
         self.roundtrip_with_deadline(message, RPC_TIMEOUT)
     }

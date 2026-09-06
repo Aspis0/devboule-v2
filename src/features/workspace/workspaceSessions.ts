@@ -6,7 +6,13 @@ import {
   sessionsUnwatch,
   sessionsWatch,
 } from "../../lib/tauri";
-import type { ProviderInfo, Session, SessionKind, SessionStateSnapshot } from "../../types/ipc";
+import type {
+  AttentionReason,
+  ProviderInfo,
+  Session,
+  SessionKind,
+  SessionStateSnapshot,
+} from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
 
 export interface WorkspaceSessionSource {
@@ -108,6 +114,16 @@ export function sessionDotTone(state: unknown): "green" | "terracotta" | "border
   return "terracotta";
 }
 
+/**
+ * Human words for why a session wants attention. Rendered inside the tab
+ * button so the reason is part of the tab's accessible name, not only its
+ * colour.
+ */
+export function sessionAttentionLabel(reason: AttentionReason): string {
+  if (reason === "permission") return "needs approval";
+  return reason;
+}
+
 export function sessionTitle(session: Pick<Session, "id" | "title" | "kind">): string {
   const title = session.title.trim();
   if (title) return title;
@@ -166,20 +182,21 @@ export function createWorkspaceSessionController(
     const known = new Map(state.sessions.map((session) => [session.id, session]));
     const sessions = snapshots.map((snapshot): Session => {
       const previous = known.get(snapshot.id);
+      const carried = {
+        title: snapshot.title,
+        state: snapshot.state,
+        elapsedMs: snapshot.elapsedMs,
+        // Attention comes and goes with each roster push; assigning it
+        // (even undefined) keeps a stale badge from surviving a cleared one.
+        attention: snapshot.attention,
+      };
       return previous
-        ? {
-            ...previous,
-            title: snapshot.title,
-            state: snapshot.state,
-            elapsedMs: snapshot.elapsedMs,
-          }
+        ? { ...previous, ...carried }
         : {
             id: snapshot.id,
             workspaceId: null,
-            kind: "terminal",
-            title: snapshot.title,
-            state: snapshot.state,
-            elapsedMs: snapshot.elapsedMs,
+            kind: "terminal" as const,
+            ...carried,
           };
     });
     const selected =

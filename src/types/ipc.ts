@@ -192,6 +192,8 @@ export interface Session {
   state: SessionState;
   /** Milliseconds since the last observed output; null for recovered records. */
   elapsedMs: number | null;
+  /** Mirror of the roster snapshot's attention; the frontend only renders it. */
+  attention?: Attention;
 }
 
 export type ResumeResult =
@@ -199,12 +201,22 @@ export type ResumeResult =
   | { type: "not_supported" }
   | { type: "failed"; message: string };
 
+/** Why a session wants the user's attention. Suppression is daemon-side policy. */
+export type AttentionReason = "finished" | "error" | "permission";
+
+export interface Attention {
+  reason: AttentionReason;
+  atMs: number;
+}
+
 /** Compact daemon push used to update the workspace tab roster. */
 export interface SessionStateSnapshot {
   id: Id;
   title: string;
   state: SessionState;
   elapsedMs: number | null;
+  /** Absent when the session needs no attention; suppression is daemon-side. */
+  attention?: Attention;
 }
 
 export type CursorShape = "block" | "underline" | "bar";

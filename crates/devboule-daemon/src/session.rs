@@ -449,11 +449,19 @@ fn check_attached(runtime: &SessionRuntime, conn: &ConnHandle) -> Result<(), Wir
 type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
 
 #[derive(Clone)]
+struct ConnectionPresence {
+    user: String,
+    focused_session_id: Option<String>,
+    app_visible: bool,
+}
+
+#[derive(Clone)]
 pub struct SessionRegistry {
     inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
     paths: RuntimePaths,
     journal: Option<Arc<Journal>>,
     transition_sink: Arc<Mutex<Option<TransitionSink>>>,
+    presence: Arc<Mutex<HashMap<u64, ConnectionPresence>>>,
 }
 
 /// Whether a resolved provider id came from the session-create request
@@ -476,6 +484,7 @@ impl SessionRegistry {
             paths,
             journal,
             transition_sink: Arc::new(Mutex::new(None)),
+            presence: Arc::new(Mutex::new(HashMap::new())),
         };
         spawn_os_liveness_sweeper(&registry);
         registry
@@ -505,13 +514,13 @@ impl SessionRegistry {
             .map(|map| {
                 map.values()
                     .filter(|entry| entry.owner().user == owner.user)
-                    .map(RegistryEntry::to_session)
+                    .map(|entry| (entry.to_session(), entry.runtime().attention()))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         let live_ids = sessions
             .iter()
-            .map(|session| session.id.clone())
+            .map(|(session, _)| session.id.clone())
             .collect::<std::collections::HashSet<_>>();
         if let Some(journal) = &self.journal {
             if let Ok(rows) = journal.list() {
@@ -519,20 +528,86 @@ impl SessionRegistry {
                     if live_ids.contains(&row.id) {
                         return None;
                     }
-                    (row.owner == owner.user).then(|| row.to_session())
+                    (row.owner == owner.user).then(|| (row.to_session(), None))
                 }));
             }
         }
-        sessions.sort_by(|left, right| left.id.cmp(&right.id));
+        sessions.sort_by(|left, right| left.0.id.cmp(&right.0.id));
         sessions
             .into_iter()
-            .map(|session| SessionStateSnapshot {
+            .map(|(session, attention)| SessionStateSnapshot {
                 id: session.id,
                 title: session.title,
                 state: session.state,
                 elapsed_ms: session.elapsed_ms,
+                attention,
             })
             .collect()
+    }
+
+    fn configure_runtime_attention(&self, runtime: &Arc<SessionRuntime>, owner: &OwnerId) {
+        let presence = Arc::clone(&self.presence);
+        let user = owner.user.clone();
+        let session_id = runtime.session_id.clone();
+        let suppressed = Arc::new(move || {
+            presence.lock().is_ok_and(|connections| {
+                connections.values().any(|connection| {
+                    connection.user == user
+                        && connection.app_visible
+                        && connection.focused_session_id.as_deref() == Some(session_id.as_str())
+                })
+            })
+        });
+        let registry = self.clone();
+        let owner = owner.clone();
+        let notify = Arc::new(move || registry.notify_transition(&owner));
+        runtime.set_attention_hooks(suppressed, notify);
+    }
+
+    pub(crate) fn set_presence(
+        &self,
+        conn_id: u64,
+        owner: &OwnerId,
+        focused_session_id: Option<String>,
+        app_visible: bool,
+    ) -> Result<(), WireError> {
+        if let Some(session_id) = focused_session_id.as_deref() {
+            validate_session_id(session_id)
+                .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        }
+        if let Ok(mut presence) = self.presence.lock() {
+            presence.insert(
+                conn_id,
+                ConnectionPresence {
+                    user: owner.user.clone(),
+                    focused_session_id: focused_session_id.clone(),
+                    app_visible,
+                },
+            );
+        } else {
+            return Err(internal("Session state is unavailable."));
+        }
+        // The presence guard is intentionally released before clearing
+        // attention: raises use the global attention -> presence order.
+        if app_visible {
+            if let Some(session_id) = focused_session_id {
+                let runtime = self.inner.lock().ok().and_then(|map| {
+                    map.get(&session_id).and_then(|entry| {
+                        (entry.owner().user == owner.user).then(|| entry.runtime())
+                    })
+                });
+                if runtime.is_some_and(|runtime| runtime.clear_attention()) {
+                    self.notify_transition(owner);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn clear_presence(&self, conn_id: u64) {
+        if let Ok(mut presence) = self.presence.lock() {
+            presence.remove(&conn_id);
+        }
     }
 
     pub(crate) fn output_metrics(&self) -> OutputMetrics {
@@ -1129,7 +1204,11 @@ impl SessionRegistry {
                 permission_broker::PermissionResponseError::Io(_) => ErrorCode::Io,
             };
             WireError::new(code, error.to_string())
-        })
+        })?;
+        if runtime.clear_attention() {
+            self.notify_transition(owner);
+        }
+        Ok(())
     }
 
     /// Drop every subscription this connection holds. The processes stay.
@@ -1353,6 +1432,9 @@ impl SessionRegistry {
                 // event, so do not send an unrecordable prompt to the child.
                 if !runtime.publish_agent_user_message(text.to_string()) {
                     return Err(internal("Agent input could not be recorded."));
+                }
+                if runtime.clear_attention() {
+                    self.notify_transition(owner);
                 }
             }
         }
@@ -1869,6 +1951,7 @@ fn start_spawned_session(
             registry.notify_transition(&owner);
         }));
     }
+    registry.configure_runtime_attention(&runtime, &owner);
     if metadata.kind.is_agent() {
         let death_killer = Mutex::new(killer.clone_killer());
         let job = Arc::clone(&process_job);
@@ -3141,6 +3224,291 @@ mod tests {
         OwnerId::new(user, client).expect("owner")
     }
 
+    fn permission_attention_event() -> SessionEvent {
+        SessionEvent::PermissionRequest {
+            tool_call_id: "tool-attention".to_string(),
+            title: "Run attention test".to_string(),
+            description: None,
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            options: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn attention_priority_preserves_permission_and_allows_escalation() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        let finished_at = runtime.attention().expect("finished attention");
+        assert_eq!(
+            finished_at.reason,
+            devboule_protocol::AttentionReason::Finished
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        runtime.publish_agent_event(
+            SessionEvent::AgentError {
+                message: "attention error".to_string(),
+            },
+            None,
+        );
+        let error_at = runtime.attention().expect("error attention");
+        assert_eq!(error_at.reason, devboule_protocol::AttentionReason::Error);
+        assert!(error_at.at_ms > finished_at.at_ms);
+        runtime.publish_agent_event(permission_attention_event(), None);
+        assert_eq!(
+            runtime.attention().expect("permission attention").reason,
+            devboule_protocol::AttentionReason::Permission
+        );
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert_eq!(
+            runtime
+                .attention()
+                .expect("permission stays pending")
+                .reason,
+            devboule_protocol::AttentionReason::Permission
+        );
+    }
+
+    #[test]
+    fn attention_clear_cannot_complete_during_the_suppression_decision() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let suppression_entered = Arc::new(std::sync::Barrier::new(2));
+        let release_suppression = Arc::new(std::sync::Barrier::new(2));
+        let entered = Arc::clone(&suppression_entered);
+        let release = Arc::clone(&release_suppression);
+        runtime.set_attention_hooks(
+            Arc::new(move || {
+                entered.wait();
+                release.wait();
+                false
+            }),
+            Arc::new(|| {}),
+        );
+
+        let raising = Arc::clone(&runtime);
+        let raise_thread = std::thread::spawn(move || {
+            raising.publish_agent_event(
+                SessionEvent::AgentFinished {
+                    stop_reason: "end_turn".to_string(),
+                    model_id: None,
+                    usage: None,
+                },
+                None,
+            );
+        });
+        suppression_entered.wait();
+
+        let (clear_started, clear_started_rx) = std::sync::mpsc::channel();
+        let (clear_done, clear_done_rx) = std::sync::mpsc::channel();
+        let clearing = Arc::clone(&runtime);
+        let clear_thread = std::thread::spawn(move || {
+            clear_started.send(()).expect("clear thread started");
+            clear_done
+                .send(clearing.clear_attention())
+                .expect("clear result");
+        });
+        clear_started_rx
+            .recv()
+            .expect("clear thread reached the call");
+        let clear_was_blocked = clear_done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err();
+
+        release_suppression.wait();
+        raise_thread.join().expect("raise thread");
+        clear_thread.join().expect("clear thread");
+        assert!(
+            clear_was_blocked,
+            "clear completed while the suppression decision was still open"
+        );
+        assert!(runtime.attention().is_none());
+    }
+
+    #[test]
+    fn visible_focus_suppresses_attention_and_presence_clears_it() {
+        let (_dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attention", "process-attention");
+        let runtime = insert_live_agent(&registry, "s.attention.1", owner.clone());
+        registry
+            .set_presence(1, &owner, Some("s.attention.1".to_string()), true)
+            .expect("presence");
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(
+            runtime.attention().is_none(),
+            "visible focus suppresses raise"
+        );
+        registry.clear_presence(1);
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(runtime.attention().is_some());
+        registry
+            .set_presence(1, &owner, Some("s.attention.1".to_string()), true)
+            .expect("focus clears attention");
+        assert!(
+            runtime.attention().is_none(),
+            "focus acknowledges attention"
+        );
+        drop(journal);
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn invisible_presence_raises_and_a_second_connection_elsewhere_does_not_suppress() {
+        let (_dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-presence", "process-presence");
+        let runtime = insert_live_agent(&registry, "s.presence.1", owner.clone());
+        registry
+            .set_presence(1, &owner, None, false)
+            .expect("invisible presence");
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(
+            runtime.attention().is_some(),
+            "invisible app is not watching"
+        );
+        assert!(runtime.clear_attention());
+        registry
+            .set_presence(1, &owner, Some("s.presence.1".to_string()), true)
+            .expect("focused connection");
+        registry
+            .set_presence(2, &owner, Some("s.other.1".to_string()), true)
+            .expect("second connection elsewhere");
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(
+            runtime.attention().is_none(),
+            "the focused connection suppresses"
+        );
+        drop(journal);
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn sending_a_prompt_acknowledges_attention() {
+        let (_dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-send-attention", "process-send-attention");
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "s.send.1",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+        );
+        let conn = ConnHandle::new(7);
+        registry
+            .attach("s.send.1", None, &conn, &owner, true)
+            .expect("attach");
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(runtime.attention().is_some());
+        registry
+            .send("s.send.1", "next", &owner, &conn)
+            .expect("send");
+        assert!(
+            runtime.attention().is_none(),
+            "prompt acknowledges attention"
+        );
+        drop(journal);
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn answering_permission_acknowledges_attention() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner(
+            "S-1-5-21-permission-attention",
+            "process-permission-attention",
+        );
+        let session_id = "s.permission-attention.1";
+        let runtime = insert_live_agent(&registry, session_id, owner.clone());
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("session row");
+        let conn = ConnHandle::new(8);
+        registry
+            .attach(session_id, None, &conn, &owner, true)
+            .expect("attach");
+        let request = permission_broker::permission("ack-permission");
+        runtime.publish_agent_event(request.clone(), None);
+        runtime
+            .permission_broker()
+            .expect("permission broker")
+            .register(12, request, &runtime)
+            .expect("permission request");
+        assert_eq!(
+            runtime.attention().expect("permission attention").reason,
+            devboule_protocol::AttentionReason::Permission
+        );
+
+        registry
+            .permission_respond(
+                session_id,
+                "ack-permission",
+                PermissionOutcome::AllowOnce,
+                &conn,
+                &owner,
+            )
+            .expect("permission response");
+        assert!(
+            runtime.attention().is_none(),
+            "answering permission acknowledges attention"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn ended_record(id: &str, user: &str) -> crate::journal::SessionRecord {
         let mut record = new_session_record(id, user, None, SessionKind::Terminal, "Terminal");
         record.status = PersistStatus::Ended;
@@ -3247,6 +3615,7 @@ mod tests {
         };
         let (broker, _) = permission_broker::test_broker();
         let runtime = SessionRuntime::for_acp(id.to_string(), registry.journal.clone(), broker);
+        registry.configure_runtime_attention(&runtime, &owner);
         let session = PtySession {
             metadata,
             owner,
@@ -3306,6 +3675,7 @@ mod tests {
             id.to_string(),
             registry.journal.clone(),
         ));
+        registry.configure_runtime_attention(&runtime, &owner);
         let session = PtySession {
             metadata,
             owner,

@@ -516,6 +516,24 @@
   font-size: 10px;
 }
 
+/* Attention: the daemon flags sessions the user is not looking at. The badge
+   text carries the reason (so the tab's accessible name says why), the ochre
+   dot tone makes it spottable at a glance. */
+.workspace-session-tab-attention .workspace-status-dot {
+  background: var(--ochre);
+}
+
+.workspace-tab-attention {
+  padding: 1px 7px;
+  border: 1px solid var(--ochre);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ochre-deep);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .workspace-session-add {
   width: 25px;
   height: 25px;

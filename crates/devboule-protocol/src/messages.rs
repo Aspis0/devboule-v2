@@ -140,6 +140,13 @@ pub enum ClientMessage {
     SessionsUnwatch {
         id: u64,
     },
+    /// Per-connection foreground presence. `focused_session_id` is only
+    /// meaningful while `app_visible` is true.
+    SessionsPresence {
+        id: u64,
+        focused_session_id: Option<String>,
+        app_visible: bool,
+    },
     SessionResume {
         id: u64,
         persistence: Persistence,
@@ -213,6 +220,7 @@ impl ClientMessage {
             | Self::SessionsList { id }
             | Self::SessionsWatch { id }
             | Self::SessionsUnwatch { id }
+            | Self::SessionsPresence { id, .. }
             | Self::SessionResume { id, .. }
             | Self::JournalUsage { id }
             | Self::JournalRetentionGet { id }
@@ -262,6 +270,7 @@ impl ClientMessage {
             | Self::SessionsList { .. }
             | Self::SessionsWatch { .. }
             | Self::SessionsUnwatch { .. }
+            | Self::SessionsPresence { .. }
             | Self::JournalUsage { .. }
             | Self::JournalRetentionGet { .. }
             | Self::ProvidersList { .. }
@@ -617,6 +626,7 @@ mod tests {
                     title: "Terminal".to_string(),
                     state: SessionState::Silent { generation: 3 },
                     elapsed_ms: Some(300_001),
+                    attention: None,
                 }],
             },
         });
@@ -643,6 +653,21 @@ mod tests {
         .expect("json");
         assert_eq!(value["fromCursor"]["generation"], 2);
         assert_eq!(value["fromCursor"]["seq"], 40);
+    }
+
+    #[test]
+    fn presence_carries_focus_and_visibility_per_connection() {
+        let message = ClientMessage::SessionsPresence {
+            id: 4,
+            focused_session_id: Some("s.a.1".to_string()),
+            app_visible: true,
+        };
+        let value = serde_json::to_value(&message).expect("presence json");
+        assert_eq!(value["type"], "sessions_presence");
+        assert_eq!(value["focusedSessionId"], "s.a.1");
+        assert_eq!(value["appVisible"], true);
+        let decoded: ClientMessage = serde_json::from_value(value).expect("presence round trip");
+        assert_eq!(decoded, message);
     }
 
     #[test]

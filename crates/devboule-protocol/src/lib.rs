@@ -95,11 +95,11 @@ pub use messages::{
 };
 pub use plugin::WorkspaceRootBody;
 pub use session::{
-    cursor_replay_ok, AgentActivityState, AvailableCommandView, Cursor, CursorShape,
-    PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence, PersistenceKind,
-    ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind, SessionModeStateView,
-    SessionModeView, SessionModel, SessionModelEffort, SessionState, SessionStateSnapshot,
-    ToolLocation, TranscriptIntegrity, TurnUsage,
+    cursor_replay_ok, AgentActivityState, Attention, AttentionReason, AvailableCommandView, Cursor,
+    CursorShape, PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence,
+    PersistenceKind, ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind,
+    SessionModeStateView, SessionModeView, SessionModel, SessionModelEffort, SessionState,
+    SessionStateSnapshot, ToolLocation, TranscriptIntegrity, TurnUsage,
 };
 
 /// Current protocol dialect spoken by this crate.

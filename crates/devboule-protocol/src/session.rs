@@ -35,6 +35,34 @@ pub enum AgentActivityState {
     Unknown,
 }
 
+/// Why a session is asking for the user's attention. This is runtime state,
+/// not transcript history.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionReason {
+    Finished,
+    Error,
+    Permission,
+}
+
+impl AttentionReason {
+    pub fn priority(self) -> u8 {
+        match self {
+            Self::Finished => 1,
+            Self::Error => 2,
+            Self::Permission => 3,
+        }
+    }
+}
+
+/// Runtime attention state for a live session.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Attention {
+    pub reason: AttentionReason,
+    pub at_ms: u64,
+}
+
 /// Public session metadata returned by `session_create` and `sessions_list`.
 ///
 /// `workspace_id` is optional in M2 because workspace lookup is not
@@ -75,6 +103,8 @@ pub struct SessionStateSnapshot {
     pub title: String,
     pub state: SessionState,
     pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention: Option<Attention>,
 }
 
 /// What the journal can honestly say about a finished transcript.
@@ -669,6 +699,27 @@ mod tests {
         let exit = serde_json::to_value(SessionEvent::Exit { code: Some(0) }).expect("json");
         assert_eq!(exit["type"], "exit");
         assert_eq!(exit["code"], 0);
+    }
+
+    #[test]
+    fn attention_uses_camel_case_and_omits_absent_snapshot_value() {
+        let attention = Attention {
+            reason: AttentionReason::Permission,
+            at_ms: 42,
+        };
+        let encoded = serde_json::to_value(attention).expect("attention json");
+        assert_eq!(encoded["reason"], "permission");
+        assert_eq!(encoded["atMs"], 42);
+
+        let snapshot = SessionStateSnapshot {
+            id: "s.client.1".to_string(),
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: None,
+            attention: None,
+        };
+        let encoded = serde_json::to_value(snapshot).expect("snapshot json");
+        assert!(encoded.get("attention").is_none());
     }
 
     #[test]

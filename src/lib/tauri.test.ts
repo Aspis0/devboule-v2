@@ -12,6 +12,7 @@ import {
   sessionAttach,
   sessionCreate,
   sessionDelete,
+  sessionPresence,
   sessionResume,
   surfaceSettingsGet,
   surfaceSettingsSet,
@@ -169,6 +170,24 @@ describe("bridge wire-key convention", () => {
         "object. Command NAMES stay snake_case; only argument keys are camelCase.\n" +
         offenders.map((line) => `  - ${line}`).join("\n"),
     ).toEqual([]);
+  });
+});
+
+describe("presence command wrapper", () => {
+  it("passes the camelCase keys expected by Tauri v2", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+    await sessionPresence("session-a", true);
+    await sessionPresence(null, false);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "session_presence", {
+      focusedSessionId: "session-a",
+      appVisible: true,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "session_presence", {
+      focusedSessionId: null,
+      appVisible: false,
+    });
   });
 });
 

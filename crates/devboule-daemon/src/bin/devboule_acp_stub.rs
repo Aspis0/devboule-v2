@@ -28,6 +28,7 @@ fn main() -> io::Result<()> {
     let fail_initialize = std::env::args().any(|arg| arg == "--fail-initialize");
     let echo_user = !std::env::args().any(|arg| arg == "--no-user-echo");
     let stream_first = std::env::args().any(|arg| arg == "--stream-first");
+    let emit_malformed = !std::env::args().any(|arg| arg == "--no-malformed");
     // Emulate an expired-credentials peer: session/new answers with a
     // JSON-RPC error and the process keeps reading instead of exiting, so
     // the daemon observes a handshake failure against a live process.
@@ -329,8 +330,10 @@ fn main() -> io::Result<()> {
                     )?;
                     continue;
                 }
-                eprintln!("stub-agent stderr marker");
-                stdout.write_all(b"not-json\r\n")?;
+                if emit_malformed {
+                    eprintln!("stub-agent stderr marker");
+                    stdout.write_all(b"not-json\r\n")?;
+                }
                 if echo_user {
                     emit(
                         &mut stdout,

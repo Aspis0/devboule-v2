@@ -13,11 +13,13 @@ import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
+import { startPresenceReporting, type PresenceReporter } from "./presence";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
 import {
   chatCapableProviders,
   requiresConsent,
+  sessionAttentionLabel,
   sessionCreateFromProvider,
   sessionDotTone,
   sessionStateLabel,
@@ -119,6 +121,20 @@ export function Workspace() {
   const selectedSurface =
     MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
+  // Presence reporter lives outside React state: it holds no render output.
+  // Selection changes arrive through the second effect below.
+  const presenceReporterRef = useRef<PresenceReporter | null>(null);
+  useEffect(() => {
+    const reporter = startPresenceReporting();
+    presenceReporterRef.current = reporter;
+    return () => {
+      presenceReporterRef.current = null;
+      reporter.dispose();
+    };
+  }, []);
+  useEffect(() => {
+    presenceReporterRef.current?.onSelectionChanged(selectedSessionId);
+  }, [selectedSessionId]);
   const handleReopenSession = useCallback(
     (session: Session) => {
       openSession(session);
@@ -517,7 +533,7 @@ export function Workspace() {
               id={`workspace-session-tab-${session.id}`}
               aria-selected={selectedSessionId === session.id}
               aria-controls={WORKSPACE_TERMINAL_PANEL_ID}
-              className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}`}
+              className={`workspace-session-tab${selectedSessionId === session.id ? " workspace-session-tab-selected" : ""}${session.attention ? " workspace-session-tab-attention" : ""}`}
               key={session.id}
               onClick={() => selectSession(session.id)}
             >
@@ -528,6 +544,13 @@ export function Workspace() {
               <span className="workspace-tab-meta">
                 {sessionStateLabel(session.state, session.elapsedMs)}
               </span>
+              {session.attention ? (
+                <span
+                  className={`workspace-tab-attention workspace-attention-${session.attention.reason}`}
+                >
+                  {sessionAttentionLabel(session.attention.reason)}
+                </span>
+              ) : null}
             </button>
           ))}
           <button

@@ -5,10 +5,11 @@ use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
-    cursor_replay_ok, Cursor, ErrorCode, SessionEvent, TranscriptIntegrity, WireError,
+    cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, SessionEvent,
+    TranscriptIntegrity, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -120,6 +121,11 @@ pub(crate) struct SessionRuntime {
     pub(crate) published_frames: AtomicU64,
     pub(crate) published_bytes: AtomicUsize,
     pub(crate) session_manifest: Mutex<Option<SessionEvent>>,
+    /// Attention is deliberately runtime-only. It is a user's current view
+    /// state, not transcript history, so it is not journaled and does not
+    /// survive a daemon restart.
+    pub(crate) attention: Mutex<Option<Attention>>,
+    attention_hooks: Mutex<Option<AttentionHooks>>,
     /// Duplicated OS process handle. Queried by the shared sweeper; never a
     /// PID, which the OS may reuse after the child dies.
     pub(crate) os_handle: Mutex<Option<ProcessHandle>>,
@@ -133,6 +139,11 @@ pub(crate) struct SessionRuntime {
     /// Provider-side session id (ACP `sessionId`, Claude `system/init`
     /// `session_id`). Stored for resume; not the Devboule session id.
     pub(crate) peer_session_id: Mutex<Option<String>>,
+}
+
+struct AttentionHooks {
+    suppressed: Arc<dyn Fn() -> bool + Send + Sync>,
+    notify: Arc<dyn Fn() + Send + Sync>,
 }
 
 pub(crate) struct LiveAgentReplay {
@@ -201,6 +212,8 @@ impl SessionRuntime {
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
+            attention: Mutex::new(None),
+            attention_hooks: Mutex::new(None),
             os_handle: Mutex::new(None),
             on_os_death: Mutex::new(None),
             os_death_started: AtomicBool::new(false),
@@ -627,6 +640,7 @@ impl SessionRuntime {
         if was_silent {
             self.notify_roster();
         }
+        self.raise_attention_for_event(&event);
         true
     }
 
@@ -686,6 +700,7 @@ impl SessionRuntime {
         if was_silent {
             self.notify_roster();
         }
+        self.raise_attention_for_event(&event);
         was_silent
     }
 
@@ -958,6 +973,75 @@ impl SessionRuntime {
     pub(crate) fn set_roster_notify(&self, callback: Arc<dyn Fn() + Send + Sync>) {
         if let Ok(mut slot) = self.roster_notify.lock() {
             *slot = Some(callback);
+        }
+    }
+
+    pub(crate) fn set_attention_hooks(
+        &self,
+        suppressed: Arc<dyn Fn() -> bool + Send + Sync>,
+        notify: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        if let Ok(mut hooks) = self.attention_hooks.lock() {
+            *hooks = Some(AttentionHooks { suppressed, notify });
+        }
+    }
+
+    pub(crate) fn attention(&self) -> Option<Attention> {
+        self.attention.lock().ok().and_then(|attention| *attention)
+    }
+
+    pub(crate) fn clear_attention(&self) -> bool {
+        let Ok(mut attention) = self.attention.lock() else {
+            return false;
+        };
+        attention.take().is_some()
+    }
+
+    fn raise_attention_for_event(&self, event: &SessionEvent) {
+        let reason = match event {
+            SessionEvent::AgentFinished { .. } => AttentionReason::Finished,
+            SessionEvent::AgentError { .. } => AttentionReason::Error,
+            SessionEvent::PermissionRequest { .. } => AttentionReason::Permission,
+            _ => return,
+        };
+        self.raise_attention(reason);
+    }
+
+    fn raise_attention(&self, reason: AttentionReason) {
+        let hooks = self.attention_hooks.lock().ok().and_then(|hooks| {
+            hooks
+                .as_ref()
+                .map(|hooks| (Arc::clone(&hooks.suppressed), Arc::clone(&hooks.notify)))
+        });
+        // Attention is the transaction guard: hold it while consulting
+        // presence so the suppression decision and the write cannot be
+        // separated by a focus update. The global order is attention ->
+        // presence; set_presence releases its presence guard before it calls
+        // clear_attention, so it never holds these locks in reverse.
+        let Ok(mut attention) = self.attention.lock() else {
+            return;
+        };
+        if hooks.as_ref().is_some_and(|(suppressed, _)| suppressed()) {
+            return;
+        }
+        if attention
+            .as_ref()
+            .is_some_and(|current| current.reason.priority() >= reason.priority())
+        {
+            return;
+        }
+        *attention = Some(Attention {
+            reason,
+            at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+        });
+        drop(attention);
+        if let Some((_, notify)) = hooks {
+            notify();
         }
     }
 
