@@ -106,11 +106,7 @@ symbol or line range that the index does not provide.
 
 **There is no dragging and no resizing, and there will not be.** Layers derive from the
 repository and nothing writes a moved layer back to the code it stands for.
-`snapAdvanced.ts` and `multiResize.ts` were deleted for this reason and should not return.
-
-`src/lib/canvas/snap.ts` was ported alongside them and **is still in the tree, imported by
-nothing but its own test**. It serves the same manipulation model, so it is dead by the
-same argument; it survived only because it was deleted less thoroughly. Do not wire it up.
+`snapAdvanced.ts`, `multiResize.ts` and `snap.ts` were deleted for this reason and should not return.
 
 ## What is not real yet
 
