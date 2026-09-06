@@ -129,6 +129,17 @@ pub fn session_interrupt(bridge: State<'_, DaemonBridge>, id: String) -> Result<
 }
 
 #[tauri::command]
+pub fn session_set_model(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    model_id: Option<String>,
+    effort: Option<String>,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    Ok(require_client(&bridge)?.session_set_model(&id, model_id.as_deref(), effort.as_deref())?)
+}
+
+#[tauri::command]
 pub fn session_close(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
     require_session_id(&id)?;
     bridge.forget_generation(&id);

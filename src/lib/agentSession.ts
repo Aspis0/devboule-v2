@@ -22,6 +22,8 @@ export interface AgentSessionState {
   availableCommands: Array<{ name: string; description: string; hint?: string }>;
   lastFinished: AgentFinished | null;
   manifest: SessionManifest | null;
+  /** A model/effort switch sent to the daemon that no manifest confirmed yet. */
+  pendingSwitch: { modelId?: string; effort?: string; at: number } | null;
 }
 
 export interface AgentSessionDeps {
@@ -40,7 +42,10 @@ const INITIAL_STATE: AgentSessionState = {
   availableCommands: [],
   lastFinished: null,
   manifest: null,
+  pendingSwitch: null,
 };
+
+const SWITCH_CONFIRM_TIMEOUT_MS = 15_000;
 
 type MessageRole = "user" | "assistant" | "thought";
 
@@ -69,6 +74,7 @@ export class AgentSession {
   private attached = false;
   private turnOpen = false;
   private disposed = false;
+  private switchTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deps: AgentSessionDeps) {}
 
@@ -131,6 +137,37 @@ export class AgentSession {
     }
   }
 
+  /**
+   * Hot-switch the model or its thinking effort within the fixed provider.
+   * The invoke response is not a confirmation — the runtime confirms through
+   * a later session_manifest event, so this only marks the switch as pending
+   * and reports a rejected call through the chat error path, like send().
+   */
+  async setModel(modelId?: string, effort?: string): Promise<void> {
+    if (this.disposed || !this.started || !this.attached) return;
+    if (this.state.status === "closed") return;
+    if (modelId === undefined && effort === undefined) return;
+
+    this.update({ pendingSwitch: { modelId, effort, at: Date.now() } });
+    try {
+      await this.deps.invoke("session_set_model", {
+        id: this.deps.sessionId,
+        ...(modelId === undefined ? {} : { modelId }),
+        ...(effort === undefined ? {} : { effort }),
+      });
+    } catch (error) {
+      this.update({ pendingSwitch: null });
+      this.fail(`Could not switch the model: ${eventError(error)}`);
+      return;
+    }
+    if (this.disposed || this.state.pendingSwitch === null) {
+      // A manifest that arrived during the invoke already confirmed or
+      // superseded the switch; the pending marker is handled.
+      return;
+    }
+    this.armSwitchTimeout();
+  }
+
   handleEvent(event: SessionEvent): void {
     if (this.disposed) return;
 
@@ -172,9 +209,21 @@ export class AgentSession {
       case "permission_resolved":
         this.deps.onPermissionResolved?.(event.toolCallId);
         return;
-      case "session_manifest":
-        this.update({ manifest: event });
+      case "session_manifest": {
+        // The provider also pushes spontaneous manifest updates (grok's
+        // models/update); only a manifest that confirms or supersedes the
+        // pending switch resolves it. Everything else leaves the strip dimmed
+        // and the backstop timer running.
+        const pending = this.state.pendingSwitch;
+        const previous = this.state.manifest;
+        if (pending !== null && this.manifestResolvesSwitch(event, previous, pending)) {
+          this.clearSwitchTimer();
+          this.update({ manifest: event, pendingSwitch: null });
+        } else {
+          this.update({ manifest: event });
+        }
         return;
+      }
       case "agent_tool_call":
         this.ensureTurn();
         this.appendTool(event.toolCallId, event.title, event.status);
@@ -207,8 +256,51 @@ export class AgentSession {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.clearSwitchTimer();
     if (this.attached) void this.detach();
     this.listeners.clear();
+  }
+
+  /**
+   * Whether a session_manifest resolves the pending switch: it either
+   * confirms the requested model/effort, or a third party moved the model
+   * away (superseded — the request can no longer be honored).
+   */
+  private manifestResolvesSwitch(
+    event: SessionManifest,
+    previous: SessionManifest | null,
+    pending: { modelId?: string; effort?: string; at: number },
+  ): boolean {
+    if (pending.modelId !== undefined) {
+      if (event.currentModelId === pending.modelId) return true;
+      return (
+        previous?.currentModelId !== undefined &&
+        event.currentModelId !== undefined &&
+        event.currentModelId !== previous.currentModelId
+      );
+    }
+    const current = event.models.find((model) => model.modelId === event.currentModelId);
+    if (current?.currentEffort === pending.effort) return true;
+    return (
+      previous?.currentModelId !== undefined &&
+      event.currentModelId !== undefined &&
+      event.currentModelId !== previous.currentModelId
+    );
+  }
+
+  private clearSwitchTimer(): void {
+    if (this.switchTimer !== null) {
+      clearTimeout(this.switchTimer);
+      this.switchTimer = null;
+    }
+  }
+
+  private armSwitchTimeout(): void {
+    this.clearSwitchTimer();
+    this.switchTimer = setTimeout(() => {
+      this.switchTimer = null;
+      if (!this.disposed) this.update({ pendingSwitch: null });
+    }, SWITCH_CONFIRM_TIMEOUT_MS);
   }
 
   private async detach(): Promise<void> {

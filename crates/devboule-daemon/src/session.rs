@@ -177,6 +177,11 @@ pub(super) trait SessionKiller: Send + Sync {
     fn clone_killer(&self) -> Box<dyn SessionKiller>;
 }
 
+pub(super) trait ModelSwitcher: Send + Sync {
+    fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError>;
+    fn clone_switcher(&self) -> Box<dyn ModelSwitcher>;
+}
+
 pub(super) trait WaitableChild: Send {
     fn wait(self: Box<Self>) -> Option<u32>;
 }
@@ -232,6 +237,7 @@ struct PtySession {
     process_job: Arc<JobObject>,
     master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     killer: Box<dyn SessionKiller>,
+    switcher: Option<Box<dyn ModelSwitcher>>,
     /// This is separate from the stdout reader: stderr must never be able to
     /// fill its pipe and stop the ACP child from producing responses.
     stderr_handle: Option<JoinHandle<()>>,
@@ -250,6 +256,7 @@ struct SpawnedSession {
     process_job: JobObject,
     master: Option<Arc<Mutex<Box<dyn MasterPty + Send>>>>,
     killer: Box<dyn SessionKiller>,
+    switcher: Option<Box<dyn ModelSwitcher>>,
     child: Box<dyn WaitableChild>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     reader: Box<dyn Read + Send>,
@@ -1239,6 +1246,49 @@ impl SessionRegistry {
         Ok(())
     }
 
+    pub fn set_model(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        if model_id.is_none() && effort.is_none() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "A model or effort is required.",
+            ));
+        }
+        let switcher = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get_mut(session_id).ok_or_else(not_found)?;
+            check_user_owner(entry, owner)?;
+            let session = entry.as_live_mut().ok_or_else(process_gone)?;
+            if !session.metadata.kind.is_agent() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Only agent sessions support switching the model or effort.",
+                ));
+            }
+            session
+                .switcher
+                .as_ref()
+                .map(|switcher| switcher.clone_switcher())
+                .ok_or_else(|| {
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "This provider does not support switching the model or effort.",
+                    )
+                })?
+        };
+        switcher.set_model(model_id, effort)
+    }
+
     pub fn send(&self, session_id: &str, text: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -1660,6 +1710,7 @@ pub fn spawn_session(
         process_job,
         master: Some(Arc::new(Mutex::new(pair.master))),
         killer: Box::new(PtyKiller { inner: killer }),
+        switcher: None,
         child: Box::new(PtyWaitableChild { child }),
         writer: Arc::new(Mutex::new(writer)),
         reader,
@@ -1703,6 +1754,7 @@ fn start_spawned_session(
         process_job,
         master,
         killer,
+        switcher,
         child,
         writer,
         reader,
@@ -1785,6 +1837,7 @@ fn start_spawned_session(
         process_job,
         master,
         killer,
+        switcher,
         child_wait,
         writer,
         reader_handle: None,
@@ -2113,6 +2166,7 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
         process_job,
         master,
         mut killer,
+        switcher: _,
         child_wait,
         writer,
         reader_handle,
@@ -3063,6 +3117,7 @@ mod tests {
             process_job: Arc::new(JobObject::new().expect("job")),
             master: None,
             killer: Box::new(NoopKiller),
+            switcher: None,
             stderr_handle: None,
             child_wait: None,
             writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),

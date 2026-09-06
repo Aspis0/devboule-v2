@@ -2,7 +2,7 @@
 
 import { StrictMode, act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { SessionEvent, SessionState } from "../../types/ipc";
 
 const channelHarness = vi.hoisted(() => ({
@@ -106,9 +106,17 @@ vi.mock("../../lib/tauri", () => ({
   }),
   sessionSend: vi.fn(async () => undefined),
   sessionInterrupt: vi.fn(async () => undefined),
+  sessionSetModel: vi.fn(async () => undefined),
 }));
 
-import { sessionAttach, sessionDetach, sessionInterrupt, sessionSend } from "../../lib/tauri";
+import {
+  sessionAttach,
+  sessionDetach,
+  sessionInterrupt,
+  sessionSend,
+  sessionSetModel,
+} from "../../lib/tauri";
+import { setPreferredEffort } from "../../lib/modelPrefs";
 import { AgentChatSurface } from "./AgentChatSurface";
 
 const LIVE_OBSERVED: SessionState = { type: "live", generation: 1 };
@@ -121,6 +129,7 @@ describe("AgentChatSurface", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     channelHarness.emit = null;
+    localStorage.removeItem("devboule.modelEffortPrefs");
   });
 
   afterEach(async () => {
@@ -327,7 +336,7 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector("[data-testid=session-modes]")).toBeNull();
   });
 
-  it("shows provider, model, and effort from the session manifest", async () => {
+  it("shows provider, model, and effort as selects from the session manifest", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
@@ -344,19 +353,378 @@ describe("AgentChatSurface", () => {
             modelId: "grok-4.6",
             name: "Grok 4.6",
             currentEffort: "xhigh",
-            efforts: [{ id: "xhigh", label: "Extra High Effort" }],
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
           },
+          { modelId: "grok-4.7", name: "Grok 4.7", currentEffort: "high", efforts: [] },
         ],
       });
     });
 
     const strip = container.querySelector("[data-testid=session-manifest]");
     expect(strip?.textContent).toContain("grok");
-    expect(strip?.textContent).toContain("Grok 4.6");
-    expect(strip?.textContent).toContain("xhigh");
+    const modelSelect = container.querySelector<HTMLSelectElement>(
+      "[data-testid=session-model-select]",
+    );
+    expect(modelSelect).not.toBeNull();
+    expect(modelSelect?.value).toBe("grok-4.6");
+    expect(modelSelect?.options).toHaveLength(2);
+    expect(modelSelect?.options[0].textContent).toBe("Grok 4.6");
+    const effortSelect = container.querySelector<HTMLSelectElement>(
+      "[data-testid=session-effort-select]",
+    );
+    expect(effortSelect?.value).toBe("xhigh");
+    expect(effortSelect?.options).toHaveLength(2);
     expect(container.querySelector("[data-testid=session-modes]")).toBeNull();
   });
 
+  it("shows no selects for the claude shape: one model and no efforts", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "claude",
+        currentModelId: "claude-opus",
+        models: [{ modelId: "claude-opus", name: "Claude Opus" }],
+      });
+    });
+
+    const strip = container.querySelector("[data-testid=session-manifest]");
+    expect(strip?.textContent).toContain("claude");
+    expect(container.querySelector("[data-testid=session-model-select]")).toBeNull();
+    expect(container.querySelector("[data-testid=session-effort-select]")).toBeNull();
+  });
+
+  it("calls session_set_model on model change and keeps the confirmed value until the manifest lands", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [{ id: "high", label: "High" }],
+          },
+          {
+            modelId: "grok-4.7",
+            name: "Grok 4.7",
+            currentEffort: "high",
+            efforts: [{ id: "high", label: "High" }],
+          },
+        ],
+      });
+    });
+
+    const modelSelect = container.querySelector<HTMLSelectElement>(
+      "[data-testid=session-model-select]",
+    );
+    if (modelSelect === null) throw new Error("model select did not render");
+    await act(async () => {
+      modelSelect.value = "grok-4.7";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(sessionSetModel).toHaveBeenCalledWith("agent-1", "grok-4.7", undefined);
+    const pendingStrip = container.querySelector("[data-testid=session-manifest]");
+    expect(pendingStrip?.getAttribute("aria-busy")).toBe("true");
+    expect(
+      container.querySelector<HTMLSelectElement>("[data-testid=session-model-select]")?.value,
+    ).toBe("grok-4.6");
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.7",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [{ id: "high", label: "High" }],
+          },
+          {
+            modelId: "grok-4.7",
+            name: "Grok 4.7",
+            currentEffort: "high",
+            efforts: [{ id: "high", label: "High" }],
+          },
+        ],
+      });
+    });
+
+    expect(
+      container.querySelector<HTMLSelectElement>("[data-testid=session-model-select]")?.value,
+    ).toBe("grok-4.7");
+    expect(
+      container.querySelector("[data-testid=session-manifest]")?.getAttribute("aria-busy"),
+    ).toBe("false");
+  });
+
+  it("stores the effort preference and auto-applies it once on a new session's first manifest", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="pref-agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+        ],
+      });
+    });
+
+    const effortSelect = container.querySelector<HTMLSelectElement>(
+      "[data-testid=session-effort-select]",
+    );
+    if (effortSelect === null) throw new Error("effort select did not render");
+    await act(async () => {
+      effortSelect.value = "xhigh";
+      effortSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(sessionSetModel).toHaveBeenCalledWith("pref-agent-1", undefined, "xhigh");
+    expect(localStorage.getItem("devboule.modelEffortPrefs")).toBe(
+      JSON.stringify({ [JSON.stringify(["grok", "grok-4.6"])]: "xhigh" }),
+    );
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="pref-agent-2" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+        ],
+      });
+    });
+    const autoCalls = (sessionSetModel as unknown as Mock).mock.calls.filter(
+      ([id]) => id === "pref-agent-2",
+    );
+    expect(autoCalls).toHaveLength(1);
+    expect(autoCalls[0]).toEqual(["pref-agent-2", "grok-4.6", "xhigh"]);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "xhigh",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+        ],
+      });
+    });
+    expect(
+      (sessionSetModel as unknown as Mock).mock.calls.filter(([id]) => id === "pref-agent-2"),
+    ).toHaveLength(1);
+  });
+
+  it("skips the stored effort when the manifest's model does not declare it", async () => {
+    setPreferredEffort("grok", "grok-4.6", "xhigh");
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="pref-skip-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "low", label: "Low" },
+            ],
+          },
+        ],
+      });
+    });
+
+    expect(
+      (sessionSetModel as unknown as Mock).mock.calls.filter(([id]) => id === "pref-skip-agent"),
+    ).toHaveLength(0);
+  });
+
+  it("labels the pending switch and clears the label on confirmation", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+          {
+            modelId: "grok-4.7",
+            name: "Grok 4.7",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+        ],
+      });
+    });
+
+    const modelSelect = container.querySelector<HTMLSelectElement>(
+      "[data-testid=session-model-select]",
+    );
+    if (modelSelect === null) throw new Error("model select did not render");
+    await act(async () => {
+      modelSelect.value = "grok-4.7";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    const label = container.querySelector("[data-testid=session-pending-label]");
+    expect(label?.textContent).toBe("switching to Grok 4.7…");
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.7",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+          {
+            modelId: "grok-4.7",
+            name: "Grok 4.7",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+        ],
+      });
+    });
+    expect(container.querySelector("[data-testid=session-pending-label]")).toBeNull();
+
+    const effortSelect = container.querySelector<HTMLSelectElement>(
+      "[data-testid=session-effort-select]",
+    );
+    if (effortSelect === null) throw new Error("effort select did not render");
+    await act(async () => {
+      effortSelect.value = "xhigh";
+      effortSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector("[data-testid=session-pending-label]")?.textContent).toBe(
+      "switching to Extra High Effort…",
+    );
+  });
+
+  it("shows an error item when the model switch invoke rejects", async () => {
+    (sessionSetModel as unknown as Mock).mockRejectedValueOnce(new Error("provider refused"));
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          { modelId: "grok-4.6", name: "Grok 4.6" },
+          { modelId: "grok-4.7", name: "Grok 4.7" },
+        ],
+      });
+    });
+
+    const modelSelect = container.querySelector<HTMLSelectElement>(
+      "[data-testid=session-model-select]",
+    );
+    if (modelSelect === null) throw new Error("model select did not render");
+    await act(async () => {
+      modelSelect.value = "grok-4.7";
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Could not switch the model: provider refused",
+    );
+  });
   it("does not show a current effort the model did not declare", async () => {
     root = createRoot(container);
     await act(async () => {
@@ -386,7 +754,11 @@ describe("AgentChatSurface", () => {
 
     const strip = container.querySelector("[data-testid=session-manifest]");
     expect(strip?.textContent).toContain("Grok 4.6");
-    expect(strip?.textContent).not.toContain("turbo");
+    const effortSelect = container.querySelector<HTMLSelectElement>(
+      "[data-testid=session-effort-select]",
+    );
+    expect(effortSelect).not.toBeNull();
+    expect(effortSelect?.value).not.toBe("turbo");
   });
 
   it("shows Finished from an ended sessions_watch snapshot, not Ready", async () => {

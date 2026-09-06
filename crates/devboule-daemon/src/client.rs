@@ -194,6 +194,25 @@ impl DaemonClient {
         }
     }
 
+    pub fn session_set_model(
+        &self,
+        session_id: &str,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionSetModel {
+            id,
+            session_id: session_id.to_string(),
+            model_id: model_id.map(str::to_string),
+            effort: effort.map(str::to_string),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {

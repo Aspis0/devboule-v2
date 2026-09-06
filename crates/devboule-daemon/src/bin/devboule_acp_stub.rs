@@ -104,7 +104,38 @@ fn main() -> io::Result<()> {
                 respond(
                     &mut stdout,
                     request.get("id").cloned(),
-                    json!({"sessionId": "stub-session"}),
+                    json!({
+                        "sessionId": "stub-session",
+                        "models": {
+                            "currentModelId": "stub-model",
+                            "availableModels": [{
+                                "modelId": "stub-model",
+                                "name": "Stub Model",
+                                "_meta": {
+                                    "supportsReasoningEffort": true,
+                                    "reasoningEffort": "high",
+                                    "reasoningEfforts": [
+                                        {"id": "high", "label": "High"},
+                                        {"id": "low", "label": "Low"}
+                                    ]
+                                }
+                            }, {
+                                "modelId": "stub-model-new",
+                                "name": "stub-model-new",
+                                "_meta": if std::env::args().any(|arg| arg == "--no-target-efforts") {
+                                    json!({"supportsReasoningEffort": false})
+                                } else {
+                                    json!({
+                                        "supportsReasoningEffort": true,
+                                        "reasoningEfforts": [
+                                            {"id": "high", "label": "High", "default": true},
+                                            {"id": "low", "label": "Low"}
+                                        ]
+                                    })
+                                }
+                            }]
+                        }
+                    }),
                 )?;
             }
             "session/load" => {
@@ -148,6 +179,90 @@ fn main() -> io::Result<()> {
                                 "_meta": {
                                     "supportsReasoningEffort": true,
                                     "reasoningEfforts": [{"id": "high", "label": "High"}]
+                                }
+                            }]
+                        }
+                    }),
+                )?;
+            }
+            "session/set_model" => {
+                let model_id = request
+                    .get("params")
+                    .and_then(|params| params.get("modelId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("stub-model");
+                if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE") {
+                    let effort = request
+                        .get("params")
+                        .and_then(|params| params.get("_meta"))
+                        .and_then(|meta| meta.get("reasoningEffort"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("<none>");
+                    std::fs::write(path, effort).ok();
+                }
+                if let Ok(path) = std::env::var("DEVBOULE_ACP_STUB_SET_MODEL_FILE") {
+                    std::fs::write(path, model_id).ok();
+                }
+                if std::env::var_os("DEVBOULE_STUB_REJECT_SET_MODEL").is_some() {
+                    respond_error(
+                        &mut stdout,
+                        request.get("id").cloned(),
+                        json!({"code": -32602, "message": "unknown model"}),
+                    )?;
+                    continue;
+                }
+                respond(
+                    &mut stdout,
+                    request.get("id").cloned(),
+                    json!({"_meta": {"model": {"Ok": model_id}}}),
+                )?;
+                if std::env::var_os("DEVBOULE_STUB_SET_MODEL_SESSIONS_CHANGED").is_some() {
+                    emit(
+                        &mut stdout,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "_x.ai/sessions/changed",
+                            "params": {
+                                "upserted": [{
+                                    "sessionId": "stub-session",
+                                    "modelId": model_id,
+                                    "reasoningEffort": "medium"
+                                }]
+                            }
+                        }),
+                    )?;
+                }
+                if std::env::var_os("DEVBOULE_STUB_SET_MODEL_NO_PUSH").is_some() {
+                    continue;
+                }
+                let catalog_effort =
+                    if std::env::var_os("DEVBOULE_STUB_SET_MODEL_CATALOG_DEFAULT_PUSH").is_some() {
+                        "xhigh"
+                    } else {
+                        request
+                            .get("params")
+                            .and_then(|params| params.get("_meta"))
+                            .and_then(|meta| meta.get("reasoningEffort"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("high")
+                    };
+                emit(
+                    &mut stdout,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "_x.ai/models/update",
+                        "params": {
+                            "currentModelId": model_id,
+                            "availableModels": [{
+                                "modelId": model_id,
+                                "name": model_id,
+                                "_meta": {
+                                    "supportsReasoningEffort": true,
+                                    "reasoningEffort": catalog_effort,
+                                    "reasoningEfforts": [
+                                        {"id": "high", "label": "High"},
+                                        {"id": "low", "label": "Low"}
+                                    ]
                                 }
                             }]
                         }

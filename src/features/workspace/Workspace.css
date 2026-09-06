@@ -699,6 +699,25 @@
   border: 1px solid var(--border);
   border-radius: 999px;
 }
+.workspace-agent-manifest select {
+  padding: 1px 4px;
+  color: var(--silence);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.workspace-agent-manifest select:hover {
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+
+/* A switch is in flight: the strip still shows the last confirmed values. */
+.workspace-agent-manifest-pending {
+  opacity: 0.55;
+}
 
 .workspace-agent-modes [role="radio"][aria-checked="true"] {
   color: var(--ink);

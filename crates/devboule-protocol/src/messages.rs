@@ -95,6 +95,14 @@ pub enum ClientMessage {
         id: u64,
         session_id: String,
     },
+    SessionSetModel {
+        id: u64,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+    },
     SessionPermissionRespond {
         id: u64,
         session_id: String,
@@ -192,6 +200,7 @@ impl ClientMessage {
             | Self::SessionSend { id, .. }
             | Self::SessionResize { id, .. }
             | Self::SessionInterrupt { id, .. }
+            | Self::SessionSetModel { id, .. }
             | Self::SessionPermissionRespond { id, .. }
             | Self::SessionReportAgent { id, .. }
             | Self::SessionsList { id }
@@ -239,6 +248,7 @@ impl ClientMessage {
             | Self::SessionStop { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
+            | Self::SessionSetModel { .. }
             | Self::SessionReportAgent { .. }
             | Self::SessionsList { .. }
             | Self::SessionsWatch { .. }
@@ -657,6 +667,33 @@ mod tests {
         assert!(!encoded.contains('\n'));
         let decoded: ClientMessage = serde_json::from_str(&encoded).expect("parse");
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn session_set_model_round_trips_with_optional_fields() {
+        let msg = ClientMessage::SessionSetModel {
+            id: 8,
+            session_id: "s.a.1".to_string(),
+            model_id: Some("grok-4.5".to_string()),
+            effort: Some("low".to_string()),
+        };
+        let value = serde_json::to_value(&msg).expect("json");
+        assert_eq!(value["type"], "session_set_model");
+        assert_eq!(value["sessionId"], "s.a.1");
+        assert_eq!(value["modelId"], "grok-4.5");
+        assert_eq!(value["effort"], "low");
+        let encoded = serde_json::to_string(&msg).expect("json");
+        let decoded: ClientMessage = serde_json::from_str(&encoded).expect("parse");
+        assert_eq!(decoded, msg);
+
+        let effort_only = ClientMessage::SessionSetModel {
+            id: 9,
+            session_id: "s.a.1".to_string(),
+            model_id: None,
+            effort: Some("high".to_string()),
+        };
+        let effort_only_value = serde_json::to_value(effort_only).expect("json");
+        assert!(effort_only_value.get("modelId").is_none());
     }
 
     #[test]

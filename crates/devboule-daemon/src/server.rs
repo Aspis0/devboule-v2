@@ -910,6 +910,7 @@ fn dispatch(
         | ClientMessage::SessionSend { .. }
         | ClientMessage::SessionResize { .. }
         | ClientMessage::SessionInterrupt { .. }
+        | ClientMessage::SessionSetModel { .. }
         | ClientMessage::SessionPermissionRespond { .. }
         | ClientMessage::SessionsList { .. }
         | ClientMessage::SessionsWatch { .. }
@@ -1285,6 +1286,18 @@ fn dispatch_session(
             state
                 .sessions
                 .interrupt(&session_id, owner)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
+        ClientMessage::SessionSetModel {
+            id,
+            session_id,
+            model_id,
+            effort,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .set_model(&session_id, owner, model_id.as_deref(), effort.as_deref())
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionPermissionRespond {

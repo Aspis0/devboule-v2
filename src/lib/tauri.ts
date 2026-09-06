@@ -38,6 +38,7 @@ type CommandArgs = {
   session_attach: { id: Id; from_cursor: number | null; ch: SessionChannel };
   session_send: { id: Id; text: string };
   session_interrupt: { id: Id };
+  session_set_model: { id: Id; modelId?: string; effort?: string };
   session_permission_respond: { id: Id; requestId: Id; outcome: PermissionOutcome };
   session_resize: { id: Id; cols: number; rows: number };
   session_detach: { id: Id };
@@ -83,6 +84,7 @@ type CommandResults = {
   session_attach: void;
   session_send: void;
   session_interrupt: void;
+  session_set_model: void;
   session_permission_respond: void;
   session_resize: void;
   session_detach: void;
@@ -188,6 +190,14 @@ export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChan
   invokeTyped("session_attach", { id, from_cursor: fromCursor, ch });
 export const sessionSend = (id: Id, text: string) => invokeTyped("session_send", { id, text });
 export const sessionInterrupt = (id: Id) => invokeTyped("session_interrupt", { id });
+export const sessionSetModel = (id: Id, modelId?: string, effort?: string) =>
+  // The response is void and is not a confirmation: the runtime confirms the
+  // switch through a later session_manifest event on the attach channel.
+  invokeTyped("session_set_model", {
+    id,
+    ...(modelId === undefined ? {} : { modelId }),
+    ...(effort === undefined ? {} : { effort }),
+  });
 export const sessionPermissionRespond = (id: Id, requestId: Id, outcome: PermissionOutcome) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key here must be `requestId`, not `request_id` (the command has no
