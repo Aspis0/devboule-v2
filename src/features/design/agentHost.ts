@@ -14,7 +14,7 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import type { OracleResult, Session, SessionEvent, Workspace } from "../../types/ipc";
-import type { DesignGenerationResult, DesignHost } from "./designHost";
+import type { DesignGenerationOptions, DesignGenerationResult, DesignHost } from "./designHost";
 import { builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
 import { createOracleHost } from "./oracleHost";
 import { buildSkillBlock } from "./skillLoader";
@@ -365,6 +365,7 @@ export function createAgentHost(): DesignHost {
   const runGeneration = async (
     prompt: string,
     signal: AbortSignal,
+    options?: DesignGenerationOptions,
   ): Promise<DesignGenerationResult> => {
     throwIfAborted(signal);
     const oracleResponse = await oracleAsk(prompt);
@@ -407,7 +408,11 @@ export function createAgentHost(): DesignHost {
     // Record the boundary immediately before send(); send() clears lastFinished synchronously.
     run.itemStart = handle.controller.getState().items.length;
     // Subscribe only after send() so a prior turn cannot settle this run.
-    const sendPromise = handle.controller.send(groundedPrompt(prompt, oracleResponse.results));
+    const skillSlugs = options?.skills ?? builtInSkillSlugs();
+    const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
+    const sendPromise = handle.controller.send(
+      groundedPrompt(prompt, oracleResponse.results, composedDoctrine),
+    );
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;
       const state = handle.controller.getState();
@@ -455,13 +460,17 @@ export function createAgentHost(): DesignHost {
   // activeRun is only assigned after the Oracle, workspace and session awaits, so a
   // second call can pass a check on activeRun alone while the first is still in that
   // window. runPending is set synchronously at entry, which is what serialises runs.
-  const generate = async (prompt: string, signal: AbortSignal): Promise<DesignGenerationResult> => {
+  const generate = async (
+    prompt: string,
+    signal: AbortSignal,
+    options?: DesignGenerationOptions,
+  ): Promise<DesignGenerationResult> => {
     if (runPending || activeRun !== null) {
       throw new Error("A design generation is already running.");
     }
     runPending = true;
     try {
-      return await runGeneration(prompt, signal);
+      return await runGeneration(prompt, signal, options);
     } finally {
       runPending = false;
     }

@@ -4,6 +4,22 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
+import { builtInSkillIndex } from "./builtInSkills";
+
+const skillSettingsMocks = vi.hoisted(() => ({
+  load: vi.fn(),
+  save: vi.fn(),
+}));
+
+vi.mock("./designSettings", async () => {
+  const actual = await vi.importActual<typeof import("./designSettings")>("./designSettings");
+  return {
+    ...actual,
+    loadDesignSkillSelection: skillSettingsMocks.load,
+    saveDesignSkillSelection: skillSettingsMocks.save,
+  };
+});
+
 import {
   createViewport,
   fitViewport,
@@ -177,6 +193,10 @@ async function renderDesign(host: DesignHost): Promise<{
 
 beforeEach(() => {
   useAppStore.setState({ plugins: null, installing: null, installError: null });
+  skillSettingsMocks.load.mockReset();
+  skillSettingsMocks.save.mockReset();
+  skillSettingsMocks.load.mockResolvedValue({ version: 1, mode: "all", enabledSlugs: [] });
+  skillSettingsMocks.save.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -523,6 +543,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Make the header quieter.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
+      { skills: expect.any(Array) },
     );
     await act(async () => root.unmount());
   });
@@ -538,7 +559,9 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
-    expect(generate).toHaveBeenCalledWith("Make the header quieter.", expect.any(AbortSignal));
+    expect(generate).toHaveBeenCalledWith("Make the header quieter.", expect.any(AbortSignal), {
+      skills: expect.any(Array),
+    });
     await act(async () => root.unmount());
   });
 
@@ -566,6 +589,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       expect.stringContaining("source file: src/components/Header.tsx"),
       expect.any(AbortSignal),
+      { skills: expect.any(Array) },
     );
     await act(async () => root.unmount());
   });
@@ -736,6 +760,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenLastCalledWith(
       "Refine this artifact.\n\nScope: Editing Generated artifact; the user is refining the artifact the agent just produced.",
       expect.any(AbortSignal),
+      { skills: expect.any(Array) },
     );
 
     await act(async () => {
@@ -917,6 +942,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
+      { skills: expect.any(Array) },
     );
     await act(async () => root.unmount());
   });
@@ -949,6 +975,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
+      { skills: expect.any(Array) },
     );
     await act(async () => root.unmount());
   });
@@ -1230,6 +1257,172 @@ describe("DesignSurface host capabilities", () => {
     expect(container.querySelector(".design-generate-button")).toBeNull();
     expect(container.querySelector('[aria-label="Run visual check"]')).toBeNull();
     expect(container.textContent).not.toContain("Regenerate");
+    await act(async () => root.unmount());
+  });
+
+  it("shows the all-sections summary and sends the same resolved slugs", async () => {
+    const skillIndex = builtInSkillIndex();
+    const generate = vi
+      .fn<NonNullable<DesignHost["generate"]>>()
+      .mockResolvedValue(GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+
+    expect(summary.textContent).toBe(`Craft: all ${skillIndex.length} sections`);
+    await fillDraft(container, "Use every craft rule.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(generate.mock.calls[0]?.[2]).toEqual({
+      skills: skillIndex.map((entry) => entry.slug),
+    });
+    await act(async () => root.unmount());
+  });
+
+  it("restores a stored manual selection and reflects its count", async () => {
+    const skillIndex = builtInSkillIndex();
+    const selected = skillIndex[0];
+    const omitted = skillIndex[1];
+    if (selected === undefined || omitted === undefined) throw new Error("Built-in skills missing");
+    skillSettingsMocks.load.mockResolvedValueOnce({
+      version: 1,
+      mode: "manual",
+      enabledSlugs: [selected.slug],
+    });
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    expect(summary.textContent).toBe(`Craft: 1 of ${skillIndex.length}`);
+
+    await act(async () => summary.click());
+    const selectedCheckbox = container.querySelector<HTMLInputElement>(
+      `input[aria-label="Apply ${selected.title}"]`,
+    );
+    const omittedCheckbox = container.querySelector<HTMLInputElement>(
+      `input[aria-label="Apply ${omitted.title}"]`,
+    );
+    if (selectedCheckbox === null || omittedCheckbox === null) {
+      throw new Error("Craft choices missing");
+    }
+    expect(selectedCheckbox.checked).toBe(true);
+    expect(omittedCheckbox.checked).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("changes the manual selection through the preference save path", async () => {
+    const skillIndex = builtInSkillIndex();
+    const selected = skillIndex[0];
+    if (selected === undefined) throw new Error("Built-in skills missing");
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
+    const manual = container.querySelector<HTMLInputElement>('input[type="radio"][value="manual"]');
+    const checkbox = container.querySelector<HTMLInputElement>(
+      `input[aria-label="Apply ${selected.title}"]`,
+    );
+    if (manual === null || checkbox === null) throw new Error("Craft choices missing");
+
+    await act(async () => manual.click());
+    await act(async () => checkbox.click());
+
+    expect(skillSettingsMocks.save).toHaveBeenLastCalledWith({
+      version: 1,
+      mode: "manual",
+      enabledSlugs: [selected.slug],
+    });
+    await act(async () => root.unmount());
+  });
+
+  it("sends only the manually selected section and shows the matching count", async () => {
+    const skillIndex = builtInSkillIndex();
+    const selected = skillIndex[0];
+    if (selected === undefined) throw new Error("Built-in skills missing");
+    const generate = vi
+      .fn<NonNullable<DesignHost["generate"]>>()
+      .mockResolvedValue(GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
+    const manual = container.querySelector<HTMLInputElement>('input[type="radio"][value="manual"]');
+    const checkbox = container.querySelector<HTMLInputElement>(
+      `input[aria-label="Apply ${selected.title}"]`,
+    );
+    if (manual === null || checkbox === null) throw new Error("Craft choices missing");
+    await act(async () => manual.click());
+    await act(async () => checkbox.click());
+
+    expect(summary.textContent).toBe(`Craft: 1 of ${skillIndex.length}`);
+    await fillDraft(container, "Use the selected craft section.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(generate.mock.calls[0]?.[2]).toEqual({ skills: [selected.slug] });
+    await act(async () => root.unmount());
+  });
+
+  // A class assertion proves a string is present and nothing about what renders.
+  // It gates the wiring only; whether the row actually reads as locked was checked
+  // by reading design.css and computing the contrast of --silence on
+  // --surface-muted (5.37:1), not by measuring the running app.
+  it("marks every option row locked in all mode and none of them in manual mode", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
+
+    const rows = () => [...container.querySelectorAll(".design-skill-option")];
+    expect(rows()).toHaveLength(builtInSkillIndex().length);
+    expect(rows().every((row) => row.classList.contains("design-skill-option-locked"))).toBe(true);
+
+    const manual = container.querySelector<HTMLInputElement>('input[type="radio"][value="manual"]');
+    if (manual === null) throw new Error("Craft mode choice missing");
+    await act(async () => manual.click());
+
+    expect(rows().some((row) => row.classList.contains("design-skill-option-locked"))).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("manual mode with no checked sections sends an empty skill list", async () => {
+    const generate = vi
+      .fn<NonNullable<DesignHost["generate"]>>()
+      .mockResolvedValue(GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
+    const manual = container.querySelector<HTMLInputElement>('input[type="radio"][value="manual"]');
+    if (manual === null) throw new Error("Manual mode missing");
+    await act(async () => manual.click());
+
+    await fillDraft(container, "Do not apply craft doctrine.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(generate.mock.calls[0]?.[2]).toEqual({ skills: [] });
     await act(async () => root.unmount());
   });
 });

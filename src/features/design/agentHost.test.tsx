@@ -61,7 +61,7 @@ import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationResult } from "./designHost";
-import { builtInSkillSources } from "./builtInSkills";
+import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
 import { parseSkillFile } from "./skillLoader";
 import {
   DESIGN_DOCTRINE_BEGIN,
@@ -150,8 +150,9 @@ function emitToolUpdate(
 
 async function startRun(
   host: ReturnType<typeof createAgentHost>,
+  options?: { skills?: readonly string[] },
 ): Promise<{ run: Promise<DesignGenerationResult> }> {
-  const run = host.generate?.("Update the design", new AbortController().signal);
+  const run = host.generate?.("Update the design", new AbortController().signal, options);
   let failure: unknown;
   void run?.catch((error: unknown) => {
     failure = error;
@@ -227,6 +228,57 @@ afterEach(() => {
 });
 
 describe("ACP design host", () => {
+  it("sends only the explicitly selected doctrine section", async () => {
+    const index = builtInSkillIndex();
+    const selected = index[0];
+    const omitted = index[1];
+    if (selected === undefined || omitted === undefined) throw new Error("Built-in skills missing");
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skills: [selected.slug] });
+    finishRun();
+    await run;
+
+    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    expect(sentText).toContain(`## ${selected.title}`);
+    const selectedSource = builtInSkillSources().find((source) =>
+      source.path.endsWith(`${selected.slug}.md`),
+    );
+    if (selectedSource === undefined) throw new Error("Selected skill source missing");
+    const selectedSection = parseSkillFile(selectedSource.path, selectedSource.text);
+    if (!selectedSection.ok) throw new Error("Selected skill did not parse");
+    expect(sentText).toContain(selectedSection.section.body);
+    expect(sentText).not.toContain(`## ${omitted.title}`);
+
+    await disposeAgentHost(host);
+  });
+
+  it("omits the doctrine block when an empty skill list is selected", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skills: [] });
+    finishRun();
+    await run;
+
+    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    expect(sentText).not.toContain(DESIGN_DOCTRINE_BEGIN);
+    expect(sentText).not.toContain(DESIGN_DOCTRINE_END);
+
+    await disposeAgentHost(host);
+  });
+
+  it("sends every built-in doctrine section when all are selected", async () => {
+    const index = builtInSkillIndex();
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skills: index.map((entry) => entry.slug) });
+    finishRun();
+    await run;
+
+    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    for (const entry of index) expect(sentText).toContain(`## ${entry.title}`);
+
+    await disposeAgentHost(host);
+  });
+
   it("reports paths from a completed write tool as sources", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);

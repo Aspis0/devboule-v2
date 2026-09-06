@@ -17,6 +17,14 @@ import type {
   DesignTool,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
+import { builtInSkillIndex, type BuiltInSkillIndexEntry } from "./builtInSkills";
+import {
+  DEFAULT_DESIGN_SKILL_SELECTION,
+  loadDesignSkillSelection,
+  saveDesignSkillSelection,
+  selectedSlugs,
+  type DesignSkillSelection,
+} from "./designSettings";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
 import type { NodeRect } from "../../types/geometry";
@@ -155,6 +163,11 @@ interface AssistantProps {
   onVisualCheck: () => void;
   onClearContext: () => void;
   onMessageAction: (action: MessageAction, message: DesignMessage) => void;
+  skillIndex: readonly BuiltInSkillIndexEntry[];
+  skillSelection: DesignSkillSelection;
+  selectedSkillSlugs: readonly string[];
+  onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
+  onSkillToggle: (slug: string) => void;
 }
 
 type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
@@ -1048,7 +1061,19 @@ const DesignAssistant = memo(function DesignAssistant({
   onVisualCheck,
   onClearContext,
   onMessageAction,
+  skillIndex,
+  skillSelection,
+  selectedSkillSlugs,
+  onSkillModeChange,
+  onSkillToggle,
 }: AssistantProps) {
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
+  const skillSummary =
+    skillSelection.mode === "all"
+      ? `Craft: all ${selectedSkillSlugs.length} ${selectedSkillSlugs.length === 1 ? "section" : "sections"}`
+      : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
+
   return (
     <aside className="design-assistant" aria-labelledby="design-assistant-title">
       <div className="design-assistant-header">
@@ -1083,7 +1108,7 @@ const DesignAssistant = memo(function DesignAssistant({
 
       {canGenerate ? (
         <div className="design-composer-wrap">
-          <div className="design-composer">
+          <div className="design-composer-meta">
             {contextLayerName ? (
               <div className="design-composer-context">
                 <span>
@@ -1099,6 +1124,80 @@ const DesignAssistant = memo(function DesignAssistant({
                 </button>
               </div>
             ) : null}
+            <div className="design-skill-controls">
+              <button
+                className="design-skill-summary"
+                type="button"
+                aria-expanded={skillPickerOpen}
+                aria-controls="design-skill-picker"
+                aria-label="Configure design craft"
+                onClick={() => setSkillPickerOpen((open) => !open)}
+              >
+                {skillSummary}
+              </button>
+              {skillPickerOpen ? (
+                <div
+                  id="design-skill-picker"
+                  className="design-skill-picker"
+                  role="group"
+                  aria-label="Design craft sections"
+                >
+                  <fieldset className="design-skill-modes">
+                    <legend>Apply craft sections</legend>
+                    <label>
+                      <input
+                        type="radio"
+                        name="design-skill-mode"
+                        value="all"
+                        checked={skillSelection.mode === "all"}
+                        onChange={() => onSkillModeChange("all")}
+                      />
+                      <span>All</span>
+                      <small>Every section, including ones added later.</small>
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="design-skill-mode"
+                        value="manual"
+                        checked={skillSelection.mode === "manual"}
+                        onChange={() => onSkillModeChange("manual")}
+                      />
+                      <span>Manual</span>
+                      <small>Exactly the sections you tick.</small>
+                    </label>
+                  </fieldset>
+                  <div className="design-skill-list">
+                    {skillIndex.map((entry) => (
+                      <label
+                        className={
+                          skillSelection.mode === "all"
+                            ? "design-skill-option design-skill-option-locked"
+                            : "design-skill-option"
+                        }
+                        key={entry.slug}
+                      >
+                        <input
+                          type="checkbox"
+                          aria-label={`Apply ${entry.title}`}
+                          checked={skillSelection.mode === "all" || selectedSlugSet.has(entry.slug)}
+                          disabled={skillSelection.mode === "all"}
+                          onChange={() => onSkillToggle(entry.slug)}
+                        />
+                        <span className="design-skill-option-copy">
+                          <span className="design-skill-option-title">{entry.title}</span>
+                          <span className="design-skill-option-description">
+                            {entry.description}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <div className="design-composer">
             <textarea
               value={draft}
               onChange={onDraftChange}
@@ -1194,6 +1293,8 @@ interface DesignSurfaceContentProps {
 }
 
 function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceContentProps) {
+  const skillIndex = useMemo(() => builtInSkillIndex(), []);
+  const knownSkillSlugs = useMemo(() => skillIndex.map((entry) => entry.slug), [skillIndex]);
   const initialSnapshot: DesignSnapshot = {
     hiddenLayerIds: document.initialState.hiddenLayerIds,
     layers: cloneLayers(document),
@@ -1222,6 +1323,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [messages, setMessages] = useState<DesignMessage[]>(() => cloneMessages(document));
+  const [skillSelection, setSkillSelectionState] = useState<DesignSkillSelection>(
+    DEFAULT_DESIGN_SKILL_SELECTION,
+  );
 
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -1232,6 +1336,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const messagesRef = useRef(messages);
   const documentRevisionRef = useRef(0);
   const layerCopyCounterRef = useRef(0);
+  const skillSelectionInteractedRef = useRef(false);
   const assistantRef = useRef<HTMLDivElement>(null);
   const designSurfaceRef = useRef<HTMLElement>(null);
 
@@ -1253,9 +1358,50 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     if (assistantRef.current) assistantRef.current.scrollTop = assistantRef.current.scrollHeight;
   }, [messages, busy]);
 
+  useEffect(() => {
+    let active = true;
+    void loadDesignSkillSelection(knownSkillSlugs).then((selection) => {
+      if (active && !skillSelectionInteractedRef.current) setSkillSelectionState(selection);
+    });
+    return () => {
+      active = false;
+    };
+  }, [knownSkillSlugs]);
+
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) ?? null,
     [layers, selectedLayerId],
+  );
+
+  // The same resolved list drives both the composer summary and each generation.
+  const selectedSkillSlugs = useMemo(
+    () => selectedSlugs(skillSelection, knownSkillSlugs),
+    [knownSkillSlugs, skillSelection],
+  );
+  const updateSkillSelection = useCallback((selection: DesignSkillSelection) => {
+    skillSelectionInteractedRef.current = true;
+    setSkillSelectionState(selection);
+    void saveDesignSkillSelection(selection);
+  }, []);
+  const handleSkillModeChange = useCallback(
+    (mode: DesignSkillSelection["mode"]) => {
+      if (skillSelection.mode === mode) return;
+      updateSkillSelection({ ...skillSelection, mode });
+    },
+    [skillSelection, updateSkillSelection],
+  );
+  const handleSkillToggle = useCallback(
+    (slug: string) => {
+      if (skillSelection.mode !== "manual") return;
+      const enabled = new Set(skillSelection.enabledSlugs);
+      if (enabled.has(slug)) enabled.delete(slug);
+      else enabled.add(slug);
+      updateSkillSelection({
+        ...skillSelection,
+        enabledSlugs: [...enabled],
+      });
+    },
+    [skillSelection, updateSkillSelection],
   );
 
   const layerRows = useMemo(
@@ -1626,7 +1772,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       setMessages((current) => [...current, userMessage, assistantMessage]);
       setDraft("");
       setBusy(true);
-      void generate(scopedPrompt, controller.signal)
+      void generate(scopedPrompt, controller.signal, { skills: selectedSkillSlugs })
         .then((result) => {
           if (controller.signal.aborted || activeGenerationRef.current !== activeGeneration) return;
           activeGeneration.delivered = true;
@@ -1679,6 +1825,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       document.contextPrefix,
       document.workingMessage,
       generate,
+      selectedSkillSlugs,
     ],
   );
 
@@ -1866,6 +2013,11 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           onVisualCheck={visualCheck}
           onClearContext={clearComposerContext}
           onMessageAction={handleMessageAction}
+          skillIndex={skillIndex}
+          skillSelection={skillSelection}
+          selectedSkillSlugs={selectedSkillSlugs}
+          onSkillModeChange={handleSkillModeChange}
+          onSkillToggle={handleSkillToggle}
         />
       </div>
     </section>

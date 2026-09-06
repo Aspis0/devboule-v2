@@ -56,6 +56,10 @@ export interface DesignGenerationResult {
   artifactError?: string;
 }
 
+export interface DesignGenerationOptions {
+  skills?: readonly string[];
+}
+
 export interface DesignCanvasContent {
   aiRegion: {
     x: number;
@@ -100,5 +104,9 @@ export interface DesignDocument {
 export interface DesignHost {
   loadDocument(signal?: AbortSignal): Promise<DesignDocument>;
   saveDocument?(doc: DesignDocument): Promise<void>;
-  generate?(prompt: string, signal: AbortSignal): Promise<DesignGenerationResult>;
+  generate?(
+    prompt: string,
+    signal: AbortSignal,
+    options?: DesignGenerationOptions,
+  ): Promise<DesignGenerationResult>;
 }

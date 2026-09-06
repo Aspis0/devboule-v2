@@ -1106,6 +1106,147 @@
   border-top: 1px solid var(--border);
 }
 
+.design-composer-meta {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.design-skill-controls {
+  flex: 1;
+  min-width: 0;
+}
+
+.design-skill-summary {
+  width: 100%;
+  padding: 2px 0;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.design-skill-summary:hover,
+.design-skill-summary:focus-visible {
+  color: var(--terracotta-deep);
+}
+
+.design-skill-summary:focus-visible {
+  outline: 1px solid var(--terracotta);
+  outline-offset: 2px;
+}
+
+.design-skill-modes input:focus-visible,
+.design-skill-option input:focus-visible {
+  outline: 1px solid var(--terracotta);
+  outline-offset: 2px;
+}
+
+.design-skill-picker {
+  max-height: 230px;
+  margin-top: 6px;
+  padding: 9px 10px;
+  overflow-y: auto;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.design-composer-meta .design-composer-context {
+  flex: none;
+  margin-bottom: 0;
+}
+
+.design-skill-modes {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 9px;
+  padding: 0;
+  border: 0;
+}
+
+.design-skill-modes legend {
+  margin-bottom: 5px;
+  color: var(--ink);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.design-skill-modes label,
+.design-skill-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 10px;
+}
+
+.design-skill-modes label {
+  flex-wrap: wrap;
+}
+
+.design-skill-modes small {
+  flex-basis: 100%;
+  margin-left: 20px;
+  color: var(--silence);
+  font-size: 9px;
+}
+
+.design-skill-list {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.design-skill-option {
+  cursor: pointer;
+}
+
+.design-skill-option input {
+  flex: none;
+  margin: 2px 0 0;
+}
+
+.design-skill-option input:disabled {
+  opacity: 0.55;
+}
+
+/* In "all" mode every box is ticked and locked.  Dimming only the 13px checkbox
+   leaves a row that still reads as interactive and still shows a pointer, which
+   invites a click that does nothing — the exact defect this surface shipped once
+   before.  The whole row has to say it is not editable. */
+.design-skill-option.design-skill-option-locked {
+  /* Two classes deliberately: at equal specificity this would depend on source
+     order, and source order is the thing a refactor silently reorders. */
+  cursor: default;
+}
+
+.design-skill-option-locked .design-skill-option-title,
+.design-skill-option-locked .design-skill-option-description {
+  color: var(--silence);
+}
+
+.design-skill-option-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.design-skill-option-title {
+  color: var(--ink);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.design-skill-option-description {
+  color: var(--ink-soft);
+  line-height: 1.35;
+}
+
 .design-composer {
   padding: 9px 11px 8px;
   background: var(--surface);
