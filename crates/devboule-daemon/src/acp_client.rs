@@ -757,6 +757,14 @@ impl AcpTransport {
         if let Some(model_id) = model_id {
             self.update_current_model_id(Some(model_id));
         }
+        // `_x.ai/sessions/changed.reasoningEffort` is the session's ACTUAL live
+        // effort, not a catalog default (measured: it reports `low`/`high` as
+        // the user set them, whereas `models/update` reports the model's default
+        // regardless). It is therefore authoritative and MUST update the tracked
+        // effort — this is what makes `override_manifest_effort` reflect a change
+        // the provider made on its own side. Do not "protect" the tracked effort
+        // from this source: that would hide a real runtime change and violate
+        // §4.3.4 (show the runtime-confirmed value, not the last click).
         if effort.is_some() {
             self.update_current_effort(effort);
         }
