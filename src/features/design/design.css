@@ -1155,6 +1155,13 @@
   border-radius: 10px;
 }
 
+.design-skill-purpose {
+  margin: 0 0 9px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .design-composer-meta .design-composer-context {
   flex: none;
   margin-bottom: 0;
@@ -1245,6 +1252,42 @@
 .design-skill-option-description {
   color: var(--ink-soft);
   line-height: 1.35;
+}
+
+.design-skill-preview {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.design-skill-preview summary {
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.design-skill-preview summary:focus-visible {
+  outline: 1px solid var(--terracotta);
+  outline-offset: 2px;
+}
+
+.design-skill-preview pre {
+  max-height: 160px;
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  color: var(--silence);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: "JetBrains Mono", monospace;
+  /* Matches the controls around it rather than shrinking below them.  This
+     preview is how a person learns what the sections do, so it must not be the
+     least readable text in the panel. */
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .design-composer {

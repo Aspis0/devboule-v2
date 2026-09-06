@@ -17,7 +17,11 @@ import type {
   DesignTool,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
-import { builtInSkillIndex, type BuiltInSkillIndexEntry } from "./builtInSkills";
+import {
+  builtInSkillIndex,
+  builtInSkillSources,
+  type BuiltInSkillIndexEntry,
+} from "./builtInSkills";
 import {
   DEFAULT_DESIGN_SKILL_SELECTION,
   loadDesignSkillSelection,
@@ -25,6 +29,7 @@ import {
   selectedSlugs,
   type DesignSkillSelection,
 } from "./designSettings";
+import { buildSkillBlock } from "./skillLoader";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
 import type { NodeRect } from "../../types/geometry";
@@ -1072,7 +1077,13 @@ const DesignAssistant = memo(function DesignAssistant({
   const skillSummary =
     skillSelection.mode === "all"
       ? `Craft: all ${selectedSkillSlugs.length} ${selectedSkillSlugs.length === 1 ? "section" : "sections"}`
-      : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
+      : selectedSkillSlugs.length === 0
+        ? `Craft: 0 of ${skillIndex.length} · no design guidance`
+        : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
+  const skillPreview = useMemo(
+    () => buildSkillBlock(builtInSkillSources(), selectedSkillSlugs).text,
+    [selectedSkillSlugs],
+  );
 
   return (
     <aside className="design-assistant" aria-labelledby="design-assistant-title">
@@ -1142,6 +1153,10 @@ const DesignAssistant = memo(function DesignAssistant({
                   role="group"
                   aria-label="Design craft sections"
                 >
+                  <p className="design-skill-purpose">
+                    These sections are added to every design request, so the agent works to the same
+                    standards each time.
+                  </p>
                   <fieldset className="design-skill-modes">
                     <legend>Apply craft sections</legend>
                     <label>
@@ -1193,6 +1208,12 @@ const DesignAssistant = memo(function DesignAssistant({
                       </label>
                     ))}
                   </div>
+                  {skillPreview.length > 0 ? (
+                    <details className="design-skill-preview">
+                      <summary>What the agent will be told</summary>
+                      <pre>{skillPreview}</pre>
+                    </details>
+                  ) : null}
                 </div>
               ) : null}
             </div>

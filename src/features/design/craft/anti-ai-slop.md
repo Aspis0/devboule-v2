@@ -39,5 +39,11 @@ not solve it.
 photograph. When the asset is unavailable, use a deliberate placeholder — correct aspect
 ratio, a caption naming what belongs there — and keep the space it needs.
 
+**What to reach for instead**, because every rule above is a decision avoided and removing
+one leaves a hole. The replacements are a short list: hierarchy from weight, scale and space
+before colour; a container earned by an interaction rather than assumed; one deliberate move
+the brief can justify, and the rest quiet around it; asymmetry or an off-grid element chosen
+on purpose rather than symmetry by default.
+
 The test: hide the logo. If the first screen could belong to any other product, no choice
 has been made yet.

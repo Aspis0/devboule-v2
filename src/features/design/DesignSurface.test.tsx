@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
-import { builtInSkillIndex } from "./builtInSkills";
+import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
 
 const skillSettingsMocks = vi.hoisted(() => ({
   load: vi.fn(),
@@ -29,7 +29,13 @@ import {
 } from "./designViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationResult } from "./designHost";
-import { MAX_ARTIFACT_BYTES } from "./agentHost";
+import {
+  DESIGN_DOCTRINE_BEGIN,
+  DESIGN_DOCTRINE_END,
+  DESIGN_DOCTRINE_RESTATEMENT,
+  MAX_ARTIFACT_BYTES,
+} from "./agentHost";
+import { buildSkillBlock } from "./skillLoader";
 import { nodesBounds } from "../../lib/canvas/viewportMath";
 import { rectIntersects } from "../../lib/canvas/hitTest";
 import type { NodeRect } from "../../types/geometry";
@@ -1417,12 +1423,64 @@ describe("DesignSurface host capabilities", () => {
     if (manual === null) throw new Error("Manual mode missing");
     await act(async () => manual.click());
 
+    expect(summary.textContent).toContain("no design guidance");
+    expect(container.querySelector(".design-skill-preview")).toBeNull();
     await fillDraft(container, "Do not apply craft doctrine.");
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
     expect(generate.mock.calls[0]?.[2]).toEqual({ skills: [] });
+    await act(async () => root.unmount());
+  });
+
+  it("explains craft sections when the picker is open", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
+
+    const purpose = container.querySelector<HTMLElement>(".design-skill-purpose");
+    expect(purpose?.textContent).toContain("design request");
+    await act(async () => root.unmount());
+  });
+
+  it("reveals exactly the selected doctrine without prompt scaffolding", async () => {
+    const skillIndex = builtInSkillIndex();
+    const selected = skillIndex[0];
+    if (selected === undefined) throw new Error("Built-in skills missing");
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const pickerButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (pickerButton === null) throw new Error("Craft summary missing");
+    await act(async () => pickerButton.click());
+    const manual = container.querySelector<HTMLInputElement>('input[type="radio"][value="manual"]');
+    const checkbox = container.querySelector<HTMLInputElement>(
+      `input[aria-label="Apply ${selected.title}"]`,
+    );
+    if (manual === null || checkbox === null) throw new Error("Craft choices missing");
+    await act(async () => manual.click());
+    await act(async () => checkbox.click());
+
+    const preview = container.querySelector<HTMLDetailsElement>(".design-skill-preview");
+    if (preview === null) throw new Error("Craft preview missing");
+    expect(preview.open).toBe(false);
+    const previewToggle = preview.querySelector<HTMLElement>("summary");
+    if (previewToggle === null) throw new Error("Craft preview toggle missing");
+    await act(async () => previewToggle.click());
+
+    const expected = buildSkillBlock(builtInSkillSources(), [selected.slug]).text;
+    expect(preview.querySelector("pre")?.textContent).toBe(expected);
+    expect(preview.textContent).not.toContain(DESIGN_DOCTRINE_BEGIN);
+    expect(preview.textContent).not.toContain(DESIGN_DOCTRINE_END);
+    expect(preview.textContent).not.toContain(DESIGN_DOCTRINE_RESTATEMENT);
     await act(async () => root.unmount());
   });
 });
