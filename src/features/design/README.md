@@ -94,11 +94,13 @@ says so rather than an application that stops responding.
 
 `skillLoader.ts` composes craft doctrine into one block of prompt text,
 `builtInSkills.ts` discovers the sections, and `groundedPrompt` in `agentHost.ts` sends it
-with every agent generation. **There is no selection yet** — every built-in section goes, always.
-Letting the user choose is the next slice, and it needs somewhere to persist the choice:
-the app has no preference store in the frontend, and `ARCHITETTURA.md` names
-`<app_config_dir>/oracle-settings.json` as the model to copy, which is a command pair in
-`src-tauri/` rather than anything reachable from here.
+with every agent generation. **There is no selection yet** — every built-in section goes,
+always. Letting the user choose is the next slice, and the choice has to persist. The
+project has two mechanisms for that: `localStorage`, used for per-model effort preferences,
+and a JSON document under `<app_config_dir>` behind an IPC command pair, which
+`ARCHITETTURA.md` names as the model to copy. This selection takes the second, because it
+feeds prompt composition rather than UI appearance — it is product configuration, and it
+should outlive a cleared webview store.
 
 **A skill is a file, not a feature**: the sections live in `craft/` as markdown with three
 front-matter fields — `slug` (must match the filename), `title`, `requires` — discovered
