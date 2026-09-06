@@ -4,11 +4,20 @@ Commit:    a9b54a3e62a6391f5f5ab7a20e4ddb32fb79a27d
 Committed: 2026-09-05T12:11:03Z
 Read on:   2026-09-06
 
+Second origin, for two rules only:
+Upstream:  https://github.com/nexu-io/open-design
+Commit:    3d0d15fc55031e8e6cead709491e7b82565c4dee
+Licence:   Apache-2.0, Copyright 2026 Open Design contributors
+Covers:    the rules against invented metrics and against filler copy in
+           anti-ai-slop.md, which do not appear in refero_skill. OpenDesign's
+           craft/ is itself an adaptation of the same refero_skill material.
+
 Adapted, not copied. The doctrine files in this directory are condensed and
-rewritten from skills/refero-design/references/*.md in the project above:
+rewritten from skills/refero-design/references/*.md in refero_skill:
 shortened to a character budget, stripped of references to the upstream's own
 tooling and research corpus, and written to prescribe no palette at all, because
 the output lands in the user's project rather than in ours. Concrete hex values
-appear only as values to avoid. LICENSE.refero_skill is
-the upstream MIT licence, reproduced verbatim; it does not license this
-directory, it travels with the material adapted from that project.
+appear only as values to avoid. LICENSE.refero_skill is refero_skill's MIT
+licence, reproduced verbatim; it does not license this directory, it travels
+with the material adapted from that project. OpenDesign is Apache-2.0, the same
+licence as this repository, so its terms are already in LICENSE at the root.
