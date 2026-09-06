@@ -26,7 +26,7 @@ describe("built-in design skills", () => {
 
   it("contains exactly the current built-in skill slugs", () => {
     expect(new Set(builtInSkillIndex().map((entry) => entry.slug))).toEqual(
-      new Set(["anti-ai-slop", "color", "state-coverage"]),
+      new Set(["anti-ai-slop", "color", "state-coverage", "typography"]),
     );
   });
 
