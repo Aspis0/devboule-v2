@@ -30,6 +30,13 @@ Covers:    the whole of state-coverage.md, condensed from a 7,218-byte source
            which refero states only as "sparingly"; and the substance of
            motion.md and rtl.md, from their animation-discipline.md and
            rtl-and-bidi.md.
+Read on:   2026-09-07, for the second batch — form-validation.md and
+           cognition.md, condensed from their form-validation.md (17,407
+           bytes) and laws-of-ux.md (17,635) to parsed bodies of 2,396 and
+           2,315 characters, roughly a seventh each. Bytes against parsed
+           characters: the ratio is an order of magnitude, not a figure. cognition.md is deliberately not named
+           after the upstream slug: the section is organised around what the
+           reader has to do, not around the branded name of a rule collection.
 Note:      OpenDesign's craft/ is partly an adaptation of the same refero_skill
            material, but animation-discipline.md, rtl-and-bidi.md,
            accessibility-baseline.md, laws-of-ux.md and their state-coverage.md
@@ -59,6 +66,24 @@ passage about strings of small and full capitals, in which he writes that
 display capitals have no generalised optimum; an easing curve attributed to
 Material was wrong; and Arabic size and line-height ranges had no traceable
 source and were removed.
+
+The 2026-09-07 batch lost three more. Two attributed form-validation practice
+to the ARIA Authoring Practices Guide: the APG has no form-validation or
+error-summary pattern saying where focus goes after submit, and its spinbutton
+example wires an invalid value with aria-errormessage rather than the
+aria-describedby recipe. Both were replaced with the W3C WAI forms tutorial and
+technique ARIA21, and the surviving GOV.UK half was narrowed to what that
+design system does: it focuses the summary, and its examples do not use
+aria-invalid at all. The third was a dated citation to a paywalled commercial
+benchmark, supporting no rule a model could act on and uncheckable against a
+primary source; it was deleted rather than hedged.
+
+Reading a claim in an upstream file is not verification of that claim. The same
+pass found two errors in OpenDesign's accessibility-baseline.md, which we did
+not adopt: EN 301 549 V4.1.1 is described there as awaiting publication when it
+is published (ETSI, 2026-09) and merely not yet cited in the Official Journal,
+and Section 508 is called harmonised with EN 301 549 when the Access Board
+expressly declined to incorporate it by reference.
 
 The rules name no palette, because the output lands in the user's project
 rather than in ours. Concrete hex values appear only as values to avoid.

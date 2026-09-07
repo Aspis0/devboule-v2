@@ -2,6 +2,7 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { Window as HappyWindow } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
@@ -32,6 +33,42 @@ const VALID_RESULT = {
     },
   ],
 } as const;
+
+function runAssembledMeasurement(html: string, setup?: (measurementWindow: HappyWindow) => void) {
+  const srcDoc = buildArtifactMeasurementSrcDoc(html);
+  const scriptMatch = srcDoc.match(/<script>([\s\S]*?)<\/script>/);
+  if (scriptMatch === null) throw new Error("Measurement script was not assembled");
+  const measurementWindow = new HappyWindow({ url: "http://measurement.test/" });
+  let posted: unknown;
+  const parent = { postMessage: (message: unknown) => (posted = message) };
+  Object.defineProperty(measurementWindow, "parent", {
+    configurable: true,
+    value: parent,
+  });
+  measurementWindow.document.write(srcDoc.replace(scriptMatch[0], ""));
+  setup?.(measurementWindow);
+  measurementWindow.eval(scriptMatch[1]);
+  measurementWindow.happyDOM.close();
+  const result = readArtifactRenderCriticResult(posted);
+  if (result === null) throw new Error("Measurement script did not post a valid result");
+  return result;
+}
+
+function setRect(element: object, width: number, height: number, left = 0, top = 0) {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () => ({
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      top,
+      width,
+      x: left,
+      y: top,
+    }),
+  });
+}
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -98,6 +135,267 @@ describe("artifact render critic pure helpers", () => {
     expect(scriptTags).toHaveLength(1);
     expect(srcDoc).toContain("<main>Measured</main>");
     expect(srcDoc).not.toContain("onclick");
+  });
+
+  it("measures native controls with their associated label target", () => {
+    const result = runAssembledMeasurement(
+      `<main>
+        <label id="check-label"><input id="check" type="checkbox"></label>
+        <label for="radio-one">Radio one</label><input id="radio-one" type="radio">
+        <label for="radio-two">Radio two</label><input id="radio-two" type="radio">
+        <label for="radio-three">Radio three</label><input id="radio-three" type="radio">
+      </main>`,
+      (measurementWindow) => {
+        const checkLabel = measurementWindow.document.querySelector("#check-label");
+        const check = measurementWindow.document.querySelector("#check");
+        const radioOneLabel = measurementWindow.document.querySelector('label[for="radio-one"]');
+        const radioOne = measurementWindow.document.querySelector("#radio-one");
+        const radioTwoLabel = measurementWindow.document.querySelector('label[for="radio-two"]');
+        const radioTwo = measurementWindow.document.querySelector("#radio-two");
+        const radioThreeLabel = measurementWindow.document.querySelector(
+          'label[for="radio-three"]',
+        );
+        const radioThree = measurementWindow.document.querySelector("#radio-three");
+        if (
+          checkLabel === null ||
+          check === null ||
+          radioOneLabel === null ||
+          radioOne === null ||
+          radioTwoLabel === null ||
+          radioTwo === null ||
+          radioThreeLabel === null ||
+          radioThree === null
+        ) {
+          throw new Error("Native control fixture did not mount");
+        }
+        setRect(checkLabel, 350, 68);
+        setRect(check, 1, 1);
+        setRect(radioOneLabel, 220, 64);
+        setRect(radioOne, 13, 13);
+        setRect(radioTwoLabel, 220, 64);
+        setRect(radioTwo, 13, 13);
+        setRect(radioThreeLabel, 220, 64);
+        setRect(radioThree, 13, 13);
+      },
+    );
+
+    expect(result.findings.some((finding) => finding.kind === "pointer-target")).toBe(false);
+  });
+
+  it("reports a bare undersized native button", () => {
+    const result = runAssembledMeasurement(
+      '<button id="small" type="button">Small</button>',
+      (measurementWindow) => {
+        const button = measurementWindow.document.querySelector("#small");
+        if (button === null) throw new Error("Button fixture did not mount");
+        setRect(button, 12, 12);
+      },
+    );
+    const finding = result.findings.find((candidate) => candidate.kind === "pointer-target");
+
+    expect(finding).toMatchObject({ kind: "pointer-target", count: 1 });
+  });
+
+  it("measures authored focus contrast but does not report 3.247:1", () => {
+    const lowContrast = runAssembledMeasurement(`
+      <style>
+        body { background-color: #f7f8f4; }
+        button:focus-visible { outline: 3px solid #f0a187; }
+      </style>
+      <button>Sign in</button>
+    `);
+    const lowFinding = lowContrast.findings.find(
+      (finding) => finding.kind === "focus-indicator" && finding.reason === "low-contrast",
+    );
+    expect(lowFinding).toMatchObject({ kind: "focus-indicator", reason: "low-contrast", count: 1 });
+    if (lowFinding?.kind === "focus-indicator") {
+      expect(lowFinding.samples[0]?.ratio).toBeCloseTo(1.939, 3);
+    }
+
+    const passing = runAssembledMeasurement(`
+      <style>
+        :root { --focus: #b88428; }
+        body { background-color: #fffdfa; }
+        button:focus-visible { outline: 3px solid var(--focus); }
+      </style>
+      <button>System</button>
+    `);
+    expect(
+      passing.findings.some(
+        (finding) => finding.kind === "focus-indicator" && finding.reason === "low-contrast",
+      ),
+    ).toBe(false);
+  });
+
+  it("resolves a focus color per matched element", () => {
+    const result = runAssembledMeasurement(`
+      <style>
+        body { background-color: #f7f8f4; }
+        button:focus-visible { outline: 3px solid currentColor; }
+      </style>
+      <div><button style="color: #001133">Light</button></div>
+      <div><button style="color: #f0a187">Dark</button></div>
+    `);
+    const finding = result.findings.find(
+      (candidate) => candidate.kind === "focus-indicator" && candidate.reason === "low-contrast",
+    );
+
+    expect(finding).toMatchObject({ kind: "focus-indicator", reason: "low-contrast", count: 1 });
+    if (finding?.kind === "focus-indicator") {
+      expect(finding.samples[0]?.label).toContain('"Dark"');
+      expect(finding.samples[0]?.ratio).toBeCloseTo(1.939, 3);
+    }
+  });
+
+  it("reports an outline removed without a replacement only", () => {
+    const removed = runAssembledMeasurement(`
+      <style>button:focus-visible { outline: none; }</style>
+      <button>Remove ring</button>
+    `);
+    expect(removed.findings).toContainEqual(
+      expect.objectContaining({ kind: "focus-indicator", reason: "removed", count: 1 }),
+    );
+
+    const replacement = runAssembledMeasurement(`
+      <style>button:focus-visible { outline: none; background: #dcebe5; }</style>
+      <button>Replacement</button>
+    `);
+    expect(
+      replacement.findings.some(
+        (finding) => finding.kind === "focus-indicator" && finding.reason === "removed",
+      ),
+    ).toBe(false);
+  });
+
+  it("suppresses removed when another rule supplies a focus ring", () => {
+    const result = runAssembledMeasurement(`
+      <style>
+        .btn:focus-visible, .btn { outline: none; font-weight: 600; }
+        .btn:focus-visible { outline: 3px solid #001133; }
+      </style>
+      <button class="btn">Save</button>
+    `);
+
+    expect(result.findings).toEqual([]);
+  });
+
+  it("treats auto outlines and supported width units as unknown visible indicators", () => {
+    const auto = runAssembledMeasurement(
+      `
+      <style>
+        .auto:focus-visible, .auto { font-weight: 600; }
+        .auto:focus-visible { outline: auto; }
+        .style-auto:focus-visible, .style-auto { font-weight: 600; }
+        .style-auto:focus-visible { outline-style: auto; outline-width: 2em; }
+        .rem:focus-visible, .rem { font-weight: 600; }
+        .rem:focus-visible { outline-width: 1rem; outline-style: solid; outline-color: #001133; }
+        .percent:focus-visible, .percent { font-weight: 600; }
+        .percent:focus-visible { outline-width: 2%; outline-style: solid; outline-color: #001133; }
+      </style>
+      <button class="auto">Auto</button>
+      <button class="style-auto">Style auto</button>
+      <button class="rem">Rem</button>
+      <button class="percent">Percent</button>
+    `,
+      (measurementWindow) => {
+        const style = (values: Record<string, string>) => ({
+          getPropertyValue: (property: string) => values[property] ?? "",
+          item: (index: number) => Object.keys(values)[index] ?? "",
+          length: Object.keys(values).length,
+        });
+        const rule = (selectorText: string, values: Record<string, string>) => ({
+          cssRules: [],
+          selectorText,
+          style: style(values),
+        });
+        Object.defineProperty(measurementWindow.document, "styleSheets", {
+          configurable: true,
+          value: [
+            {
+              cssRules: [
+                rule(".auto:focus-visible, .auto", { outline: "auto" }),
+                rule(".style-auto:focus-visible, .style-auto", {
+                  "outline-style": "auto",
+                  "outline-width": "2em",
+                }),
+                rule(".rem:focus-visible, .rem", {
+                  "outline-color": "#001133",
+                  "outline-style": "solid",
+                  "outline-width": "1rem",
+                }),
+                rule(".percent:focus-visible, .percent", {
+                  "outline-color": "#001133",
+                  "outline-style": "solid",
+                  "outline-width": "2%",
+                }),
+              ],
+            },
+          ],
+        });
+      },
+    );
+
+    expect(auto.findings.some((finding) => finding.kind === "focus-indicator")).toBe(false);
+  });
+
+  it("gives removed precedence over always-on for the same element", () => {
+    const result = runAssembledMeasurement(`
+      <style>.btn:focus-visible, .btn { outline: none; font-weight: 600; }</style>
+      <button class="btn">Save</button>
+    `);
+    const focusFindings = result.findings.filter((finding) => finding.kind === "focus-indicator");
+
+    expect(focusFindings).toContainEqual(
+      expect.objectContaining({ kind: "focus-indicator", reason: "removed", count: 1 }),
+    );
+    expect(focusFindings.some((finding) => finding.reason === "always-on")).toBe(false);
+  });
+
+  it("does not use aria-labelledby as a pointer-target label", () => {
+    const result = runAssembledMeasurement(
+      `<span id="label" style="display:inline-block;width:200px;padding:20px">Notifications</span>
+       <input class="hidden-input" type="checkbox" aria-labelledby="label">`,
+      (measurementWindow) => {
+        const input = measurementWindow.document.querySelector("input");
+        if (input === null) throw new Error("ARIA-labelledby fixture did not mount");
+        setRect(input, 1, 1);
+      },
+    );
+    const finding = result.findings.find((candidate) => candidate.kind === "pointer-target");
+
+    expect(finding).toMatchObject({ kind: "pointer-target", count: 1 });
+  });
+
+  it("suppresses always-on when another focus rule supplies an indicator", () => {
+    const suppliedIndicator = runAssembledMeasurement(`
+      <style>
+        .btn:focus-visible { outline: 3px solid #001133; }
+        .btn, .btn:focus-visible { font-weight: 600; }
+      </style>
+      <button class="btn" style="padding:12px 20px">Save</button>
+    `);
+    expect(suppliedIndicator.findings).toEqual([]);
+  });
+
+  it("reports a static aria-current collision but not a hover/focus selector pair", () => {
+    const collision = runAssembledMeasurement(`
+      <style>
+        .nav a:hover, .nav a:focus-visible, .nav a[aria-current="page"] {
+          background: #f0f0f0;
+          outline: none;
+        }
+      </style>
+      <nav class="nav"><a href="#" aria-current="page">New simulation</a></nav>
+    `);
+    expect(collision.findings).toContainEqual(
+      expect.objectContaining({ kind: "focus-indicator", reason: "always-on", count: 1 }),
+    );
+
+    const transient = runAssembledMeasurement(`
+      <style>a:hover, a:focus-visible { outline: 3px solid #000; }</style>
+      <a href="#">Transient</a>
+    `);
+    expect(transient.findings.some((finding) => finding.kind === "focus-indicator")).toBe(false);
   });
 
   it("calculates WCAG contrast and recognizes both large-text thresholds", () => {

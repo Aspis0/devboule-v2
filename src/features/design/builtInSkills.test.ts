@@ -20,6 +20,8 @@ const EXPECTED_PRIORITY_ORDER = [
   "icons",
   "motion",
   "rtl",
+  "form-validation",
+  "cognition",
 ] as const;
 
 function slugForPath(path: string): string {

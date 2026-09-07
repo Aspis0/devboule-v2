@@ -90,6 +90,60 @@ The `<iframe>` keeps `pointer-events: none` and the artifact's content wrapper i
 focus cannot descend into the frame. Artifacts are capped at 256 KiB, with a card that
 says so rather than an application that stops responding.
 
+## Checking what rendered
+
+`artifactRenderCritic.ts` measures the artifact instead of trusting the prose the agent wrote
+about it. It cannot use the display frame: that frame is `sandbox=""` with an opaque origin,
+which is the point of it, and nothing can read back what rendered there. So it renders the
+same markup a second time in a hidden frame at `sandbox="allow-scripts"` and nothing else,
+with `<script>` elements and `on*` attributes stripped first, its own CSP delivered inside the
+document, results validated both against `frame.contentWindow` and by shape, and a 1.5 second
+timeout after which nothing is shown. The measurement frame is 700 × 500 — the same size as
+the artifact node on the canvas — so it measures the viewport the user is actually looking at.
+
+Four checks, chosen because each is decidable from the rendered box rather than from taste:
+text contrast against SC 1.4.3, pointer targets against SC 2.5.8, content overflow, and focus
+indicators against SC 1.4.11.
+
+**The pointer-target check measures the element unioned with its label**, because the common
+"visually hidden input inside a big label" pattern would otherwise generate pure noise. Two
+real artifacts settled the rule in opposite directions: a Settings screen whose switch is a
+1 × 1 checkbox inside a 350.8 × 68 label produces nothing, and a desktop mock whose 14 × 14
+checkboxes sit in 131.7 × 20 labels produces two findings, because 20 CSS px is genuinely under
+the 24 the criterion asks for.
+
+**The focus check is static analysis of the stylesheets, and that is a measured constraint
+rather than a preference.** Focusing an element inside the hidden frame moves the *parent*
+page's `document.activeElement` to the iframe, and removing the frame afterwards drops it to
+`body`. Probed in Chromium 152 with a control: with no `focus()` call the parent keeps both
+its active element and its text caret; with one, it loses them. The critic runs immediately
+after a generation, which is exactly when the user may be typing the next prompt, so it never
+calls `focus()`, `blur()` or `showPicker()`. Three reasons are reported: an outline below 3:1,
+an outline removed with nothing declared in its place, and a rule whose focus selector shares
+its declarations with a *static* selector some element already matches — that last one catches
+the case where the item carrying `aria-current="page"` looks identical focused and unfocused.
+`:hover` is deliberately excluded from that collision test, because sharing a block with a
+transient state is correct and extremely common.
+
+**Two defects found by measuring rather than by reading the report**, both recorded because
+the shape of them recurs. The first version emitted its measurement source as raw text with no
+`<script>` element and prepended it ahead of the artifact's doctype, so the script never ran
+and the document fell into quirks mode — and it failed silently, because a timeout is designed
+to show nothing. 650 tests were green: they asserted the pure functions and never the
+assembled document, which is the only thing a browser sees. The second was a false positive in
+the collision test, which fired on a button that had a perfectly good focus ring, because the
+check ran per rule and never asked whether a *different* rule supplied the indicator. A
+warning on correct output is the expensive failure for this component: it teaches the reader
+to dismiss the card, and then the real finding is invisible too. Both cases are now tests that
+drive the assembled document.
+
+**What it does not measure.** When an ancestor carries a `background-image`, the contrast check
+returns nothing rather than guessing at a colour underneath. Measuring against the real pixels
+would need a screenshot taken from outside the frame — a Tauri or CDP capture — because
+rasterising the DOM from inside is blocked by the frame's own CSP and taints the canvas.
+Re-rendering with a library instead would produce an approximation wearing the costume of a
+measurement, which is worse than the gap.
+
 ## Design doctrine
 
 `skillLoader.ts` composes craft doctrine into one block of prompt text,
@@ -106,8 +160,26 @@ and the pre-flight prompt does not offer it as a choice. It was measured at two 
 fifteen requests across three runs — first in the list, last in the list, and with a
 description rewritten to state its breadth outright — because a relevance ranking under a cap
 rewards specificity, so a section that applies to everything loses to sections that apply to
-this. That is structural and no wording fixes it. `MAX_AUTOMATIC_SKILL_SECTIONS` is five, and
-the routed maximum is derived from it minus the baseline count so the two cannot drift.
+this. That is structural and no wording fixes it. `MAX_AUTOMATIC_SKILL_SECTIONS` is four,
+bounded by the composed budget rather than chosen. Measured exhaustively over the current
+corpus: of the 220 possible four-section selections every one composes with nothing dropped,
+and of the 495 possible five-section selections 8 fit while 487 overflow. Four is therefore
+the largest cap under which everything the router can choose arrives intact — at five, 98% of
+generations would silently discard the router's own last choice and attach a notice saying
+the doctrine is incomplete. The cap moved rather than the deliberate 12,000-character ceiling,
+and the routed maximum is derived from the cap minus the baseline count so the two cannot
+drift.
+
+**That justification has already gone stale once, which is worth more than the number
+itself.** The cap was set against an eleven-section corpus, on the finding that no five
+sections could fit *at all*: the cheapest five then composed to 9,741 characters with one
+dropped. Two smaller sections were added hours later and the claim quietly became false — the
+cheapest five now compose to 11,975 and fit. The decision survived and its real reason turned
+out to be stronger, but the sentence justifying it did not, and no test would have caught the
+prose going wrong. The invariant in `agentHost.test.tsx` guards the cap itself, composing the
+most expensive selection the cap allows and asserting nothing is dropped, so it holds whatever
+the corpus becomes. The arithmetic quoted in this file does not: recompute it whenever a
+section is added, removed or resized.
 
 The choice persists through `surface_settings_get`/`set` rather than `localStorage`, which
 the project does use elsewhere for per-model effort preferences. This one feeds prompt
@@ -124,9 +196,63 @@ same field Cursor's agent-requested rules and the Agent Skills standard use for 
 both of which chose a sentence over a category taxonomy. Every value has to stay on one
 line: the parser wants a key per line and says so when it does not get one. Adding one is dropping in a file, which is the shape the marketplace will need
 to distribute them. Nothing is ever executed: doctrine is markdown that becomes prompt
-text. There are eleven sections today, totalling 26,553 characters of body, which is
+text. There are thirteen sections today, totalling 31,264 characters of body, which is
 more than twice what the ceiling composes — the corpus is a library to select from rather
 than a block to send whole.
+
+**`form-validation` and `cognition` were condensed from OpenDesign's corpus, and the
+condensation is the work.** Their upstream files are 17,407 and 17,635 bytes; the parsed
+bodies we ship are 2,396 and 2,315 characters, so roughly a seventh survives. The two sides
+are measured differently — a file on disk against what `parseSkillFile` returns — so read the
+ratio as an order of magnitude, not a figure. What survives is the checkable rules; what
+went is the discussion. Both were given explicit ownership boundaries, because a section
+that repeats another wastes one of the four slots automatic mode can send and invites the
+two to contradict each other: `form-validation` owns only *when* validation fires and *how*
+an error is wired to its field — `state-coverage` still owns which states exist, `microcopy`
+the words, `accessibility` the conformance floor — and `cognition` owns perception, choice
+and memory while deferring distance to `spacing` and target size to `accessibility` and
+`icons`.
+
+Both were then measured against the router rather than assumed to be reachable, because a
+section nothing selects is a section that does not exist. `form-validation` ranked second of
+three for a sign-in request; `cognition` ranked first for a pricing page with four plans to
+compare and second for a dashboard to scan. Neither appeared where it did not belong —
+`cognition` was not chosen for the sign-in, `form-validation` not for either scanning task.
+That refuted a prediction made before they were written: `cognition`'s description is close
+to universal, and the baseline measurement above says a relevance ranking punishes breadth,
+so it was expected to be unselectable. It was not. Breadth in the *subject* is survivable
+when the description names a concrete trigger — here "compare, choose" — and the earlier
+result is narrower than it first appeared.
+
+Both were appended to the end of `BUILT_IN_SKILL_PRIORITY` rather than placed by importance.
+`all` is the default mode and truncation keeps the head of that list, so inserting them
+higher would have pushed `accessibility` out of the block every existing user receives.
+Measured after the change: `all` still composes `anti-ai-slop`, `typography`, `color` and
+`accessibility`, exactly as before.
+
+**The provenance scheme has no tier for empirical findings, and `cognition` exposed that.**
+`STANDARD` wants a clause and a conformance level; `CONVENTION` wants two or more named,
+independent design systems. A replicated psychology result is neither, so Fitts, Hick and
+Hyman, and Iyengar and Lepper are all labelled `OPINION` — the same word as an aesthetic
+preference. The prose carries the provenance instead, naming the researchers inline, and the
+section's "What is contested" paragraph does the corrective work: Miller's 7±2 is about
+chunk capacity and not a menu limit, Hick does not license a universal three-to-five cap, and
+Fitts predicts a speed–accuracy trade-off rather than a pixel rule. A fourth tier would be
+more honest, and it would mean re-auditing all thirteen sections; the flattening is recorded
+here rather than fixed.
+
+**The conformance target this doctrine writes to is WCAG 2.2 Level AA**, verified against
+the W3C rather than inherited: 2.2 is the current Recommendation and conforming to it also
+conforms to 2.1 and 2.0, so it covers the US Title II baseline (WCAG 2.1 AA, deadlines
+2027-04-26 and 2028-04-26 by total population) and the Section 508 baseline (still WCAG 2.0
+AA in the published revision) while matching the direction of EN 301 549 V4.1.1. That is a
+conformance target for an interface, **not** a claim of legal compliance: EN 301 549 carries
+requirements beyond WCAG, and applicability depends on the whole product and its
+jurisdiction. Two details worth keeping straight, because a secondary source we read had both
+wrong: EN 301 549 V4.1.1 is *published* (ETSI, 2026-09) but not yet *cited in the Official
+Journal*, so V3.2.1 and WCAG 2.1 remain the EU legal reference; and Section 508 is
+coordinated with EN 301 549 but not harmonised with it — the Access Board expressly declined
+to incorporate it by reference.
 
 `doctrineLint.test.ts` guards the corpus, and it is deliberately narrow. It checks that every
 WCAG citation carries a conformance level, that every description ends in the Apply-whenever
@@ -186,12 +312,13 @@ was run against this code. The same request was generated twice, with the first 
 sections of the priority order and with the first five. The larger block produced a semantic
 table, pointer targets sized against a cited criterion, specific accessible names, a declared
 spacing scale and a responsive rule, none of which appeared in the smaller one — and it did
-not drift from the brief. That is one request, one model, one run per arm: enough to raise
-the automatic cap from three to five, not enough to call it an optimum.
+not drift from the brief. That is one request, one model, one run per arm: evidence that more
+doctrine can help, not enough to call five an attainable automatic cap or an optimum.
 
-Routing was measured at the new cap too, because a wider cap could have made the selector
-spray rather than choose. It did not: doubling the routed slots from two to four left `icons`
-at two selections in fifteen and `rtl` at one, exactly the requests that need them, while
+Routing was also measured while evaluating the wider, temporary cap, because it could have
+made the selector spray rather than choose. It did not: doubling the routed slots from two
+to four left `icons` at two selections in fifteen and `rtl` at one, exactly the requests that
+need them, while
 `spacing` — which no automatic path had delivered at all, being fifth in priority and never
 chosen — rose to seven. It had not been described badly; it had been below the cut. The
 instruction to name fewer than the maximum also started to work only at four slots, going

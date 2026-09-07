@@ -1322,6 +1322,44 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  // Manual used to be excluded from the resolved-composition check, so a user who ticked
+  // more than the budget carries saw every box ticked and no explanation, while the agent
+  // silently received fewer sections. The tick must survive — it is the user's choice — and
+  // the row must still say the section did not fit.
+  it("marks omitted rows in manual mode, keeping the user's tick", async () => {
+    const skillIndex = builtInSkillIndex();
+    const allSlugs = skillIndex.map((entry) => entry.slug);
+    const composed = buildSkillBlock(builtInSkillSources(), allSlugs);
+    expect(composed.dropped.length).toBeGreaterThan(0);
+    skillSettingsMocks.load.mockResolvedValueOnce({
+      version: 1,
+      mode: "manual",
+      enabledSlugs: allSlugs,
+    });
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
+
+    const omitted = `Omitted: did not fit within the ${composed.ceiling.toLocaleString()}-character budget.`;
+    for (const entry of skillIndex) {
+      const checkbox = container.querySelector<HTMLInputElement>(
+        `input[aria-label="Apply ${entry.title}"]`,
+      );
+      const row = checkbox?.closest<HTMLElement>(".design-skill-option") ?? null;
+      if (row === null || checkbox === null) throw new Error(`Craft row missing: ${entry.title}`);
+      const dropped = composed.dropped.includes(entry.slug);
+      expect(checkbox.checked).toBe(true);
+      expect(row.classList.contains("design-skill-option-dropped")).toBe(dropped);
+      expect(row.textContent?.includes(omitted)).toBe(dropped);
+    }
+    await act(async () => root.unmount());
+  });
+
   it("restores a stored manual selection and reflects its count", async () => {
     const skillIndex = builtInSkillIndex();
     const selected = skillIndex[0];

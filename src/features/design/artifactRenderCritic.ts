@@ -2,14 +2,24 @@ import { createElement, useEffect, useState } from "react";
 
 /*
  * This is a small render-time heuristic over an untrusted artifact, not an accessibility
- * audit. It measures only three things: text contrast, pointer-target size, and horizontal
- * clipping/overflow. It intentionally skips text with no measurable box, ambiguous colors,
- * background images or gradients, opacity/blending it cannot resolve, pseudo-elements,
- * replaced content, and targets it cannot identify as interactive (including custom interactions
- * exposed only through on* handlers, which are removed before measurement). It does not evaluate the
- * WCAG pointer-target exceptions for spacing, an equivalent control elsewhere, unmodified
- * user-agent controls, or essential presentation; native controls without an explicit ARIA
- * role are conservatively skipped, and inline targets in a run of text are skipped.
+ * audit. It measures only four things: text contrast, pointer-target size, horizontal
+ * clipping/overflow, and a static stylesheet heuristic for focus indicators. It intentionally
+ * skips text with no measurable box, ambiguous colors, background images or gradients,
+ * opacity/blending it cannot resolve, pseudo-elements, replaced content, and targets it cannot
+ * identify as interactive (including custom interactions exposed only through on* handlers, which
+ * are removed before measurement). It does not evaluate the WCAG pointer-target exceptions for
+ * spacing, an equivalent control elsewhere, unmodified user-agent controls, or essential
+ * presentation; visually hidden native controls are measured with their associated label when
+ * one exists, and inline targets in a run of text are skipped.
+ * `aria-labelledby` is intentionally not treated as a hit-area association: it names a control,
+ * but clicking the referenced element does not toggle it.
+ * The focus check intentionally misses user-agent rings, focus indicators supplied only by
+ * script or pseudo-elements, selectors it cannot safely strip or match, cross-origin or
+ * inaccessible stylesheets, colors it cannot parse, and focus rules whose effective background
+ * is ambiguous. It also does not infer a missing focus rule: a browser default indicator is a
+ * valid outcome when no authored focus rule matches.
+ * A 261,117-byte synthetic artifact with 4,000 controls and 64 focus rules measured `run()` at
+ * 242.9 ms in Chromium 152, comfortably below the current 1,500 ms measurement timeout.
  * It also does not catch vertical clipping, overflow hidden without a wider scroll box,
  * transforms or clip-path that hide content, text rendered by canvas, shadow DOM, or defects
  * caused by a positioned sibling covering text, or defects that appear only after asynchronous
@@ -329,7 +339,15 @@ export type ArtifactRenderFinding =
       kind: "overflow";
       count: number;
       samples: readonly OverflowSample[];
+    }
+  | {
+      kind: "focus-indicator";
+      reason: FocusIndicatorReason;
+      count: number;
+      samples: readonly FocusIndicatorSample[];
     };
+
+export type FocusIndicatorReason = "low-contrast" | "removed" | "always-on";
 
 export interface ContrastSample {
   readonly fontSizePx: number;
@@ -348,6 +366,12 @@ export interface OverflowSample {
   readonly clientWidth: number;
   readonly label: string;
   readonly scrollWidth: number;
+}
+
+export interface FocusIndicatorSample {
+  readonly label: string;
+  readonly selector: string;
+  readonly ratio?: number;
 }
 
 export interface ArtifactRenderCriticResult {
@@ -369,7 +393,16 @@ function boundedLabel(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 160;
 }
 
-function validSamples(value: unknown, count: number, kind: ArtifactRenderFinding["kind"]): boolean {
+function boundedSelector(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 400;
+}
+
+function validSamples(
+  value: unknown,
+  count: number,
+  kind: ArtifactRenderFinding["kind"],
+  reason?: FocusIndicatorReason,
+): boolean {
   if (!Array.isArray(value) || value.length === 0 || value.length > 3 || value.length > count) {
     return false;
   }
@@ -393,6 +426,13 @@ function validSamples(value: unknown, count: number, kind: ArtifactRenderFinding
         sample.height > 0
       );
     }
+    if (kind === "focus-indicator") {
+      if (!boundedSelector(sample.selector)) return false;
+      if (reason === "low-contrast") {
+        return boundedNumber(sample.ratio, 1000) && sample.ratio > 0 && sample.ratio < 3;
+      }
+      return sample.ratio === undefined;
+    }
     return (
       boundedNumber(sample.scrollWidth, 1000000) &&
       boundedNumber(sample.clientWidth, 1000000) &&
@@ -409,26 +449,33 @@ export function readArtifactRenderCriticResult(value: unknown): ArtifactRenderCr
     message.source !== ARTIFACT_RENDER_CRITIC_SOURCE ||
     message.version !== ARTIFACT_RENDER_CRITIC_VERSION ||
     !Array.isArray(message.findings) ||
-    message.findings.length > 3
+    message.findings.length > 6
   ) {
     return null;
   }
 
-  const kinds = new Set<ArtifactRenderFinding["kind"]>();
+  const kinds = new Set<string>();
   const findings: ArtifactRenderFinding[] = [];
   for (const findingValue of message.findings) {
     const finding = record(findingValue);
-    if (
-      finding === null ||
-      typeof finding.kind !== "string" ||
-      kinds.has(finding.kind as ArtifactRenderFinding["kind"])
-    ) {
+    if (finding === null || typeof finding.kind !== "string") {
       return null;
     }
     if (
       finding.kind !== "contrast" &&
       finding.kind !== "pointer-target" &&
-      finding.kind !== "overflow"
+      finding.kind !== "overflow" &&
+      finding.kind !== "focus-indicator"
+    ) {
+      return null;
+    }
+    const reason =
+      finding.kind === "focus-indicator" ? (finding.reason as FocusIndicatorReason) : undefined;
+    if (
+      finding.kind === "focus-indicator" &&
+      reason !== "low-contrast" &&
+      reason !== "removed" &&
+      reason !== "always-on"
     ) {
       return null;
     }
@@ -437,11 +484,14 @@ export function readArtifactRenderCriticResult(value: unknown): ArtifactRenderCr
       !Number.isInteger(finding.count) ||
       finding.count < 1 ||
       finding.count > 10000 ||
-      !validSamples(finding.samples, finding.count, finding.kind)
+      !validSamples(finding.samples, finding.count, finding.kind, reason)
     ) {
       return null;
     }
-    kinds.add(finding.kind);
+    const findingKey =
+      finding.kind === "focus-indicator" ? `${finding.kind}:${reason}` : finding.kind;
+    if (kinds.has(findingKey)) return null;
+    kinds.add(findingKey);
     findings.push(finding as ArtifactRenderFinding);
   }
 
@@ -515,20 +565,9 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
     };
   }
 
-  function channel(value) {
-    const normalized = value / 255;
-    return normalized <= 0.04045
-      ? normalized / 12.92
-      : Math.pow((normalized + 0.055) / 1.055, 2.4);
-  }
-
-  function ratio(foreground, background) {
-    const foregroundLuminance = 0.2126 * channel(foreground.r) + 0.7152 * channel(foreground.g) + 0.0722 * channel(foreground.b);
-    const backgroundLuminance = 0.2126 * channel(background.r) + 0.7152 * channel(background.g) + 0.0722 * channel(background.b);
-    const lighter = Math.max(foregroundLuminance, backgroundLuminance);
-    const darker = Math.min(foregroundLuminance, backgroundLuminance);
-    return (lighter + 0.05) / (darker + 0.05);
-  }
+  ${linearChannel.toString()}
+  ${relativeLuminance.toString()}
+  ${contrastRatio.toString()}
 
   function label(element) {
     const tag = element.tagName.toLowerCase();
@@ -557,6 +596,10 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
     return background;
   }
 
+  function focusBackground(element) {
+    return effectiveBackground(element.parentElement || element);
+  }
+
   function hasVisibleDirectText(element) {
     const style = getComputedStyle(element);
     if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
@@ -583,7 +626,7 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
     if (foreground === null || background === null || foreground.a <= 0 || !Number.isFinite(fontSize)) return null;
     const visibleForeground = composite(foreground, background);
     const minimum = isLargeText(fontSize, style.fontWeight) ? 3 : 4.5;
-    const measuredRatio = ratio(visibleForeground, background);
+    const measuredRatio = contrastRatio(visibleForeground, background);
     return measuredRatio < minimum ? { label: label(element), ratio: measuredRatio, minimum, fontSizePx: fontSize } : null;
   }
 
@@ -605,17 +648,360 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
   function isPointerTarget(element) {
     const tag = element.tagName.toLowerCase();
     if (tag === 'a' || tag === 'area') return element.hasAttribute('href');
+    if (tag === 'button' || tag === 'select' || tag === 'textarea' || tag === 'summary') return true;
+    if (tag === 'input') return (element.getAttribute('type') || 'text').toLowerCase() !== 'hidden';
     const role = (element.getAttribute('role') || '').toLowerCase();
     return ['button', 'link', 'checkbox', 'radio', 'switch', 'tab', 'option', 'menuitem', 'combobox'].includes(role);
+  }
+
+  function associatedLabel(element) {
+    for (let current = element.parentElement; current; current = current.parentElement) {
+      if (current.tagName.toLowerCase() === 'label') return current;
+    }
+    const id = element.getAttribute('id');
+    if (!id) return null;
+    return [...document.querySelectorAll('label')].find((candidate) => candidate.getAttribute('for') === id) || null;
+  }
+
+  function targetRect(element) {
+    const rect = element.getBoundingClientRect();
+    const labelElement = associatedLabel(element);
+    if (labelElement === null) return rect;
+    const labelStyle = getComputedStyle(labelElement);
+    if (labelStyle.display === 'none' || labelStyle.visibility === 'hidden' || labelStyle.pointerEvents === 'none') return rect;
+    const labelRect = labelElement.getBoundingClientRect();
+    if (labelRect.width <= 0 || labelRect.height <= 0) return rect;
+    const left = Math.min(rect.left, labelRect.left);
+    const top = Math.min(rect.top, labelRect.top);
+    const right = Math.max(rect.right, labelRect.right);
+    const bottom = Math.max(rect.bottom, labelRect.bottom);
+    return { left, top, right, bottom, width: right - left, height: bottom - top };
   }
 
   function measurePointerTarget(element) {
     if (!isPointerTarget(element) || element.hasAttribute('disabled') || element.getAttribute('aria-disabled') === 'true') return null;
     const style = getComputedStyle(element);
     if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none' || isInlineTextTarget(element, style)) return null;
-    const rect = element.getBoundingClientRect();
+    const rect = targetRect(element);
     if (rect.width <= 0 || rect.height <= 0 || (rect.width >= 24 && rect.height >= 24)) return null;
     return { label: label(element), width: rect.width, height: rect.height };
+  }
+
+  function splitSelectorList(selectorText) {
+    const selectors = [];
+    let current = '';
+    let bracketDepth = 0;
+    let parenthesisDepth = 0;
+    let quote = null;
+    for (const character of selectorText) {
+      if (quote !== null) {
+        current += character;
+        if (character === quote) quote = null;
+      } else if (character === '"' || character === "'") {
+        quote = character;
+        current += character;
+      } else if (character === '[') {
+        bracketDepth += 1;
+        current += character;
+      } else if (character === ']') {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        current += character;
+      } else if (character === '(') {
+        parenthesisDepth += 1;
+        current += character;
+      } else if (character === ')') {
+        parenthesisDepth = Math.max(0, parenthesisDepth - 1);
+        current += character;
+      } else if (character === ',' && bracketDepth === 0 && parenthesisDepth === 0) {
+        if (current.trim()) selectors.push(current.trim());
+        current = '';
+      } else {
+        current += character;
+      }
+    }
+    if (current.trim()) selectors.push(current.trim());
+    return selectors;
+  }
+
+  function hasFocusPseudo(selector) {
+    return /(^|[^:]):focus-visible(?![-\w])|(^|[^:]):focus(?![-\w])/i.test(selector);
+  }
+
+  function stripFocusPseudo(selector) {
+    const stripped = selector
+      .replace(/(^|[^:]):focus-visible(?![-\w])/gi, '$1')
+      .replace(/(^|[^:]):focus(?![-\w])/gi, '$1')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return stripped || '*';
+  }
+
+  const STATIC_PSEUDOS = new Set([
+    'root',
+    'first-child',
+    'last-child',
+    'only-child',
+    'nth-child',
+    'nth-last-child',
+    'first-of-type',
+    'last-of-type',
+    'only-of-type',
+    'nth-of-type',
+    'nth-last-of-type',
+    'empty',
+    'not',
+    'is',
+    'where',
+    'has',
+    'scope',
+  ]);
+
+  function hasDynamicPseudo(selector) {
+    const matches = selector.matchAll(/(^|[^:]):([a-z-]+)/gi);
+    for (const match of matches) {
+      if (!STATIC_PSEUDOS.has(match[2].toLowerCase())) return true;
+    }
+    return false;
+  }
+
+  function matchingElements(selector) {
+    try {
+      return [...document.querySelectorAll(selector)];
+    } catch {
+      return [];
+    }
+  }
+
+  function selectorLabel(selector) {
+    return selector.length <= 160 ? selector : selector.slice(0, 157) + '...';
+  }
+
+  function resolveVars(value, element) {
+    let resolved = String(value || '').trim();
+    for (let depth = 0; depth < 8 && resolved.includes('var('); depth += 1) {
+      let changed = false;
+      resolved = resolved.replace(/var\(\s*(--[-\w]+)\s*(?:,\s*([^)]*))?\)/g, (whole, name, fallback) => {
+        const customValue = getComputedStyle(element).getPropertyValue(name).trim();
+        if (customValue) {
+          changed = true;
+          return customValue;
+        }
+        if (fallback) {
+          changed = true;
+          return fallback.trim();
+        }
+        return whole;
+      });
+      if (!changed) break;
+    }
+    return resolved;
+  }
+
+  function colorFromValue(value, element) {
+    const resolved = resolveVars(value, element);
+    const currentColor = getComputedStyle(element).color;
+    const candidates = [resolved, ...resolved.match(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|transparent|currentcolor/gi) || []];
+    for (const candidate of candidates) {
+      if (candidate.trim().toLowerCase() === 'currentcolor') {
+        const parsedCurrentColor = parseColor(currentColor);
+        if (parsedCurrentColor !== null) return parsedCurrentColor;
+      } else {
+        const parsed = parseColor(candidate);
+        if (parsed !== null) return parsed;
+      }
+    }
+    return null;
+  }
+
+  function declaration(style, property) {
+    return style && typeof style.getPropertyValue === 'function' ? style.getPropertyValue(property).trim() : '';
+  }
+
+  function lengthFromOutline(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'thin') return 1;
+    if (normalized === 'medium') return 3;
+    if (normalized === 'thick') return 5;
+    const match = normalized.match(/(?:^|\s)(0|(?:\d*\.)?\d+)(px|pt|pc|in|cm|mm|q|em|rem|ex|ch|vw|vh|vmin|vmax|%)?(?:\s|$)/i);
+    if (!match) return null;
+    const number = Number.parseFloat(match[1]);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function outlineState(style, element) {
+    const outline = resolveVars(declaration(style, 'outline'), element).toLowerCase();
+    const outlineWidth = resolveVars(declaration(style, 'outline-width'), element).toLowerCase();
+    const outlineStyle = resolveVars(declaration(style, 'outline-style'), element).toLowerCase();
+    const width = outlineWidth ? lengthFromOutline(outlineWidth) : lengthFromOutline(outline);
+    const removed = /\bnone\b/.test(outline) || outlineStyle === 'none' || outlineStyle === 'hidden' || width === 0;
+    if (removed) return { removed: true, color: null, visible: false };
+    if (/\bauto\b/.test(outline) || outlineStyle === 'auto') {
+      return { removed: false, color: null, visible: true };
+    }
+    if (width === null || width <= 0) return { removed: false, color: null, visible: false };
+    const colorValue = declaration(style, 'outline-color') || outline;
+    const color = colorFromValue(colorValue, element);
+    return { removed: false, color: color && color.a > 0 ? color : null, visible: color === null || color.a > 0 };
+  }
+
+  function hasIndicatorReplacement(style) {
+    for (let index = 0; index < style.length; index += 1) {
+      const property = typeof style.item === 'function' ? style.item(index) : style[index];
+      if (typeof property !== 'string') continue;
+      const name = property.toLowerCase();
+      if (
+        name.startsWith('background') ||
+        name.startsWith('border') ||
+        name === 'box-shadow' ||
+        name === 'color' ||
+        name.startsWith('text-decoration') ||
+        name === 'text-shadow' ||
+        name === 'filter' ||
+        name === 'transform' ||
+        name === 'opacity' ||
+        name === 'fill' ||
+        name === 'stroke'
+      ) return true;
+    }
+    return false;
+  }
+
+  function walkRules(rules, visit) {
+    try {
+      for (const rule of rules) {
+        if (typeof rule.selectorText === 'string' && rule.style) visit(rule);
+        let nestedRules = null;
+        try {
+          nestedRules = rule.cssRules;
+        } catch {
+          nestedRules = null;
+        }
+        if (nestedRules) walkRules(nestedRules, visit);
+      }
+    } catch {
+      // An inaccessible stylesheet or rule is safer to omit than to turn into a finding.
+    }
+  }
+
+  function matchesStaticPart(element, staticParts) {
+    return staticParts.some((staticPart) => {
+      try {
+        return element.matches(staticPart);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  function measureFocusIndicators() {
+    const findings = {
+      'low-contrast': { count: 0, samples: [] },
+      removed: { count: 0, samples: [] },
+      'always-on': { count: 0, samples: [] },
+    };
+    const focusRules = [];
+    const collect = (rule) => {
+      const parts = splitSelectorList(rule.selectorText);
+      const focusParts = parts.filter(hasFocusPseudo);
+      if (focusParts.length === 0) return;
+      focusRules.push({ rule, focusParts, staticParts: parts.filter((part) => !hasDynamicPseudo(part)) });
+    };
+    try {
+      for (const styleSheet of [...document.styleSheets]) {
+        try {
+          walkRules(styleSheet.cssRules, collect);
+        } catch {
+          // An inaccessible stylesheet is safer to omit than to turn into a finding.
+        }
+      }
+    } catch {
+      // A missing stylesheet list is safer to omit than to turn into a finding.
+    }
+
+    const suppressedElements = new Set();
+    for (const focusRule of focusRules) {
+      const replacementWithoutStatic =
+        focusRule.staticParts.length === 0 && hasIndicatorReplacement(focusRule.rule.style);
+      for (const focusPart of focusRule.focusParts) {
+        const elements = matchingElements(stripFocusPseudo(focusPart));
+        for (const element of elements) {
+          if (
+            replacementWithoutStatic ||
+            outlineState(focusRule.rule.style, element).visible
+          ) {
+            suppressedElements.add(element);
+          }
+        }
+      }
+    }
+
+    const removedElements = new Set();
+    for (const focusRule of focusRules) {
+      const hasReplacement = hasIndicatorReplacement(focusRule.rule.style);
+      if (hasReplacement) continue;
+      for (const focusPart of focusRule.focusParts) {
+        const elements = matchingElements(stripFocusPseudo(focusPart));
+        for (const element of elements) {
+          if (!suppressedElements.has(element) && outlineState(focusRule.rule.style, element).removed) {
+            removedElements.add(element);
+          }
+        }
+      }
+    }
+
+    const reportedAlwaysOnElements = new Set();
+    for (const focusRule of focusRules) {
+      const { rule, focusParts, staticParts } = focusRule;
+      let lowContrastReported = false;
+      let removedReported = false;
+      const hasReplacement = hasIndicatorReplacement(rule.style);
+      for (const focusPart of focusParts) {
+        const strippedFocusPart = stripFocusPseudo(focusPart);
+        const elements = matchingElements(strippedFocusPart);
+        if (elements.length === 0) continue;
+        for (const element of elements) {
+          const outline = outlineState(rule.style, element);
+          if (outline.color !== null) {
+            const background = focusBackground(element);
+            if (background !== null) {
+              const measuredRatio = contrastRatio(composite(outline.color, background), background);
+              if (measuredRatio < 3 && !lowContrastReported) {
+                lowContrastReported = true;
+                findings['low-contrast'].count += 1;
+                if (findings['low-contrast'].samples.length < SAMPLE_LIMIT) {
+                  findings['low-contrast'].samples.push({ label: label(element), selector: selectorLabel(focusPart), ratio: measuredRatio });
+                }
+              }
+            }
+          } else if (
+            !suppressedElements.has(element) &&
+            outline.removed &&
+            !hasReplacement &&
+            !removedReported
+          ) {
+            removedReported = true;
+            findings.removed.count += 1;
+            if (findings.removed.samples.length < SAMPLE_LIMIT) {
+              findings.removed.samples.push({ label: label(element), selector: selectorLabel(focusPart) });
+            }
+          }
+
+          if (
+            !suppressedElements.has(element) &&
+            !removedElements.has(element) &&
+            !reportedAlwaysOnElements.has(element) &&
+            matchesStaticPart(element, staticParts)
+          ) {
+            reportedAlwaysOnElements.add(element);
+            findings['always-on'].count += 1;
+            if (findings['always-on'].samples.length < SAMPLE_LIMIT) {
+              findings['always-on'].samples.push({ label: label(element), selector: selectorLabel(focusPart) });
+            }
+          }
+        }
+      }
+    }
+    return findings;
   }
 
   function measureOverflow(element) {
@@ -668,6 +1054,13 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
       if (overflowSamples.length < SAMPLE_LIMIT) overflowSamples.push({ label: 'document', scrollWidth: documentWidth, clientWidth: viewportWidth });
     }
     if (overflowCount > 0) findings.push({ kind: 'overflow', count: overflowCount, samples: overflowSamples });
+    const focusFindings = measureFocusIndicators();
+    for (const reason of ['low-contrast', 'removed', 'always-on']) {
+      const focusFinding = focusFindings[reason];
+      if (focusFinding.count > 0) {
+        findings.push({ kind: 'focus-indicator', reason, count: focusFinding.count, samples: focusFinding.samples });
+      }
+    }
     return findings;
   }
 
@@ -717,6 +1110,22 @@ function findingText(finding: ArtifactRenderFinding): string {
       .join(" ");
     return `Pointer targets: ${finding.count} ${noun} below the AA minimum. ${samples}`.trim();
   }
+  if (finding.kind === "focus-indicator") {
+    const noun = finding.count === 1 ? "focus rule measures" : "focus rules measure";
+    const samples = finding.samples
+      .map((sample) => {
+        if (finding.reason === "low-contrast") {
+          return `Measured ${sample.label} at ${numberText(sample.ratio ?? 0)}:1 against its effective background (minimum 3:1).`;
+        }
+        if (finding.reason === "removed") {
+          return `Measured ${sample.label} with ${sample.selector} setting no outline and no replacement indicator.`;
+        }
+        return `Measured ${sample.label} matching ${sample.selector} and a static selector in the same rule.`;
+      })
+      .join(" ");
+    const reason = finding.reason === "low-contrast" ? "low contrast" : finding.reason;
+    return `Focus indicators: ${finding.count} ${noun} for ${reason}. ${samples}`.trim();
+  }
   const noun = finding.count === 1 ? "item measures" : "items measure";
   const samples = finding.samples
     .map(
@@ -745,7 +1154,16 @@ function RenderCriticCard({ result }: { result: ArtifactRenderCriticResult }) {
         "ul",
         null,
         result.findings.map((finding) =>
-          createElement("li", { key: finding.kind }, findingText(finding)),
+          createElement(
+            "li",
+            {
+              key:
+                finding.kind === "focus-indicator"
+                  ? `${finding.kind}-${finding.reason}`
+                  : finding.kind,
+            },
+            findingText(finding),
+          ),
         ),
       ),
     ),

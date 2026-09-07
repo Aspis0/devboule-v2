@@ -1088,8 +1088,14 @@ const DesignAssistant = memo(function DesignAssistant({
   const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
   const resolvedSkillSlugs =
     skillSelection.mode === "auto" ? autoAppliedSkillSlugs : selectedSkillSlugs;
+  // Manual belongs here too: `resolvedSkillSlugs` is the user's own ticks, so the composition
+  // is as resolved as it is in `all`. Leaving it out meant a manual selection that overflowed
+  // the budget kept every box ticked and said nothing, which is the same lie this row status
+  // exists to prevent — and the larger the corpus grows, the easier it is to tick past the
+  // ceiling.
   const hasResolvedComposition =
     skillSelection.mode === "all" ||
+    skillSelection.mode === "manual" ||
     (skillSelection.mode === "auto" && autoAppliedSkillSlugs !== null);
   const skillBlock = useMemo(
     () => buildSkillBlock(builtInSkillSources(), resolvedSkillSlugs ?? []),

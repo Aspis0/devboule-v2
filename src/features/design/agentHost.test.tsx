@@ -62,7 +62,12 @@ import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
 import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
-import { DOCTRINE_DESCRIPTION_CEILING_CHARS, parseSkillFile } from "./skillLoader";
+import {
+  buildSkillBlock,
+  DOCTRINE_DESCRIPTION_CEILING_CHARS,
+  parseSkillFile,
+  TRUNCATION_NOTICE,
+} from "./skillLoader";
 import {
   automaticSkillPrompt,
   DESIGN_DOCTRINE_BEGIN,
@@ -343,6 +348,30 @@ describe("ACP design host", () => {
         ["anti-ai-slop", "typography", "color"],
       ),
     ).toEqual(["anti-ai-slop", "typography", "color"]);
+  });
+
+  it("keeps the automatic cap reachable within the doctrine budget", () => {
+    const sources = builtInSkillSources();
+    const baselineSlugs = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
+    const routedCount = MAX_AUTOMATIC_SKILL_SECTIONS - AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS.length;
+    const largestNonBaseline = builtInSkillIndex()
+      .filter((entry) => !baselineSlugs.has(entry.slug))
+      .map((entry) => ({
+        slug: entry.slug,
+        totalChars: buildSkillBlock(sources, [entry.slug]).totalChars,
+      }))
+      .sort((left, right) => right.totalChars - left.totalChars)
+      .slice(0, routedCount)
+      .map((entry) => entry.slug);
+
+    const result = buildSkillBlock(sources, [
+      ...AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
+      ...largestNonBaseline,
+    ]);
+
+    // Protect the automatic cap from becoming larger than the budget can carry.
+    expect(result.dropped).toEqual([]);
+    expect(result.text).not.toContain(TRUNCATION_NOTICE);
   });
 
   it("falls back to requesting every section when automatic selection names none", async () => {
