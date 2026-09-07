@@ -71,7 +71,14 @@ fn index_cancel_reaches_the_real_indexer_loop() {
         );
     });
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // This deadline is a stuck-worker guard, not a performance assertion. The
+    // poll exits the moment the embedder runs, so on a healthy run it costs
+    // nothing; the budget only has to be long enough that a worker that starts
+    // slowly on a busy runner (thread spawn, store opens, file walk, while a
+    // hundred other tests share the machine) never trips it, and short enough
+    // that a worker which never embeds at all fails fast instead of hanging
+    // the suite. Do not shrink it back down to observed runtimes.
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !started.load(Ordering::Acquire) && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(5));
     }
