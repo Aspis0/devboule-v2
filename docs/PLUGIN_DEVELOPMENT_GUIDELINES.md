@@ -403,7 +403,12 @@ these host-side additions, in this order:
      with it (collision = install rejection);
    - per-request confinement + canonicalization under `workspace.root`
      (symlinks out, `..` out, reparse points out);
-   - no directory listing; per-file size cap;
+   - no directory listing; per-REQUEST size cap (host-memory ceiling), NOT a
+     per-file limit: the branch answers `Accept-Ranges: bytes` and files
+     above the per-request cap MUST use Range slices (full-body reads beyond
+     the cap are rejected 413 with a hint) — otherwise the cap, not the
+     format, decides what can be opened. Every `206` repeats the same guards
+     (allowlist MIME, `nosniff`, no ACAO, per-request confinement);
    - **MIME never derived from extension** on this branch: strict allowlist
      of non-executable types only; `text/javascript`, `text/html`,
      `image/svg+xml` never emitted; `X-Content-Type-Options: nosniff`
