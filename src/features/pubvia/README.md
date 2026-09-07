@@ -1,3 +1,4 @@
 # Pubvia placeholder
 
-Pubvia remains a coming-soon out-of-process plugin, as specified by the architecture.
+Pubvia is not built yet. Its tab is a placeholder (`SurfacePlaceholder` in
+`src/app/App.tsx`); it is planned as an out-of-process plugin, like Polis.

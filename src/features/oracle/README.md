@@ -1,6 +1,6 @@
 # Oracle pointers panel
 
-M1b contains the Settings-embedded Oracle panel. Oracle returns ranked pointers
+The Settings-embedded Oracle panel. Oracle returns ranked pointers
 to source files and line ranges, with the matching snippet and optional symbol
 or match type. The numeric RRF score is intentionally not rendered: it orders
 the pointers but is not a confidence measure. Snippets have already passed

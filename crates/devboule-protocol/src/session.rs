@@ -607,7 +607,7 @@ pub struct TurnUsage {
 /// ACP persistence handle. Terminal sessions always use [`PersistenceKind::None`].
 ///
 /// The protocol carries an explicit "resume not supported" result because
-/// "ACP is spoken" does not imply "resume is spoken" (ARCHITETTURA §1.6).
+/// "ACP is spoken" does not imply "resume is spoken".
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Persistence {
@@ -1061,8 +1061,8 @@ mod tests {
         // repaints foreground and background in its own 24-bit colour, so
         // no pair of SGR sequences can collapse. Each cell costs 49 bytes
         // of escaped JSON (each ESC becomes \u001b), about 490 KiB total -
-        // heavier than the ~410 KiB worst case measured for ARCHITETTURA
-        // 9.2, and still under the 1 MiB NDJSON frame cap. A typical
+        // heavier than the ~410 KiB worst case measured during design, and
+        // still under the 1 MiB NDJSON frame cap. A typical
         // snapshot is 8-30 KiB: never assume snapshots are always small.
         let mut data = String::with_capacity(200 * 50 * 39);
         for cell in 0..(200u32 * 50) {

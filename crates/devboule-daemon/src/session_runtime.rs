@@ -1417,7 +1417,7 @@ impl SessionRuntime {
             attached.outbound.notify();
         }
         drop(stream);
-        // Child::wait returns before ConPTY EOFs (ARCHITETTURA §1.7). Record
+        // Child::wait returns before ConPTY EOFs. Record
         // that the process was observed, but do not freeze last_seq: drain
         // frames still need seqs. Ended (exit row) is written at EOF.
         // Fire-and-forget: a blocking journal RPC here would stall

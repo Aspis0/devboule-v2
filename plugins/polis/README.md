@@ -2,7 +2,8 @@
 
 Devboule's first real plugin. It is not a port of the v1: the v1 had its own agent
 system, and the v2 is an orchestrator over existing CLI agents, so the data model
-is different even where the pictures look alike. See `ARCHITETTURA.md` §5.6.
+is different even where the pictures look alike. The rest of this document
+describes what the v2 plugin draws and how it runs.
 
 ## What it draws today
 
@@ -10,10 +11,10 @@ Buildings are files — footprint and height from line count, tint from the top-
 folder. Roads are imports, thickness from weight, direction importer → imported.
 The city is this repository, extracted by `scripts/extract-city-fixture.mjs`.
 
-**That extractor is a stand-in and is named as one.** The real graph is the CKG the
-host already builds (`ARCHITETTURA.md` §5.5), and it will arrive over the bridge as
-a capability. The regex extractor exists so the renderer could be built and looked
-at before that seam is finished.
+**That extractor is a stand-in and is named as one.** The real graph is meant
+to arrive from the host over the bridge as a capability. The regex extractor
+exists so the renderer could be built and looked at before that seam is
+finished.
 
 ## What it runs inside
 

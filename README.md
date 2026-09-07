@@ -25,7 +25,7 @@ because it is ready to use.
 What works today:
 
 - **Workspace** — the main surface, with terminal sessions attached to real
-  PTYs.
+  PTYs and agent sessions owned by the daemon.
 - **Terminal sessions** — owned by a background daemon rather than by the view,
   so moving to another surface, detaching and coming back leaves the process
   untouched. Output is journalled, so reattaching replays what was missed
@@ -34,11 +34,23 @@ What works today:
   Sessions do not outlive the application yet: on exit, Devboule asks the
   daemon to shut down. Surviving a full restart is the next step, and it is
   what the daemon and the journal were built for.
-- **Settings** — providers, projects, devices and Oracle administration.
+- **Agent conversation** — real IPC sessions on the daemon, including ACP
+  conversation events, model selection and permission handling.
+- **History** — the persisted session journal, with grouping, retention notices,
+  deletion, and `Reopen` for resumable ACP sessions.
+- **Provider inventory** — the daemon discovers known agent CLIs from `PATH`;
+  Settings can refresh the catalog and reports the last measured start outcome.
+- **Surface registry** — five surfaces are registered: `workspace`, `polis`,
+  `pubvia` (a placeholder), `design`, and `settings`.
+- **Plugin host** — installed plugins run in a cross-origin frame and can use
+  an out-of-process backend over the plugin RPC protocol.
+- **Settings** — provider inventory and Oracle administration are wired;
+  Projects and Devices remain mock panels.
 
-What is drawn but not wired: the agent conversation and the provider inventory
-still read from fixed sample data. The boundary between those and real IPC is
-deliberate and marked in the source.
+What is still mock: the Project/Workspace layer is a complete mock.
+`src/features/workspace/workspaceProjects.ts` initializes its state from
+`MOCK_PROJECTS` in `mockData.ts` and updates React state only. There is no
+Tauri command for projects or workspaces, and projects are not persisted.
 
 Developed and tested on Windows. Tauri itself is cross-platform, but no other
 platform has been verified, so treat them as unsupported for now.
@@ -69,7 +81,11 @@ Oracle is for the person reading a codebase, not just for configuring the app:
 
 1. Choose the folder you want Oracle to understand.
 2. Oracle automatically downloads its two local models — about **34 MB** for
-   embeddings and **5 MB** for reranking.
+   embeddings and **5 MB** for reranking. They land in
+   `<the folder you chose>/oracle-data/models/`, so each indexed folder keeps
+   its own copy. This repository already carries that copy for itself, which
+   is most of its clone size; the weights are third-party and are attributed
+   in [THIRD_PARTY.md](THIRD_PARTY.md).
 3. Start the first index pass. Reading and chunking a large folder can take
    several minutes.
 4. When indexing finishes, ask a question in natural language. Oracle returns
@@ -130,7 +146,14 @@ hard to hold in your head, and a map you can recognise at a glance turns out to
 be a real way to navigate one — and a way to point an agent at a place rather
 than a path.
 
-Not yet ported into this repository.
+Polis is ported as an out-of-process plugin. `PolisSurface` mounts the
+installed `plugins/polis` build in a cross-origin iframe served from
+`http://plugin.localhost`; `crates/polis-backend` is the plugin backend process
+for the city graph and Augur findings.
+
+The plugin currently draws a repository fixture extracted by
+`plugins/polis/scripts/extract-city-fixture.mjs`. The host's real CKG is not
+yet delivered over the plugin bridge.
 
 ## Plugins
 
@@ -148,8 +171,8 @@ Pubvia is not available yet.
 
 ## Building from source
 
-Requirements are pinned in the repository: Node **26.7.0** (`.nvmrc`), pnpm
-**10.33.2** (`packageManager`), Rust **1.97.1** (`rust-toolchain.toml`). Tauri
+Requirements are pinned in the repository: Node **26.8.1** (`.nvmrc`), pnpm
+**10.33.2** (`packageManager`), Rust **1.98.0** (`rust-toolchain.toml`). Tauri
 also needs the usual platform prerequisites — see the
 [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/).
 
@@ -158,14 +181,48 @@ pnpm install
 pnpm tauri dev      # run the app
 ```
 
-Other useful commands:
+Day to day:
 
 ```sh
 pnpm build          # type-check and build the frontend
 pnpm lint           # oxlint
 pnpm test           # vitest
+pnpm run format:check
+cargo test --workspace --exclude oracle-core --locked
+```
+
+Note the `--exclude oracle-core`. That crate is built and tested on its own,
+serially:
+
+```sh
+cargo clippy -p oracle-core --locked --all-targets -- -D warnings
+cargo test -p oracle-core --locked -j 1
+```
+
+The `-j 1` is deliberate. At full parallelism `rustc` has crashed while linking
+its integration-test binaries, so `cargo test --workspace` on its own is not a
+command that finishes here.
+
+Before opening a pull request, these are the checks worth running locally. They
+are not everything CI does — it also runs `cargo audit`, `pnpm audit`, a
+third-party licence check, a separate Polis plugin job, and a scheduled job for
+the ignored tests. `.github/workflows/ci.yml` is the authority.
+
+```sh
+pnpm exec tsc --noEmit
+pnpm run lint
+pnpm run test
+pnpm exec vite build
+pnpm run format:check
+pnpm run check:shrinkwrap
 pnpm run check:dependency-majors
-cargo test --workspace
+cargo fmt --all -- --check
+cargo build --workspace --locked
+cargo check -p devboule-daemon --no-default-features --locked
+cargo clippy --workspace --exclude oracle-core --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --exclude oracle-core --locked
+cargo clippy -p oracle-core --locked --all-targets -- -D warnings
+cargo test -p oracle-core --locked -j 1
 ```
 
 The direct dependency major-version check compares npm dependencies with the
@@ -179,9 +236,13 @@ If a deliberate exception is ever needed, add it inline in
 `cargo` map. Each entry must include both `reason` and `exitCondition`; the
 exception output must state why the lag exists and what will allow its removal.
 
-The Cargo workspace holds the Tauri application (`src-tauri`) plus two crates:
-`devboule-protocol` for the wire types shared with the daemon, and
-`devboule-daemon` for the session host itself.
+The Cargo workspace holds the Tauri application (`src-tauri`) plus six crates:
+`devboule-protocol` for shared wire types, `devboule-daemon` for the local
+daemon and its session and provider runtime, `oracle-core` for local indexing
+and retrieval, `devboule-augur` for repository review detectors and findings,
+`devboule-plugin-rpc` for the host-to-plugin-backend protocol and lifecycle,
+and `polis-backend` for the Polis plugin backend's city graph and Augur
+findings.
 
 ## Licence
 

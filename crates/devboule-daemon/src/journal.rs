@@ -2368,7 +2368,7 @@ mod tests {
 
     #[test]
     fn drain_output_after_process_exit_is_not_dropped() {
-        // ConPTY keeps delivering after Child::wait (ARCHITETTURA §1.7).
+        // ConPTY keeps delivering after Child::wait.
         // Marking the journal ended at wait-time steals last_seq+1 for the
         // exit row; the drain frame then collides and vanishes. This is the
         // silent tail loss: live ring has the bytes, replay does not.
