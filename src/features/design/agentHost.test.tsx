@@ -328,10 +328,7 @@ describe("ACP design host", () => {
     finishRun();
 
     const result = await run;
-    expect(result.appliedSkillSlugs).toEqual([
-      baseline.slug,
-      ...kept.map((entry) => entry.slug),
-    ]);
+    expect(result.appliedSkillSlugs).toEqual([baseline.slug, ...kept.map((entry) => entry.slug)]);
     expect(result.appliedSkillSlugs?.filter((slug) => slug === baseline.slug)).toHaveLength(1);
     await disposeAgentHost(host);
   });
@@ -439,9 +436,15 @@ describe("ACP design host", () => {
   it("ignores clearly negated or discussed slug mentions", () => {
     const index = builtInSkillIndex();
 
-    expect(parseAutomaticSkillReply("anti-ai-slop is not relevant; choose rtl", index)).toEqual(["rtl"]);
-    expect(parseAutomaticSkillReply("I considered anti-ai-slop, but choose rtl", index)).toEqual(["rtl"]);
-    expect(parseAutomaticSkillReply("Do not choose anti-ai-slop; recommend rtl", index)).toEqual(["rtl"]);
+    expect(parseAutomaticSkillReply("anti-ai-slop is not relevant; choose rtl", index)).toEqual([
+      "rtl",
+    ]);
+    expect(parseAutomaticSkillReply("I considered anti-ai-slop, but choose rtl", index)).toEqual([
+      "rtl",
+    ]);
+    expect(parseAutomaticSkillReply("Do not choose anti-ai-slop; recommend rtl", index)).toEqual([
+      "rtl",
+    ]);
   });
 
   it("falls back to requesting every section after the automatic preflight timeout", async () => {

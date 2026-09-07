@@ -139,13 +139,14 @@ export function parseAutomaticSkillReply(
     // Keep the permissive token scan, but do not treat a slug mentioned as a
     // rejection or as an example under discussion as a choice.  The positive
     // cue check preserves chatty rankings such as "recommend color, then type".
-    const sentenceStart = Math.max(
-      normalizedReply.lastIndexOf(".", token.index - 1),
-      normalizedReply.lastIndexOf("!", token.index - 1),
-      normalizedReply.lastIndexOf("?", token.index - 1),
-      normalizedReply.lastIndexOf(";", token.index - 1),
-      normalizedReply.lastIndexOf("\n", token.index - 1),
-    ) + 1;
+    const sentenceStart =
+      Math.max(
+        normalizedReply.lastIndexOf(".", token.index - 1),
+        normalizedReply.lastIndexOf("!", token.index - 1),
+        normalizedReply.lastIndexOf("?", token.index - 1),
+        normalizedReply.lastIndexOf(";", token.index - 1),
+        normalizedReply.lastIndexOf("\n", token.index - 1),
+      ) + 1;
     const before = normalizedReply.slice(sentenceStart, token.index);
     const after = normalizedReply.slice(token.index + token[0].length);
     const isNegatedBefore =
@@ -170,9 +171,7 @@ export function parseAutomaticSkillReply(
       /^\s*,?\s*(?:is|are|was|were)\s+(?:an?\s+)?(?:option|example|possibility|candidate)\b/.test(
         after,
       ) ||
-      /^\s*,?\s*(?:is|are|was|were)\s+(?:mentioned|listed|discussed|considered)\b/.test(
-        after,
-      );
+      /^\s*,?\s*(?:is|are|was|were)\s+(?:mentioned|listed|discussed|considered)\b/.test(after);
     const hasPositiveCue =
       /\b(?:choose|choosing|chosen|select|selecting|selected|recommend|recommended|apply|applying|use|using|include|including|prioritize|priority|first|then|also|next)\b/.test(
         before,

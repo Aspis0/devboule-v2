@@ -97,9 +97,17 @@ says so rather than an application that stops responding.
 with every agent generation. **Which sections go is the user's choice**, in three modes:
 priority — request every section including ones added later, then send the most important
 sections that fit and declare the rest omitted; manual — exactly the ones ticked; or automatic
-— a short pre-flight turn asks the agent which apply to this request and only those are composed.
-Any failure of that question falls back to requesting every section, with the same priority and
-ceiling behavior, never to none.
+— a short pre-flight turn asks the agent which apply to this request, and those are composed on
+top of a baseline that is never routed. Any failure of that question falls back to requesting
+every section, with the same priority and ceiling behavior, never to none.
+
+`AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS` holds that baseline, currently `anti-ai-slop` alone,
+and the pre-flight prompt does not offer it as a choice. It was measured at two selections in
+fifteen requests across three runs — first in the list, last in the list, and with a
+description rewritten to state its breadth outright — because a relevance ranking under a cap
+rewards specificity, so a section that applies to everything loses to sections that apply to
+this. That is structural and no wording fixes it. `MAX_AUTOMATIC_SKILL_SECTIONS` is five, and
+the routed maximum is derived from it minus the baseline count so the two cannot drift.
 
 The choice persists through `surface_settings_get`/`set` rather than `localStorage`, which
 the project does use elsewhere for per-model effort preferences. This one feeds prompt
@@ -116,7 +124,18 @@ same field Cursor's agent-requested rules and the Agent Skills standard use for 
 both of which chose a sentence over a category taxonomy. Every value has to stay on one
 line: the parser wants a key per line and says so when it does not get one. Adding one is dropping in a file, which is the shape the marketplace will need
 to distribute them. Nothing is ever executed: doctrine is markdown that becomes prompt
-text.
+text. There are eleven sections today, totalling 26,553 characters of body, which is
+more than twice what the ceiling composes — the corpus is a library to select from rather
+than a block to send whole.
+
+`doctrineLint.test.ts` guards the corpus, and it is deliberately narrow. It checks that every
+WCAG citation carries a conformance level, that every description ends in the Apply-whenever
+sentence the router matches on, that both ceilings hold with the constants imported rather
+than retyped, and that no truncation marker or TODO survived. It does **not** try to decide
+whether a sentence describes craft or issues an instruction: that needs a heuristic which
+misfires in both directions, and a check that fires on correct content is worse than no check.
+Each rule it does run exists because a defect of that exact shape shipped and was caught by
+hand — a correct success-criterion number with the level missing was the most frequent.
 
 **The doctrine is palette-agnostic, and that is a rule about content, not a style.** The
 agent writes into the user's project, so binding its output to Devboule's terracotta would
@@ -144,7 +163,7 @@ No vendor publishes a measured curve of adherence against prompt length.
 
 The ceiling went 8,000 → 16,000 → 12,000. The first raise was right in direction and wrong
 in size: at 8,000 the truncation path could not fire at all, because three sections composed
-to 7,211 and the automatic cap is three. The correction downward came from evidence rather
+to 7,211 and the automatic cap was three at the time. The correction downward came from evidence rather
 than taste, and from noticing that a bigger corpus is a selection problem, not a budget one.
 
 **The corpus is deliberately larger than the ceiling.** nexu-io/open-design ships about
