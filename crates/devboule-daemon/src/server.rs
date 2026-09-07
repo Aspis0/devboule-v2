@@ -97,6 +97,7 @@ struct CliVersionFingerprint {
 struct SessionWatch {
     owner: OwnerId,
     conn: Arc<ConnHandle>,
+    last_snapshot: Option<Vec<devboule_protocol::SessionStateSnapshot>>,
 }
 
 fn session_state_event(
@@ -188,17 +189,18 @@ impl ServerState {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         conn.clear_state_events();
+        // Registration and the initial snapshot share the watcher lock with
+        // transition broadcasts, so the first pushed change cannot overtake
+        // the state that established this subscription.
+        let snapshots = self.sessions.state_snapshots(owner);
         watchers.insert(
             conn.id,
             SessionWatch {
                 owner: owner.clone(),
                 conn: Arc::clone(conn),
+                last_snapshot: Some(snapshots.clone()),
             },
         );
-        // Registration and the initial snapshot share the watcher lock with
-        // transition broadcasts, so the first pushed change cannot overtake
-        // the state that established this subscription.
-        let snapshots = self.sessions.state_snapshots(owner);
         conn.queue_state_event(session_state_event(snapshots));
     }
 
@@ -210,21 +212,22 @@ impl ServerState {
     }
 
     fn broadcast_session_state(&self, owner: &OwnerId) {
-        let watchers = self
+        let mut watchers = self
             .session_watchers
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let connections = watchers
-            .values()
-            .filter(|watch| watch.owner == *owner)
-            .map(|watch| Arc::clone(&watch.conn))
-            .collect::<Vec<_>>();
-        if connections.is_empty() {
+        if !watchers.values().any(|watch| watch.owner == *owner) {
             return;
         }
-        let event = session_state_event(self.sessions.state_snapshots(owner));
-        for conn in connections {
-            conn.queue_state_event(event.clone());
+        let snapshots = self.sessions.state_snapshots(owner);
+        for watch in watchers.values_mut().filter(|watch| watch.owner == *owner) {
+            if watch.last_snapshot.as_ref() == Some(&snapshots) {
+                continue;
+            }
+            watch.last_snapshot = Some(snapshots.clone());
+            watch
+                .conn
+                .queue_state_event(session_state_event(snapshots.clone()));
         }
     }
 
@@ -2250,6 +2253,23 @@ mod tests {
         let collapsed = collapse_health_reason(&"\u{e8}".repeat(300));
         assert_eq!(collapsed, "\u{e8}".repeat(200));
         assert_eq!(collapse_health_reason("a\n\tb   c"), "a b c");
+    }
+
+    #[test]
+    fn unchanged_roster_transition_is_not_resent() {
+        let state = state();
+        let owner = OwnerId::new("roster-user", "roster-client").expect("owner");
+        let conn = ConnHandle::new(1);
+
+        state.watch_sessions(&owner, &conn);
+        assert_eq!(conn.pull_state_events().len(), 1, "initial snapshot");
+
+        state.broadcast_session_state(&owner);
+
+        assert!(
+            conn.pull_state_events().is_empty(),
+            "an unchanged full roster must not be resent"
+        );
     }
 
     fn wait_for_shutdown(state: &ServerState) {

@@ -81,7 +81,7 @@ use devboule_protocol::{
     SessionState, SessionStateSnapshot, WireError,
 };
 
-use crate::journal::{new_session_record, Journal, PersistStatus};
+use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 #[cfg(test)]
@@ -447,6 +447,10 @@ fn check_attached(runtime: &SessionRuntime, conn: &ConnHandle) -> Result<(), Wir
 }
 
 type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
+type JournalRosterCache = Arc<Mutex<Option<(u64, Vec<SessionRecord>)>>>;
+
+#[cfg(test)]
+type JournalRosterAfterListHook = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone)]
 struct ConnectionPresence {
@@ -462,6 +466,20 @@ pub struct SessionRegistry {
     journal: Option<Arc<Journal>>,
     transition_sink: Arc<Mutex<Option<TransitionSink>>>,
     presence: Arc<Mutex<HashMap<u64, ConnectionPresence>>>,
+    /// Journal rows are the slow, mostly-static half of a roster. Keep them
+    /// out of live-session transition broadcasts; lifecycle operations below
+    /// invalidate this cache when they can change the row set.
+    journal_roster: JournalRosterCache,
+    /// Once materialized, a user's full wire roster is updated in place for
+    /// one live-session transition. This keeps the full-snapshot contract
+    /// while avoiding a second walk over every live entry.
+    state_roster_cache: Arc<Mutex<HashMap<String, Vec<SessionStateSnapshot>>>>,
+    #[cfg(test)]
+    journal_list_calls: Arc<AtomicU64>,
+    #[cfg(test)]
+    full_roster_builds: Arc<AtomicU64>,
+    #[cfg(test)]
+    journal_roster_after_list_hook: Arc<Mutex<Option<JournalRosterAfterListHook>>>,
 }
 
 /// Whether a resolved provider id came from the session-create request
@@ -498,9 +516,121 @@ impl SessionRegistry {
             journal,
             transition_sink: Arc::new(Mutex::new(None)),
             presence: Arc::new(Mutex::new(HashMap::new())),
+            journal_roster: Arc::new(Mutex::new(None)),
+            state_roster_cache: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            journal_list_calls: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            full_roster_builds: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            journal_roster_after_list_hook: Arc::new(Mutex::new(None)),
         };
         spawn_os_liveness_sweeper(&registry);
         registry
+    }
+
+    #[cfg(test)]
+    fn journal_list_call_count(&self) -> u64 {
+        self.journal_list_calls.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn full_roster_build_count(&self) -> u64 {
+        self.full_roster_builds.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn set_journal_roster_after_list_hook(&self, hook: JournalRosterAfterListHook) {
+        *self
+            .journal_roster_after_list_hook
+            .lock()
+            .expect("journal roster test hook") = Some(hook);
+    }
+
+    fn invalidate_journal_roster(&self) {
+        // A poisoned cache is not a reason to keep serving possibly stale
+        // roster data. Recover the guard and clear it so the next read is
+        // forced to consult the journal again.
+        *self
+            .journal_roster
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
+        self.invalidate_state_roster();
+    }
+
+    fn invalidate_state_roster(&self) {
+        self.state_roster_cache
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+
+    fn invalidate_stale_journal_roster(&self) {
+        let Some(journal) = self.journal.as_ref() else {
+            return;
+        };
+        let revision = journal.session_set_revision();
+        let stale = self
+            .journal_roster
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .is_some_and(|(cached, _)| *cached != revision);
+        if stale {
+            self.invalidate_journal_roster();
+        }
+    }
+
+    fn journal_roster(&self) -> Option<Vec<SessionRecord>> {
+        let journal = self.journal.as_ref()?;
+        let before_revision = journal.session_set_revision();
+        let cached_rows = self
+            .journal_roster
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .and_then(|(cached_revision, rows)| {
+                (*cached_revision == before_revision).then(|| rows.clone())
+            });
+        if cached_rows.is_some() {
+            return cached_rows;
+        }
+
+        #[cfg(test)]
+        self.journal_list_calls.fetch_add(1, Ordering::Relaxed);
+        let rows = journal.list().ok()?;
+
+        #[cfg(test)]
+        if let Some(hook) = self
+            .journal_roster_after_list_hook
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take())
+        {
+            hook();
+        }
+
+        let after_revision = journal.session_set_revision();
+        if after_revision != before_revision {
+            // The rows and revision came from different points in the
+            // journal's mutation stream. Returning this point-in-time result
+            // is safe, but caching it under either revision would make the
+            // next reader trust data that it did not actually read at that
+            // revision. Let the next call retry instead.
+            return Some(rows);
+        }
+
+        let mut cache = self
+            .journal_roster
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some((cached_revision, cached)) = cache.as_ref() {
+            if *cached_revision == after_revision {
+                return Some(cached.clone());
+            }
+        }
+        *cache = Some((before_revision, rows.clone()));
+        Some(rows)
     }
 
     pub(crate) fn set_transition_sink(&self, sink: TransitionSink) {
@@ -509,7 +639,7 @@ impl SessionRegistry {
         }
     }
 
-    fn notify_transition(&self, owner: &OwnerId) {
+    fn emit_transition(&self, owner: &OwnerId) {
         let sink = self
             .transition_sink
             .lock()
@@ -520,7 +650,40 @@ impl SessionRegistry {
         }
     }
 
+    fn notify_session_transition(&self, owner: &OwnerId, session_id: &str) {
+        self.refresh_state_snapshot(owner, session_id);
+        self.emit_transition(owner);
+    }
+
     pub(crate) fn state_snapshots(&self, owner: &OwnerId) -> Vec<SessionStateSnapshot> {
+        self.invalidate_stale_journal_roster();
+        if let Ok(cache) = self.state_roster_cache.lock() {
+            if let Some(snapshots) = cache.get(&owner.user) {
+                return snapshots.clone();
+            }
+        }
+
+        let snapshots = self.build_state_snapshots(owner);
+        // A failed journal read must remain retryable. Live state is still
+        // useful to return now, but do not let that partial roster become an
+        // unbounded cache entry.
+        let journal_is_cached = self.journal.is_none()
+            || self
+                .journal_roster
+                .lock()
+                .ok()
+                .is_some_and(|cache| cache.is_some());
+        if journal_is_cached {
+            if let Ok(mut cache) = self.state_roster_cache.lock() {
+                cache.insert(owner.user.clone(), snapshots.clone());
+            }
+        }
+        snapshots
+    }
+
+    fn build_state_snapshots(&self, owner: &OwnerId) -> Vec<SessionStateSnapshot> {
+        #[cfg(test)]
+        self.full_roster_builds.fetch_add(1, Ordering::Relaxed);
         let mut sessions = self
             .inner
             .lock()
@@ -535,15 +698,13 @@ impl SessionRegistry {
             .iter()
             .map(|(session, _)| session.id.clone())
             .collect::<std::collections::HashSet<_>>();
-        if let Some(journal) = &self.journal {
-            if let Ok(rows) = journal.list() {
-                sessions.extend(rows.into_iter().filter_map(|row| {
-                    if live_ids.contains(&row.id) {
-                        return None;
-                    }
-                    (row.owner == owner.user).then(|| (row.to_session(), None))
-                }));
-            }
+        if let Some(rows) = self.journal_roster() {
+            sessions.extend(rows.into_iter().filter_map(|row| {
+                if live_ids.contains(&row.id) {
+                    return None;
+                }
+                (row.owner == owner.user).then(|| (row.to_session(), None))
+            }));
         }
         sessions.sort_by(|left, right| left.0.id.cmp(&right.0.id));
         sessions
@@ -558,22 +719,53 @@ impl SessionRegistry {
             .collect()
     }
 
+    fn refresh_state_snapshot(&self, owner: &OwnerId, session_id: &str) {
+        let snapshot = self.inner.lock().ok().and_then(|map| {
+            map.get(session_id)
+                .filter(|entry| entry.owner().user == owner.user)
+                .map(|entry| {
+                    let session = entry.to_session();
+                    SessionStateSnapshot {
+                        id: session.id,
+                        title: session.title,
+                        state: session.state,
+                        elapsed_ms: session.elapsed_ms,
+                        attention: entry.runtime().attention(),
+                    }
+                })
+        });
+        if let Ok(mut cache) = self.state_roster_cache.lock() {
+            let Some(roster) = cache.get_mut(&owner.user) else {
+                return;
+            };
+            roster.retain(|session| session.id != session_id);
+            if let Some(snapshot) = snapshot {
+                roster.push(snapshot);
+                roster.sort_by(|left, right| left.id.cmp(&right.id));
+            }
+        }
+    }
+
     fn configure_runtime_attention(&self, runtime: &Arc<SessionRuntime>, owner: &OwnerId) {
         let presence = Arc::clone(&self.presence);
         let user = owner.user.clone();
         let session_id = runtime.session_id.clone();
+        let suppressed_session_id = session_id.clone();
         let suppressed = Arc::new(move || {
             presence.lock().is_ok_and(|connections| {
                 connections.values().any(|connection| {
                     connection.user == user
                         && connection.app_visible
-                        && connection.focused_session_id.as_deref() == Some(session_id.as_str())
+                        && connection.focused_session_id.as_deref()
+                            == Some(suppressed_session_id.as_str())
                 })
             })
         });
         let registry = self.clone();
         let owner = owner.clone();
-        let notify = Arc::new(move || registry.notify_transition(&owner));
+        let notify = Arc::new(move || {
+            registry.notify_session_transition(&owner, &session_id);
+        });
         runtime.set_attention_hooks(suppressed, notify);
     }
 
@@ -610,7 +802,7 @@ impl SessionRegistry {
                     })
                 });
                 if runtime.is_some_and(|runtime| runtime.clear_attention()) {
-                    self.notify_transition(owner);
+                    self.notify_session_transition(owner, &session_id);
                 }
             }
         }
@@ -686,11 +878,16 @@ impl SessionRegistry {
         &self,
         patch: RetentionPatch,
     ) -> Result<JournalRetention, WireError> {
-        self.journal
+        let result = self
+            .journal
             .as_ref()
             .ok_or_else(journal_unavailable)?
             .retention_set(patch)
-            .map_err(Into::into)
+            .map_err(WireError::from);
+        if result.is_ok() {
+            self.invalidate_journal_roster();
+        }
+        result
     }
 
     pub fn delete_session(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
@@ -732,13 +929,14 @@ impl SessionRegistry {
         journal
             .delete_session(session_id)
             .map_err(WireError::from)?;
+        self.invalidate_journal_roster();
         if transcript_in_registry {
             if let Ok(mut map) = self.inner.lock() {
                 map.remove(session_id);
             }
             journal.unpin(session_id);
         }
-        self.notify_transition(owner);
+        self.notify_session_transition(owner, session_id);
         Ok(())
     }
 
@@ -899,6 +1097,7 @@ impl SessionRegistry {
             record.status = PersistStatus::Live;
             record_generation = record.generation;
             journal.try_upsert(record);
+            self.invalidate_journal_roster();
         }
         // The journal row above is the durable product boundary. A failed
         // spawn must end that row, or the next roster render resurrects a
@@ -1057,6 +1256,7 @@ impl SessionRegistry {
             state.session_finished();
             return Err(error.into());
         }
+        self.invalidate_journal_roster();
         // Health is measured per provider id; `provider` is moved into the
         // metadata below, so keep a copy for the spawn outcome recording.
         let health_provider = provider.clone();
@@ -1219,7 +1419,7 @@ impl SessionRegistry {
             WireError::new(code, error.to_string())
         })?;
         if runtime.clear_attention() {
-            self.notify_transition(owner);
+            self.notify_session_transition(owner, session_id);
         }
         Ok(())
     }
@@ -1285,17 +1485,19 @@ impl SessionRegistry {
                 if let Some(journal) = &self.journal {
                     journal.try_mark_closed(session_id);
                     journal.unpin(session_id);
+                    self.invalidate_journal_roster();
                 }
                 teardown_session(session);
-                self.notify_transition(owner);
+                self.notify_session_transition(owner, session_id);
                 Ok(true)
             }
             Some(RegistryEntry::Transcript(_)) => {
                 if let Some(journal) = &self.journal {
                     journal.try_mark_closed(session_id);
                     journal.unpin(session_id);
+                    self.invalidate_journal_roster();
                 }
-                self.notify_transition(owner);
+                self.notify_session_transition(owner, session_id);
                 Ok(false)
             }
             None => {
@@ -1307,7 +1509,8 @@ impl SessionRegistry {
                             return Err(unauthorized());
                         }
                         journal.try_mark_closed(session_id);
-                        self.notify_transition(owner);
+                        self.invalidate_journal_roster();
+                        self.notify_session_transition(owner, session_id);
                         return Ok(false);
                     }
                 }
@@ -1447,7 +1650,7 @@ impl SessionRegistry {
                     return Err(internal("Agent input could not be recorded."));
                 }
                 if runtime.clear_attention() {
-                    self.notify_transition(owner);
+                    self.notify_session_transition(owner, session_id);
                 }
             }
         }
@@ -1960,8 +2163,9 @@ fn start_spawned_session(
     {
         let registry = registry.clone();
         let owner = owner.clone();
+        let session_id = metadata.id.clone();
         runtime.set_roster_notify(Arc::new(move || {
-            registry.notify_transition(&owner);
+            registry.notify_session_transition(&owner, &session_id);
         }));
     }
     registry.configure_runtime_attention(&runtime, &owner);
@@ -1986,6 +2190,7 @@ fn start_spawned_session(
             .expect("pty writer registered exactly once");
     }
     let id = metadata.id.clone();
+    let wait_id = id.clone();
     let wait_runtime = Arc::clone(&runtime);
     let wait_registry = registry.clone();
     let wait_owner = owner.clone();
@@ -1998,7 +2203,7 @@ fn start_spawned_session(
                 .store(code.is_some(), Ordering::Release);
             wait_runtime.mark_exited(code);
             if wait_runtime.should_publish_exit_transition() {
-                wait_registry.notify_transition(&wait_owner);
+                wait_registry.notify_session_transition(&wait_owner, &wait_id);
             }
             code
         })
@@ -2037,6 +2242,7 @@ fn start_spawned_session(
             let (coalesce_tx, coalesce_rx) = mpsc::channel::<Vec<u8>>();
             let coalesce_runtime = Arc::clone(&runtime);
             let coalesce_registry = registry.clone();
+            let coalesce_session_id = id.clone();
             let coalesce_owner = owner.clone();
             let coalesce_handle = match std::thread::Builder::new()
                 .name(format!("session-coalesce-{id}"))
@@ -2045,6 +2251,7 @@ fn start_spawned_session(
                         coalesce_rx,
                         coalesce_runtime,
                         coalesce_registry,
+                        coalesce_session_id,
                         coalesce_owner,
                     )
                 }) {
@@ -2135,10 +2342,10 @@ fn start_spawned_session(
     if runtime.process_exited() {
         runtime.exit_transition_sent.store(true, Ordering::Release);
     }
-    registry.notify_transition(&owner);
+    registry.notify_session_transition(&owner, &id);
     runtime.transition_ready.store(true, Ordering::Release);
     if runtime.process_exited() && runtime.should_publish_exit_transition() {
-        registry.notify_transition(&owner);
+        registry.notify_session_transition(&owner, &id);
     }
     Ok(())
 }
@@ -2194,6 +2401,7 @@ fn coalesce_loop(
     rx: mpsc::Receiver<Vec<u8>>,
     runtime: Arc<SessionRuntime>,
     registry: SessionRegistry,
+    session_id: String,
     owner: OwnerId,
 ) {
     let mut pending = Vec::new();
@@ -2204,7 +2412,7 @@ fn coalesce_loop(
             match rx.recv_timeout(COALESCE_FLUSH) {
                 Ok(bytes) => Some(bytes),
                 Err(RecvTimeoutError::Timeout) => {
-                    flush_coalesced(&mut pending, &runtime, &registry, &owner);
+                    flush_coalesced(&mut pending, &runtime, &registry, &session_id, &owner);
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => None,
@@ -2214,11 +2422,11 @@ fn coalesce_loop(
             Some(bytes) => {
                 pending.extend_from_slice(&bytes);
                 if pending.len() >= COALESCE_MAX_BYTES || pending.len() == COALESCE_EAGER_BYTES {
-                    flush_coalesced(&mut pending, &runtime, &registry, &owner);
+                    flush_coalesced(&mut pending, &runtime, &registry, &session_id, &owner);
                 }
             }
             None => {
-                flush_coalesced(&mut pending, &runtime, &registry, &owner);
+                flush_coalesced(&mut pending, &runtime, &registry, &session_id, &owner);
                 break;
             }
         }
@@ -2229,6 +2437,7 @@ fn flush_coalesced(
     pending: &mut Vec<u8>,
     runtime: &SessionRuntime,
     registry: &SessionRegistry,
+    session_id: &str,
     owner: &OwnerId,
 ) {
     if pending.is_empty() {
@@ -2237,7 +2446,7 @@ fn flush_coalesced(
     let data = String::from_utf8_lossy(pending).into_owned();
     pending.clear();
     if runtime.publish_output(&data) && runtime.transition_ready() {
-        registry.notify_transition(owner);
+        registry.notify_session_transition(owner, session_id);
     }
 }
 
@@ -2309,6 +2518,7 @@ fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
             runtime.session_id
         );
     }
+    registry.invalidate_journal_roster();
 }
 
 fn terminate_spawned_child(pair: portable_pty::PtyPair, mut child: Box<dyn Child + Send + Sync>) {
@@ -4566,6 +4776,127 @@ mod tests {
         let history = registry.list(&caller).expect("history");
         assert!(history.iter().any(|session| session.id == previous_id));
         assert!(history.iter().all(|session| session.id != stranger_id));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_transition_does_not_requery_the_journal_roster() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-roster-cache", "process-roster-cache");
+        let runtime = insert_live_agent(&registry, "s.roster-cache.1", owner.clone());
+        let journal_id =
+            compose_session_id(&owner.session_token(), "roster-cache-history").expect("journal id");
+        journal
+            .upsert_blocking(ended_record(&journal_id, &owner.user))
+            .expect("journal row");
+
+        let _ = registry.state_snapshots(&owner);
+        assert_eq!(registry.journal_list_call_count(), 1);
+
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        let _ = registry.state_snapshots(&owner);
+
+        assert_eq!(
+            registry.journal_list_call_count(),
+            1,
+            "a live transition must reuse the cached journal roster"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_roster_does_not_cache_rows_under_revision_that_changed_after_list() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-roster-race", "process-roster-race");
+        let initial_id = compose_session_id(&owner.session_token(), "roster-race-initial")
+            .expect("initial journal id");
+        let added_after_list_id =
+            compose_session_id(&owner.session_token(), "roster-race-after-list")
+                .expect("post-list journal id");
+        journal
+            .upsert_blocking(ended_record(&initial_id, &owner.user))
+            .expect("initial journal row");
+
+        let hook_journal = Arc::clone(&journal);
+        let hook_owner = owner.clone();
+        let hook_id = added_after_list_id.clone();
+        registry.set_journal_roster_after_list_hook(Arc::new(move || {
+            hook_journal
+                .upsert_blocking(ended_record(&hook_id, &hook_owner.user))
+                .expect("post-list journal row");
+        }));
+
+        // The hook queues a real roster mutation after list() has returned,
+        // deterministically reproducing the revision/data mismatch without
+        // depending on sleeps or scheduler timing.
+        let first = registry.state_snapshots(&owner);
+        assert!(first
+            .iter()
+            .all(|session| session.id != added_after_list_id));
+
+        let second = registry.state_snapshots(&owner);
+        assert!(
+            second
+                .iter()
+                .any(|session| session.id == added_after_list_id),
+            "a row added after list() must not be hidden by a stale cache"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_transition_does_not_rebuild_a_large_roster() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-large-roster", "process-large-roster");
+        for index in 0..64 {
+            let id = compose_session_id(
+                &owner.session_token(),
+                &format!("roster-history-{index:02}"),
+            )
+            .expect("journal id");
+            journal
+                .upsert_blocking(ended_record(&id, &owner.user))
+                .expect("journal row");
+        }
+        let runtimes = (0..8)
+            .map(|index| {
+                insert_live_agent(&registry, &format!("s.large-roster-{index}"), owner.clone())
+            })
+            .collect::<Vec<_>>();
+
+        let roster = registry.state_snapshots(&owner);
+        assert_eq!(roster.len(), 72);
+        assert_eq!(registry.full_roster_build_count(), 1);
+        assert_eq!(registry.journal_list_call_count(), 1);
+
+        runtimes[0].publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        let updated = registry.state_snapshots(&owner);
+
+        assert_eq!(updated.len(), 72);
+        assert_eq!(registry.full_roster_build_count(), 1);
+        assert_eq!(
+            registry.journal_list_call_count(),
+            1,
+            "the transition must not make work proportional to journal-only sessions"
+        );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

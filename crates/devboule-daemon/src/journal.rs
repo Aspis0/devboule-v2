@@ -504,7 +504,14 @@ pub struct Journal {
     queued: Arc<AtomicU64>,
     degraded_sessions: Arc<Mutex<HashMap<String, DropCounters>>>,
     stats: Arc<JournalStats>,
+    session_set_revision: Arc<AtomicU64>,
     path: PathBuf,
+}
+
+struct JournalLoopState {
+    degraded_sessions: Arc<Mutex<HashMap<String, DropCounters>>>,
+    stats: Arc<JournalStats>,
+    session_set_revision: Arc<AtomicU64>,
 }
 
 impl Journal {
@@ -526,6 +533,8 @@ impl Journal {
         let degraded_sessions_thread = Arc::clone(&degraded_sessions);
         let stats = Arc::new(JournalStats::default());
         let stats_thread = Arc::clone(&stats);
+        let session_set_revision = Arc::new(AtomicU64::new(0));
+        let session_set_revision_thread = Arc::clone(&session_set_revision);
         let path_buf = path.to_path_buf();
         let thread_path = path_buf.clone();
         let join = std::thread::Builder::new()
@@ -535,8 +544,11 @@ impl Journal {
                     conn,
                     rx,
                     queued_thread,
-                    degraded_sessions_thread,
-                    stats_thread,
+                    JournalLoopState {
+                        degraded_sessions: degraded_sessions_thread,
+                        stats: stats_thread,
+                        session_set_revision: session_set_revision_thread,
+                    },
                     limits,
                     thread_path,
                 )
@@ -548,6 +560,7 @@ impl Journal {
             queued,
             degraded_sessions,
             stats,
+            session_set_revision,
             path: path_buf,
         })
     }
@@ -579,6 +592,13 @@ impl Journal {
     /// nothing left to consult.
     pub fn stats(&self) -> JournalStatsSnapshot {
         self.stats.snapshot()
+    }
+
+    /// Changes only when a journal operation can change the session roster.
+    /// Roster readers use this cheap atomic to notice background retention
+    /// without querying SQLite on every live-session transition.
+    pub(crate) fn session_set_revision(&self) -> u64 {
+        self.session_set_revision.load(Ordering::Acquire)
     }
 
     /// Never blocks. On a full queue or a dead writer the session is marked
@@ -978,11 +998,15 @@ fn journal_loop(
     conn: Connection,
     rx: mpsc::Receiver<JournalCmd>,
     queued: Arc<AtomicU64>,
-    degraded_sessions: Arc<Mutex<HashMap<String, DropCounters>>>,
-    stats: Arc<JournalStats>,
+    loop_state: JournalLoopState,
     limits: JournalLimits,
     path: PathBuf,
 ) {
+    let JournalLoopState {
+        degraded_sessions,
+        stats,
+        session_set_revision,
+    } = loop_state;
     let mut pins: HashSet<String> = HashSet::new();
     let mut retention_state = RetentionState::default();
     while let Ok(cmd) = rx.recv() {
@@ -998,40 +1022,47 @@ fn journal_loop(
                     on_write_error(&error);
                 } else {
                     retention_state.session_set_changed();
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
             }
             JournalCmd::Append(record) => {
                 let is_output = matches!(record.kind, EventKind::Output | EventKind::AcpEnvelope);
                 let payload_len = record.payload.len() as u64;
-                if let Err(error) =
-                    append_event(&conn, &record, &pins, limits, &mut retention_state)
-                {
-                    if is_output {
-                        stats.failed_frames.fetch_add(1, Ordering::Relaxed);
-                        note_degraded(
-                            &degraded_sessions,
-                            &record.session_id,
-                            DropCounters {
-                                frames: 1,
-                                bytes: payload_len,
-                            },
-                        );
-                    } else {
-                        note_degraded(
-                            &degraded_sessions,
-                            &record.session_id,
-                            DropCounters::default(),
-                        );
+                match append_event(&conn, &record, &pins, limits, &mut retention_state) {
+                    Ok(roster_changed) => {
+                        if roster_changed {
+                            session_set_revision.fetch_add(1, Ordering::AcqRel);
+                        }
+                        if is_output {
+                            stats.committed_frames.fetch_add(1, Ordering::Relaxed);
+                            stats
+                                .committed_bytes
+                                .fetch_add(payload_len, Ordering::Relaxed);
+                        }
                     }
-                    on_write_error(&error);
-                    let (degraded, dropped) =
-                        degradation_state(&degraded_sessions, &record.session_id);
-                    let _ = mark_degraded(&conn, &record.session_id, degraded, dropped);
-                } else if is_output {
-                    stats.committed_frames.fetch_add(1, Ordering::Relaxed);
-                    stats
-                        .committed_bytes
-                        .fetch_add(payload_len, Ordering::Relaxed);
+                    Err(error) => {
+                        if is_output {
+                            stats.failed_frames.fetch_add(1, Ordering::Relaxed);
+                            note_degraded(
+                                &degraded_sessions,
+                                &record.session_id,
+                                DropCounters {
+                                    frames: 1,
+                                    bytes: payload_len,
+                                },
+                            );
+                        } else {
+                            note_degraded(
+                                &degraded_sessions,
+                                &record.session_id,
+                                DropCounters::default(),
+                            );
+                        }
+                        on_write_error(&error);
+                        let (degraded, dropped) =
+                            degradation_state(&degraded_sessions, &record.session_id);
+                        let _ = mark_degraded(&conn, &record.session_id, degraded, dropped);
+                    }
                 }
             }
             JournalCmd::Permission { record, reply } => {
@@ -1051,6 +1082,8 @@ fn journal_loop(
                 if let Err(error) = mark_reaped(&conn, &session_id, code, degraded, dropped) {
                     note_degraded(&degraded_sessions, &session_id, DropCounters::default());
                     on_write_error(&error);
+                } else {
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
             }
             JournalCmd::MarkEnded {
@@ -1066,6 +1099,7 @@ fn journal_loop(
                     on_write_error(&error);
                 } else {
                     retention_state.session_set_changed();
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
             }
             JournalCmd::MarkClosed { session_id } => {
@@ -1074,6 +1108,7 @@ fn journal_loop(
                     on_write_error(&error);
                 } else {
                     retention_state.session_set_changed();
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
             }
             JournalCmd::SetPeerSessionId {
@@ -1095,6 +1130,8 @@ fn journal_loop(
                 let result = start_generation(&conn, &session_id, generation);
                 if let Err(error) = &result {
                     on_write_error(error);
+                } else {
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
                 let _ = reply.send(result);
             }
@@ -1102,6 +1139,8 @@ fn journal_loop(
                 let (degraded, dropped) = degradation_state(&degraded_sessions, &session_id);
                 if let Err(error) = mark_degraded(&conn, &session_id, degraded, dropped) {
                     on_write_error(&error);
+                } else {
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
             }
             JournalCmd::List { reply } => {
@@ -1135,6 +1174,7 @@ fn journal_loop(
                 let result = delete_session_user(&conn, &session_id);
                 if result.is_ok() {
                     retention_state.session_set_changed();
+                    session_set_revision.fetch_add(1, Ordering::AcqRel);
                 }
                 let _ = reply.send(result);
             }
@@ -1285,7 +1325,7 @@ fn append_event(
     pins: &HashSet<String>,
     limits: JournalLimits,
     retention_state: &mut RetentionState,
-) -> Result<(), JournalError> {
+) -> Result<bool, JournalError> {
     let checksum = crc32(&record.payload) as i64;
     let tx = conn.unchecked_transaction()?;
     let limits = effective_limits(&tx, limits)?;
@@ -1333,7 +1373,7 @@ fn append_event(
     }
     maybe_snapshot(&tx, &record.session_id, record.generation, limits)?;
     let global_sweep = retention_state.global_sweep_due(add as u64);
-    retain(
+    let roster_changed = retain(
         &tx,
         pins,
         now_ms(),
@@ -1343,7 +1383,7 @@ fn append_event(
     )?;
     tx.commit()?;
     retention_state.append_committed(add as u64, global_sweep);
-    Ok(())
+    Ok(roster_changed)
 }
 
 fn maybe_snapshot(
