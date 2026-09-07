@@ -3,6 +3,14 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly, Mondays 03:00 UTC. Only consumed by the
+    # ignored-tests-informational job below; see its comment for why it is a
+    # schedule and not a push trigger.
+    - cron: "0 3 * * 1"
+  # Lets the informational job be re-run by hand right after touching the
+  # daemon's session code, instead of waiting up to a week.
+  workflow_dispatch:
 
 jobs:
   windows:
@@ -85,6 +93,22 @@ jobs:
       - name: Build Rust workspace
         run: cargo build --workspace --locked
 
+      # This step exists because every other Rust command in this file uses
+      # --workspace --all-features, which unifies devboule-daemon's features
+      # to "with server". But the shipped app links the daemon with
+      # `default-features = false` (src-tauri/Cargo.toml): the GUI process
+      # never runs the server, so portable-pty, rusqlite,
+      # alacritty_terminal and reqwest are compiled out of the real binary.
+      # That client-only configuration is therefore compiled HERE and
+      # nowhere else — this step is not redundant with the workspace build,
+      # it is the complement of it. Do not delete it. It targets the daemon
+      # alone (not `cargo check -p devboule`) because the GUI crate pulls
+      # oracle-core, lancedb and datafusion (measured locally: 6.5 min) for
+      # coverage this step does not need; the daemon-only check runs in
+      # seconds.
+      - name: Check client-only daemon build (the configuration the shipped app links)
+        run: cargo check -p devboule-daemon --no-default-features --locked
+
       # oracle-core is excluded from the lint set, not from the build: src-tauri
       # depends on it, so it still compiles here with its default features, and
       # the oracle-core-check job below is what lints it.
@@ -104,6 +128,10 @@ jobs:
         # between tests. A CI that goes red at random is worse than a
         # recorded gap. Local command:
         # cargo test --workspace --locked -- --ignored --test-threads=4
+        # That exact command runs on a weekly schedule in the
+        # ignored-tests-informational job below, so a test that broke
+        # permanently (rather than flakily) is still caught — without this
+        # job ever gating a merge.
         run: cargo test --workspace --exclude oracle-core --locked
 
       - name: Install pinned cargo-audit
@@ -246,3 +274,58 @@ jobs:
       - name: Report free disk after
         shell: pwsh
         run: Get-PSDrive C | Select-Object Used,Free
+
+  # Informational, known-flaky, NEVER blocking. Runs the #[ignore]d ConPTY /
+  # named-pipe tests that the windows job deliberately excludes — see the
+  # comment on its "Test Rust workspace" step for the flakiness record.
+  # Scheduled rather than push-triggered with continue-on-error, for two
+  # reasons: (1) the tests are known-flaky, so a per-push run would paint a
+  # red X on most commits — a red mark that blocks nothing is still a red
+  # mark, and one that appears on every push trains people to dismiss the
+  # job entirely; (2) the failure mode being watched for is permanent
+  # breakage, not per-commit regressions, and a weekly run detects that
+  # within days at ~1/30th of the runner cost. workflow_dispatch lets a
+  # human trigger it on demand after touching the daemon's session code.
+  # The `if` below is load-bearing: without it the job would also run on
+  # push and pull_request (top-level `on:`), turning every push red at
+  # random. No `continue-on-error` — on a scheduled run, red IS the signal.
+  ignored-tests-informational:
+    name: Ignored tests (informational, known-flaky, scheduled-only, non-blocking)
+    runs-on: windows-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Show pinned Rust toolchain
+        run: rustup show active-toolchain
+
+      # Even with --exclude oracle-core, src-tauri still links oracle-core as
+      # a dependency, so the Oracle graph compiles here too and protoc is
+      # required (same reason as in the windows job).
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "31.1"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Separate key from the other jobs (same rationale as oracle-core's
+      # cache): the scheduled run would otherwise overwrite the cache entry
+      # that push builds restore. First run after a Cargo.lock change pays a
+      # cold oracle-stack build; subsequent weekly runs are warm.
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ignored-tests
+          cache-on-failure: true
+
+      - name: Cache the ort runtime download
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\ort.pyke.io
+          key: ort-dfbin-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ort-dfbin-${{ runner.os }}-
+
+      - name: "Run #[ignore]d tests (failures here are informational)"
+        run: cargo test --workspace --exclude oracle-core --locked -- --ignored --test-threads=4
