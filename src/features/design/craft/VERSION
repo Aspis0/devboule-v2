@@ -1,28 +1,64 @@
+Three provenances. Nothing here is copied; every section is condensed and
+rewritten, and capped at 2,500 characters by the loader's strict check.
+
+FIRST ORIGIN
 Upstream:  https://github.com/referodesign/refero_skill
 Branch:    master
 Commit:    a9b54a3e62a6391f5f5ab7a20e4ddb32fb79a27d
 Committed: 2026-09-05T12:11:03Z
 Read on:   2026-09-06
+Licence:   MIT, Copyright (c) 2026 Refero
+Covers:    the substance of anti-ai-slop.md and color.md, and the rule
+           structure of typography.md, adapted from
+           skills/refero-design/references/*.md.
+           LICENSE.refero_skill reproduces the upstream MIT licence verbatim.
+           It travels with that material; it does not license this directory.
 
-Second origin, for two rules only:
+SECOND ORIGIN
 Upstream:  https://github.com/nexu-io/open-design
 Commit:    3d0d15fc55031e8e6cead709491e7b82565c4dee
-Licence:   Apache-2.0, Copyright 2026 Open Design contributors
-Covers:    the whole of state-coverage.md, which has no refero_skill
-           counterpart; the rules against invented metrics and against filler
-           copy in anti-ai-slop.md; and in color.md the mechanics of an
-           undefined custom property (from their token-schema.ts) and the cap
-           of two visible accent uses per screen. OpenDesign's craft/ is itself an
-           adaptation of the same refero_skill material; their state-coverage
-           source credits WCAG 2.2, NN/g, Material Design 3, Apple HIG and
-           Baymard Institute research.
+Read on:   2026-09-06
+Licence:   Apache-2.0, Copyright 2026 Open Design contributors — the same
+           licence as this repository, so its terms are already in the root
+           LICENSE.
+Covers:    the whole of state-coverage.md, condensed from a 7,218-byte source
+           that itself credits WCAG 2.2, NN/g, Material Design 3, Apple HIG
+           and Baymard Institute research; the rules against invented metrics
+           and against filler copy in anti-ai-slop.md; in color.md the
+           mechanics of an undefined custom property (from their
+           token-schema.ts) and the cap of two visible accent uses per screen,
+           which refero states only as "sparingly"; and the substance of
+           motion.md and rtl.md, from their animation-discipline.md and
+           rtl-and-bidi.md.
+Note:      OpenDesign's craft/ is partly an adaptation of the same refero_skill
+           material, but animation-discipline.md, rtl-and-bidi.md,
+           accessibility-baseline.md, laws-of-ux.md and their state-coverage.md
+           carry no refero_skill attribution and appear original to OpenDesign.
+           They are credited to OpenDesign alone rather than swept under the
+           blanket claim in that project's README, because crediting Refero for
+           material that is not theirs is its own kind of error.
 
-Adapted, not copied. The doctrine files in this directory are condensed and
-rewritten from skills/refero-design/references/*.md in refero_skill:
-shortened to a character budget, stripped of references to the upstream's own
-tooling and research corpus, and written to prescribe no palette at all, because
-the output lands in the user's project rather than in ours. Concrete hex values
-appear only as values to avoid. LICENSE.refero_skill is refero_skill's MIT
-licence, reproduced verbatim; it does not license this directory, it travels
-with the material adapted from that project. OpenDesign is Apache-2.0, the same
-licence as this repository, so its terms are already in LICENSE at the root.
+THIRD PROVENANCE — public standards, read directly
+Covers:    the substance of accessibility.md, spacing.md, layout.md,
+           microcopy.md and icons.md, and the citations in typography.md.
+           Neither upstream held usable material for spacing, layout, microcopy
+           or icons.
+Sources:   WCAG 2.2 success criteria with their conformance levels (w3.org);
+           Apple Human Interface Guidelines; Material Design; IBM Carbon;
+           GitHub Primer; GOV.UK Design System; Bringhurst, The Elements of
+           Typographic Style.
+Rule:      where a figure comes from one design system rather than from a
+           standard, the text says which. A model reading these files would
+           otherwise repeat a convention as a requirement.
+
+VERIFICATION
+Every claim carrying a clause number or an attribution was checked against its
+primary source before shipping. Several inherited claims did not survive: the
+uppercase-tracking floor upstream states as required rests on a Bringhurst
+passage about strings of small and full capitals, in which he writes that
+display capitals have no generalised optimum; an easing curve attributed to
+Material was wrong; and Arabic size and line-height ranges had no traceable
+source and were removed.
+
+The rules name no palette, because the output lands in the user's project
+rather than in ours. Concrete hex values appear only as values to avoid.
