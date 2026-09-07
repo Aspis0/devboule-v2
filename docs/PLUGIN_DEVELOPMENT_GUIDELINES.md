@@ -409,6 +409,22 @@ these host-side additions, in this order:
      the cap are rejected 413 with a hint) — otherwise the cap, not the
      format, decides what can be opened. Every `206` repeats the same guards
      (allowlist MIME, `nosniff`, no ACAO, per-request confinement);
+   - **weak version validator, mandatory for Range reads**: workspace files
+     CHANGE under the windows (ongoing acquisition, a Fiji save, a sync) —
+     without it a multi-window read of a 2 GB file can silently splice two
+     different files into data that LOOKS correct and gets measured. Emit
+     `ETag` from mtime+size (`Last-Modified` too); every Range request sends
+     `If-Range`; mismatch -> `412`, never a slice of a different version;
+   - **multi-range requests are REJECTED, not implemented**
+     (`Range: bytes=0-100, 200-300` would force multipart/byteranges for a
+     use case that does not exist): respond with the full body (within cap)
+     or `416`. Range parsing is untrusted input like everything else:
+     suffix (`bytes=-500`), open-ended (`bytes=100-`), overflow, and
+     end-before-start must all be handled;
+   - **native-element behavior is a known consequence, not a bug**: `<img>`
+     sends plain GET (no Range) -> a file above the cap simply does not
+     display via `<img>`; `<video>`/`<audio>` send Range natively and stream
+     for free. Range-speaking viewers are the intended consumer;
    - **MIME never derived from extension** on this branch: strict allowlist
      of non-executable types only; `text/javascript`, `text/html`,
      `image/svg+xml` never emitted; `X-Content-Type-Options: nosniff`
