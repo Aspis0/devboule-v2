@@ -270,6 +270,11 @@ export interface DaemonDiagnostics {
     appVersion: string;
     runtimeDir: string;
     pipeName: string;
+    loginShellCapture: {
+      state: "not_run" | "applied" | "skipped" | "failed";
+      appliedVariables: number;
+      preservedVariables: number;
+    };
   };
 }
 

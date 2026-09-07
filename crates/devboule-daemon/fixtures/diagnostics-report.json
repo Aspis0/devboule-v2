@@ -59,6 +59,11 @@
     "osVersion": "Windows 10.0.26200 (x86_64)",
     "appVersion": "0.1.0",
     "runtimeDir": "[redacted-home]\\AppData\\Local\\Devboule",
-    "pipeName": "\\\\.\\pipe\\devboule-[redacted]"
+    "pipeName": "\\\\.\\pipe\\devboule-[redacted]",
+    "loginShellCapture": {
+      "state": "applied",
+      "appliedVariables": 12,
+      "preservedVariables": 2
+    }
   }
 }

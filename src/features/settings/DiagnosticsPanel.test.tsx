@@ -26,7 +26,30 @@ import diagnosticsFixture from "../../../crates/devboule-daemon/fixtures/diagnos
 
 // This import is the same committed fixture generated and round-tripped by
 // the Rust diagnostics test. It keeps the frontend test on the real wire.
-const sampleReport: DaemonDiagnostics = diagnosticsFixture;
+function parseCaptureState(
+  value: string,
+): DaemonDiagnostics["environment"]["loginShellCapture"]["state"] {
+  switch (value) {
+    case "not_run":
+    case "applied":
+    case "skipped":
+    case "failed":
+      return value;
+    default:
+      throw new Error(`Unexpected login-shell capture state in fixture: ${value}`);
+  }
+}
+const captureState = parseCaptureState(diagnosticsFixture.environment.loginShellCapture.state);
+const sampleReport: DaemonDiagnostics = {
+  ...diagnosticsFixture,
+  environment: {
+    ...diagnosticsFixture.environment,
+    loginShellCapture: {
+      ...diagnosticsFixture.environment.loginShellCapture,
+      state: captureState,
+    },
+  },
+};
 
 const emptyReport = {
   daemon: {},

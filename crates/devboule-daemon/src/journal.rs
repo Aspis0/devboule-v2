@@ -1167,14 +1167,30 @@ fn journal_loop(
                 let _ = reply.send(result);
             }
             JournalCmd::FileLen { reply } => {
-                let result = std::fs::metadata(&path)
-                    .map(|meta| meta.len())
+                let result = journal_disk_footprint(&path)
                     .map_err(|error| JournalError::Unavailable(error.to_string()));
                 let _ = reply.send(result);
             }
             JournalCmd::Shutdown => break,
         }
     }
+}
+
+fn journal_disk_footprint(path: &Path) -> std::io::Result<u64> {
+    let main_bytes = std::fs::metadata(path)?.len();
+    let mut wal_name = path.as_os_str().to_os_string();
+    wal_name.push("-wal");
+    let wal_path = PathBuf::from(wal_name);
+    let wal_bytes = match std::fs::metadata(wal_path) {
+        Ok(meta) => meta.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error),
+    };
+
+    // SQLite's -shm file is a transient shared-memory index, not journal
+    // content. Exclude it so this reports the durable database plus WAL
+    // footprint that represents the journal's retained data.
+    Ok(main_bytes.saturating_add(wal_bytes))
 }
 
 fn note_degraded(
@@ -1845,6 +1861,30 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn file_len_accounts_for_an_uncheckpointed_wal() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("journal");
+        journal
+            .upsert_blocking(sample_session("s.wal.size"))
+            .expect("session");
+
+        assert!(journal.try_append(output_record("s.wal.size", 1, 1, vec![b'x'; 256 * 1024],)));
+        let reported = journal.file_len().expect("reported journal size");
+        let main_bytes = std::fs::metadata(&path).expect("main journal").len();
+        let wal_path = path.with_file_name("journal.db-wal");
+        let wal_bytes = std::fs::metadata(&wal_path).expect("wal journal").len();
+
+        assert!(wal_bytes > 0, "the test must observe an uncheckpointed WAL");
+        assert!(
+            reported >= main_bytes.saturating_add(wal_bytes),
+            "reported={reported} main={main_bytes} wal={wal_bytes}"
+        );
+
+        journal.shutdown();
+        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[test]

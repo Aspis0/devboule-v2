@@ -21,6 +21,7 @@ use crate::framing::Framed;
 use crate::idempotency::{IdempotencyOutcome, IdempotencyStore};
 use crate::journal::{Journal, JOURNAL_SCHEMA_VERSION};
 use crate::lock::SingleInstanceLock;
+use crate::login_shell_env::login_shell_capture_outcome;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
@@ -113,10 +114,15 @@ fn session_state_event(
 impl ServerState {
     #[cfg(test)]
     pub fn new(instance_id: String) -> Arc<Self> {
+        static TEST_STATE_COUNTER: AtomicU64 = AtomicU64::new(1);
+        let counter = TEST_STATE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Each test state needs its own SQLite path: parallel WAL writers
+        // sharing one test database can legitimately hold each other locked.
         Self::with_paths(
             instance_id,
             RuntimePaths::from_dir(
-                std::env::temp_dir().join(format!("devboule-test-{}", std::process::id())),
+                std::env::temp_dir()
+                    .join(format!("devboule-test-{}-{counter}", std::process::id())),
             ),
         )
         .expect("create daemon process job")
@@ -639,6 +645,7 @@ fn diagnostics_report(
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         runtime_dir: state.sessions.runtime_dir().to_string_lossy().into_owned(),
         pipe_name: state.sessions.pipe_name().to_string(),
+        login_shell_capture: login_shell_capture_outcome(),
     }))
 }
 
@@ -2424,9 +2431,17 @@ mod tests {
             report["health"]["journalSchemaVersion"],
             JOURNAL_SCHEMA_VERSION
         );
-        assert!(report["health"]["journalFileBytes"]
-            .as_u64()
-            .is_some_and(|bytes| bytes > 0));
+        assert!(
+            report["health"]["journalFileBytes"]
+                .as_u64()
+                .is_some_and(|bytes| bytes > 0),
+            "journal file bytes were not positive: report={report}, journal_error={:?}",
+            state
+                .journal_error
+                .lock()
+                .ok()
+                .and_then(|error| error.clone())
+        );
         let encoded = report.to_string();
         assert!(!encoded.contains("title"));
         assert!(!encoded.contains("transcript"));

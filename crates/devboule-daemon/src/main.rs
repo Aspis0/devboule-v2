@@ -1,6 +1,16 @@
 use devboule_daemon::{DaemonError, RuntimePaths};
 
 fn main() {
+    #[cfg(all(feature = "server", unix))]
+    {
+        // This call must remain the first runtime action in main: the Unix
+        // set_var precondition is that no other thread exists yet. Do not move
+        // thread creation, logging initialization, or any other threaded work
+        // above it; every later child (ACP, Claude, and PTY) inherits this
+        // environment.
+        devboule_daemon::initialize_login_shell_environment();
+    }
+
     // This target is listed with `required-features = ["server"]` in the
     // manifest. Keep the guard here too so a direct target invocation cannot
     // accidentally turn the client library into an in-process server.

@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::login_shell_env::LoginShellCaptureOutcome;
 use devboule_protocol::JournalStats;
 #[cfg(feature = "server")]
 use devboule_protocol::{ProviderInfo, Session, SessionState};
@@ -211,9 +212,12 @@ fn redact_secret_tokens(value: &str) -> String {
     redacted
 }
 
-/// Replace the user component of Windows home paths, including paths supplied
-/// by the runtime directory and provider diagnostics. This is deliberately
-/// local to the report because oracle-core redacts secrets, not identities.
+/// Replace the user component of home paths, including paths supplied by the
+/// runtime directory and provider diagnostics. The daemon currently receives
+/// Windows runtime directories, but Unix home forms are handled now so a
+/// macOS/Linux port cannot silently violate the diagnostics redaction promise.
+/// This is deliberately local to the report because oracle-core redacts
+/// secrets, not identities.
 fn redact_windows_home_paths(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut output = String::with_capacity(value.len());
@@ -261,6 +265,12 @@ fn redact_windows_home_paths(value: &str) -> String {
             }
         }
 
+        if let Some(user_end) = unix_home_user_end(value, bytes, index) {
+            output.push_str("[redacted-home]");
+            index = user_end;
+            continue;
+        }
+
         let is_drive = index + 3 <= bytes.len()
             && bytes[index].is_ascii_alphabetic()
             && bytes[index + 1] == b':'
@@ -296,6 +306,33 @@ fn redact_windows_home_paths(value: &str) -> String {
         index = user_end;
     }
     output
+}
+
+fn unix_home_user_end(value: &str, bytes: &[u8], index: usize) -> Option<usize> {
+    if bytes.get(index) != Some(&b'/')
+        || (index > 0
+            && !matches!(
+                bytes[index - 1],
+                b' ' | b'\t' | b'\r' | b'\n' | b'(' | b'[' | b'{' | b'=' | b':' | b','
+            ))
+    {
+        return None;
+    }
+
+    let prefix = if value[index..].starts_with("/Users/") {
+        "/Users/"
+    } else if value[index..].starts_with("/home/") {
+        "/home/"
+    } else {
+        return None;
+    };
+    let user_start = index + prefix.len();
+    let user_end = bytes[user_start..]
+        .iter()
+        .position(|byte| matches!(byte, b'/' | b' ' | b'\t' | b'\r' | b'\n'))
+        .map(|offset| user_start + offset)
+        .unwrap_or(bytes.len());
+    (user_end > user_start).then_some(user_end)
 }
 
 /// Replace the deterministic pipe discriminator. It is deliberately not
@@ -395,6 +432,7 @@ pub struct DiagnosticsInput {
     pub app_version: String,
     pub runtime_dir: String,
     pub pipe_name: String,
+    pub login_shell_capture: LoginShellCaptureOutcome,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -470,6 +508,7 @@ pub struct EnvironmentDiagnostics {
     pub app_version: String,
     pub runtime_dir: SafeText,
     pub pipe_name: SafeText,
+    pub login_shell_capture: LoginShellCaptureOutcome,
 }
 
 impl DiagnosticsReport {
@@ -556,6 +595,7 @@ impl DiagnosticsReport {
                 app_version: input.app_version,
                 runtime_dir: SafeText::new(input.runtime_dir),
                 pipe_name: SafeText::new(input.pipe_name),
+                login_shell_capture: input.login_shell_capture,
             },
         }
     }
@@ -629,6 +669,11 @@ mod tests {
             app_version: "0.1.0".to_string(),
             runtime_dir: "C:\\runtime".to_string(),
             pipe_name: "devboule".to_string(),
+            login_shell_capture: LoginShellCaptureOutcome {
+                state: crate::login_shell_env::LoginShellCaptureState::NotRun,
+                applied_variables: 0,
+                preserved_variables: 0,
+            },
         }
     }
 
@@ -694,6 +739,11 @@ mod tests {
                 app_version: "0.1.0".to_string(),
                 runtime_dir: SafeText::new("[redacted-home]\\AppData\\Local\\Devboule"),
                 pipe_name: SafeText::new(r"\\.\pipe\devboule-[redacted]"),
+                login_shell_capture: LoginShellCaptureOutcome {
+                    state: crate::login_shell_env::LoginShellCaptureState::Applied,
+                    applied_variables: 12,
+                    preserved_variables: 2,
+                },
             },
         }
     }
@@ -781,11 +831,48 @@ mod tests {
                 r"//server/share/Users/alice/AppData/Local/Devboule",
                 r"[redacted-home]/AppData/Local/Devboule",
             ),
+            (
+                "/Users/alice/Library/Application Support/Devboule",
+                "[redacted-home]/Library/Application Support/Devboule",
+            ),
+            (
+                "/home/alice/.config/devboule",
+                "[redacted-home]/.config/devboule",
+            ),
+            ("/Users/alice", "[redacted-home]"),
+            ("/home/alice", "[redacted-home]"),
+            ("/usr/local/bin", "/usr/local/bin"),
+            ("/opt/homebrew/bin", "/opt/homebrew/bin"),
+            (
+                "/var/folders/ab/cd/T/devboule",
+                "/var/folders/ab/cd/T/devboule",
+            ),
         ];
 
         for (raw, expected) in cases {
             assert_eq!(redact_windows_home_paths(raw), expected);
         }
+    }
+
+    #[test]
+    fn report_includes_login_shell_capture_outcome_without_environment_values() {
+        let report = fixture_report();
+        let encoded = serde_json::to_value(report).expect("report json");
+        assert_eq!(
+            encoded["environment"]["loginShellCapture"]["state"],
+            "applied"
+        );
+        assert_eq!(
+            encoded["environment"]["loginShellCapture"]["appliedVariables"],
+            12
+        );
+        assert_eq!(
+            encoded["environment"]["loginShellCapture"]["preservedVariables"],
+            2
+        );
+        let environment = encoded["environment"].as_object().expect("environment");
+        assert!(!environment.contains_key("PATH"));
+        assert!(!environment.contains_key("captured"));
     }
 
     #[test]
