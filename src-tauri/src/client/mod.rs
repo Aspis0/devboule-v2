@@ -6,15 +6,18 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
-    connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, DaemonError, RuntimePaths,
-    SessionStateHandler,
+    connect_or_spawn, current_user_sid, daemon_file_name, DaemonClient, DaemonError, EventHandler,
+    RuntimePaths, SessionStateHandler,
 };
-use devboule_protocol::{ClientHello, DaemonStatusBody, ErrorCode};
+use devboule_protocol::{
+    ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
+    SessionState, SessionStateSnapshot,
+};
 use serde::Serialize;
 use tauri::State;
 
@@ -22,6 +25,7 @@ use crate::backend::error::CommandError;
 
 const PING_PERIOD: Duration = Duration::from_secs(2);
 const JOIN_BUDGET: Duration = Duration::from_millis(1500);
+const ROSTER_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -94,51 +98,595 @@ impl SessionWatchClient for DaemonClient {
 #[derive(Default)]
 struct RosterSubscription {
     handler: Mutex<Option<SessionStateHandler>>,
+    snapshot_epoch: Mutex<u64>,
+    snapshot_ready: Condvar,
+    binding_gate: Mutex<()>,
+    active_binding: Mutex<Option<u64>>,
+    next_binding: Mutex<u64>,
 }
 
 impl RosterSubscription {
-    fn watch<C: SessionWatchClient>(
+    fn next_binding(&self) -> u64 {
+        let mut next = self
+            .next_binding
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        *next = next.saturating_add(1);
+        *next
+    }
+
+    fn begin_rebind(&self) -> Option<u64> {
+        let _gate = self
+            .binding_gate
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if self
+            .handler
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .is_none()
+        {
+            return None;
+        }
+        *self
+            .active_binding
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(self.next_binding());
+        let mut epoch = self
+            .snapshot_epoch
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        *epoch = epoch.saturating_add(1);
+        Some(*epoch)
+    }
+
+    fn accept_snapshot(
         &self,
+        binding: u64,
+        handler: &SessionStateHandler,
+        snapshots: Vec<SessionStateSnapshot>,
+    ) {
+        let _gate = self
+            .binding_gate
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if self
+            .active_binding
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+            != Some(&binding)
+        {
+            return;
+        }
+        handler(snapshots);
+        let mut epoch = self
+            .snapshot_epoch
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        *epoch = epoch.saturating_add(1);
+        self.snapshot_ready.notify_all();
+    }
+
+    fn guarded_handler(
+        self: &Arc<Self>,
+        binding: u64,
+        handler: SessionStateHandler,
+    ) -> SessionStateHandler {
+        let subscription = Arc::clone(self);
+        Arc::new(move |snapshots| {
+            subscription.accept_snapshot(binding, &handler, snapshots);
+        })
+    }
+
+    fn wait_for_snapshot(&self, requested_epoch: u64) -> bool {
+        let deadline = Instant::now() + ROSTER_SNAPSHOT_TIMEOUT;
+        let mut epoch = self
+            .snapshot_epoch
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        while *epoch <= requested_epoch {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, result) = self
+                .snapshot_ready
+                .wait_timeout(epoch, remaining)
+                .unwrap_or_else(|err| err.into_inner());
+            epoch = next;
+            if result.timed_out() {
+                return *epoch > requested_epoch;
+            }
+        }
+        true
+    }
+
+    fn watch<C: SessionWatchClient>(
+        self: &Arc<Self>,
         client: Option<&C>,
         handler: SessionStateHandler,
     ) -> Result<(), DaemonError> {
-        *self.handler.lock().unwrap_or_else(|err| err.into_inner()) = Some(Arc::clone(&handler));
+        let binding = {
+            let _gate = self
+                .binding_gate
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            *self.handler.lock().unwrap_or_else(|err| err.into_inner()) =
+                Some(Arc::clone(&handler));
+            let binding = self.next_binding();
+            *self
+                .active_binding
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = Some(binding);
+            binding
+        };
         if let Some(client) = client {
-            client.sessions_watch(handler)?;
+            client.sessions_watch(self.guarded_handler(binding, handler))?;
         }
         Ok(())
     }
 
     fn unwatch<C: SessionWatchClient>(&self, client: Option<&C>) -> Result<(), DaemonError> {
-        self.handler
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .take();
+        {
+            let _gate = self
+                .binding_gate
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            *self
+                .active_binding
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = None;
+            self.handler
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .take();
+        }
         if let Some(client) = client {
             client.sessions_unwatch()?;
         }
         Ok(())
     }
 
-    fn rebind<C: SessionWatchClient>(&self, client: &C) -> Result<(), DaemonError> {
-        let handler = self
-            .handler
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .clone();
-        if let Some(handler) = handler {
-            client.sessions_watch(handler)?;
-        }
+    fn rebind<C: SessionWatchClient>(self: &Arc<Self>, client: &C) -> Result<(), DaemonError> {
+        let (binding, handler) = {
+            let _gate = self
+                .binding_gate
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            let handler = self
+                .handler
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone();
+            let Some(handler) = handler else {
+                return Ok(());
+            };
+            let binding = self.next_binding();
+            *self
+                .active_binding
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = Some(binding);
+            (binding, handler)
+        };
+        client.sessions_watch(self.guarded_handler(binding, handler))?;
         Ok(())
     }
+}
+
+pub(crate) type AttachmentSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
+
+trait SessionAttachmentClient {
+    fn session_attach(
+        &self,
+        session_id: &str,
+        from_cursor: Option<Cursor>,
+        handler: EventHandler,
+    ) -> Result<(), DaemonError>;
+}
+
+impl SessionAttachmentClient for DaemonClient {
+    fn session_attach(
+        &self,
+        session_id: &str,
+        from_cursor: Option<Cursor>,
+        handler: EventHandler,
+    ) -> Result<(), DaemonError> {
+        DaemonClient::session_attach(self, session_id, from_cursor, handler)
+    }
+}
+
+struct AttachmentEntry {
+    sink: AttachmentSink,
+    cursor: Option<Cursor>,
+    binding: Option<u64>,
+}
+
+#[derive(Default)]
+struct AttachmentRegistryState {
+    entries: HashMap<String, AttachmentEntry>,
+    roster: Option<HashMap<String, SessionStateSnapshot>>,
+    next_binding: u64,
+}
+
+/// Desired per-session subscriptions owned by the bridge rather than by one
+/// daemon connection. A binding token makes an old DaemonClient callback
+/// harmless after replacement: the old client can still deliver its synthetic
+/// connection-loss exit while its reader thread is being dropped.
+#[derive(Default)]
+struct AttachmentRegistry {
+    state: Mutex<AttachmentRegistryState>,
+}
+
+impl AttachmentRegistry {
+    fn insert(&self, session_id: &str, cursor: Option<Cursor>, sink: AttachmentSink) {
+        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        state.entries.insert(
+            session_id.to_string(),
+            AttachmentEntry {
+                sink,
+                cursor,
+                binding: None,
+            },
+        );
+    }
+
+    fn remove(&self, session_id: &str) {
+        self.state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .remove(session_id);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .len()
+    }
+
+    #[cfg(test)]
+    fn is_bound(&self, session_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .get(session_id)
+            .and_then(|entry| entry.binding)
+            .is_some()
+    }
+
+    fn generation_for(&self, session_id: &str) -> Option<u64> {
+        let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        state
+            .entries
+            .get(session_id)
+            .and_then(|entry| entry.cursor)
+            .map(|cursor| cursor.generation)
+            .or_else(|| {
+                state
+                    .roster
+                    .as_ref()
+                    .and_then(|roster| roster.get(session_id))
+                    .map(|snapshot| snapshot.state.generation())
+            })
+    }
+
+    fn forget_generation(&self, session_id: &str) {
+        if let Some(roster) = self
+            .state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .roster
+            .as_mut()
+        {
+            roster.remove(session_id);
+        }
+    }
+
+    fn begin_replacement(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        state.roster = None;
+        for entry in state.entries.values_mut() {
+            entry.binding = None;
+        }
+    }
+
+    fn observe_roster(&self, snapshots: &[SessionStateSnapshot]) {
+        let mut terminal = Vec::new();
+        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        state.roster = Some(
+            snapshots
+                .iter()
+                .map(|snapshot| (snapshot.id.clone(), snapshot.clone()))
+                .collect(),
+        );
+        for snapshot in snapshots {
+            let Some(event) = terminal_event(&snapshot.state) else {
+                continue;
+            };
+            let Some(entry) = state.entries.get(&snapshot.id) else {
+                continue;
+            };
+            // A normal live attachment receives its authoritative exit from
+            // the session stream. During replacement all bindings are cleared,
+            // so this branch is specifically the new daemon's roster answer.
+            if entry.binding.is_none() {
+                let Some(entry) = state.entries.remove(&snapshot.id) else {
+                    continue;
+                };
+                terminal.push((entry.sink, event));
+            }
+        }
+        drop(state);
+        for (sink, event) in terminal {
+            sink(event);
+        }
+    }
+
+    fn bind<C: SessionAttachmentClient>(
+        self: &Arc<Self>,
+        client: &C,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let cursor = self
+            .state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .get(session_id)
+            .and_then(|entry| entry.cursor);
+        self.bind_with_cursor(client, session_id, cursor)
+    }
+
+    fn bind_with_cursor<C: SessionAttachmentClient>(
+        self: &Arc<Self>,
+        client: &C,
+        session_id: &str,
+        cursor: Option<Cursor>,
+    ) -> Result<(), DaemonError> {
+        let (binding, handler) = {
+            let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+            let binding = next_binding(&mut state);
+            let Some(entry) = state.entries.get_mut(session_id) else {
+                return Err(DaemonError::Protocol(
+                    "session attachment is no longer registered".to_string(),
+                ));
+            };
+            entry.binding = Some(binding);
+            (binding, self.handler(session_id.to_string(), binding))
+        };
+        let result = client.session_attach(session_id, cursor, handler);
+        if result.is_err() {
+            self.clear_binding(session_id, binding);
+        }
+        result
+    }
+
+    fn handler(self: &Arc<Self>, session_id: String, binding: u64) -> EventHandler {
+        let registry = Arc::clone(self);
+        Arc::new(move |envelope| registry.dispatch(&session_id, binding, envelope))
+    }
+
+    fn clear_binding(&self, session_id: &str, binding: u64) {
+        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        if state
+            .entries
+            .get(session_id)
+            .and_then(|entry| entry.binding)
+            == Some(binding)
+        {
+            if let Some(entry) = state.entries.get_mut(session_id) {
+                entry.binding = None;
+            }
+        }
+    }
+
+    fn dispatch(&self, session_id: &str, binding: u64, envelope: SessionEventEnvelope) {
+        // DaemonClient uses generation 0 only for the synthetic Exit emitted
+        // when a connection fails. A real daemon Exit always belongs to the
+        // session generation and must still reach the tab.
+        if envelope.generation == 0 && matches!(envelope.event, SessionEvent::Exit { code: None }) {
+            return;
+        }
+        let (sink, event) = {
+            let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+            let (sink, event, remove) = {
+                let Some(entry) = state.entries.get_mut(session_id) else {
+                    return;
+                };
+                if entry.binding != Some(binding) {
+                    return;
+                }
+                advance_cursor(entry, &envelope);
+                let sink = Arc::clone(&entry.sink);
+                let event = envelope.event;
+                let remove = matches!(
+                    &event,
+                    SessionEvent::Exit { .. } | SessionEvent::Recovered { .. }
+                );
+                (sink, event, remove)
+            };
+            if remove {
+                state.entries.remove(session_id);
+            }
+            (sink, event)
+        };
+        sink(event);
+    }
+
+    fn reattach_cursor(&self, session_id: &str) -> Option<Cursor> {
+        let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let cursor = state.entries.get(session_id).and_then(|entry| entry.cursor);
+        let cursor = cursor?;
+        let Some(snapshot) = state
+            .roster
+            .as_ref()
+            .and_then(|roster| roster.get(session_id))
+        else {
+            return Some(cursor);
+        };
+        let generation = snapshot.state.generation();
+        if cursor.generation == generation {
+            Some(cursor)
+        } else {
+            // Sequence numbers restart for a new process generation. Never
+            // send the old generation's seq to the daemon; a zero cursor for
+            // the new generation is the only honest replay position.
+            Some(Cursor { generation, seq: 0 })
+        }
+    }
+
+    fn terminal_for_replacement(&self, session_id: &str) -> Option<(AttachmentSink, SessionEvent)> {
+        let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let snapshot = state
+            .roster
+            .as_ref()
+            .and_then(|roster| roster.get(session_id))?;
+        let event = terminal_event(&snapshot.state)?;
+        let entry = state.entries.remove(session_id)?;
+        Some((entry.sink, event))
+    }
+
+    fn attach_one<C: SessionAttachmentClient>(
+        self: &Arc<Self>,
+        client: &C,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let cursor = self.reattach_cursor(session_id);
+        let result = self.bind_with_cursor(client, session_id, cursor);
+        match result {
+            Err(error) if is_generation_mismatch(&error) && cursor.is_some() => {
+                // Without a fresh roster generation, the daemon is the
+                // authority. Retry exactly once from the new stream's
+                // beginning; this is still one active RPC at a time.
+                self.bind_with_cursor(client, session_id, None)
+            }
+            other => other,
+        }
+    }
+
+    fn retry_one<C: SessionAttachmentClient>(
+        self: &Arc<Self>,
+        client: &C,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let should_retry = self
+            .state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .get(session_id)
+            .is_some_and(|entry| entry.binding.is_none());
+        if !should_retry {
+            return Ok(());
+        }
+        if let Some((sink, event)) = self.terminal_for_replacement(session_id) {
+            sink(event);
+            return Ok(());
+        }
+        let result = self.attach_one(client, session_id);
+        if let Err(error) = &result {
+            self.emit_reattach_error(session_id, error);
+        }
+        result
+    }
+
+    fn reattach_all<C: SessionAttachmentClient>(
+        self: &Arc<Self>,
+        client: &C,
+    ) -> Vec<(String, DaemonError)> {
+        // This is intentionally a single sequential worker: the daemon gets
+        // at most one re-attach RPC at a time even when many tabs were open.
+        let ids = self
+            .state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut failures = Vec::new();
+        for session_id in ids {
+            if let Err(error) = self.retry_one(client, &session_id) {
+                failures.push((session_id, error));
+            }
+        }
+        failures
+    }
+
+    fn emit_reattach_error(&self, session_id: &str, error: &DaemonError) {
+        let sink = self
+            .state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .get(session_id)
+            .map(|entry| Arc::clone(&entry.sink));
+        if let Some(sink) = sink {
+            sink(SessionEvent::AgentError {
+                message: format!("Could not reattach the agent session: {error}"),
+            });
+        }
+    }
+}
+
+fn next_binding(state: &mut AttachmentRegistryState) -> u64 {
+    state.next_binding = state.next_binding.saturating_add(1);
+    state.next_binding
+}
+
+fn advance_cursor(entry: &mut AttachmentEntry, envelope: &SessionEventEnvelope) {
+    let seq = match &envelope.event {
+        SessionEvent::Output { seq, .. }
+        | SessionEvent::AgentReported { seq, .. }
+        | SessionEvent::Snapshot { as_of_seq: seq, .. } => Some(*seq),
+        _ => None,
+    };
+    match entry.cursor {
+        Some(cursor) if cursor.generation == envelope.generation => {
+            if let Some(seq) = seq {
+                entry.cursor = Some(Cursor {
+                    generation: cursor.generation,
+                    seq: cursor.seq.max(seq),
+                });
+            }
+        }
+        _ => {
+            entry.cursor = Some(Cursor {
+                generation: envelope.generation,
+                seq: seq.unwrap_or(0),
+            });
+        }
+    }
+}
+
+fn terminal_event(state: &SessionState) -> Option<SessionEvent> {
+    match state {
+        SessionState::Ended { code, .. } => Some(SessionEvent::Exit { code: *code }),
+        SessionState::Recovered { integrity, .. } => Some(SessionEvent::Recovered {
+            integrity: *integrity,
+        }),
+        SessionState::Live { .. } | SessionState::Silent { .. } => None,
+    }
+}
+
+fn is_generation_mismatch(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::Handshake(error) if error.code == ErrorCode::SessionGenerationMismatch
+    )
 }
 
 pub(crate) struct BridgeInner {
     status: Mutex<UiDaemonStatus>,
     client: Mutex<Option<Arc<DaemonClient>>>,
     client_lifecycle: Mutex<()>,
-    roster_subscription: RosterSubscription,
-    generations: Mutex<HashMap<String, u64>>,
+    roster_subscription: Arc<RosterSubscription>,
+    attachments: Arc<AttachmentRegistry>,
 }
 
 pub struct DaemonBridge {
@@ -153,8 +701,8 @@ impl DaemonBridge {
             status: Mutex::new(UiDaemonStatus::connecting()),
             client: Mutex::new(None),
             client_lifecycle: Mutex::new(()),
-            roster_subscription: RosterSubscription::default(),
-            generations: Mutex::new(HashMap::new()),
+            roster_subscription: Arc::new(RosterSubscription::default()),
+            attachments: Arc::new(AttachmentRegistry::default()),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let thread_inner = Arc::clone(&inner);
@@ -190,12 +738,25 @@ impl DaemonBridge {
         self.inner.sessions_unwatch()
     }
 
-    pub fn generation_tracker(&self) -> Arc<BridgeInner> {
-        Arc::clone(&self.inner)
+    pub(crate) fn session_attach(
+        &self,
+        session_id: &str,
+        from_seq: Option<u64>,
+        sink: AttachmentSink,
+    ) -> Result<(), DaemonError> {
+        self.inner.session_attach(session_id, from_seq, sink)
     }
 
-    pub fn generation_for(&self, session_id: &str) -> u64 {
-        self.inner.generation_for(session_id)
+    pub(crate) fn ensure_session_attached(&self, session_id: &str) -> Result<(), DaemonError> {
+        self.inner.ensure_session_attached(session_id)
+    }
+
+    pub(crate) fn session_detach(&self, session_id: &str) -> Result<(), DaemonError> {
+        self.inner.session_detach(session_id)
+    }
+
+    pub(crate) fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
+        self.inner.session_close(session_id)
     }
 
     pub fn forget_generation(&self, session_id: &str) {
@@ -234,7 +795,7 @@ impl BridgeInner {
             .ok_or_else(|| "The daemon connection was lost.".to_string())
     }
 
-    fn sessions_watch(&self, handler: SessionStateHandler) -> Result<(), DaemonError> {
+    fn sessions_watch(self: &Arc<Self>, handler: SessionStateHandler) -> Result<(), DaemonError> {
         // Serialize desired-subscription changes with client replacement. The
         // lifecycle guard is always acquired before the client mutex, and no
         // path acquires them in the reverse order.
@@ -247,6 +808,11 @@ impl BridgeInner {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone();
+        let bridge = Arc::clone(self);
+        let handler = Arc::new(move |snapshots: Vec<SessionStateSnapshot>| {
+            bridge.observe_roster(&snapshots);
+            handler(snapshots);
+        });
         self.roster_subscription.watch(client.as_deref(), handler)
     }
 
@@ -268,6 +834,8 @@ impl BridgeInner {
             .client_lifecycle
             .lock()
             .unwrap_or_else(|err| err.into_inner());
+        self.attachments.begin_replacement();
+        let roster_epoch = self.roster_subscription.begin_rebind();
         *self.client.lock().unwrap_or_else(|err| err.into_inner()) = Some(Arc::clone(&client));
         if let Err(error) = self.roster_subscription.rebind(client.as_ref()) {
             let mut current = self.client.lock().unwrap_or_else(|err| err.into_inner());
@@ -278,6 +846,19 @@ impl BridgeInner {
                 *current = None;
             }
             return Err(error);
+        }
+        if let Some(roster_epoch) = roster_epoch {
+            if !self.roster_subscription.wait_for_snapshot(roster_epoch) {
+                // Keep the successfully connected client. A slow journal
+                // read must not create another reconnect cycle and strand all
+                // tabs; attachment retries use the daemon as the generation
+                // authority when the roster catches up later.
+                eprintln!("daemon session roster is slow; reattaching from stored cursors");
+            }
+        }
+        let failures = self.attachments.reattach_all(client.as_ref());
+        for (session_id, error) in failures {
+            eprintln!("session {session_id} reattach deferred until the next user action: {error}");
         }
         Ok(())
     }
@@ -293,6 +874,7 @@ impl BridgeInner {
             .is_some_and(|active| Arc::ptr_eq(active, expected))
         {
             *current = None;
+            self.attachments.begin_replacement();
         }
     }
 
@@ -307,27 +889,84 @@ impl BridgeInner {
             .take()
     }
 
-    pub fn note_generation(&self, session_id: &str, generation: u64) {
-        self.generations
+    fn observe_roster(&self, snapshots: &[SessionStateSnapshot]) {
+        self.attachments.observe_roster(snapshots);
+    }
+
+    pub(crate) fn ensure_session_attached(&self, session_id: &str) -> Result<(), DaemonError> {
+        let _lifecycle = self
+            .client_lifecycle
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let client = self
+            .client
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .insert(session_id.to_string(), generation);
+            .clone()
+            .ok_or(DaemonError::ConnectionLost)?;
+        self.attachments.retry_one(client.as_ref(), session_id)
+    }
+
+    pub(crate) fn session_attach(
+        &self,
+        session_id: &str,
+        from_seq: Option<u64>,
+        sink: AttachmentSink,
+    ) -> Result<(), DaemonError> {
+        let _lifecycle = self
+            .client_lifecycle
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+            .ok_or(DaemonError::ConnectionLost)?;
+        let cursor = from_seq.map(|seq| Cursor {
+            generation: self.attachments.generation_for(session_id).unwrap_or(1),
+            seq,
+        });
+        self.attachments.insert(session_id, cursor, sink);
+        if let Err(error) = self.attachments.bind(client.as_ref(), session_id) {
+            self.attachments.remove(session_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn session_detach(&self, session_id: &str) -> Result<(), DaemonError> {
+        let _lifecycle = self
+            .client_lifecycle
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        self.attachments.remove(session_id);
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+            .ok_or(DaemonError::ConnectionLost)?;
+        client.session_detach(session_id)
+    }
+
+    pub(crate) fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
+        let _lifecycle = self
+            .client_lifecycle
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        self.attachments.remove(session_id);
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+            .ok_or(DaemonError::ConnectionLost)?;
+        client.session_close(session_id)
     }
 
     pub fn forget_generation(&self, session_id: &str) {
-        self.generations
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .remove(session_id);
-    }
-
-    fn generation_for(&self, session_id: &str) -> u64 {
-        self.generations
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .get(session_id)
-            .copied()
-            .unwrap_or(1)
+        self.attachments.forget_generation(session_id);
     }
 }
 
@@ -685,10 +1324,398 @@ fn sleep_interruptible(stop: &AtomicBool, total: Duration) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devboule_daemon::SessionStateHandler;
+    use devboule_daemon::{DaemonError, EventHandler, SessionStateHandler};
     use devboule_protocol::DaemonStatusBody;
     use devboule_protocol::{SessionState, SessionStateSnapshot};
+    use std::collections::HashSet;
     use std::sync::atomic::AtomicUsize;
+
+    #[derive(Default)]
+    struct FakeAttachmentClient {
+        calls: Mutex<Vec<(String, Option<devboule_protocol::Cursor>)>>,
+        handlers: Mutex<HashMap<String, Vec<EventHandler>>>,
+        failures: Mutex<HashSet<String>>,
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
+    }
+
+    impl FakeAttachmentClient {
+        fn emit(&self, session_id: &str, envelope: devboule_protocol::SessionEventEnvelope) {
+            if let Some(handler) = self
+                .handlers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(session_id)
+                .and_then(|handlers| handlers.last().cloned())
+            {
+                handler(envelope);
+            }
+        }
+
+        fn emit_stale(&self, session_id: &str, envelope: devboule_protocol::SessionEventEnvelope) {
+            if let Some(handler) = self
+                .handlers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(session_id)
+                .and_then(|handlers| handlers.first().cloned())
+            {
+                handler(envelope);
+            }
+        }
+
+        fn fail_for(&self, session_id: &str) {
+            self.failures
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(session_id.to_string());
+        }
+
+        fn allow_for(&self, session_id: &str) {
+            self.failures
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(session_id);
+        }
+    }
+
+    impl SessionAttachmentClient for FakeAttachmentClient {
+        fn session_attach(
+            &self,
+            session_id: &str,
+            from_cursor: Option<devboule_protocol::Cursor>,
+            handler: EventHandler,
+        ) -> Result<(), DaemonError> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((session_id.to_string(), from_cursor));
+            let active = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(active, Ordering::SeqCst);
+            let failed = self
+                .failures
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .contains(session_id);
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            if failed {
+                return Err(DaemonError::Protocol("fake attach failed".to_string()));
+            }
+            self.handlers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .entry(session_id.to_string())
+                .or_default()
+                .push(handler);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn attached_session_reattaches_with_the_cursor_received_before_replacement() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_handler = Arc::clone(&received);
+        let sink: AttachmentSink = Arc::new(move |event| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
+        });
+        let old_client = FakeAttachmentClient::default();
+        let new_client = FakeAttachmentClient::default();
+
+        registry.insert("session-1", None, sink);
+        registry
+            .bind(&old_client, "session-1")
+            .expect("initial attach");
+        old_client.emit(
+            "session-1",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "session-1".to_string(),
+                generation: 4,
+                event: devboule_protocol::SessionEvent::Output {
+                    seq: 17,
+                    data: "before replacement".to_string(),
+                },
+            },
+        );
+
+        registry.begin_replacement();
+        old_client.emit_stale(
+            "session-1",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "session-1".to_string(),
+                generation: 0,
+                event: devboule_protocol::SessionEvent::Exit { code: None },
+            },
+        );
+        assert_eq!(
+            received
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            1,
+            "connection-loss exit from the old client must not reach the tab"
+        );
+        registry.reattach_all(&new_client);
+
+        assert_eq!(
+            new_client
+                .calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_slice(),
+            &[(
+                "session-1".to_string(),
+                Some(devboule_protocol::Cursor {
+                    generation: 4,
+                    seq: 17,
+                }),
+            )]
+        );
+        new_client.emit(
+            "session-1",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "session-1".to_string(),
+                generation: 4,
+                event: devboule_protocol::SessionEvent::Output {
+                    seq: 18,
+                    data: "after replacement".to_string(),
+                },
+            },
+        );
+        old_client.emit_stale(
+            "session-1",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "session-1".to_string(),
+                generation: 4,
+                event: devboule_protocol::SessionEvent::Output {
+                    seq: 99,
+                    data: "late old-client event".to_string(),
+                },
+            },
+        );
+        assert!(received
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .any(|event| matches!(
+                event,
+                devboule_protocol::SessionEvent::Output { seq: 18, .. }
+            )));
+        assert!(!received
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .any(|event| matches!(
+                event,
+                devboule_protocol::SessionEvent::Output { seq: 99, .. }
+            )));
+    }
+
+    #[test]
+    fn generation_bump_discards_the_old_sequence_but_keeps_the_session_binding() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let sink: AttachmentSink = Arc::new(|_| {});
+        let old_client = FakeAttachmentClient::default();
+        let new_client = FakeAttachmentClient::default();
+        registry.insert("session-2", None, sink);
+        registry
+            .bind(&old_client, "session-2")
+            .expect("initial attach");
+        old_client.emit(
+            "session-2",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "session-2".to_string(),
+                generation: 4,
+                event: devboule_protocol::SessionEvent::Output {
+                    seq: 17,
+                    data: "old generation".to_string(),
+                },
+            },
+        );
+        registry.begin_replacement();
+        registry.observe_roster(&[SessionStateSnapshot {
+            id: "session-2".to_string(),
+            title: "agent".to_string(),
+            state: SessionState::Live { generation: 5 },
+            elapsed_ms: None,
+            attention: None,
+        }]);
+        registry.reattach_all(&new_client);
+
+        assert_eq!(
+            new_client
+                .calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .first()
+                .and_then(|(_, cursor)| *cursor),
+            Some(devboule_protocol::Cursor {
+                generation: 5,
+                seq: 0,
+            })
+        );
+        assert!(registry.is_bound("session-2"));
+    }
+
+    #[test]
+    fn ended_while_disconnected_is_delivered_as_ended_without_an_attach() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_handler = Arc::clone(&received);
+        let sink: AttachmentSink = Arc::new(move |event| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
+        });
+        let old_client = FakeAttachmentClient::default();
+        let new_client = FakeAttachmentClient::default();
+        registry.insert("ended", None, sink);
+        registry.bind(&old_client, "ended").expect("initial attach");
+        registry.begin_replacement();
+        registry.observe_roster(&[SessionStateSnapshot {
+            id: "ended".to_string(),
+            title: "ended".to_string(),
+            state: SessionState::Ended {
+                generation: 4,
+                code: Some(23),
+                integrity: devboule_protocol::TranscriptIntegrity::Complete,
+            },
+            elapsed_ms: None,
+            attention: None,
+        }]);
+        registry.reattach_all(&new_client);
+
+        assert!(new_client
+            .calls
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty());
+        assert!(received
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .any(|event| matches!(
+                event,
+                devboule_protocol::SessionEvent::Exit { code: Some(23) }
+            )));
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn a_failed_reattach_does_not_abort_the_remaining_tabs() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_handler = Arc::clone(&received);
+        let sink: AttachmentSink = Arc::new(move |event| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
+        });
+        let second_sink = Arc::clone(&sink);
+        let client = FakeAttachmentClient::default();
+        client.fail_for("bad");
+        registry.insert("bad", None, Arc::clone(&sink));
+        registry.insert("good", None, second_sink);
+        registry.begin_replacement();
+        let failures = registry.reattach_all(&client);
+
+        assert_eq!(failures.len(), 1);
+        assert!(!registry.is_bound("bad"));
+        assert!(registry.is_bound("good"));
+        client.emit(
+            "good",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "good".to_string(),
+                generation: 1,
+                event: devboule_protocol::SessionEvent::AgentMessage {
+                    message_id: None,
+                    text: "still live".to_string(),
+                },
+            },
+        );
+        assert!(received
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .any(|event| matches!(event, devboule_protocol::SessionEvent::AgentMessage { text, .. } if text == "still live")));
+    }
+
+    #[test]
+    fn a_failed_reattach_can_be_retried_for_a_later_user_action() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_handler = Arc::clone(&received);
+        let sink: AttachmentSink = Arc::new(move |event| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(event);
+        });
+        let client = FakeAttachmentClient::default();
+        client.fail_for("retry");
+        registry.insert("retry", None, sink);
+        registry.begin_replacement();
+        assert_eq!(registry.reattach_all(&client).len(), 1);
+        assert!(!registry.is_bound("retry"));
+
+        client.allow_for("retry");
+        registry
+            .retry_one(&client, "retry")
+            .expect("the later action retries the attachment");
+        assert!(registry.is_bound("retry"));
+        client.emit(
+            "retry",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "retry".to_string(),
+                generation: 1,
+                event: devboule_protocol::SessionEvent::AgentMessage {
+                    message_id: None,
+                    text: "recovered".to_string(),
+                },
+            },
+        );
+        assert!(received
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .any(|event| matches!(event, devboule_protocol::SessionEvent::AgentMessage { text, .. } if text == "recovered")));
+    }
+
+    #[test]
+    fn reattach_worker_allows_only_one_attach_in_flight() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let client = FakeAttachmentClient::default();
+        for index in 0..8 {
+            registry.insert(&format!("session-{index}"), None, Arc::new(|_| {}));
+        }
+        registry.begin_replacement();
+        registry.reattach_all(&client);
+
+        assert_eq!(client.max_in_flight.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn closed_session_events_remove_the_registry_entry() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let client = FakeAttachmentClient::default();
+        registry.insert("closed", None, Arc::new(|_| {}));
+        registry.bind(&client, "closed").expect("attach");
+        client.emit(
+            "closed",
+            devboule_protocol::SessionEventEnvelope {
+                session_id: "closed".to_string(),
+                generation: 1,
+                event: devboule_protocol::SessionEvent::Exit { code: Some(0) },
+            },
+        );
+
+        assert_eq!(registry.len(), 0);
+    }
 
     #[derive(Default)]
     struct FakeRosterClient {
@@ -738,7 +1765,7 @@ mod tests {
 
     #[test]
     fn roster_update_reaches_a_subscription_after_client_replacement() {
-        let subscription = RosterSubscription::default();
+        let subscription = Arc::new(RosterSubscription::default());
         let received = Arc::new(Mutex::new(Vec::new()));
         let received_by_handler = Arc::clone(&received);
         let handler: SessionStateHandler = Arc::new(move |snapshots| {
@@ -771,7 +1798,7 @@ mod tests {
 
     #[test]
     fn roster_subscription_registered_while_disconnected_binds_later() {
-        let subscription = RosterSubscription::default();
+        let subscription = Arc::new(RosterSubscription::default());
         let received = Arc::new(Mutex::new(Vec::new()));
         let received_by_handler = Arc::clone(&received);
         let handler: SessionStateHandler = Arc::new(move |snapshots| {
@@ -801,7 +1828,7 @@ mod tests {
 
     #[test]
     fn roster_unwatch_stays_unsubscribed_across_client_replacement() {
-        let subscription = RosterSubscription::default();
+        let subscription = Arc::new(RosterSubscription::default());
         let received = Arc::new(Mutex::new(Vec::new()));
         let received_by_handler = Arc::clone(&received);
         let handler: SessionStateHandler = Arc::new(move |snapshots| {
@@ -828,6 +1855,54 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .is_empty());
+    }
+
+    #[test]
+    fn an_old_roster_client_cannot_satisfy_the_new_client_snapshot_barrier() {
+        let subscription = Arc::new(RosterSubscription::default());
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_handler = Arc::clone(&received);
+        let handler: SessionStateHandler = Arc::new(move |snapshots| {
+            received_by_handler
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .extend(snapshots);
+        });
+        let old_client = FakeRosterClient::default();
+        let new_client = FakeRosterClient::default();
+        subscription
+            .watch(Some(&old_client), handler)
+            .expect("watch old client");
+        let requested_epoch = subscription
+            .begin_rebind()
+            .expect("a desired roster watch exists");
+        subscription.rebind(&new_client).expect("rebind new client");
+
+        old_client.emit(roster_snapshot("old-daemon"));
+        assert!(received
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty());
+        assert_eq!(
+            *subscription
+                .snapshot_epoch
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            requested_epoch,
+            "the old callback must not advance the snapshot barrier"
+        );
+
+        new_client.emit(roster_snapshot("new-daemon"));
+        assert!(subscription.wait_for_snapshot(requested_epoch));
+        assert_eq!(
+            received
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .iter()
+                .map(|snapshot| snapshot.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["new-daemon"]
+        );
     }
 
     struct TimeoutStatusSource {

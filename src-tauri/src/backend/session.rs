@@ -9,10 +9,8 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use devboule_daemon::{DaemonClient, DiagnosticsReport, EventHandler, SessionStateHandler};
-use devboule_protocol::{
-    Cursor, ErrorCode, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
-};
+use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
+use devboule_protocol::{ErrorCode, PermissionOutcome, Persistence, PersistenceKind, ResumeResult};
 
 use crate::client::DaemonBridge;
 
@@ -65,16 +63,10 @@ pub fn session_attach(
     ch: Channel<SessionEvent>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    let client = require_client(&bridge)?;
-    let generation = bridge.generation_for(&id);
-    let from_cursor = from_cursor.map(|seq| Cursor { generation, seq });
-    let tracker = bridge.generation_tracker();
-    let session_id = id.clone();
-    let handler: EventHandler = Arc::new(move |envelope| {
-        tracker.note_generation(&envelope.session_id, envelope.generation);
-        let _ = ch.send(envelope.event);
+    let sink = Arc::new(move |event| {
+        let _ = ch.send(event);
     });
-    Ok(client.session_attach(&session_id, from_cursor, handler)?)
+    Ok(bridge.session_attach(&id, from_cursor, sink)?)
 }
 
 /// Detach the current view without touching the process, reader, registry,
@@ -83,7 +75,7 @@ pub fn session_attach(
 #[tauri::command]
 pub fn session_detach(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    Ok(require_client(&bridge)?.session_detach(&id)?)
+    Ok(bridge.session_detach(&id)?)
 }
 
 #[tauri::command]
@@ -104,6 +96,7 @@ pub fn session_send(
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     require_write_size(&text)?;
+    bridge.ensure_session_attached(&id)?;
     Ok(require_client(&bridge)?.session_send(&id, &text)?)
 }
 
@@ -121,6 +114,7 @@ pub fn session_permission_respond(
             "Permission request id is required.",
         ));
     }
+    bridge.ensure_session_attached(&id)?;
     Ok(require_client(&bridge)?.session_permission_respond(&id, &request_id, outcome)?)
 }
 
@@ -132,12 +126,14 @@ pub fn session_resize(
     rows: u16,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
+    bridge.ensure_session_attached(&id)?;
     Ok(require_client(&bridge)?.session_resize(&id, cols, rows)?)
 }
 
 #[tauri::command]
 pub fn session_interrupt(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
     require_session_id(&id)?;
+    bridge.ensure_session_attached(&id)?;
     Ok(require_client(&bridge)?.session_interrupt(&id)?)
 }
 
@@ -149,6 +145,7 @@ pub fn session_set_model(
     effort: Option<String>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
+    bridge.ensure_session_attached(&id)?;
     Ok(require_client(&bridge)?.session_set_model(&id, model_id.as_deref(), effort.as_deref())?)
 }
 
@@ -156,7 +153,7 @@ pub fn session_set_model(
 pub fn session_close(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
     require_session_id(&id)?;
     bridge.forget_generation(&id);
-    Ok(require_client(&bridge)?.session_close(&id)?)
+    Ok(bridge.session_close(&id)?)
 }
 
 #[tauri::command]
