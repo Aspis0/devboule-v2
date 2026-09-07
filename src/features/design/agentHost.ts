@@ -89,7 +89,7 @@ export function automaticSkillPrompt(
     `User request: ${prompt}`,
     "Available sections:",
     choices,
-    `Reply with at most ${MAX_AUTOMATIC_SKILL_SECTIONS} section slugs, most important first, as a comma-separated list in one line.`,
+    `Reply with at most ${MAX_AUTOMATIC_SKILL_SECTIONS} section slugs, most important first, as a comma-separated list in one line. Choose fewer than ${MAX_AUTOMATIC_SKILL_SECTIONS} when fewer sections apply; do not fill the quota just to reach the limit.`,
     "Do not investigate, read files, use tools, or modify anything.",
   ].join("\n");
 }
@@ -101,12 +101,60 @@ export function parseAutomaticSkillReply(
   const known = new Map(index.map((entry) => [entry.slug.toLowerCase(), entry.slug]));
   const seen = new Set<string>();
   const selected: string[] = [];
-  for (const word of reply
-    .toLowerCase()
-    .split(/[^a-z0-9-]+/)
-    .filter(Boolean)) {
-    const slug = known.get(word);
+  const normalizedReply = reply.toLowerCase();
+  const tokenPattern = /[a-z0-9-]+/g;
+  let token: RegExpExecArray | null;
+  while ((token = tokenPattern.exec(normalizedReply)) !== null) {
+    const slug = known.get(token[0]);
     if (slug === undefined || seen.has(slug)) continue;
+
+    // Keep the permissive token scan, but do not treat a slug mentioned as a
+    // rejection or as an example under discussion as a choice.  The positive
+    // cue check preserves chatty rankings such as "recommend color, then type".
+    const sentenceStart = Math.max(
+      normalizedReply.lastIndexOf(".", token.index - 1),
+      normalizedReply.lastIndexOf("!", token.index - 1),
+      normalizedReply.lastIndexOf("?", token.index - 1),
+      normalizedReply.lastIndexOf(";", token.index - 1),
+      normalizedReply.lastIndexOf("\n", token.index - 1),
+    ) + 1;
+    const before = normalizedReply.slice(sentenceStart, token.index);
+    const after = normalizedReply.slice(token.index + token[0].length);
+    const isNegatedBefore =
+      /\b(?:do|does|did|would|should|could|will|must)\s+not(?:\s+(?:choose|select|use|apply|include|recommend|need|want))?\s*$/.test(
+        before,
+      ) ||
+      /\b(?:don['’]t|doesn['’]t|didn['’]t|wouldn['’]t|shouldn['’]t|couldn['’]t|won['’]t|mustn['’]t)(?:\s+(?:choose|select|use|apply|include|recommend|need|want))?\s*$/.test(
+        before,
+      ) ||
+      /\b(?:not|never|no)\s+(?:to\s+)?(?:choose|select|use|apply|include|recommend|need|want)?\s*$/.test(
+        before,
+      ) ||
+      /\b(?:exclude|excluding|skip|skipping|omit|omitting|avoid|without|reject|rejected|leave out|rather than|instead of)\s*$/.test(
+        before,
+      );
+    const isNegatedAfter =
+      /^\s*,?\s*(?:is|are|was|were)\s+(?:not\b|irrelevant\b|inapplicable\b|unnecessary\b|unneeded\b|excluded\b|omitted\b)/.test(
+        after,
+      ) ||
+      /^\s*,?\s*(?:does|do|did)\s+not\s+apply\b/.test(after) ||
+      /^\s*,?\s*(?:doesn['’]t|don['’]t|didn['’]t)\s+apply\b/.test(after) ||
+      /^\s*,?\s*(?:is|are|was|were)\s+(?:an?\s+)?(?:option|example|possibility|candidate)\b/.test(
+        after,
+      ) ||
+      /^\s*,?\s*(?:is|are|was|were)\s+(?:mentioned|listed|discussed|considered)\b/.test(
+        after,
+      );
+    const hasPositiveCue =
+      /\b(?:choose|choosing|chosen|select|selecting|selected|recommend|recommended|apply|applying|use|using|include|including|prioritize|priority|first|then|also|next)\b/.test(
+        before,
+      );
+    const isDiscussionMention =
+      /\b(?:consider|considered|considering|discuss|discussed|discussing|mention|mentioned|mentioning|list|listed|listing|example|examples|available|option|options|about|regarding)\b/.test(
+        before,
+      ) && !hasPositiveCue;
+    if (isNegatedBefore || isNegatedAfter || isDiscussionMention) continue;
+
     seen.add(slug);
     selected.push(slug);
     if (selected.length === MAX_AUTOMATIC_SKILL_SECTIONS) break;

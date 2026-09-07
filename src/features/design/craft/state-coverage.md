@@ -1,6 +1,6 @@
 ---
 slug: state-coverage
-description: The four states a generated interface usually omits — loading, empty, error and edge — and what each has to contain. Apply whenever the output shows a list, a table, a form, a card, or anything that can be slow, empty, or wrong.
+description: The four states for data-bearing UI — loading, empty, error and edge — and what each has to contain. Apply whenever the output fetches, holds, or transforms data that can be empty, slow, or wrong.
 title: State coverage
 requires: []
 ---

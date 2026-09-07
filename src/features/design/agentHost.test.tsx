@@ -266,6 +266,8 @@ describe("ACP design host", () => {
     expect(preflight).toContain("one line");
     expect(preflight).toContain(`at most ${MAX_AUTOMATIC_SKILL_SECTIONS}`);
     expect(preflight).toContain("most important first");
+    expect(preflight).toContain(`Choose fewer than ${MAX_AUTOMATIC_SKILL_SECTIONS} when fewer sections apply`);
+    expect(preflight).toContain("do not fill the quota just to reach the limit");
 
     channelHarness.active?.({
       type: "agent_message",
@@ -365,6 +367,14 @@ describe("ACP design host", () => {
       ),
     ).toEqual(expected);
     expect(parseAutomaticSkillReply(`unknown, ${index[3]!.slug}`, index)).toEqual([index[3]!.slug]);
+  });
+
+  it("ignores clearly negated or discussed slug mentions", () => {
+    const index = builtInSkillIndex();
+
+    expect(parseAutomaticSkillReply("anti-ai-slop is not relevant; choose rtl", index)).toEqual(["rtl"]);
+    expect(parseAutomaticSkillReply("I considered anti-ai-slop, but choose rtl", index)).toEqual(["rtl"]);
+    expect(parseAutomaticSkillReply("Do not choose anti-ai-slop; recommend rtl", index)).toEqual(["rtl"]);
   });
 
   it("falls back to requesting every section after the automatic preflight timeout", async () => {

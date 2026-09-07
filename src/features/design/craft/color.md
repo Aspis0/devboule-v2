@@ -1,6 +1,6 @@
 ---
 slug: color
-description: Using a palette well, whatever the palette is: proportion between neutrals and accent, contrast as a gate, dark themes as a second scale, semantic colours as sets, and defining every token that is referenced. Apply whenever the output involves colour decisions.
+description: Choose colour deliberately: set the palette's neutral-to-accent proportion, treat contrast as a gate, build a second scale for dark themes, group semantic colours as sets, and define every referenced token. Apply whenever the output makes a colour choice.
 title: Color
 requires: []
 ---
