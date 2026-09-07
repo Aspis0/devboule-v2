@@ -13,7 +13,10 @@ use crate::paths::RuntimePaths;
 #[cfg(windows)]
 mod windows_pipe;
 #[cfg(windows)]
-pub use windows_pipe::{connect_pipe, inspect_pipe_dacl};
+pub use windows_pipe::{
+    connect_pipe, inspect_pipe_dacl, server_process_id,
+    terminate_server_process_if_identity_matches,
+};
 #[cfg(all(windows, feature = "server"))]
 pub use windows_pipe::{peer_identity, ListenerShutdown, NamedPipeListener};
 

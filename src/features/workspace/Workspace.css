@@ -412,6 +412,17 @@
   white-space: nowrap;
 }
 
+/* A restart that did not complete: an additional fact beside the daemon's own
+   unresponsive sentence, held together in the same strip. */
+.workspace-recovery-note::before {
+  content: "· ";
+  color: var(--terracotta-deep);
+}
+
+.workspace-recovery-note {
+  color: var(--terracotta-deep);
+}
+
 .workspace-daemon-status .workspace-status-dot,
 .workspace-browser-status .workspace-status-dot,
 .workspace-test-heading .workspace-status-dot,

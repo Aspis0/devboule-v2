@@ -169,12 +169,12 @@ pub fn sessions_watch(
     let handler: SessionStateHandler = Arc::new(move |snapshots| {
         let _ = ch.send(snapshots);
     });
-    Ok(require_client(&bridge)?.sessions_watch(handler)?)
+    Ok(bridge.sessions_watch(handler)?)
 }
 
 #[tauri::command]
 pub fn sessions_unwatch(bridge: State<'_, DaemonBridge>) -> Result<(), CommandError> {
-    Ok(require_client(&bridge)?.sessions_unwatch()?)
+    Ok(bridge.sessions_unwatch()?)
 }
 
 fn require_client(bridge: &DaemonBridge) -> Result<Arc<DaemonClient>, CommandError> {

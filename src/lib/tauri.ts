@@ -33,6 +33,7 @@ import type {
 export type CommandArgs = {
   app_identity: undefined;
   daemon_status: undefined;
+  daemon_restart: undefined;
   session_create: { workspaceId: Id | null; kind: SessionKind; provider?: string | null };
   session_resume: { sessionId: Id };
   session_attach: { id: Id; fromCursor: number | null; ch: SessionChannel };
@@ -80,6 +81,7 @@ export type CommandArgs = {
 type CommandResults = {
   app_identity: string;
   daemon_status: DaemonStatus;
+  daemon_restart: void;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: void;
@@ -140,6 +142,7 @@ type CommandName = keyof CommandArgs & keyof CommandResults;
 export const COMMAND_ARG_KEYS = {
   app_identity: [],
   daemon_status: [],
+  daemon_restart: [],
   session_create: ["workspaceId", "kind", "provider"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -256,6 +259,14 @@ export function isCommandError(error: unknown): error is CommandError {
 
 export const appIdentity = () => invokeTyped("app_identity");
 export const daemonStatus = () => invokeTyped("daemon_status");
+/**
+ * Kills a wedged daemon; the supervisor then spawns a fresh one on its own.
+ * Destructive — it closes the Job Object owning every agent and terminal
+ * process, so live turns die with it. The transcripts survive in the journal.
+ * Call only after the frontend decided it may restart silently or the user
+ * confirmed the dialog.
+ */
+export const daemonRestart = () => invokeTyped("daemon_restart");
 export const sessionCreate = (
   workspaceId: Id | null,
   kind: SessionKind = "terminal",

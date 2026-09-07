@@ -44,6 +44,7 @@ struct ClientInner {
     session_state_subscription: Mutex<Option<SessionStateHandler>>,
     stop: AtomicBool,
     hello: DaemonHello,
+    server_pid: Option<u32>,
 }
 
 pub struct DaemonClient {
@@ -68,6 +69,10 @@ impl DaemonClient {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::Status { id })? {
             DaemonMessage::Status { body, .. } => Ok(body),
+            DaemonMessage::Error(error) if error.code == ErrorCode::Io => {
+                Err(DaemonError::ConnectionLost)
+            }
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
     }
@@ -78,6 +83,29 @@ impl DaemonClient {
             DaemonMessage::Shutdown { accepted, .. } if accepted => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
+        }
+    }
+
+    /// Kill the daemon at the server end of this connection. The pipe PID is
+    /// captured at handshake and checked again immediately before termination;
+    /// a changed identity is refused rather than risking a recycled PID.
+    pub fn restart_daemon(&self) -> Result<(), DaemonError> {
+        #[cfg(windows)]
+        {
+            let expected = self.inner.server_pid.ok_or_else(|| {
+                DaemonError::Protocol(
+                    "cannot prove the identity of the connected daemon".to_string(),
+                )
+            })?;
+            crate::transport::terminate_server_process_if_identity_matches(
+                &self.inner.framed.as_file(),
+                expected,
+            )
+            .map_err(DaemonError::from)
+        }
+        #[cfg(not(windows))]
+        {
+            Err(DaemonError::UnsupportedPlatform)
         }
     }
 
@@ -538,9 +566,7 @@ impl DaemonClient {
                     .remove(&id);
                 Err(DaemonError::timed_out("waiting for a daemon reply"))
             }
-            Err(RecvTimeoutError::Disconnected) => Err(DaemonError::Protocol(
-                "daemon connection was lost".to_string(),
-            )),
+            Err(RecvTimeoutError::Disconnected) => Err(DaemonError::ConnectionLost),
         }
     }
 
@@ -548,9 +574,7 @@ impl DaemonClient {
     /// uses this so we can prove other connections still make progress.
     pub fn write_frame(&self, message: &ClientMessage) -> Result<(), DaemonError> {
         if self.inner.stop.load(Ordering::SeqCst) {
-            return Err(DaemonError::Protocol(
-                "daemon connection was lost".to_string(),
-            ));
+            return Err(DaemonError::ConnectionLost);
         }
         self.inner.framed.send(message)
     }
@@ -636,9 +660,25 @@ pub fn connect_or_spawn(
         Some(path) => path.to_path_buf(),
         None => resolve_daemon_binary()?,
     };
+    connect_or_spawn_with(paths, hello, &binary, connect, |binary, paths| {
+        spawn_daemon(binary, paths).map(|_| ())
+    })
+}
+
+fn connect_or_spawn_with<T, Connect, Spawn>(
+    paths: &RuntimePaths,
+    hello: ClientHello,
+    daemon_binary: &Path,
+    mut connect_fn: Connect,
+    mut spawn_fn: Spawn,
+) -> Result<T, DaemonError>
+where
+    Connect: FnMut(&RuntimePaths, ClientHello) -> Result<T, DaemonError>,
+    Spawn: FnMut(&Path, &RuntimePaths) -> Result<(), DaemonError>,
+{
     let mut spawned = false;
     for attempt in 0..SPAWN_ATTEMPTS {
-        match connect(paths, hello.clone()) {
+        match connect_fn(paths, hello.clone()) {
             Ok(client) => return Ok(client),
             Err(error) => {
                 if attempt + 1 == SPAWN_ATTEMPTS {
@@ -647,9 +687,8 @@ pub fn connect_or_spawn(
             }
         }
         if !spawned {
-            match spawn_daemon(&binary, paths) {
-                Ok(child) => {
-                    drop(child);
+            match spawn_fn(daemon_binary, paths) {
+                Ok(()) => {
                     spawned = true;
                 }
                 Err(error) => {
@@ -665,6 +704,10 @@ pub fn connect_or_spawn(
 }
 
 pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonError> {
+    #[cfg(windows)]
+    let server_pid = crate::transport::server_process_id(&file).ok();
+    #[cfg(not(windows))]
+    let server_pid = None;
     let framed = Framed::new(file);
     framed.send(&ClientMessage::Hello(hello))?;
     let reply: DaemonMessage = framed.recv_timeout(HANDSHAKE_TIMEOUT)?;
@@ -679,6 +722,7 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
                 session_state_subscription: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 hello: daemon_hello,
+                server_pid,
             });
             let reader_inner = Arc::clone(&inner);
             let reader = std::thread::Builder::new()
@@ -710,7 +754,10 @@ pub fn test_owner(client: &str) -> Result<OwnerId, DaemonError> {
 fn client_read_loop(inner: Arc<ClientInner>) {
     loop {
         if inner.stop.load(Ordering::SeqCst) {
-            fail_connection(&inner, "daemon connection was closed");
+            fail_connection(
+                &inner,
+                DaemonError::Protocol("daemon connection was closed".to_string()),
+            );
             return;
         }
         match inner
@@ -780,14 +827,14 @@ fn client_read_loop(inner: Arc<ClientInner>) {
             }
             Err(DaemonError::TimedOut(_)) => continue,
             Err(_) => {
-                fail_connection(&inner, "daemon connection was lost");
+                fail_connection(&inner, DaemonError::ConnectionLost);
                 return;
             }
         }
     }
 }
 
-fn fail_connection(inner: &ClientInner, message: &str) {
+fn fail_connection(inner: &ClientInner, error: DaemonError) {
     inner.stop.store(true, Ordering::SeqCst);
     inner
         .session_state_subscription
@@ -822,7 +869,7 @@ fn fail_connection(inner: &ClientInner, message: &str) {
         .drain()
         .map(|(_, tx)| tx)
         .collect();
-    let error = DaemonMessage::Error(WireError::new(ErrorCode::Io, message));
+    let error = DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()));
     for tx in pending {
         let _ = tx.send(error.clone());
     }
@@ -875,6 +922,41 @@ mod tests {
         // constants protect the deadline relationship directly.
         assert!(PROVIDER_UPDATE_RPC_TIMEOUT > UPDATE_TIMEOUT + Duration::from_secs(30));
         assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn dead_connection_recovery_still_spawns_then_retries() {
+        let paths = crate::paths::RuntimePaths::from_dir("fake-dead-daemon");
+        let hello = devboule_protocol::ClientHello::m3a(
+            super::test_owner("dead-recovery-test").expect("owner"),
+            "dead-recovery-test",
+        );
+        let mut connects = 0;
+        let mut spawns = 0;
+        let result = super::connect_or_spawn_with(
+            &paths,
+            hello,
+            std::path::Path::new("fake-daemon.exe"),
+            |_, _| {
+                connects += 1;
+                if connects == 1 {
+                    Err(crate::DaemonError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "dead daemon",
+                    )))
+                } else {
+                    Ok(42u32)
+                }
+            },
+            |_, _| {
+                spawns += 1;
+                Ok(())
+            },
+        )
+        .expect("the next connection recovers");
+        assert_eq!(result, 42);
+        assert_eq!(connects, 2);
+        assert_eq!(spawns, 1);
     }
 
     #[cfg(windows)]
@@ -955,18 +1037,19 @@ mod tests {
                     },
                 ))
                 .expect("B event");
-            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
         });
 
-        let connection = (0..100)
-            .find_map(|_| match crate::transport::connect(&paths) {
-                Ok(connection) => Some(connection),
-                Err(_) => {
-                    thread::yield_now();
-                    None
+        let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let connection = loop {
+            match crate::transport::connect(&paths) {
+                Ok(connection) => break connection,
+                Err(_) if std::time::Instant::now() < connection_deadline => {
+                    thread::sleep(Duration::from_millis(10));
                 }
-            })
-            .expect("connect");
+                Err(error) => panic!("connect: {error}"),
+            }
+        };
         let client = super::handshake(
             connection,
             devboule_protocol::ClientHello::m3a(
@@ -996,7 +1079,7 @@ mod tests {
             )
             .expect("attach B");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut a_events = Vec::new();
         let mut b_events = Vec::new();
         while std::time::Instant::now() < deadline && a_events.len() + b_events.len() < 3 {
@@ -1080,15 +1163,16 @@ mod tests {
                 .expect("late event");
         });
 
-        let connection = (0..100)
-            .find_map(|_| match crate::transport::connect(&paths) {
-                Ok(connection) => Some(connection),
-                Err(_) => {
-                    thread::yield_now();
-                    None
+        let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let connection = loop {
+            match crate::transport::connect(&paths) {
+                Ok(connection) => break connection,
+                Err(_) if std::time::Instant::now() < connection_deadline => {
+                    thread::sleep(Duration::from_millis(10));
                 }
-            })
-            .expect("connect");
+                Err(error) => panic!("connect: {error}"),
+            }
+        };
         let client = Arc::new(
             super::handshake(
                 connection,
@@ -1111,7 +1195,7 @@ mod tests {
             )
         });
         attach_seen_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(10))
             .expect("attach reached server");
         client
             .session_detach("s.detach.pending")

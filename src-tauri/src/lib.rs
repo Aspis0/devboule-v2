@@ -49,6 +49,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_identity,
             client::daemon_status,
+            client::daemon_restart,
             backend::session::session_create,
             backend::session::session_resume,
             backend::session::session_attach,

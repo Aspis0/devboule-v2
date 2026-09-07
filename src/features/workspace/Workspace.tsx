@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { MOCK_SURFACES, type MockSurface } from "./mockData";
 import { NewProjectDialog } from "./NewProjectDialog";
 import {
@@ -14,6 +14,7 @@ import { AgentChatSurface } from "./AgentChatSurface";
 import { HistoryPanel } from "../history/HistoryPanel";
 import { useWorkspaceDaemon } from "./workspaceDaemon";
 import { startPresenceReporting, type PresenceReporter } from "./presence";
+import { createDaemonRecovery } from "./daemonRecovery";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
 import {
@@ -28,7 +29,12 @@ import {
 } from "./workspaceSessions";
 import type { DaemonStatus, PermissionRequest, ProviderInfo, Session } from "../../types/ipc";
 import { isAgentKind } from "../../types/ipc";
-import { providersList, reasonFromCause, sessionPermissionRespond } from "../../lib/tauri";
+import {
+  daemonRestart,
+  providersList,
+  reasonFromCause,
+  sessionPermissionRespond,
+} from "../../lib/tauri";
 import "./Workspace.css";
 
 type ActiveSidePanel = MockSurface["id"];
@@ -47,6 +53,11 @@ function daemonLabel(status: DaemonStatus): string {
     return status.message ? `daemon · ${pid} · ${status.message}` : `daemon · ${pid}`;
   }
   if (status.state === "connecting") return "daemon · connecting";
+  if (status.state === "unresponsive") {
+    // The supervisor's sentence, verbatim — this strip is also what keeps the
+    // state visible after the user declines the restart dialog.
+    return status.message ? `daemon · ${status.message}` : "daemon · not answering";
+  }
   if (status.message) return `daemon · ${status.message}`;
   return "daemon · disconnected";
 }
@@ -121,6 +132,17 @@ export function Workspace() {
   const selectedSurface =
     MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
+  // The recovery decision is a small external store: it holds the episode, the
+  // roster answer, and the attempt-failed note, which only change from pushed
+  // updates. Both pushes happen in effects below — no ref is read during render.
+  const [daemonRecovery] = useState(() => createDaemonRecovery({ restart: () => daemonRestart() }));
+  const restartFailureNote = useSyncExternalStore(daemonRecovery.subscribe, daemonRecovery.note);
+  useEffect(() => {
+    daemonRecovery.setRoster(sessions.some((session) => session.state.type === "live"));
+  }, [sessions, daemonRecovery]);
+  useEffect(() => {
+    daemonRecovery.onStatus(daemon);
+  }, [daemon, daemonRecovery]);
   // Presence reporter lives outside React state: it holds no render output.
   // Selection changes arrive through the second effect below.
   const presenceReporterRef = useRef<PresenceReporter | null>(null);
@@ -504,6 +526,9 @@ export function Workspace() {
                   className={`workspace-status-dot workspace-dot-${daemonDotTone(daemon.state)}`}
                 />
                 {daemonLabel(daemon)}
+                {restartFailureNote !== null ? (
+                  <span className="workspace-recovery-note">{restartFailureNote}</span>
+                ) : null}
               </div>
             </div>
           </div>
