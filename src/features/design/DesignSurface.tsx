@@ -171,6 +171,7 @@ interface AssistantProps {
   skillIndex: readonly BuiltInSkillIndexEntry[];
   skillSelection: DesignSkillSelection;
   selectedSkillSlugs: readonly string[];
+  autoAppliedSkillSlugs: readonly string[] | null;
   autoSkillNotice: string | null;
   onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
   onSkillToggle: (slug: string) => void;
@@ -1070,12 +1071,27 @@ const DesignAssistant = memo(function DesignAssistant({
   skillIndex,
   skillSelection,
   selectedSkillSlugs,
+  autoAppliedSkillSlugs,
   autoSkillNotice,
   onSkillModeChange,
   onSkillToggle,
 }: AssistantProps) {
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
+  const resolvedSkillSlugs =
+    skillSelection.mode === "auto" ? autoAppliedSkillSlugs : selectedSkillSlugs;
+  const hasResolvedComposition =
+    skillSelection.mode === "all" ||
+    (skillSelection.mode === "auto" && autoAppliedSkillSlugs !== null);
+  const skillBlock = useMemo(
+    () => buildSkillBlock(builtInSkillSources(), resolvedSkillSlugs ?? []),
+    [resolvedSkillSlugs],
+  );
+  const resolvedSkillSlugSet = useMemo(
+    () => new Set(resolvedSkillSlugs ?? []),
+    [resolvedSkillSlugs],
+  );
+  const droppedSkillSlugSet = useMemo(() => new Set(skillBlock.dropped), [skillBlock]);
   const skillSummary =
     skillSelection.mode === "auto"
       ? "Craft: automatic"
@@ -1084,10 +1100,7 @@ const DesignAssistant = memo(function DesignAssistant({
         : selectedSkillSlugs.length === 0
           ? `Craft: 0 of ${skillIndex.length} · no design guidance`
           : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
-  const skillPreview = useMemo(
-    () => buildSkillBlock(builtInSkillSources(), selectedSkillSlugs).text,
-    [selectedSkillSlugs],
-  );
+  const skillPreview = useMemo(() => skillBlock.text, [skillBlock]);
 
   return (
     <aside className="design-assistant" aria-labelledby="design-assistant-title">
@@ -1203,39 +1216,66 @@ const DesignAssistant = memo(function DesignAssistant({
                     </label>
                   </fieldset>
                   <div className="design-skill-list">
-                    {skillIndex.map((entry) => (
-                      <label
-                        className={
-                          skillSelection.mode !== "manual"
-                            ? "design-skill-option design-skill-option-locked"
-                            : "design-skill-option"
-                        }
-                        key={entry.slug}
-                      >
-                        <input
-                          type="checkbox"
-                          aria-label={`Apply ${entry.title}`}
-                          // Automatic has not decided yet, and an empty box would say it
-                          // decided no.  `indeterminate` is the state HTML already has for
-                          // exactly this, announced as "mixed" rather than "not checked".
-                          ref={(node) => {
-                            if (node !== null) node.indeterminate = skillSelection.mode === "auto";
-                          }}
-                          checked={
-                            skillSelection.mode === "all" ||
-                            (skillSelection.mode === "manual" && selectedSlugSet.has(entry.slug))
-                          }
-                          disabled={skillSelection.mode !== "manual"}
-                          onChange={() => onSkillToggle(entry.slug)}
-                        />
-                        <span className="design-skill-option-copy">
-                          <span className="design-skill-option-title">{entry.title}</span>
-                          <span className="design-skill-option-description">
-                            {entry.description}
+                    {skillIndex.map((entry) => {
+                      const isRequested = resolvedSkillSlugSet.has(entry.slug);
+                      const isDropped =
+                        hasResolvedComposition &&
+                        isRequested &&
+                        droppedSkillSlugSet.has(entry.slug);
+                      const isIncluded = hasResolvedComposition && isRequested && !isDropped;
+                      const isAutomaticallyUnselected =
+                        skillSelection.mode === "auto" &&
+                        autoAppliedSkillSlugs !== null &&
+                        !isRequested;
+                      const status = isDropped
+                        ? `Omitted: did not fit within the ${skillBlock.ceiling.toLocaleString()}-character budget.`
+                        : isAutomaticallyUnselected
+                          ? "Not chosen automatically."
+                          : null;
+                      const rowClass = [
+                        "design-skill-option",
+                        skillSelection.mode !== "manual" ? "design-skill-option-locked" : null,
+                        isIncluded ? "design-skill-option-included" : null,
+                        isDropped ? "design-skill-option-dropped" : null,
+                        isAutomaticallyUnselected ? "design-skill-option-not-selected" : null,
+                      ]
+                        .filter((className): className is string => className !== null)
+                        .join(" ");
+
+                      return (
+                        <label className={rowClass} key={entry.slug}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Apply ${entry.title}`}
+                            // Automatic has not decided yet, and an empty box would say it
+                            // decided no.  `indeterminate` is the state HTML already has for
+                            // exactly this, announced as "mixed" rather than "not checked".
+                            ref={(node) => {
+                              if (node !== null) {
+                                node.indeterminate =
+                                  skillSelection.mode === "auto" && autoAppliedSkillSlugs === null;
+                              }
+                            }}
+                            checked={
+                              skillSelection.mode === "manual"
+                                ? selectedSlugSet.has(entry.slug)
+                                : isIncluded
+                            }
+                            disabled={skillSelection.mode !== "manual"}
+                            onChange={() => onSkillToggle(entry.slug)}
+                          />
+                          <span className="design-skill-option-copy">
+                            <span className="design-skill-option-title">{entry.title}</span>
+                            <span className="design-skill-option-description">
+                              {entry.description}
+                            </span>
+                            {status !== null ? (
+                              <span className="design-skill-option-status">{status}</span>
+                            ) : null}
                           </span>
-                        </span>
-                      </label>
-                    ))}
+                        </label>
+                      );
+                    })}
                   </div>
                   {skillPreview.length > 0 ? (
                     <details className="design-skill-preview">
@@ -1376,6 +1416,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [skillSelection, setSkillSelectionState] = useState<DesignSkillSelection>(
     DEFAULT_DESIGN_SKILL_SELECTION,
   );
+  const [autoAppliedSkillSlugs, setAutoAppliedSkillSlugs] = useState<readonly string[] | null>(
+    null,
+  );
   const [autoSkillNotice, setAutoSkillNotice] = useState<string | null>(null);
 
   const savingRef = useRef(false);
@@ -1438,6 +1481,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     (mode: DesignSkillSelection["mode"]) => {
       if (skillSelection.mode === mode) return;
       setAutoSkillNotice(null);
+      setAutoAppliedSkillSlugs(null);
       updateSkillSelection({ ...skillSelection, mode });
     },
     [skillSelection, updateSkillSelection],
@@ -1825,6 +1869,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       setDraft("");
       setBusy(true);
       setAutoSkillNotice(null);
+      setAutoAppliedSkillSlugs(null);
       const generationOptions =
         skillSelection.mode === "auto"
           ? { skillMode: "auto" as const }
@@ -1852,14 +1897,29 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             ),
           );
           if (skillSelection.mode === "auto" && result.appliedSkillSlugs !== undefined) {
+            const composedAutoSkillBlock = buildSkillBlock(
+              builtInSkillSources(),
+              result.appliedSkillSlugs,
+            );
+            const droppedAutoSkillSlugs = new Set(composedAutoSkillBlock.dropped);
             const appliedTitles = result.appliedSkillSlugs
+              .filter((slug) => !droppedAutoSkillSlugs.has(slug))
               .map((slug) => skillIndex.find((entry) => entry.slug === slug)?.title)
               .filter((title): title is string => title !== undefined);
+            const droppedTitles = result.appliedSkillSlugs
+              .filter((slug) => droppedAutoSkillSlugs.has(slug))
+              .map((slug) => skillIndex.find((entry) => entry.slug === slug)?.title)
+              .filter((title): title is string => title !== undefined);
+            setAutoAppliedSkillSlugs([...result.appliedSkillSlugs]);
             setAutoSkillNotice(
               result.skillSelectionFallback
                 ? "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted."
                 : appliedTitles.length > 0
-                  ? `Automatic craft: ${appliedTitles.join(", ")}`
+                  ? `Automatic craft: ${appliedTitles.join(", ")}${
+                      droppedTitles.length > 0
+                        ? `. Omitted: ${droppedTitles.join(", ")} did not fit within the ${composedAutoSkillBlock.ceiling.toLocaleString()}-character budget.`
+                        : ""
+                    }`
                   : "Automatic craft: no sections were used.",
             );
           }
@@ -2087,6 +2147,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           skillIndex={skillIndex}
           skillSelection={skillSelection}
           selectedSkillSlugs={selectedSkillSlugs}
+          autoAppliedSkillSlugs={autoAppliedSkillSlugs}
           autoSkillNotice={autoSkillNotice}
           onSkillModeChange={handleSkillModeChange}
           onSkillToggle={handleSkillToggle}

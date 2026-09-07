@@ -1244,10 +1244,33 @@
   color: var(--silence);
 }
 
+.design-skill-option-locked.design-skill-option-included {
+  color: var(--ink-soft);
+}
+
+.design-skill-option-locked.design-skill-option-included .design-skill-option-title {
+  color: var(--ink);
+}
+
+.design-skill-option-locked.design-skill-option-included .design-skill-option-description {
+  color: var(--ink-soft);
+}
+
+.design-skill-option-locked.design-skill-option-dropped,
+.design-skill-option-locked.design-skill-option-not-selected {
+  color: var(--silence);
+}
+
 .design-skill-option-copy {
   display: grid;
   gap: 2px;
   min-width: 0;
+}
+
+.design-skill-option-status {
+  color: inherit;
+  font-size: 9px;
+  font-weight: 500;
 }
 
 .design-skill-option-title {

@@ -1289,6 +1289,38 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows priority rows from the composed block, not the requested slug list", async () => {
+    const skillIndex = builtInSkillIndex();
+    const requestedSlugs = skillIndex.map((entry) => entry.slug);
+    const composed = buildSkillBlock(builtInSkillSources(), requestedSlugs);
+    expect(composed.dropped.length).toBeGreaterThan(0);
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const summary = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Configure design craft"]',
+    );
+    if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
+
+    for (const entry of skillIndex) {
+      const checkbox = container.querySelector<HTMLInputElement>(
+        `input[aria-label="Apply ${entry.title}"]`,
+      );
+      const row = checkbox?.closest<HTMLElement>(".design-skill-option") ?? null;
+      if (row === null || checkbox === null) throw new Error(`Craft row missing: ${entry.title}`);
+      const dropped = composed.dropped.includes(entry.slug);
+      expect(checkbox.checked).toBe(!dropped);
+      expect(row.classList.contains("design-skill-option-dropped")).toBe(dropped);
+      expect(row.textContent).toContain(
+        dropped
+          ? `Omitted: did not fit within the ${composed.ceiling.toLocaleString()}-character budget.`
+          : entry.description,
+      );
+    }
+    await act(async () => root.unmount());
+  });
+
   it("restores a stored manual selection and reflects its count", async () => {
     const skillIndex = builtInSkillIndex();
     const selected = skillIndex[0];
@@ -1553,6 +1585,10 @@ describe("DesignSurface host capabilities", () => {
 
   it("states when automatic craft selection falls back to the priority fit", async () => {
     const skillIndex = builtInSkillIndex();
+    const composed = buildSkillBlock(
+      builtInSkillSources(),
+      skillIndex.map((entry) => entry.slug),
+    );
     skillSettingsMocks.load.mockResolvedValueOnce({
       version: 1,
       mode: "auto",
@@ -1568,6 +1604,7 @@ describe("DesignSurface host capabilities", () => {
       '[aria-label="Configure design craft"]',
     );
     if (summary === null) throw new Error("Craft summary missing");
+    await act(async () => summary.click());
     await fillDraft(container, "Use automatic craft selection.");
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
@@ -1577,6 +1614,14 @@ describe("DesignSurface host capabilities", () => {
     expect(container.textContent).toContain(
       "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted.",
     );
+    for (const entry of skillIndex) {
+      const checkbox = container.querySelector<HTMLInputElement>(
+        `input[aria-label="Apply ${entry.title}"]`,
+      );
+      if (checkbox === null) throw new Error(`Craft row missing: ${entry.title}`);
+      expect(checkbox.indeterminate).toBe(false);
+      expect(checkbox.checked).toBe(!composed.dropped.includes(entry.slug));
+    }
     await act(async () => root.unmount());
   });
 });
