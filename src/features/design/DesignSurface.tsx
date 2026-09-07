@@ -17,6 +17,7 @@ import type {
   DesignTool,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
+import { ArtifactRenderCritic } from "./artifactRenderCritic";
 import { AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
 import {
   builtInSkillIndex,
@@ -833,10 +834,16 @@ const DesignCanvas = memo(function DesignCanvas({
                 />
               </div>
             )}
-            {artifactMissingTokens.length > 0 ? (
-              <div className="design-canvas-artifact-token-warning" role="status">
-                This artifact references {artifactMissingTokens.length === 1 ? "a token" : "tokens"}{" "}
-                it does not define: {artifactMissingTokens.join(", ")}.
+            {artifactMissingTokens.length > 0 || artifactHtml !== undefined ? (
+              <div className="design-canvas-artifact-notices">
+                {artifactMissingTokens.length > 0 ? (
+                  <div className="design-canvas-artifact-token-warning" role="status">
+                    This artifact references{" "}
+                    {artifactMissingTokens.length === 1 ? "a token" : "tokens"} it does not define:{" "}
+                    {artifactMissingTokens.join(", ")}.
+                  </div>
+                ) : null}
+                {artifactHtml !== undefined ? <ArtifactRenderCritic html={artifactHtml} /> : null}
               </div>
             ) : null}
           </div>
