@@ -17,6 +17,7 @@ import type {
   DesignTool,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
+import { AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
 import {
   builtInSkillIndex,
   builtInSkillSources,
@@ -1091,6 +1092,10 @@ const DesignAssistant = memo(function DesignAssistant({
     () => new Set(resolvedSkillSlugs ?? []),
     [resolvedSkillSlugs],
   );
+  const automaticBaselineSlugSet = useMemo(
+    () => new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS),
+    [],
+  );
   const droppedSkillSlugSet = useMemo(() => new Set(skillBlock.dropped), [skillBlock]);
   const skillSummary =
     skillSelection.mode === "auto"
@@ -1217,26 +1222,34 @@ const DesignAssistant = memo(function DesignAssistant({
                   </fieldset>
                   <div className="design-skill-list">
                     {skillIndex.map((entry) => {
+                      const isAutomaticBaseline =
+                        skillSelection.mode === "auto" && automaticBaselineSlugSet.has(entry.slug);
                       const isRequested = resolvedSkillSlugSet.has(entry.slug);
                       const isDropped =
                         hasResolvedComposition &&
                         isRequested &&
                         droppedSkillSlugSet.has(entry.slug);
-                      const isIncluded = hasResolvedComposition && isRequested && !isDropped;
+                      const isIncluded =
+                        !isDropped &&
+                        ((hasResolvedComposition && isRequested) || isAutomaticBaseline);
                       const isAutomaticallyUnselected =
                         skillSelection.mode === "auto" &&
                         autoAppliedSkillSlugs !== null &&
-                        !isRequested;
+                        !isRequested &&
+                        !isAutomaticBaseline;
                       const status = isDropped
                         ? `Omitted: did not fit within the ${skillBlock.ceiling.toLocaleString()}-character budget.`
-                        : isAutomaticallyUnselected
-                          ? "Not chosen automatically."
-                          : null;
+                        : isAutomaticBaseline
+                          ? "Always included automatically."
+                          : isAutomaticallyUnselected
+                            ? "Not chosen automatically."
+                            : null;
                       const rowClass = [
                         "design-skill-option",
                         skillSelection.mode !== "manual" ? "design-skill-option-locked" : null,
                         isIncluded ? "design-skill-option-included" : null,
                         isDropped ? "design-skill-option-dropped" : null,
+                        isAutomaticBaseline ? "design-skill-option-always-included" : null,
                         isAutomaticallyUnselected ? "design-skill-option-not-selected" : null,
                       ]
                         .filter((className): className is string => className !== null)
@@ -1253,7 +1266,9 @@ const DesignAssistant = memo(function DesignAssistant({
                             ref={(node) => {
                               if (node !== null) {
                                 node.indeterminate =
-                                  skillSelection.mode === "auto" && autoAppliedSkillSlugs === null;
+                                  skillSelection.mode === "auto" &&
+                                  autoAppliedSkillSlugs === null &&
+                                  !isAutomaticBaseline;
                               }
                             }}
                             checked={

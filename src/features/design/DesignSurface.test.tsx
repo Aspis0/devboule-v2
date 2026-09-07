@@ -29,6 +29,7 @@ import {
 } from "./designViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationResult } from "./designHost";
+import { AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
 import {
   DESIGN_DOCTRINE_BEGIN,
   DESIGN_DOCTRINE_END,
@@ -1439,9 +1440,26 @@ describe("DesignSurface host capabilities", () => {
       ),
     ];
     expect(boxes).toHaveLength(builtInSkillIndex().length);
-    // Unchecked would claim the section is excluded; nothing has decided yet.
-    expect(boxes.every((box) => box.indeterminate)).toBe(true);
-    expect(boxes.every((box) => box.checked)).toBe(false);
+    const baseline = builtInSkillIndex().find((entry) =>
+      AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS.includes(
+        entry.slug as (typeof AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS)[number],
+      ),
+    );
+    if (baseline === undefined) throw new Error("Automatic baseline missing");
+    const baselineBox = container.querySelector<HTMLInputElement>(
+      `input[aria-label="Apply ${baseline.title}"]`,
+    );
+    if (baselineBox === null) throw new Error("Automatic baseline row missing");
+    expect(baselineBox.checked).toBe(true);
+    expect(baselineBox.indeterminate).toBe(false);
+    expect(baselineBox.closest(".design-skill-option")?.textContent).toContain(
+      "Always included automatically.",
+    );
+
+    // Unchecked would claim the section is excluded; nothing has decided yet for routed sections.
+    const routedBoxes = boxes.filter((box) => box !== baselineBox);
+    expect(routedBoxes.every((box) => box.indeterminate)).toBe(true);
+    expect(routedBoxes.every((box) => box.checked)).toBe(false);
     await act(async () => root.unmount());
   });
 

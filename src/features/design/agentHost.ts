@@ -53,6 +53,13 @@ export const AUTO_SKILL_PREFLIGHT_TIMEOUT_MS = 8_000;
 // the only count an end-to-end comparison has covered; raising it changes the shape of
 // every generation, so it wants evidence rather than merely room in the budget.
 export const MAX_AUTOMATIC_SKILL_SECTIONS = 3;
+// A relevance router structurally cannot select a section whose value is universal:
+// that section loses to three sections specific to the request.  This was measured
+// three times at 2/15, so automatic mode includes it as a baseline instead.  Keep
+// this list very short because every entry spends section budget on every request.
+export const AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS = ["anti-ai-slop"] as const;
+export const MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS =
+  MAX_AUTOMATIC_SKILL_SECTIONS - AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS.length;
 
 const hostDisposers = new WeakMap<DesignHost, () => Promise<void>>();
 
@@ -81,15 +88,22 @@ export function automaticSkillPrompt(
   prompt: string,
   index: readonly { slug: string; title: string; description: string }[],
 ): string {
+  const alwaysIncluded = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
+  const baseline = AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS.map((slug) => {
+    const entry = index.find((candidate) => candidate.slug === slug);
+    return entry === undefined ? slug : `${slug} (${entry.title})`;
+  }).join(", ");
   const choices = index
+    .filter((entry) => !alwaysIncluded.has(entry.slug))
     .map((entry) => `- ${entry.slug}: ${entry.title} — ${boundedDescription(entry.description)}`)
     .join("\n");
   return [
     "Choose the design craft sections that apply to this request.",
     `User request: ${prompt}`,
-    "Available sections:",
+    `Already included automatically (not a choice): ${baseline}.`,
+    "Available sections to route:",
     choices,
-    `Reply with at most ${MAX_AUTOMATIC_SKILL_SECTIONS} section slugs, most important first, as a comma-separated list in one line. Choose fewer than ${MAX_AUTOMATIC_SKILL_SECTIONS} when fewer sections apply; do not fill the quota just to reach the limit.`,
+    `Reply with at most ${MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS} remaining section slugs, most important first, as a comma-separated list in one line. The always-included baseline already counts toward the total of ${MAX_AUTOMATIC_SKILL_SECTIONS} sections. Choose fewer when fewer sections apply; do not fill the quota just to reach the limit.`,
     "Do not investigate, read files, use tools, or modify anything.",
   ].join("\n");
 }
@@ -99,6 +113,7 @@ export function parseAutomaticSkillReply(
   index: readonly { slug: string; title: string; description: string }[],
 ): readonly string[] {
   const known = new Map(index.map((entry) => [entry.slug.toLowerCase(), entry.slug]));
+  const alwaysIncluded = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
   const seen = new Set<string>();
   const selected: string[] = [];
   const normalizedReply = reply.toLowerCase();
@@ -107,6 +122,7 @@ export function parseAutomaticSkillReply(
   while ((token = tokenPattern.exec(normalizedReply)) !== null) {
     const slug = known.get(token[0]);
     if (slug === undefined || seen.has(slug)) continue;
+    if (alwaysIncluded.has(slug)) continue;
 
     // Keep the permissive token scan, but do not treat a slug mentioned as a
     // rejection or as an example under discussion as a choice.  The positive
@@ -157,9 +173,24 @@ export function parseAutomaticSkillReply(
 
     seen.add(slug);
     selected.push(slug);
-    if (selected.length === MAX_AUTOMATIC_SKILL_SECTIONS) break;
+    if (selected.length === MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS) break;
   }
   return selected;
+}
+
+export function composeAutomaticSkillSlugs(
+  routedSlugs: readonly string[],
+  allSlugs: readonly string[],
+): readonly string[] {
+  const known = new Set(allSlugs);
+  const seen = new Set<string>();
+  const applied: string[] = [];
+  for (const slug of [...AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS, ...routedSlugs]) {
+    if (!known.has(slug) || seen.has(slug)) continue;
+    seen.add(slug);
+    applied.push(slug);
+  }
+  return applied;
 }
 
 export function extractFencedHtml(text: string): string | undefined {
@@ -540,7 +571,11 @@ export function createAgentHost(): DesignHost {
           .map((item) => item.text)
           .join("\n");
         const selected = parseAutomaticSkillReply(reply, index);
-        settle(selected.length === 0 ? fallback() : { slugs: selected, fallback: false });
+        settle(
+          selected.length === 0
+            ? fallback()
+            : { slugs: composeAutomaticSkillSlugs(selected, allSlugs), fallback: false },
+        );
       } else if (state.status === "error" || state.status === "closed") {
         settle(fallback());
       }

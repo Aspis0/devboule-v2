@@ -74,7 +74,10 @@ import {
   extractFencedHtml,
   groundedPrompt,
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
+  AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
+  composeAutomaticSkillSlugs,
   MAX_AUTOMATIC_SKILL_SECTIONS,
+  MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS,
   parseAutomaticSkillReply,
   MAX_ARTIFACT_BYTES,
 } from "./agentHost";
@@ -251,22 +254,36 @@ afterEach(() => {
 describe("ACP design host", () => {
   it("preflights automatic craft selection and uses the returned sections", async () => {
     const index = builtInSkillIndex();
-    const selected = index[0];
-    const omitted = index[1];
-    if (selected === undefined || omitted === undefined) throw new Error("Built-in skills missing");
+    const baseline = index.find((entry) =>
+      AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS.includes(
+        entry.slug as (typeof AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS)[number],
+      ),
+    );
+    const selected = index.find((entry) => entry.slug !== AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0]);
+    const omitted = index.find(
+      (entry) =>
+        entry.slug !== AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0] && entry.slug !== selected?.slug,
+    );
+    if (baseline === undefined || selected === undefined || omitted === undefined) {
+      throw new Error("Built-in skills missing");
+    }
 
     const host = createAgentHost();
     const { run } = await startRun(host, { skillMode: "auto" });
     const preflight = mocks.sessionSend.mock.calls[0]?.[1] as string;
     expect(preflight).toContain("Update the design");
+    expect(preflight).toContain(`Already included automatically (not a choice): ${baseline.slug}`);
+    expect(preflight).not.toContain(`- ${baseline.slug}: ${baseline.title}`);
     expect(preflight).toContain(selected.slug);
     expect(preflight).toContain(selected.title);
     expect(preflight).toContain(selected.description);
     expect(preflight).toContain("Do not investigate");
     expect(preflight).toContain("one line");
-    expect(preflight).toContain(`at most ${MAX_AUTOMATIC_SKILL_SECTIONS}`);
+    expect(preflight).toContain(`at most ${MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS} remaining`);
     expect(preflight).toContain("most important first");
-    expect(preflight).toContain(`Choose fewer than ${MAX_AUTOMATIC_SKILL_SECTIONS} when fewer sections apply`);
+    expect(preflight).toContain(
+      `total of ${MAX_AUTOMATIC_SKILL_SECTIONS} sections. Choose fewer when fewer sections apply`,
+    );
     expect(preflight).toContain("do not fill the quota just to reach the limit");
 
     channelHarness.active?.({
@@ -283,9 +300,60 @@ describe("ACP design host", () => {
     finishRun();
 
     const result = await run;
-    expect(result.appliedSkillSlugs).toEqual([selected.slug]);
+    expect(result.appliedSkillSlugs).toEqual([baseline.slug, selected.slug]);
     expect(result.skillSelectionFallback).toBe(false);
     await disposeAgentHost(host);
+  });
+
+  it("applies the baseline first without duplicating it or spending a routed slot", async () => {
+    const index = builtInSkillIndex();
+    const baseline = index.find((entry) => entry.slug === AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0]);
+    const routed = index.find((entry) => entry.slug !== baseline?.slug);
+    const secondRouted = index.find(
+      (entry) => entry.slug !== baseline?.slug && entry.slug !== routed?.slug,
+    );
+    const ignored = index.find(
+      (entry) =>
+        entry.slug !== baseline?.slug &&
+        entry.slug !== routed?.slug &&
+        entry.slug !== secondRouted?.slug,
+    );
+    if (
+      baseline === undefined ||
+      routed === undefined ||
+      secondRouted === undefined ||
+      ignored === undefined
+    ) {
+      throw new Error("Built-in skills missing");
+    }
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: `${baseline.slug}, ${routed.slug}, ${secondRouted.slug}, ${ignored.slug}`,
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    finishRun();
+
+    const result = await run;
+    expect(result.appliedSkillSlugs).toEqual([baseline.slug, routed.slug, secondRouted.slug]);
+    expect(result.appliedSkillSlugs?.filter((slug) => slug === baseline.slug)).toHaveLength(1);
+    await disposeAgentHost(host);
+  });
+
+  it("derives the routed automatic limit from the total and baseline count", () => {
+    expect(MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS).toBe(
+      MAX_AUTOMATIC_SKILL_SECTIONS - AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS.length,
+    );
+    expect(
+      composeAutomaticSkillSlugs(
+        [AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0], "typography", "color"],
+        ["anti-ai-slop", "typography", "color"],
+      ),
+    ).toEqual(["anti-ai-slop", "typography", "color"]);
   });
 
   it("falls back to requesting every section when automatic selection names none", async () => {
@@ -329,8 +397,11 @@ describe("ACP design host", () => {
 
   it("preserves the agent's automatic ranking in a chatty answer", async () => {
     const index = builtInSkillIndex();
-    const first = index[0];
-    const second = index[1];
+    const routed = index.filter(
+      (entry) => !AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS.includes(entry.slug as "anti-ai-slop"),
+    );
+    const first = routed[0];
+    const second = routed[1];
     if (first === undefined || second === undefined) throw new Error("Built-in skills missing");
 
     const host = createAgentHost();
@@ -345,7 +416,11 @@ describe("ACP design host", () => {
     finishRun();
 
     const result = await run;
-    expect(result.appliedSkillSlugs).toEqual([second.slug, first.slug]);
+    expect(result.appliedSkillSlugs).toEqual([
+      AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0],
+      second.slug,
+      first.slug,
+    ]);
     await disposeAgentHost(host);
   });
 
@@ -357,7 +432,7 @@ describe("ACP design host", () => {
     }));
     const replyOrder = [index[4]!, index[2]!, index[4]!, "unknown", index[0]!, index[1]!];
     const expected = [index[4]!, index[2]!, index[0]!]
-      .slice(0, MAX_AUTOMATIC_SKILL_SECTIONS)
+      .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS)
       .map((entry) => entry.slug);
 
     expect(
