@@ -1,0 +1,22 @@
+Apache License 2.0
+
+The model weights and tokenizer in this directory are third-party material,
+licensed under the Apache License, Version 2.0. The full text of that licence
+is the file `LICENSE` at the root of this repository, which is the same
+licence; a second verbatim copy is not reproduced here. The canonical text is
+also published at https://www.apache.org/licenses/LICENSE-2.0.
+
+Attribution:
+  cross-encoder/ms-marco-TinyBERT-L-2-v2, by Sentence-Transformers
+  Cross-Encoders (UKP Lab, sentence-transformers), trained on the MS MARCO
+  Passage Ranking task.
+  Model card: https://huggingface.co/cross-encoder/ms-marco-TinyBERT-L-2-v2
+
+The files here are the ONNX export republished as
+https://huggingface.co/Xenova/ms-marco-TinyBERT-L-2-v2, which is what
+`crates/oracle-core/src/model_download.rs` fetches. The export carries the
+licence of the base model above.
+
+This licence covers the third-party weights and tokenizer only. It does not
+apply to `model_config.json` in this directory, which is a descriptor written
+for this project and covered by the repository's own LICENSE and NOTICE.

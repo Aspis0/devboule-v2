@@ -18,7 +18,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "check:shrinkwrap": "node scripts/check-no-npm-shrinkwrap.mjs",
-    "check:dependency-majors": "node scripts/check-direct-dependency-majors.mjs"
+    "check:dependency-majors": "node scripts/check-direct-dependency-majors.mjs",
+    "check:third-party": "node scripts/generate-third-party.mjs --check",
+    "generate:third-party": "node scripts/generate-third-party.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

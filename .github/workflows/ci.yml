@@ -56,9 +56,8 @@ jobs:
 
       # Since src-tauri links oracle-core, a cold build of this job compiles
       # DataFusion, Arrow, LanceDB, ORT and candle: measured locally at 31m49s
-      # against 4m53s before (ARCHITETTURA §7.4). Without a cargo cache every
-      # push pays that. `key` is the job name so the two Rust jobs do not fight
-      # over one entry.
+      # against 4m53s before. Without a cargo cache every push pays that. `key`
+      # is the job name so the two Rust jobs do not fight over one entry.
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -160,6 +159,16 @@ jobs:
       # gets compiled and tested.
       - name: Check direct dependency major versions
         run: pnpm run check:dependency-majors
+
+      # Belongs in this last block for the same reason as the two around it: it
+      # resolves npm package metadata, so a registry outage must not be able to
+      # mark the Rust steps as never executed. THIRD_PARTY.md is the licence
+      # inventory of a public repository; it was hand-maintained until it had
+      # drifted by roughly 500 Rust packages and denied in writing that vendored
+      # third-party source it does ship existed. This gate is what stops that
+      # happening again.
+      - name: Check the third-party licence inventory matches the lockfiles
+        run: pnpm run check:third-party
 
       - name: Audit npm dependencies (High and above are blocking)
         run: pnpm audit --audit-level high
