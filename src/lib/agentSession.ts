@@ -68,7 +68,9 @@ export class AgentSession {
   private readonly listeners = new Set<() => void>();
   private readonly blocks = new Map<string, number>();
   private readonly activeBlocks = new Map<MessageRole, string>();
+  private activeRole: MessageRole | null = null;
   private nextItemId = 1;
+  private nextAnonymousBlock = 1;
   private turn = 0;
   private started = false;
   private attached = false;
@@ -174,6 +176,7 @@ export class AgentSession {
     switch (event.type) {
       case "agent_user_message":
         this.ensureTurn();
+        this.closeActiveBlocks();
         this.appendText("user", event.messageId, event.text);
         return;
       case "agent_message":
@@ -186,7 +189,7 @@ export class AgentSession {
         return;
       case "agent_finished":
         this.turnOpen = false;
-        this.activeBlocks.clear();
+        this.closeActiveBlocks();
         this.update({
           status: "idle",
           streaming: false,
@@ -316,7 +319,7 @@ export class AgentSession {
   private beginTurn(): void {
     this.turn += 1;
     this.turnOpen = true;
-    this.activeBlocks.clear();
+    this.closeActiveBlocks();
     this.update({ lastFinished: null });
   }
 
@@ -325,6 +328,7 @@ export class AgentSession {
   }
 
   private appendText(role: MessageRole, messageId: string | null, text: string): void {
+    this.prepareRole(role);
     const key = this.blockKey(role, messageId);
     const index = this.blocks.get(key);
     if (index === undefined) {
@@ -349,6 +353,9 @@ export class AgentSession {
   }
 
   private appendTool(toolCallId: string, title: string, status: string): void {
+    // A tool-call item is a transcript boundary. Tool updates for an existing
+    // item mutate it in place and must not close text that arrived afterward.
+    this.closeActiveBlocks();
     const key = `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
     if (index === undefined) {
@@ -398,12 +405,28 @@ export class AgentSession {
     if (messageId !== null) return `${role}:${this.turn}:${messageId}`;
     const active = this.activeBlocks.get(role);
     if (active !== undefined) return active;
-    return `${role}:${this.turn}`;
+    return `${role}:${this.turn}:anonymous:${this.nextAnonymousBlock++}`;
+  }
+
+  /**
+   * An id-less stream is one open block only while its role stays active.
+   * Explicit message ids can still reactivate their keyed block after an
+   * interleaving role, preserving the existing keyed replay behavior.
+   */
+  private prepareRole(role: MessageRole): void {
+    if (this.activeRole === role) return;
+    this.closeActiveBlocks();
+    this.activeRole = role;
+  }
+
+  private closeActiveBlocks(): void {
+    this.activeBlocks.clear();
+    this.activeRole = null;
   }
 
   private fail(message: string): void {
     this.turnOpen = false;
-    this.activeBlocks.clear();
+    this.closeActiveBlocks();
     this.update({
       status: "error",
       streaming: false,

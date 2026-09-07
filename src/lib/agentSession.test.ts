@@ -42,6 +42,191 @@ describe("ACP agent session", () => {
     expect(assistantMessages[0].text).toBe("Hello");
   });
 
+  it("starts a new id-less assistant bubble after each replayed user message", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_user_message",
+      messageId: "devboule-user-1-1",
+      text: "prima domanda",
+    });
+    harness.emit({
+      type: "agent_message",
+      messageId: null,
+      text: "risposta uno",
+    });
+    harness.emit({
+      type: "agent_user_message",
+      messageId: "devboule-user-1-2",
+      text: "seconda domanda",
+    });
+    harness.emit({
+      type: "agent_message",
+      messageId: null,
+      text: "risposta due",
+    });
+
+    expect(harness.session.getState().items.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "user", text: "prima domanda" },
+      { role: "assistant", text: "risposta uno" },
+      { role: "user", text: "seconda domanda" },
+      { role: "assistant", text: "risposta due" },
+    ]);
+  });
+
+  it("keeps id-less assistant and thought messages in chronological order", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "agent_message", messageId: null, text: "parte uno" });
+    harness.emit({ type: "agent_thought", messageId: null, text: "penso" });
+    harness.emit({ type: "agent_message", messageId: null, text: "parte due" });
+
+    expect(harness.session.getState().items.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "assistant", text: "parte uno" },
+      { role: "thought", text: "penso" },
+      { role: "assistant", text: "parte due" },
+    ]);
+  });
+
+  it("keeps consecutive id-less chunks for one role in the same bubble", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "agent_message", messageId: null, text: "Hel" });
+    harness.emit({ type: "agent_message", messageId: null, text: "lo" });
+
+    expect(harness.session.getState().items.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "assistant", text: "Hello" },
+    ]);
+  });
+
+  it("replays the real id-less grok run shape as nine ordered bubbles", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    for (let turn = 1; turn <= 3; turn += 1) {
+      harness.emit({
+        type: "agent_user_message",
+        messageId: `grok-user-${turn}`,
+        text: `prompt ${turn}`,
+      });
+      for (let chunk = 0; chunk < 35; chunk += 1) {
+        harness.emit({
+          type: "agent_thought",
+          messageId: null,
+          text: `thought-${turn}-${chunk} `,
+        });
+      }
+      for (let chunk = 0; chunk < 5; chunk += 1) {
+        harness.emit({
+          type: "agent_message",
+          messageId: null,
+          text: `message-${turn}-${chunk} `,
+        });
+      }
+    }
+
+    const items = harness.session.getState().items.map(({ role, text }) => ({ role, text }));
+    expect(items).toEqual(
+      Array.from({ length: 3 }, (_, index) => {
+        const turn = index + 1;
+        return [
+          { role: "user", text: `prompt ${turn}` },
+          {
+            role: "thought",
+            text: Array.from({ length: 35 }, (_, chunk) => `thought-${turn}-${chunk} `).join(""),
+          },
+          {
+            role: "assistant",
+            text: Array.from({ length: 5 }, (_, chunk) => `message-${turn}-${chunk} `).join(""),
+          },
+        ];
+      }).flat(),
+    );
+  });
+
+  it("keeps text after a tool call in a new bubble", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    await harness.session.send("vai");
+
+    harness.emit({
+      type: "agent_user_message",
+      messageId: "devboule-user-1-1",
+      text: "vai",
+    });
+    harness.emit({ type: "agent_message", messageId: null, text: "prima" });
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "Read file",
+      status: "running",
+    });
+    harness.emit({ type: "agent_message", messageId: null, text: "dopo" });
+
+    expect(harness.session.getState().items.map(({ role, text }) => `${role}:${text}`)).toEqual([
+      "user:vai",
+      "assistant:prima",
+      "tool:Read file",
+      "assistant:dopo",
+    ]);
+  });
+
+  it("keeps an existing tool update inside the tool bubble", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "agent_message", messageId: null, text: "prima" });
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "Read file",
+      status: "running",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "completed",
+      text: "contents",
+    });
+    harness.emit({ type: "agent_message", messageId: null, text: "dopo" });
+
+    expect(harness.session.getState().items.map(({ role, text }) => `${role}:${text}`)).toEqual([
+      "assistant:prima",
+      "tool:Read file\ncontents",
+      "assistant:dopo",
+    ]);
+  });
+
+  it("does not close a later text bubble when an existing tool is updated", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "agent_message", messageId: null, text: "prima" });
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "Read file",
+      status: "running",
+    });
+    harness.emit({ type: "agent_message", messageId: null, text: "dopo" });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "completed",
+      text: "contents",
+    });
+    harness.emit({ type: "agent_message", messageId: null, text: " ancora" });
+
+    expect(harness.session.getState().items.map(({ role, text }) => `${role}:${text}`)).toEqual([
+      "assistant:prima",
+      "tool:Read file\ncontents",
+      "assistant:dopo ancora",
+    ]);
+  });
+
   it("makes an agent error visible to the user", async () => {
     const harness = makeHarness();
     await harness.session.start();
