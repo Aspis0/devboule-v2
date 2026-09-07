@@ -1,11 +1,81 @@
 import { create } from "zustand";
 import { pluginInstall, pluginsList, pluginsRescan, reasonFromCause } from "../lib/tauri";
+import type { DesignDocument, DesignHost, DesignMessage } from "../features/design/designHost";
 import type { PluginInventory } from "../types/ipc";
 import type { SurfaceKey } from "../types/surface";
+
+export interface DesignArtifact {
+  html?: string;
+  error?: string;
+}
+
+export interface DesignGenerationState {
+  // The assistant message this run is writing into. It is the run's identity: every guard
+  // compares against it, so there is deliberately no second field that could disagree.
+  assistantId: string;
+  controller: AbortController;
+}
+
+export interface DesignSessionState {
+  host: DesignHost | null;
+  document: DesignDocument | null;
+  messages: DesignMessage[];
+  latestArtifact: DesignArtifact | null;
+  generation: DesignGenerationState | null;
+}
+
+function emptyDesignSession(host: DesignHost | null = null): DesignSessionState {
+  return {
+    host,
+    document: null,
+    messages: [],
+    latestArtifact: null,
+    generation: null,
+  };
+}
+
+// `status === "done"` is load-bearing, not defensive. A message still `working` can carry a
+// half-streamed fence, and this value is what the canvas renders, what a preview elsewhere
+// mirrors, and what the render critic measures. Measuring incomplete markup would produce
+// findings that vanish when the turn finishes, and a check whose findings come and go is one
+// people learn to ignore. This is the only definition: the surface reads it rather than
+// computing its own, because two definitions can disagree about what the current artifact is.
+function latestArtifact(messages: readonly DesignMessage[]): DesignArtifact | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      message?.role === "assistant" &&
+      message.status === "done" &&
+      (message.artifactHtml !== undefined || message.artifactError !== undefined)
+    ) {
+      return { html: message.artifactHtml, error: message.artifactError };
+    }
+  }
+  return null;
+}
+
+type DesignMessagesUpdate =
+  | readonly DesignMessage[]
+  | ((messages: readonly DesignMessage[]) => readonly DesignMessage[]);
 
 interface AppState {
   activeSurface: SurfaceKey;
   selectSurface: (surface: SurfaceKey) => void;
+
+  /**
+   * The live Design session is shared because its surface is intentionally
+   * mounted only while Design is selected.
+   */
+  designSession: DesignSessionState;
+  setDesignHost: (host: DesignHost) => void;
+  setDesignDocument: (
+    host: DesignHost,
+    document: DesignDocument,
+    messages: readonly DesignMessage[],
+  ) => void;
+  setDesignMessages: (host: DesignHost, update: DesignMessagesUpdate) => void;
+  setDesignGeneration: (host: DesignHost, generation: DesignGenerationState | null) => void;
+  clearDesignSession: (host?: DesignHost) => void;
 
   /**
    * What discovery last reported. `null` means nobody has asked yet, which is
@@ -33,6 +103,51 @@ interface AppState {
 export const useAppStore = create<AppState>((set) => ({
   activeSurface: "workspace",
   selectSurface: (activeSurface) => set({ activeSurface }),
+
+  designSession: emptyDesignSession(),
+  setDesignHost: (host) =>
+    set((state) =>
+      state.designSession.host === host ? state : { designSession: emptyDesignSession(host) },
+    ),
+  setDesignDocument: (host, document, messages) =>
+    set((state) => {
+      if (state.designSession.host !== host) return state;
+      const nextMessages = [...messages];
+      return {
+        designSession: {
+          ...state.designSession,
+          document,
+          messages: nextMessages,
+          latestArtifact: latestArtifact(nextMessages),
+        },
+      };
+    }),
+  setDesignMessages: (host, update) =>
+    set((state) => {
+      if (state.designSession.host !== host) return state;
+      const nextMessages = [
+        ...(typeof update === "function" ? update(state.designSession.messages) : update),
+      ];
+      return {
+        designSession: {
+          ...state.designSession,
+          messages: nextMessages,
+          latestArtifact: latestArtifact(nextMessages),
+        },
+      };
+    }),
+  setDesignGeneration: (host, generation) =>
+    set((state) =>
+      state.designSession.host !== host
+        ? state
+        : { designSession: { ...state.designSession, generation } },
+    ),
+  clearDesignSession: (host) =>
+    set((state) =>
+      host !== undefined && state.designSession.host !== host
+        ? state
+        : { designSession: emptyDesignSession() },
+    ),
 
   plugins: null,
   installing: null,

@@ -17,7 +17,7 @@ use devboule_daemon::{
 };
 use devboule_protocol::{
     ClientHello, ErrorCode, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
-    SessionEvent, SessionKind,
+    SessionEvent, SessionKind, SessionState,
 };
 use rusqlite::Connection;
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -113,10 +113,15 @@ impl Harness {
             paths,
             child: Some(child),
         };
+        harness.wait_until_up();
+        harness
+    }
+
+    fn wait_until_up(&self) {
         let deadline = Instant::now() + Duration::from_secs(8);
         while Instant::now() < deadline {
-            if connect(&harness.paths, hello("wait")).is_ok() {
-                return harness;
+            if connect(&self.paths, hello("wait")).is_ok() {
+                return;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -129,6 +134,16 @@ impl Harness {
 
     fn client_named(&self, name: &str) -> DaemonClient {
         connect(&self.paths, hello(name)).expect("connect")
+    }
+
+    fn restart(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        self.child = Some(spawn_daemon(&daemon_bin(), &self.paths).expect("spawn daemon"));
+        self.wait_until_up();
     }
 }
 
@@ -926,6 +941,76 @@ fn set_model_on_terminal_session_is_rejected() {
 }
 
 #[test]
+fn acp_session_survives_daemon_restart_and_replays_agent_message() {
+    const MARKER: &str = "stub reply";
+
+    let _test_lock = lock_tests();
+    let mut test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let live_events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let live_received = Arc::clone(&live_events);
+    let live_handler: EventHandler = Arc::new(move |envelope| {
+        live_received
+            .lock()
+            .expect("live events lock")
+            .push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, live_handler)
+        .expect("attach ACP session");
+    test.client
+        .session_send(&session.id, "before daemon restart")
+        .expect("prompt before daemon restart");
+    wait_for(&live_events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    assert!(
+        live_events.lock().expect("live events lock").iter().any(
+            |event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == MARKER)
+        ),
+        "stub did not produce the pre-restart marker"
+    );
+
+    // journal_usage waits for the asynchronous journal writer, so the daemon
+    // restart cannot race the pre-restart ACP events still being persisted.
+    assert!(
+        test.journal_event_count(&session.id) > 0,
+        "pre-restart ACP events were not journaled"
+    );
+    test.restart();
+
+    let listed = test.client.sessions_list().expect("list sessions");
+    let recovered = listed
+        .iter()
+        .find(|listed| listed.id == session.id)
+        .expect("recovered ACP session missing from sessions_list");
+    assert!(
+        matches!(recovered.state, SessionState::Recovered { .. }),
+        "expected recovered ACP session, got {:?}",
+        recovered.state
+    );
+
+    let replayed_events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let replayed_received = Arc::clone(&replayed_events);
+    let replayed_handler: EventHandler = Arc::new(move |envelope| {
+        replayed_received
+            .lock()
+            .expect("replayed events lock")
+            .push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, replayed_handler)
+        .expect("attach recovered ACP session");
+    wait_for(&replayed_events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == MARKER))
+    });
+}
+
+#[test]
 fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
     let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
@@ -1131,6 +1216,11 @@ impl AcpTest {
             .session_attach(&session.id, None, handler)
             .expect("attach ACP session");
         (session, events)
+    }
+
+    fn restart(&mut self) {
+        self._harness.restart();
+        self.client = Arc::new(self._harness.client_named("restarted"));
     }
 
     fn pid_file(&self) -> PathBuf {

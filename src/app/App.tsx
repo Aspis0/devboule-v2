@@ -3,15 +3,11 @@ import type { ComponentType } from "react";
 import { Shell } from "./Shell";
 import { SurfacePlaceholder } from "./SurfacePlaceholder";
 import { oracleStatus } from "../lib/tauri";
-import { useAppStore } from "../store/appStore";
+import { useAppStore, type DesignSessionState } from "../store/appStore";
 import type { OracleIndexStatus } from "../types/ipc";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
 import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
-import {
-  createAgentHost,
-  disposeAgentHost,
-  resolveAgentWorkspace,
-} from "../features/design/agentHost";
+import { createAgentHost, disposeAgentHost } from "../features/design/agentHost";
 import { createDemoHost } from "../features/design/mockData";
 import { createOracleHost } from "../features/design/oracleHost";
 
@@ -43,7 +39,13 @@ const DEMO_DESIGN_HOST = createDemoHost();
 const ORACLE_DESIGN_HOST = createOracleHost();
 const DEMO_DESIGN_DISCLOSURE = "Demo design — fixtures, not a live store.";
 const ORACLE_DESIGN_DISCLOSURE = "Repository index — Oracle results, no design writes.";
-const AGENT_DESIGN_DISCLOSURE = "Repository agent — ACP writes in the first workspace it finds.";
+const AGENT_DESIGN_DISCLOSURE = "ACP agent — writes in the directory the app was launched from.";
+
+type DesignHostKind = "agent" | "oracle" | "demo";
+
+let resolvedDesignHostKind: DesignHostKind | null = null;
+let designHostResolution: Promise<DesignHostKind> | null = null;
+let designBoundaryLifecycle = 0;
 
 function oracleCanAnswer(status: OracleIndexStatus): boolean {
   return (
@@ -60,33 +62,80 @@ interface DesignHostBoundaryProps {
   DesignSurface: ComponentType<DesignSurfaceProps>;
 }
 
+function resolveDesignHostKind(): Promise<DesignHostKind> {
+  if (resolvedDesignHostKind !== null) return Promise.resolve(resolvedDesignHostKind);
+  if (designHostResolution !== null) return designHostResolution;
+
+  const pending = Promise.allSettled([oracleStatus()]).then(([oracleResult]) => {
+    const kind: DesignHostKind =
+      oracleResult.status === "fulfilled" && oracleCanAnswer(oracleResult.value) ? "agent" : "demo";
+    resolvedDesignHostKind = kind;
+    return kind;
+  });
+  designHostResolution = pending;
+  void pending.finally(() => {
+    if (designHostResolution === pending) designHostResolution = null;
+  });
+  return pending;
+}
+
+function selectedDesignHost(kind: DesignHostKind): DesignHost {
+  const currentHost = useAppStore.getState().designSession.host;
+  if (currentHost !== null) return currentHost;
+
+  const host =
+    kind === "agent"
+      ? createAgentHost()
+      : kind === "oracle"
+        ? ORACLE_DESIGN_HOST
+        : DEMO_DESIGN_HOST;
+  useAppStore.getState().setDesignHost(host);
+  return host;
+}
+
+function designHasWork(session: DesignSessionState): boolean {
+  // There is no discard/new-document action yet, so a message or artifact keeps
+  // this session live for the application's lifetime once it has been created.
+  return (
+    session.generation !== null || session.latestArtifact !== null || session.messages.length > 0
+  );
+}
+
+async function releaseDesignHostIfUnused(): Promise<void> {
+  const session = useAppStore.getState().designSession;
+  if (designHasWork(session) || session.host === null) return;
+
+  const host = session.host;
+  useAppStore.getState().clearDesignSession(host);
+  await disposeAgentHost(host);
+}
+
 function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
   const [selection, setSelection] = useState<{ host: DesignHost; disclosure: string } | null>(null);
 
   useEffect(() => {
-    const agentHost = createAgentHost();
+    const lifecycle = ++designBoundaryLifecycle;
     let active = true;
 
-    void Promise.allSettled([oracleStatus(), resolveAgentWorkspace()]).then(
-      ([oracleResult, workspaceResult]) => {
-        if (!active) return;
-        if (
-          oracleResult.status === "fulfilled" &&
-          oracleCanAnswer(oracleResult.value) &&
-          workspaceResult.status === "fulfilled"
-        ) {
-          setSelection({ host: agentHost, disclosure: AGENT_DESIGN_DISCLOSURE });
-        } else if (oracleResult.status === "fulfilled" && oracleCanAnswer(oracleResult.value)) {
-          setSelection({ host: ORACLE_DESIGN_HOST, disclosure: ORACLE_DESIGN_DISCLOSURE });
-        } else {
-          setSelection({ host: DEMO_DESIGN_HOST, disclosure: DEMO_DESIGN_DISCLOSURE });
-        }
-      },
-    );
+    void resolveDesignHostKind().then((kind) => {
+      if (!active) return;
+      const host = selectedDesignHost(kind);
+      setSelection({
+        host,
+        disclosure:
+          kind === "agent"
+            ? AGENT_DESIGN_DISCLOSURE
+            : kind === "oracle"
+              ? ORACLE_DESIGN_DISCLOSURE
+              : DEMO_DESIGN_DISCLOSURE,
+      });
+    });
 
     return () => {
       active = false;
-      void disposeAgentHost(agentHost);
+      queueMicrotask(() => {
+        if (designBoundaryLifecycle === lifecycle) void releaseDesignHostIfUnused();
+      });
     };
   }, []);
 

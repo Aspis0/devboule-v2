@@ -2,7 +2,6 @@ import { AgentSession, type AgentSessionState } from "../../lib/agentSession";
 import {
   createSessionChannel,
   oracleAsk,
-  projectsList,
   reasonFromCause,
   sessionAttach,
   sessionClose,
@@ -11,7 +10,6 @@ import {
   sessionInterrupt,
   sessionSend,
   type SessionChannel,
-  workspacesList,
 } from "../../lib/tauri";
 import type { OracleResult, Session, SessionEvent, Workspace } from "../../types/ipc";
 import type { DesignGenerationOptions, DesignGenerationResult, DesignHost } from "./designHost";
@@ -67,6 +65,10 @@ export const MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS =
   MAX_AUTOMATIC_SKILL_SECTIONS - AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS.length;
 
 const hostDisposers = new WeakMap<DesignHost, () => Promise<void>>();
+
+// The app has no teardown hook today. A retained design session therefore keeps
+// its ACP session until the process ends unless a test or explicit app teardown
+// calls disposeAgentHost.
 
 function abortError(): DOMException {
   return new DOMException("Generation aborted", "AbortError");
@@ -381,14 +383,31 @@ function invokeAgentCommand<T>(command: string, args: Record<string, unknown> = 
   }
 }
 
-export async function resolveAgentWorkspace(): Promise<Workspace> {
-  const projects = await projectsList();
-  for (const project of projects) {
-    const workspaces = await workspacesList(project.id);
-    const workspace = workspaces[0];
-    if (workspace) return workspace;
-  }
-  throw new Error("No workspace is available.");
+/**
+ * The workspace a design session belongs to, or null when the application cannot name
+ * one — which is always, today.
+ *
+ * It deliberately does not ask. The commands it would ask with, `projects_list` and
+ * `workspaces_list`, are declared in `src/lib/tauri.ts` and registered nowhere:
+ * `generate_handler!` in `src-tauri/src/lib.rs` carries no project command and neither
+ * does the daemon. Asking cost one guaranteed-rejected IPC round trip per generation,
+ * and because the caller in `App.tsx` resolved it with `Promise.allSettled`, that
+ * rejection silently downgraded this surface to a host that cannot produce an artifact
+ * at all — no ACP generation, no critic, no doctrine, and no error anywhere.
+ *
+ * Not asking loses nothing. `workspace_id` is an opaque label the daemon never resolves
+ * to a path: it captures `current_dir` at spawn (`acp_client.rs`) and confines the
+ * agent's file access to it (`acp_host.rs`), whatever the id says. A resolved workspace
+ * would change the stored id and one environment variable, and nothing else.
+ *
+ * When the project registry lands, restore the lookup **here**. This is the single
+ * resolution that both the generation and the per-project doctrine settings read, so
+ * they cannot disagree about which project is current — two resolutions could, and the
+ * divergence would be silent. `scripts/tauri-command-contract.test.mjs` will hold you
+ * to calling only commands that exist.
+ */
+export function resolveAgentWorkspace(): Promise<Workspace | null> {
+  return Promise.resolve(null);
 }
 
 export function createAgentHost(): DesignHost {
@@ -427,10 +446,10 @@ export function createAgentHost(): DesignHost {
     }
   };
 
-  const openSession = async (workspace: Workspace): Promise<AgentSessionHandle> => {
+  const openSession = async (workspace: Workspace | null): Promise<AgentSessionHandle> => {
     let session: Session;
     try {
-      session = await sessionCreate(workspace.id, "acp");
+      session = await sessionCreate(workspace?.id ?? null, "acp");
     } catch (cause) {
       throw sessionError("Could not start the agent session", cause);
     }
@@ -499,7 +518,7 @@ export function createAgentHost(): DesignHost {
     return handle;
   };
 
-  const ensureSession = async (workspace: Workspace): Promise<AgentSessionHandle> => {
+  const ensureSession = async (workspace: Workspace | null): Promise<AgentSessionHandle> => {
     if (disposed) throw new Error("The design surface is no longer available.");
     if (sessionHandle !== null && !sessionHandle.closed) {
       if (sessionHandle.controller.getState().status !== "closed") {
@@ -615,6 +634,9 @@ export function createAgentHost(): DesignHost {
     throwIfAborted(signal);
     const oracleResponse = await oracleAsk(prompt);
     throwIfAborted(signal);
+    // Null until a project registry exists; `sessionCreate(null, …)` is what the
+    // Workspace surface already does, and the daemon treats the id as a label rather
+    // than a location. A missing workspace must never gate a generation again.
     const workspace = await resolveAgentWorkspace();
     throwIfAborted(signal);
     const handle = await ensureSession(workspace);

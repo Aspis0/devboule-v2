@@ -34,6 +34,7 @@ import {
 import { buildSkillBlock } from "./skillLoader";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
+import { useAppStore } from "../../store/appStore";
 import type { NodeRect } from "../../types/geometry";
 import {
   clampViewportZoom,
@@ -180,6 +181,8 @@ interface AssistantProps {
 }
 
 type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
+
+const EMPTY_DESIGN_MESSAGES: readonly DesignMessage[] = [];
 
 function cloneMessages(document: DesignDocument): DesignMessage[] {
   return cloneMessageList(document.messages).map((message) =>
@@ -531,23 +534,6 @@ function sourceDirectory(path: string): string {
 
 function artifactSrcDoc(html: string): string {
   return `${ARTIFACT_CSP_META}\n${html}`;
-}
-
-function latestArtifact(messages: readonly DesignMessage[]): {
-  html?: string;
-  error?: string;
-} | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (
-      message.role === "assistant" &&
-      message.status === "done" &&
-      (message.artifactHtml !== undefined || message.artifactError !== undefined)
-    ) {
-      return { html: message.artifactHtml, error: message.artifactError };
-    }
-  }
-  return null;
 }
 
 const DesignCanvas = memo(function DesignCanvas({
@@ -1358,16 +1344,32 @@ export interface DesignSurfaceProps {
 }
 
 export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
-  const [document, setDocument] = useState<DesignDocument | null>(null);
+  const storedDocument = useAppStore((state) =>
+    state.designSession.host === host ? state.designSession.document : null,
+  );
+  const [document, setDocument] = useState<DesignDocument | null>(storedDocument);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
+
+    const session = useAppStore.getState().designSession;
+    if (session.host !== host) {
+      useAppStore.getState().setDesignHost(host);
+    } else if (session.document !== null) {
+      return () => {
+        active = false;
+        controller.abort();
+      };
+    }
+
     void host
       .loadDocument(controller.signal)
       .then((loadedDocument) => {
         if (!active) return;
+        const messages = cloneMessages(loadedDocument);
+        useAppStore.getState().setDesignDocument(host, loadedDocument, messages);
         setDocument(loadedDocument);
       })
       .catch((error: unknown) => {
@@ -1411,6 +1413,12 @@ interface DesignSurfaceContentProps {
 }
 
 function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceContentProps) {
+  const messages = useAppStore((state) =>
+    state.designSession.host === host ? state.designSession.messages : EMPTY_DESIGN_MESSAGES,
+  );
+  const generation = useAppStore((state) =>
+    state.designSession.host === host ? state.designSession.generation : null,
+  );
   const skillIndex = useMemo(() => builtInSkillIndex(), []);
   const knownSkillSlugs = useMemo(() => skillIndex.map((entry) => entry.slug), [skillIndex]);
   const initialSnapshot: DesignSnapshot = {
@@ -1437,10 +1445,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   );
   const [grounded, setGrounded] = useState(document.grounded);
   const [draft, setDraft] = useState(document.initialState.draft);
-  const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [messages, setMessages] = useState<DesignMessage[]>(() => cloneMessages(document));
   const [skillSelection, setSkillSelectionState] = useState<DesignSkillSelection>(
     DEFAULT_DESIGN_SKILL_SELECTION,
   );
@@ -1451,27 +1457,33 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
 
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
-  const activeGenerationRef = useRef<{
-    controller: AbortController;
-    delivered: boolean;
-  } | null>(null);
   const messagesRef = useRef(messages);
   const documentRevisionRef = useRef(0);
   const layerCopyCounterRef = useRef(0);
   const skillSelectionInteractedRef = useRef(false);
   const assistantRef = useRef<HTMLDivElement>(null);
   const designSurfaceRef = useRef<HTMLElement>(null);
+  const setMessages = useCallback(
+    (
+      update:
+        | readonly DesignMessage[]
+        | ((messages: readonly DesignMessage[]) => readonly DesignMessage[]),
+    ) => {
+      useAppStore.getState().setDesignMessages(host, update);
+    },
+    [host],
+  );
 
   const snapshot = history.present;
   const layers = snapshot.layers;
   const saved = history.saved;
+  const busy = generation !== null;
   const { pan, selectedLayerId, tool, zoom } = viewState;
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      activeGenerationRef.current?.controller.abort();
     };
   }, []);
 
@@ -1538,7 +1550,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     [layers, selectedLayerId, snapshot.hiddenLayerIds],
   );
 
-  const artifact = latestArtifact(messages);
+  const artifact = useAppStore((state) =>
+    state.designSession.host === host ? state.designSession.latestArtifact : null,
+  );
   const artifactHtml = artifact?.html;
   const artifactError = artifact?.error;
   const artifactMissingTokens = useMemo(
@@ -1867,9 +1881,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       const scopedPrompt = composerContextTarget
         ? `${prompt}\n\nScope: ${composerContextTarget.scope}`
         : prompt;
-      activeGenerationRef.current?.controller.abort();
       const controller = new AbortController();
-      const activeGeneration = { controller, delivered: false };
       const userId = crypto.randomUUID();
       const assistantId = crypto.randomUUID();
       const userMessage: DesignMessage = {
@@ -1891,11 +1903,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         instruction: prompt,
       };
 
-      activeGenerationRef.current = activeGeneration;
       documentRevisionRef.current += 1;
       setMessages((current) => [...current, userMessage, assistantMessage]);
+      useAppStore.getState().setDesignGeneration(host, { assistantId, controller });
       setDraft("");
-      setBusy(true);
       setAutoSkillNotice(null);
       setAutoAppliedSkillSlugs(null);
       const generationOptions =
@@ -1904,8 +1915,14 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           : { skills: selectedSkillSlugs };
       void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
-          if (controller.signal.aborted || activeGenerationRef.current !== activeGeneration) return;
-          activeGeneration.delivered = true;
+          const currentGeneration = useAppStore.getState().designSession.generation;
+          if (
+            controller.signal.aborted ||
+            currentGeneration === null ||
+            currentGeneration.assistantId !== assistantId
+          ) {
+            return;
+          }
           documentRevisionRef.current += 1;
           setMessages((current) =>
             current.map((message) =>
@@ -1951,12 +1968,20 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                   : "Automatic craft: no sections were used.",
             );
           }
-          setBusy(false);
-          setHistory((current) => (current.saved ? { ...current, saved: false } : current));
-          activeGenerationRef.current = null;
+          useAppStore.getState().setDesignGeneration(host, null);
+          if (mountedRef.current) {
+            setHistory((current) => (current.saved ? { ...current, saved: false } : current));
+          }
         })
         .catch((error: unknown) => {
-          if (controller.signal.aborted || activeGenerationRef.current !== activeGeneration) return;
+          const currentGeneration = useAppStore.getState().designSession.generation;
+          if (
+            controller.signal.aborted ||
+            currentGeneration === null ||
+            currentGeneration.assistantId !== assistantId
+          ) {
+            return;
+          }
           documentRevisionRef.current += 1;
           setMessages((current) =>
             current.map((message) =>
@@ -1970,9 +1995,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                 : message,
             ),
           );
-          setBusy(false);
-          setHistory((current) => (current.saved ? { ...current, saved: false } : current));
-          activeGenerationRef.current = null;
+          useAppStore.getState().setDesignGeneration(host, null);
+          if (mountedRef.current) {
+            setHistory((current) => (current.saved ? { ...current, saved: false } : current));
+          }
         });
     },
     [
@@ -1982,9 +2008,11 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       document.contextPrefix,
       document.workingMessage,
       generate,
+      host,
       skillIndex,
       skillSelection.mode,
       selectedSkillSlugs,
+      setMessages,
     ],
   );
 
@@ -2016,13 +2044,12 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const handleMessageAction = useCallback(
     (action: MessageAction, message: DesignMessage) => {
       if (action === "stop" && message.role === "assistant") {
-        const activeGeneration = activeGenerationRef.current;
-        if (activeGeneration === null || activeGeneration.delivered) return;
+        const activeGeneration = useAppStore.getState().designSession.generation;
+        if (activeGeneration === null || activeGeneration.assistantId !== message.id) return;
 
-        activeGenerationRef.current = null;
         activeGeneration.controller.abort();
         documentRevisionRef.current += 1;
-        setBusy(false);
+        useAppStore.getState().setDesignGeneration(host, null);
         setMessages((current) =>
           current.map((item) =>
             item.id === message.id && item.role === "assistant"
@@ -2053,7 +2080,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       const prompt = promptForMessage(messagesRef.current, message);
       if (prompt !== null) startGeneration(prompt);
     },
-    [selectLayer, startGeneration],
+    [host, selectLayer, setMessages, startGeneration],
   );
 
   const clearComposerContext = useCallback(() => setComposerContextLayerId(null), []);

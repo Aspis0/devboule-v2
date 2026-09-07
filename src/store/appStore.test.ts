@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginEntry, PluginInventory } from "../types/ipc";
+import type { DesignHost, DesignMessage } from "../features/design/designHost";
 
 const mocks = vi.hoisted(() => ({
   pluginInstall: vi.fn(),
@@ -75,5 +76,61 @@ describe("appStore plugin state", () => {
     await useAppStore.getState().refreshPlugins();
 
     expect(useAppStore.getState().installError).toBe("the previous copy failed");
+  });
+});
+
+describe("appStore design session", () => {
+  // The canvas renders this value, a preview elsewhere mirrors it, and the render critic
+  // measures it. A message still `working` can carry a half-streamed fence, so promoting it
+  // would make the critic report findings that vanish when the turn finishes — and a check
+  // whose findings come and go is one people stop reading. Without this test the looser
+  // predicate passes every other test in the suite, which is how it would come back.
+  it("does not treat an unfinished message's artifact as the current one", () => {
+    const host = { loadDocument: async () => ({}) } as unknown as DesignHost;
+    useAppStore.getState().setDesignHost(host);
+
+    const working: DesignMessage = {
+      id: "assistant-1",
+      role: "assistant",
+      status: "working",
+      title: "Working",
+      desc: "",
+      sources: [],
+      nodeIds: [],
+      artifactHtml: "<main>half written",
+    };
+    useAppStore.getState().setDesignMessages(host, [working]);
+    expect(useAppStore.getState().designSession.latestArtifact).toBeNull();
+
+    useAppStore
+      .getState()
+      .setDesignMessages(host, [
+        { ...working, status: "done", artifactHtml: "<main>finished</main>" },
+      ]);
+    expect(useAppStore.getState().designSession.latestArtifact).toEqual({
+      html: "<main>finished</main>",
+      error: undefined,
+    });
+  });
+
+  it("refuses writes from a host that is no longer the session's", () => {
+    const host = { loadDocument: async () => ({}) } as unknown as DesignHost;
+    const stale = { loadDocument: async () => ({}) } as unknown as DesignHost;
+    useAppStore.getState().setDesignHost(host);
+    useAppStore.getState().setDesignMessages(stale, [
+      {
+        id: "assistant-stale",
+        role: "assistant",
+        status: "done",
+        title: "Stale",
+        desc: "",
+        sources: [],
+        nodeIds: [],
+        artifactHtml: "<main>from a disposed session</main>",
+      },
+    ]);
+
+    expect(useAppStore.getState().designSession.messages).toHaveLength(0);
+    expect(useAppStore.getState().designSession.latestArtifact).toBeNull();
   });
 });

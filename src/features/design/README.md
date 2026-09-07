@@ -113,14 +113,14 @@ checkboxes sit in 131.7 × 20 labels produces two findings, because 20 CSS px is
 the 24 the criterion asks for.
 
 **The focus check is static analysis of the stylesheets, and that is a measured constraint
-rather than a preference.** Focusing an element inside the hidden frame moves the *parent*
+rather than a preference.** Focusing an element inside the hidden frame moves the _parent_
 page's `document.activeElement` to the iframe, and removing the frame afterwards drops it to
 `body`. Probed in Chromium 152 with a control: with no `focus()` call the parent keeps both
 its active element and its text caret; with one, it loses them. The critic runs immediately
 after a generation, which is exactly when the user may be typing the next prompt, so it never
 calls `focus()`, `blur()` or `showPicker()`. Three reasons are reported: an outline below 3:1,
 an outline removed with nothing declared in its place, and a rule whose focus selector shares
-its declarations with a *static* selector some element already matches — that last one catches
+its declarations with a _static_ selector some element already matches — that last one catches
 the case where the item carrying `aria-current="page"` looks identical focused and unfocused.
 `:hover` is deliberately excluded from that collision test, because sharing a block with a
 transient state is correct and extremely common.
@@ -132,7 +132,7 @@ and the document fell into quirks mode — and it failed silently, because a tim
 to show nothing. 650 tests were green: they asserted the pure functions and never the
 assembled document, which is the only thing a browser sees. The second was a false positive in
 the collision test, which fired on a button that had a perfectly good focus ring, because the
-check ran per rule and never asked whether a *different* rule supplied the indicator. A
+check ran per rule and never asked whether a _different_ rule supplied the indicator. A
 warning on correct output is the expensive failure for this component: it teaches the reader
 to dismiss the card, and then the real finding is invisible too. Both cases are now tests that
 drive the assembled document.
@@ -172,7 +172,7 @@ drift.
 
 **That justification has already gone stale once, which is worth more than the number
 itself.** The cap was set against an eleven-section corpus, on the finding that no five
-sections could fit *at all*: the cheapest five then composed to 9,741 characters with one
+sections could fit _at all_: the cheapest five then composed to 9,741 characters with one
 dropped. Two smaller sections were added hours later and the claim quietly became false — the
 cheapest five now compose to 11,975 and fit. The decision survived and its real reason turned
 out to be stronger, but the sentence justifying it did not, and no test would have caught the
@@ -207,7 +207,7 @@ are measured differently — a file on disk against what `parseSkillFile` return
 ratio as an order of magnitude, not a figure. What survives is the checkable rules; what
 went is the discussion. Both were given explicit ownership boundaries, because a section
 that repeats another wastes one of the four slots automatic mode can send and invites the
-two to contradict each other: `form-validation` owns only *when* validation fires and *how*
+two to contradict each other: `form-validation` owns only _when_ validation fires and _how_
 an error is wired to its field — `state-coverage` still owns which states exist, `microcopy`
 the words, `accessibility` the conformance floor — and `cognition` owns perception, choice
 and memory while deferring distance to `spacing` and target size to `accessibility` and
@@ -220,7 +220,7 @@ compare and second for a dashboard to scan. Neither appeared where it did not be
 `cognition` was not chosen for the sign-in, `form-validation` not for either scanning task.
 That refuted a prediction made before they were written: `cognition`'s description is close
 to universal, and the baseline measurement above says a relevance ranking punishes breadth,
-so it was expected to be unselectable. It was not. Breadth in the *subject* is survivable
+so it was expected to be unselectable. It was not. Breadth in the _subject_ is survivable
 when the description names a concrete trigger — here "compare, choose" — and the earlier
 result is narrower than it first appeared.
 
@@ -249,8 +249,8 @@ AA in the published revision) while matching the direction of EN 301 549 V4.1.1.
 conformance target for an interface, **not** a claim of legal compliance: EN 301 549 carries
 requirements beyond WCAG, and applicability depends on the whole product and its
 jurisdiction. Two details worth keeping straight, because a secondary source we read had both
-wrong: EN 301 549 V4.1.1 is *published* (ETSI, 2026-09) but not yet *cited in the Official
-Journal*, so V3.2.1 and WCAG 2.1 remain the EU legal reference; and Section 508 is
+wrong: EN 301 549 V4.1.1 is _published_ (ETSI, 2026-09) but not yet _cited in the Official
+Journal_, so V3.2.1 and WCAG 2.1 remain the EU legal reference; and Section 508 is
 coordinated with EN 301 549 but not harmonised with it — the Access Board expressly declined
 to incorporate it by reference.
 

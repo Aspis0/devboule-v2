@@ -57,6 +57,10 @@ vi.mock("../../lib/tauri", () => ({
   pluginsList: mocks.pluginsList,
 }));
 
+vi.mock("../../features/workspace/Workspace", () => ({
+  Workspace: () => <div data-screen-label="Workspace">Workspace</div>,
+}));
+
 import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
@@ -252,7 +256,10 @@ beforeEach(() => {
   mocks.pluginsList.mockResolvedValue({ root: "", plugins: [], problem: null });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  const host = useAppStore.getState().designSession.host;
+  if (host !== null) await disposeAgentHost(host);
+  useAppStore.getState().clearDesignSession(host ?? undefined);
   document.body.replaceChildren();
 });
 
@@ -599,7 +606,9 @@ describe("ACP design host", () => {
     expect(result.desc).toContain("DesignSurface.tsx");
     expect(result.title).toContain("wrote");
     expect(result.desc).toContain("Review what the agent wrote with your own git.");
-    expect(mocks.sessionCreate).toHaveBeenCalledWith(WORKSPACE.id, "acp");
+    // Null, not WORKSPACE.id: the daemon treats the id as a label and runs every agent in
+    // its own current_dir, so no workspace is resolved until a project registry exists.
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp");
     expect(mocks.sessionAttach).toHaveBeenCalledWith("session-1", null, expect.anything());
     expect(mocks.sessionSend).toHaveBeenCalledWith(
       "session-1",
@@ -705,15 +714,17 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("fails honestly when no workspace is available", async () => {
+  it("falls back to the daemon working directory when no workspace is available", async () => {
     mocks.projectsList.mockResolvedValue([]);
     const host = createAgentHost();
 
-    await expect(
-      host.generate?.("Update the design", new AbortController().signal),
-    ).rejects.toThrow("No workspace is available");
+    const { run } = await startRun(host);
     expect(mocks.oracleAsk).toHaveBeenCalledWith("Update the design");
-    expect(mocks.sessionCreate).not.toHaveBeenCalled();
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp");
+    finishRun();
+    await run;
+
+    await disposeAgentHost(host);
   });
 
   it("rejects when AgentSession cannot attach", async () => {
@@ -888,8 +899,13 @@ describe("ACP design host", () => {
     expect(mocks.sessionCreate).not.toHaveBeenCalled();
   });
 
-  it("closes and detaches the agent session when the Design mount unmounts", async () => {
+  // The project registry does not exist in this build, so the surface must never ask for
+  // it. The rejecting mock below is a landmine: it proves we do not call the command
+  // rather than merely tolerating its failure, because tolerating it is what shipped a
+  // silently downgraded host that could not produce an artifact at all.
+  it("reaches ACP without asking for a project registry, and retains its artifact", async () => {
     mocks.oracleStatus.mockResolvedValue(READY_STATUS);
+    mocks.projectsList.mockRejectedValue(new Error("unknown command: projects_list"));
     const { container, root } = createRootContainer();
 
     await act(async () => root.render(<App />));
@@ -903,7 +919,7 @@ describe("ACP design host", () => {
       ).not.toBeNull(),
     );
     expect(container.textContent).toContain(
-      "Repository agent — ACP writes in the first workspace it finds.",
+      "ACP agent — writes in the directory the app was launched from.",
     );
 
     const draft = container.querySelector<HTMLTextAreaElement>(
@@ -911,21 +927,104 @@ describe("ACP design host", () => {
     );
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (draft === null || send === null) throw new Error("Design composer did not render");
+    const firstHost = useAppStore.getState().designSession.host;
+    if (firstHost === null) throw new Error("Design host was not stored");
     const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
     if (setValue === undefined) throw new Error("textarea value setter did not exist");
     setValue.call(draft, "Update the design");
     draft.dispatchEvent(new Event("input", { bubbles: true }));
     await act(async () => send.click());
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
+    expect(mocks.projectsList).not.toHaveBeenCalled();
+    expect(mocks.workspacesList).not.toHaveBeenCalled();
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp");
+
+    await act(async () => useAppStore.getState().selectSurface("workspace"));
     await settle();
+    expect(mocks.sessionClose).not.toHaveBeenCalled();
+
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "artifact-message",
+      text: "```html\n<main>Kept artifact</main>\n```",
+    });
+    finishRun();
+    await vi.waitFor(() =>
+      expect(useAppStore.getState().designSession.latestArtifact?.html).toBe(
+        "<main>Kept artifact</main>",
+      ),
+    );
+
+    const retainedHost = useAppStore.getState().designSession.host;
+    expect(retainedHost).toBe(firstHost);
+    await act(async () => useAppStore.getState().selectSurface("design"));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    );
+
+    expect(container.querySelector("iframe")?.getAttribute("srcdoc")).toContain(
+      "<main>Kept artifact</main>",
+    );
+    expect(container.querySelectorAll(".design-message, .design-message-card")).toHaveLength(2);
+    expect(container.textContent).toContain("Update the design");
+
+    const secondDraft = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Describe a design change"]',
+    );
+    const secondSend = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (secondDraft === null || secondSend === null)
+      throw new Error("Design composer did not return");
+    setValue.call(secondDraft, "Make that panel green");
+    secondDraft.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => secondSend.click());
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "second-message",
+      text: "The panel is green.",
+    });
+    finishRun();
+    await settle();
+
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(1);
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    expect(mocks.oracleStatus).toHaveBeenCalledTimes(1);
+    expect(container.querySelectorAll(".design-message, .design-message-card")).toHaveLength(4);
 
     await act(async () => root.unmount());
-    await settle();
-
-    expect(mocks.sessionDetach).toHaveBeenCalledWith("session-1");
-    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1");
   });
 
-  it("creates a fresh agent host after StrictMode effect cleanup", async () => {
+  it("disposes the host when Design is left without any work", async () => {
+    mocks.oracleStatus.mockResolvedValue(READY_STATUS);
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<App />));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    );
+
+    const host = useAppStore.getState().designSession.host;
+    if (host === null) throw new Error("Design host was not stored");
+    expect(useAppStore.getState().designSession.messages).toHaveLength(0);
+
+    await act(async () => useAppStore.getState().selectSurface("workspace"));
+    await vi.waitFor(() => expect(useAppStore.getState().designSession.host).toBeNull());
+
+    await expect(
+      host.generate?.("should be rejected", new AbortController().signal),
+    ).rejects.toThrow("The design surface is no longer available.");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps ACP Design usable under StrictMode effect cleanup", async () => {
     mocks.oracleStatus.mockResolvedValue(READY_STATUS);
     const { container, root } = createRootContainer();
 
