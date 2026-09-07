@@ -392,6 +392,29 @@ these host-side additions, in this order:
 
 1. **`providers.list` (bridge method)** — read-only provider catalog through
    the existing daemon RPC. Smallest possible step; unblocks pickers.
+1-bis. **Workspace asset serving (same-origin)** — let a granted plugin load
+   workspace files as same-origin resources under a RESERVED path prefix
+   inside `http://plugin.localhost/{pluginId}/` (e.g.
+   `workspace/<relative-path>`), instead of moving bytes through the bridge.
+   This is a DELIBERATE, documented exception to the digest invariant in §8
+   (workspace files change on disk and are not manifest-listed). Required
+   guards, all mandatory:
+   - reserved segment validated at scan time — no manifest path may start
+     with it (collision = install rejection);
+   - per-request confinement + canonicalization under `workspace.root`
+     (symlinks out, `..` out, reparse points out);
+   - no directory listing; per-file size cap;
+   - **MIME never derived from extension** on this branch: strict allowlist
+     of non-executable types only; `text/javascript`, `text/html`,
+     `image/svg+xml` never emitted; `X-Content-Type-Options: nosniff`
+     mandatory (the invariant exists because scripts run from this origin —
+     extension-based typing would let a frame execute arbitrary user-repo
+     files as code);
+   - **no `Access-Control-Allow-Origin`** on this branch — the files are
+     same-origin with the plugin frame (img/canvas/fetch need no CORS), so
+     `*` would only enable cross-origin reads of user files by origins that
+     must never have them (`*` stays on the public bundle branch only).
+   Blocks: native-path image ingest for domain apps.
 2. **`agents.run` (capability + bridge method)** — managed one-shot requests:
    the host creates a hidden session (or uses a one-shot protocol adapter),
    streams transcript events to the plugin frame, enforces timeouts, and
@@ -441,7 +464,9 @@ makes the trust model work):
 
 - **Files**: SHA-256 digest per file, verified at scan/install; asset server
   refuses unlisted files. Manifest and artifacts must be produced together
-  (§4) — hand-edited manifests are the #1 rejection cause.
+  (§4) — hand-edited manifests are the #1 rejection cause. Planned exception
+  (§7 1-bis, not built yet): a reserved workspace serving prefix — dynamic
+  class, never extension-typed, `nosniff` mandatory, no ACAO.
 - **UI containment**: cross-origin sandboxed iframe; no Tauri IPC from plugin
   frames (a GHSA-documented boundary); per-plugin CSP
   (`default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; …;
