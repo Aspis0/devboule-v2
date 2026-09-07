@@ -31,7 +31,8 @@ read as finished; the emoji reads as unfinished.
 meaning — status, priority, selection. If you cannot say in one word what it means, it is
 decoration.
 
-**Numbers nobody measured.** "10x faster", "99.9% uptime". Likewise filler: lorem ipsum,
+**Numbers nobody measured.** "10x faster", "99.9% uptime" — claims, not data; a screen whose
+job is reporting figures should report them. Likewise filler: lorem ipsum,
 "Feature one / two / three". An empty section is a composition problem; inventing words does
 not solve it.
 

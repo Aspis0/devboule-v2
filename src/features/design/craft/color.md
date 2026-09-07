@@ -13,6 +13,8 @@ less. One accent. A second "hero color" is nearly always a decision that was nev
 
 **Ration the accent.** At most two visible uses per screen — typically one chip or eyebrow
 and one primary action. Links, focus rings and hover states all spend from the same budget.
+Status does not spend from it: a row reporting success or failure carries meaning, not
+emphasis, and rationing it deletes the information.
 
 **Two hues per component.** A control carrying a gradient, a colored border, a colored
 shadow and colored text has no hierarchy left to spend. Two is the limit, and tints of one

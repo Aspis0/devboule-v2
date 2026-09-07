@@ -1,6 +1,6 @@
 ---
 slug: spacing
-description: Spacing as structure rather than leftover: one scale, taken from the project when it has one, gaps between groups larger than gaps inside them, space before borders and cards, and rhythm that changes with the viewport. Apply whenever the output arranges more than one element.
+description: Spacing owns the scale, rhythm, and grouping by distance: token steps, cumulative cadence, and larger gaps between unrelated groups. Apply whenever distance must separate, size, or pace content.
 title: Spacing
 requires: []
 ---

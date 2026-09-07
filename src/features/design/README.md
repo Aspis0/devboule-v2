@@ -162,9 +162,15 @@ one that honours none, whereas a compliance checklist scoring 21% has failed. Th
 reason the corpus is allowed to hold more rules than any model will satisfy jointly, and the
 reason instruction count is not the unit the ceiling is written in.
 
-None of these numbers measured this system. The experiment that would is a fixed task suite
-with objective checks, run at randomised budgets, scoring per-rule adherence separately from
-all-rules success. It has not been run.
+None of the borrowed numbers measured this system, so a narrower version of the experiment
+was run against this code. The same request was generated twice, with the first three
+sections of the priority order and with the first five. The larger block produced a semantic
+table, pointer targets sized against a cited criterion, specific accessible names, a declared
+spacing scale and a responsive rule, none of which appeared in the smaller one — and it did
+not drift from the brief. That is one request, one model, one run per arm: enough to raise
+the automatic cap from three to five, not enough to call it an optimum. The full version,
+with a fixed task suite at randomised budgets scoring per-rule adherence separately from
+all-rules success, has still not been run.
 
 **When the ceiling does cut something, the block says so.** Truncation removes whole
 sections from the tail of the priority order, never part of a rule, and the composed text carries

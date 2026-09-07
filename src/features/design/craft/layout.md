@@ -1,6 +1,6 @@
 ---
 slug: layout
-description: Alignment as hierarchy: visible keylines, optical rather than box-perfect balance, grouping by proximity before enclosure, and grid breaks that have a reason. Apply whenever the output arranges content on a grid or aligns related interface elements.
+description: Layout owns alignment, keylines, optical correction, and deliberate grid breaks: shared edges, visual balance, and purposeful bleeds or offsets. Apply whenever geometry must align, balance, or break a grid.
 title: Layout
 requires: []
 ---

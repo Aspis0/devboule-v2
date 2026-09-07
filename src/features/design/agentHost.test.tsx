@@ -308,22 +308,11 @@ describe("ACP design host", () => {
   it("applies the baseline first without duplicating it or spending a routed slot", async () => {
     const index = builtInSkillIndex();
     const baseline = index.find((entry) => entry.slug === AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0]);
-    const routed = index.find((entry) => entry.slug !== baseline?.slug);
-    const secondRouted = index.find(
-      (entry) => entry.slug !== baseline?.slug && entry.slug !== routed?.slug,
-    );
-    const ignored = index.find(
-      (entry) =>
-        entry.slug !== baseline?.slug &&
-        entry.slug !== routed?.slug &&
-        entry.slug !== secondRouted?.slug,
-    );
-    if (
-      baseline === undefined ||
-      routed === undefined ||
-      secondRouted === undefined ||
-      ignored === undefined
-    ) {
+    const routable = index.filter((entry) => entry.slug !== baseline?.slug);
+    // Name one more than the routed limit so the cap is exercised whatever the limit is.
+    const named = routable.slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS + 1);
+    const kept = named.slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS);
+    if (baseline === undefined || named.length <= MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS) {
       throw new Error("Built-in skills missing");
     }
 
@@ -332,14 +321,17 @@ describe("ACP design host", () => {
     channelHarness.active?.({
       type: "agent_message",
       messageId: "preflight-message",
-      text: `${baseline.slug}, ${routed.slug}, ${secondRouted.slug}, ${ignored.slug}`,
+      text: [baseline.slug, ...named.map((entry) => entry.slug)].join(", "),
     });
     finishRun();
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
     finishRun();
 
     const result = await run;
-    expect(result.appliedSkillSlugs).toEqual([baseline.slug, routed.slug, secondRouted.slug]);
+    expect(result.appliedSkillSlugs).toEqual([
+      baseline.slug,
+      ...kept.map((entry) => entry.slug),
+    ]);
     expect(result.appliedSkillSlugs?.filter((slug) => slug === baseline.slug)).toHaveLength(1);
     await disposeAgentHost(host);
   });
@@ -431,7 +423,7 @@ describe("ACP design host", () => {
       description: `${slug} description`,
     }));
     const replyOrder = [index[4]!, index[2]!, index[4]!, "unknown", index[0]!, index[1]!];
-    const expected = [index[4]!, index[2]!, index[0]!]
+    const expected = [index[4]!, index[2]!, index[0]!, index[1]!]
       .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS)
       .map((entry) => entry.slug);
 

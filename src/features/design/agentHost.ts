@@ -49,10 +49,22 @@ export const MAX_ARTIFACT_BYTES = 256 * 1024;
 export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
 // This is a real ACP turn, so eight seconds bounds a missing answer without pretending it is instant.
 export const AUTO_SKILL_PREFLIGHT_TIMEOUT_MS = 8_000;
-// Three current sections compose to 7,211 of the 16,000-character ceiling. Three is also
-// the only count an end-to-end comparison has covered; raising it changes the shape of
-// every generation, so it wants evidence rather than merely room in the budget.
-export const MAX_AUTOMATIC_SKILL_SECTIONS = 3;
+// Five, because the comparison that mattered was run rather than assumed. The same request
+// was generated twice from this code, with the first three sections of the priority order
+// (7,177 characters of doctrine) and with the first five (11,909). Five produced a semantic
+// table with column scopes, pointer targets sized against SC 2.5.8, specific accessible
+// names, a declared spacing scale and a responsive rule; three produced none of those. It
+// did NOT drift from the brief: both returned one panel.
+//
+// That last point corrected an earlier reading. A previous comparison saw a generation
+// answer "a dashboard panel" with five stacked state variants and blamed the volume of
+// doctrine. The cause was one sentence in state-coverage telling the model to draw them,
+// since fixed. More doctrine did not mean more drift.
+//
+// One request, one model, one run per arm. Five sections can exceed the composed ceiling,
+// in which case truncation drops the router's own last choice and says so, which is the
+// intended behaviour rather than an accident.
+export const MAX_AUTOMATIC_SKILL_SECTIONS = 5;
 // A relevance router structurally cannot select a section whose value is universal:
 // that section loses to three sections specific to the request.  This was measured
 // three times at 2/15, so automatic mode includes it as a baseline instead.  Keep

@@ -7,7 +7,7 @@ requires: []
 
 **Set direction and language (STANDARD).** Use `<html dir="rtl" lang="ar">`; use `dir="auto"` for unknown content. MDN recommends root `dir` ([MDN `dir`](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Global_attributes/dir)); `lang` informs localization.
 
-**Use logical CSS (STANDARD).** Logical properties are direction-relative ([MDN logical properties](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Logical_properties_and_values)). Physical `left`/`right` do not automatically break RTL; use them for genuinely physical relationships. Use `margin-inline`, `padding-inline`, and `text-align: start/end` for direction-relative ones.
+**Use logical CSS (STANDARD).** Logical properties are direction-relative ([MDN logical properties](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Logical_properties_and_values)). Use `margin-inline`, `padding-inline`, and `text-align: start/end` for direction-relative ones.
 
 **Mirror directional meaning (CONVENTION).** Mirror controls when meaning depends on reading order or progress: next/previous, sliders, progress. Preserve controls referring to a real-world direction. Apple supports RTL flipped icons ([Apple Icons HIG](https://developer.apple.com/design/human-interface-guidelines/icons)); its clause excludes checkbox-label relationships or all reading-order illustrations. Keep DOM order meaningful and verify keyboard focus follows the same task sequence in LTR and RTL. Do not flip logos/universal signs ([Apple Right to left HIG](https://developer.apple.com/design/human-interface-guidelines/right-to-left)); preserve photos, artwork, charts, clocks, real-world objects; decide illustrations by meaning.
 
