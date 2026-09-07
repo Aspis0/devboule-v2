@@ -9,6 +9,12 @@ import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
 const skillSettingsMocks = vi.hoisted(() => ({
   load: vi.fn(),
   save: vi.fn(),
+  loadProvider: vi.fn(),
+  saveProvider: vi.fn(),
+}));
+
+const providerMocks = vi.hoisted(() => ({
+  list: vi.fn(),
 }));
 
 vi.mock("./designSettings", async () => {
@@ -17,8 +23,19 @@ vi.mock("./designSettings", async () => {
     ...actual,
     loadDesignSkillSelection: skillSettingsMocks.load,
     saveDesignSkillSelection: skillSettingsMocks.save,
+    loadDesignProviderId: skillSettingsMocks.loadProvider,
+    saveDesignProviderId: skillSettingsMocks.saveProvider,
   };
 });
+
+vi.mock("../../lib/tauri", () => ({
+  providersList: providerMocks.list,
+  createSessionStateChannel: vi.fn(),
+  sessionCreate: vi.fn(),
+  sessionsList: vi.fn(),
+  sessionsUnwatch: vi.fn(),
+  sessionsWatch: vi.fn(),
+}));
 
 import {
   createViewport,
@@ -40,6 +57,8 @@ import { buildSkillBlock } from "./skillLoader";
 import { nodesBounds } from "../../lib/canvas/viewportMath";
 import { rectIntersects } from "../../lib/canvas/hitTest";
 import type { NodeRect } from "../../types/geometry";
+import type { AgentSessionState } from "../../lib/agentSession";
+import type { ProviderInfo, SessionManifest, SessionModel } from "../../types/ipc";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -48,7 +67,6 @@ import type { NodeRect } from "../../types/geometry";
 const DOCUMENT: DesignDocument = {
   name: "Index browser",
   path: "~/dev/devboule/src/design",
-  provider: "Claude Code · High",
   contextPrefix: "Editing",
   draftPlaceholder: "Describe the change to Index header…",
   noContextPlaceholder: "Describe what to generate…",
@@ -56,7 +74,6 @@ const DOCUMENT: DesignDocument = {
   selectedLayerId: "index-header",
   grounded: true,
   initialState: {
-    tool: "move",
     zoom: 1,
     radius: 14,
     flat: false,
@@ -78,9 +95,6 @@ const DOCUMENT: DesignDocument = {
       transform: { x: 60, y: 46, width: 300, height: 124 },
     },
   ],
-  canvasContent: {
-    aiRegion: { x: 420, y: 300, width: 240, height: 96, actionLabel: "Analyze this region" },
-  },
   radiusOptions: [
     { token: "none", value: 0 },
     { token: "sm", value: 8 },
@@ -198,12 +212,66 @@ async function renderDesign(host: DesignHost): Promise<{
   return { container, root };
 }
 
+async function settle(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function provider(id: string, origin: ProviderInfo["origin"] = "user-binary"): ProviderInfo {
+  return {
+    id,
+    executable: id,
+    acpAvailable: true,
+    authentication: "unknown",
+    protocol: "acp",
+    origin,
+  };
+}
+
+function agentState(manifest: AgentSessionState["manifest"]): AgentSessionState {
+  return {
+    items: [],
+    status: "idle",
+    streaming: false,
+    availableCommands: [],
+    lastFinished: null,
+    manifest,
+    pendingSwitch: null,
+  };
+}
+
+function fakeAgentSession(initialState: AgentSessionState) {
+  let state = initialState;
+  const listeners = new Set<() => void>();
+  const updateState = (nextState: AgentSessionState): void => {
+    state = nextState;
+    for (const listener of listeners) listener();
+  };
+  const session = {
+    getState: () => state,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    setModel: vi.fn(async (modelId?: string, effort?: string) => {
+      updateState({ ...state, pendingSwitch: { modelId, effort, at: Date.now() } });
+    }),
+  };
+  return { session, updateState };
+}
+
 beforeEach(() => {
   useAppStore.setState({ plugins: null, installing: null, installError: null });
   skillSettingsMocks.load.mockReset();
   skillSettingsMocks.save.mockReset();
+  skillSettingsMocks.loadProvider.mockReset();
+  skillSettingsMocks.saveProvider.mockReset();
   skillSettingsMocks.load.mockResolvedValue({ version: 1, mode: "all", enabledSlugs: [] });
   skillSettingsMocks.save.mockResolvedValue(undefined);
+  skillSettingsMocks.loadProvider.mockResolvedValue(null);
+  skillSettingsMocks.saveProvider.mockResolvedValue(undefined);
+  providerMocks.list.mockReset();
+  providerMocks.list.mockResolvedValue({ providers: [], unreadableDirs: 0 });
 });
 
 afterEach(() => {
@@ -211,11 +279,198 @@ afterEach(() => {
 });
 
 describe("DesignSurface host capabilities", () => {
+  it("filters npx agents after the shared chat-capable filter and explains the omission", async () => {
+    const installed = provider("grok");
+    const downloadedOnDemand = provider("downloaded-agent", "npx-wrapper");
+    const selectProvider = vi.fn();
+    providerMocks.list.mockResolvedValueOnce({
+      providers: [installed, downloadedOnDemand],
+      unreadableDirs: 0,
+    });
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        selectProvider,
+      }),
+    );
+    await act(settle);
+
+    const pickerButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Choose provider:"]',
+    );
+    if (pickerButton === null) throw new Error("Provider picker missing");
+    await act(async () => pickerButton.click());
+
+    const option = container.querySelector<HTMLButtonElement>('[role="option"]');
+    expect(option?.textContent).toBe("grok");
+    expect(container.textContent).toContain("downloaded on demand");
+    expect(container.textContent).toContain("Workspace");
+    await act(async () => option?.click());
+    expect(selectProvider).toHaveBeenCalledWith(installed);
+    expect(container.textContent).not.toContain("downloaded-agent");
+    await act(async () => root.unmount());
+  });
+
+  it("renders the manifest model without a select when one model has no efforts", async () => {
+    const { session } = fakeAgentSession(
+      agentState({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4",
+        models: [{ modelId: "grok-4", name: "Grok 4" }],
+      }),
+    );
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        getAgentSession: () => session,
+      }),
+    );
+    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
+    if (modelButton === null) throw new Error("Model picker missing");
+    await act(async () => modelButton.click());
+
+    expect(container.textContent).toContain("Grok 4");
+    expect(container.querySelector('select[aria-label="Model"]')).toBeNull();
+    expect(container.querySelector('select[aria-label="Thinking effort"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("renders and switches the declared effort control", async () => {
+    const { session } = fakeAgentSession(
+      agentState({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4",
+        models: [
+          {
+            modelId: "grok-4",
+            name: "Grok 4",
+            currentEffort: "high",
+            efforts: [
+              { id: "low", label: "Low" },
+              { id: "high", label: "High" },
+            ],
+          },
+        ],
+      }),
+    );
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        getAgentSession: () => session,
+      }),
+    );
+    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
+    if (modelButton === null) throw new Error("Model picker missing");
+    await act(async () => modelButton.click());
+
+    const effort = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Thinking effort"]',
+    );
+    if (effort === null) throw new Error("Effort picker missing");
+    await act(async () => {
+      effort.value = "low";
+      effort.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(session.setModel).toHaveBeenCalledWith(undefined, "low");
+    await act(async () => root.unmount());
+  });
+
+  it("round-trips a model switch through pending and confirmed manifest states", async () => {
+    const firstModel: SessionModel = {
+      modelId: "grok-4",
+      name: "Grok 4",
+    };
+    const secondModel: SessionModel = {
+      modelId: "grok-4-mini",
+      name: "Grok 4 Mini",
+    };
+    const initialManifest: SessionManifest = {
+      type: "session_manifest",
+      providerId: "grok",
+      currentModelId: firstModel.modelId,
+      models: [firstModel, secondModel],
+    };
+    const { session, updateState } = fakeAgentSession(agentState(initialManifest));
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        getAgentSession: () => session,
+      }),
+    );
+    const modelButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Model:"]');
+    if (modelButton === null) throw new Error("Model picker missing");
+    await act(async () => modelButton.click());
+
+    const modelSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    if (modelSelect === null) throw new Error("Model select missing");
+    await act(async () => {
+      modelSelect.value = secondModel.modelId;
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(session.getState().pendingSwitch).toMatchObject({ modelId: secondModel.modelId });
+    const pendingPicker = container.querySelector<HTMLElement>("#design-model-picker");
+    if (pendingPicker === null) throw new Error("Model picker group missing");
+    expect(pendingPicker.getAttribute("aria-busy")).toBe("true");
+    expect(pendingPicker.classList.contains("design-agent-picker-pending")).toBe(true);
+    expect(modelSelect.disabled).toBe(true);
+
+    const confirmedManifest: SessionManifest = {
+      ...initialManifest,
+      currentModelId: secondModel.modelId,
+    };
+    await act(async () => {
+      updateState({
+        ...session.getState(),
+        manifest: confirmedManifest,
+        pendingSwitch: null,
+      });
+    });
+
+    const settledModelButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Model:"]',
+    );
+    const settledPicker = container.querySelector<HTMLElement>("#design-model-picker");
+    const settledSelect = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    if (settledModelButton === null || settledPicker === null || settledSelect === null) {
+      throw new Error("Settled model picker missing");
+    }
+    expect(settledModelButton.textContent).toBe(`Model: ${secondModel.name} ▾`);
+    expect(settledModelButton.getAttribute("aria-label")).toBe(`Model: ${secondModel.name}`);
+    expect(settledPicker.getAttribute("aria-busy")).not.toBe("true");
+    expect(settledSelect.disabled).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("drops a stored provider that is no longer installed", async () => {
+    providerMocks.list.mockResolvedValueOnce({
+      providers: [provider("grok")],
+      unreadableDirs: 0,
+    });
+    skillSettingsMocks.loadProvider.mockResolvedValueOnce("removed-agent");
+    const selectProvider = vi.fn();
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        selectProvider,
+      }),
+    );
+    await act(settle);
+
+    const pickerButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Choose provider:"]',
+    );
+    expect(pickerButton?.textContent).toContain("Choose agent");
+    expect(selectProvider).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it("omits the save control when the host is view-only", async () => {
     const { container, root } = await renderDesign(createHost());
 
     expect(container.querySelector(".design-save-primary")).toBeNull();
-    expect(container.querySelector(".design-save-menu")).toBeNull();
     await act(async () => root.unmount());
   });
 

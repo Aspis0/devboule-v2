@@ -7,7 +7,6 @@ import type {
   DesignLayer,
   DesignMessage,
   DesignRadiusOption,
-  DesignTool,
 } from "./designHost";
 
 export type {
@@ -21,13 +20,11 @@ export type {
   DesignMessageStatus,
   DesignRadiusOption,
   DesignRadiusToken,
-  DesignTool,
   DesignTransform,
   DesignUserMessage,
 } from "./designHost";
 
 export const MOCK_DESIGN_INITIAL_STATE = {
-  tool: "move" as DesignTool,
   zoom: 1,
   radius: 14,
   flat: false,
@@ -39,7 +36,6 @@ export const MOCK_DESIGN_INITIAL_STATE = {
 export const MOCK_DESIGN_DOCUMENT = {
   name: "Index browser",
   path: "~/dev/devboule/src/design",
-  provider: "Claude Code · High",
   contextPrefix: "Editing",
   draftPlaceholder: "Describe the change to Index header…",
   noContextPlaceholder: "Describe what to generate…",
@@ -74,16 +70,6 @@ export const MOCK_DESIGN_LAYERS: readonly DesignLayer[] = [
     transform: { x: 80, y: 252, width: 220, height: 120 },
   },
 ];
-
-export const MOCK_DESIGN_CANVAS_CONTENT = {
-  aiRegion: {
-    x: 420,
-    y: 300,
-    width: 240,
-    height: 96,
-    actionLabel: "Analyze this region",
-  },
-} as const;
 
 export const MOCK_DESIGN_RADIUS_OPTIONS: readonly DesignRadiusOption[] = [
   { token: "none", value: 0 },
@@ -158,7 +144,6 @@ function cloneDesignDocument(document: DesignDocument): DesignDocument {
       ...layer,
       transform: { ...layer.transform },
     })),
-    canvasContent: { aiRegion: { ...document.canvasContent.aiRegion } },
     radiusOptions: document.radiusOptions.map((option) => ({ ...option })),
     messages: document.messages.map((message) =>
       message.role === "user"
@@ -174,7 +159,6 @@ function createDemoDocument(): DesignDocument {
     ...MOCK_DESIGN_DOCUMENT,
     initialState: { ...MOCK_DESIGN_INITIAL_STATE },
     layers: MOCK_DESIGN_LAYERS,
-    canvasContent: MOCK_DESIGN_CANVAS_CONTENT,
     radiusOptions: MOCK_DESIGN_RADIUS_OPTIONS,
     messages: MOCK_DESIGN_MESSAGES,
     workingMessage: MOCK_DESIGN_WORKING_MESSAGE,

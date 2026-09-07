@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
   pluginsList: vi.fn(),
+  providersList: vi.fn(),
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -16,6 +17,12 @@ vi.mock("../../lib/tauri", () => ({
   oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
   pluginsList: mocks.pluginsList,
+  providersList: mocks.providersList,
+  createSessionStateChannel: vi.fn(),
+  sessionCreate: vi.fn(),
+  sessionsList: vi.fn(),
+  sessionsUnwatch: vi.fn(),
+  sessionsWatch: vi.fn(),
 }));
 
 import { App } from "../../app/App";
@@ -75,8 +82,10 @@ beforeEach(() => {
   mocks.oracleAsk.mockReset();
   mocks.oracleFiles.mockReset();
   mocks.oracleStatus.mockReset();
+  mocks.providersList.mockReset();
   mocks.oracleFiles.mockResolvedValue([]);
   mocks.pluginsList.mockResolvedValue({ root: "", plugins: [], problem: null });
+  mocks.providersList.mockResolvedValue({ providers: [], unreadableDirs: 0 });
 });
 
 afterEach(async () => {
@@ -207,7 +216,6 @@ describe("Oracle design host", () => {
     const { container, root } = await renderDesign(host);
 
     expect(container.querySelector(".design-save-primary")).toBeNull();
-    expect(container.querySelector(".design-save-menu")).toBeNull();
     await act(async () => root.unmount());
   });
 

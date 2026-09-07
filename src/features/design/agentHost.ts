@@ -9,10 +9,13 @@ import {
   sessionDetach,
   sessionInterrupt,
   sessionSend,
+  sessionSetModel,
   type SessionChannel,
 } from "../../lib/tauri";
-import type { OracleResult, Session, SessionEvent, Workspace } from "../../types/ipc";
+import type { OracleResult, ProviderInfo, Session, SessionEvent, Workspace } from "../../types/ipc";
 import type { DesignGenerationOptions, DesignGenerationResult, DesignHost } from "./designHost";
+// These helpers are shared with Workspace for now; they would eventually belong in src/lib/.
+import { sessionCreateFromProvider } from "../workspace/workspaceSessions";
 import { builtInSkillIndex, builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
 import { createOracleHost } from "./oracleHost";
 import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
@@ -376,6 +379,12 @@ function invokeAgentCommand<T>(command: string, args: Record<string, unknown> = 
       ) as Promise<T>;
     case "session_send":
       return sessionSend(args.id as string, args.text as string) as Promise<T>;
+    case "session_set_model":
+      return sessionSetModel(
+        args.id as string,
+        args.modelId as string | undefined,
+        args.effort as string | undefined,
+      ) as Promise<T>;
     case "session_detach":
       return sessionDetach(args.id as string) as Promise<T>;
     default:
@@ -419,6 +428,12 @@ export function createAgentHost(): DesignHost {
   let sessionPromise: Promise<AgentSessionHandle> | null = null;
   let disposalPromise: Promise<void> | null = null;
   let activePreflight: { sessionId: string; reject: (error: Error) => void } | null = null;
+  let selectedProvider: ProviderInfo | undefined;
+  const sessionListeners = new Set<() => void>();
+
+  const publishSessionChange = (): void => {
+    for (const listener of sessionListeners) listener();
+  };
 
   const settleRun = (
     run: ActiveRun,
@@ -435,7 +450,10 @@ export function createAgentHost(): DesignHost {
   const closeSession = async (handle: AgentSessionHandle): Promise<void> => {
     if (handle.closed) return;
     handle.closed = true;
-    if (sessionHandle === handle) sessionHandle = null;
+    if (sessionHandle === handle) {
+      sessionHandle = null;
+      publishSessionChange();
+    }
     handle.controller.dispose();
     // AgentSession.dispose() starts session_detach without awaiting it. The daemon's
     // close path (server.rs:536-541) safely accepts session_close while attached.
@@ -449,7 +467,11 @@ export function createAgentHost(): DesignHost {
   const openSession = async (workspace: Workspace | null): Promise<AgentSessionHandle> => {
     let session: Session;
     try {
-      session = await sessionCreate(workspace?.id ?? null, "acp");
+      const args = sessionCreateFromProvider(selectedProvider);
+      session =
+        args.provider === null
+          ? await sessionCreate(workspace?.id ?? null, args.kind)
+          : await sessionCreate(workspace?.id ?? null, args.kind, args.provider);
     } catch (cause) {
       throw sessionError("Could not start the agent session", cause);
     }
@@ -497,6 +519,7 @@ export function createAgentHost(): DesignHost {
     });
     const handle: AgentSessionHandle = { session, controller, closed: false };
     sessionHandle = handle;
+    publishSessionChange();
 
     try {
       await controller.start();
@@ -779,6 +802,17 @@ export function createAgentHost(): DesignHost {
   const host: DesignHost = {
     loadDocument: oracleHost.loadDocument,
     generate,
+    getAgentSession: () => sessionHandle?.controller ?? null,
+    subscribeAgentSession: (listener) => {
+      sessionListeners.add(listener);
+      return () => sessionListeners.delete(listener);
+    },
+    selectProvider: (provider) => {
+      // Generate clicked, session not yet created: keep the committed provider.
+      if (runPending || activeRun !== null || sessionHandle !== null || sessionPromise !== null)
+        return;
+      selectedProvider = provider;
+    },
   };
   hostDisposers.set(host, dispose);
   return host;

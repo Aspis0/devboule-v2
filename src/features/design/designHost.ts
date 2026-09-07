@@ -1,4 +1,6 @@
-export type DesignTool = "move" | "ai";
+import type { AgentSessionState } from "../../lib/agentSession";
+import type { ProviderInfo } from "../../types/ipc";
+
 export type DesignLayerKind = "TSX" | "SVG";
 export type DesignRadiusToken = "none" | "sm" | "md" | "lg";
 export type DesignMessageStatus = "working" | "done" | "error";
@@ -63,19 +65,8 @@ export interface DesignGenerationOptions {
   skillMode?: "auto";
 }
 
-export interface DesignCanvasContent {
-  aiRegion: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    actionLabel: string;
-  };
-}
-
 export interface DesignInitialState {
-  // Initial values; zoom and tool seed the view but are not rewritten by document saves.
-  tool: DesignTool;
+  // Initial values; zoom seeds the view but is not rewritten by document saves.
   zoom: number;
   radius: number;
   flat: boolean;
@@ -87,7 +78,6 @@ export interface DesignInitialState {
 export interface DesignDocument {
   name: string;
   path: string;
-  provider: string;
   contextPrefix: string;
   draftPlaceholder: string;
   noContextPlaceholder: string;
@@ -98,7 +88,6 @@ export interface DesignDocument {
   grounded: boolean;
   layers: readonly DesignLayer[];
   layerNotice?: string;
-  canvasContent: DesignCanvasContent;
   radiusOptions: readonly DesignRadiusOption[];
   messages: readonly DesignMessage[];
   workingMessage: Pick<DesignAssistantMessage, "title" | "desc">;
@@ -112,4 +101,14 @@ export interface DesignHost {
     signal: AbortSignal,
     options?: DesignGenerationOptions,
   ): Promise<DesignGenerationResult>;
+  /** Optional live session capability supplied by the agent-backed host. */
+  getAgentSession?(): DesignAgentSession | null;
+  subscribeAgentSession?(listener: () => void): () => void;
+  selectProvider?(provider: ProviderInfo): void;
+}
+
+export interface DesignAgentSession {
+  getState(): AgentSessionState;
+  subscribe(listener: () => void): () => void;
+  setModel(modelId?: string, effort?: string): Promise<void>;
 }

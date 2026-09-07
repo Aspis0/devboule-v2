@@ -13,13 +13,17 @@ vi.mock("../../lib/tauri", () => ({
 import {
   DEFAULT_DESIGN_SKILL_SELECTION,
   DOCTRINE_SETTINGS_SURFACE_ID,
+  loadDesignProviderId,
   loadDesignSkillSelection,
+  saveDesignProviderId,
   saveDesignSkillSelection,
   selectedSlugs,
   type DesignSkillSelection,
 } from "./designSettings";
 
 const KNOWN_SLUGS = ["color", "motion", "spacing"] as const;
+
+let storedSettings: unknown = null;
 
 function expectDefaultFor(value: unknown): Promise<void> {
   mocks.surfaceSettingsGet.mockResolvedValueOnce(value);
@@ -29,9 +33,16 @@ function expectDefaultFor(value: unknown): Promise<void> {
 }
 
 beforeEach(() => {
+  storedSettings = null;
   mocks.surfaceSettingsGet.mockReset();
   mocks.surfaceSettingsSet.mockReset();
-  mocks.surfaceSettingsSet.mockResolvedValue(undefined);
+  mocks.surfaceSettingsGet.mockImplementation(async () => {
+    await Promise.resolve();
+    return storedSettings;
+  });
+  mocks.surfaceSettingsSet.mockImplementation(async (_surfaceId: string, value: unknown) => {
+    storedSettings = value;
+  });
 });
 
 describe("loadDesignSkillSelection", () => {
@@ -188,5 +199,82 @@ describe("saveDesignSkillSelection", () => {
     mocks.surfaceSettingsSet.mockRejectedValueOnce(new Error("settings unavailable"));
 
     await expect(saveDesignSkillSelection(DEFAULT_DESIGN_SKILL_SELECTION)).resolves.toBeUndefined();
+  });
+
+  it("preserves the provider beside the doctrine selection", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      providerId: "grok",
+    });
+    const selection: DesignSkillSelection = {
+      version: 1,
+      mode: "manual",
+      enabledSlugs: [KNOWN_SLUGS[0]],
+    };
+
+    await saveDesignSkillSelection(selection);
+
+    expect(mocks.surfaceSettingsSet).toHaveBeenCalledWith(DOCTRINE_SETTINGS_SURFACE_ID, {
+      ...selection,
+      providerId: "grok",
+    });
+  });
+});
+
+describe("design provider settings", () => {
+  it("resolves only a provider still present in the catalog", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      providerId: "removed-agent",
+    });
+
+    await expect(loadDesignProviderId(["grok"])).resolves.toBeNull();
+  });
+
+  it("stores the provider beside the current doctrine selection", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      version: 1,
+      mode: "all",
+      enabledSlugs: [KNOWN_SLUGS[0]],
+    });
+
+    await saveDesignProviderId("grok");
+
+    expect(mocks.surfaceSettingsSet).toHaveBeenCalledWith(DOCTRINE_SETTINGS_SURFACE_ID, {
+      version: 1,
+      mode: "all",
+      enabledSlugs: [KNOWN_SLUGS[0]],
+      providerId: "grok",
+    });
+  });
+});
+
+describe("concurrent design settings writes", () => {
+  const selection: DesignSkillSelection = {
+    version: 1,
+    mode: "manual",
+    enabledSlugs: [KNOWN_SLUGS[0]],
+  };
+
+  it("preserves both fields when the selection write starts first", async () => {
+    const selectionWrite = saveDesignSkillSelection(selection);
+    const providerWrite = saveDesignProviderId("grok");
+
+    await Promise.all([selectionWrite, providerWrite]);
+
+    expect(storedSettings).toEqual({ ...selection, providerId: "grok" });
+  });
+
+  it("preserves both fields when the provider write starts first", async () => {
+    const providerWrite = saveDesignProviderId("grok");
+    const selectionWrite = saveDesignSkillSelection(selection);
+
+    await Promise.all([providerWrite, selectionWrite]);
+
+    expect(storedSettings).toEqual({ ...selection, providerId: "grok" });
   });
 });

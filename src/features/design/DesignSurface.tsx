@@ -8,13 +8,12 @@ import type {
 } from "react";
 import type {
   DesignAssistantMessage,
-  DesignCanvasContent,
   DesignDocument,
+  DesignAgentSession,
   DesignHost,
   DesignLayer,
   DesignMessage,
   DesignRadiusOption,
-  DesignTool,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic } from "./artifactRenderCritic";
@@ -26,15 +25,21 @@ import {
 } from "./builtInSkills";
 import {
   DEFAULT_DESIGN_SKILL_SELECTION,
+  loadDesignProviderId,
   loadDesignSkillSelection,
+  saveDesignProviderId,
   saveDesignSkillSelection,
   selectedSlugs,
   type DesignSkillSelection,
 } from "./designSettings";
+import { designChatCapableProviders } from "./designProviders";
 import { buildSkillBlock } from "./skillLoader";
+import { providersList } from "../../lib/tauri";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
 import { useAppStore } from "../../store/appStore";
+import type { AgentSessionState } from "../../lib/agentSession";
+import type { ProviderInfo, SessionManifest, SessionModel } from "../../types/ipc";
 import type { NodeRect } from "../../types/geometry";
 import {
   clampViewportZoom,
@@ -66,7 +71,6 @@ interface DesignViewState {
   // Viewport state is deliberately outside DesignHistory, so undo never moves the camera.
   pan: Pan;
   selectedLayerId: string;
-  tool: DesignTool;
   zoom: number;
 }
 
@@ -109,12 +113,10 @@ interface LayerPanelProps {
 }
 
 interface CanvasProps {
-  content: DesignCanvasContent;
   layers: readonly DesignLayer[];
   hiddenLayerIds: readonly string[];
   pan: Pan;
   selectedLayerId: string;
-  tool: DesignTool;
   zoom: number;
   layerNotice?: string;
   artifactHtml?: string;
@@ -158,7 +160,11 @@ interface AssistantProps {
   contextPrefix: string;
   generationLabel: string;
   contextLayerName: string | null;
-  provider: string;
+  providers: readonly ProviderInfo[];
+  providersLoading: boolean;
+  selectedProviderId: string | null;
+  agentSession: DesignAgentSession | null;
+  agentState: AgentSessionState | null;
   draft: string;
   draftPlaceholder: string;
   sendLabel: string;
@@ -171,6 +177,9 @@ interface AssistantProps {
   onVisualCheck: () => void;
   onClearContext: () => void;
   onMessageAction: (action: MessageAction, message: DesignMessage) => void;
+  onProviderSelect: (provider: ProviderInfo) => void;
+  onModelSelect: (modelId: string) => void;
+  onEffortSelect: (effort: string) => void;
   skillIndex: readonly BuiltInSkillIndexEntry[];
   skillSelection: DesignSkillSelection;
   selectedSkillSlugs: readonly string[];
@@ -268,13 +277,10 @@ const DesignToolbar = memo(function DesignToolbar({
 
   return (
     <header className="design-toolbar">
-      <button className="design-browser-selector" type="button" aria-label="Choose design document">
+      <div className="design-browser-label">
         <span className="design-toolbar-dot" aria-hidden="true" />
         <span className="design-browser-name">{documentName}</span>
-        <span className="design-chevron" aria-hidden="true">
-          ▾
-        </span>
-      </button>
+      </div>
       <span className="design-path" title={documentPath}>
         {documentPath}
       </span>
@@ -329,28 +335,11 @@ const DesignToolbar = memo(function DesignToolbar({
           aria-hidden="true"
         />
         {grounded ? "Grounded · devboule" : "Not grounded"}
-        <span className="design-chevron" aria-hidden="true">
-          ▾
-        </span>
-      </button>
-      <button className="design-toolbar-button" type="button">
-        Export
-      </button>
-      <button className="design-toolbar-button" type="button">
-        Preview
       </button>
       {canSave ? (
         <span className="design-save-actions">
           <button className="design-save-primary" type="button" onClick={onSave} disabled={saving}>
             Save to repo
-          </button>
-          <button
-            className="design-save-menu"
-            type="button"
-            title="More save options"
-            aria-label="More save options"
-          >
-            ▾
           </button>
         </span>
       ) : null}
@@ -368,9 +357,6 @@ const LayerPanel = memo(function LayerPanel({
       <div className="design-overlay-heading">
         <span id="design-layers-title">Layers</span>
         <span className="design-layer-count">{layers.length}</span>
-        <span className="design-chevron" aria-hidden="true">
-          ▾
-        </span>
       </div>
       <div className="design-layer-list">
         {layers.map((layer) => (
@@ -537,12 +523,10 @@ function artifactSrcDoc(html: string): string {
 }
 
 const DesignCanvas = memo(function DesignCanvas({
-  content,
   layers,
   hiddenLayerIds,
   pan,
   selectedLayerId,
-  tool,
   zoom,
   layerNotice,
   artifactHtml,
@@ -551,7 +535,6 @@ const DesignCanvas = memo(function DesignCanvas({
   onSelectLayer,
   onViewportChange,
 }: CanvasProps) {
-  const aiRegion = content.aiRegion;
   const canvasRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<DesignViewport>(createViewport(zoom, pan));
@@ -834,19 +817,6 @@ const DesignCanvas = memo(function DesignCanvas({
             ) : null}
           </div>
         ) : null}
-        {tool === "ai" ? (
-          <div
-            className="design-ai-region"
-            style={{
-              left: aiRegion.x,
-              top: aiRegion.y,
-              width: aiRegion.width,
-              height: aiRegion.height,
-            }}
-          >
-            <button type="button">{aiRegion.actionLabel}</button>
-          </div>
-        ) : null}
       </div>
     </div>
   );
@@ -951,24 +921,6 @@ const InspectorPanel = memo(function InspectorPanel({
         </div>
       </div>
 
-      <div className="design-inspector-section">
-        <div className="design-inspector-label">Arrange</div>
-        <div className="design-arrange-actions">
-          <button type="button" title="Send to back" aria-label="Send layer to back">
-            ⤓
-          </button>
-          <button type="button" title="Move backward" aria-label="Move layer backward">
-            ↓
-          </button>
-          <button type="button" title="Move forward" aria-label="Move layer forward">
-            ↑
-          </button>
-          <button type="button" title="Bring to front" aria-label="Bring layer to front">
-            ⤒
-          </button>
-        </div>
-      </div>
-
       <div className="design-inspector-actions">
         {canDuplicate ? (
           <button type="button" onClick={onDuplicate}>
@@ -1044,12 +996,31 @@ const DesignMessageCard = memo(function DesignMessageCard({
   );
 });
 
+function manifestModel(manifest: SessionManifest | null): SessionModel | null {
+  if (manifest === null || manifest.currentModelId === undefined) return null;
+  return manifest.models.find((model) => model.modelId === manifest.currentModelId) ?? null;
+}
+
+function confirmedEffort(model: SessionModel | null): string {
+  if (
+    model?.currentEffort !== undefined &&
+    model.efforts?.some((entry) => entry.id === model.currentEffort)
+  ) {
+    return model.currentEffort;
+  }
+  return "";
+}
+
 const DesignAssistant = memo(function DesignAssistant({
   canGenerate,
   contextPrefix,
   generationLabel,
   contextLayerName,
-  provider,
+  providers,
+  providersLoading,
+  selectedProviderId,
+  agentSession,
+  agentState,
   draft,
   draftPlaceholder,
   sendLabel,
@@ -1062,6 +1033,9 @@ const DesignAssistant = memo(function DesignAssistant({
   onVisualCheck,
   onClearContext,
   onMessageAction,
+  onProviderSelect,
+  onModelSelect,
+  onEffortSelect,
   skillIndex,
   skillSelection,
   selectedSkillSlugs,
@@ -1071,6 +1045,43 @@ const DesignAssistant = memo(function DesignAssistant({
   onSkillToggle,
 }: AssistantProps) {
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [providerPickerOpen, setProviderPickerOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const manifest = agentState?.manifest ?? null;
+  const currentModel = manifestModel(manifest);
+  const modelLabel =
+    currentModel?.name ??
+    manifest?.currentModelId ??
+    (agentState === null ? "No agent running" : "No model selected");
+  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? null;
+  const providerLabel =
+    selectedProvider?.id ??
+    manifest?.providerId ??
+    (providersLoading ? "Loading agents…" : "Choose agent");
+  const efforts = currentModel?.efforts ?? [];
+  const pendingSwitch =
+    agentState?.pendingSwitch !== null && agentState?.pendingSwitch !== undefined;
+  const providerButtonDisabled = agentSession !== null;
+  const modelButtonDisabled =
+    agentSession === null || manifest === null || manifest.models.length === 0;
+  const modelUnavailableMessage =
+    agentSession === null || manifest === null
+      ? "Start a generation to see the models offered by this agent."
+      : "This agent offered no models.";
+  const modelButtonUnavailableLabel =
+    agentSession === null || manifest === null
+      ? `No agent running yet. ${modelUnavailableMessage}`
+      : modelUnavailableMessage;
+
+  // A picker whose button is disabled must not keep an open flag: a session can close and a
+  // later one can open, and the stale flag would reopen the menu with no user action.
+  useEffect(() => {
+    if (providerButtonDisabled) setProviderPickerOpen(false);
+  }, [providerButtonDisabled]);
+  useEffect(() => {
+    if (modelButtonDisabled) setModelPickerOpen(false);
+  }, [modelButtonDisabled]);
+
   const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
   const resolvedSkillSlugs =
     skillSelection.mode === "auto" ? autoAppliedSkillSlugs : selectedSkillSlugs;
@@ -1311,14 +1322,153 @@ const DesignAssistant = memo(function DesignAssistant({
               rows={2}
             />
             <div className="design-composer-footer">
-              <button
-                className="design-provider-button"
-                type="button"
-                aria-label={`Model: ${provider}`}
-              >
-                <span className="design-provider-dot" aria-hidden="true" />
-                {provider} ▾
-              </button>
+              <div className="design-agent-picker-wrap">
+                <button
+                  className="design-provider-button"
+                  type="button"
+                  // A session keeps the agent it was opened with, so once one exists this
+                  // is not a choice any more. Say which agent, say why, and drop the
+                  // chevron: a disabled control that still promises a menu is the shape
+                  // this surface has been carrying everywhere — `saveDocument` already
+                  // sets the rule that an absent capability removes its own UI.
+                  aria-label={
+                    providerButtonDisabled
+                      ? `Agent for this session: ${providerLabel}. Choose an agent before the first generation.`
+                      : `Choose provider: ${providerLabel}`
+                  }
+                  title={
+                    providerButtonDisabled
+                      ? "This session keeps the agent it started with. Choose an agent before the first generation."
+                      : undefined
+                  }
+                  aria-expanded={providerButtonDisabled ? undefined : providerPickerOpen}
+                  aria-controls={providerButtonDisabled ? undefined : "design-provider-picker"}
+                  disabled={providerButtonDisabled}
+                  onClick={() => {
+                    setProviderPickerOpen((open) => !open);
+                    setModelPickerOpen(false);
+                  }}
+                >
+                  <span className="design-provider-dot" aria-hidden="true" />
+                  {providerLabel}
+                  {providerButtonDisabled ? null : " ▾"}
+                </button>
+                {providerPickerOpen && !providerButtonDisabled ? (
+                  <div
+                    id="design-provider-picker"
+                    className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
+                    role="listbox"
+                    aria-label="Choose provider"
+                  >
+                    <div className="design-agent-picker-label">Choose installed agent</div>
+                    <p className="design-agent-picker-notice">
+                      Agents downloaded on demand are not offered in Design yet. Use Workspace to
+                      run them.
+                    </p>
+                    {providersLoading ? (
+                      <div className="design-agent-picker-status">Loading installed agents…</div>
+                    ) : providers.length === 0 ? (
+                      <div className="design-agent-picker-status">
+                        No installed chat-capable agents found. Choose an agent in Workspace when
+                        one is available.
+                      </div>
+                    ) : (
+                      <div className="design-agent-picker-options">
+                        {providers.map((providerOption) => (
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={providerOption.id === selectedProviderId}
+                            className="design-agent-picker-option"
+                            key={providerOption.id}
+                            onClick={() => {
+                              onProviderSelect(providerOption);
+                              setProviderPickerOpen(false);
+                            }}
+                          >
+                            {providerOption.id}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+              <div className="design-agent-picker-wrap">
+                <button
+                  className="design-provider-button"
+                  type="button"
+                  aria-label={
+                    modelButtonDisabled ? modelButtonUnavailableLabel : `Model: ${modelLabel}`
+                  }
+                  title={modelButtonDisabled ? modelButtonUnavailableLabel : undefined}
+                  aria-expanded={modelButtonDisabled ? undefined : modelPickerOpen}
+                  aria-controls={modelButtonDisabled ? undefined : "design-model-picker"}
+                  disabled={modelButtonDisabled}
+                  onClick={() => {
+                    setModelPickerOpen((open) => !open);
+                    setProviderPickerOpen(false);
+                  }}
+                >
+                  <span className="design-provider-dot" aria-hidden="true" />
+                  Model: {modelLabel}
+                  {modelButtonDisabled ? null : " ▾"}
+                </button>
+                {modelButtonDisabled ? (
+                  <div className="design-agent-picker-status" role="status">
+                    {modelUnavailableMessage}
+                  </div>
+                ) : modelPickerOpen ? (
+                  <div
+                    id="design-model-picker"
+                    className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
+                    role="group"
+                    aria-label="Choose model"
+                    aria-busy={pendingSwitch}
+                  >
+                    <>
+                      <div className="design-agent-picker-label">
+                        {manifest.providerId ?? providerLabel}
+                      </div>
+                      {manifest.models.length > 1 ? (
+                        <select
+                          aria-label="Model"
+                          value={manifest.currentModelId ?? ""}
+                          disabled={pendingSwitch}
+                          onChange={(event) => onModelSelect(event.target.value)}
+                        >
+                          {manifest.models.map((model) => (
+                            <option key={model.modelId} value={model.modelId}>
+                              {model.name}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span className="design-agent-picker-model-name">
+                          {manifest.models[0].name}
+                        </span>
+                      )}
+                      {efforts.length > 0 ? (
+                        <label className="design-agent-picker-effort">
+                          <span>Thinking effort</span>
+                          <select
+                            aria-label="Thinking effort"
+                            value={confirmedEffort(currentModel)}
+                            disabled={pendingSwitch}
+                            onChange={(event) => onEffortSelect(event.target.value)}
+                          >
+                            {efforts.map((effort) => (
+                              <option key={effort.id} value={effort.id}>
+                                {effort.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                    </>
+                  </div>
+                ) : null}
+              </div>
               <button
                 className="design-generate-button"
                 type="button"
@@ -1430,7 +1580,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const initialViewState: DesignViewState = {
     pan: { x: 0, y: 0 },
     selectedLayerId: document.selectedLayerId,
-    tool: document.initialState.tool,
     zoom: clampViewportZoom(document.initialState.zoom),
   };
   const [history, setHistory] = useState<DesignHistory>(() => ({
@@ -1454,6 +1603,15 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     null,
   );
   const [autoSkillNotice, setAutoSkillNotice] = useState<string | null>(null);
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [providersLoading, setProvidersLoading] = useState(true);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
+  const [agentSession, setAgentSession] = useState<DesignAgentSession | null>(
+    () => host.getAgentSession?.() ?? null,
+  );
+  const [agentState, setAgentState] = useState<AgentSessionState | null>(
+    () => host.getAgentSession?.()?.getState() ?? null,
+  );
 
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -1461,6 +1619,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const documentRevisionRef = useRef(0);
   const layerCopyCounterRef = useRef(0);
   const skillSelectionInteractedRef = useRef(false);
+  const providerSelectionInteractedRef = useRef(false);
   const assistantRef = useRef<HTMLDivElement>(null);
   const designSurfaceRef = useRef<HTMLElement>(null);
   const setMessages = useCallback(
@@ -1474,11 +1633,60 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     [host],
   );
 
+  useEffect(() => {
+    const updateAgentSession = (): void => {
+      const next = host.getAgentSession?.() ?? null;
+      setAgentSession(next);
+      setAgentState(next?.getState() ?? null);
+    };
+    const unsubscribe = host.subscribeAgentSession?.(updateAgentSession);
+    updateAgentSession();
+    return () => unsubscribe?.();
+  }, [host]);
+
+  useEffect(() => {
+    if (agentSession === null) return;
+    const update = (): void => setAgentState(agentSession.getState());
+    update();
+    return agentSession.subscribe(update);
+  }, [agentSession]);
+
+  useEffect(() => {
+    let active = true;
+    void providersList()
+      .then((catalog) => {
+        if (!active) return;
+        const available = designChatCapableProviders(catalog.providers);
+        setProviders(available);
+        return loadDesignProviderId(available.map((provider) => provider.id)).then((storedId) => {
+          if (!active) return;
+          if (providerSelectionInteractedRef.current) return;
+          setSelectedProviderId(storedId);
+          if (storedId !== null) {
+            const storedProvider = available.find((provider) => provider.id === storedId);
+            if (storedProvider !== undefined) host.selectProvider?.(storedProvider);
+          }
+        });
+      })
+      .catch(() => {
+        if (active) {
+          setProviders([]);
+          setSelectedProviderId(null);
+        }
+      })
+      .finally(() => {
+        if (active) setProvidersLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [host]);
+
   const snapshot = history.present;
   const layers = snapshot.layers;
   const saved = history.saved;
   const busy = generation !== null;
-  const { pan, selectedLayerId, tool, zoom } = viewState;
+  const { pan, selectedLayerId, zoom } = viewState;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1592,6 +1800,28 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const generate = host.generate;
   const canSave = saveDocument !== undefined;
   const canGenerate = generate !== undefined;
+  const selectProvider = useCallback(
+    (provider: ProviderInfo) => {
+      if (agentSession !== null) return;
+      providerSelectionInteractedRef.current = true;
+      setSelectedProviderId(provider.id);
+      host.selectProvider?.(provider);
+      void saveDesignProviderId(provider.id);
+    },
+    [agentSession, host],
+  );
+  const selectModel = useCallback(
+    (modelId: string) => {
+      void agentSession?.setModel(modelId);
+    },
+    [agentSession],
+  );
+  const selectEffort = useCallback(
+    (effort: string) => {
+      void agentSession?.setModel(undefined, effort);
+    },
+    [agentSession],
+  );
 
   const generationCount = useMemo(
     () =>
@@ -1716,16 +1946,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       commitSnapshot((current) => (current.flat === flat ? null : { ...current, flat }));
     },
     [commitSnapshot],
-  );
-
-  const setMoveTool = useCallback(
-    () =>
-      setViewState((current) => (current.tool === "move" ? current : { ...current, tool: "move" })),
-    [],
-  );
-  const setAiTool = useCallback(
-    () => setViewState((current) => (current.tool === "ai" ? current : { ...current, tool: "ai" })),
-    [],
   );
 
   const setViewport = useCallback((nextViewport: DesignViewport) => {
@@ -2115,12 +2335,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       <div className="design-main">
         <div className="design-workspace">
           <DesignCanvas
-            content={document.canvasContent}
             layers={layers}
             hiddenLayerIds={snapshot.hiddenLayerIds}
             pan={pan}
             selectedLayerId={selectedLayerId}
-            tool={tool}
             zoom={zoom}
             layerNotice={document.layerNotice}
             artifactHtml={artifactHtml}
@@ -2134,26 +2352,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             onSelect={selectLayer}
             onToggleVisibility={toggleLayerVisibility}
           />
-          <div className="design-tool-controls" aria-label="Canvas tools">
-            <button
-              type="button"
-              title="Move / select"
-              aria-pressed={tool === "move"}
-              className={tool === "move" ? "design-tool-selected" : ""}
-              onClick={setMoveTool}
-            >
-              Move
-            </button>
-            <button
-              type="button"
-              title="Drag a region, then let the AI analyze and fix it"
-              aria-pressed={tool === "ai"}
-              className={tool === "ai" ? "design-tool-selected" : ""}
-              onClick={setAiTool}
-            >
-              Spot Edit
-            </button>
-          </div>
           <ZoomControls
             zoom={zoom}
             canZoomIn={zoom < DESIGN_MAX_ZOOM}
@@ -2184,7 +2382,11 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           contextPrefix={document.contextPrefix}
           generationLabel={generationLabel}
           contextLayerName={composerContextLayerName}
-          provider={document.provider}
+          providers={providers}
+          providersLoading={providersLoading}
+          selectedProviderId={selectedProviderId}
+          agentSession={agentSession}
+          agentState={agentState}
           draft={draft}
           draftPlaceholder={
             composerContextLayerName ? document.draftPlaceholder : document.noContextPlaceholder
@@ -2199,6 +2401,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           onVisualCheck={visualCheck}
           onClearContext={clearComposerContext}
           onMessageAction={handleMessageAction}
+          onProviderSelect={selectProvider}
+          onModelSelect={selectModel}
+          onEffortSelect={selectEffort}
           skillIndex={skillIndex}
           skillSelection={skillSelection}
           selectedSkillSlugs={selectedSkillSlugs}

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   OracleIndexStatus,
   OracleSearchResponse,
+  ProviderInfo,
   Session,
   SessionEvent,
   Workspace,
@@ -25,13 +26,19 @@ const mocks = vi.hoisted(() => ({
   projectsList: vi.fn(),
   workspacesList: vi.fn(),
   sessionCreate: vi.fn(),
+  createSessionStateChannel: vi.fn(),
   sessionAttach: vi.fn(),
   sessionSend: vi.fn(),
+  sessionSetModel: vi.fn(),
   sessionInterrupt: vi.fn(),
   sessionDetach: vi.fn(),
   sessionClose: vi.fn(),
   sessionPermissionRespond: vi.fn(),
   pluginsList: vi.fn(),
+  providersList: vi.fn(),
+  sessionsList: vi.fn(),
+  sessionsUnwatch: vi.fn(),
+  sessionsWatch: vi.fn(),
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -48,13 +55,19 @@ vi.mock("../../lib/tauri", () => ({
   projectsList: mocks.projectsList,
   workspacesList: mocks.workspacesList,
   sessionCreate: mocks.sessionCreate,
+  createSessionStateChannel: mocks.createSessionStateChannel,
   sessionAttach: mocks.sessionAttach,
   sessionSend: mocks.sessionSend,
+  sessionSetModel: mocks.sessionSetModel,
   sessionInterrupt: mocks.sessionInterrupt,
   sessionDetach: mocks.sessionDetach,
   sessionClose: mocks.sessionClose,
   sessionPermissionRespond: mocks.sessionPermissionRespond,
   pluginsList: mocks.pluginsList,
+  providersList: mocks.providersList,
+  sessionsList: mocks.sessionsList,
+  sessionsUnwatch: mocks.sessionsUnwatch,
+  sessionsWatch: mocks.sessionsWatch,
 }));
 
 vi.mock("../../features/workspace/Workspace", () => ({
@@ -217,11 +230,13 @@ beforeEach(() => {
   mocks.sessionCreate.mockReset();
   mocks.sessionAttach.mockReset();
   mocks.sessionSend.mockReset();
+  mocks.sessionSetModel.mockReset();
   mocks.sessionInterrupt.mockReset();
   mocks.sessionDetach.mockReset();
   mocks.sessionClose.mockReset();
   mocks.sessionPermissionRespond.mockReset();
   mocks.pluginsList.mockReset();
+  mocks.providersList.mockReset();
 
   mocks.oracleAsk.mockResolvedValue({
     query: "Update the design",
@@ -250,10 +265,12 @@ beforeEach(() => {
         : null;
   });
   mocks.sessionSend.mockResolvedValue(undefined);
+  mocks.sessionSetModel.mockResolvedValue(undefined);
   mocks.sessionInterrupt.mockResolvedValue(undefined);
   mocks.sessionDetach.mockResolvedValue(undefined);
   mocks.sessionClose.mockResolvedValue(undefined);
   mocks.pluginsList.mockResolvedValue({ root: "", plugins: [], problem: null });
+  mocks.providersList.mockResolvedValue({ providers: [], unreadableDirs: 0 });
 });
 
 afterEach(async () => {
@@ -264,6 +281,72 @@ afterEach(async () => {
 });
 
 describe("ACP design host", () => {
+  it("creates the selected provider with the shared session kind mapping", async () => {
+    const selectedProvider: ProviderInfo = {
+      id: "grok",
+      executable: "grok",
+      acpAvailable: true,
+      authentication: "unknown",
+      protocol: "acp",
+      origin: "user-binary",
+    };
+    const host = createAgentHost();
+    host.selectProvider?.(selectedProvider);
+    const { run } = await startRun(host);
+
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
+    channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+  });
+
+  it("keeps the selected provider when Generate is ahead of session creation", async () => {
+    const providerA: ProviderInfo = {
+      id: "provider-a",
+      executable: "provider-a",
+      acpAvailable: true,
+      authentication: "unknown",
+      protocol: "acp",
+      origin: "user-binary",
+    };
+    const providerB: ProviderInfo = {
+      ...providerA,
+      id: "provider-b",
+      executable: "provider-b",
+    };
+    let releaseOracle: ((response: OracleSearchResponse) => void) | undefined;
+    mocks.oracleAsk.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseOracle = resolve;
+        }),
+    );
+    const host = createAgentHost();
+    host.selectProvider?.(providerA);
+    const run = host.generate?.("Update the design", new AbortController().signal);
+
+    await vi.waitFor(() => expect(mocks.oracleAsk).toHaveBeenCalledWith("Update the design"));
+    host.selectProvider?.(providerB);
+    releaseOracle?.({ query: "Update the design", results: [] });
+
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-a");
+    finishRun();
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+  });
+
+  it("routes model and effort changes through the existing session controller", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const session = host.getAgentSession?.();
+    if (session === null || session === undefined) throw new Error("agent session missing");
+
+    await session.setModel("grok-4", "high");
+
+    expect(mocks.sessionSetModel).toHaveBeenCalledWith("session-1", "grok-4", "high");
+    channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+  });
+
   it("preflights automatic craft selection and uses the returned sections", async () => {
     const index = builtInSkillIndex();
     const baseline = index.find((entry) =>
@@ -905,6 +988,19 @@ describe("ACP design host", () => {
   // silently downgraded host that could not produce an artifact at all.
   it("reaches ACP without asking for a project registry, and retains its artifact", async () => {
     mocks.oracleStatus.mockResolvedValue(READY_STATUS);
+    mocks.providersList.mockResolvedValue({
+      providers: [
+        {
+          id: "grok",
+          executable: "grok",
+          acpAvailable: true,
+          authentication: "unknown",
+          protocol: "acp",
+          origin: "user-binary",
+        },
+      ],
+      unreadableDirs: 0,
+    });
     mocks.projectsList.mockRejectedValue(new Error("unknown command: projects_list"));
     const { container, root } = createRootContainer();
 
@@ -921,6 +1017,14 @@ describe("ACP design host", () => {
     expect(container.textContent).toContain(
       "ACP agent — writes in the directory the app was launched from.",
     );
+    const providerButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Choose provider:"]',
+    );
+    if (providerButton === null) throw new Error("Provider picker did not render");
+    await act(async () => providerButton.click());
+    const grokOption = container.querySelector<HTMLButtonElement>('[role="option"]');
+    if (grokOption === null) throw new Error("Installed provider option did not render");
+    await act(async () => grokOption.click());
 
     const draft = container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Describe a design change"]',
@@ -937,7 +1041,7 @@ describe("ACP design host", () => {
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
     expect(mocks.projectsList).not.toHaveBeenCalled();
     expect(mocks.workspacesList).not.toHaveBeenCalled();
-    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp");
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
 
     await act(async () => useAppStore.getState().selectSurface("workspace"));
     await settle();
