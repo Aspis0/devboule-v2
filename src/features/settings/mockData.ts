@@ -1,6 +1,13 @@
 /** M1b mock boundary. Replace these values with typed settings IPC responses. */
 
-export type SettingsTab = "general" | "projects" | "oracle" | "providers" | "devices" | "labs";
+export type SettingsTab =
+  | "general"
+  | "projects"
+  | "oracle"
+  | "providers"
+  | "devices"
+  | "labs"
+  | "diagnostics";
 
 export const MOCK_SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
@@ -9,6 +16,7 @@ export const MOCK_SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] =
   { id: "providers", label: "Providers & models" },
   { id: "devices", label: "Devices" },
   { id: "labs", label: "Labs" },
+  { id: "diagnostics", label: "Diagnostics" },
 ];
 
 export const MOCK_PROJECTS = [

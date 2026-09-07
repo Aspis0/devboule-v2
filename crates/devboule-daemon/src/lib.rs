@@ -14,6 +14,7 @@ mod atomic;
 #[cfg(feature = "server")]
 mod claude_view;
 mod client;
+mod diagnostics;
 mod error;
 mod framing;
 #[cfg(feature = "server")]
@@ -54,6 +55,12 @@ pub use atomic::atomic_write;
 pub use client::{
     connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler,
     SessionStateHandler,
+};
+#[cfg(feature = "server")]
+pub use diagnostics::DiagnosticsInput;
+pub use diagnostics::{
+    DaemonDiagnostics, DiagnosticsReport, EnvironmentDiagnostics, HealthDiagnostics,
+    ProviderDiagnostics, SafeText, SessionDiagnostics,
 };
 pub use error::DaemonError;
 pub use framing::Framed;

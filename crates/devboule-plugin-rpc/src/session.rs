@@ -226,6 +226,7 @@ impl PluginSession {
                         DaemonMessage::Error(error) => error.id,
                         DaemonMessage::Pong { id, .. }
                         | DaemonMessage::Status { id, .. }
+                        | DaemonMessage::Diagnostics { id, .. }
                         | DaemonMessage::Shutdown { id, .. }
                         | DaemonMessage::Session { id, .. }
                         | DaemonMessage::Sessions { id, .. }

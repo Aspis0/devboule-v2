@@ -478,6 +478,19 @@ impl SessionRegistry {
         &self.paths.dir
     }
 
+    pub(crate) fn pipe_name(&self) -> &str {
+        &self.paths.pipe_name
+    }
+
+    /// The journal worker owns SQLite, so its file-size query is a bounded
+    /// RPC just like `list`. Diagnostics reports the failure instead of
+    /// inventing a zero-sized database.
+    pub(crate) fn journal_file_bytes(&self) -> Option<Result<u64, String>> {
+        self.journal
+            .as_ref()
+            .map(|journal| journal.file_len().map_err(|error| error.to_string()))
+    }
+
     pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>) -> Self {
         let registry = Self {
             inner: Arc::new(Mutex::new(HashMap::new())),

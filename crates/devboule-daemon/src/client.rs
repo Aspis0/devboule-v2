@@ -14,6 +14,7 @@ use devboule_protocol::{
     SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError,
 };
 
+use crate::diagnostics::DiagnosticsReport;
 use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::paths::RuntimePaths;
@@ -71,6 +72,19 @@ impl DaemonClient {
             DaemonMessage::Status { body, .. } => Ok(body),
             DaemonMessage::Error(error) if error.code == ErrorCode::Io => {
                 Err(DaemonError::ConnectionLost)
+            }
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn daemon_diagnostics(&self) -> Result<DiagnosticsReport, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::DaemonDiagnostics { id })? {
+            DaemonMessage::Diagnostics { report, .. } => {
+                serde_json::from_value(report).map_err(|error| {
+                    DaemonError::Protocol(format!("invalid diagnostics report: {error}"))
+                })
             }
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
@@ -881,6 +895,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         DaemonMessage::Error(error) => error.id,
         DaemonMessage::Pong { id, .. }
         | DaemonMessage::Status { id, .. }
+        | DaemonMessage::Diagnostics { id, .. }
         | DaemonMessage::Shutdown { id, .. }
         | DaemonMessage::Session { id, .. }
         | DaemonMessage::Sessions { id, .. }

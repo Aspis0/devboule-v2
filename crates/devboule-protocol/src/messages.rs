@@ -44,6 +44,9 @@ pub enum ClientMessage {
     Status {
         id: u64,
     },
+    DaemonDiagnostics {
+        id: u64,
+    },
     Shutdown {
         id: u64,
     },
@@ -205,6 +208,7 @@ impl ClientMessage {
             Self::Hello(_) => None,
             Self::Ping { id }
             | Self::Status { id }
+            | Self::DaemonDiagnostics { id }
             | Self::Shutdown { id }
             | Self::SessionCreate { id, .. }
             | Self::SessionAttach { id, .. }
@@ -259,6 +263,7 @@ impl ClientMessage {
             Self::Hello(_)
             | Self::Ping { .. }
             | Self::Status { .. }
+            | Self::DaemonDiagnostics { .. }
             | Self::Shutdown { .. }
             | Self::SessionAttach { .. }
             | Self::SessionDetach { .. }
@@ -301,6 +306,10 @@ pub enum DaemonMessage {
         id: u64,
         #[serde(flatten)]
         body: DaemonStatusBody,
+    },
+    Diagnostics {
+        id: u64,
+        report: serde_json::Value,
     },
     Shutdown {
         id: u64,

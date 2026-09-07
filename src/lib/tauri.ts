@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   CommandError,
+  DaemonDiagnostics,
   DaemonStatus,
   FileTab,
   Id,
@@ -34,6 +35,7 @@ export type CommandArgs = {
   app_identity: undefined;
   daemon_status: undefined;
   daemon_restart: undefined;
+  daemon_diagnostics: undefined;
   session_create: { workspaceId: Id | null; kind: SessionKind; provider?: string | null };
   session_resume: { sessionId: Id };
   session_attach: { id: Id; fromCursor: number | null; ch: SessionChannel };
@@ -82,6 +84,7 @@ type CommandResults = {
   app_identity: string;
   daemon_status: DaemonStatus;
   daemon_restart: void;
+  daemon_diagnostics: DaemonDiagnostics;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: void;
@@ -143,6 +146,7 @@ export const COMMAND_ARG_KEYS = {
   app_identity: [],
   daemon_status: [],
   daemon_restart: [],
+  daemon_diagnostics: [],
   session_create: ["workspaceId", "kind", "provider"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -267,6 +271,11 @@ export const daemonStatus = () => invokeTyped("daemon_status");
  * confirmed the dialog.
  */
 export const daemonRestart = () => invokeTyped("daemon_restart");
+/**
+ * The daemon's structured, already-redacted diagnostics report. The frontend
+ * renders it as given — never sanitises, never adds fields.
+ */
+export const daemonDiagnostics = () => invokeTyped("daemon_diagnostics");
 export const sessionCreate = (
   workspaceId: Id | null,
   kind: SessionKind = "terminal",

@@ -201,6 +201,78 @@ export type ResumeResult =
   | { type: "not_supported" }
   | { type: "failed"; message: string };
 
+/** Journal writer counters nested inside the daemon's health section. */
+export interface JournalStatsDiagnostics {
+  acceptedFrames: number;
+  acceptedBytes: number;
+  committedFrames: number;
+  committedBytes: number;
+  failedFrames: number;
+}
+
+/**
+ * Diagnostics report from the daemon, already redacted server-side. The
+ * frontend renders exactly what it is given and never sanitises it. This is a
+ * direct camelCase mirror of `DiagnosticsReport`; journal facts are nested in
+ * `health` on the wire and are presented as a derived Journal section by the
+ * panel.
+ */
+export interface DaemonDiagnostics {
+  /** Identity and version. */
+  daemon: {
+    version: string;
+    protocolVersion: number;
+    pid: number;
+    uptimeMs: number;
+    clients: number;
+    sessions: number;
+    capabilities: string[];
+    instanceId: string;
+  };
+  /** Health counters and nested journal facts. */
+  health: {
+    peakRingBytes: number;
+    ringEvictedBytes: number;
+    ringDroppedFrames: number;
+    journalStats: JournalStatsDiagnostics | null;
+    journalError?: string;
+    journalSchemaVersion: number;
+    journalFileBytes?: number;
+  };
+  /** Aggregate session counts. `oldestLiveAgeMs` is null when no session is live. */
+  sessions: {
+    total: number;
+    live: number;
+    silent: number;
+    ended: number;
+    recovered: number;
+    terminal: number;
+    acp: number;
+    claude: number;
+    resumable: number;
+    oldestLiveAgeMs: number | null;
+  };
+  /** One row per provider, redacted server-side. */
+  providers: Array<{
+    id: string;
+    protocol: string | null;
+    origin: string | null;
+    installChannel: string | null;
+    installedVersion: string | null;
+    latestVersion: string | null;
+    agentVersion: string | null;
+    installed: boolean;
+    authentication: string;
+  }>;
+  /** Environment facts. */
+  environment: {
+    osVersion: string;
+    appVersion: string;
+    runtimeDir: string;
+    pipeName: string;
+  };
+}
+
 /** Why a session wants the user's attention. Suppression is daemon-side policy. */
 export type AttentionReason = "finished" | "error" | "permission";
 

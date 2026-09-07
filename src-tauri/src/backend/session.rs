@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
-use devboule_daemon::{DaemonClient, EventHandler, SessionStateHandler};
+use devboule_daemon::{DaemonClient, DiagnosticsReport, EventHandler, SessionStateHandler};
 use devboule_protocol::{
     Cursor, ErrorCode, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
 };
@@ -17,6 +17,9 @@ use devboule_protocol::{
 use crate::client::DaemonBridge;
 
 use super::error::CommandError;
+
+#[cfg(test)]
+use devboule_daemon::SafeText;
 
 const MAX_WRITE_BYTES: usize = 64 * 1024;
 
@@ -162,6 +165,13 @@ pub fn sessions_list(bridge: State<'_, DaemonBridge>) -> Result<Vec<Session>, Co
 }
 
 #[tauri::command]
+pub fn daemon_diagnostics(
+    bridge: State<'_, DaemonBridge>,
+) -> Result<DiagnosticsReport, CommandError> {
+    Ok(require_client(&bridge)?.daemon_diagnostics()?)
+}
+
+#[tauri::command]
 pub fn sessions_watch(
     bridge: State<'_, DaemonBridge>,
     ch: Channel<Vec<SessionStateSnapshot>>,
@@ -242,5 +252,103 @@ mod tests {
         let error = disconnected("The daemon connection was lost.".to_string());
         assert_eq!(error.code, ErrorCode::Io);
         assert_eq!(error.message, "The daemon connection was lost.");
+    }
+
+    #[test]
+    fn safe_text_agrees_with_oracle_and_extends_it() {
+        struct OracleCase {
+            name: &'static str,
+            input: &'static str,
+            removed_literal: &'static str,
+        }
+
+        let oracle_cases = [
+            OracleCase {
+                name: "github token",
+                input: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+                removed_literal: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+            },
+            OracleCase {
+                name: "slack token",
+                input: "xoxb-1234567890-1234567890-1234567890",
+                removed_literal: "xoxb-1234567890-1234567890-1234567890",
+            },
+            OracleCase {
+                name: "aws access key",
+                input: "AKIA1234567890ABCDEF",
+                removed_literal: "AKIA1234567890ABCDEF",
+            },
+            OracleCase {
+                name: "bearer token",
+                input: "Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+                removed_literal: "abcdefghijklmnopqrstuvwxyz0123456789",
+            },
+            OracleCase {
+                name: "jwt",
+                input: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+                removed_literal: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+            },
+            OracleCase {
+                name: "api key assignment",
+                input: "api_key=super_secret_value_123",
+                removed_literal: "super_secret_value_123",
+            },
+            OracleCase {
+                name: "password assignment",
+                input: "password = \"hunter2\"",
+                removed_literal: "hunter2",
+            },
+            OracleCase {
+                name: "high entropy base64",
+                input: "Aa0Bb1Cc2Dd3Ee4Ff5Gg6Hh7Ii8Jj9Kk0Ll1Mm2Nn3Oo4Pp5",
+                removed_literal: "Aa0Bb1Cc2Dd3Ee4Ff5Gg6Hh7Ii8Jj9Kk0Ll1Mm2Nn3Oo4Pp5",
+            },
+            OracleCase {
+                name: "long hex",
+                input: "0123456789abcdef0123456789abcdef01234567",
+                removed_literal: "0123456789abcdef0123456789abcdef01234567",
+            },
+        ];
+
+        for case in oracle_cases {
+            let oracle = oracle_core::redact_secret_tokens(case.input);
+            assert!(
+                !oracle.contains(case.removed_literal),
+                "corpus case no longer exercises oracle-core: {} -> {oracle:?}",
+                case.name
+            );
+            let safe = SafeText::new(case.input);
+            assert!(
+                !safe.as_str().contains(case.removed_literal),
+                "diagnostics redactor drift on {}: {:?}",
+                case.name,
+                safe.as_str()
+            );
+        }
+
+        for (name, input, removed_literal) in [
+            (
+                "Windows home path",
+                r"C:\Users\alice\secret-project",
+                r"C:\Users\alice",
+            ),
+            (
+                "Windows SID",
+                "S-1-5-21-111-222-333-1001",
+                "S-1-5-21-111-222-333-1001",
+            ),
+        ] {
+            let oracle = oracle_core::redact_secret_tokens(input);
+            assert!(
+                oracle.contains(removed_literal),
+                "diagnostics-only case unexpectedly belongs to oracle-core: {name}"
+            );
+            let safe = SafeText::new(input);
+            assert!(
+                !safe.as_str().contains(removed_literal),
+                "diagnostics-only identifier survived: {name} -> {:?}",
+                safe.as_str()
+            );
+        }
     }
 }
