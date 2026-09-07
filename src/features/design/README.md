@@ -187,7 +187,19 @@ sections of the priority order and with the first five. The larger block produce
 table, pointer targets sized against a cited criterion, specific accessible names, a declared
 spacing scale and a responsive rule, none of which appeared in the smaller one — and it did
 not drift from the brief. That is one request, one model, one run per arm: enough to raise
-the automatic cap from three to five, not enough to call it an optimum. The full version,
+the automatic cap from three to five, not enough to call it an optimum.
+
+Routing was measured at the new cap too, because a wider cap could have made the selector
+spray rather than choose. It did not: doubling the routed slots from two to four left `icons`
+at two selections in fifteen and `rtl` at one, exactly the requests that need them, while
+`spacing` — which no automatic path had delivered at all, being fifth in priority and never
+chosen — rose to seven. It had not been described badly; it had been below the cut. The
+instruction to name fewer than the maximum also started to work only at four slots, going
+from one answer in fifteen to three, each with a stated reason. Worth watching: `typography`
+and `accessibility` now win ten of fifteen, which is close to being a baseline that pays a
+routed slot for the privilege.
+
+The full version,
 with a fixed task suite at randomised budgets scoring per-rule adherence separately from
 all-rules success, has still not been run.
 
