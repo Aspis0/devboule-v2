@@ -47,7 +47,10 @@ export function describePluginState(state: PluginState, id: string): string {
   switch (state.kind) {
     case "ready": {
       const { name, version } = state.entry;
-      return `${name ?? id} ${version ?? ""}`.trim() + " is installed and verified";
+      return withPayloadClamp(
+        `${name ?? id} ${version ?? ""}`.trim() + " is installed and verified",
+        state.entry,
+      );
     }
     case "refused": {
       const reason =
@@ -55,13 +58,37 @@ export function describePluginState(state: PluginState, id: string): string {
         (state.entry.ready && state.entry.uiEntry === null
           ? "ready but did not declare a UI entry path"
           : "no reason reported");
-      return `${id} is installed but was refused — ${reason}`;
+      return withPayloadClamp(`${id} is installed but was refused — ${reason}`, state.entry);
     }
     case "unknown":
       return `Devboule could not tell whether ${id} is installed — ${state.problem}`;
     case "absent":
       return `${id} is not installed`;
   }
+}
+
+/**
+ * Host payload budgets are 1024-based (`16 * 1024 * 1024` is 16 MiB). The
+ * existing size helpers (`formatMegabytes`, `humanSize`) divide by 1000 and
+ * would print that as 16.8 MB.
+ */
+function formatPayloadBytes(bytes: number): string {
+  const mib = 1024 * 1024;
+  const kib = 1024;
+  if (bytes >= mib && bytes % mib === 0) return `${bytes / mib} MiB`;
+  if (bytes >= kib && bytes % kib === 0) return `${bytes / kib} KiB`;
+  return `${bytes} bytes`;
+}
+
+/** `null` is not `false`: only an explicit clamp gets a sentence. */
+function withPayloadClamp(line: string, entry: PluginEntry): string {
+  if (entry.payloadBudgetClamped !== true) return line;
+  if (entry.maxPayloadBytes === null) {
+    return `${line}. It asked for more than the host grants.`;
+  }
+  return `${line}. It asked for more than the host grants, so it got ${formatPayloadBytes(
+    entry.maxPayloadBytes,
+  )}.`;
 }
 
 /**

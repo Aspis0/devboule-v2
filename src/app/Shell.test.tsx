@@ -19,12 +19,16 @@ const READY: PluginEntry = {
   uiEntry: "ui/index.html",
   ready: true,
   reason: null,
+  maxPayloadBytes: 16 * 1024 * 1024,
+  payloadBudgetClamped: false,
 };
 
 const REFUSED: PluginEntry = {
   ...READY,
   ready: false,
   reason: "manifest digest mismatch",
+  maxPayloadBytes: null,
+  payloadBudgetClamped: null,
 };
 
 function inventory(plugins: PluginEntry[], problem: string | null = null): PluginInventory {

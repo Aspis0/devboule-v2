@@ -44,6 +44,12 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
 
   const installed = plugins ? pluginState(plugins, POLIS_PLUGIN_ID) : null;
   const busy = checking || installing === POLIS_PLUGIN_ID;
+  // Ready plugins hide this readout — unless the host clamped their ask,
+  // which is the one fact the iframe does not show.
+  const showInstalledReadout =
+    installed === null ||
+    installed.kind !== "ready" ||
+    installed.entry.payloadBudgetClamped === true;
 
   return (
     <>
@@ -58,82 +64,82 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
         <SurfacePlaceholder surface={surface} />
       )}
       {installed?.kind !== "ready" ? (
-        <>
-          <section
-            className={`polis-readiness ${
-              transport === null
-                ? "polis-readiness-unknown"
-                : transport.works
-                  ? "polis-readiness-ready"
-                  : "polis-readiness-blocked"
-            }`}
-            aria-label="Plugin loading"
-          >
-            <span className="polis-readiness-kicker">Installing Polis, when it exists</span>
-            <p>{transport === null ? "Checking…" : describePluginTransport(transport)}</p>
-            <p className="polis-readiness-note">
-              Polis will be installed as files rather than compiled in, so the app has to be able to
-              load code it did not build. This checks that path end to end — policy, origin and
-              content type — before anything depends on it.
-            </p>
-          </section>
-          <section
-            className={`polis-readiness ${
-              installed === null
-                ? "polis-readiness-unknown"
-                : `polis-readiness-${pluginTone(installed)}`
-            }`}
-            aria-label="Installed plugins"
-          >
-            <span className="polis-readiness-kicker">What is installed</span>
-            <p>
-              {installed === null ? "Checking…" : describePluginState(installed, POLIS_PLUGIN_ID)}
-            </p>
-            <p className="polis-readiness-note">
-              A plugin is a directory holding a manifest that lists every one of its files with a
-              digest. Devboule reads nothing it was not told about, and a plugin whose files no
-              longer match what the manifest describes is refused with a reason instead of half
-              loaded.
-            </p>
-            {installError ? (
-              <div className="polis-readiness-error" role="alert">
-                <p className="polis-readiness-note polis-readiness-error">
-                  The last install did not happen — {installError}
-                </p>
-                <button
-                  className="polis-readiness-button"
-                  type="button"
-                  onClick={dismissInstallError}
-                >
-                  Dismiss
-                </button>
-              </div>
-            ) : null}
-            <div className="polis-readiness-actions">
-              {installed?.kind === "absent" ? (
-                <button
-                  className="polis-readiness-button"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void chooseAndInstall(POLIS_PLUGIN_ID, surface.label)}
-                >
-                  {installing === POLIS_PLUGIN_ID ? "Installing…" : "Install from a folder"}
-                </button>
-              ) : null}
+        <section
+          className={`polis-readiness ${
+            transport === null
+              ? "polis-readiness-unknown"
+              : transport.works
+                ? "polis-readiness-ready"
+                : "polis-readiness-blocked"
+          }`}
+          aria-label="Plugin loading"
+        >
+          <span className="polis-readiness-kicker">Installing Polis, when it exists</span>
+          <p>{transport === null ? "Checking…" : describePluginTransport(transport)}</p>
+          <p className="polis-readiness-note">
+            Polis will be installed as files rather than compiled in, so the app has to be able to
+            load code it did not build. This checks that path end to end — policy, origin and
+            content type — before anything depends on it.
+          </p>
+        </section>
+      ) : null}
+      {showInstalledReadout ? (
+        <section
+          className={`polis-readiness ${
+            installed === null
+              ? "polis-readiness-unknown"
+              : `polis-readiness-${pluginTone(installed)}`
+          }`}
+          aria-label="Installed plugins"
+        >
+          <span className="polis-readiness-kicker">What is installed</span>
+          <p>
+            {installed === null ? "Checking…" : describePluginState(installed, POLIS_PLUGIN_ID)}
+          </p>
+          <p className="polis-readiness-note">
+            A plugin is a directory holding a manifest that lists every one of its files with a
+            digest. Devboule reads nothing it was not told about, and a plugin whose files no
+            longer match what the manifest describes is refused with a reason instead of half
+            loaded.
+          </p>
+          {installError ? (
+            <div className="polis-readiness-error" role="alert">
+              <p className="polis-readiness-note polis-readiness-error">
+                The last install did not happen — {installError}
+              </p>
+              <button
+                className="polis-readiness-button"
+                type="button"
+                onClick={dismissInstallError}
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+          <div className="polis-readiness-actions">
+            {installed?.kind === "absent" ? (
               <button
                 className="polis-readiness-button"
                 type="button"
                 disabled={busy}
-                onClick={() => {
-                  setChecking(true);
-                  void refreshPlugins(true).finally(() => setChecking(false));
-                }}
+                onClick={() => void chooseAndInstall(POLIS_PLUGIN_ID, surface.label)}
               >
-                {checking ? "Looking…" : "Check again"}
+                {installing === POLIS_PLUGIN_ID ? "Installing…" : "Install from a folder"}
               </button>
-            </div>
-          </section>
-        </>
+            ) : null}
+            <button
+              className="polis-readiness-button"
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setChecking(true);
+                void refreshPlugins(true).finally(() => setChecking(false));
+              }}
+            >
+              {checking ? "Looking…" : "Check again"}
+            </button>
+          </div>
+        </section>
       ) : null}
     </>
   );

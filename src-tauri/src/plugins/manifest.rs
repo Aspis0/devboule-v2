@@ -37,6 +37,8 @@
 
 use std::collections::BTreeMap;
 
+use devboule_protocol::effective_plugin_payload_bytes;
+
 use super::assets::safe_relative_segments;
 
 /// The only manifest version this build understands.
@@ -77,6 +79,13 @@ pub struct PluginManifest {
     pub capabilities: Vec<String>,
     /// Every file in the directory, normalised path to lowercase hex digest.
     pub files: BTreeMap<String, String>,
+    /// What the manifest asked for, before the host ceiling. `None` means
+    /// the plugin did not declare a budget and gets the host default.
+    pub declared_payload_bytes: Option<u64>,
+    /// Bytes this plugin may send or receive on one invoke: `min(declared
+    /// or default, host ceiling)`. Never larger than the ceiling even if
+    /// `declared_payload_bytes` is.
+    pub max_payload_bytes: usize,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -90,6 +99,8 @@ struct RawManifest {
     #[serde(default)]
     capabilities: Vec<String>,
     files: BTreeMap<String, String>,
+    #[serde(default)]
+    max_payload_bytes: Option<u64>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -186,6 +197,12 @@ pub fn parse_manifest(bytes: &[u8], directory_name: &str) -> Result<PluginManife
         }
     }
 
+    if raw.max_payload_bytes == Some(0) {
+        return Err("maxPayloadBytes must be greater than zero".to_string());
+    }
+    let declared_payload_bytes = raw.max_payload_bytes;
+    let max_payload_bytes = effective_plugin_payload_bytes(declared_payload_bytes);
+
     Ok(PluginManifest {
         id: raw.id,
         name,
@@ -194,6 +211,8 @@ pub fn parse_manifest(bytes: &[u8], directory_name: &str) -> Result<PluginManife
         backend_entry,
         capabilities,
         files,
+        declared_payload_bytes,
+        max_payload_bytes,
     })
 }
 
@@ -271,7 +290,7 @@ fn check_entry(
 
 /// Echo an untrusted value into a message without letting it take the message
 /// over: bounded length, and no control characters reaching a log or a readout.
-fn quote(value: &str) -> String {
+pub(super) fn quote(value: &str) -> String {
     const LIMIT: usize = 64;
     let cleaned: String = value
         .chars()
@@ -294,6 +313,7 @@ fn quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use devboule_protocol::{plugin_payload_budget_clamped, DEFAULT_PLUGIN_PAYLOAD_BYTES};
 
     /// A manifest with nothing wrong with it, as a starting point for the cases
     /// that break one thing at a time.
@@ -328,6 +348,11 @@ mod tests {
             vec!["oracle.search", "workspace.root"]
         );
         assert_eq!(manifest.files.len(), 2);
+        assert_eq!(manifest.declared_payload_bytes, None);
+        assert_eq!(manifest.max_payload_bytes, DEFAULT_PLUGIN_PAYLOAD_BYTES);
+        assert!(!plugin_payload_budget_clamped(
+            manifest.declared_payload_bytes
+        ));
     }
 
     #[test]
@@ -462,6 +487,58 @@ mod tests {
         value["capabilities"] = serde_json::json!(["oracle.search", "oracle.search"]);
         let manifest = parse(&value).expect("a duplicate is sloppy, not hostile");
         assert_eq!(manifest.capabilities, vec!["oracle.search"]);
+    }
+
+    #[test]
+    fn a_manifest_without_max_payload_bytes_still_parses_under_deny_unknown_fields() {
+        let value = good_manifest();
+        assert!(value.get("maxPayloadBytes").is_none());
+        let manifest = parse(&value).expect("omitting the field must not be an unknown field");
+        assert_eq!(manifest.max_payload_bytes, DEFAULT_PLUGIN_PAYLOAD_BYTES);
+        assert_eq!(manifest.declared_payload_bytes, None);
+        assert!(!plugin_payload_budget_clamped(
+            manifest.declared_payload_bytes
+        ));
+    }
+
+    #[test]
+    fn a_declared_payload_budget_under_the_ceiling_is_honoured() {
+        let mut value = good_manifest();
+        value["maxPayloadBytes"] = serde_json::json!(2 * 1024 * 1024);
+        let manifest = parse(&value).expect("a modest declared budget is accepted");
+        assert_eq!(manifest.declared_payload_bytes, Some(2 * 1024 * 1024));
+        assert_eq!(manifest.max_payload_bytes, 2 * 1024 * 1024);
+        assert!(!plugin_payload_budget_clamped(
+            manifest.declared_payload_bytes
+        ));
+    }
+
+    #[test]
+    fn a_declared_payload_budget_over_the_ceiling_is_clamped_and_visible() {
+        let mut value = good_manifest();
+        let asked: u64 = 4 * 1024 * 1024 * 1024;
+        value["maxPayloadBytes"] = serde_json::json!(asked);
+        let manifest = parse(&value).expect("asking for 4 GiB is clamped, not refused");
+        assert_eq!(manifest.declared_payload_bytes, Some(asked));
+        assert_eq!(
+            manifest.max_payload_bytes,
+            devboule_protocol::PLUGIN_PAYLOAD_CEILING_BYTES
+        );
+        assert!(plugin_payload_budget_clamped(
+            manifest.declared_payload_bytes
+        ));
+        assert_ne!(
+            manifest.max_payload_bytes as u64, asked,
+            "a 4 GiB ask must not look like it was granted"
+        );
+    }
+
+    #[test]
+    fn a_zero_payload_budget_is_refused() {
+        let mut value = good_manifest();
+        value["maxPayloadBytes"] = serde_json::json!(0);
+        let error = parse(&value).expect_err("zero is not a budget");
+        assert!(error.contains("greater than zero"));
     }
 
     #[test]

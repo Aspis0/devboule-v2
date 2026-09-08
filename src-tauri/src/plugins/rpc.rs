@@ -10,11 +10,14 @@ use devboule_plugin_rpc::{
     confine_project_path, granted_capabilities, host_owner, next_generation, verify_file_digest,
     workspace_root_for_grant, PluginError, PluginSession, SpawnSpec,
 };
-use devboule_protocol::{caps, plugin_payload_within_limit, ErrorCode};
+use devboule_protocol::{
+    caps, plugin_payload_limit_reason, plugin_payload_within_limit, ErrorCode,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};
 
+use super::manifest::quote;
 use super::{plugins_root, PluginRegistry};
 use crate::backend::error::CommandError;
 use crate::oracle::OracleRuntime;
@@ -132,7 +135,7 @@ impl PluginRuntime {
             let _ = session.kill_process();
             return Err(CommandError::new(
                 ErrorCode::Io,
-                format!("plugin backend '{plugin_id}' ensure was cancelled"),
+                format!("plugin backend {} ensure was cancelled", quote(&plugin_id)),
             ));
         }
         inner.sessions.insert(plugin_id, session);
@@ -155,7 +158,7 @@ impl PluginRuntime {
             .ok_or_else(|| {
                 CommandError::new(
                     ErrorCode::Io,
-                    format!("plugin backend '{plugin_id}' is not running"),
+                    format!("plugin backend {} is not running", quote(plugin_id)),
                 )
             })?;
         let value = session.invoke(method, payload).map_err(command_error)?;
@@ -180,7 +183,7 @@ impl PluginRuntime {
             .ok_or_else(|| {
                 CommandError::new(
                     ErrorCode::Io,
-                    format!("plugin backend '{plugin_id}' is not running"),
+                    format!("plugin backend {} is not running", quote(plugin_id)),
                 )
             })?;
         let ping_ok = session.ping().is_ok();
@@ -276,13 +279,13 @@ fn spawn_spec<R: Runtime>(app: &AppHandle<R>, plugin_id: &str) -> Result<SpawnSp
         .ok_or_else(|| {
             CommandError::new(
                 ErrorCode::InvalidRequest,
-                format!("plugin '{plugin_id}' is not installed and verified"),
+                format!("plugin {} is not installed and verified", quote(plugin_id)),
             )
         })?;
     let Some(backend) = manifest.backend_entry.as_ref() else {
         return Err(CommandError::new(
             ErrorCode::InvalidRequest,
-            format!("plugin '{plugin_id}' did not declare a backend"),
+            format!("plugin {} did not declare a backend", quote(plugin_id)),
         ));
     };
     let binary = root.join(plugin_id).join(backend);
@@ -290,7 +293,8 @@ fn spawn_spec<R: Runtime>(app: &AppHandle<R>, plugin_id: &str) -> Result<SpawnSp
         return Err(CommandError::new(
             ErrorCode::InvalidRequest,
             format!(
-                "plugin '{plugin_id}' backend {} is missing",
+                "plugin {} backend {} is missing",
+                quote(plugin_id),
                 binary.display()
             ),
         ));
@@ -298,13 +302,19 @@ fn spawn_spec<R: Runtime>(app: &AppHandle<R>, plugin_id: &str) -> Result<SpawnSp
     let expected_digest = manifest.files.get(backend).ok_or_else(|| {
         CommandError::new(
             ErrorCode::InvalidRequest,
-            format!("plugin '{plugin_id}' backend is not covered by its verified manifest"),
+            format!(
+                "plugin {} backend is not covered by its verified manifest",
+                quote(plugin_id)
+            ),
         )
     })?;
     verify_file_digest(&binary, expected_digest).map_err(|error| {
         CommandError::new(
             ErrorCode::InvalidRequest,
-            format!("plugin '{plugin_id}' backend verification failed: {error}"),
+            format!(
+                "plugin {} backend verification failed: {error}",
+                quote(plugin_id)
+            ),
         )
     })?;
     let workspace = if manifest
@@ -347,9 +357,16 @@ fn spawn_spec<R: Runtime>(app: &AppHandle<R>, plugin_id: &str) -> Result<SpawnSp
 fn command_error(error: PluginError) -> CommandError {
     match error {
         PluginError::Handshake(wire) => CommandError::from(wire),
+        // `method` crosses the same IPC boundary as `plugin_id` and is just as
+        // untrusted: it is whatever string the caller asked to invoke. Quoting
+        // it here for the same reason the ids above are quoted — an error
+        // message is somewhere a value must not be able to add lines of its own.
         PluginError::CapabilityNotSupported(method) => CommandError::new(
             ErrorCode::CapabilityNotSupported,
-            format!("plugin method '{method}' was not in the granted capability set"),
+            format!(
+                "plugin method {} was not in the granted capability set",
+                quote(&method)
+            ),
         ),
         PluginError::TimedOut(what) => {
             CommandError::new(ErrorCode::Io, format!("timed out: {what}"))
@@ -392,11 +409,9 @@ pub async fn plugin_invoke(
     method: String,
     payload: Option<Value>,
 ) -> Result<Value, CommandError> {
-    if !plugin_payload_within_limit(payload.as_ref()) {
-        return Err(CommandError::new(
-            ErrorCode::InvalidRequest,
-            "plugin invoke payload is too large (maximum 1 MiB)",
-        ));
+    let (limit, declared) = plugin_payload_budget(&app, &plugin_id)?;
+    if !plugin_payload_within_limit(payload.as_ref(), limit) {
+        return Err(oversize_payload_error("invoke payload", declared));
     }
     let spec = spawn_spec(&app, &plugin_id)?;
     let runtime = (*app.state::<PluginRuntime>()).clone();
@@ -405,13 +420,42 @@ pub async fn plugin_invoke(
     })
     .await
     .map_err(|error| CommandError::new(ErrorCode::Internal, error.to_string()))??;
-    if !plugin_payload_within_limit(Some(&value)) {
-        return Err(CommandError::new(
-            ErrorCode::InvalidRequest,
-            "plugin response is too large (maximum 1 MiB)",
-        ));
+    if !plugin_payload_within_limit(Some(&value), limit) {
+        return Err(oversize_payload_error("response", declared));
     }
     Ok(value)
+}
+
+fn plugin_payload_budget<R: Runtime>(
+    app: &AppHandle<R>,
+    plugin_id: &str,
+) -> Result<(usize, Option<u64>), CommandError> {
+    let root = plugins_root(app).ok_or_else(|| {
+        CommandError::new(
+            ErrorCode::Internal,
+            "this machine did not say where application data belongs, so there is nowhere to find a plugin backend",
+        )
+    })?;
+    let manifest = app
+        .state::<PluginRegistry>()
+        .ready_manifest(&root, plugin_id)
+        .ok_or_else(|| {
+            CommandError::new(
+                ErrorCode::InvalidRequest,
+                format!("plugin {} is not installed and verified", quote(plugin_id)),
+            )
+        })?;
+    Ok((manifest.max_payload_bytes, manifest.declared_payload_bytes))
+}
+
+fn oversize_payload_error(direction: &str, declared: Option<u64>) -> CommandError {
+    CommandError::new(
+        ErrorCode::InvalidRequest,
+        format!(
+            "plugin {direction} is too large ({})",
+            plugin_payload_limit_reason(declared)
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -426,6 +470,32 @@ mod tests {
         ));
         assert_eq!(error.code, ErrorCode::CapabilityNotSupported);
         assert!(error.message.contains("oracle.search"));
+    }
+
+    #[test]
+    fn oversize_payload_error_names_the_limit_that_applied() {
+        use devboule_protocol::{DEFAULT_PLUGIN_PAYLOAD_BYTES, PLUGIN_PAYLOAD_CEILING_BYTES};
+
+        let host = oversize_payload_error("invoke payload", None);
+        assert_eq!(host.code, ErrorCode::InvalidRequest);
+        assert!(host
+            .message
+            .contains(&DEFAULT_PLUGIN_PAYLOAD_BYTES.to_string()));
+        assert!(host.message.contains("host default"));
+        assert!(!host.message.contains("maximum 1 MiB"));
+
+        let declared = oversize_payload_error("response", Some(2 * 1024 * 1024));
+        assert!(declared.message.contains(&(2 * 1024 * 1024).to_string()));
+        assert!(declared.message.contains("plugin manifest"));
+
+        let asked: u64 = 4 * 1024 * 1024 * 1024;
+        let clamped = oversize_payload_error("invoke payload", Some(asked));
+        assert!(clamped
+            .message
+            .contains(&PLUGIN_PAYLOAD_CEILING_BYTES.to_string()));
+        assert!(clamped.message.contains("host ceiling"));
+        assert!(clamped.message.contains(&asked.to_string()));
+        assert!(!clamped.message.contains("maximum 1 MiB"));
     }
 
     #[test]
@@ -483,28 +553,41 @@ mod tests {
         let worker = std::thread::spawn(move || {
             worker_runtime.invoke(&worker_id, worker_spec, caps::FINDINGS_GET, None)
         });
-        std::thread::sleep(std::time::Duration::from_millis(400));
-
-        let g = runtime
-            .lock()
-            .generation
-            .get(&plugin_id)
-            .copied()
-            .expect("worker ensure must have registered a generation");
-        let pid = runtime
-            .lock()
-            .sessions
-            .get(&plugin_id)
-            .expect("session")
-            .pid();
-        assert!(
-            runtime
-                .lock()
-                .sessions
-                .get(&plugin_id)
-                .is_some_and(|session| session.invoke_in_flight()),
-            "slow invoke must be in flight before the remount ensure"
-        );
+        // Wait for the state this test needs, rather than betting on how long
+        // it takes to arrive. This was a fixed 400 ms sleep: on a machine also
+        // running a build it lost the bet, and the failure was
+        // `.expect("session")` panicking with the word "session" — which does
+        // not say which half of the precondition was missing. The backend hangs
+        // for 6 s (`hang_ms` in `runtime_spec`), so a deadline well inside that
+        // window either observes the state or reports what never became true.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        let (g, pid) = loop {
+            let observed = {
+                let state = runtime.lock();
+                state.generation.get(&plugin_id).copied().zip(
+                    state
+                        .sessions
+                        .get(&plugin_id)
+                        .and_then(|session| session.invoke_in_flight().then(|| session.pid())),
+                )
+            };
+            if let Some(observed) = observed {
+                break observed;
+            }
+            if std::time::Instant::now() >= deadline {
+                let state = runtime.lock();
+                panic!(
+                    "the worker never reached a registered session with an invoke in flight \
+                     (generation {:?}, session in flight {:?})",
+                    state.generation.get(&plugin_id).copied(),
+                    state
+                        .sessions
+                        .get(&plugin_id)
+                        .map(|session| session.invoke_in_flight()),
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
 
         let g2 = runtime.ensure_session(spec).expect("inflight re-ensure");
         assert!(
