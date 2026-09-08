@@ -19,9 +19,14 @@ pub enum WorkspaceIsolation {
     Worktree,
 }
 
-/// Public workspace metadata. The path is kept in the journal record and is
-/// deliberately not duplicated on this wire type; session creation resolves
-/// it from `id` in the daemon.
+/// Public workspace metadata.
+///
+/// `path` is the checkout in display form. It used to be omitted because
+/// every workspace WAS the project folder and session creation could resolve
+/// it from `id`. A worktree checkout is new information a user cannot derive
+/// from the project — the third time in this protocol a "deliberately
+/// omitted" wire field became load-bearing. Check the premise before
+/// dropping a field like this again.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
@@ -29,4 +34,6 @@ pub struct Workspace {
     pub project_id: String,
     pub title: String,
     pub isolation: WorkspaceIsolation,
+    /// Checkout directory. Display form: no Windows verbatim `\\?\` prefix.
+    pub path: String,
 }

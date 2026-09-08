@@ -31,6 +31,25 @@ pub(crate) fn local_workspace_record(project: &ProjectRecord) -> WorkspaceRecord
         title: project.name.clone(),
         isolation: WorkspaceIsolation::Local,
         path: project.path.clone(),
+        branch: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+    }
+}
+
+pub(crate) fn worktree_workspace_record(
+    project: &ProjectRecord,
+    checkout: &Path,
+    branch: &str,
+) -> WorkspaceRecord {
+    let now = now_ms();
+    WorkspaceRecord {
+        id: entity_id("w"),
+        project_id: project.id.clone(),
+        title: format!("{} ({branch})", project.name),
+        isolation: WorkspaceIsolation::Worktree,
+        path: checkout.to_string_lossy().into_owned(),
+        branch: Some(branch.to_string()),
         created_at_ms: now,
         updated_at_ms: now,
     }

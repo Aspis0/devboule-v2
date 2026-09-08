@@ -465,12 +465,14 @@ describe("workspace session controller", () => {
       projectId: "project-1",
       title: "one",
       isolation: "local",
+      path: "C:\\project-1",
     };
     const workspaceWithAgent: Workspace = {
       id: "workspace-agent",
       projectId: "project-1",
       title: "agent",
       isolation: "local",
+      path: "C:\\project-1",
     };
     expect(workspaceView(workspaceOne, sessions).meta).toBe("0 live sessions · local");
     expect(workspaceView(workspaceWithAgent, sessions).meta).toBe("1 live session · local");

@@ -96,6 +96,16 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
                     ON workspaces(project_id, updated_at_ms, id);",
             )?;
         }
+        if version < 7 {
+            let workspaces_exist: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'",
+                [],
+                |row| row.get(0),
+            )?;
+            if workspaces_exist == 1 && !workspace_has_column(&tx, "branch")? {
+                tx.execute("ALTER TABLE workspaces ADD COLUMN branch TEXT", [])?;
+            }
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
@@ -119,7 +129,15 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
 }
 
 fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalError> {
-    let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+    table_has_column(conn, "sessions", column)
+}
+
+fn workspace_has_column(conn: &Connection, column: &str) -> Result<bool, JournalError> {
+    table_has_column(conn, "workspaces", column)
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, JournalError> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         if row.get::<_, String>(1)? == column {
@@ -153,6 +171,7 @@ fn validate_v6_schema(conn: &Connection) -> Result<(), JournalError> {
             ("path", "TEXT", 1, 0),
             ("created_at_ms", "INTEGER", 1, 0),
             ("updated_at_ms", "INTEGER", 1, 0),
+            ("branch", "TEXT", 0, 0),
         ],
     )?;
     let project_index: i64 = conn.query_row(
@@ -407,7 +426,7 @@ mod tests {
             [],
         )
         .expect("old row");
-        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 2)
+        conn.pragma_update(None, "user_version", 4)
             .expect("old version");
         drop(conn);
 
@@ -489,7 +508,7 @@ mod tests {
             [],
         )
         .expect("old event row");
-        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 1)
+        conn.pragma_update(None, "user_version", 5)
             .expect("v5 version");
         drop(conn);
 

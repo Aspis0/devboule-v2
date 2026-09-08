@@ -35,12 +35,29 @@ which identify a running `node.exe` agent from argv; the catalog inverts
 that mapping to produce the launch argv. No herdr source was copied for
 the unwrap.
 
+The git worktree helpers in `crates/devboule-daemon/src/worktree.rs` are
+adapted from herdr, licensed under the Apache License, Version 2.0, commit
+`d79fd746a96ddb5642939c9727baefce642d78e6`:
+
+- `herdr-src/src/worktree.rs` `generated_branch_slug`
+- `herdr-src/src/worktree.rs` `branch_to_path_slug`
+- `herdr-src/src/worktree.rs` `default_checkout_path`
+- `herdr-src/src/worktree.rs` `build_worktree_remove_command`
+- `herdr-src/src/worktree.rs` `build_worktree_add_new_branch_command`
+- `herdr-src/src/worktree.rs` `build_worktree_add_existing_branch_command`
+- `herdr-src/src/worktree.rs` `is_dirty_worktree_remove_error`
+- `herdr-src/src/worktree.rs` `is_not_working_tree_remove_error`
+- `herdr-src/src/worktree.rs` `worktree_dirty_remove_message`
+- `herdr-src/src/worktree.rs` `parse_worktree_list_porcelain`
+- `herdr-src/src/worktree.rs` `leftover_worktree_checkout_matches_repo`
+- `herdr-src/src/worktree.rs` `git_common_worktrees_dir`
+
 The provider catalog adds Devboule's installed-agent model, ACP launch
 metadata, and an explicit unknown authentication status; it does not probe
 login state.
 
 No third-party library source code beyond the explicitly attributed herdr
-portion above is copied into this repository. This does not mean that linked
+portions above is copied into this repository. This does not mean that linked
 dependency code is absent from a built binary; the
 Cargo and npm dependencies identified in THIRD_PARTY.md are compiled or
 bundled according to their respective licences. The three checked-in fonts

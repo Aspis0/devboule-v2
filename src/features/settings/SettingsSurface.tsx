@@ -9,7 +9,7 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
-import type { Project, ProviderCatalog, ProviderInfo } from "../../types/ipc";
+import type { Project, ProviderCatalog, ProviderInfo, Workspace } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { NewProjectDialog } from "../workspace/NewProjectDialog";
@@ -523,7 +523,7 @@ function ProvidersPanel() {
 
 function ProjectsPanel() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [workspaceCounts, setWorkspaceCounts] = useState<Record<string, number>>({});
+  const [workspacesByProject, setWorkspacesByProject] = useState<Record<string, Workspace[]>>({});
   const [workspaceErrors, setWorkspaceErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -538,24 +538,24 @@ function ProjectsPanel() {
       const results = await Promise.all(
         listed.map(async (project) => {
           try {
-            return { id: project.id, count: (await workspacesList(project.id)).length };
+            return { id: project.id, workspaces: await workspacesList(project.id) };
           } catch (cause: unknown) {
             return { id: project.id, error: reasonFromCause(cause) };
           }
         }),
       );
-      const nextCounts: Record<string, number> = {};
+      const nextWorkspaces: Record<string, Workspace[]> = {};
       const nextErrors: Record<string, string> = {};
       for (const result of results) {
-        if (typeof result.count === "number") nextCounts[result.id] = result.count;
+        if (Array.isArray(result.workspaces)) nextWorkspaces[result.id] = result.workspaces;
         else if (typeof result.error === "string") nextErrors[result.id] = result.error;
       }
       setProjects(listed);
-      setWorkspaceCounts(nextCounts);
+      setWorkspacesByProject(nextWorkspaces);
       setWorkspaceErrors(nextErrors);
     } catch (cause: unknown) {
       setProjects([]);
-      setWorkspaceCounts({});
+      setWorkspacesByProject({});
       setWorkspaceErrors({});
       setError(reasonFromCause(cause));
     } finally {
@@ -579,7 +579,7 @@ function ProjectsPanel() {
       if (index < 0) return [...current, project];
       return current.map((entry, entryIndex) => (entryIndex === index ? project : entry));
     });
-    setWorkspaceCounts((current) => ({ ...current, [project.id]: workspaces.length }));
+    setWorkspacesByProject((current) => ({ ...current, [project.id]: workspaces }));
     setError(null);
   }, []);
 
@@ -601,13 +601,23 @@ function ProjectsPanel() {
         ) : null}
         {error === null
           ? projects.map((project) => {
-              const workspaceCount = workspaceCounts[project.id];
+              const workspaces = workspacesByProject[project.id];
+              const workspaceCount = workspaces?.length;
               const workspaceError = workspaceErrors[project.id];
               return (
                 <div className="settings-card settings-project-card" key={project.id}>
                   <span className="settings-card-copy">
                     <span className="settings-card-title">{project.name}</span>
                     <span className="settings-card-meta">{project.path}</span>
+                    {(workspaces ?? []).map((workspace) =>
+                      // Render exactly what the daemon sent: no project-path
+                      // fallback, no joined path. Same contract as Session.cwd.
+                      workspace.path ? (
+                        <span className="settings-card-meta" key={workspace.id}>
+                          {workspace.path}
+                        </span>
+                      ) : null,
+                    )}
                   </span>
                   {workspaceError !== undefined ? (
                     <span role="alert">

@@ -1251,7 +1251,8 @@ fn dispatch_immediate(
         | ClientMessage::ProjectsList { .. }
         | ClientMessage::ProjectAdd { .. }
         | ClientMessage::WorkspacesList { .. }
-        | ClientMessage::WorkspaceCreate { .. } => {
+        | ClientMessage::WorkspaceCreate { .. }
+        | ClientMessage::WorkspaceDelete { .. } => {
             if !journal_ok {
                 return capability_not_supported(request.request_id(), caps::JOURNAL);
             }
@@ -1791,6 +1792,14 @@ fn dispatch_journal(
             .workspace_create(&project_id, isolation, branch)
         {
             Ok(workspace) => DaemonMessage::Workspace { id, workspace },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::WorkspaceDelete {
+            id,
+            workspace_id,
+            force,
+        } => match state.sessions.workspace_delete(&workspace_id, force) {
+            Ok(()) => DaemonMessage::Ok { id },
             Err(error) => DaemonMessage::Error(error.with_id(id)),
         },
         other => DaemonMessage::Error(WireError::new(

@@ -453,6 +453,7 @@ export function Workspace() {
                             key={workspace.id}
                             onClick={() => setSelectedWorkspace(workspace.id)}
                             aria-pressed={selectedWorkspace === workspace.id}
+                            title={workspace.path ? workspace.path : undefined}
                           >
                             <span
                               className={`workspace-status-dot workspace-dot-${workspace.dotTone}`}

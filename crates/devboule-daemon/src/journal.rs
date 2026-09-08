@@ -50,7 +50,7 @@ use journal_schema::open_connection;
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 6;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 7;
 
 /// Bounded journal queue. Each slot is one coalesced frame (typically
 /// ≤ 8 KiB). A full queue never blocks the PTY path.
@@ -256,6 +256,8 @@ pub struct WorkspaceRecord {
     pub title: String,
     pub isolation: WorkspaceIsolation,
     pub path: String,
+    /// Exact git branch for a worktree workspace. `None` for Local.
+    pub branch: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -267,6 +269,7 @@ impl WorkspaceRecord {
             project_id: self.project_id.clone(),
             title: self.title.clone(),
             isolation: self.isolation,
+            path: crate::workspace::display_path(&self.path),
         }
     }
 }
@@ -532,6 +535,10 @@ enum JournalCmd {
     WorkspaceGet {
         id: String,
         reply: mpsc::Sender<Result<Option<WorkspaceRecord>, JournalError>>,
+    },
+    WorkspaceDelete {
+        id: String,
+        reply: mpsc::Sender<Result<(), JournalError>>,
     },
     Replay {
         session_id: String,
@@ -843,6 +850,13 @@ impl Journal {
 
     pub fn workspace_get(&self, id: &str) -> Result<Option<WorkspaceRecord>, JournalError> {
         self.rpc(|reply| JournalCmd::WorkspaceGet {
+            id: id.to_string(),
+            reply,
+        })
+    }
+
+    pub fn workspace_delete(&self, id: &str) -> Result<(), JournalError> {
+        self.rpc(|reply| JournalCmd::WorkspaceDelete {
             id: id.to_string(),
             reply,
         })
@@ -1312,6 +1326,13 @@ fn journal_loop(
             JournalCmd::WorkspaceGet { id, reply } => {
                 let _ = reply.send(get_workspace(&conn, &id));
             }
+            JournalCmd::WorkspaceDelete { id, reply } => {
+                let result = delete_workspace(&conn, &id);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
             JournalCmd::Replay {
                 session_id,
                 from_seq,
@@ -1485,7 +1506,7 @@ fn list_workspaces(
         )));
     }
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms
+        "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms, branch
          FROM workspaces WHERE project_id = ?1 ORDER BY id",
     )?;
     let rows = stmt.query_map([project_id], workspace_from_row)?;
@@ -1495,7 +1516,7 @@ fn list_workspaces(
 
 fn get_workspace(conn: &Connection, id: &str) -> Result<Option<WorkspaceRecord>, JournalError> {
     conn.query_row(
-        "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms
+        "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms, branch
          FROM workspaces WHERE id = ?1",
         [id],
         workspace_from_row,
@@ -1516,8 +1537,8 @@ fn add_workspace(
     }
     conn.execute(
         "INSERT INTO workspaces (
-            id, project_id, title, isolation, path, created_at_ms, updated_at_ms
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            id, project_id, title, isolation, path, created_at_ms, updated_at_ms, branch
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             record.id,
             record.project_id,
@@ -1526,9 +1547,20 @@ fn add_workspace(
             record.path,
             record.created_at_ms as i64,
             record.updated_at_ms as i64,
+            record.branch,
         ],
     )?;
     Ok(record.clone())
+}
+
+fn delete_workspace(conn: &Connection, id: &str) -> Result<(), JournalError> {
+    let deleted = conn.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
+    if deleted == 0 {
+        return Err(JournalError::InvalidRequest(format!(
+            "Workspace '{id}' does not exist."
+        )));
+    }
+    Ok(())
 }
 
 fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
@@ -1562,6 +1594,7 @@ fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceReco
         path: row.get(4)?,
         created_at_ms: row.get::<_, i64>(5)? as u64,
         updated_at_ms: row.get::<_, i64>(6)? as u64,
+        branch: row.get(7)?,
     })
 }
 
@@ -2267,6 +2300,7 @@ mod tests {
             title: project.name.clone(),
             isolation: WorkspaceIsolation::Local,
             path: project.path.clone(),
+            branch: None,
             created_at_ms: 12,
             updated_at_ms: 12,
         };

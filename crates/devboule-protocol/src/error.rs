@@ -50,6 +50,37 @@ pub enum ErrorDetails {
         current: u64,
         requested: u64,
     },
+    /// Checkout has local changes. Removal requires `force`. The branch is
+    /// not deleted either way.
+    WorktreeDirty {
+        path: String,
+        force_required: bool,
+    },
+    /// Recorded `git_state` said a worktree was possible; live git disagrees.
+    WorktreeGitState {
+        recorded: String,
+        observed: String,
+    },
+    /// Git's worktree at this path is not the branch the workspace row means.
+    WorktreeMismatch {
+        path: String,
+        expected_branch: String,
+        observed_branch: Option<String>,
+    },
+    /// The worktree is locked. `--force` does not override a lock.
+    WorktreeLocked {
+        path: String,
+    },
+    /// The checkout path is not inside this project's worktree root.
+    WorktreeNotConfined {
+        path: String,
+        root: String,
+    },
+    /// The project folder is gone, so git cannot run. The row can still be
+    /// detached; the checkout is left on disk if it exists.
+    WorktreeProjectGone {
+        leftover_checkout: Option<String>,
+    },
 }
 
 /// Error payload used both as a handshake-level first frame (`id` is `None`)
@@ -79,6 +110,11 @@ impl WireError {
         self.id = Some(id);
         self
     }
+
+    pub fn with_details(mut self, details: ErrorDetails) -> Self {
+        self.details = Some(details);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +134,41 @@ mod tests {
         assert_eq!(value, "idempotency_conflict");
         let value = serde_json::to_value(ErrorCode::Journal).expect("json");
         assert_eq!(value, "journal");
+    }
+
+    #[test]
+    fn worktree_removal_outcomes_are_typed_details() {
+        let details = ErrorDetails::WorktreeDirty {
+            path: r"C:\w\checkout".to_string(),
+            force_required: true,
+        };
+        let value = serde_json::to_value(&details).expect("json");
+        assert_eq!(value["type"], "worktree_dirty");
+        assert_eq!(value["force_required"], true);
+        let state = ErrorDetails::WorktreeGitState {
+            recorded: "repository".to_string(),
+            observed: "not_repository".to_string(),
+        };
+        let value = serde_json::to_value(&state).expect("json");
+        assert_eq!(value["type"], "worktree_git_state");
+        assert_eq!(value["recorded"], "repository");
+        assert_eq!(value["observed"], "not_repository");
+        let locked = ErrorDetails::WorktreeLocked {
+            path: r"C:\w\locked".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&locked).expect("json")["type"],
+            "worktree_locked"
+        );
+        let mismatch = ErrorDetails::WorktreeMismatch {
+            path: r"C:\w\feature-a".to_string(),
+            expected_branch: "feature/a".to_string(),
+            observed_branch: Some("feature.a".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&mismatch).expect("json")["type"],
+            "worktree_mismatch"
+        );
     }
 
     #[test]

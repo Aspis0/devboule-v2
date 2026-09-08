@@ -182,6 +182,7 @@ const workspace: IpcWorkspace = {
   projectId: project.id,
   title: "main",
   isolation: "local",
+  path: "C:\\devboule",
 };
 const secondProject: Project = {
   id: "project-2",
@@ -193,12 +194,14 @@ const secondWorkspace: IpcWorkspace = {
   projectId: secondProject.id,
   title: "other-main",
   isolation: "local",
+  path: "C:\\other-project",
 };
 const createdWorkspace: IpcWorkspace = {
   id: "workspace-created",
   projectId: project.id,
   title: "new-workspace",
   isolation: "local",
+  path: "C:\\devboule",
 };
 
 const permissionRequest: PermissionRequest = {
@@ -293,6 +296,34 @@ describe("Workspace sessions", () => {
     );
     expect(row?.textContent).toContain("1 live session · local");
     expect(row?.textContent).not.toContain("dirty");
+    expect(row?.title).toBe("C:\\devboule");
+  });
+
+  it("exposes the checkout path on hover and omits it when the daemon sent none", async () => {
+    const worktreeWorkspace: IpcWorkspace = {
+      id: "workspace-worktree",
+      projectId: project.id,
+      title: "feature-x",
+      isolation: "worktree",
+      path: "C:\\devboule.worktrees\\feature-x-9f2e1a",
+    };
+    const bareWorkspace: IpcWorkspace = {
+      id: "workspace-bare",
+      projectId: project.id,
+      title: "no-path",
+      isolation: "local",
+      path: "",
+    };
+    vi.mocked(workspacesList).mockResolvedValue([worktreeWorkspace, bareWorkspace]);
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const rows = container.querySelectorAll<HTMLButtonElement>("button.workspace-row");
+    expect(rows.length).toBe(2);
+    expect(rows[0]?.title).toBe("C:\\devboule.worktrees\\feature-x-9f2e1a");
+    expect(rows[0]?.textContent).not.toContain("C:\\devboule.worktrees\\feature-x-9f2e1a");
+    expect(rows[1]?.title).toBe("");
   });
 
   it("shows the daemon's project-load failure instead of an empty-project message", async () => {
@@ -352,6 +383,7 @@ describe("Workspace sessions", () => {
       projectId: createdProject.id,
       title: "created-main",
       isolation: "local",
+      path: "C:\\created-during-load",
     };
     let releaseInitialWorkspaces: ((value: IpcWorkspace[]) => void) | undefined;
     const initialWorkspaces = new Promise<IpcWorkspace[]>((resolve) => {

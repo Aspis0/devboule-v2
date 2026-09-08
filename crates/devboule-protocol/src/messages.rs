@@ -200,6 +200,14 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
     },
+    /// Remove a worktree workspace. Never deletes the branch. A dirty
+    /// checkout fails unless `force` is true.
+    WorkspaceDelete {
+        id: u64,
+        workspace_id: String,
+        #[serde(default)]
+        force: bool,
+    },
     ProvidersList {
         id: u64,
     },
@@ -253,6 +261,7 @@ impl ClientMessage {
             | Self::ProjectAdd { id, .. }
             | Self::WorkspacesList { id, .. }
             | Self::WorkspaceCreate { id, .. }
+            | Self::WorkspaceDelete { id, .. }
             | Self::ProvidersList { id }
             | Self::ProvidersRefresh { id }
             | Self::ProviderUpdate { id, .. }
@@ -308,6 +317,7 @@ impl ClientMessage {
             | Self::ProjectAdd { .. }
             | Self::WorkspacesList { .. }
             | Self::WorkspaceCreate { .. }
+            | Self::WorkspaceDelete { .. }
             | Self::Invoke { .. } => None,
         }
     }
@@ -744,11 +754,23 @@ mod tests {
             project_id: "p.one".to_string(),
             title: "Project".to_string(),
             isolation: WorkspaceIsolation::Local,
+            path: r"C:\code\Project".to_string(),
         };
         let reply = serde_json::to_value(DaemonMessage::Workspace { id: 7, workspace })
             .expect("workspace reply json");
         assert_eq!(reply["workspace"]["projectId"], "p.one");
+        assert_eq!(reply["workspace"]["path"], r"C:\code\Project");
         assert!(reply["workspace"].get("project_id").is_none());
+
+        let delete = ClientMessage::WorkspaceDelete {
+            id: 8,
+            workspace_id: "w.one".to_string(),
+            force: true,
+        };
+        let value = serde_json::to_value(&delete).expect("workspace delete json");
+        assert_eq!(value["type"], "workspace_delete");
+        assert_eq!(value["workspaceId"], "w.one");
+        assert_eq!(value["force"], true);
     }
 
     #[test]
