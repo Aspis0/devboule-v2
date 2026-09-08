@@ -433,6 +433,19 @@ impl DaemonClient {
         }
     }
 
+    pub fn workspace_delete(&self, workspace_id: &str, force: bool) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceDelete {
+            id,
+            workspace_id: workspace_id.to_string(),
+            force,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn journal_usage(&self) -> Result<JournalUsage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalUsage { id })? {

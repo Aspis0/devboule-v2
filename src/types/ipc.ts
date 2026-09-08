@@ -16,6 +16,12 @@ export interface Workspace {
   projectId: Id;
   title: string;
   isolation: "local" | "worktree";
+  /**
+   * Checkout directory, display form. Display-only and lossy in the same
+   * sense as `Session.cwd`: never compare it, never key on it, never send it
+   * back. The daemon resolves directories from `id`.
+   */
+  path: string;
 }
 
 export type SessionKind = "terminal" | "acp" | "claude";

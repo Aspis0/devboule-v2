@@ -453,6 +453,7 @@ export function Workspace() {
                             key={workspace.id}
                             onClick={() => setSelectedWorkspace(workspace.id)}
                             aria-pressed={selectedWorkspace === workspace.id}
+                            title={workspace.path ? workspace.path : undefined}
                           >
                             <span
                               className={`workspace-status-dot workspace-dot-${workspace.dotTone}`}
@@ -499,11 +500,17 @@ export function Workspace() {
                                       <span className="workspace-surface-name">
                                         {consentProvider.id}
                                       </span>
-                                      <span className="workspace-consent-spec">
+                                      <span
+                                        className="workspace-consent-spec"
+                                        id="workspace-consent-command"
+                                      >
                                         {consentCommandLine}
                                       </span>
                                     </div>
-                                    <p className="workspace-consent-notice">
+                                    <p
+                                      className="workspace-consent-notice"
+                                      id="workspace-consent-warning"
+                                    >
                                       npx will download and run third-party code on first use.
                                     </p>
                                   </div>
@@ -515,12 +522,23 @@ export function Workspace() {
                                     >
                                       Cancel
                                     </button>
+                                    {/*
+                                      Focus moves here when the card opens, so
+                                      this button's accessible description is
+                                      the whole of what a screen-reader user
+                                      hears before approving. Without it they
+                                      hear "Confirm" and nothing about the
+                                      command or the download — which is not
+                                      consent. The command comes first because
+                                      it is the specific thing being approved.
+                                    */}
                                     <button
                                       ref={consentConfirmRef}
                                       type="button"
                                       className="workspace-primary-action"
                                       onClick={consentConfirm}
                                       disabled={consentInFlight}
+                                      aria-describedby="workspace-consent-command workspace-consent-warning"
                                     >
                                       Confirm
                                     </button>

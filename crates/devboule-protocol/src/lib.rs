@@ -20,11 +20,11 @@
 //!   versions and which binary to update. Neither side may hang or try to
 //!   parse the rest of the stream as the other version.
 //!
-//! This crate speaks only version [`PROTOCOL_VERSION`] (2), with
-//! [`PROTOCOL_MIN_VERSION`] also 2. Version 1 is refused: a required field
-//! (`created_at_ms`, plus the snapshot's `workspace_id` and `kind`) was added
-//! and the daemon always serializes the current struct, so agreeing on 1 would
-//! not produce a v1 payload. Bumping
+//! This crate speaks only version [`PROTOCOL_VERSION`] (3), with
+//! [`PROTOCOL_MIN_VERSION`] also 3. Older dialects are refused: required
+//! fields (`created_at_ms`, `Workspace.path`) were added and the daemon
+//! always serializes the current struct, so agreeing on an older version
+//! would not produce an old-shaped payload. Bumping
 //! `PROTOCOL_MIN_VERSION` is how an old dialect is dropped.
 //!
 //! Capabilities are an open string set, independently negotiated as the
@@ -111,15 +111,15 @@ pub use session::{
 /// A field added with `#[serde(default)]` is backward compatible and needs
 /// no bump (`cwd`). A required field is a breaking change and requires
 /// bumping both this constant and [`PROTOCOL_MIN_VERSION`] (`created_at_ms`,
-/// `workspace_id`, and `kind`).
+/// `Workspace.path`).
 /// The daemon always serializes the current struct regardless of the agreed
 /// version, so negotiating down does not produce an old-shaped payload;
 /// refusing the handshake is the only protection.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.
-pub const PROTOCOL_MIN_VERSION: u32 = 2;
+pub const PROTOCOL_MIN_VERSION: u32 = 3;
 
 /// Well-known capability names. These are strings on the wire so a peer that
 /// does not know a name can still complete the handshake.
@@ -226,9 +226,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protocol_version_is_two_and_min_matches() {
-        assert_eq!(PROTOCOL_VERSION, 2);
-        assert_eq!(PROTOCOL_MIN_VERSION, 2);
+    fn protocol_version_is_three_and_min_matches() {
+        assert_eq!(PROTOCOL_VERSION, 3);
+        assert_eq!(PROTOCOL_MIN_VERSION, 3);
     }
 
     #[test]

@@ -45,6 +45,8 @@ mod spawn;
 mod transport;
 #[cfg(feature = "server")]
 mod workspace;
+#[cfg(feature = "server")]
+mod worktree;
 
 #[cfg(windows)]
 mod security;

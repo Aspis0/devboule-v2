@@ -65,7 +65,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, Weak};
@@ -77,9 +77,10 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 #[cfg(test)]
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
-    compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, JournalRetention,
-    JournalStats, OwnerId, PermissionOutcome, Project, RetentionPatch, Session, SessionEvent,
-    SessionKind, SessionState, SessionStateSnapshot, WireError, Workspace, WorkspaceIsolation,
+    compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, ErrorDetails,
+    JournalRetention, JournalStats, OwnerId, PermissionOutcome, Project, RetentionPatch, Session,
+    SessionEvent, SessionKind, SessionState, SessionStateSnapshot, WireError, Workspace,
+    WorkspaceIsolation,
 };
 
 use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
@@ -606,7 +607,61 @@ impl SessionRegistry {
             journal_roster_after_list_hook: Arc::new(Mutex::new(None)),
         };
         spawn_os_liveness_sweeper(&registry);
+        registry.reconcile_worktree_journal();
         registry
+    }
+
+    fn reconcile_worktree_journal(&self) {
+        let Some(journal) = &self.journal else {
+            return;
+        };
+        let Ok(projects) = journal.projects_list() else {
+            return;
+        };
+        for project in projects {
+            let Ok(workspaces) = journal.workspaces_list(&project.id) else {
+                continue;
+            };
+            let project_path = PathBuf::from(&project.path);
+            let root = crate::worktree::worktree_root_beside_project(&project_path);
+            let mut known_checkouts = Vec::new();
+            for workspace in workspaces {
+                if workspace.isolation != WorkspaceIsolation::Worktree {
+                    continue;
+                }
+                let checkout = PathBuf::from(&workspace.path);
+                known_checkouts.push(checkout.clone());
+                if !checkout.exists() {
+                    eprintln!(
+                        "worktree row '{}' points at missing checkout '{}'; detaching the row",
+                        workspace.id, workspace.path
+                    );
+                    let _ = journal.workspace_delete(&workspace.id);
+                }
+            }
+            let Some(root) = root else {
+                continue;
+            };
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let known = known_checkouts.iter().any(|known| {
+                    crate::worktree::canonical_or_original(known)
+                        == crate::worktree::canonical_or_original(&path)
+                });
+                if !known {
+                    eprintln!(
+                        "orphan worktree checkout '{}' has no journal row; leaving it on disk",
+                        path.display()
+                    );
+                }
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1039,19 +1094,107 @@ impl SessionRegistry {
         isolation: WorkspaceIsolation,
         branch: Option<String>,
     ) -> Result<Workspace, WireError> {
-        if branch.is_some() {
-            return Err(WireError::new(
-                ErrorCode::Unimplemented,
-                "branch-based workspaces are not supported until worktree isolation is implemented.",
-            ));
+        match isolation {
+            WorkspaceIsolation::Local => {
+                if branch.is_some() {
+                    return Err(WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "Local workspaces do not take a branch.",
+                    ));
+                }
+                self.create_local_workspace(project_id)
+            }
+            WorkspaceIsolation::Worktree => self.create_worktree_workspace(project_id, branch),
         }
-        if isolation != WorkspaceIsolation::Local {
-            return Err(WireError::new(
-                ErrorCode::Unimplemented,
-                "Worktree workspaces are not supported yet.",
-            ));
-        }
+    }
+
+    fn create_local_workspace(&self, project_id: &str) -> Result<Workspace, WireError> {
         let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        let project = self.require_project(journal, project_id)?;
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .map_err(WireError::from)?;
+        self.remember_workspace_path(&workspace.id, PathBuf::from(&workspace.path));
+        Ok(workspace.to_workspace())
+    }
+
+    fn create_worktree_workspace(
+        &self,
+        project_id: &str,
+        branch: Option<String>,
+    ) -> Result<Workspace, WireError> {
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        let project = self.require_project(journal, project_id)?;
+        let project_path = PathBuf::from(&project.path);
+        let live = crate::git::detect_git_repository(&project_path);
+        refuse_worktree_unless_live_git_allows(&project.git_state, live.as_str(), project_id)?;
+        let branch = match branch.filter(|value| !value.trim().is_empty()) {
+            Some(branch) => branch,
+            None => crate::worktree::generated_branch_slug(worktree_branch_seed()),
+        };
+        let Some(checkout) = crate::worktree::checkout_path_for_branch(&project_path, &branch)
+        else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Project '{project_id}' has no parent directory for a sibling worktree."),
+            ));
+        };
+        let Some(root) = checkout.parent() else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Project '{project_id}' has no parent directory for a sibling worktree."),
+            ));
+        };
+        std::fs::create_dir_all(root).map_err(|error| {
+            WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "Worktree directory '{}' is not writable: {error}",
+                    crate::workspace::display_path(&root.to_string_lossy())
+                ),
+            )
+        })?;
+        if let Err(error) =
+            crate::worktree::run_worktree_add_command(&project_path, &checkout, &branch, "HEAD")
+        {
+            let cleanup = cleanup_failed_worktree_add(&project_path, &checkout);
+            return Err(WireError::new(
+                ErrorCode::WorkspaceUnavailable,
+                match cleanup {
+                    Ok(()) => format!("Could not add git worktree for '{project_id}': {error}"),
+                    Err(cleanup_error) => format!(
+                        "Could not add git worktree for '{project_id}': {error}; leftover checkout at '{}' ({cleanup_error})",
+                        crate::workspace::display_path(&checkout.to_string_lossy())
+                    ),
+                },
+            ));
+        }
+        let checkout = std::fs::canonicalize(&checkout).unwrap_or(checkout);
+        let record = crate::workspace::worktree_workspace_record(&project, &checkout, &branch);
+        let workspace = match journal.workspace_create(record) {
+            Ok(workspace) => workspace,
+            Err(error) => {
+                if let Err(cleanup_error) = cleanup_failed_worktree_add(&project_path, &checkout) {
+                    return Err(WireError::new(
+                        ErrorCode::Journal,
+                        format!(
+                            "{error}; leftover checkout at '{}' ({cleanup_error})",
+                            crate::workspace::display_path(&checkout.to_string_lossy())
+                        ),
+                    ));
+                }
+                return Err(WireError::from(error));
+            }
+        };
+        self.remember_workspace_path(&workspace.id, PathBuf::from(&workspace.path));
+        Ok(workspace.to_workspace())
+    }
+
+    fn require_project(
+        &self,
+        journal: &Journal,
+        project_id: &str,
+    ) -> Result<crate::journal::ProjectRecord, WireError> {
         let project = journal
             .project_get(project_id)
             .map_err(WireError::from)?
@@ -1067,11 +1210,161 @@ impl SessionRegistry {
                 format!("Project '{project_id}' is no longer an existing folder."),
             ));
         }
+        Ok(project)
+    }
+
+    pub fn workspace_delete(&self, workspace_id: &str, force: bool) -> Result<(), WireError> {
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
         let workspace = journal
-            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .workspace_get(workspace_id)
+            .map_err(WireError::from)?
+            .ok_or_else(|| workspace_unavailable(workspace_id, "it does not exist"))?;
+        match workspace.isolation {
+            WorkspaceIsolation::Local => {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "The local workspace is the project folder and is not removed as a worktree.",
+                ));
+            }
+            WorkspaceIsolation::Worktree => {}
+        }
+        let checkout = PathBuf::from(&workspace.path);
+        let project = journal
+            .project_get(&workspace.project_id)
             .map_err(WireError::from)?;
-        self.remember_workspace_path(&workspace.id, PathBuf::from(&workspace.path));
-        Ok(workspace.to_workspace())
+        let Some(project) = project else {
+            return self.detach_worktree_row(
+                journal,
+                workspace_id,
+                &checkout,
+                "its project row is gone",
+            );
+        };
+        let repo = PathBuf::from(&project.path);
+        if !repo.is_dir() {
+            return self.detach_worktree_row(
+                journal,
+                workspace_id,
+                &checkout,
+                "its project folder is gone",
+            );
+        }
+        let Some(root) = crate::worktree::worktree_root_beside_project(&repo) else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Project has no parent directory for a sibling worktree.",
+            ));
+        };
+        if !crate::worktree::path_is_within(&checkout, &root) {
+            let path = crate::workspace::display_path(&checkout.to_string_lossy());
+            let root = crate::workspace::display_path(&root.to_string_lossy());
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Checkout '{path}' is not inside worktree root '{root}'."),
+            )
+            .with_details(ErrorDetails::WorktreeNotConfined { path, root }));
+        }
+        let expected_branch = workspace.branch.as_deref().unwrap_or("");
+        match crate::worktree::list_existing_worktrees(&repo) {
+            Ok(entries) => {
+                match crate::worktree::identify_worktree_at_path(
+                    &entries,
+                    &checkout,
+                    expected_branch,
+                ) {
+                    crate::worktree::WorktreeIdentity::Locked => {
+                        let path = crate::workspace::display_path(&checkout.to_string_lossy());
+                        return Err(WireError::new(
+                            ErrorCode::InvalidRequest,
+                            format!(
+                                "Worktree '{path}' is locked. Unlock it before removing; --force does not override a lock."
+                            ),
+                        )
+                        .with_details(ErrorDetails::WorktreeLocked { path }));
+                    }
+                    crate::worktree::WorktreeIdentity::BranchMismatch { observed } => {
+                        let path = crate::workspace::display_path(&checkout.to_string_lossy());
+                        return Err(WireError::new(
+                            ErrorCode::InvalidRequest,
+                            format!(
+                                "Worktree at '{path}' is branch '{}', not '{}'. Refusing to remove another workspace's checkout.",
+                                observed.as_deref().unwrap_or("(detached)"),
+                                expected_branch
+                            ),
+                        )
+                        .with_details(ErrorDetails::WorktreeMismatch {
+                            path,
+                            expected_branch: expected_branch.to_string(),
+                            observed_branch: observed,
+                        }));
+                    }
+                    crate::worktree::WorktreeIdentity::Match
+                    | crate::worktree::WorktreeIdentity::Missing => {}
+                }
+            }
+            Err(error) => {
+                return Err(WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    format!("Could not list worktrees for '{workspace_id}': {error}"),
+                ));
+            }
+        }
+        if !force {
+            if let Ok(true) = crate::worktree::checkout_has_dirty_files(&checkout) {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    crate::worktree::worktree_dirty_remove_message(&checkout),
+                )
+                .with_details(ErrorDetails::WorktreeDirty {
+                    path: crate::workspace::display_path(&checkout.to_string_lossy()),
+                    force_required: true,
+                }));
+            }
+        }
+        let command = crate::worktree::build_worktree_remove_command(&repo, &checkout, force);
+        if let Err(error) = crate::worktree::run_worktree_remove_command_with_recovery(
+            &command, &repo, &checkout, force,
+        ) {
+            if crate::worktree::is_dirty_worktree_remove_error(&error) {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    crate::worktree::worktree_dirty_remove_message(&checkout),
+                )
+                .with_details(ErrorDetails::WorktreeDirty {
+                    path: crate::workspace::display_path(&checkout.to_string_lossy()),
+                    force_required: true,
+                }));
+            }
+            return Err(WireError::new(
+                ErrorCode::WorkspaceUnavailable,
+                format!("Could not remove worktree '{workspace_id}': {error}"),
+            ));
+        }
+        journal
+            .workspace_delete(workspace_id)
+            .map_err(WireError::from)?;
+        self.invalidate_workspace_path(workspace_id);
+        Ok(())
+    }
+
+    fn detach_worktree_row(
+        &self,
+        journal: &Journal,
+        workspace_id: &str,
+        checkout: &Path,
+        reason: &str,
+    ) -> Result<(), WireError> {
+        let leftover = checkout
+            .exists()
+            .then(|| crate::workspace::display_path(&checkout.to_string_lossy()));
+        journal
+            .workspace_delete(workspace_id)
+            .map_err(WireError::from)?;
+        self.invalidate_workspace_path(workspace_id);
+        eprintln!(
+            "workspace '{workspace_id}' detached because {reason}; checkout left at {leftover:?}"
+        );
+        Ok(())
     }
 
     fn workspace_cwd(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
@@ -1093,12 +1386,6 @@ impl SessionRegistry {
             .workspace_get_for_session(workspace_id)
             .map_err(|error| workspace_journal_error(workspace_id, error))?
             .ok_or_else(|| workspace_unavailable(workspace_id, "it does not exist"))?;
-        if workspace.isolation != WorkspaceIsolation::Local {
-            return Err(workspace_unavailable(
-                workspace_id,
-                "worktree workspaces are not supported yet",
-            ));
-        }
         let path = PathBuf::from(workspace.path);
         if !path.is_dir() {
             return Err(workspace_unavailable(
@@ -2901,6 +3188,45 @@ fn journal_unavailable() -> WireError {
     )
 }
 
+fn git_state_allows_worktree(state: &str) -> bool {
+    matches!(state, "repository" | "inside_repository")
+}
+
+fn refuse_worktree_unless_live_git_allows(
+    recorded: &str,
+    observed: &str,
+    project_id: &str,
+) -> Result<(), WireError> {
+    if git_state_allows_worktree(observed) {
+        return Ok(());
+    }
+    Err(
+        WireError::new(
+            ErrorCode::WorkspaceUnavailable,
+            format!(
+                "Project '{project_id}' cannot host a worktree (git state is '{observed}'; recorded '{recorded}')."
+            ),
+        )
+        .with_details(ErrorDetails::WorktreeGitState {
+            recorded: recorded.to_string(),
+            observed: observed.to_string(),
+        }),
+    )
+}
+
+fn cleanup_failed_worktree_add(repo: &Path, checkout: &Path) -> Result<(), String> {
+    let remove = crate::worktree::build_worktree_remove_command(repo, checkout, true);
+    crate::worktree::run_worktree_remove_command_with_recovery(&remove, repo, checkout, true)
+}
+
+fn worktree_branch_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ u64::from(std::process::id())
+}
+
 fn workspace_unavailable(workspace_id: &str, reason: &str) -> WireError {
     WireError::new(
         ErrorCode::WorkspaceUnavailable,
@@ -3969,7 +4295,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_create_rejects_branch_until_worktrees_exist() {
+    fn workspace_create_rejects_a_branch_on_a_local_workspace() {
         let (dir, registry, journal) = tmp_delete_registry();
         let error = registry
             .workspace_create(
@@ -3978,8 +4304,145 @@ mod tests {
                 Some("feature-x".to_string()),
             )
             .expect_err("branch must not be silently ignored");
-        assert_eq!(error.code, ErrorCode::Unimplemented);
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert!(error.message.contains("branch"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worktree_create_refuses_when_live_git_is_not_a_repository() {
+        let error = refuse_worktree_unless_live_git_allows("repository", "not_repository", "p.one")
+            .expect_err("live not_repository must refuse even if recorded says repository");
+        assert_eq!(error.code, ErrorCode::WorkspaceUnavailable);
+        match error.details {
+            Some(devboule_protocol::ErrorDetails::WorktreeGitState { recorded, observed }) => {
+                assert_eq!(recorded, "repository");
+                assert_eq!(observed, "not_repository");
+            }
+            other => panic!("expected WorktreeGitState, got {other:?}"),
+        }
+        assert!(
+            refuse_worktree_unless_live_git_allows("not_repository", "repository", "p.one").is_ok(),
+            "live repository must win over a stale recorded not_repository"
+        );
+    }
+
+    #[test]
+    fn worktree_workspace_cwd_uses_the_checkout_path_not_the_project() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("project");
+        let checkout = dir.join("checkout");
+        std::fs::create_dir(&project_path).expect("project folder");
+        std::fs::create_dir(&checkout).expect("checkout folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::worktree_workspace_record(
+                &project,
+                &checkout,
+                "feature-x",
+            ))
+            .expect("persist worktree workspace");
+        assert_eq!(workspace.isolation, WorkspaceIsolation::Worktree);
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut command)
+            .expect("worktree cwd");
+        assert_eq!(command.cwd, checkout);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_delete_detaches_the_row_when_the_project_folder_is_gone() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("project");
+        let checkout = dir.join("project.worktrees").join("kept");
+        std::fs::create_dir(&project_path).expect("project folder");
+        std::fs::create_dir_all(&checkout).expect("checkout");
+        std::fs::write(checkout.join("uncommitted.txt"), "keep me").expect("work");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::worktree_workspace_record(
+                &project,
+                &checkout,
+                "feature/a",
+            ))
+            .expect("persist worktree workspace");
+        std::fs::remove_dir_all(&project_path).expect("remove project folder");
+        registry
+            .workspace_delete(&workspace.id, false)
+            .expect("row must be removable when the project folder is gone");
+        assert!(
+            journal.workspace_get(&workspace.id).expect("get").is_none(),
+            "stale row must be detached"
+        );
+        assert!(
+            checkout.join("uncommitted.txt").is_file(),
+            "uncommitted work must stay on disk"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_delete_refuses_a_checkout_outside_the_project_worktree_root() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("project");
+        let outsider = dir.join("someone-else");
+        std::fs::create_dir(&project_path).expect("project folder");
+        std::fs::create_dir(&outsider).expect("outsider");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::worktree_workspace_record(
+                &project,
+                &outsider,
+                "feature/a",
+            ))
+            .expect("persist worktree workspace");
+        let error = registry
+            .workspace_delete(&workspace.id, true)
+            .expect_err("must not git-remove a path outside the worktree root");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(matches!(
+            error.details,
+            Some(devboule_protocol::ErrorDetails::WorktreeNotConfined { .. })
+        ));
+        assert!(outsider.is_dir(), "outsider checkout must be untouched");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_workspace_delete_does_not_remove_the_project_folder() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("project");
+        std::fs::create_dir(&project_path).expect("project folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = registry
+            .workspace_create(&project.id, WorkspaceIsolation::Local, None)
+            .expect("local workspace");
+        let error = registry
+            .workspace_delete(&workspace.id, false)
+            .expect_err("local workspace must not be deleted as a worktree");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(project_path.is_dir());
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

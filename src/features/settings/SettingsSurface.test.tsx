@@ -1158,7 +1158,13 @@ describe("Settings projects", () => {
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);
     vi.mocked(workspacesList).mockResolvedValue([
-      { id: "workspace-settings", projectId: project.id, title: "main", isolation: "local" },
+      {
+        id: "workspace-settings",
+        projectId: project.id,
+        title: "feature-x",
+        isolation: "worktree",
+        path: "D:\\real-project.worktrees\\feature-x-9f2e1a",
+      },
     ]);
     vi.mocked(open).mockResolvedValue(null);
   });
@@ -1187,6 +1193,10 @@ describe("Settings projects", () => {
     expect(container.textContent).toContain("real-project");
     expect(container.textContent).toContain("D:\\real-project");
     expect(container.textContent).toContain("1 workspace");
+    // The checkout path is rendered exactly as the daemon sent it. It differs
+    // from the project path here, so a frontend that substituted the project
+    // path would fail this assertion.
+    expect(container.textContent).toContain("D:\\real-project.worktrees\\feature-x-9f2e1a");
   });
 
   it("keeps other projects visible when one workspace list fails and retries", async () => {
@@ -1198,7 +1208,15 @@ describe("Settings projects", () => {
     vi.mocked(projectsList).mockResolvedValue([project, brokenProject]);
     vi.mocked(workspacesList).mockImplementation(async (projectId) => {
       if (projectId === brokenProject.id) throw new Error("settings workspace list failed");
-      return [{ id: "workspace-settings", projectId, title: "main", isolation: "local" }];
+      return [
+        {
+          id: "workspace-settings",
+          projectId,
+          title: "main",
+          isolation: "local",
+          path: projectId === project.id ? "D:\\real-project" : "D:\\broken-project",
+        },
+      ];
     });
     await renderProjects();
 
@@ -1213,6 +1231,7 @@ describe("Settings projects", () => {
         projectId: brokenProject.id,
         title: "fixed",
         isolation: "local",
+        path: "D:\\broken-project",
       },
     ]);
     const retry = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
