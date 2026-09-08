@@ -29,6 +29,30 @@ serves. The trust bar is correspondingly higher, and the platform enforces it
 mechanically (digest verification, capability negotiation, sandboxing) — not
 by promising.
 
+### Reading order (first-time author)
+
+**§1 → §2 → §3 → §4 → §5 → §9 → §12** gets you from zero to an installed
+plugin. §6 (backends) when you need native power; §7 and §11 are ROADMAP and
+FUTURE-DESIGN sections — read them last, they describe capabilities that do
+not exist yet. §8 is the security contract you are accepting.
+
+### Known platform limitations (learn these BEFORE designing anything)
+
+These are architectural facts today (hostile-audit verified), not
+implementation details:
+
+1. **All plugins share ONE origin** (`http://plugin.localhost`). Your
+   JavaScript, assets, and backend binary are readable by every other
+   installed plugin via the asset server. Do not embed secrets in the UI
+   bundle. (Per-plugin origins are a platform roadmap item.)
+2. **Your backend binary has FULL user-level access.** The Job Object only
+   prevents orphan processes — it is NOT a sandbox. No filesystem, network,
+   or registry confinement. Reviewers and users trust you accordingly.
+3. **No self-registered nav surface**: reaching your plugin's UI goes through
+   the plugin management UI (see §5).
+4. **Dev loop is manual**: no hot-reload, no scaffold CLI, no template repo
+   yet. Plan for a slower inner loop than Vite gives you in web work.
+
 ---
 
 ## 1. What a Devboule plugin is
@@ -172,46 +196,93 @@ Copy the shape of `plugins/hello/`:
    and `ui/index.js` — the bridge call pattern (versioned postMessage):
 
 ```js
+// ── bridge client (complete, handles events AND replies) ──────────────
+const HOST_ORIGINS = [
+  "http://tauri.localhost",     // Windows/Linux shell
+  "tauri://localhost",          // macOS shell
+  "http://localhost:1420",      // dev server
+];
+
 let seq = 0;
-const pending = new Map();
+const pending = new Map();          // request id → {resolve, reject}
+const subscriptions = new Map();    // subscription id → callback
 
 export function invoke(method, payload = {}) {
-  const id = crypto.randomUUID();
+  const id = `aimacro-${++seq}`;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     window.parent.postMessage(
       { v: 1, id, kind: "invoke", method, payload },
-      "http://tauri.localhost",          // the shell's origin
+      HOST_ORIGINS[0],                // outbound target origin (see table §3)
     );
   });
 }
 
 window.addEventListener("message", (event) => {
-  if (event.origin !== "http://tauri.localhost") return;  // origin gate
+  if (!HOST_ORIGINS.includes(event.origin)) return;   // origin gate
+  if (event.source !== window.parent) return;         // source gate
   const msg = event.data;
-  if (msg?.kind !== "result" && msg?.kind !== "error") return;
+  if (msg?.v !== 1) return;
+
+  if (msg.kind === "event") {
+    // push events (e.g. sessions.update) arrive HERE, with the
+    // subscription id in msg.id and the data in msg.value — NOT in
+    // msg.payload, and NOT as a "result". Handle or ignore; do not
+    // route them into the pending map.
+    const cb = subscriptions.get(msg.id);
+    cb?.(msg.value);
+    return;
+  }
   const p = pending.get(msg.id);
-  if (!p) return;
+  if (!p) return;                     // late/unknown reply — ignore
   pending.delete(msg.id);
   msg.kind === "result" ? p.resolve(msg.value) : p.reject(new Error(msg.message));
 });
 
 document.getElementById("go")?.addEventListener("click", async () => {
   try {
-    const feed = await invoke("sessions.watch", {});
-    document.getElementById("out").textContent =
-      JSON.stringify(feed, null, 2);
+    // sessions.watch: the invoke RESULT is the subscription
+    // acknowledgment; session updates arrive as EVENTS (see handler above).
+    const sub = await invoke("sessions.watch", {});
+    subscriptions.set(sub.id ?? sub.subscriptionId ?? sub, (feed) => {
+      document.getElementById("out").textContent =
+        JSON.stringify(feed, null, 2);
+    });
   } catch (e) {
     document.getElementById("out").textContent = String(e);
   }
 });
 ```
 
+**Platform origins table** (both directions — outbound `targetOrigin` and
+inbound `event.origin` check):
+
+| Platform | Shell origin |
+|----------|-------------|
+| Windows / Linux | `http://tauri.localhost` |
+| macOS | `tauri://localhost` |
+| Dev server | `http://localhost:1420` |
+
+**`PluginSession` shape** (what `sessions.update` delivers in
+`value.sessions`): `{ id, title, kind, provider, status, createdAt }` —
+read `src/features/plugins/pluginBridge.ts::sessionToPluginSession` in the
+devboule repo for the authoritative field list before relying on any field.
+
+**Install**: plugins are installed from the SHELL's plugin management UI
+(folder picker → staging → verify → atomic swap) — your plugin frame has no
+Tauri IPC and cannot install anything, including itself. During development,
+drop your plugin directory into `<app-data>/plugins/<id>/` — on Windows:
+`%APPDATA%\<app-identifier>\plugins\` (check `tauri.conf.json`
+`identifier` for `<app-identifier>`); the shell scans it on next launch.
+
    (Empty `capabilities: []` means the host denies `sessions.watch` — declare
    the capabilities you call. `ping` needs nothing.)
 
 3. Compute digests and fill `files` (PowerShell:
    `Get-FileHash -Algorithm SHA256 <file>`; POSIX: `sha256sum <file>`).
+   Hand-computing is fine for this 3-file case; for ANY build-chain plugin
+   use a manifest producer instead (§4) — hand-edited digests on built
+   artifacts are the #1 rejection cause.
 
 4. Install: either drop the directory into `<app-data>/plugins/` (the scan
    picks it up on next launch), or call the `plugin_install` Tauri command —
@@ -511,6 +582,25 @@ makes the trust model work):
   review; digests + review are the trust pair. No Devboule SSO, no promise of
   payouts without a license-check story.
 
+### Known platform limitations (hostile audit 2026-09-08)
+
+Findings from a hostile review of the platform. Status labels:
+`ENFORCED-BY-CODE` = architectural fact today; `ROADMAP-GAP` = platform
+change required. Full report: `HOSTILE_AUDIT_PLUGIN_PLATFORM.md` (AiMacro
+repo).
+
+| # | Severity | Limitation | Status |
+|---|----------|-----------|--------|
+| F-01 | critical | All plugins share `http://plugin.localhost`: every plugin can READ every other plugin's JS, assets, and backend binary (asset server answers cross-frame fetches from the shared origin, `ACAO: *`). Do not ship secrets in plugin bundles. Fix (roadmap): per-plugin unique origins OR request-origin binding in the scheme handler. | ENFORCED-BY-CODE |
+| F-02 | critical | Backends have full user-level access — the Job Object only kills orphans; child processes spawned before close survive. Roadmap: restricted tokens / AppContainer + child-process job policy. | ENFORCED-BY-CODE |
+| F-03 | high | The mtime+size ETag proposed for workspace serving is spoofable (`SetFileTime` + same-size swap, attacker = a backend with full user access, F-02). The workspace-serving roadmap (§7 1-bis) must ship a stronger validator or accept this threat explicitly. | ROADMAP-GAP |
+| F-04 | high | A plugin frame can register a service worker on the shared origin and poison the cache for OTHER plugins' assets. Roadmap: `Service-Worker-Allowed` scoping or per-plugin origins. | ENFORCED-BY-CODE |
+| F-08 | high | Backend BINARIES are served like any manifest-listed file — a frame can download another plugin's exe for reverse engineering (same root as F-01). | ENFORCED-BY-CODE |
+| F-07 | medium | Capability names are an open set: unicode-confusable names (`сapabilities` with Cyrillic с) parse as distinct-but-lookalike entries. Platform should restrict capability charset at manifest validation. | ROADMAP-GAP |
+| F-09/10/11 | med/low | Workspace serving (§7 1-bis) guards must ALSO cover: Windows 8.3 short names, NTFS Alternate Data Streams (`file.js:hidden` — ADS never matches the extension allowlist… or bypasses it), unicode normalization races. | ROADMAP-GAP |
+| F-12 | medium | The open capability set is a forward-compatibility trap: a manifest declaring grab-bag names today could silently gain powers when the platform grants them later. Mitigation: capability charset restriction + explicit grant review. | ROADMAP-GAP |
+| F-18 | medium | Where this document says "the platform enforces X", verify against code before building on it — this audit found doc-vs-enforcement drift is possible (see the findings table in the hostile report). | DOC-ONLY |
+
 Do not try to bypass any of these — they are the reason a reviewed plugin can
 be trusted with a surface in the shell.
 
@@ -673,7 +763,8 @@ evolving; treat them as a compatibility layer, not the normative contract).
 4. Keep the UI CSP-clean (no inline scripts from CDNs; self-hosted assets).
 5. No Tauri IPC from the frame — it does not exist for you, by design.
 6. Backend: answer the handshake honestly; serve only what you declared; die
-   when the Job Object kills you.
+   when the Job Object kills you — and know the Job Object is an
+   orphan-guard, NOT a sandbox (F-02: you have full user-level access).
 7. Test the uninstalled state (the shell ships with zero plugins — your
    first-run experience must still make sense).
 8. Write the listing like documentation: what it does, what it needs, what
