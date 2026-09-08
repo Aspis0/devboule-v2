@@ -34,6 +34,8 @@ const VALID_RESULT = {
   ],
 } as const;
 
+const CLEAN_RESULT = { ...VALID_RESULT, findings: [] };
+
 function runAssembledMeasurement(html: string, setup?: (measurementWindow: HappyWindow) => void) {
   const srcDoc = buildArtifactMeasurementSrcDoc(html);
   const scriptMatch = srcDoc.match(/<script>([\s\S]*?)<\/script>/);
@@ -516,6 +518,52 @@ describe("artifact render critic lifecycle", () => {
       "Render checks found 1 finding.",
     );
     expect(container.textContent).toContain("Measured <code> at 1:1");
+    await act(async () => root.unmount());
+  });
+
+  it("reports a timeout after the check settles without confusing it with pending work", async () => {
+    vi.useFakeTimers();
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<ArtifactRenderCritic html="<main>Slow</main>" />);
+    });
+    expect(container.querySelector('[role="status"]')).toBeNull();
+
+    await act(async () => {
+      vi.advanceTimersByTime(ARTIFACT_RENDER_CRITIC_TIMEOUT_MS);
+    });
+
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "This artifact was too slow to check; the render check did not run.",
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a completed clean check quiet", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<ArtifactRenderCritic html="<main>Clean</main>" />);
+    });
+    const frame = document.querySelector<HTMLIFrameElement>(".design-artifact-measurement-frame");
+    if (frame === null || frame.contentWindow === null) {
+      throw new Error("Measurement frame did not mount");
+    }
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: CLEAN_RESULT,
+          source: frame.contentWindow,
+        }),
+      );
+    });
+
+    expect(container.querySelector('[role="status"]')).toBeNull();
     await act(async () => root.unmount());
   });
 });

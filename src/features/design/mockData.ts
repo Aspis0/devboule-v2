@@ -99,6 +99,8 @@ export const MOCK_DESIGN_MESSAGES: readonly DesignMessage[] = [
 
 export const MOCK_DESIGN_GENERATION_RESULTS = {
   edit: {
+    sessionId: "mock-design-session",
+    peerSessionId: null,
     prompt: "Apply the requested edit.",
     title: "Edited Index header",
     desc: "Applied to the selected node and committed to the manifest, so undo takes it back in one step. Values snapped to radius.md and shadow.soft.",
@@ -106,6 +108,8 @@ export const MOCK_DESIGN_GENERATION_RESULTS = {
     nodeIds: ["index-header"],
   },
   retry: {
+    sessionId: "mock-design-session",
+    peerSessionId: null,
     prompt: "Retry.",
     title: "Edited Index header",
     desc: "Second attempt succeeded — the node was written and the manifest committed.",
@@ -113,6 +117,8 @@ export const MOCK_DESIGN_GENERATION_RESULTS = {
     nodeIds: ["index-header"],
   },
   regenerate: {
+    sessionId: "mock-design-session",
+    peerSessionId: null,
     prompt: "Regenerate that edit.",
     title: "Regenerated Index header",
     desc: "Same instruction, new pass. The count row is now a single line and the actions collapsed to one primary.",
@@ -120,6 +126,8 @@ export const MOCK_DESIGN_GENERATION_RESULTS = {
     nodeIds: ["index-header"],
   },
   visualCheck: {
+    sessionId: "mock-design-session",
+    peerSessionId: null,
     prompt: "Run a visual check on the canvas.",
     title: "Visual check passed",
     desc: "Captured the canvas and compared it against the tokens: contrast holds at 4.9:1, no node overlaps, and every radius resolves to a token. The stale count reads from the snapshot, not a literal.",

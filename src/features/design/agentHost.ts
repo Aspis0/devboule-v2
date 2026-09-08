@@ -27,6 +27,7 @@ interface AgentSessionHandle {
 }
 
 interface ActiveRun {
+  session: AgentSessionHandle;
   sessionId: string;
   prompt: string;
   itemStart: number;
@@ -299,7 +300,7 @@ export function groundedPrompt(
 function resultFor(
   prompt: string,
   toolObservations: Map<string, ToolObservation>,
-): DesignGenerationResult {
+): Omit<DesignGenerationResult, "sessionId" | "peerSessionId"> {
   const observations = [...toolObservations.values()];
   const shellCommandsRan = observations.some(
     (observation) => observation.kind === "execute" && observation.completed,
@@ -673,6 +674,7 @@ export function createAgentHost(): DesignHost {
     const skillSlugs = skillChoice.slugs;
 
     const run: ActiveRun = {
+      session: handle,
       sessionId: handle.session.id,
       prompt,
       itemStart: 0,
@@ -721,15 +723,20 @@ export function createAgentHost(): DesignHost {
               skillSelectionFallback: skillChoice.fallback,
             }
           : baseResult;
+        const resultWithSession = {
+          ...result,
+          sessionId: run.session.session.id,
+          peerSessionId: run.session.session.peerSessionId ?? null,
+        };
         const artifact = extractArtifact(state, run.itemStart);
         settleRun(
           run,
           "resolve",
           artifact.html !== undefined
-            ? { ...result, artifactHtml: artifact.html }
+            ? { ...resultWithSession, artifactHtml: artifact.html }
             : artifact.error !== undefined
-              ? { ...result, artifactError: artifact.error }
-              : result,
+              ? { ...resultWithSession, artifactError: artifact.error }
+              : resultWithSession,
         );
         return true;
       } else if (state.status === "error") {

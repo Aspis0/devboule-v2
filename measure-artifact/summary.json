@@ -1,0 +1,2054 @@
+{
+  "machine": {
+    "os": "Windows_NT 10.0.26200",
+    "platform": "win32",
+    "arch": "x64",
+    "hostname": "Marcolenovo",
+    "cpu": "Intel(R) Core(TM) Ultra 9 185H",
+    "cores": 22,
+    "totalmemBytes": 33945935872,
+    "node": "v26.7.0",
+    "browser": {
+      "protocolVersion": "1.3",
+      "product": "Edg/152.0.4191.66",
+      "revision": "@cc2931e6363af1d70882ad63ee33b0e8cd524de0",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+      "jsVersion": "15.2.23.10"
+    },
+    "measuredAt": "2026-09-08T04:46:36.098Z"
+  },
+  "constants": {
+    "ARTIFACT_RENDER_CRITIC_TIMEOUT_MS": 1500,
+    "ARTIFACT_RENDER_CRITIC_SANDBOX": "allow-scripts"
+  },
+  "rows": [
+    {
+      "family": "realistic",
+      "kib": 8,
+      "tags": 73,
+      "cards": 1,
+      "tokensMs": "0.4 [0.3..0.7] spr=0.4",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "73.3 [65.5..164.7] spr=99.2",
+      "previewLoadMs": "19.6 [17.9..114.9] spr=97.0",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "65.9 [59.6..82.1] spr=22.5",
+      "criticBuildMs": "0.7 [0.5..1.0] spr=0.5",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 63,
+          "buildMs": 1,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 59.60000002384186,
+          "buildMs": 0.7000000476837158,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 82.10000002384186,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 72.5,
+          "buildMs": 0.8999999761581421,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 65.89999997615814,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "100.4 [96.4..114.0] spr=17.6",
+      "combinedCritic": "63.2 [57.8..88.6] spr=30.8",
+      "combinedPreview": "98.8 [94.7..113.4] spr=18.7",
+      "combinedTokens": "0.4 [0.3..0.4] spr=0.1",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 2439730,
+      "peakPreview": 1704007,
+      "peakCritic": 2046795,
+      "peakCombined": 2575147
+    },
+    {
+      "family": "adversarial",
+      "kib": 8,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "0.2 [0.1..0.7] spr=0.6",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "62.3 [47.7..64.8] spr=17.1",
+      "previewLoadMs": "30.1 [22.8..32.5] spr=9.7",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "37.5 [29.7..49.3] spr=19.6",
+      "criticBuildMs": "0.1 [0.1..0.4] spr=0.3",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 29.700000047683716,
+          "buildMs": 0.3999999761581421,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 49.299999952316284,
+          "buildMs": 0.19999992847442627,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 33.800000071525574,
+          "buildMs": 0.10000002384185791,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 43.5,
+          "buildMs": 0.10000002384185791,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 37.5,
+          "buildMs": 0.10000002384185791,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "62.8 [49.6..82.8] spr=33.2",
+      "combinedCritic": "37.4 [29.4..44.5] spr=15.1",
+      "combinedPreview": "62.3 [49.0..82.2] spr=33.2",
+      "combinedTokens": "0.3 [0.2..0.4] spr=0.2",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 2044081,
+      "peakPreview": 1814347,
+      "peakCritic": 1873847,
+      "peakCombined": 1955183
+    },
+    {
+      "family": "realistic",
+      "kib": 16,
+      "tags": 297,
+      "cards": 8,
+      "tokensMs": "0.6 [0.5..1.0] spr=0.5",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "79.4 [70.5..87.0] spr=16.5",
+      "previewLoadMs": "21.6 [21.1..23.5] spr=2.4",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "88.8 [84.0..110.1] spr=26.1",
+      "criticBuildMs": "2.2 [1.4..2.6] spr=1.2",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 84,
+          "buildMs": 2.600000023841858,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 85.89999997615814,
+          "buildMs": 2.600000023841858,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 88.79999995231628,
+          "buildMs": 1.899999976158142,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 110.09999990463257,
+          "buildMs": 2.1999999284744263,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 109.39999997615814,
+          "buildMs": 1.399999976158142,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "118.2 [98.7..122.7] spr=24.0",
+      "combinedCritic": "96.7 [73.2..99.9] spr=26.7",
+      "combinedPreview": "101.0 [97.5..121.3] spr=23.8",
+      "combinedTokens": "1.0 [0.9..1.1] spr=0.2",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 1957319,
+      "peakPreview": 1839705,
+      "peakCritic": 2632585,
+      "peakCombined": 2626753
+    },
+    {
+      "family": "adversarial",
+      "kib": 16,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "0.3 [0.2..0.4] spr=0.2",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "48.2 [41.9..50.2] spr=8.3",
+      "previewLoadMs": "28.8 [20.1..30.4] spr=10.3",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "46.8 [25.1..116.9] spr=91.8",
+      "criticBuildMs": "0.2 [0.1..0.3] spr=0.2",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 94,
+          "buildMs": 0.2999999523162842,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 25.100000023841858,
+          "buildMs": 0.20000004768371582,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 116.89999997615814,
+          "buildMs": 0.19999992847442627,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 27.100000023841858,
+          "buildMs": 0.10000002384185791,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 46.800000071525574,
+          "buildMs": 0.10000002384185791,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "50.2 [48.1..66.0] spr=17.9",
+      "combinedCritic": "33.8 [32.8..41.5] spr=8.7",
+      "combinedPreview": "49.6 [47.6..65.7] spr=18.1",
+      "combinedTokens": "0.3 [0.1..0.5] spr=0.4",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 2215535,
+      "peakPreview": 1867927,
+      "peakCritic": 1951891,
+      "peakCombined": 2106591
+    },
+    {
+      "family": "realistic",
+      "kib": 32,
+      "tags": 713,
+      "cards": 21,
+      "tokensMs": "1.3 [1.0..1.5] spr=0.5",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "87.6 [81.2..97.1] spr=15.9",
+      "previewLoadMs": "23.2 [22.4..23.7] spr=1.3",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "228.5 [159.6..2307.1] spr=2147.5",
+      "criticBuildMs": "5.3 [3.4..5.6] spr=2.2",
+      "criticExceeds": 1,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 248.19999992847443,
+          "buildMs": 5.599999904632568,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 2307.100000023842,
+          "buildMs": 5.200000047683716,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 228.5,
+          "buildMs": 5.599999904632568,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 159.59999990463257,
+          "buildMs": 3.399999976158142,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 212.10000002384186,
+          "buildMs": 5.299999952316284,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "258.3 [126.9..279.3] spr=152.4",
+      "combinedCritic": "247.1 [123.3..260.6] spr=137.3",
+      "combinedPreview": "166.3 [95.7..255.4] spr=159.7",
+      "combinedTokens": "1.9 [1.4..2.5] spr=1.1",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 2180409,
+      "peakPreview": 1885531,
+      "peakCritic": 2805935,
+      "peakCombined": 3057719
+    },
+    {
+      "family": "adversarial",
+      "kib": 32,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "0.6 [0.6..0.7] spr=0.1",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "63.0 [38.3..97.5] spr=59.2",
+      "previewLoadMs": "32.9 [20.6..71.7] spr=51.1",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "42.4 [28.2..50.0] spr=21.8",
+      "criticBuildMs": "0.2 [0.1..0.2] spr=0.1",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 28.199999928474426,
+          "buildMs": 0.19999992847442627,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 50,
+          "buildMs": 0.20000004768371582,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 36.799999952316284,
+          "buildMs": 0.10000002384185791,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 42.39999997615814,
+          "buildMs": 0.20000004768371582,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 49.89999997615814,
+          "buildMs": 0.09999990463256836,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "63.7 [47.0..82.4] spr=35.4",
+      "combinedCritic": "38.6 [36.5..56.3] spr=19.8",
+      "combinedPreview": "62.7 [45.8..81.6] spr=35.8",
+      "combinedTokens": "0.8 [0.5..0.8] spr=0.3",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 2459165,
+      "peakPreview": 1892663,
+      "peakCritic": 2025779,
+      "peakCombined": 2343475
+    },
+    {
+      "family": "realistic",
+      "kib": 64,
+      "tags": 1577,
+      "cards": 48,
+      "tokensMs": "3.3 [2.3..4.3] spr=2.0",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "85.3 [81.1..101.6] spr=20.5",
+      "previewLoadMs": "25.1 [24.7..27.8] spr=3.1",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "254.8 [226.5..257.5] spr=31.0",
+      "criticBuildMs": "8.8 [7.1..10.9] spr=3.8",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 256.2000000476837,
+          "buildMs": 10.900000095367432,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 257.5,
+          "buildMs": 8.799999952316284,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 242.39999997615814,
+          "buildMs": 7.399999976158142,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 254.79999995231628,
+          "buildMs": 9.299999952316284,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 226.5,
+          "buildMs": 7.100000023841858,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "208.4 [176.2..217.7] spr=41.5",
+      "combinedCritic": "199.9 [157.7..207.1] spr=49.4",
+      "combinedPreview": "155.1 [99.0..165.3] spr=66.3",
+      "combinedTokens": "3.4 [3.3..4.0] spr=0.7",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 2459223,
+      "peakPreview": 1926561,
+      "peakCritic": 1986477,
+      "peakCombined": 4325213
+    },
+    {
+      "family": "adversarial",
+      "kib": 64,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "0.9 [0.9..1.3] spr=0.4",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "48.8 [47.9..53.6] spr=5.7",
+      "previewLoadMs": "25.2 [20.4..27.4] spr=7.0",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "37.6 [30.9..46.2] spr=15.3",
+      "criticBuildMs": "0.2 [0.2..0.3] spr=0.1",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 30.90000009536743,
+          "buildMs": 0.30000007152557373,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 46.199999928474426,
+          "buildMs": 0.19999992847442627,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 34.700000047683716,
+          "buildMs": 0.20000004768371582,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 43.699999928474426,
+          "buildMs": 0.19999992847442627,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 37.60000002384186,
+          "buildMs": 0.19999992847442627,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "64.1 [49.1..66.4] spr=17.3",
+      "combinedCritic": "33.8 [32.8..41.8] spr=9.0",
+      "combinedPreview": "62.7 [47.9..64.7] spr=16.8",
+      "combinedTokens": "1.4 [0.8..1.5] spr=0.7",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 2835355,
+      "peakPreview": 1940755,
+      "peakCritic": 2172175,
+      "peakCombined": 2693735
+    },
+    {
+      "family": "realistic",
+      "kib": 128,
+      "tags": 3273,
+      "cards": 101,
+      "tokensMs": "5.4 [3.9..9.7] spr=5.8",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "116.8 [111.9..125.2] spr=13.3",
+      "previewLoadMs": "36.1 [35.7..38.3] spr=2.6",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "448.5 [324.7..572.4] spr=247.7",
+      "criticBuildMs": "15.2 [12.0..17.0] spr=5.0",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 306,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 572.3999999761581,
+          "buildMs": 17,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 523.1000000238419,
+          "buildMs": 16.199999928474426,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 324.7000000476837,
+          "buildMs": 12,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 339.09999990463257,
+          "buildMs": 15.199999928474426,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 448.5,
+          "buildMs": 12.300000071525574,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "370.6 [362.4..588.7] spr=226.3",
+      "combinedCritic": "359.6 [353.9..570.7] spr=216.8",
+      "combinedPreview": "164.4 [161.1..178.6] spr=17.5",
+      "combinedTokens": "6.4 [5.4..6.6] spr=1.2",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 3788563,
+      "peakPreview": 2010271,
+      "peakCritic": 5290563,
+      "peakCombined": 5258103
+    },
+    {
+      "family": "adversarial",
+      "kib": 128,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "2.1 [1.7..3.0] spr=1.3",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "47.9 [46.6..49.1] spr=2.5",
+      "previewLoadMs": "26.0 [19.1..28.4] spr=9.3",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "40.1 [35.6..42.9] spr=7.3",
+      "criticBuildMs": "0.3 [0.2..0.5] spr=0.3",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 35.60000002384186,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 42.90000009536743,
+          "buildMs": 0.20000004768371582,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 35.59999990463257,
+          "buildMs": 0.2999999523162842,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 42,
+          "buildMs": 0.2999999523162842,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 40.10000002384186,
+          "buildMs": 0.19999992847442627,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "62.9 [50.1..98.1] spr=48.0",
+      "combinedCritic": "36.2 [33.0..69.2] spr=36.2",
+      "combinedPreview": "59.8 [47.0..95.0] spr=48.0",
+      "combinedTokens": "2.8 [2.7..3.0] spr=0.3",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 3533125,
+      "peakPreview": 2011923,
+      "peakCritic": 2441683,
+      "peakCombined": 3235167
+    },
+    {
+      "family": "realistic",
+      "kib": 256,
+      "tags": 6697,
+      "cards": 208,
+      "tokensMs": "9.5 [7.5..12.2] spr=4.7",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "199.4 [197.1..200.5] spr=3.4",
+      "previewLoadMs": "179.7 [176.7..184.7] spr=8.0",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "1117.2 [1000.6..1126.6] spr=126.0",
+      "criticBuildMs": "36.1 [22.5..37.8] spr=15.3",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 627,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 1012.6999999284744,
+          "buildMs": 37.799999952316284,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1126.5999999046326,
+          "buildMs": 22.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1117.2000000476837,
+          "buildMs": 36.299999952316284,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1122.5,
+          "buildMs": 36.10000002384186,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1000.6000000238419,
+          "buildMs": 35.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "812.2 [788.7..818.8] spr=30.1",
+      "combinedCritic": "798.5 [775.2..801.9] spr=26.7",
+      "combinedPreview": "180.0 [171.0..191.4] spr=20.4",
+      "combinedTokens": "8.2 [7.4..13.2] spr=5.8",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 6708319,
+      "peakPreview": 5892369,
+      "peakCritic": 10498745,
+      "peakCombined": 11551197
+    },
+    {
+      "family": "adversarial",
+      "kib": 256,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "3.1 [3.0..3.3] spr=0.3",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "49.2 [47.4..63.6] spr=16.2",
+      "previewLoadMs": "21.5 [19.5..33.1] spr=13.6",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "35.5 [30.7..46.4] spr=15.7",
+      "criticBuildMs": "0.4 [0.3..0.5] spr=0.2",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 30.699999928474426,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 45.200000047683716,
+          "buildMs": 0.30000007152557373,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 33.10000002384186,
+          "buildMs": 0.3999999761581421,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 46.40000009536743,
+          "buildMs": 0.40000009536743164,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 35.5,
+          "buildMs": 0.3999999761581421,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "65.4 [47.1..66.3] spr=19.2",
+      "combinedCritic": "40.7 [32.0..47.1] spr=15.1",
+      "combinedPreview": "60.1 [41.3..61.8] spr=20.5",
+      "combinedTokens": "5.4 [4.2..5.5] spr=1.3",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 2477935,
+      "peakPreview": 2212107,
+      "peakCritic": 3033367,
+      "peakCombined": 4482187
+    },
+    {
+      "family": "realistic",
+      "kib": 384,
+      "tags": 10089,
+      "cards": 314,
+      "tokensMs": "18.8 [11.5..19.1] spr=7.6",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "232.6 [231.9..233.6] spr=1.7",
+      "previewLoadMs": "229.8 [224.3..232.3] spr=8.0",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "1135.8 [1047.3..1346.9] spr=299.6",
+      "criticBuildMs": "33.2 [32.7..49.2] spr=16.5",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 945,
+      "criticLong": {
+        "trialsWithLongTask": 1,
+        "maxDuration": 52,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 1141.7999999523163,
+          "buildMs": 34.60000002384186,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1118.1000000238419,
+          "buildMs": 32.700000047683716,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1346.9000000953674,
+          "buildMs": 32.700000047683716,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1135.7999999523163,
+          "buildMs": 49.200000047683716,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1047.3000000715256,
+          "buildMs": 33.200000047683716,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "1187.4 [1157.2..1219.8] spr=62.6",
+      "combinedCritic": "1169.6 [1138.2..1200.1] spr=61.9",
+      "combinedPreview": "190.3 [184.2..194.0] spr=9.8",
+      "combinedTokens": "14.3 [11.7..16.0] spr=4.3",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 10691127,
+      "peakPreview": 7936177,
+      "peakCritic": 8310185,
+      "peakCombined": 10103857
+    },
+    {
+      "family": "adversarial",
+      "kib": 384,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "4.8 [4.7..4.9] spr=0.2",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "49.1 [41.5..115.2] spr=73.7",
+      "previewLoadMs": "20.9 [20.5..87.0] spr=66.5",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "36.8 [31.3..44.3] spr=13.0",
+      "criticBuildMs": "0.4 [0.2..0.5] spr=0.3",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 31.300000071525574,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 44.299999952316284,
+          "buildMs": 0.3999999761581421,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 36.199999928474426,
+          "buildMs": 0.3999999761581421,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 40.09999990463257,
+          "buildMs": 0.19999992847442627,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 36.800000071525574,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "65.4 [64.3..76.0] spr=11.7",
+      "combinedCritic": "36.6 [36.1..44.1] spr=8.0",
+      "combinedPreview": "57.0 [56.0..67.5] spr=11.5",
+      "combinedTokens": "8.0 [8.0..8.3] spr=0.3",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 6499351,
+      "peakPreview": 2355067,
+      "peakCritic": 3569543,
+      "peakCombined": 5673543
+    },
+    {
+      "family": "realistic",
+      "kib": 512,
+      "tags": 13513,
+      "cards": 421,
+      "tokensMs": "25.3 [22.6..25.8] spr=3.2",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "416.0 [412.2..417.8] spr=5.6",
+      "previewLoadMs": "405.0 [397.1..413.8] spr=16.7",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "1343.2 [1301.7..1391.8] spr=90.1",
+      "criticBuildMs": "45.4 [43.2..54.8] spr=11.6",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 1266,
+      "criticLong": {
+        "trialsWithLongTask": 2,
+        "maxDuration": 58,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 1343.1999999284744,
+          "buildMs": 54.799999952316284,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1301.7000000476837,
+          "buildMs": 44.40000009536743,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1391.7999999523163,
+          "buildMs": 45.39999997615814,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1341.6999999284744,
+          "buildMs": 48,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 1367.2999999523163,
+          "buildMs": 43.199999928474426,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "1495.3 [1449.0..1563.4] spr=114.4",
+      "combinedCritic": "1476.6 [1429.7..1543.5] spr=113.8",
+      "combinedPreview": "208.5 [194.0..220.1] spr=26.1",
+      "combinedTokens": "15.1 [14.6..25.3] spr=10.7",
+      "combinedExceeds": 2,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 72,
+        "medianMaxDuration": 61
+      },
+      "peakTokens": 3360213,
+      "peakPreview": 2486651,
+      "peakCritic": 19224615,
+      "peakCombined": 2603155
+    },
+    {
+      "family": "adversarial",
+      "kib": 512,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "9.2 [7.0..10.8] spr=3.8",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "49.3 [46.9..131.3] spr=84.4",
+      "previewLoadMs": "31.0 [26.2..104.7] spr=78.5",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "60.5 [57.5..81.5] spr=24.0",
+      "criticBuildMs": "0.5 [0.4..0.7] spr=0.3",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 57.5,
+          "buildMs": 0.7000000476837158,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 81.5,
+          "buildMs": 0.40000009536743164,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 60.5,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 59.59999990463257,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 72.39999997615814,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "148.0 [98.0..214.3] spr=116.3",
+      "combinedCritic": "121.0 [79.5..191.0] spr=111.5",
+      "combinedPreview": "135.4 [86.6..204.8] spr=118.2",
+      "combinedTokens": "11.0 [9.0..12.3] spr=3.3",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 7950613,
+      "peakPreview": 2496123,
+      "peakCritic": 4103815,
+      "peakCombined": 6862979
+    },
+    {
+      "family": "realistic",
+      "kib": 768,
+      "tags": 20361,
+      "cards": 635,
+      "tokensMs": "21.6 [21.6..27.0] spr=5.4",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "615.2 [550.7..654.5] spr=103.8",
+      "previewLoadMs": "599.2 [540.3..643.0] spr=102.7",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "1935.8 [1893.0..1983.8] spr=90.8",
+      "criticBuildMs": "68.6 [61.5..85.7] spr=24.2",
+      "criticExceeds": 5,
+      "criticCap": 0,
+      "criticFindings": 1908,
+      "criticLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 89,
+        "medianMaxDuration": 73
+      },
+      "criticSamples": [
+        {
+          "totalMs": 1893,
+          "buildMs": 66.29999995231628,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 1950.6000000238419,
+          "buildMs": 69.19999992847443,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 1935.8000000715256,
+          "buildMs": 68.60000002384186,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 1893.9000000953674,
+          "buildMs": 61.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 1983.7999999523163,
+          "buildMs": 85.69999992847443,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        }
+      ],
+      "combinedTotal": "2200.1 [2157.8..2248.0] spr=90.2",
+      "combinedCritic": "2167.8 [2131.9..2222.0] spr=90.1",
+      "combinedPreview": "232.0 [216.3..234.5] spr=18.2",
+      "combinedTokens": "22.0 [21.8..29.8] spr=8.0",
+      "combinedExceeds": 5,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 91,
+        "medianMaxDuration": 79
+      },
+      "peakTokens": 19615117,
+      "peakPreview": 2758379,
+      "peakCritic": 14896459,
+      "peakCombined": 18540519
+    },
+    {
+      "family": "adversarial",
+      "kib": 768,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "10.1 [9.3..10.8] spr=1.5",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "48.6 [46.2..49.4] spr=3.2",
+      "previewLoadMs": "25.4 [25.1..30.2] spr=5.1",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "36.3 [34.0..111.8] spr=77.8",
+      "criticBuildMs": "0.6 [0.5..0.7] spr=0.2",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 35.90000009536743,
+          "buildMs": 0.7000000476837158,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 34,
+          "buildMs": 0.6000000238418579,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 111.79999995231628,
+          "buildMs": 0.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 39.800000071525574,
+          "buildMs": 0.7000000476837158,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 36.300000071525574,
+          "buildMs": 0.6000000238418579,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "79.9 [66.6..81.7] spr=15.1",
+      "combinedCritic": "33.4 [31.7..45.6] spr=13.9",
+      "combinedPreview": "63.4 [50.5..65.3] spr=14.8",
+      "combinedTokens": "16.1 [12.9..16.2] spr=3.3",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 10844865,
+      "peakPreview": 2768803,
+      "peakCritic": 5162999,
+      "peakCombined": 9233015
+    },
+    {
+      "family": "realistic",
+      "kib": 1024,
+      "tags": 27177,
+      "cards": 848,
+      "tokensMs": "30.4 [29.1..31.8] spr=2.7",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "798.9 [781.7..821.9] spr=40.2",
+      "previewLoadMs": "786.0 [765.2..814.3] spr=49.1",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "2514.9 [2509.8..2687.4] spr=177.6",
+      "criticBuildMs": "98.8 [91.5..124.8] spr=33.3",
+      "criticExceeds": 5,
+      "criticCap": 0,
+      "criticFindings": 2547,
+      "criticLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 132,
+        "medianMaxDuration": 104
+      },
+      "criticSamples": [
+        {
+          "totalMs": 2687.399999976158,
+          "buildMs": 98.89999997615814,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 2615.600000023842,
+          "buildMs": 124.79999995231628,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 2510.3000000715256,
+          "buildMs": 98.80000007152557,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 2514.899999976158,
+          "buildMs": 91.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 2509.8000000715256,
+          "buildMs": 91.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        }
+      ],
+      "combinedTotal": "2967.3 [2944.5..2987.2] spr=42.7",
+      "combinedCritic": "2933.5 [2908.9..2952.3] spr=43.4",
+      "combinedPreview": "284.1 [266.9..293.2] spr=26.3",
+      "combinedTokens": "30.1 [27.4..40.7] spr=13.3",
+      "combinedExceeds": 5,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 130,
+        "medianMaxDuration": 114
+      },
+      "peakTokens": 4858899,
+      "peakPreview": 3031565,
+      "peakCritic": 3069129,
+      "peakCombined": 3078905
+    },
+    {
+      "family": "adversarial",
+      "kib": 1024,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "12.3 [11.6..13.0] spr=1.4",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "65.7 [65.3..68.1] spr=2.8",
+      "previewLoadMs": "37.3 [36.2..39.3] spr=3.1",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "51.0 [45.4..90.2] spr=44.8",
+      "criticBuildMs": "0.7 [0.6..0.8] spr=0.2",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 51.5,
+          "buildMs": 0.8000000715255737,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 45.40000009536743,
+          "buildMs": 0.7000000476837158,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 90.20000004768372,
+          "buildMs": 0.6000000238418579,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 51,
+          "buildMs": 0.6999999284744263,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 47.299999952316284,
+          "buildMs": 0.7000000476837158,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "83.5 [82.6..99.6] spr=17.0",
+      "combinedCritic": "58.1 [45.4..68.0] spr=22.6",
+      "combinedPreview": "71.3 [66.3..84.9] spr=18.6",
+      "combinedTokens": "14.5 [11.9..17.3] spr=5.4",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 13732795,
+      "peakPreview": 3034591,
+      "peakCritic": 6215231,
+      "peakCombined": 11595871
+    },
+    {
+      "family": "realistic",
+      "kib": 1536,
+      "tags": 40841,
+      "cards": 1275,
+      "tokensMs": "45.2 [44.3..49.2] spr=4.9",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "1248.5 [1149.8..1265.9] spr=116.1",
+      "previewLoadMs": "1235.7 [1141.9..1252.3] spr=110.4",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "3763.9 [3751.7..4028.9] spr=277.2",
+      "criticBuildMs": "138.6 [127.0..207.5] spr=80.5",
+      "criticExceeds": 5,
+      "criticCap": 0,
+      "criticFindings": 3828,
+      "criticLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 215,
+        "medianMaxDuration": 146
+      },
+      "criticSamples": [
+        {
+          "totalMs": 4028.899999976158,
+          "buildMs": 207.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 3751.7000000476837,
+          "buildMs": 132.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 3752,
+          "buildMs": 141.10000002384186,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 3773.2000000476837,
+          "buildMs": 138.60000002384186,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 3763.899999976158,
+          "buildMs": 127,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        }
+      ],
+      "combinedTotal": "4548.2 [4374.7..5318.3] spr=943.6",
+      "combinedCritic": "4487.3 [4309.7..5263.1] spr=953.4",
+      "combinedPreview": "348.7 [313.2..365.7] spr=52.5",
+      "combinedTokens": "53.0 [47.7..57.5] spr=9.8",
+      "combinedExceeds": 5,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 194,
+        "medianMaxDuration": 156
+      },
+      "peakTokens": 27314391,
+      "peakPreview": 26255835,
+      "peakCritic": 32217963,
+      "peakCombined": 32184151
+    },
+    {
+      "family": "adversarial",
+      "kib": 1536,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "19.7 [17.4..23.5] spr=6.1",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "64.9 [60.9..99.4] spr=38.5",
+      "previewLoadMs": "46.6 [44.8..90.0] spr=45.2",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "64.1 [60.2..65.2] spr=5.0",
+      "criticBuildMs": "1.1 [0.9..1.5] spr=0.6",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 63.200000047683716,
+          "buildMs": 1.100000023841858,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 60.199999928474426,
+          "buildMs": 1.100000023841858,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 64.09999990463257,
+          "buildMs": 1.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 65.20000004768372,
+          "buildMs": 1.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 64.40000009536743,
+          "buildMs": 0.9000000953674316,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "114.4 [113.0..144.5] spr=31.5",
+      "combinedCritic": "77.6 [74.3..93.7] spr=19.4",
+      "combinedPreview": "83.5 [80.7..111.8] spr=31.1",
+      "combinedTokens": "32.0 [30.7..32.4] spr=1.7",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 19501473,
+      "peakPreview": 3561643,
+      "peakCritic": 8315147,
+      "peakCombined": 16317363
+    },
+    {
+      "family": "realistic",
+      "kib": 2048,
+      "tags": 54505,
+      "cards": 1702,
+      "tokensMs": "59.0 [56.7..64.7] spr=8.0",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "1549.5 [1533.7..1663.4] spr=129.7",
+      "previewLoadMs": "1546.4 [1523.7..1657.0] spr=133.3",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "5060.7 [4910.4..6795.5] spr=1885.1",
+      "criticBuildMs": "185.7 [177.0..201.1] spr=24.1",
+      "criticExceeds": 5,
+      "criticCap": 0,
+      "criticFindings": 5109,
+      "criticLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 211,
+        "medianMaxDuration": 194
+      },
+      "criticSamples": [
+        {
+          "totalMs": 5019.900000095367,
+          "buildMs": 201.10000002384186,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 5060.700000047684,
+          "buildMs": 181.79999995231628,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 4910.399999976158,
+          "buildMs": 185.70000004768372,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 5084.600000023842,
+          "buildMs": 200.30000007152557,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 6795.5,
+          "buildMs": 177,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        }
+      ],
+      "combinedTotal": "5851.5 [5825.8..6840.0] spr=1014.2",
+      "combinedCritic": "5772.6 [5760.2..6731.3] spr=971.1",
+      "combinedPreview": "434.8 [414.0..761.6] spr=347.6",
+      "combinedTokens": "63.6 [57.2..96.2] spr=39.0",
+      "combinedExceeds": 5,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 314,
+        "medianMaxDuration": 212
+      },
+      "peakTokens": 34386669,
+      "peakPreview": 34384777,
+      "peakCritic": 8287793,
+      "peakCombined": 11325325
+    },
+    {
+      "family": "adversarial",
+      "kib": 2048,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "24.3 [22.6..24.9] spr=2.3",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "65.8 [65.1..89.9] spr=24.8",
+      "previewLoadMs": "59.1 [57.7..62.2] spr=4.5",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "70.9 [67.2..75.8] spr=8.6",
+      "criticBuildMs": "1.2 [1.1..1.9] spr=0.8",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 70.10000002384186,
+          "buildMs": 1.399999976158142,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 67.20000004768372,
+          "buildMs": 1.2000000476837158,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 70.90000009536743,
+          "buildMs": 1.100000023841858,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 75.79999995231628,
+          "buildMs": 1.100000023841858,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 74.70000004768372,
+          "buildMs": 1.899999976158142,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "143.7 [132.8..149.3] spr=16.5",
+      "combinedCritic": "86.3 [86.1..91.2] spr=5.1",
+      "combinedPreview": "103.7 [87.2..108.1] spr=20.9",
+      "combinedTokens": "42.6 [24.6..43.0] spr=18.4",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 25270127,
+      "peakPreview": 4088791,
+      "peakCritic": 10415159,
+      "peakCombined": 21038779
+    },
+    {
+      "family": "realistic",
+      "kib": 3072,
+      "tags": 81833,
+      "cards": 2556,
+      "tokensMs": "88.9 [84.5..107.7] spr=23.2",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "2214.0 [2147.9..2457.8] spr=309.9",
+      "previewLoadMs": "2198.9 [2133.6..2445.6] spr=312.0",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "7572.4 [7510.0..10360.9] spr=2850.9",
+      "criticBuildMs": "292.8 [275.3..305.4] spr=30.1",
+      "criticExceeds": 5,
+      "criticCap": 0,
+      "criticFindings": 7671,
+      "criticLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 319,
+        "medianMaxDuration": 309
+      },
+      "criticSamples": [
+        {
+          "totalMs": 7590,
+          "buildMs": 305.39999997615814,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 7549.899999976158,
+          "buildMs": 277.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 7510,
+          "buildMs": 292.7999999523163,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 7572.399999976158,
+          "buildMs": 275.2999999523163,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        },
+        {
+          "totalMs": 10360.900000095367,
+          "buildMs": 303.40000009536743,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": true
+        }
+      ],
+      "combinedTotal": "9000.8 [8976.8..9136.4] spr=159.6",
+      "combinedCritic": "8863.1 [8846.5..9014.3] spr=167.8",
+      "combinedPreview": "755.0 [714.5..773.0] spr=58.5",
+      "combinedTokens": "110.0 [107.4..132.1] spr=24.7",
+      "combinedExceeds": 5,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 5,
+        "maxDuration": 372,
+        "medianMaxDuration": 364
+      },
+      "peakTokens": 50648889,
+      "peakPreview": 50647013,
+      "peakCritic": 32127245,
+      "peakCombined": 5131825
+    },
+    {
+      "family": "adversarial",
+      "kib": 3072,
+      "tags": 5,
+      "cards": 0,
+      "tokensMs": "36.0 [35.0..39.7] spr=4.7",
+      "tokensMissing": 0,
+      "tokensLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "previewLayoutMs": "104.5 [97.1..116.6] spr=19.5",
+      "previewLoadMs": "82.5 [78.5..87.2] spr=8.7",
+      "previewTimedOut": 0,
+      "previewLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticMs": "97.2 [88.6..101.8] spr=13.2",
+      "criticBuildMs": "1.6 [1.4..2.5] spr=1.1",
+      "criticExceeds": 0,
+      "criticCap": 0,
+      "criticFindings": 0,
+      "criticLong": {
+        "trialsWithLongTask": 0,
+        "maxDuration": 0,
+        "medianMaxDuration": 0
+      },
+      "criticSamples": [
+        {
+          "totalMs": 91.89999997615814,
+          "buildMs": 2.5,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 101.80000007152557,
+          "buildMs": 1.4000000953674316,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 88.60000002384186,
+          "buildMs": 1.399999976158142,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 97.70000004768372,
+          "buildMs": 1.7999999523162842,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        },
+        {
+          "totalMs": 97.19999992847443,
+          "buildMs": 1.600000023841858,
+          "timedOutAtCap": false,
+          "exceedsProductTimeout": false
+        }
+      ],
+      "combinedTotal": "180.2 [165.4..183.0] spr=17.6",
+      "combinedCritic": "119.2 [117.0..124.1] spr=7.1",
+      "combinedPreview": "127.7 [124.5..139.2] spr=14.7",
+      "combinedTokens": "43.7 [39.1..53.8] spr=14.7",
+      "combinedExceeds": 0,
+      "combinedCap": 0,
+      "combinedLong": {
+        "trialsWithLongTask": 1,
+        "maxDuration": 59,
+        "medianMaxDuration": 0
+      },
+      "peakTokens": 30331619,
+      "peakPreview": 5136947,
+      "peakCritic": 14612663,
+      "peakCombined": 14675791
+    }
+  ]
+}

@@ -57,3 +57,10 @@ oracle-data/*
 # `oracle-data/` rule the attribution files here are silently dropped from
 # every commit.
 !oracle-data/models/
+
+# Artifact-cost measurement working files. The harness and its results are tracked; the
+# headless browser profile and the generated samples are not — `measure-artifact/run.mjs`
+# and `generate-samples.mjs` rebuild them, and together they are ~50 MB.
+measure-artifact/.browser-profile/
+measure-artifact/samples/
+measure-artifact/*.log

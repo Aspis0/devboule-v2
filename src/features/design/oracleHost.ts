@@ -41,6 +41,8 @@ export function createOracleHost(): DesignHost {
       throwIfAborted(signal);
 
       return {
+        sessionId: "oracle-host",
+        peerSessionId: null,
         prompt,
         title:
           response.results.length === 0

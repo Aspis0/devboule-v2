@@ -20,6 +20,7 @@ import {
   selectedSlugs,
   type DesignSkillSelection,
 } from "./designSettings";
+import { recordDesignHistoryEntry, type DesignHistoryEntry } from "./designHistory";
 
 const KNOWN_SLUGS = ["color", "motion", "spacing"] as const;
 
@@ -41,6 +42,7 @@ beforeEach(() => {
     return storedSettings;
   });
   mocks.surfaceSettingsSet.mockImplementation(async (_surfaceId: string, value: unknown) => {
+    await Promise.resolve();
     storedSettings = value;
   });
 });
@@ -276,5 +278,22 @@ describe("concurrent design settings writes", () => {
     await Promise.all([providerWrite, selectionWrite]);
 
     expect(storedSettings).toEqual({ ...selection, providerId: "grok" });
+  });
+
+  it("preserves history when recording overlaps a selection write", async () => {
+    const entry: DesignHistoryEntry = {
+      sessionId: "session-history",
+      peerSessionId: "peer-history",
+      title: "A generated design",
+      savedAtMs: 10,
+      origin: "design",
+    };
+
+    const historyWrite = recordDesignHistoryEntry(entry);
+    const selectionWrite = saveDesignSkillSelection(selection);
+
+    await Promise.all([historyWrite, selectionWrite]);
+
+    expect(storedSettings).toEqual({ ...selection, history: [entry] });
   });
 });

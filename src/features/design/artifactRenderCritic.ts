@@ -18,8 +18,10 @@ import { createElement, useEffect, useState } from "react";
  * inaccessible stylesheets, colors it cannot parse, and focus rules whose effective background
  * is ambiguous. It also does not infer a missing focus rule: a browser default indicator is a
  * valid outcome when no authored focus rule matches.
- * A 261,117-byte synthetic artifact with 4,000 controls and 64 focus rules measured `run()` at
- * 242.9 ms in Chromium 152, comfortably below the current 1,500 ms measurement timeout.
+ * On an Intel Core Ultra 9 185H in Edge 152 headless, a realistic artifact took a median 1,117 ms
+ * end to end at 256 KiB, 1,343 ms at 512 KiB in an isolated run, and crossed 1,500 ms around
+ * 580 KiB. The same byte counts made only of HTML comments took 36 ms, so bytes are a weak proxy
+ * for cost. These figures move with hardware; `measure-artifact/run.mjs` reproduces them.
  * It also does not catch vertical clipping, overflow hidden without a wider scroll box,
  * transforms or clip-path that hide content, text rendered by canvas, shadow DOM, or defects
  * caused by a positioned sibling covering text, or defects that appear only after asynchronous
@@ -1171,10 +1173,9 @@ function RenderCriticCard({ result }: { result: ArtifactRenderCriticResult }) {
 }
 
 export function ArtifactRenderCritic({ html }: { html: string }) {
-  const [measurement, setMeasurement] = useState<{
-    html: string;
-    result: ArtifactRenderCriticResult;
-  } | null>(null);
+  const [measurement, setMeasurement] = useState<
+    { html: string; result: ArtifactRenderCriticResult } | { html: string; timedOut: true } | null
+  >(null);
 
   useEffect(() => {
     let disposed = false;
@@ -1212,6 +1213,7 @@ export function ArtifactRenderCritic({ html }: { html: string }) {
       if (disposed || settled) return;
       settled = true;
       cleanup();
+      setMeasurement({ html, timedOut: true });
     }, ARTIFACT_RENDER_CRITIC_TIMEOUT_MS);
     frame.srcdoc = buildArtifactMeasurementSrcDoc(html);
     document.body.append(frame);
@@ -1223,7 +1225,15 @@ export function ArtifactRenderCritic({ html }: { html: string }) {
     };
   }, [html]);
 
-  const result = measurement?.html === html ? measurement.result : null;
-  if (result === null || result.findings.length === 0) return null;
-  return createElement(RenderCriticCard, { result });
+  const currentMeasurement = measurement?.html === html ? measurement : null;
+  if (currentMeasurement === null) return null;
+  if ("timedOut" in currentMeasurement) {
+    return createElement(
+      "div",
+      { className: "design-canvas-artifact-render-warning", role: "status" },
+      "This artifact was too slow to check; the render check did not run.",
+    );
+  }
+  if (currentMeasurement.result.findings.length === 0) return null;
+  return createElement(RenderCriticCard, { result: currentMeasurement.result });
 }

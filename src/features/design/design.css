@@ -198,6 +198,61 @@
   background: color-mix(in srgb, var(--terracotta-deep) 84%, var(--ink));
 }
 
+.design-history-list {
+  flex: none;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.design-history-heading {
+  margin: 0 0 8px;
+  color: var(--silence);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.design-history-list ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.design-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.design-history-title {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-history-row time,
+.design-history-gone {
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.design-history-gone {
+  grid-column: 1 / -1;
+}
+
+.design-history-empty {
+  margin: 0;
+  color: var(--silence);
+  font-size: 11px;
+}
+
 .design-main {
   display: flex;
   flex: 1;

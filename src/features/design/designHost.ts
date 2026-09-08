@@ -49,6 +49,9 @@ export interface DesignAssistantMessage {
 export type DesignMessage = DesignUserMessage | DesignAssistantMessage;
 
 export interface DesignGenerationResult {
+  /** Identity of the session that produced this result, not whichever session is current later. */
+  sessionId: string;
+  peerSessionId: string | null;
   prompt: string;
   title: string;
   desc: string;

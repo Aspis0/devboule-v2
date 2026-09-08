@@ -33,6 +33,8 @@ import {
   type DesignSkillSelection,
 } from "./designSettings";
 import { designChatCapableProviders } from "./designProviders";
+import { DesignHistoryList } from "./DesignHistoryList";
+import { recordDesignHistoryEntry } from "./designHistory";
 import { buildSkillBlock } from "./skillLoader";
 import { providersList } from "../../lib/tauri";
 import { hitTest } from "../../lib/canvas/hitTest";
@@ -2161,6 +2163,19 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                 : message,
             ),
           );
+          if (
+            result.artifactHtml !== undefined &&
+            mountedRef.current &&
+            useAppStore.getState().designSession.host === host
+          ) {
+            void recordDesignHistoryEntry({
+              sessionId: result.sessionId,
+              peerSessionId: result.peerSessionId,
+              title: prompt.trim(),
+              savedAtMs: Date.now(),
+              origin: "design",
+            });
+          }
           if (skillSelection.mode === "auto" && result.appliedSkillSlugs !== undefined) {
             const composedAutoSkillBlock = buildSkillBlock(
               builtInSkillSources(),
@@ -2331,6 +2346,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         onUndo={undo}
         onRedo={redo}
       />
+
+      <DesignHistoryList refreshKey={generationCount} />
 
       <div className="design-main">
         <div className="design-workspace">
