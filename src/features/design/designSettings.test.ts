@@ -15,8 +15,11 @@ import {
   DOCTRINE_SETTINGS_SURFACE_ID,
   loadDesignProviderId,
   loadDesignSkillSelection,
+  loadDesignWorkspaceId,
+  loadStoredDesignWorkspaceId,
   saveDesignProviderId,
   saveDesignSkillSelection,
+  saveDesignWorkspaceId,
   selectedSlugs,
   type DesignSkillSelection,
 } from "./designSettings";
@@ -250,6 +253,68 @@ describe("design provider settings", () => {
       version: 1,
       mode: "all",
       enabledSlugs: [KNOWN_SLUGS[0]],
+      providerId: "grok",
+    });
+  });
+});
+
+describe("design workspace settings", () => {
+  it("can read a stored workspace before an incomplete registry is validated", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      workspaceId: "workspace-unconfirmed",
+    });
+
+    await expect(loadStoredDesignWorkspaceId()).resolves.toBe("workspace-unconfirmed");
+  });
+
+  it("resolves only a workspace still present in the registry", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      workspaceId: "removed-workspace",
+    });
+
+    await expect(loadDesignWorkspaceId(["workspace-current"])).resolves.toBeNull();
+  });
+
+  it("stores the workspace beside the provider", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      providerId: "grok",
+    });
+
+    await saveDesignWorkspaceId("workspace-current");
+
+    expect(mocks.surfaceSettingsSet).toHaveBeenCalledWith(DOCTRINE_SETTINGS_SURFACE_ID, {
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      providerId: "grok",
+      workspaceId: "workspace-current",
+    });
+  });
+
+  it("removes a cleared workspace without erasing the provider", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      providerId: "grok",
+      workspaceId: "workspace-old",
+    });
+
+    await saveDesignWorkspaceId(null);
+
+    expect(mocks.surfaceSettingsSet).toHaveBeenCalledWith(DOCTRINE_SETTINGS_SURFACE_ID, {
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
       providerId: "grok",
     });
   });

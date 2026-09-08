@@ -6,7 +6,11 @@ import { oracleStatus } from "../lib/tauri";
 import { useAppStore, type DesignSessionState } from "../store/appStore";
 import type { OracleIndexStatus } from "../types/ipc";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
-import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
+import type {
+  DesignDisclosureContext,
+  DesignHost,
+  DesignSurfaceProps,
+} from "../features/design/DesignSurface";
 import { createAgentHost, disposeAgentHost } from "../features/design/agentHost";
 import { createDemoHost } from "../features/design/mockData";
 import { createOracleHost } from "../features/design/oracleHost";
@@ -39,7 +43,19 @@ const DEMO_DESIGN_HOST = createDemoHost();
 const ORACLE_DESIGN_HOST = createOracleHost();
 const DEMO_DESIGN_DISCLOSURE = "Demo design — fixtures, not a live store.";
 const ORACLE_DESIGN_DISCLOSURE = "Repository index — Oracle results, no design writes.";
-const AGENT_DESIGN_DISCLOSURE = "ACP agent — writes in the directory the app was launched from.";
+export const AGENT_DESIGN_DISCLOSURE = ({
+  session,
+  selectedWorkspace,
+}: DesignDisclosureContext): string => {
+  if (session !== null) {
+    return session.cwd === undefined
+      ? "ACP agent — the directory is not known for this session."
+      : `ACP agent — running in ${session.cwd}.`;
+  }
+  return selectedWorkspace === null
+    ? "ACP agent — will run in the directory the app was launched from."
+    : `ACP agent — will run in workspace ${selectedWorkspace.title}.`;
+};
 
 type DesignHostKind = "agent" | "oracle" | "demo";
 
@@ -111,7 +127,10 @@ async function releaseDesignHostIfUnused(): Promise<void> {
 }
 
 function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
-  const [selection, setSelection] = useState<{ host: DesignHost; disclosure: string } | null>(null);
+  const [selection, setSelection] = useState<{
+    host: DesignHost;
+    disclosure: DesignSurfaceProps["disclosure"];
+  } | null>(null);
 
   useEffect(() => {
     const lifecycle = ++designBoundaryLifecycle;

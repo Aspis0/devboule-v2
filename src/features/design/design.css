@@ -1497,6 +1497,12 @@
   gap: 3px;
 }
 
+.design-workspace-project {
+  display: grid;
+  gap: 4px;
+  padding-top: 3px;
+}
+
 .design-agent-picker-option {
   padding: 6px 8px;
   color: var(--ink-soft);

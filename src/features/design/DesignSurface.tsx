@@ -8,6 +8,7 @@ import type {
 } from "react";
 import type {
   DesignAssistantMessage,
+  DesignDisclosure,
   DesignDocument,
   DesignAgentSession,
   DesignHost,
@@ -27,8 +28,11 @@ import {
   DEFAULT_DESIGN_SKILL_SELECTION,
   loadDesignProviderId,
   loadDesignSkillSelection,
+  loadDesignWorkspaceId,
+  loadStoredDesignWorkspaceId,
   saveDesignProviderId,
   saveDesignSkillSelection,
+  saveDesignWorkspaceId,
   selectedSlugs,
   type DesignSkillSelection,
 } from "./designSettings";
@@ -37,12 +41,19 @@ import { recordDesignHistoryEntry } from "./designHistory";
 import { buildSkillBlock } from "./skillLoader";
 import { useProviderConsent } from "../workspace/useProviderConsent";
 import { chatCapableProviders, requiresConsent } from "../workspace/workspaceSessions";
-import { providersList } from "../../lib/tauri";
+import { projectsList, providersList, reasonFromCause, workspacesList } from "../../lib/tauri";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
-import type { ProviderInfo, SessionManifest, SessionModel } from "../../types/ipc";
+import type {
+  Project,
+  ProviderInfo,
+  Session,
+  SessionManifest,
+  SessionModel,
+  Workspace,
+} from "../../types/ipc";
 import type { NodeRect } from "../../types/geometry";
 import {
   clampViewportZoom,
@@ -59,7 +70,12 @@ import {
 } from "./designViewport";
 import "./design.css";
 
-export type { DesignDocument, DesignHost } from "./designHost";
+export type {
+  DesignDisclosure,
+  DesignDisclosureContext,
+  DesignDocument,
+  DesignHost,
+} from "./designHost";
 
 type MessageAction = "stop" | "retry" | "select" | "regenerate";
 
@@ -158,6 +174,15 @@ interface InspectorProps {
   canDelete: boolean;
 }
 
+interface WorkspaceProject extends Project {
+  workspaces: readonly Workspace[];
+  workspaceError?: string;
+}
+
+const WORKSPACE_NOT_REGISTERED_NOTICE = "The selected workspace is no longer registered.";
+const WORKSPACE_UNCONFIRMED_NOTICE =
+  "The selected workspace could not be confirmed because its project failed to load.";
+
 interface AssistantProps {
   canGenerate: boolean;
   contextPrefix: string;
@@ -166,6 +191,13 @@ interface AssistantProps {
   providers: readonly ProviderInfo[];
   providersLoading: boolean;
   selectedProviderId: string | null;
+  workspaceProjects: readonly WorkspaceProject[];
+  workspacesLoading: boolean;
+  workspacesRefreshing: boolean;
+  workspacesError: string | null;
+  selectedWorkspaceId: string | null;
+  workspaceSelectionNotice: string | null;
+  workspaceSelectionUnresolved: boolean;
   agentSession: DesignAgentSession | null;
   agentState: AgentSessionState | null;
   draft: string;
@@ -181,6 +213,8 @@ interface AssistantProps {
   onClearContext: () => void;
   onMessageAction: (action: MessageAction, message: DesignMessage) => void;
   onProviderSelect: (provider: ProviderInfo) => void;
+  onWorkspaceSelect: (workspace: Workspace | null) => void;
+  onWorkspacePickerOpen: () => void;
   onModelSelect: (modelId: string) => void;
   onEffortSelect: (effort: string) => void;
   skillIndex: readonly BuiltInSkillIndexEntry[];
@@ -1022,6 +1056,13 @@ const DesignAssistant = memo(function DesignAssistant({
   providers,
   providersLoading,
   selectedProviderId,
+  workspaceProjects,
+  workspacesLoading,
+  workspacesRefreshing,
+  workspacesError,
+  selectedWorkspaceId,
+  workspaceSelectionNotice,
+  workspaceSelectionUnresolved,
   agentSession,
   agentState,
   draft,
@@ -1037,6 +1078,8 @@ const DesignAssistant = memo(function DesignAssistant({
   onClearContext,
   onMessageAction,
   onProviderSelect,
+  onWorkspaceSelect,
+  onWorkspacePickerOpen,
   onModelSelect,
   onEffortSelect,
   skillIndex,
@@ -1049,9 +1092,11 @@ const DesignAssistant = memo(function DesignAssistant({
 }: AssistantProps) {
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
+  const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const providerButtonRef = useRef<HTMLButtonElement>(null);
   const providerPickerWrapRef = useRef<HTMLDivElement>(null);
+  const workspacePickerWrapRef = useRef<HTMLDivElement>(null);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
   const consentRestoreProviderIdRef = useRef<string | null>(null);
@@ -1066,10 +1111,17 @@ const DesignAssistant = memo(function DesignAssistant({
     selectedProvider?.id ??
     manifest?.providerId ??
     (providersLoading ? "Loading agents…" : "Choose agent");
+  const selectedWorkspace = workspaceProjects
+    .flatMap((project) => project.workspaces)
+    .find((workspace) => workspace.id === selectedWorkspaceId);
+  const workspaceLabel =
+    selectedWorkspace?.title ??
+    (workspaceSelectionUnresolved ? "Workspace not confirmed" : "No workspace");
   const efforts = currentModel?.efforts ?? [];
   const pendingSwitch =
     agentState?.pendingSwitch !== null && agentState?.pendingSwitch !== undefined;
   const providerButtonDisabled = agentSession !== null;
+  const workspaceButtonDisabled = agentSession !== null;
   const modelButtonDisabled =
     agentSession === null || manifest === null || manifest.models.length === 0;
   const modelUnavailableMessage =
@@ -1086,6 +1138,9 @@ const DesignAssistant = memo(function DesignAssistant({
   useEffect(() => {
     if (providerButtonDisabled) setProviderPickerOpen(false);
   }, [providerButtonDisabled]);
+  useEffect(() => {
+    if (workspaceButtonDisabled) setWorkspacePickerOpen(false);
+  }, [workspaceButtonDisabled]);
   useEffect(() => {
     if (modelButtonDisabled) setModelPickerOpen(false);
   }, [modelButtonDisabled]);
@@ -1162,6 +1217,31 @@ const DesignAssistant = memo(function DesignAssistant({
       window.removeEventListener("mousedown", onMouseDown);
     };
   }, [dismissProviderPicker, providerPickerOpen]);
+
+  const dismissWorkspacePicker = useCallback(() => {
+    setWorkspacePickerOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (!workspacePickerOpen) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      dismissWorkspacePicker();
+    };
+    const onMouseDown = (event: globalThis.MouseEvent): void => {
+      const root = workspacePickerWrapRef.current;
+      if (root !== null && event.target instanceof Node && !root.contains(event.target)) {
+        dismissWorkspacePicker();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onMouseDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [dismissWorkspacePicker, workspacePickerOpen]);
 
   const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
   const resolvedSkillSlugs =
@@ -1429,6 +1509,7 @@ const DesignAssistant = memo(function DesignAssistant({
                   onClick={() => {
                     if (consentProvider !== null) return;
                     setProviderPickerOpen((open) => !open);
+                    setWorkspacePickerOpen(false);
                     setModelPickerOpen(false);
                   }}
                 >
@@ -1522,6 +1603,114 @@ const DesignAssistant = memo(function DesignAssistant({
                   </div>
                 ) : null}
               </div>
+              <div className="design-agent-picker-wrap" ref={workspacePickerWrapRef}>
+                <button
+                  className="design-provider-button"
+                  type="button"
+                  aria-label={
+                    workspaceButtonDisabled
+                      ? `Workspace for this session: ${workspaceLabel}. Choose a workspace before the first generation.`
+                      : `Choose workspace: ${workspaceLabel}`
+                  }
+                  title={
+                    workspaceButtonDisabled
+                      ? "This session keeps the workspace it started in. Choose a workspace before the first generation."
+                      : undefined
+                  }
+                  aria-expanded={workspaceButtonDisabled ? undefined : workspacePickerOpen}
+                  aria-controls={workspaceButtonDisabled ? undefined : "design-workspace-picker"}
+                  disabled={workspaceButtonDisabled}
+                  onClick={() => {
+                    const nextOpen = !workspacePickerOpen;
+                    if (nextOpen) onWorkspacePickerOpen();
+                    setWorkspacePickerOpen(nextOpen);
+                    setProviderPickerOpen(false);
+                    setModelPickerOpen(false);
+                  }}
+                >
+                  <span className="design-provider-dot" aria-hidden="true" />
+                  {workspaceLabel}
+                  {workspaceButtonDisabled ? null : " ▾"}
+                </button>
+                {workspacePickerOpen && !workspaceButtonDisabled ? (
+                  <div
+                    id="design-workspace-picker"
+                    className="design-agent-picker"
+                    role="listbox"
+                    aria-label="Choose workspace"
+                  >
+                    <div className="design-agent-picker-label">Choose workspace</div>
+                    {workspacesLoading && workspaceProjects.length === 0 ? (
+                      <div className="design-agent-picker-status">Loading workspaces.</div>
+                    ) : (
+                      <>
+                        {workspacesRefreshing ? (
+                          <div className="design-agent-picker-status">Refreshing workspaces.</div>
+                        ) : null}
+                        {workspacesError !== null ? (
+                          <div className="design-agent-picker-status">{workspacesError}</div>
+                        ) : null}
+                        {workspaceSelectionNotice !== null ? (
+                          <div className="design-agent-picker-status">
+                            {workspaceSelectionNotice}
+                          </div>
+                        ) : null}
+                        <div className="design-agent-picker-options">
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={selectedWorkspaceId === null}
+                            className="design-agent-picker-option"
+                            onClick={() => {
+                              onWorkspaceSelect(null);
+                              setWorkspacePickerOpen(false);
+                            }}
+                          >
+                            No workspace — use the daemon directory
+                          </button>
+                        </div>
+                        {workspaceProjects.length === 0 ? (
+                          <div className="design-agent-picker-status">No projects registered.</div>
+                        ) : (
+                          workspaceProjects.map((project) => (
+                            <div className="design-workspace-project" key={project.id}>
+                              <div className="design-agent-picker-label">{project.name}</div>
+                              {project.workspaceError !== undefined ? (
+                                <div className="design-agent-picker-status">
+                                  {project.workspaceError}
+                                </div>
+                              ) : project.workspaces.length === 0 ? (
+                                <div className="design-agent-picker-status">
+                                  A workspace has to be created in Workspace first.
+                                </div>
+                              ) : (
+                                <div className="design-agent-picker-options">
+                                  {project.workspaces.map((workspace) => (
+                                    <button
+                                      type="button"
+                                      role="option"
+                                      aria-selected={workspace.id === selectedWorkspaceId}
+                                      data-workspace-id={workspace.id}
+                                      className="design-agent-picker-option"
+                                      key={workspace.id}
+                                      onClick={() => {
+                                        onWorkspaceSelect(workspace);
+                                        setWorkspacePickerOpen(false);
+                                      }}
+                                    >
+                                      {workspace.title}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : null}
+              </div>
               <div className="design-agent-picker-wrap">
                 <button
                   className="design-provider-button"
@@ -1536,6 +1725,7 @@ const DesignAssistant = memo(function DesignAssistant({
                   onClick={() => {
                     setModelPickerOpen((open) => !open);
                     setProviderPickerOpen(false);
+                    setWorkspacePickerOpen(false);
                   }}
                 >
                   <span className="design-provider-dot" aria-hidden="true" />
@@ -1618,7 +1808,14 @@ const DesignAssistant = memo(function DesignAssistant({
 
 export interface DesignSurfaceProps {
   host: DesignHost;
-  disclosure?: string;
+  disclosure?: DesignDisclosure;
+}
+
+function resolveDesignDisclosure(
+  disclosure: DesignDisclosure | undefined,
+  context: { session: Session | null; selectedWorkspace: Workspace | null },
+): string | undefined {
+  return typeof disclosure === "function" ? disclosure(context) : disclosure;
 }
 
 export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
@@ -1663,10 +1860,17 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
     };
   }, [host]);
 
+  const initialDisclosure = resolveDesignDisclosure(disclosure, {
+    session: null,
+    selectedWorkspace: null,
+  });
+
   if (loadError !== null) {
     return (
       <section className="surface-card design-surface" data-screen-label="Design">
-        {disclosure ? <div className="design-demo-disclosure">{disclosure}</div> : null}
+        {initialDisclosure ? (
+          <div className="design-demo-disclosure">{initialDisclosure}</div>
+        ) : null}
         <div role="alert">Unable to load the design document: {loadError}</div>
       </section>
     );
@@ -1675,7 +1879,9 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
   if (document === null) {
     return (
       <section className="surface-card design-surface" data-screen-label="Design">
-        {disclosure ? <div className="design-demo-disclosure">{disclosure}</div> : null}
+        {initialDisclosure ? (
+          <div className="design-demo-disclosure">{initialDisclosure}</div>
+        ) : null}
         <div role="status">Loading…</div>
       </section>
     );
@@ -1687,7 +1893,7 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
 interface DesignSurfaceContentProps {
   host: DesignHost;
   document: DesignDocument;
-  disclosure?: string;
+  disclosure?: DesignDisclosure;
 }
 
 function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceContentProps) {
@@ -1734,11 +1940,21 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
+  const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProject[]>([]);
+  const [workspacesLoading, setWorkspacesLoading] = useState(true);
+  const [workspacesRefreshing, setWorkspacesRefreshing] = useState(false);
+  const [workspacesError, setWorkspacesError] = useState<string | null>(null);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [workspaceSelectionNotice, setWorkspaceSelectionNotice] = useState<string | null>(null);
+  const [workspaceSelectionUnresolved, setWorkspaceSelectionUnresolved] = useState(false);
   const [agentSession, setAgentSession] = useState<DesignAgentSession | null>(
     () => host.getAgentSession?.() ?? null,
   );
   const [agentState, setAgentState] = useState<AgentSessionState | null>(
     () => host.getAgentSession?.()?.getState() ?? null,
+  );
+  const [agentSessionRecord, setAgentSessionRecord] = useState<Session | null>(
+    () => host.getAgentSessionRecord?.() ?? null,
   );
 
   const savingRef = useRef(false);
@@ -1748,6 +1964,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const layerCopyCounterRef = useRef(0);
   const skillSelectionInteractedRef = useRef(false);
   const providerSelectionInteractedRef = useRef(false);
+  const workspaceSelectionInteractedRef = useRef(false);
+  const workspaceSelectionIdRef = useRef<string | null>(null);
+  const workspaceSelectionUnresolvedRef = useRef(false);
+  const workspaceRequestTokenRef = useRef(0);
   const assistantRef = useRef<HTMLDivElement>(null);
   const designSurfaceRef = useRef<HTMLElement>(null);
   const setMessages = useCallback(
@@ -1761,11 +1981,23 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     [host],
   );
 
+  const updateWorkspaceSelection = useCallback(
+    (workspaceId: string | null, unresolved: boolean, notice: string | null): void => {
+      workspaceSelectionIdRef.current = workspaceId;
+      workspaceSelectionUnresolvedRef.current = unresolved;
+      setSelectedWorkspaceId(workspaceId);
+      setWorkspaceSelectionUnresolved(unresolved);
+      setWorkspaceSelectionNotice(notice);
+    },
+    [],
+  );
+
   useEffect(() => {
     const updateAgentSession = (): void => {
       const next = host.getAgentSession?.() ?? null;
       setAgentSession(next);
       setAgentState(next?.getState() ?? null);
+      setAgentSessionRecord(host.getAgentSessionRecord?.() ?? null);
     };
     const unsubscribe = host.subscribeAgentSession?.(updateAgentSession);
     updateAgentSession();
@@ -1809,6 +2041,106 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       active = false;
     };
   }, [host]);
+
+  const refreshWorkspaceProjects = useCallback(
+    async (initialLoad: boolean, isActive: () => boolean = () => true): Promise<void> => {
+      const requestToken = ++workspaceRequestTokenRef.current;
+      if (initialLoad) setWorkspacesLoading(true);
+      else setWorkspacesRefreshing(true);
+      setWorkspacesError(null);
+
+      // active only rejects updates after unmount; opening twice can leave an older response alive
+      // while a newer request is current, so the token also orders concurrent refreshes.
+      const isCurrent = (): boolean =>
+        isActive() && mountedRef.current && requestToken === workspaceRequestTokenRef.current;
+
+      try {
+        const projects = await projectsList();
+        const records = await Promise.all(
+          projects.map(async (project): Promise<WorkspaceProject> => {
+            try {
+              return { ...project, workspaces: await workspacesList(project.id) };
+            } catch {
+              return {
+                ...project,
+                workspaces: [],
+                workspaceError: "Workspaces could not be loaded.",
+              };
+            }
+          }),
+        );
+        if (!isCurrent()) return;
+
+        setWorkspaceProjects(records);
+        const workspaceIds = records.flatMap((project) =>
+          project.workspaces.map((workspace) => workspace.id),
+        );
+        const failedProjectExists = records.some((project) => project.workspaceError !== undefined);
+        const existingSession = host.getAgentSessionRecord?.() ?? null;
+        const wasUnresolved = workspaceSelectionUnresolvedRef.current;
+        let storedSelection = false;
+        let candidateId: string | null;
+
+        if (existingSession !== null) {
+          candidateId = existingSession.workspaceId;
+        } else if (!initialLoad || workspaceSelectionInteractedRef.current) {
+          candidateId = workspaceSelectionIdRef.current;
+        } else {
+          storedSelection = true;
+          candidateId = failedProjectExists
+            ? await loadStoredDesignWorkspaceId()
+            : await loadDesignWorkspaceId(workspaceIds);
+          if (!isCurrent()) return;
+          if (workspaceSelectionInteractedRef.current) {
+            candidateId = workspaceSelectionIdRef.current;
+            storedSelection = false;
+          }
+        }
+
+        if (!isCurrent()) return;
+        const selectedWorkspace =
+          candidateId === null
+            ? undefined
+            : records
+                .flatMap((project) => project.workspaces)
+                .find((workspace) => workspace.id === candidateId);
+
+        if (candidateId !== null && selectedWorkspace !== undefined) {
+          updateWorkspaceSelection(candidateId, false, null);
+          if (existingSession === null && (storedSelection || (!initialLoad && wasUnresolved))) {
+            host.selectWorkspace?.(selectedWorkspace);
+          }
+        } else if (candidateId !== null && failedProjectExists) {
+          updateWorkspaceSelection(candidateId, true, WORKSPACE_UNCONFIRMED_NOTICE);
+          if (!initialLoad && !wasUnresolved) host.selectWorkspace?.(null);
+        } else if (!initialLoad && candidateId !== null) {
+          updateWorkspaceSelection(null, false, WORKSPACE_NOT_REGISTERED_NOTICE);
+          host.selectWorkspace?.(null);
+          void saveDesignWorkspaceId(null);
+        } else if (candidateId !== null || initialLoad) {
+          updateWorkspaceSelection(null, false, null);
+        }
+      } catch (cause: unknown) {
+        if (!isCurrent()) return;
+        setWorkspacesError(`Could not load workspaces: ${reasonFromCause(cause)}`);
+      }
+      if (!isCurrent()) return;
+      if (initialLoad) setWorkspacesLoading(false);
+      else {
+        setWorkspacesRefreshing(false);
+        setWorkspacesLoading(false);
+      }
+    },
+    [host, updateWorkspaceSelection],
+  );
+
+  useEffect(() => {
+    let active = true;
+    void refreshWorkspaceProjects(true, () => active);
+    return () => {
+      active = false;
+    };
+  }, [refreshWorkspaceProjects]);
 
   const snapshot = history.present;
   const layers = snapshot.layers;
@@ -1928,6 +2260,13 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const generate = host.generate;
   const canSave = saveDocument !== undefined;
   const canGenerate = generate !== undefined;
+  const selectedWorkspace = useMemo(
+    () =>
+      workspaceProjects
+        .flatMap((project) => project.workspaces)
+        .find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
+    [selectedWorkspaceId, workspaceProjects],
+  );
   const selectProvider = useCallback(
     (provider: ProviderInfo) => {
       if (agentSession !== null) return;
@@ -1938,6 +2277,20 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     },
     [agentSession, host],
   );
+  const selectWorkspace = useCallback(
+    (workspace: Workspace | null) => {
+      if (agentSession !== null) return;
+      workspaceSelectionInteractedRef.current = true;
+      updateWorkspaceSelection(workspace?.id ?? null, false, null);
+      host.selectWorkspace?.(workspace);
+      void saveDesignWorkspaceId(workspace?.id ?? null);
+    },
+    [agentSession, host, updateWorkspaceSelection],
+  );
+  const openWorkspacePicker = useCallback(() => {
+    if (agentSession !== null) return;
+    void refreshWorkspaceProjects(false);
+  }, [agentSession, refreshWorkspaceProjects]);
   const selectModel = useCallback(
     (modelId: string) => {
       void agentSession?.setModel(modelId);
@@ -1981,6 +2334,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     };
   }, [artifactError, artifactHtml, composerContextLayerId, document.contextPrefix, layers]);
   const composerContextLayerName = composerContextTarget?.label ?? null;
+  const resolvedDisclosure = resolveDesignDisclosure(disclosure, {
+    session: agentSessionRecord,
+    selectedWorkspace,
+  });
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
 
@@ -2457,7 +2814,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       <h1 className="design-sr-only" id="design-surface-title">
         Design
       </h1>
-      {disclosure ? <div className="design-demo-disclosure">{disclosure}</div> : null}
+      {resolvedDisclosure ? (
+        <div className="design-demo-disclosure">{resolvedDisclosure}</div>
+      ) : null}
       <DesignToolbar
         documentName={document.name}
         documentPath={document.path}
@@ -2529,6 +2888,13 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           providers={providers}
           providersLoading={providersLoading}
           selectedProviderId={selectedProviderId}
+          workspaceProjects={workspaceProjects}
+          workspacesLoading={workspacesLoading}
+          workspacesRefreshing={workspacesRefreshing}
+          workspacesError={workspacesError}
+          selectedWorkspaceId={selectedWorkspaceId}
+          workspaceSelectionNotice={workspaceSelectionNotice}
+          workspaceSelectionUnresolved={workspaceSelectionUnresolved}
           agentSession={agentSession}
           agentState={agentState}
           draft={draft}
@@ -2546,6 +2912,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           onClearContext={clearComposerContext}
           onMessageAction={handleMessageAction}
           onProviderSelect={selectProvider}
+          onWorkspaceSelect={selectWorkspace}
+          onWorkspacePickerOpen={openWorkspacePicker}
           onModelSelect={selectModel}
           onEffortSelect={selectEffort}
           skillIndex={skillIndex}

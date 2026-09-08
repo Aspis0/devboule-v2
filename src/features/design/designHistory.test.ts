@@ -248,6 +248,7 @@ describe("design history settings size", () => {
       version: 1,
       mode: "manual",
       enabledSlugs: [...builtInSkillSlugs()],
+      workspaceId: "workspace-history",
       history: maximumEntries,
     };
     const newestEntry: DesignHistoryEntry = {

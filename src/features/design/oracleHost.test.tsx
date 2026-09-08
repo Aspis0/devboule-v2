@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   oracleStatus: vi.fn(),
   pluginsList: vi.fn(),
   providersList: vi.fn(),
+  projectsList: vi.fn(),
+  workspacesList: vi.fn(),
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -18,6 +20,9 @@ vi.mock("../../lib/tauri", () => ({
   oracleStatus: mocks.oracleStatus,
   pluginsList: mocks.pluginsList,
   providersList: mocks.providersList,
+  projectsList: mocks.projectsList,
+  workspacesList: mocks.workspacesList,
+  reasonFromCause: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
   createSessionStateChannel: vi.fn(),
   sessionCreate: vi.fn(),
   sessionsList: vi.fn(),
@@ -83,9 +88,13 @@ beforeEach(() => {
   mocks.oracleFiles.mockReset();
   mocks.oracleStatus.mockReset();
   mocks.providersList.mockReset();
+  mocks.projectsList.mockReset();
+  mocks.workspacesList.mockReset();
   mocks.oracleFiles.mockResolvedValue([]);
   mocks.pluginsList.mockResolvedValue({ root: "", plugins: [], problem: null });
   mocks.providersList.mockResolvedValue({ providers: [], unreadableDirs: 0 });
+  mocks.projectsList.mockResolvedValue([]);
+  mocks.workspacesList.mockResolvedValue([]);
 });
 
 afterEach(async () => {

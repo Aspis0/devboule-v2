@@ -393,33 +393,6 @@ function invokeAgentCommand<T>(command: string, args: Record<string, unknown> = 
   }
 }
 
-/**
- * The workspace a design session belongs to, or null when the application cannot name
- * one — which is always, today.
- *
- * It deliberately does not ask. The commands it would ask with, `projects_list` and
- * `workspaces_list`, are declared in `src/lib/tauri.ts` and registered nowhere:
- * `generate_handler!` in `src-tauri/src/lib.rs` carries no project command and neither
- * does the daemon. Asking cost one guaranteed-rejected IPC round trip per generation,
- * and because the caller in `App.tsx` resolved it with `Promise.allSettled`, that
- * rejection silently downgraded this surface to a host that cannot produce an artifact
- * at all — no ACP generation, no critic, no doctrine, and no error anywhere.
- *
- * Not asking loses nothing. `workspace_id` is an opaque label the daemon never resolves
- * to a path: it captures `current_dir` at spawn (`acp_client.rs`) and confines the
- * agent's file access to it (`acp_host.rs`), whatever the id says. A resolved workspace
- * would change the stored id and one environment variable, and nothing else.
- *
- * When the project registry lands, restore the lookup **here**. This is the single
- * resolution that both the generation and the per-project doctrine settings read, so
- * they cannot disagree about which project is current — two resolutions could, and the
- * divergence would be silent. `scripts/tauri-command-contract.test.mjs` will hold you
- * to calling only commands that exist.
- */
-export function resolveAgentWorkspace(): Promise<Workspace | null> {
-  return Promise.resolve(null);
-}
-
 export function createAgentHost(): DesignHost {
   const oracleHost = createOracleHost();
   let disposed = false;
@@ -430,6 +403,12 @@ export function createAgentHost(): DesignHost {
   let disposalPromise: Promise<void> | null = null;
   let activePreflight: { sessionId: string; reject: (error: Error) => void } | null = null;
   let selectedProvider: ProviderInfo | undefined;
+  /**
+   * The explicit selection is the SINGLE resolution that both generation and the per-project
+   * doctrine settings read, so they cannot disagree about which project is current; two
+   * resolutions could, and the divergence would be silent.
+   */
+  let selectedWorkspace: Workspace | null = null;
   const sessionListeners = new Set<() => void>();
 
   const publishSessionChange = (): void => {
@@ -658,12 +637,7 @@ export function createAgentHost(): DesignHost {
     throwIfAborted(signal);
     const oracleResponse = await oracleAsk(prompt);
     throwIfAborted(signal);
-    // Null until a project registry exists; `sessionCreate(null, …)` is what the
-    // Workspace surface already does, and the daemon treats the id as a label rather
-    // than a location. A missing workspace must never gate a generation again.
-    const workspace = await resolveAgentWorkspace();
-    throwIfAborted(signal);
-    const handle = await ensureSession(workspace);
+    const handle = await ensureSession(selectedWorkspace);
     throwIfAborted(signal);
 
     const automatic = options?.skillMode === "auto";
@@ -811,6 +785,7 @@ export function createAgentHost(): DesignHost {
     loadDocument: oracleHost.loadDocument,
     generate,
     getAgentSession: () => sessionHandle?.controller ?? null,
+    getAgentSessionRecord: () => sessionHandle?.session ?? null,
     subscribeAgentSession: (listener) => {
       sessionListeners.add(listener);
       return () => sessionListeners.delete(listener);
@@ -820,6 +795,11 @@ export function createAgentHost(): DesignHost {
       if (runPending || activeRun !== null || sessionHandle !== null || sessionPromise !== null)
         return;
       selectedProvider = provider;
+    },
+    selectWorkspace: (workspace) => {
+      if (runPending || activeRun !== null || sessionHandle !== null || sessionPromise !== null)
+        return;
+      selectedWorkspace = workspace;
     },
   };
   hostDisposers.set(host, dispose);

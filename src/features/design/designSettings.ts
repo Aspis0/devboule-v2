@@ -43,6 +43,7 @@ function orderedIntersection(
 interface StoredDesignSettings {
   selection: DesignSkillSelection;
   providerId: string | null;
+  workspaceId: string | null;
   history?: readonly unknown[];
 }
 
@@ -70,6 +71,7 @@ function parseStoredDesignSettings(value: unknown): StoredDesignSettings | null 
   return {
     selection: parseDoctrineSelection(value) ?? defaultSelection(),
     providerId: typeof value.providerId === "string" ? value.providerId : null,
+    workspaceId: typeof value.workspaceId === "string" ? value.workspaceId : null,
     history: Array.isArray(value.history) ? value.history : undefined,
   };
 }
@@ -101,19 +103,22 @@ function serializedBytes(value: unknown): number {
 function documentWithoutHistory(
   selection: DesignSkillSelection,
   providerId: string | null,
+  workspaceId: string | null,
 ): Record<string, unknown> {
   return {
     ...selection,
     ...(providerId === null ? {} : { providerId }),
+    ...(workspaceId === null ? {} : { workspaceId }),
   };
 }
 
 function fitHistoryToSettingsBudget(
   selection: DesignSkillSelection,
   providerId: string | null,
+  workspaceId: string | null,
   history: readonly unknown[],
 ): Record<string, unknown> {
-  const base = documentWithoutHistory(selection, providerId);
+  const base = documentWithoutHistory(selection, providerId, workspaceId);
   const retained = [...history];
 
   while (retained.length > 0) {
@@ -131,11 +136,12 @@ function fitHistoryToSettingsBudget(
 async function writeDesignSettings(
   selection: DesignSkillSelection,
   providerId: string | null,
+  workspaceId: string | null,
   history: readonly unknown[],
 ): Promise<void> {
   await surfaceSettingsSet(
     DOCTRINE_SETTINGS_SURFACE_ID,
-    fitHistoryToSettingsBudget(selection, providerId, history),
+    fitHistoryToSettingsBudget(selection, providerId, workspaceId, history),
   );
 }
 
@@ -156,7 +162,8 @@ export async function saveDesignSkillSelection(selection: DesignSkillSelection):
   try {
     await queueSettingsWrite(async (stored) => {
       const providerId = stored?.providerId ?? null;
-      await writeDesignSettings(selection, providerId, stored?.history ?? []);
+      const workspaceId = stored?.workspaceId ?? null;
+      await writeDesignSettings(selection, providerId, workspaceId, stored?.history ?? []);
     });
   } catch {
     // Losing a preference must never take down a design generation.
@@ -175,7 +182,33 @@ export async function saveDesignProviderId(providerId: string | null): Promise<v
   try {
     await queueSettingsWrite(async (stored) => {
       const settings = stored?.selection ?? defaultSelection();
-      await writeDesignSettings(settings, providerId, stored?.history ?? []);
+      const workspaceId = stored?.workspaceId ?? null;
+      await writeDesignSettings(settings, providerId, workspaceId, stored?.history ?? []);
+    });
+  } catch {
+    // Losing a preference must never take down a design generation.
+  }
+}
+
+export async function loadDesignWorkspaceId(
+  knownWorkspaceIds: readonly string[],
+): Promise<string | null> {
+  const workspaceId = await loadStoredDesignWorkspaceId();
+  return workspaceId !== null && knownWorkspaceIds.includes(workspaceId) ? workspaceId : null;
+}
+
+export async function loadStoredDesignWorkspaceId(): Promise<string | null> {
+  const stored = await readStoredDesignSettings();
+  if (stored === null || stored.workspaceId === null) return null;
+  return stored.workspaceId;
+}
+
+export async function saveDesignWorkspaceId(workspaceId: string | null): Promise<void> {
+  try {
+    await queueSettingsWrite(async (stored) => {
+      const settings = stored?.selection ?? defaultSelection();
+      const providerId = stored?.providerId ?? null;
+      await writeDesignSettings(settings, providerId, workspaceId, stored?.history ?? []);
     });
   } catch {
     // Losing a preference must never take down a design generation.
@@ -204,7 +237,8 @@ export async function updateStoredDesignHistory(
   await queueSettingsWrite(async (stored) => {
     const selection = stored?.selection ?? defaultSelection();
     const providerId = stored?.providerId ?? null;
+    const workspaceId = stored?.workspaceId ?? null;
     const history = update(stored?.history ?? []);
-    await writeDesignSettings(selection, providerId, history);
+    await writeDesignSettings(selection, providerId, workspaceId, history);
   });
 }

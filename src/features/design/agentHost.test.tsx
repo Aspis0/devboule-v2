@@ -74,7 +74,7 @@ vi.mock("../../features/workspace/Workspace", () => ({
   Workspace: () => <div data-screen-label="Workspace">Workspace</div>,
 }));
 
-import { App } from "../../app/App";
+import { AGENT_DESIGN_DISCLOSURE, App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
@@ -113,7 +113,7 @@ const WORKSPACE: Workspace = {
   id: "workspace-1",
   projectId: PROJECT.id,
   title: "feat/design",
-  isolation: "worktree",
+  isolation: "local",
 };
 const SESSION: Session = {
   id: "session-1",
@@ -399,6 +399,39 @@ describe("ACP design host", () => {
     const result = await run;
     expect(result.appliedSkillSlugs).toEqual([baseline.slug, selected.slug]);
     expect(result.skillSelectionFallback).toBe(false);
+    await disposeAgentHost(host);
+  });
+
+  it("creates the session in the explicitly selected workspace", async () => {
+    const host = createAgentHost();
+    host.selectWorkspace?.(WORKSPACE);
+    const { run } = await startRun(host);
+
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(WORKSPACE.id, "acp");
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("keeps the daemon-directory fallback when no workspace is selected", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp");
+    finishRun();
+    await expect(run).resolves.toMatchObject({ sessionId: SESSION.id });
+    await disposeAgentHost(host);
+  });
+
+  it("refuses a workspace change after a session exists", async () => {
+    const host = createAgentHost();
+    host.selectWorkspace?.(WORKSPACE);
+    const { run } = await startRun(host);
+    host.selectWorkspace?.(null);
+
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(WORKSPACE.id, "acp");
+    finishRun();
+    await run;
     await disposeAgentHost(host);
   });
 
@@ -691,8 +724,7 @@ describe("ACP design host", () => {
     expect(result.desc).toContain("DesignSurface.tsx");
     expect(result.title).toContain("wrote");
     expect(result.desc).toContain("Review what the agent wrote with your own git.");
-    // Null, not WORKSPACE.id: the daemon treats the id as a label and runs every agent in
-    // its own current_dir, so no workspace is resolved until a project registry exists.
+    // No selection is intentional: the daemon-directory fallback remains a valid generation.
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp");
     expect(mocks.sessionAttach).toHaveBeenCalledWith("session-1", null, expect.anything());
     expect(mocks.sessionSend).toHaveBeenCalledWith(
@@ -799,8 +831,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("falls back to the daemon working directory when no workspace is available", async () => {
-    mocks.projectsList.mockResolvedValue([]);
+  it("falls back to the daemon working directory when no workspace is selected", async () => {
     const host = createAgentHost();
 
     const { run } = await startRun(host);
@@ -984,11 +1015,7 @@ describe("ACP design host", () => {
     expect(mocks.sessionCreate).not.toHaveBeenCalled();
   });
 
-  // The project registry does not exist in this build, so the surface must never ask for
-  // it. The rejecting mock below is a landmine: it proves we do not call the command
-  // rather than merely tolerating its failure, because tolerating it is what shipped a
-  // silently downgraded host that could not produce an artifact at all.
-  it("reaches ACP without asking for a project registry, and retains its artifact", async () => {
+  it("loads the workspace registry, reaches ACP, and retains its artifact", async () => {
     mocks.oracleStatus.mockResolvedValue(READY_STATUS);
     mocks.providersList.mockResolvedValue({
       providers: [
@@ -1003,7 +1030,6 @@ describe("ACP design host", () => {
       ],
       unreadableDirs: 0,
     });
-    mocks.projectsList.mockRejectedValue(new Error("unknown command: projects_list"));
     const { container, root } = createRootContainer();
 
     await act(async () => root.render(<App />));
@@ -1017,7 +1043,7 @@ describe("ACP design host", () => {
       ).not.toBeNull(),
     );
     expect(container.textContent).toContain(
-      "ACP agent — writes in the directory the app was launched from.",
+      "ACP agent — will run in the directory the app was launched from.",
     );
     const providerButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label^="Choose provider:"]',
@@ -1041,8 +1067,8 @@ describe("ACP design host", () => {
     draft.dispatchEvent(new Event("input", { bubbles: true }));
     await act(async () => send.click());
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
-    expect(mocks.projectsList).not.toHaveBeenCalled();
-    expect(mocks.workspacesList).not.toHaveBeenCalled();
+    expect(mocks.projectsList).toHaveBeenCalled();
+    expect(mocks.workspacesList).toHaveBeenCalledWith(PROJECT.id);
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
 
     await act(async () => useAppStore.getState().selectSurface("workspace"));
@@ -1536,5 +1562,39 @@ describe("ACP design host", () => {
         await disposeAgentHost(host);
       });
     });
+  });
+});
+
+describe("agent design disclosure", () => {
+  it("names the daemon-reported directory for a live session", () => {
+    expect(
+      AGENT_DESIGN_DISCLOSURE({
+        session: { ...SESSION, cwd: "C:/actual/design" },
+        selectedWorkspace: WORKSPACE,
+      }),
+    ).toBe("ACP agent — running in C:/actual/design.");
+  });
+
+  it("does not guess a path when a live session has no cwd", () => {
+    const disclosure = AGENT_DESIGN_DISCLOSURE({
+      session: SESSION,
+      selectedWorkspace: WORKSPACE,
+    });
+
+    expect(disclosure).toBe("ACP agent — the directory is not known for this session.");
+    expect(disclosure).not.toContain("C:/");
+    expect(disclosure).not.toContain(WORKSPACE.title);
+  });
+
+  it("describes the selected workspace before a session exists", () => {
+    expect(AGENT_DESIGN_DISCLOSURE({ session: null, selectedWorkspace: WORKSPACE })).toBe(
+      "ACP agent — will run in workspace feat/design.",
+    );
+  });
+
+  it("describes the launch-directory fallback before a session exists", () => {
+    expect(AGENT_DESIGN_DISCLOSURE({ session: null, selectedWorkspace: null })).toBe(
+      "ACP agent — will run in the directory the app was launched from.",
+    );
   });
 });

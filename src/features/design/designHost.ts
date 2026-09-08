@@ -1,5 +1,5 @@
 import type { AgentSessionState } from "../../lib/agentSession";
-import type { ProviderInfo } from "../../types/ipc";
+import type { ProviderInfo, Session, Workspace } from "../../types/ipc";
 
 export type DesignLayerKind = "TSX" | "SVG";
 export type DesignRadiusToken = "none" | "sm" | "md" | "lg";
@@ -108,9 +108,19 @@ export interface DesignHost {
   ): Promise<DesignGenerationResult>;
   /** Optional live session capability supplied by the agent-backed host. */
   getAgentSession?(): DesignAgentSession | null;
+  /** The daemon record for the live session, including its echoed working directory. */
+  getAgentSessionRecord?(): Session | null;
   subscribeAgentSession?(listener: () => void): () => void;
   selectProvider?(provider: ProviderInfo): void;
+  selectWorkspace?(workspace: Workspace | null): void;
 }
+
+export interface DesignDisclosureContext {
+  session: Session | null;
+  selectedWorkspace: Workspace | null;
+}
+
+export type DesignDisclosure = string | ((context: DesignDisclosureContext) => string);
 
 export interface DesignAgentSession {
   getState(): AgentSessionState;
