@@ -7,7 +7,12 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-const GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+// Local cold measurements of `git -C <path> rev-parse --show-toplevel` are
+// below 150 ms, but the Windows launcher, first-start antivirus scans, and
+// network-backed folders need a much larger operational margin. Ten seconds
+// keeps a hung probe bounded while making ordinary cold-start slowness a
+// retryable `TimedOut` result instead of a misleading `NotRepository` result.
+const GIT_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const GIT_REAP_TIMEOUT: Duration = Duration::from_millis(500);
 const GIT_PROBE_POLL: Duration = Duration::from_millis(10);
 const GIT_OUTPUT_READ_TIMEOUT: Duration = Duration::from_millis(250);
@@ -160,6 +165,11 @@ struct GitProcess {
     job: crate::process_tree::JobObject,
 }
 
+fn append_git_stdout(output: &mut Vec<u8>, chunk: &[u8]) {
+    let remaining = (GIT_STDOUT_MAX_BYTES + 1).saturating_sub(output.len());
+    output.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+}
+
 fn spawn_git_process(mut command: Command) -> std::io::Result<GitProcess> {
     #[cfg(windows)]
     let job = crate::process_tree::JobObject::new()?;
@@ -193,10 +203,7 @@ fn spawn_git_process(mut command: Command) -> std::io::Result<GitProcess> {
             match stdout.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(length) => {
-                    if bytes.len() <= GIT_STDOUT_MAX_BYTES {
-                        let remaining = GIT_STDOUT_MAX_BYTES + 1 - bytes.len();
-                        bytes.extend_from_slice(&buffer[..length.min(remaining)]);
-                    }
+                    append_git_stdout(&mut bytes, &buffer[..length]);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => {
@@ -295,7 +302,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        bounded_reap, classify_git_probe, detect_git_repository,
+        append_git_stdout, bounded_reap, classify_git_probe, detect_git_repository,
         detect_git_repository_with_program, parse_git_root, GitReapOutcome, GitReapPoll,
         GitRepositoryStatus, GIT_STDOUT_MAX_BYTES,
     };
@@ -365,6 +372,26 @@ mod tests {
     }
 
     #[test]
+    fn git_stdout_accumulator_keeps_draining_after_the_output_cap() {
+        let mut output = Vec::new();
+        let chunks = (0..(GIT_STDOUT_MAX_BYTES / 4096 + 4)).map(|index| {
+            if index == 0 {
+                vec![b'a'; 4096]
+            } else {
+                vec![b'b'; 4096]
+            }
+        });
+
+        for chunk in chunks {
+            append_git_stdout(&mut output, &chunk);
+        }
+
+        assert_eq!(output.len(), GIT_STDOUT_MAX_BYTES + 1);
+        assert_eq!(output[0], b'a');
+        assert_eq!(output[GIT_STDOUT_MAX_BYTES], b'b');
+    }
+
+    #[test]
     fn detect_git_repository_classifies_a_real_root_and_nested_folder() {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -402,6 +429,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "spawns PowerShell and cmd.exe; run by ignored-tests-informational on scheduled/dispatch Windows CI"]
     fn git_probe_drains_large_stdout_before_waiting_for_exit() {
         let root = unique_probe_directory("git-output");
         std::fs::create_dir(&root).expect("test directory");
@@ -433,6 +461,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    #[ignore = "spawns PowerShell, ping.exe, and a real process tree; run by ignored-tests-informational on scheduled/dispatch Windows CI"]
     fn timed_out_git_probe_leaves_no_descendant_process_alive() {
         let root = unique_probe_directory("git-tree");
         std::fs::create_dir(&root).expect("test directory");

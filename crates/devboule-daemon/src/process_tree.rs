@@ -280,6 +280,12 @@ mod tests {
             .expect("spawn innocuous ping")
     }
 
+    // Deliberately NOT ignored, unlike the two Git probe tests parked in the
+    // same pass. Those were measured red on the GitHub runner; this one has
+    // been running and passing there since before the workspace slice existed.
+    // Parking a test because it belongs to the same category as two that
+    // failed trades away working coverage for a symmetry nobody asked for —
+    // and this file is shared with PTY session lifetime.
     #[test]
     fn os_query_reports_alive_then_exited_after_kill() {
         let mut child = spawn_innocuous();
