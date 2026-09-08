@@ -230,6 +230,10 @@ impl PluginSession {
                         | DaemonMessage::Shutdown { id, .. }
                         | DaemonMessage::Session { id, .. }
                         | DaemonMessage::Sessions { id, .. }
+                        | DaemonMessage::Projects { id, .. }
+                        | DaemonMessage::Project { id, .. }
+                        | DaemonMessage::Workspaces { id, .. }
+                        | DaemonMessage::Workspace { id, .. }
                         | DaemonMessage::JournalUsage { id, .. }
                         | DaemonMessage::JournalRetention { id, .. }
                         | DaemonMessage::Providers { id, .. }

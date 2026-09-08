@@ -65,6 +65,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, Weak};
@@ -77,8 +78,8 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, JournalRetention,
-    JournalStats, OwnerId, PermissionOutcome, RetentionPatch, Session, SessionEvent, SessionKind,
-    SessionState, SessionStateSnapshot, WireError,
+    JournalStats, OwnerId, PermissionOutcome, Project, RetentionPatch, Session, SessionEvent,
+    SessionKind, SessionState, SessionStateSnapshot, WireError, Workspace, WorkspaceIsolation,
 };
 
 use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
@@ -449,6 +450,53 @@ fn check_attached(runtime: &SessionRuntime, conn: &ConnHandle) -> Result<(), Wir
 type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
 type JournalRosterCache = Arc<Mutex<Option<(u64, Vec<SessionRecord>)>>>;
 
+const WORKSPACE_PATH_CACHE_CAP: usize = 1024;
+
+#[derive(Default)]
+struct WorkspacePathCache {
+    entries: HashMap<String, (PathBuf, u64)>,
+    clock: u64,
+}
+
+impl WorkspacePathCache {
+    fn next_stamp(&mut self) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        self.clock
+    }
+
+    fn get(&mut self, workspace_id: &str) -> Option<PathBuf> {
+        let path = self
+            .entries
+            .get(workspace_id)
+            .map(|(path, _)| path.clone())?;
+        let stamp = self.next_stamp();
+        self.entries
+            .insert(workspace_id.to_string(), (path.clone(), stamp));
+        Some(path)
+    }
+
+    fn insert(&mut self, workspace_id: String, path: PathBuf) {
+        if self.entries.len() >= WORKSPACE_PATH_CACHE_CAP
+            && !self.entries.contains_key(&workspace_id)
+        {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, stamp))| *stamp)
+                .map(|(id, _)| id.clone())
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+        let stamp = self.next_stamp();
+        self.entries.insert(workspace_id, (path, stamp));
+    }
+
+    fn remove(&mut self, workspace_id: &str) {
+        self.entries.remove(workspace_id);
+    }
+}
+
 #[cfg(test)]
 type JournalRosterAfterListHook = Arc<dyn Fn() + Send + Sync>;
 
@@ -470,6 +518,10 @@ pub struct SessionRegistry {
     /// out of live-session transition broadcasts; lifecycle operations below
     /// invalidate this cache when they can change the row set.
     journal_roster: JournalRosterCache,
+    /// Workspace paths change only through workspace mutations. Cache them
+    /// after the first successful lookup so session creation does not enqueue
+    /// a blocking SQLite RPC for every new process.
+    workspace_paths: Arc<Mutex<WorkspacePathCache>>,
     /// Once materialized, a user's full wire roster is updated in place for
     /// one live-session transition. This keeps the full-snapshot contract
     /// while avoiding a second walk over every live entry.
@@ -517,6 +569,7 @@ impl SessionRegistry {
             transition_sink: Arc::new(Mutex::new(None)),
             presence: Arc::new(Mutex::new(HashMap::new())),
             journal_roster: Arc::new(Mutex::new(None)),
+            workspace_paths: Arc::new(Mutex::new(WorkspacePathCache::default())),
             state_roster_cache: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             journal_list_calls: Arc::new(AtomicU64::new(0)),
@@ -563,6 +616,27 @@ impl SessionRegistry {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clear();
+    }
+
+    fn cached_workspace_path(&self, workspace_id: &str) -> Option<PathBuf> {
+        self.workspace_paths
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(workspace_id)
+    }
+
+    fn remember_workspace_path(&self, workspace_id: &str, path: PathBuf) {
+        self.workspace_paths
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(workspace_id.to_string(), path);
+    }
+
+    fn invalidate_workspace_path(&self, workspace_id: &str) {
+        self.workspace_paths
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(workspace_id);
     }
 
     fn invalidate_stale_journal_roster(&self) {
@@ -890,6 +964,132 @@ impl SessionRegistry {
         result
     }
 
+    pub fn projects_list(&self) -> Result<Vec<Project>, WireError> {
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .projects_list()
+            .map(|projects| {
+                projects
+                    .into_iter()
+                    .map(|project| project.to_project())
+                    .collect()
+            })
+            .map_err(WireError::from)
+    }
+
+    pub fn project_add(&self, path: &str) -> Result<Project, WireError> {
+        let record = crate::workspace::project_record(path)?;
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .project_add(record)
+            .map(|project| project.to_project())
+            .map_err(WireError::from)
+    }
+
+    pub fn workspaces_list(&self, project_id: &str) -> Result<Vec<Workspace>, WireError> {
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .workspaces_list(project_id)
+            .map(|workspaces| {
+                workspaces
+                    .into_iter()
+                    .map(|workspace| workspace.to_workspace())
+                    .collect()
+            })
+            .map_err(WireError::from)
+    }
+
+    pub fn workspace_create(
+        &self,
+        project_id: &str,
+        isolation: WorkspaceIsolation,
+        branch: Option<String>,
+    ) -> Result<Workspace, WireError> {
+        if branch.is_some() {
+            return Err(WireError::new(
+                ErrorCode::Unimplemented,
+                "branch-based workspaces are not supported until worktree isolation is implemented.",
+            ));
+        }
+        if isolation != WorkspaceIsolation::Local {
+            return Err(WireError::new(
+                ErrorCode::Unimplemented,
+                "Worktree workspaces are not supported yet.",
+            ));
+        }
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        let project = journal
+            .project_get(project_id)
+            .map_err(WireError::from)?
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    format!("Project '{project_id}' does not exist."),
+                )
+            })?;
+        if !std::path::Path::new(&project.path).is_dir() {
+            return Err(WireError::new(
+                ErrorCode::WorkspaceUnavailable,
+                format!("Project '{project_id}' is no longer an existing folder."),
+            ));
+        }
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .map_err(WireError::from)?;
+        self.remember_workspace_path(&workspace.id, PathBuf::from(&workspace.path));
+        Ok(workspace.to_workspace())
+    }
+
+    fn workspace_cwd(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
+        if let Some(path) = self.cached_workspace_path(workspace_id) {
+            if path.is_dir() {
+                return Ok(path);
+            }
+            // The path can disappear after it was cached. Drop it before a
+            // bounded journal refresh so a later mutation can repair it.
+            self.invalidate_workspace_path(workspace_id);
+        }
+        let journal = self.journal.as_ref().ok_or_else(|| {
+            workspace_journal_error(
+                workspace_id,
+                crate::journal::JournalError::Unavailable("journal is not open".to_string()),
+            )
+        })?;
+        let workspace = journal
+            .workspace_get_for_session(workspace_id)
+            .map_err(|error| workspace_journal_error(workspace_id, error))?
+            .ok_or_else(|| workspace_unavailable(workspace_id, "it does not exist"))?;
+        if workspace.isolation != WorkspaceIsolation::Local {
+            return Err(workspace_unavailable(
+                workspace_id,
+                "worktree workspaces are not supported yet",
+            ));
+        }
+        let path = PathBuf::from(workspace.path);
+        if !path.is_dir() {
+            return Err(workspace_unavailable(
+                workspace_id,
+                "its folder is no longer available",
+            ));
+        }
+        self.remember_workspace_path(workspace_id, path.clone());
+        Ok(path)
+    }
+
+    fn apply_workspace_cwd(
+        &self,
+        workspace_id: Option<&str>,
+        command: &mut PtyCommand,
+    ) -> Result<(), WireError> {
+        if let Some(workspace_id) = workspace_id {
+            command.cwd = self.workspace_cwd(workspace_id)?;
+        }
+        Ok(())
+    }
+
     pub fn delete_session(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -1038,6 +1238,10 @@ impl SessionRegistry {
         command: Option<PtyCommand>,
         env_provider: Option<&str>,
     ) -> Result<Session, WireError> {
+        let workspace_id_ref = workspace_id.as_deref();
+        let workspace_cwd = workspace_id_ref
+            .map(|workspace_id| self.workspace_cwd(workspace_id))
+            .transpose()?;
         let unique = format!("{:08x}", SESSION_COUNTER.fetch_add(1, Ordering::Relaxed));
         let id = compose_session_id(&owner.session_token(), &unique)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -1055,6 +1259,9 @@ impl SessionRegistry {
             },
             None => resolve_pty_command(&self.paths)?,
         };
+        if let Some(cwd) = workspace_cwd {
+            command.cwd = cwd;
+        }
         let session_provider = match kind {
             SessionKind::Acp => provider.or_else(|| command.provider_id.clone()),
             SessionKind::Claude => Some("claude".to_string()),
@@ -1202,10 +1409,8 @@ impl SessionRegistry {
         // The persisted provider is the original explicit provider choice.
         // In particular, a persisted npx wrapper is allowed through this
         // named path because its original create already supplied consent.
-        // Resume deliberately keeps the normal spawn cwd (currently the
-        // daemon process cwd). The known workspace/cwd debt is unchanged by
-        // this slice.
-        let command = acp_client::resolve_named(&provider, &self.paths)?;
+        let mut command = acp_client::resolve_named(&provider, &self.paths)?;
+        self.apply_workspace_cwd(record.workspace_id.as_deref(), &mut command)?;
         let generation = record.generation.saturating_add(1);
 
         // A previous-run transcript is replaced. A stopped live entry is also
@@ -1947,24 +2152,20 @@ pub fn spawn_session(
     command: PtyCommand,
 ) -> Result<(), WireError> {
     if metadata.kind == SessionKind::Claude {
-        return start_spawned_session(
-            state,
-            registry,
-            metadata,
-            owner,
-            None,
-            claude_client::spawn_process(state, command)?,
-        );
+        let workspace_id = metadata.workspace_id.clone();
+        let workspace_path = command.cwd.clone();
+        let spawned = claude_client::spawn_process(state, command).map_err(|error| {
+            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+        })?;
+        return start_spawned_session(state, registry, metadata, owner, None, spawned);
     }
     if metadata.kind == SessionKind::Acp {
-        return start_spawned_session(
-            state,
-            registry,
-            metadata,
-            owner,
-            None,
-            acp_client::spawn_process(state, command)?,
-        );
+        let workspace_id = metadata.workspace_id.clone();
+        let workspace_path = command.cwd.clone();
+        let spawned = acp_client::spawn_process(state, command).map_err(|error| {
+            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+        })?;
+        return start_spawned_session(state, registry, metadata, owner, None, spawned);
     }
 
     // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
@@ -1981,10 +2182,12 @@ pub fn spawn_session(
             pixel_height: 0,
         })
         .map_err(|error| pty_wire_error("Could not open the terminal.", error))?;
+    let workspace_id = metadata.workspace_id.clone();
+    let workspace_path = command.cwd.clone();
     let mut child = pair
         .slave
         .spawn_command(command.to_command_builder())
-        .map_err(|error| pty_wire_error("Could not start the terminal shell.", error))?;
+        .map_err(|error| workspace_spawn_error(workspace_id.as_deref(), &workspace_path, error))?;
 
     // portable-pty 0.9 exposes the native Windows process handle on Child,
     // but does not expose CREATE_SUSPENDED. Assign immediately after spawn so
@@ -2661,21 +2864,83 @@ fn journal_unavailable() -> WireError {
     )
 }
 
+fn workspace_unavailable(workspace_id: &str, reason: &str) -> WireError {
+    WireError::new(
+        ErrorCode::WorkspaceUnavailable,
+        format!("Workspace '{workspace_id}' is unavailable: {reason}."),
+    )
+}
+
+fn workspace_journal_error(workspace_id: &str, error: crate::journal::JournalError) -> WireError {
+    let mut wire = WireError::from(error);
+    wire.message = format!(
+        "Workspace '{workspace_id}' could not be read from the journal: {}",
+        wire.message
+    );
+    wire
+}
+
 pub(super) fn internal(message: impl Into<String>) -> WireError {
     WireError::new(ErrorCode::Internal, message)
 }
 
 fn pty_wire_error(context: &str, error: impl std::fmt::Display) -> WireError {
     let detail = error.to_string();
-    eprintln!("{context} {detail}");
     let message = match extract_os_error_code(&detail) {
-        Some(code) => format!(
-            "{context} (OS error {code}: {}).",
-            os_error_description(code)
-        ),
-        None => format!("{context} (unknown OS error)."),
+        Some(code) => {
+            eprintln!("{context} (OS error {code})");
+            format!(
+                "{context} (OS error {code}: {}).",
+                os_error_description(code)
+            )
+        }
+        None => {
+            eprintln!("{context} (unknown OS error)");
+            format!("{context} (unknown OS error).")
+        }
     };
     WireError::new(ErrorCode::Io, message)
+}
+
+fn workspace_spawn_error(
+    workspace_id: Option<&str>,
+    path: &std::path::Path,
+    error: impl std::fmt::Display,
+) -> WireError {
+    let detail = error.to_string();
+    workspace_directory_error(workspace_id, path, &detail)
+        .unwrap_or_else(|| pty_wire_error("Could not start the terminal shell.", detail))
+}
+
+fn map_workspace_spawn_wire_error(
+    workspace_id: Option<&str>,
+    path: &std::path::Path,
+    error: WireError,
+) -> WireError {
+    workspace_directory_error(workspace_id, path, &error.message).unwrap_or(error)
+}
+
+fn workspace_directory_error(
+    workspace_id: Option<&str>,
+    path: &std::path::Path,
+    detail: &str,
+) -> Option<WireError> {
+    let workspace_id = workspace_id?;
+    let code = extract_os_error_code(detail)?;
+    if !matches!(code, 2 | 3 | 267) {
+        return None;
+    }
+    // The path is intentionally included only in the user-facing error. Do
+    // not put this personal location in daemon logs or diagnostics.
+    let display_path = crate::workspace::display_path(path.to_string_lossy().as_ref());
+    eprintln!("workspace working directory became unavailable during spawn (OS error {code})");
+    Some(WireError::new(
+        ErrorCode::WorkspaceUnavailable,
+        format!(
+            "Workspace '{workspace_id}' at '{display_path}' became unavailable while starting the session (OS error {code}: {}).",
+            os_error_description(code)
+        ),
+    ))
 }
 
 fn extract_os_error_code(detail: &str) -> Option<u32> {
@@ -2689,9 +2954,12 @@ fn extract_os_error_code(detail: &str) -> Option<u32> {
 
 fn os_error_description(code: u32) -> &'static str {
     match code {
+        2 => "no such file or directory",
+        3 => "path not found",
         8 => "not enough memory",
         232 => "no data",
         1450 => "no system resources",
+        267 => "directory name is invalid",
         _ => "unknown error",
     }
 }
@@ -3423,6 +3691,177 @@ mod tests {
             "Could not start the terminal shell. (OS error 1450: no system resources)."
         );
         assert!(!wire.message.contains("secret"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn workspace_spawn_directory_error_names_workspace_and_display_path() {
+        let parent =
+            std::env::temp_dir().join(format!("devboule-missing-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&parent).expect("parent");
+        let path = parent.join("Project With Spaces");
+        let error = std::process::Command::new("cmd.exe")
+            .current_dir(&path)
+            .spawn()
+            .expect_err("CreateProcess must reject the missing cwd");
+        let wire = workspace_spawn_error(Some("w.race"), &path, error);
+        assert_eq!(wire.code, ErrorCode::WorkspaceUnavailable);
+        assert!(wire.message.contains("w.race"));
+        assert!(wire.message.contains("Project With Spaces"));
+        assert!(!wire.message.contains(r"\\?\"));
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn a_real_local_workspace_supplies_the_session_command_cwd() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("Project With Spaces");
+        std::fs::create_dir(&project_path).expect("project folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .expect("persist workspace");
+
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut command)
+            .expect("workspace cwd");
+        assert_eq!(
+            command.cwd,
+            project_path.canonicalize().expect("canonical cwd")
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_workspace_fails_without_using_the_daemon_cwd() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let daemon_cwd = dir.clone();
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), daemon_cwd.clone(), Vec::new());
+        let error = registry
+            .apply_workspace_cwd(Some("w.missing"), &mut command)
+            .expect_err("unknown workspace must fail");
+        assert_eq!(error.code, ErrorCode::WorkspaceUnavailable);
+        assert!(error.message.contains("w.missing"));
+        assert_eq!(command.cwd, daemon_cwd);
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_cwd_cache_avoids_a_journal_rpc_after_first_lookup() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("cached-project");
+        std::fs::create_dir(&project_path).expect("project folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .expect("persist workspace");
+
+        let mut first = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut first)
+            .expect("first workspace lookup");
+        journal.shutdown();
+
+        let mut cached = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut cached)
+            .expect("cached workspace lookup");
+        assert_eq!(
+            cached.cwd,
+            project_path.canonicalize().expect("canonical path")
+        );
+        // This second call succeeds with the journal already shut down, so
+        // it proves the hit did not enqueue another workspace RPC.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_lookup_reports_journal_failure_not_a_missing_workspace() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        journal.shutdown();
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        let error = registry
+            .apply_workspace_cwd(Some("w.journal-stopped"), &mut command)
+            .expect_err("stopped journal must fail");
+        assert_eq!(error.code, ErrorCode::Journal);
+        assert!(error.message.contains("journal writer has stopped"));
+        assert!(!error.message.contains("does not exist"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_path_cache_evicts_old_entries_at_its_bound() {
+        let mut cache = WorkspacePathCache::default();
+        for index in 0..=WORKSPACE_PATH_CACHE_CAP {
+            cache.insert(
+                format!("w.{index}"),
+                PathBuf::from(format!("C:\\workspace-{index}")),
+            );
+        }
+        assert_eq!(cache.entries.len(), WORKSPACE_PATH_CACHE_CAP);
+        assert!(cache.get("w.0").is_none());
+        assert!(cache
+            .get(&format!("w.{WORKSPACE_PATH_CACHE_CAP}"))
+            .is_some());
+    }
+
+    #[test]
+    fn workspace_cache_invalidation_reports_a_missing_folder_not_a_deadline() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("missing-project");
+        std::fs::create_dir(&project_path).expect("project folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .expect("persist workspace");
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut command)
+            .expect("cache workspace");
+        std::fs::remove_dir_all(&project_path).expect("remove workspace folder");
+
+        let mut missing = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        let error = registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut missing)
+            .expect_err("missing workspace folder");
+        assert_eq!(error.code, ErrorCode::WorkspaceUnavailable);
+        assert!(error.message.contains("folder is no longer available"));
+        assert!(!error.message.contains("deadline"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_create_rejects_branch_until_worktrees_exist() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let error = registry
+            .workspace_create(
+                "p.not-needed-for-branch-rejection",
+                WorkspaceIsolation::Local,
+                Some("feature-x".to_string()),
+            )
+            .expect_err("branch must not be silently ignored");
+        assert_eq!(error.code, ErrorCode::Unimplemented);
+        assert!(error.message.contains("branch"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn tmp_delete_registry() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {

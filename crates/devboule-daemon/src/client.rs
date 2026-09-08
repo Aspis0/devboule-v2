@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{
     AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
     DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PermissionOutcome,
-    Persistence, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError,
+    Persistence, Project, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
+    SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError, Workspace,
+    WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -375,6 +376,58 @@ impl DaemonClient {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionsList { id })? {
             DaemonMessage::Sessions { sessions, .. } => Ok(sessions),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn projects_list(&self) -> Result<Vec<Project>, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProjectsList { id })? {
+            DaemonMessage::Projects { projects, .. } => Ok(projects),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn project_add(&self, path: &str) -> Result<Project, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProjectAdd {
+            id,
+            path: path.to_string(),
+        })? {
+            DaemonMessage::Project { project, .. } => Ok(project),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn workspaces_list(&self, project_id: &str) -> Result<Vec<Workspace>, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspacesList {
+            id,
+            project_id: project_id.to_string(),
+        })? {
+            DaemonMessage::Workspaces { workspaces, .. } => Ok(workspaces),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn workspace_create(
+        &self,
+        project_id: &str,
+        isolation: WorkspaceIsolation,
+        branch: Option<String>,
+    ) -> Result<Workspace, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceCreate {
+            id,
+            project_id: project_id.to_string(),
+            isolation,
+            branch,
+        })? {
+            DaemonMessage::Workspace { workspace, .. } => Ok(workspace),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -899,6 +952,10 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Shutdown { id, .. }
         | DaemonMessage::Session { id, .. }
         | DaemonMessage::Sessions { id, .. }
+        | DaemonMessage::Projects { id, .. }
+        | DaemonMessage::Project { id, .. }
+        | DaemonMessage::Workspaces { id, .. }
+        | DaemonMessage::Workspace { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }
         | DaemonMessage::Providers { id, .. }

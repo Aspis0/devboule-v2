@@ -18,6 +18,8 @@ mod diagnostics;
 mod error;
 mod framing;
 #[cfg(feature = "server")]
+mod git;
+#[cfg(feature = "server")]
 mod idempotency;
 #[cfg(feature = "server")]
 mod journal;
@@ -41,6 +43,8 @@ mod server;
 mod session;
 mod spawn;
 mod transport;
+#[cfg(feature = "server")]
+mod workspace;
 
 #[cfg(windows)]
 mod security;

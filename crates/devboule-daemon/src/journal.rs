@@ -29,8 +29,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use devboule_protocol::{
-    ErrorCode, JournalRetention, RetentionPatch, Session, SessionEvent, SessionKind, SessionState,
-    TranscriptIntegrity, WireError,
+    ErrorCode, JournalRetention, Project, RetentionPatch, Session, SessionEvent, SessionKind,
+    SessionState, TranscriptIntegrity, WireError, Workspace, WorkspaceIsolation,
 };
 
 #[path = "journal_replay.rs"]
@@ -50,7 +50,7 @@ use journal_schema::open_connection;
 
 /// Stored in `PRAGMA user_version`. Bump whenever the journal schema gains
 /// tables or columns that need migration.
-pub const JOURNAL_SCHEMA_VERSION: i32 = 5;
+pub const JOURNAL_SCHEMA_VERSION: i32 = 6;
 
 /// Bounded journal queue. Each slot is one coalesced frame (typically
 /// ≤ 8 KiB). A full queue never blocks the PTY path.
@@ -77,6 +77,10 @@ pub const JOURNAL_MAX_SESSIONS: usize = 10_000;
 pub const JOURNAL_MAX_AGE_MS: u64 = 0;
 
 const RPC_WAIT: Duration = Duration::from_secs(10);
+/// A cold workspace lookup is allowed to fail fast because it is on the
+/// session-create path. Warm lookups use SessionRegistry's in-memory cache;
+/// a busy writer must never make a new process wait ten seconds for a cwd.
+const WORKSPACE_LOOKUP_WAIT: Duration = Duration::from_millis(500);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
 /// Keep room for the degradation, reaped, and ended control records even
 /// while output is arriving faster than SQLite can commit it.
@@ -112,6 +116,7 @@ pub enum JournalError {
     LiveSession,
     InvalidRequest(String),
     Checksum { session_id: String, seq: u64 },
+    Timeout,
     Stopped,
 }
 
@@ -133,6 +138,7 @@ impl fmt::Display for JournalError {
                     "journal checksum mismatch for {session_id} seq {seq}"
                 )
             }
+            Self::Timeout => write!(formatter, "journal request timed out"),
             Self::Stopped => write!(formatter, "journal writer has stopped"),
         }
     }
@@ -219,6 +225,50 @@ pub struct SessionRecord {
     pub reaped: bool,
     /// Provider-side session id used by a future resume/load handshake.
     pub peer_session_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectRecord {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    /// `repository`, `inside_repository`, `not_repository`, or `unknown`.
+    /// This is persisted so missing git and a non-repository stay distinct.
+    pub git_state: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+impl ProjectRecord {
+    pub fn to_project(&self) -> Project {
+        Project {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            path: crate::workspace::display_path(&self.path),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceRecord {
+    pub id: String,
+    pub project_id: String,
+    pub title: String,
+    pub isolation: WorkspaceIsolation,
+    pub path: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+impl WorkspaceRecord {
+    pub fn to_workspace(&self) -> Workspace {
+        Workspace {
+            id: self.id.clone(),
+            project_id: self.project_id.clone(),
+            title: self.title.clone(),
+            isolation: self.isolation,
+        }
+    }
 }
 
 impl SessionRecord {
@@ -454,6 +504,29 @@ enum JournalCmd {
     },
     List {
         reply: mpsc::Sender<Result<Vec<SessionRecord>, JournalError>>,
+    },
+    ProjectsList {
+        reply: mpsc::Sender<Result<Vec<ProjectRecord>, JournalError>>,
+    },
+    ProjectAdd {
+        record: ProjectRecord,
+        reply: mpsc::Sender<Result<ProjectRecord, JournalError>>,
+    },
+    ProjectGet {
+        id: String,
+        reply: mpsc::Sender<Result<Option<ProjectRecord>, JournalError>>,
+    },
+    WorkspacesList {
+        project_id: String,
+        reply: mpsc::Sender<Result<Vec<WorkspaceRecord>, JournalError>>,
+    },
+    WorkspaceCreate {
+        record: WorkspaceRecord,
+        reply: mpsc::Sender<Result<WorkspaceRecord, JournalError>>,
+    },
+    WorkspaceGet {
+        id: String,
+        reply: mpsc::Sender<Result<Option<WorkspaceRecord>, JournalError>>,
     },
     Replay {
         session_id: String,
@@ -732,6 +805,57 @@ impl Journal {
         self.rpc(|reply| JournalCmd::List { reply })
     }
 
+    pub fn projects_list(&self) -> Result<Vec<ProjectRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::ProjectsList { reply })
+    }
+
+    /// Insert a project once per canonical path. Re-registering the same path
+    /// returns its existing stable record and never creates a second id.
+    pub fn project_add(&self, record: ProjectRecord) -> Result<ProjectRecord, JournalError> {
+        self.rpc(|reply| JournalCmd::ProjectAdd { record, reply })
+    }
+
+    pub fn project_get(&self, id: &str) -> Result<Option<ProjectRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::ProjectGet {
+            id: id.to_string(),
+            reply,
+        })
+    }
+
+    pub fn workspaces_list(&self, project_id: &str) -> Result<Vec<WorkspaceRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::WorkspacesList {
+            project_id: project_id.to_string(),
+            reply,
+        })
+    }
+
+    pub fn workspace_create(
+        &self,
+        record: WorkspaceRecord,
+    ) -> Result<WorkspaceRecord, JournalError> {
+        self.rpc(|reply| JournalCmd::WorkspaceCreate { record, reply })
+    }
+
+    pub fn workspace_get(&self, id: &str) -> Result<Option<WorkspaceRecord>, JournalError> {
+        self.rpc(|reply| JournalCmd::WorkspaceGet {
+            id: id.to_string(),
+            reply,
+        })
+    }
+
+    pub(crate) fn workspace_get_for_session(
+        &self,
+        id: &str,
+    ) -> Result<Option<WorkspaceRecord>, JournalError> {
+        self.rpc_with_wait(
+            |reply| JournalCmd::WorkspaceGet {
+                id: id.to_string(),
+                reply,
+            },
+            WORKSPACE_LOOKUP_WAIT,
+        )
+    }
+
     pub fn replay(&self, session_id: &str, from_seq: u64) -> Result<Replay, JournalError> {
         self.rpc(|reply| JournalCmd::Replay {
             session_id: session_id.to_string(),
@@ -824,7 +948,10 @@ impl Journal {
     }
 
     fn send_cmd(&self, cmd: JournalCmd, wait: Duration) -> Result<(), JournalError> {
-        let deadline = Instant::now() + wait;
+        self.send_cmd_until(cmd, Instant::now() + wait)
+    }
+
+    fn send_cmd_until(&self, cmd: JournalCmd, deadline: Instant) -> Result<(), JournalError> {
         let mut pending = Some(cmd);
         while Instant::now() < deadline {
             let command = pending.take().expect("pending command");
@@ -846,7 +973,7 @@ impl Journal {
                 }
             }
         }
-        Err(JournalError::Stopped)
+        Err(JournalError::Timeout)
     }
 
     fn send_cmd_until_stopped(&self, cmd: JournalCmd) -> Result<(), JournalError> {
@@ -968,13 +1095,21 @@ impl Journal {
         &self,
         make: impl FnOnce(mpsc::Sender<Result<T, JournalError>>) -> JournalCmd,
     ) -> Result<T, JournalError> {
+        self.rpc_with_wait(make, RPC_WAIT)
+    }
+
+    fn rpc_with_wait<T>(
+        &self,
+        make: impl FnOnce(mpsc::Sender<Result<T, JournalError>>) -> JournalCmd,
+        wait: Duration,
+    ) -> Result<T, JournalError> {
         let (tx, rx) = mpsc::channel();
-        self.send_cmd(make(tx), RPC_WAIT)?;
-        match rx.recv_timeout(RPC_WAIT) {
+        let deadline = Instant::now() + wait;
+        self.send_cmd_until(make(tx), deadline)?;
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
-                Err(JournalError::Stopped)
-            }
+            Err(RecvTimeoutError::Timeout) => Err(JournalError::Timeout),
+            Err(RecvTimeoutError::Disconnected) => Err(JournalError::Stopped),
         }
     }
 
@@ -1146,6 +1281,32 @@ fn journal_loop(
             JournalCmd::List { reply } => {
                 let _ = reply.send(list_sessions(&conn));
             }
+            JournalCmd::ProjectsList { reply } => {
+                let _ = reply.send(list_projects(&conn));
+            }
+            JournalCmd::ProjectAdd { record, reply } => {
+                let result = add_project(&conn, &record);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::ProjectGet { id, reply } => {
+                let _ = reply.send(get_project(&conn, &id));
+            }
+            JournalCmd::WorkspacesList { project_id, reply } => {
+                let _ = reply.send(list_workspaces(&conn, &project_id));
+            }
+            JournalCmd::WorkspaceCreate { record, reply } => {
+                let result = add_workspace(&conn, &record);
+                if let Err(error) = &result {
+                    on_write_error(error);
+                }
+                let _ = reply.send(result);
+            }
+            JournalCmd::WorkspaceGet { id, reply } => {
+                let _ = reply.send(get_workspace(&conn, &id));
+            }
             JournalCmd::Replay {
                 session_id,
                 from_seq,
@@ -1231,6 +1392,179 @@ fn journal_disk_footprint(path: &Path) -> std::io::Result<u64> {
     // content. Exclude it so this reports the durable database plus WAL
     // footprint that represents the journal's retained data.
     Ok(main_bytes.saturating_add(wal_bytes))
+}
+
+fn list_projects(conn: &Connection) -> Result<Vec<ProjectRecord>, JournalError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, path, git_state, created_at_ms, updated_at_ms
+         FROM projects ORDER BY id",
+    )?;
+    let rows = stmt.query_map([], project_from_row)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(JournalError::from)
+}
+
+fn get_project(conn: &Connection, id: &str) -> Result<Option<ProjectRecord>, JournalError> {
+    conn.query_row(
+        "SELECT id, name, path, git_state, created_at_ms, updated_at_ms
+         FROM projects WHERE id = ?1",
+        [id],
+        project_from_row,
+    )
+    .optional()
+    .map_err(JournalError::from)
+}
+
+fn add_project(conn: &Connection, record: &ProjectRecord) -> Result<ProjectRecord, JournalError> {
+    let tx = conn.unchecked_transaction()?;
+    if let Some(existing) = tx
+        .query_row(
+            "SELECT id, name, path, git_state, created_at_ms, updated_at_ms
+             FROM projects WHERE path = ?1",
+            [&record.path],
+            project_from_row,
+        )
+        .optional()?
+    {
+        // Re-registering is the explicit refresh boundary for project
+        // metadata. Listing stays read-only: probing git for every project
+        // on every list would spawn one process per row and make a cheap UI
+        // read pay that cost. A future dedicated refresh command can reuse
+        // this UPDATE without changing the storage contract.
+        tx.execute(
+            "UPDATE projects
+                SET name = ?2, git_state = ?3, updated_at_ms = ?4
+              WHERE path = ?1",
+            params![
+                record.path,
+                record.name,
+                record.git_state,
+                record.updated_at_ms as i64,
+            ],
+        )?;
+        let refreshed = ProjectRecord {
+            id: existing.id,
+            name: record.name.clone(),
+            path: existing.path,
+            git_state: record.git_state.clone(),
+            created_at_ms: existing.created_at_ms,
+            updated_at_ms: record.updated_at_ms,
+        };
+        tx.commit()?;
+        return Ok(refreshed);
+    }
+    tx.execute(
+        "INSERT INTO projects (
+            id, name, path, git_state, created_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            record.id,
+            record.name,
+            record.path,
+            record.git_state,
+            record.created_at_ms as i64,
+            record.updated_at_ms as i64,
+        ],
+    )?;
+    tx.commit()?;
+    Ok(record.clone())
+}
+
+fn list_workspaces(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Vec<WorkspaceRecord>, JournalError> {
+    if get_project(conn, project_id)?.is_none() {
+        return Err(JournalError::InvalidRequest(format!(
+            "Project '{project_id}' does not exist."
+        )));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms
+         FROM workspaces WHERE project_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map([project_id], workspace_from_row)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(JournalError::from)
+}
+
+fn get_workspace(conn: &Connection, id: &str) -> Result<Option<WorkspaceRecord>, JournalError> {
+    conn.query_row(
+        "SELECT id, project_id, title, isolation, path, created_at_ms, updated_at_ms
+         FROM workspaces WHERE id = ?1",
+        [id],
+        workspace_from_row,
+    )
+    .optional()
+    .map_err(JournalError::from)
+}
+
+fn add_workspace(
+    conn: &Connection,
+    record: &WorkspaceRecord,
+) -> Result<WorkspaceRecord, JournalError> {
+    if get_project(conn, &record.project_id)?.is_none() {
+        return Err(JournalError::InvalidRequest(format!(
+            "Project '{}' does not exist.",
+            record.project_id
+        )));
+    }
+    conn.execute(
+        "INSERT INTO workspaces (
+            id, project_id, title, isolation, path, created_at_ms, updated_at_ms
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            record.id,
+            record.project_id,
+            record.title,
+            isolation_str(record.isolation),
+            record.path,
+            record.created_at_ms as i64,
+            record.updated_at_ms as i64,
+        ],
+    )?;
+    Ok(record.clone())
+}
+
+fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRecord> {
+    Ok(ProjectRecord {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        path: row.get(2)?,
+        git_state: row.get(3)?,
+        created_at_ms: row.get::<_, i64>(4)? as u64,
+        updated_at_ms: row.get::<_, i64>(5)? as u64,
+    })
+}
+
+fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRecord> {
+    let isolation = match row.get::<_, String>(3)?.as_str() {
+        "local" => WorkspaceIsolation::Local,
+        "worktree" => WorkspaceIsolation::Worktree,
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                "unknown workspace isolation".into(),
+            ))
+        }
+    };
+    Ok(WorkspaceRecord {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        title: row.get(2)?,
+        isolation,
+        path: row.get(4)?,
+        created_at_ms: row.get::<_, i64>(5)? as u64,
+        updated_at_ms: row.get::<_, i64>(6)? as u64,
+    })
+}
+
+fn isolation_str(isolation: WorkspaceIsolation) -> &'static str {
+    match isolation {
+        WorkspaceIsolation::Local => "local",
+        WorkspaceIsolation::Worktree => "worktree",
+    }
 }
 
 fn note_degraded(
@@ -1881,6 +2215,89 @@ mod tests {
             !reused,
             "reused legacy journal test directory: {selected_display}"
         );
+    }
+
+    #[test]
+    fn project_and_workspace_rows_round_trip_and_project_add_is_idempotent() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("journal");
+        let project = ProjectRecord {
+            id: "p.first".to_string(),
+            name: "Project With Spaces".to_string(),
+            path: r"C:\Users\alice\Project With Spaces".to_string(),
+            git_state: "inside_repository".to_string(),
+            created_at_ms: 10,
+            updated_at_ms: 10,
+        };
+        let inserted = journal
+            .project_add(project.clone())
+            .expect("insert project");
+        assert_eq!(inserted, project);
+
+        let refreshed = journal
+            .project_add(ProjectRecord {
+                id: "p.second".to_string(),
+                name: "Project Refreshed".to_string(),
+                git_state: "repository".to_string(),
+                updated_at_ms: 11,
+                ..project.clone()
+            })
+            .expect("refresh same path");
+        let expected = ProjectRecord {
+            id: "p.first".to_string(),
+            name: "Project Refreshed".to_string(),
+            git_state: "repository".to_string(),
+            updated_at_ms: 11,
+            ..project.clone()
+        };
+        assert_eq!(refreshed.id, "p.first");
+        assert_eq!(
+            journal.projects_list().expect("list projects"),
+            vec![expected.clone()]
+        );
+
+        let workspace = WorkspaceRecord {
+            id: "w.local".to_string(),
+            project_id: project.id.clone(),
+            title: project.name.clone(),
+            isolation: WorkspaceIsolation::Local,
+            path: project.path.clone(),
+            created_at_ms: 12,
+            updated_at_ms: 12,
+        };
+        assert_eq!(
+            journal
+                .workspace_create(workspace.clone())
+                .expect("insert workspace"),
+            workspace
+        );
+        assert_eq!(
+            journal
+                .workspaces_list(&project.id)
+                .expect("list workspaces"),
+            vec![workspace.clone()]
+        );
+        assert_eq!(
+            journal.workspace_get(&workspace.id).expect("get workspace"),
+            Some(workspace)
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn project_wire_path_is_human_readable_but_storage_keeps_verbatim_path() {
+        let project = ProjectRecord {
+            id: "p.display".to_string(),
+            name: "Project".to_string(),
+            path: r"\\?\C:\Users\alice\Project".to_string(),
+            git_state: "unknown".to_string(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        assert_eq!(project.path, r"\\?\C:\Users\alice\Project");
+        assert_eq!(project.to_project().path, r"C:\Users\alice\Project");
     }
 
     #[test]

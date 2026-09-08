@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::{JournalError, JOURNAL_SCHEMA_VERSION};
 
@@ -73,9 +73,33 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
         if version < 5 && !session_has_column(&tx, "provider")? {
             tx.execute("ALTER TABLE sessions ADD COLUMN provider TEXT", [])?;
         }
+        if version < 6 {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    path TEXT NOT NULL UNIQUE,
+                    git_state TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS workspaces (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    isolation TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS workspaces_project
+                    ON workspaces(project_id, updated_at_ms, id);",
+            )?;
+        }
         tx.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION)?;
         tx.commit()?;
     }
+    validate_v6_schema(&conn)?;
     let _ = conn.execute(
         "ALTER TABLE sessions ADD COLUMN reaped INTEGER NOT NULL DEFAULT 0",
         [],
@@ -103,6 +127,96 @@ fn session_has_column(conn: &Connection, column: &str) -> Result<bool, JournalEr
         }
     }
     Ok(false)
+}
+
+fn validate_v6_schema(conn: &Connection) -> Result<(), JournalError> {
+    validate_table_shape(
+        conn,
+        "projects",
+        &[
+            ("id", "TEXT", 0, 1),
+            ("name", "TEXT", 1, 0),
+            ("path", "TEXT", 1, 0),
+            ("git_state", "TEXT", 1, 0),
+            ("created_at_ms", "INTEGER", 1, 0),
+            ("updated_at_ms", "INTEGER", 1, 0),
+        ],
+    )?;
+    validate_table_shape(
+        conn,
+        "workspaces",
+        &[
+            ("id", "TEXT", 0, 1),
+            ("project_id", "TEXT", 1, 0),
+            ("title", "TEXT", 1, 0),
+            ("isolation", "TEXT", 1, 0),
+            ("path", "TEXT", 1, 0),
+            ("created_at_ms", "INTEGER", 1, 0),
+            ("updated_at_ms", "INTEGER", 1, 0),
+        ],
+    )?;
+    let project_index: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+          WHERE type = 'index' AND name = 'workspaces_project'",
+        [],
+        |row| row.get(0),
+    )?;
+    if project_index != 1 {
+        return Err(JournalError::Corrupt(
+            "journal schema v6 has an unexpected workspaces_project index".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_table_shape(
+    conn: &Connection,
+    table: &str,
+    expected: &[(&str, &str, i32, i32)],
+) -> Result<(), JournalError> {
+    let object_type: Option<String> = conn
+        .query_row(
+            "SELECT type FROM sqlite_master WHERE name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if object_type.as_deref() != Some("table") {
+        return Err(JournalError::Corrupt(format!(
+            "journal schema v6 has an unexpected {table} table"
+        )));
+    }
+
+    let pragma = match table {
+        "projects" => "PRAGMA table_info('projects')",
+        "workspaces" => "PRAGMA table_info('workspaces')",
+        _ => unreachable!("schema table is fixed above"),
+    };
+    let mut statement = conn.prepare(pragma)?;
+    let actual = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)?,
+                row.get::<_, i32>(5)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let required_columns_present = expected.iter().all(|expected| {
+        actual.iter().any(|actual| {
+            actual.0 == expected.0
+                && actual.1.eq_ignore_ascii_case(expected.1)
+                && actual.2 == expected.2
+                && actual.3 == expected.3
+        })
+    });
+    if !required_columns_present {
+        return Err(JournalError::Corrupt(format!(
+            "journal schema v6 has an unexpected {table} table"
+        )));
+    }
+    Ok(())
 }
 
 const SCHEMA_SQL: &str = "
@@ -293,7 +407,7 @@ mod tests {
             [],
         )
         .expect("old row");
-        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 1)
+        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 2)
             .expect("old version");
         drop(conn);
 
@@ -325,6 +439,156 @@ mod tests {
             )
             .expect("provider column");
         assert_eq!(provider_columns, 1);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v5_journal_migrates_project_tables_without_losing_existing_rows() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("old journal");
+        conn.execute_batch(SCHEMA_SQL).expect("old schema");
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN dropped_frames INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN dropped_bytes INTEGER NOT NULL DEFAULT 0;
+             CREATE TABLE IF NOT EXISTS journal_settings (
+                 key TEXT PRIMARY KEY,
+                 value INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS deleted_sessions (
+                 id TEXT PRIMARY KEY,
+                 workspace_id TEXT,
+                 kind TEXT NOT NULL,
+                 title TEXT NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 deleted_at_ms INTEGER NOT NULL,
+                 reason TEXT NOT NULL,
+                 bytes_removed INTEGER NOT NULL
+             );
+             ALTER TABLE sessions ADD COLUMN trimmed_bytes INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sessions ADD COLUMN peer_session_id TEXT;
+             ALTER TABLE sessions ADD COLUMN provider TEXT;",
+        )
+        .expect("v5 schema");
+        conn.execute(
+            "INSERT INTO sessions (
+                id, owner, workspace_id, kind, title, created_at_ms, updated_at_ms,
+                generation, status, exit_code, closed, last_seq, degraded,
+                dropped_frames, dropped_bytes, trimmed_bytes, payload_bytes,
+                unsnapshotted_bytes, reaped, peer_session_id, provider
+             ) VALUES ('s.before-projects', 'owner', 'ws.before-projects',
+                       'terminal', 'Terminal', 1, 2, 1, 'ended', 0, 0, 1, 0,
+                       0, 0, 0, 4, 0, 0, NULL, NULL)",
+            [],
+        )
+        .expect("old session row");
+        conn.execute(
+            "INSERT INTO events (
+                session_id, generation, seq, kind, ts_ms, payload, checksum
+             ) VALUES ('s.before-projects', 1, 1, 'output', 2, X'6F6B', 36355)",
+            [],
+        )
+        .expect("old event row");
+        conn.pragma_update(None, "user_version", JOURNAL_SCHEMA_VERSION - 1)
+            .expect("v5 version");
+        drop(conn);
+
+        let journal = Journal::open(&path).expect("migrate");
+        let row = journal
+            .list()
+            .expect("list")
+            .into_iter()
+            .find(|row| row.id == "s.before-projects")
+            .expect("old session survived");
+        assert_eq!(row.workspace_id.as_deref(), Some("ws.before-projects"));
+        assert_eq!(row.payload_bytes, 4);
+
+        let check = Connection::open(&path).expect("check migrated schema");
+        let event_count: i64 = check
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = 's.before-projects'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("old event survived");
+        assert_eq!(event_count, 1);
+        for table in ["projects", "workspaces"] {
+            let count: i64 = check
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("new table exists");
+            assert_eq!(count, 1, "missing migrated table {table}");
+        }
+        let version: i32 = check
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, JOURNAL_SCHEMA_VERSION);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v6_journal_with_a_divergent_project_shape_is_rejected() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("divergent journal");
+        conn.execute_batch(SCHEMA_SQL).expect("base schema");
+        conn.execute_batch(
+            "CREATE TABLE projects (
+                 id TEXT PRIMARY KEY,
+                 path TEXT NOT NULL
+             );
+             PRAGMA user_version = 6;",
+        )
+        .expect("divergent v6 schema");
+        drop(conn);
+
+        match Journal::open(&path) {
+            Err(JournalError::Corrupt(message)) => {
+                assert!(
+                    message.contains("projects"),
+                    "unexpected message: {message}"
+                );
+            }
+            Err(other) => panic!("expected divergent schema error, got {other}"),
+            Ok(_) => panic!("divergent v6 schema opened"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v6_journal_with_an_additive_project_column_is_accepted() {
+        let (dir, path) = tmp_journal();
+        let conn = Connection::open(&path).expect("divergent journal");
+        conn.execute_batch(SCHEMA_SQL).expect("base schema");
+        conn.execute_batch(
+            "CREATE TABLE projects (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 path TEXT NOT NULL UNIQUE,
+                 git_state TEXT NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 updated_at_ms INTEGER NOT NULL,
+                 extra TEXT NOT NULL DEFAULT ''
+             );
+             CREATE TABLE workspaces (
+                 id TEXT PRIMARY KEY,
+                 project_id TEXT NOT NULL,
+                 title TEXT NOT NULL,
+                 isolation TEXT NOT NULL,
+                 path TEXT NOT NULL,
+                 created_at_ms INTEGER NOT NULL,
+                 updated_at_ms INTEGER NOT NULL
+             );
+             CREATE INDEX workspaces_project ON workspaces(project_id, updated_at_ms, id);
+             PRAGMA user_version = 6;",
+        )
+        .expect("additive v6 schema");
+        drop(conn);
+
+        let journal = Journal::open(&path).expect("additive column must be accepted");
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

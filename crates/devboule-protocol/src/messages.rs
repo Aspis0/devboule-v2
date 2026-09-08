@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::capability::Capability;
 use crate::error::WireError;
 use crate::handshake::{ClientHello, DaemonHello};
+use crate::project::{Project, Workspace, WorkspaceIsolation};
 use crate::session::{
     AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult, Session,
     SessionEvent, SessionKind,
@@ -181,6 +182,24 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    ProjectsList {
+        id: u64,
+    },
+    ProjectAdd {
+        id: u64,
+        path: String,
+    },
+    WorkspacesList {
+        id: u64,
+        project_id: String,
+    },
+    WorkspaceCreate {
+        id: u64,
+        project_id: String,
+        isolation: WorkspaceIsolation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
     ProvidersList {
         id: u64,
     },
@@ -230,6 +249,10 @@ impl ClientMessage {
             | Self::JournalRetentionGet { id }
             | Self::JournalRetentionSet { id, .. }
             | Self::SessionDelete { id, .. }
+            | Self::ProjectsList { id }
+            | Self::ProjectAdd { id, .. }
+            | Self::WorkspacesList { id, .. }
+            | Self::WorkspaceCreate { id, .. }
             | Self::ProvidersList { id }
             | Self::ProvidersRefresh { id }
             | Self::ProviderUpdate { id, .. }
@@ -281,6 +304,10 @@ impl ClientMessage {
             | Self::ProvidersList { .. }
             | Self::ProvidersRefresh { .. }
             | Self::ProviderUpdate { .. }
+            | Self::ProjectsList { .. }
+            | Self::ProjectAdd { .. }
+            | Self::WorkspacesList { .. }
+            | Self::WorkspaceCreate { .. }
             | Self::Invoke { .. } => None,
         }
     }
@@ -322,6 +349,22 @@ pub enum DaemonMessage {
     Sessions {
         id: u64,
         sessions: Vec<Session>,
+    },
+    Projects {
+        id: u64,
+        projects: Vec<Project>,
+    },
+    Project {
+        id: u64,
+        project: Project,
+    },
+    Workspaces {
+        id: u64,
+        workspaces: Vec<Workspace>,
+    },
+    Workspace {
+        id: u64,
+        workspace: Workspace,
     },
     Ok {
         id: u64,
@@ -677,6 +720,33 @@ mod tests {
         assert_eq!(value["appVisible"], true);
         let decoded: ClientMessage = serde_json::from_value(value).expect("presence round trip");
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn project_workspace_wire_fields_are_camel_case() {
+        let request = ClientMessage::WorkspaceCreate {
+            id: 7,
+            project_id: "p.one".to_string(),
+            isolation: WorkspaceIsolation::Local,
+            branch: Some("main".to_string()),
+        };
+        let value = serde_json::to_value(&request).expect("workspace request json");
+        assert_eq!(value["type"], "workspace_create");
+        assert_eq!(value["projectId"], "p.one");
+        assert_eq!(value["isolation"], "local");
+        assert_eq!(value["branch"], "main");
+        assert!(value.get("project_id").is_none());
+
+        let workspace = Workspace {
+            id: "w.one".to_string(),
+            project_id: "p.one".to_string(),
+            title: "Project".to_string(),
+            isolation: WorkspaceIsolation::Local,
+        };
+        let reply = serde_json::to_value(DaemonMessage::Workspace { id: 7, workspace })
+            .expect("workspace reply json");
+        assert_eq!(reply["workspace"]["projectId"], "p.one");
+        assert!(reply["workspace"].get("project_id").is_none());
     }
 
     #[test]

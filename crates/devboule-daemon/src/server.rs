@@ -1247,7 +1247,11 @@ fn dispatch_immediate(
         ClientMessage::JournalUsage { .. }
         | ClientMessage::JournalRetentionGet { .. }
         | ClientMessage::JournalRetentionSet { .. }
-        | ClientMessage::SessionDelete { .. } => {
+        | ClientMessage::SessionDelete { .. }
+        | ClientMessage::ProjectsList { .. }
+        | ClientMessage::ProjectAdd { .. }
+        | ClientMessage::WorkspacesList { .. }
+        | ClientMessage::WorkspaceCreate { .. } => {
             if !journal_ok {
                 return capability_not_supported(request.request_id(), caps::JOURNAL);
             }
@@ -1763,6 +1767,32 @@ fn dispatch_journal(
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
         }
+        ClientMessage::ProjectsList { id } => match state.sessions.projects_list() {
+            Ok(projects) => DaemonMessage::Projects { id, projects },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::ProjectAdd { id, path } => match state.sessions.project_add(&path) {
+            Ok(project) => DaemonMessage::Project { id, project },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::WorkspacesList { id, project_id } => {
+            match state.sessions.workspaces_list(&project_id) {
+                Ok(workspaces) => DaemonMessage::Workspaces { id, workspaces },
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
+        ClientMessage::WorkspaceCreate {
+            id,
+            project_id,
+            isolation,
+            branch,
+        } => match state
+            .sessions
+            .workspace_create(&project_id, isolation, branch)
+        {
+            Ok(workspace) => DaemonMessage::Workspace { id, workspace },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("unexpected journal frame {other:?}"),
@@ -2170,6 +2200,12 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
         DaemonMessage::Session { session, .. } => DaemonMessage::Session { id, session },
         DaemonMessage::Ok { .. } => DaemonMessage::Ok { id },
         DaemonMessage::Sessions { sessions, .. } => DaemonMessage::Sessions { id, sessions },
+        DaemonMessage::Projects { projects, .. } => DaemonMessage::Projects { id, projects },
+        DaemonMessage::Project { project, .. } => DaemonMessage::Project { id, project },
+        DaemonMessage::Workspaces { workspaces, .. } => {
+            DaemonMessage::Workspaces { id, workspaces }
+        }
+        DaemonMessage::Workspace { workspace, .. } => DaemonMessage::Workspace { id, workspace },
         DaemonMessage::JournalRetention { retention, .. } => {
             DaemonMessage::JournalRetention { id, retention }
         }

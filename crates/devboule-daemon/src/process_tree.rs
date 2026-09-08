@@ -10,15 +10,18 @@ mod platform {
     use std::mem;
     use std::os::windows::io::RawHandle;
     use std::ptr;
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use windows_sys::Win32::Foundation::{
         CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, STILL_ACTIVE, WAIT_OBJECT_0,
         WAIT_TIMEOUT,
     };
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetExitCodeProcess, ResumeThread, WaitForSingleObject,
@@ -81,6 +84,40 @@ mod platform {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
+        }
+
+        /// Terminate the complete tree and wait until the Job Object reports
+        /// no active members. `Child::kill` only targets the wrapper process;
+        /// this is the bounded cleanup path for helpers such as Git-for-
+        /// Windows' `cmd\\git.exe` launcher.
+        pub fn terminate_and_wait(&self, timeout: Duration) -> io::Result<()> {
+            self.terminate()?;
+            let deadline = Instant::now() + timeout;
+            loop {
+                let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+                let ok = unsafe {
+                    QueryInformationJobObject(
+                        self.handle,
+                        JobObjectBasicAccountingInformation,
+                        (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                        mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                        ptr::null_mut(),
+                    )
+                };
+                if ok == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if accounting.ActiveProcesses == 0 {
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "job object did not become empty before the deadline",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
         }
 
         /// Assign a process created with CREATE_SUSPENDED, then resume its
@@ -197,6 +234,10 @@ mod platform {
         }
 
         pub fn terminate(&self) -> io::Result<()> {
+            Ok(())
+        }
+
+        pub fn terminate_and_wait(&self, _timeout: std::time::Duration) -> io::Result<()> {
             Ok(())
         }
     }
