@@ -584,10 +584,10 @@ makes the trust model work):
 
 ### Known platform limitations (hostile audit 2026-09-08)
 
-Findings from a hostile review of the platform. Status labels:
-`ENFORCED-BY-CODE` = architectural fact today; `ROADMAP-GAP` = platform
-change required. Full report: `HOSTILE_AUDIT_PLUGIN_PLATFORM.md` (AiMacro
-repo).
+Findings from a hostile review of the platform (2026-09-08, 18 findings:
+2 critical, 4 high, 12 medium/low — summarized in the table below). Status
+labels: `ENFORCED-BY-CODE` = architectural fact today; `ROADMAP-GAP` =
+platform change required; `DOC-ONLY` = documentation must not over-promise.
 
 | # | Severity | Limitation | Status |
 |---|----------|-----------|--------|
