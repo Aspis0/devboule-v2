@@ -362,7 +362,15 @@ both events and replies carry data in `value`, not `payload`. Replies:
 Bridge integrity: every inbound message is checked at THREE checkpoints —
 (1) `origin` AND `event.source === iframe.contentWindow` match,
 (2) the method must appear in the manifest's declared capabilities,
-(3) the Rust side re-checks the grant at invoke time (`method_is_granted`).
+(3) the Rust side re-checks the grant at invoke time
+(`method_is_granted`, `crates/devboule-plugin-rpc/src/session.rs:166/195` —
+the grant travels in the handshake from the target plugin's manifest).
+Precise trust boundary: the check binds the method to the TARGET plugin's
+own manifest; `plugin_invoke` has no caller-identity concept (the caller is
+always the shell window, which is trusted). A compromised shell renderer
+could therefore invoke ANY installed backend's granted methods — the same
+trust level as the shell itself. Roadmap: caller binding if that ever
+matters.
 The host never calls into your frame except via `postMessage`.
 
 ### Surfaces (nav integration) — current limitation, read carefully
