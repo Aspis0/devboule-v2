@@ -59,6 +59,7 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
           entry={installed.entry.uiEntry}
           assetOrigin={transport?.origin ?? PLUGIN_ORIGINS[0]}
           capabilities={installed.entry.capabilities}
+          maxPayloadBytes={installed.entry.maxPayloadBytes}
         />
       ) : (
         <SurfacePlaceholder surface={surface} />

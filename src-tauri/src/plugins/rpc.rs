@@ -350,6 +350,7 @@ fn spawn_spec<R: Runtime>(app: &AppHandle<R>, plugin_id: &str) -> Result<SpawnSp
         capabilities,
         grants,
         owner: host_owner().map_err(command_error)?,
+        max_payload_bytes: manifest.max_payload_bytes,
         hang_ms: None,
     })
 }
@@ -528,6 +529,7 @@ mod tests {
             capabilities: plugin_backend_capabilities(),
             grants,
             owner: host_owner().expect("owner"),
+            max_payload_bytes: devboule_protocol::DEFAULT_PLUGIN_PAYLOAD_BYTES,
             hang_ms: Some(6_000),
         }
     }

@@ -9,26 +9,18 @@ use devboule_protocol::{
     WorkspaceRootBody,
 };
 
-/// Leave room for the serialized InvokeResult envelope and small protocol
-/// changes. The backend refuses before the pipe writer attempts a 1 MiB frame.
-pub const CITY_FRAME_ENVELOPE_MARGIN_BYTES: usize = 4096;
-
-pub(crate) fn city_response_within_frame(value: &serde_json::Value) -> bool {
-    let Ok(serialized) = serde_json::to_vec(value) else {
-        return false;
-    };
-    serialized.len()
-        <= devboule_protocol::MAX_FRAME_BYTES.saturating_sub(CITY_FRAME_ENVELOPE_MARGIN_BYTES)
+pub(crate) fn plugin_response_within_payload_limit(
+    value: &serde_json::Value,
+    max_payload_bytes: usize,
+) -> bool {
+    devboule_protocol::plugin_payload_within_limit(Some(value), max_payload_bytes)
 }
 
-fn city_response_too_large_error(id: u64) -> DaemonMessage {
+fn plugin_response_too_large_error(id: u64, max_payload_bytes: usize) -> DaemonMessage {
     DaemonMessage::Error(
         WireError::new(
             ErrorCode::InvalidRequest,
-            format!(
-                "plugin response is too large (maximum 1 MiB; {} bytes reserved for the frame envelope)",
-                CITY_FRAME_ENVELOPE_MARGIN_BYTES
-            ),
+            format!("plugin response is too large (maximum {max_payload_bytes} bytes)"),
         )
         .with_id(id),
     )
@@ -36,11 +28,16 @@ fn city_response_too_large_error(id: u64) -> DaemonMessage {
 mod city;
 mod findings;
 pub use city::{build_city, CityBuildError, MAX_CITY_FILES, MAX_CITY_FILE_BYTES};
+pub(crate) use findings::get_findings_with_limit;
 pub use findings::{get_findings, inspect_finding, FindingsError, InspectError};
 
+/// Dispatch a request using the payload budget negotiated by the host. The
+/// pipe entry point must pass the same value that configured its `Framed` so
+/// backend responses and transport share one boundary.
 pub fn dispatch(
     grants: &BTreeMap<String, String>,
     granted: &[Capability],
+    max_payload_bytes: usize,
     request: ClientMessage,
 ) -> DaemonMessage {
     match request {
@@ -56,7 +53,7 @@ pub fn dispatch(
             id,
             method,
             payload,
-        } => dispatch_invoke(grants, granted, id, &method, payload),
+        } => dispatch_invoke(grants, granted, max_payload_bytes, id, &method, payload),
         ClientMessage::ProviderUpdate { id, .. } => DaemonMessage::Error(
             WireError::new(
                 ErrorCode::InvalidRequest,
@@ -89,6 +86,7 @@ fn maybe_hang_for_crash_test() {
 fn dispatch_invoke(
     grants: &BTreeMap<String, String>,
     granted: &[Capability],
+    max_payload_bytes: usize,
     id: u64,
     method: &str,
     payload: Option<serde_json::Value>,
@@ -111,6 +109,9 @@ fn dispatch_invoke(
             .unwrap_or_default();
         let body = WorkspaceRootBody::ok(root);
         match serde_json::to_value(body) {
+            Ok(value) if !plugin_response_within_payload_limit(&value, max_payload_bytes) => {
+                plugin_response_too_large_error(id, max_payload_bytes)
+            }
             Ok(value) => DaemonMessage::InvokeResult { id, value },
             Err(error) => DaemonMessage::Error(
                 WireError::new(ErrorCode::Internal, error.to_string()).with_id(id),
@@ -127,7 +128,9 @@ fn dispatch_invoke(
             );
         };
         match build_city(std::path::Path::new(root)) {
-            Ok(value) if !city_response_within_frame(&value) => city_response_too_large_error(id),
+            Ok(value) if !plugin_response_within_payload_limit(&value, max_payload_bytes) => {
+                plugin_response_too_large_error(id, max_payload_bytes)
+            }
             Ok(value) => DaemonMessage::InvokeResult { id, value },
             Err(error) => {
                 DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()).with_id(id))
@@ -143,8 +146,10 @@ fn dispatch_invoke(
                 .with_id(id),
             );
         };
-        match get_findings(std::path::Path::new(root)) {
-            Ok(value) if !city_response_within_frame(&value) => city_response_too_large_error(id),
+        match get_findings_with_limit(std::path::Path::new(root), max_payload_bytes) {
+            Ok(value) if !plugin_response_within_payload_limit(&value, max_payload_bytes) => {
+                plugin_response_too_large_error(id, max_payload_bytes)
+            }
             Ok(value) => DaemonMessage::InvokeResult { id, value },
             Err(error) => {
                 DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()).with_id(id))
@@ -161,7 +166,9 @@ fn dispatch_invoke(
             );
         };
         match inspect_finding(std::path::Path::new(root), payload.as_ref()) {
-            Ok(value) if !city_response_within_frame(&value) => city_response_too_large_error(id),
+            Ok(value) if !plugin_response_within_payload_limit(&value, max_payload_bytes) => {
+                plugin_response_too_large_error(id, max_payload_bytes)
+            }
             Ok(value) => DaemonMessage::InvokeResult { id, value },
             Err(InspectError::InvalidId) => DaemonMessage::Error(
                 WireError::new(
@@ -209,10 +216,23 @@ mod tests {
         )
     }
 
+    fn dispatch_default(
+        grants: &BTreeMap<String, String>,
+        granted: &[Capability],
+        request: ClientMessage,
+    ) -> DaemonMessage {
+        dispatch(
+            grants,
+            granted,
+            devboule_protocol::DEFAULT_PLUGIN_PAYLOAD_BYTES,
+            request,
+        )
+    }
+
     #[test]
     fn workspace_root_echoes_the_grant() {
         let (grants, granted) = granted_root();
-        let reply = dispatch(
+        let reply = dispatch_default(
             &grants,
             &granted,
             ClientMessage::Invoke {
@@ -234,7 +254,7 @@ mod tests {
     #[test]
     fn ungranted_method_is_refused() {
         let (grants, granted) = granted_root();
-        let reply = dispatch(
+        let reply = dispatch_default(
             &grants,
             &granted,
             ClientMessage::Invoke {
@@ -267,7 +287,7 @@ mod tests {
             Capability::new(caps::WORKSPACE_ROOT),
             Capability::new(caps::FINDINGS_GET),
         ];
-        let reply = dispatch(
+        let reply = dispatch_default(
             &grants,
             &granted,
             ClientMessage::Invoke {
@@ -308,7 +328,7 @@ mod tests {
             Capability::new(caps::PING),
             Capability::new(caps::FINDING_INSPECT),
         ];
-        let reply = dispatch(
+        let reply = dispatch_default(
             &grants,
             &granted,
             ClientMessage::Invoke {
@@ -339,7 +359,7 @@ mod tests {
             Capability::new(caps::WORKSPACE_ROOT),
             Capability::new(caps::FINDING_INSPECT),
         ];
-        let reply = dispatch(
+        let reply = dispatch_default(
             &grants,
             &granted,
             ClientMessage::Invoke {
@@ -371,7 +391,7 @@ mod tests {
             Capability::new(caps::WORKSPACE_ROOT),
             Capability::new(caps::CITY_GET),
         ];
-        let reply = dispatch(
+        let reply = dispatch_default(
             &grants,
             &granted,
             ClientMessage::Invoke {
@@ -392,16 +412,38 @@ mod tests {
     }
 
     #[test]
-    fn city_response_guard_rejects_a_value_just_over_the_frame_budget() {
-        let value = serde_json::Value::String(
-            "x".repeat(devboule_protocol::MAX_FRAME_BYTES - CITY_FRAME_ENVELOPE_MARGIN_BYTES + 1),
+    fn city_response_guard_uses_the_negotiated_payload_budget() {
+        let root = tempfile::tempdir().expect("workspace");
+        std::fs::write(root.path().join("README.md"), "hello\n").expect("readme");
+        let mut grants = BTreeMap::new();
+        grants.insert(
+            caps::WORKSPACE_ROOT.to_string(),
+            root.path().to_string_lossy().into_owned(),
         );
-        assert!(!city_response_within_frame(&value));
-        match city_response_too_large_error(7) {
+        let granted = vec![
+            Capability::new(caps::PING),
+            Capability::new(caps::WORKSPACE_ROOT),
+            Capability::new(caps::CITY_GET),
+        ];
+        let limit = 64;
+        let reply = dispatch(
+            &grants,
+            &granted,
+            limit,
+            ClientMessage::Invoke {
+                id: 7,
+                method: caps::CITY_GET.to_string(),
+                payload: None,
+            },
+        );
+        match reply {
             DaemonMessage::Error(error) => {
                 assert_eq!(error.id, Some(7));
                 assert_eq!(error.code, ErrorCode::InvalidRequest);
-                assert!(error.message.contains("plugin response is too large"));
+                assert_eq!(
+                    error.message,
+                    "plugin response is too large (maximum 64 bytes)"
+                );
             }
             other => panic!("expected oversize refusal, got {other:?}"),
         }

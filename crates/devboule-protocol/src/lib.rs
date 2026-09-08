@@ -163,9 +163,9 @@ pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Default plugin-invoke payload budget, in bytes (16 MiB).
 ///
-/// This is not a daemon NDJSON framing cap. Plugin backends talk to the
-/// host over their own named pipe; [`MAX_FRAME_BYTES`] does not apply here
-/// and must not be copied onto this constant.
+/// This is not the daemon's default NDJSON framing cap. Plugin backends talk
+/// to the host over their own named pipe; their frame limit is derived from
+/// this budget when the host starts that pipe.
 ///
 /// What it is for: one structured JSON value on `plugin_invoke` — a city
 /// graph, a findings ledger, a table of measurements. ~50,000 entities at
@@ -184,10 +184,23 @@ pub const DEFAULT_PLUGIN_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 /// clamped, not a parse failure, and the clamp is visible on the manifest.
 pub const PLUGIN_PAYLOAD_CEILING_BYTES: usize = 64 * 1024 * 1024;
 
-const _: () = assert!(
-    DEFAULT_PLUGIN_PAYLOAD_BYTES > MAX_FRAME_BYTES,
-    "plugin payload default must not be a copy of the daemon frame cap"
-);
+/// Space reserved for the JSON envelope around a plugin invoke or result.
+/// The payload budget measures the nested `Value`; `Framed` measures the
+/// complete message. Capability names are capped at 128 characters by the
+/// manifest parser, so this leaves ample room for the method and request id.
+pub const PLUGIN_FRAME_HEADROOM_BYTES: usize = 4 * 1024;
+
+/// The per-plugin transport cap corresponding to a payload budget.
+pub const fn plugin_frame_limit_for_payload(payload_bytes: usize) -> usize {
+    payload_bytes.saturating_add(PLUGIN_FRAME_HEADROOM_BYTES)
+}
+
+// The former DEFAULT_PLUGIN_PAYLOAD_BYTES > MAX_FRAME_BYTES assertion is gone:
+// it was true while plugin Framed still used the daemon cap, so it certified
+// numerical inequality instead of separate pipe boundaries. There is
+// deliberately no compile-time comparison between these values: the plugin
+// pipe's limit is derived above and carried through ClientHello, while daemon
+// Framed::new keeps MAX_FRAME_BYTES.
 const _: () = assert!(
     PLUGIN_PAYLOAD_CEILING_BYTES >= DEFAULT_PLUGIN_PAYLOAD_BYTES,
     "host ceiling must be at least the default budget"
@@ -476,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_payload_budget_defaults_and_clamps_without_a_framing_cap() {
+    fn plugin_payload_budget_defaults_and_clamps_independently_of_daemon_frame_cap() {
         assert_eq!(
             effective_plugin_payload_bytes(None),
             DEFAULT_PLUGIN_PAYLOAD_BYTES
@@ -498,5 +511,18 @@ mod tests {
         assert!(clamped.contains(&PLUGIN_PAYLOAD_CEILING_BYTES.to_string()));
         assert!(clamped.contains("host ceiling"));
         assert!(clamped.contains(&u64::MAX.to_string()));
+    }
+
+    #[test]
+    fn plugin_frame_limit_is_payload_budget_plus_envelope_headroom() {
+        assert_eq!(
+            plugin_frame_limit_for_payload(4096),
+            4096 + PLUGIN_FRAME_HEADROOM_BYTES
+        );
+        assert_eq!(
+            plugin_frame_limit_for_payload(usize::MAX),
+            usize::MAX,
+            "deriving a transport limit must not wrap"
+        );
     }
 }

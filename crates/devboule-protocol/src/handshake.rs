@@ -25,6 +25,12 @@ pub struct ClientHello {
     /// confined project root, chosen by the host, never by the plugin.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub grants: BTreeMap<String, String>,
+    /// The effective plugin payload budget. Present only on host→plugin
+    /// hellos. It travels through this existing handshake so the backend can
+    /// configure its Framed after the small bootstrap frame; it is not a
+    /// capability grant and therefore does not belong in `grants`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_payload_bytes: Option<u64>,
 }
 
 impl ClientHello {
@@ -37,6 +43,7 @@ impl ClientHello {
             capabilities: crate::m3a_client_capabilities(),
             owner,
             grants: BTreeMap::new(),
+            plugin_payload_bytes: None,
         }
     }
 
@@ -47,6 +54,7 @@ impl ClientHello {
         client_name: impl Into<String>,
         capabilities: Vec<Capability>,
         grants: BTreeMap<String, String>,
+        plugin_payload_bytes: usize,
     ) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -56,6 +64,7 @@ impl ClientHello {
             capabilities,
             owner,
             grants,
+            plugin_payload_bytes: Some(plugin_payload_bytes as u64),
         }
     }
 }
@@ -167,6 +176,7 @@ mod tests {
             capabilities: crate::m3a_client_capabilities(),
             owner: owner(),
             grants: BTreeMap::new(),
+            plugin_payload_bytes: None,
         }
     }
 
@@ -264,9 +274,14 @@ mod tests {
             "devboule-app",
             crate::plugin_backend_capabilities(),
             grants,
+            crate::DEFAULT_PLUGIN_PAYLOAD_BYTES,
         );
         let value = serde_json::to_value(&hello).expect("json");
         assert_eq!(value["grants"]["workspace.root"], r"C:\repo");
+        assert_eq!(
+            value["pluginPayloadBytes"],
+            crate::DEFAULT_PLUGIN_PAYLOAD_BYTES
+        );
 
         let backend = DaemonHello::plugin_backend("plugin-1", 9);
         let agreed = negotiate(&hello, &backend).expect("overlap");
@@ -290,6 +305,7 @@ mod tests {
                 Capability::new(crate::caps::ORACLE_SEARCH),
             ],
             BTreeMap::new(),
+            crate::DEFAULT_PLUGIN_PAYLOAD_BYTES,
         );
         let backend = DaemonHello::plugin_backend("plugin-1", 9);
         let agreed = negotiate(&hello, &backend).expect("overlap");

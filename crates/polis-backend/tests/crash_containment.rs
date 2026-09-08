@@ -10,8 +10,8 @@ use devboule_augur::{shipped_rule_matches, FindingId, Ledger};
 use devboule_daemon::{connect_pipe, Framed};
 use devboule_plugin_rpc::{host_owner, PluginError, PluginSession, SpawnSpec, HOST_PID_ENV};
 use devboule_protocol::{
-    caps, plugin_backend_capabilities, ClientHello, ClientMessage, DaemonMessage, ErrorCode,
-    PROTOCOL_VERSION,
+    caps, plugin_backend_capabilities, plugin_frame_limit_for_payload, ClientHello, ClientMessage,
+    DaemonMessage, ErrorCode, DEFAULT_PLUGIN_PAYLOAD_BYTES, PROTOCOL_VERSION,
 };
 use oracle_core::OracleDataPaths;
 use std::sync::Arc;
@@ -41,13 +41,17 @@ fn backend_started_through_cmd_parent_reaches_the_pipe() {
         })
         .unwrap_or_else(|| panic!("connect through cmd parent: {last_error:?}"));
 
-    let framed = Framed::new(file);
+    let framed = Framed::with_limit(
+        file,
+        plugin_frame_limit_for_payload(DEFAULT_PLUGIN_PAYLOAD_BYTES),
+    );
     framed
         .send(&ClientMessage::Hello(ClientHello::plugin_host(
             host_owner().expect("owner"),
             "devboule-app",
             plugin_backend_capabilities(),
             BTreeMap::new(),
+            DEFAULT_PLUGIN_PAYLOAD_BYTES,
         )))
         .expect("hello");
     assert!(matches!(
@@ -105,13 +109,17 @@ fn copied_backend_starts_from_an_empty_directory_without_sidecar_dlls() {
             }
         })
         .unwrap_or_else(|| panic!("connect copied backend: {last_error:?}"));
-    let framed = Framed::new(file);
+    let framed = Framed::with_limit(
+        file,
+        plugin_frame_limit_for_payload(DEFAULT_PLUGIN_PAYLOAD_BYTES),
+    );
     framed
         .send(&ClientMessage::Hello(ClientHello::plugin_host(
             host_owner().expect("owner"),
             "devboule-app",
             plugin_backend_capabilities(),
             BTreeMap::new(),
+            DEFAULT_PLUGIN_PAYLOAD_BYTES,
         )))
         .expect("hello copied backend");
     assert!(matches!(
@@ -158,6 +166,7 @@ fn spec(root: &std::path::Path) -> SpawnSpec {
         capabilities: plugin_backend_capabilities(),
         grants,
         owner: host_owner().expect("owner"),
+        max_payload_bytes: DEFAULT_PLUGIN_PAYLOAD_BYTES,
         hang_ms: None,
     }
 }
@@ -203,6 +212,19 @@ fn workspace_root_round_trips_over_the_pipe() {
         value["root"].as_str().expect("root"),
         dir.path().to_string_lossy().as_ref()
     );
+    assert_eq!(value["status"], "ok");
+}
+
+#[test]
+fn plugin_session_transport_accepts_payload_above_the_daemon_frame_cap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
+    let value = session
+        .invoke(
+            caps::WORKSPACE_ROOT,
+            Some(serde_json::Value::String("x".repeat(2 * 1024 * 1024))),
+        )
+        .expect("plugin transport must use the negotiated payload budget");
     assert_eq!(value["status"], "ok");
 }
 

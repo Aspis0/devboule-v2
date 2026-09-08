@@ -62,7 +62,7 @@ describe("PluginSurface frame lifetime", () => {
   let root: Root | null = null;
   let host: HTMLElement | null = null;
 
-  function renderSurface(capabilities: readonly string[]): void {
+  function renderSurface(capabilities: readonly string[], maxPayloadBytes?: number): void {
     if (host === null) {
       host = document.createElement("div");
       document.body.appendChild(host);
@@ -75,6 +75,7 @@ describe("PluginSurface frame lifetime", () => {
           entry="index.html"
           assetOrigin="http://plugin.localhost"
           capabilities={capabilities}
+          maxPayloadBytes={maxPayloadBytes}
         />,
       );
     });
@@ -95,6 +96,17 @@ describe("PluginSurface frame lifetime", () => {
     expect(before).not.toBeNull();
 
     renderSurface(["workspace.root", "city.get", "sessions.watch"]);
+    const after = document.querySelector("iframe");
+    expect(after).not.toBeNull();
+    expect(after).not.toBe(before);
+  });
+
+  it("reloads the plugin document when the payload budget changes", () => {
+    renderSurface(["workspace.root"], 16 * 1024 * 1024);
+    const before = document.querySelector("iframe");
+    expect(before).not.toBeNull();
+
+    renderSurface(["workspace.root"], 64 * 1024 * 1024);
     const after = document.querySelector("iframe");
     expect(after).not.toBeNull();
     expect(after).not.toBe(before);

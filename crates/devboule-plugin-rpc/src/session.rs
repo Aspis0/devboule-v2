@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use devboule_daemon::connect_pipe;
 use devboule_daemon::{Framed, JobObject};
 use devboule_protocol::{
-    caps, invoke_method_capability, negotiate, Capability, ClientHello, ClientMessage, DaemonHello,
-    DaemonMessage, ErrorCode, OwnerId, WorkspaceRootBody,
+    caps, invoke_method_capability, negotiate, plugin_frame_limit_for_payload, Capability,
+    ClientHello, ClientMessage, DaemonHello, DaemonMessage, ErrorCode, OwnerId, WorkspaceRootBody,
 };
 use serde_json::Value;
 
@@ -44,6 +44,9 @@ pub struct SpawnSpec {
     pub capabilities: Vec<Capability>,
     pub grants: BTreeMap<String, String>,
     pub owner: OwnerId,
+    /// Effective payload budget from the verified manifest. The same value is
+    /// sent in ClientHello so the backend derives the same frame limit.
+    pub max_payload_bytes: usize,
     /// Test-only: the backend sleeps this long on each invoke so a test can
     /// kill it mid-request. Production spawn leaves this `None`.
     pub hang_ms: Option<u64>,
@@ -373,12 +376,13 @@ fn spawn_connected(spec: &SpawnSpec, pipe_name: String) -> Result<Connected, Plu
         let _ = child.wait();
         return Err(PluginError::from(error));
     }
-    let framed = Framed::new(file);
+    let framed = Framed::with_limit(file, plugin_frame_limit_for_payload(spec.max_payload_bytes));
     let hello = ClientHello::plugin_host(
         spec.owner.clone(),
         "devboule-app",
         spec.capabilities.clone(),
         spec.grants.clone(),
+        spec.max_payload_bytes,
     );
     if let Err(error) = framed.send(&ClientMessage::Hello(hello.clone())) {
         let _ = child.kill();
