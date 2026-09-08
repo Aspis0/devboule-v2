@@ -15,11 +15,18 @@ vi.mock("../../lib/tauri", async (importOriginal) => {
     journalRetentionGet: vi.fn(),
     journalRetentionSet: vi.fn(),
     journalUsage: vi.fn(),
+    projectAdd: vi.fn(),
+    projectsList: vi.fn(async () => []),
     providersList: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providersRefresh: vi.fn(async () => ({ providers: [], unreadableDirs: 0 })),
     providerUpdate: vi.fn(async () => ({ ok: true, exitCode: 0, log: "" })),
+    workspacesList: vi.fn(async () => []),
   };
 });
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(),
+}));
 
 vi.mock("../oracle/OraclePanel", () => ({
   OraclePanel: () => <div>Oracle mock</div>,
@@ -29,17 +36,22 @@ import {
   journalRetentionGet,
   journalRetentionSet,
   journalUsage,
+  projectAdd,
+  projectsList,
   providerUpdate,
   providersList,
   providersRefresh,
+  workspacesList,
 } from "../../lib/tauri";
 import type {
   JournalRetention,
+  Project,
   ProviderCatalog,
   ProviderInfo,
   ProviderUpdateOutcome,
 } from "../../types/ipc";
 import { SettingsSurface } from "./SettingsSurface";
+import { open } from "@tauri-apps/plugin-dialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -1129,5 +1141,131 @@ describe("Settings provider update and install", () => {
     expect(container.textContent).toContain("up to date");
     expect(container.textContent).not.toContain("Updating…");
     expect(updateButton()).toBeNull();
+  });
+});
+
+describe("Settings projects", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const project: Project = {
+    id: "project-settings",
+    name: "real-project",
+    path: "D:\\real-project",
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(projectsList).mockResolvedValue([project]);
+    vi.mocked(workspacesList).mockResolvedValue([
+      { id: "workspace-settings", projectId: project.id, title: "main", isolation: "local" },
+    ]);
+    vi.mocked(open).mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    root.unmount();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  async function renderProjects() {
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    const projectsTab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-projects']",
+    );
+    if (!projectsTab) throw new Error("Projects tab did not render");
+    await act(async () => projectsTab.click());
+    await act(async () => undefined);
+  }
+
+  it("lists daemon projects and workspace counts", async () => {
+    await renderProjects();
+
+    expect(projectsList).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("real-project");
+    expect(container.textContent).toContain("D:\\real-project");
+    expect(container.textContent).toContain("1 workspace");
+  });
+
+  it("keeps other projects visible when one workspace list fails and retries", async () => {
+    const brokenProject: Project = {
+      id: "project-settings-broken",
+      name: "broken-project",
+      path: "D:\\broken-project",
+    };
+    vi.mocked(projectsList).mockResolvedValue([project, brokenProject]);
+    vi.mocked(workspacesList).mockImplementation(async (projectId) => {
+      if (projectId === brokenProject.id) throw new Error("settings workspace list failed");
+      return [{ id: "workspace-settings", projectId, title: "main", isolation: "local" }];
+    });
+    await renderProjects();
+
+    expect(container.textContent).toContain("real-project");
+    expect(container.textContent).toContain("broken-project");
+    expect(container.textContent).toContain("settings workspace list failed");
+    expect(container.textContent).not.toContain("No projects registered");
+
+    vi.mocked(workspacesList).mockResolvedValue([
+      {
+        id: "workspace-settings-broken",
+        projectId: brokenProject.id,
+        title: "fixed",
+        isolation: "local",
+      },
+    ]);
+    const retry = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Retry",
+    );
+    if (retry === undefined) throw new Error("settings project retry control did not render");
+    await act(async () => retry.click());
+    await act(async () => undefined);
+
+    expect(container.textContent).not.toContain("settings workspace list failed");
+    expect(container.textContent).toContain("1 workspace");
+  });
+
+  it("shows a daemon project-list failure instead of pretending there are no projects", async () => {
+    vi.mocked(projectsList).mockRejectedValueOnce(new Error("project journal unavailable"));
+    await renderProjects();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "project journal unavailable",
+    );
+    expect(container.textContent).not.toContain("No projects registered");
+  });
+
+  it("uses the native folder picker and the daemon-returned project row", async () => {
+    const added: Project = {
+      id: "canonical-project",
+      name: "canonical-name",
+      path: "D:\\canonical-project",
+    };
+    vi.mocked(open).mockResolvedValueOnce("D:\\typed-or-picked");
+    vi.mocked(projectAdd).mockResolvedValueOnce(added);
+    await renderProjects();
+
+    const add = container.querySelector<HTMLButtonElement>(".settings-dashed-action");
+    if (!add) throw new Error("Add project control did not render");
+    await act(async () => add.click());
+    const choose = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Choose folder…",
+    );
+    if (!choose) throw new Error("Choose folder control did not render");
+    await act(async () => choose.click());
+    await act(async () => undefined);
+
+    expect(open).toHaveBeenCalledWith({ directory: true });
+    const submit = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Add project",
+    );
+    if (!submit) throw new Error("Add project submit control did not render");
+    await act(async () => submit.click());
+    await act(async () => undefined);
+
+    expect(projectAdd).toHaveBeenCalledWith("D:\\typed-or-picked");
+    expect(container.textContent).toContain("canonical-name");
+    expect(container.textContent).toContain("D:\\canonical-project");
   });
 });

@@ -7,7 +7,6 @@ import {
   DesignPanel,
   FilesSurface,
   PullRequestSurface,
-  type DiffState,
 } from "./sidePanels";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
@@ -17,6 +16,8 @@ import { startPresenceReporting, type PresenceReporter } from "./presence";
 import { createDaemonRecovery } from "./daemonRecovery";
 import { MAX_PANEL_WIDTH, MIN_PANEL_WIDTH, useWorkspacePanelResize } from "./workspaceResize";
 import { useWorkspaceProjects } from "./workspaceProjects";
+import { useProviderConsent } from "./useProviderConsent";
+import { quotePermissionArg } from "./commandLine";
 import {
   chatCapableProviders,
   requiresConsent,
@@ -69,13 +70,6 @@ const PERMISSION_LABELS: Record<PermissionState, string> = {
   denied: "Denied — the turn continues without it",
 };
 
-function quotePermissionArg(value: string): string {
-  if (value.length === 0 || /[\s"]/.test(value)) {
-    return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
-  }
-  return value;
-}
-
 export function formatPermissionCommand(request: PermissionRequest): string | null {
   if (!request.command) return null;
   if (request.args === undefined || request.args.length === 0) return request.command;
@@ -85,8 +79,11 @@ export function formatPermissionCommand(request: PermissionRequest): string | nu
 export function Workspace() {
   const {
     visibleProjects,
+    loading: projectsLoading,
+    error: projectsError,
     selectedWorkspace,
     setSelectedWorkspace,
+    setSessionFacts,
     search,
     handleSearchChange,
     addWorkspace,
@@ -95,6 +92,7 @@ export function Workspace() {
     closeProjectDialog,
     handleCreateProject,
     newProjectTriggerRef,
+    retryProjects,
   } = useWorkspaceProjects();
   const {
     leftWidth,
@@ -110,7 +108,6 @@ export function Workspace() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState("");
   const [surfaceMenuOpen, setSurfaceMenuOpen] = useState(false);
-  const [diffState, setDiffState] = useState<DiffState>("unstaged");
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
   const [permissionQueue, setPermissionQueue] = useState<
@@ -128,7 +125,10 @@ export function Workspace() {
     select: selectSession,
     open: openSession,
     dismissError: dismissSessionsError,
-  } = useWorkspaceSessions();
+  } = useWorkspaceSessions(selectedWorkspace);
+  useEffect(() => {
+    setSessionFacts(sessions);
+  }, [sessions, setSessionFacts]);
   const selectedSurface =
     MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
@@ -165,7 +165,6 @@ export function Workspace() {
     },
     [openSession],
   );
-  const handleDiffStateChange = useCallback((state: DiffState) => setDiffState(state), []);
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
   const [providerPicker, setProviderPicker] = useState<{
@@ -173,38 +172,19 @@ export function Workspace() {
     providers: ProviderInfo[];
   } | null>(null);
   const newWorkspaceInFlightRef = useRef(false);
-  const consentInFlightRef = useRef(false);
   const providerPickerRef = useRef<HTMLDivElement>(null);
-  const [consentProvider, setConsentProvider] = useState<{
-    projectId: string;
-    provider: ProviderInfo;
-  } | null>(null);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
-  useEffect(() => {
-    // Cleared here, not at the end of consentConfirm: a second synchronous
-    // click still sees the stale non-null consentProvider, so the ref must
-    // stay armed until this re-render.
-    consentInFlightRef.current = false;
-    if (consentProvider !== null) {
-      consentConfirmRef.current?.focus();
-    } else {
-      consentRestoreRef.current?.focus();
-      consentRestoreRef.current = null;
-    }
-  }, [consentProvider]);
+  const [consentProjectId, setConsentProjectId] = useState<string | null>(null);
+  const [providerError, setProviderError] = useState<string | null>(null);
   const loadChatProviders = useCallback(async (): Promise<ProviderInfo[]> => {
-    try {
-      const catalog = await providersList();
-      return chatCapableProviders(catalog.providers);
-    } catch {
-      return [];
-    }
+    const catalog = await providersList();
+    return chatCapableProviders(catalog.providers);
   }, []);
   const startAgentSession = useCallback(
-    (provider: ProviderInfo | undefined) => {
+    (provider: ProviderInfo | undefined, workspaceId: string | null) => {
       const args = sessionCreateFromProvider(provider);
-      void createSession(args.kind, args.provider);
+      void createSession(args.kind, args.provider, workspaceId);
     },
     [createSession],
   );
@@ -212,47 +192,88 @@ export function Workspace() {
     setProviderPicker(null);
     newWorkspaceInFlightRef.current = false;
   }, []);
-  const handleNewWorkspace = useCallback(
-    async (projectId: string) => {
-      if (newWorkspaceInFlightRef.current) return;
-      newWorkspaceInFlightRef.current = true;
-      const capable = await loadChatProviders();
-      if (capable.length <= 1) {
-        addWorkspace(projectId);
-        startAgentSession(capable[0]);
-        newWorkspaceInFlightRef.current = false;
-        return;
-      }
-      setProviderPicker({ projectId, providers: capable });
-    },
-    [addWorkspace, loadChatProviders, startAgentSession],
-  );
-  const pickProvider = useCallback(
-    (provider: ProviderInfo, projectId: string) => {
-      if (requiresConsent(provider)) {
-        setConsentProvider({ projectId, provider });
-        return;
-      }
-      setProviderPicker(null);
-      addWorkspace(projectId);
-      startAgentSession(provider);
+  const createWorkspaceAndAgent = useCallback(
+    async (projectId: string, provider: ProviderInfo | undefined) => {
+      const workspace = await addWorkspace(projectId);
+      if (workspace !== null) startAgentSession(provider, workspace.id);
       newWorkspaceInFlightRef.current = false;
     },
     [addWorkspace, startAgentSession],
   );
-  const consentConfirm = useCallback(() => {
-    if (consentProvider === null || consentInFlightRef.current) return;
-    consentInFlightRef.current = true;
-    const { projectId, provider } = consentProvider;
-    setConsentProvider(null);
-    setProviderPicker(null);
-    addWorkspace(projectId);
-    startAgentSession(provider);
-    newWorkspaceInFlightRef.current = false;
-  }, [addWorkspace, consentProvider, startAgentSession]);
+  const handleConsentConfirmed = useCallback(
+    (provider: ProviderInfo) => {
+      setProviderPicker(null);
+      setConsentProjectId(null);
+      const projectId = consentProjectId;
+      if (projectId !== null) void createWorkspaceAndAgent(projectId, provider);
+    },
+    [consentProjectId, createWorkspaceAndAgent],
+  );
+  const {
+    pending: consentProvider,
+    request: requestConsent,
+    confirm: consentConfirm,
+    cancel: cancelProviderConsent,
+    inFlight: consentInFlight,
+    commandLine: consentCommandLine,
+  } = useProviderConsent({ onConfirmed: handleConsentConfirmed });
+  const handleNewWorkspace = useCallback(
+    async (projectId: string) => {
+      if (newWorkspaceInFlightRef.current) return;
+      newWorkspaceInFlightRef.current = true;
+      setProviderError(null);
+      let capable: ProviderInfo[];
+      try {
+        capable = await loadChatProviders();
+      } catch (cause: unknown) {
+        newWorkspaceInFlightRef.current = false;
+        setProviderError(reasonFromCause(cause));
+        return;
+      }
+      if (capable.length === 0) {
+        await createWorkspaceAndAgent(projectId, undefined);
+        return;
+      }
+      if (capable.length === 1) {
+        const provider = capable[0];
+        if (requiresConsent(provider)) {
+          setConsentProjectId(projectId);
+          requestConsent(provider);
+        } else {
+          await createWorkspaceAndAgent(projectId, provider);
+        }
+        return;
+      }
+      setProviderPicker({ projectId, providers: capable });
+    },
+    [createWorkspaceAndAgent, loadChatProviders, requestConsent],
+  );
   const consentCancel = useCallback(() => {
-    setConsentProvider(null);
-  }, []);
+    setConsentProjectId(null);
+    newWorkspaceInFlightRef.current = false;
+    cancelProviderConsent();
+  }, [cancelProviderConsent]);
+  useEffect(() => {
+    if (consentProvider !== null) {
+      consentConfirmRef.current?.focus();
+    } else {
+      consentRestoreRef.current?.focus();
+      consentRestoreRef.current = null;
+    }
+  }, [consentProvider]);
+  const pickProvider = useCallback(
+    (provider: ProviderInfo, projectId: string, trigger: HTMLButtonElement) => {
+      if (requiresConsent(provider)) {
+        consentRestoreRef.current = trigger;
+        setConsentProjectId(projectId);
+        requestConsent(provider);
+        return;
+      }
+      setProviderPicker(null);
+      void createWorkspaceAndAgent(projectId, provider);
+    },
+    [createWorkspaceAndAgent, requestConsent],
+  );
   useEffect(() => {
     if (providerPicker === null && consentProvider === null) return;
     const onKey = (event: KeyboardEvent) => {
@@ -376,8 +397,30 @@ export function Workspace() {
                 <HistoryPanel search={historySearch} onReopen={handleReopenSession} />
               ) : (
                 <>
+                  {projectsLoading ? (
+                    <div className="workspace-empty" role="status">
+                      Loading projects…
+                    </div>
+                  ) : null}
+                  {projectsError !== null ? (
+                    <div className="workspace-project-error" role="alert">
+                      {projectsError}
+                      <button
+                        type="button"
+                        className="workspace-secondary-action"
+                        onClick={() => void retryProjects()}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ) : null}
+                  {providerError !== null ? (
+                    <div className="workspace-project-error" role="alert">
+                      {providerError}
+                    </div>
+                  ) : null}
                   {visibleProjects.map((project) => (
-                    <div className="workspace-project" key={project.name}>
+                    <div className="workspace-project" key={project.id}>
                       <div className="workspace-project-heading">
                         <span>{project.name}</span>
                         <button
@@ -390,6 +433,18 @@ export function Workspace() {
                           +
                         </button>
                       </div>
+                      {project.workspaceError !== undefined ? (
+                        <div className="workspace-project-error" role="alert">
+                          Could not load this project&apos;s workspaces: {project.workspaceError}
+                          <button
+                            type="button"
+                            className="workspace-secondary-action"
+                            onClick={() => void retryProjects()}
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : null}
                       <div className="workspace-project-items">
                         {project.workspaces.map((workspace) => (
                           <button
@@ -412,7 +467,10 @@ export function Workspace() {
                         <div
                           className="workspace-new-row-wrap"
                           ref={
-                            providerPicker?.projectId === project.id ? providerPickerRef : undefined
+                            providerPicker?.projectId === project.id ||
+                            consentProjectId === project.id
+                              ? providerPickerRef
+                              : undefined
                           }
                         >
                           <button
@@ -423,7 +481,7 @@ export function Workspace() {
                             <span aria-hidden="true">+</span>New workspace
                           </button>
                           {providerPicker?.projectId === project.id ||
-                          consentProvider?.projectId === project.id ? (
+                          consentProjectId === project.id ? (
                             <div
                               className="workspace-surface-menu"
                               role={consentProvider !== null ? "group" : "listbox"}
@@ -439,15 +497,10 @@ export function Workspace() {
                                   <div className="workspace-surface-options">
                                     <div className="workspace-consent-provider">
                                       <span className="workspace-surface-name">
-                                        {consentProvider.provider.id}
+                                        {consentProvider.id}
                                       </span>
                                       <span className="workspace-consent-spec">
-                                        {[
-                                          "npx",
-                                          "-y",
-                                          consentProvider.provider.executable,
-                                          ...(consentProvider.provider.launchArgs ?? []),
-                                        ].join(" ")}
+                                        {consentCommandLine}
                                       </span>
                                     </div>
                                     <p className="workspace-consent-notice">
@@ -467,6 +520,7 @@ export function Workspace() {
                                       type="button"
                                       className="workspace-primary-action"
                                       onClick={consentConfirm}
+                                      disabled={consentInFlight}
                                     >
                                       Confirm
                                     </button>
@@ -483,10 +537,11 @@ export function Workspace() {
                                         className="workspace-surface-option"
                                         key={provider.id}
                                         onClick={(event) => {
-                                          if (requiresConsent(provider)) {
-                                            consentRestoreRef.current = event.currentTarget;
-                                          }
-                                          pickProvider(provider, providerPicker!.projectId);
+                                          pickProvider(
+                                            provider,
+                                            providerPicker!.projectId,
+                                            event.currentTarget,
+                                          );
                                         }}
                                       >
                                         <span className="workspace-surface-name">
@@ -503,7 +558,7 @@ export function Workspace() {
                       </div>
                     </div>
                   ))}
-                  {visibleProjects.length === 0 ? (
+                  {projectsError === null && !projectsLoading && visibleProjects.length === 0 ? (
                     <div className="workspace-empty">No matching workspaces</div>
                   ) : null}
                 </>
@@ -625,6 +680,7 @@ export function Workspace() {
                 id={WORKSPACE_TERMINAL_PANEL_ID}
                 sessionId={selectedSessionId}
                 title={sessionTitle(selectedSession)}
+                cwd={selectedSession.cwd}
                 observedState={selectedSession.state}
                 elapsedMs={selectedSession.elapsedMs}
                 onPermissionRequest={handlePermissionRequest}
@@ -634,8 +690,9 @@ export function Workspace() {
               <TerminalSurface
                 key={selectedSessionId}
                 id={WORKSPACE_TERMINAL_PANEL_ID}
-                workspaceId={null}
+                workspaceId={selectedWorkspace}
                 sessionId={selectedSessionId}
+                cwd={selectedSession?.cwd}
                 onClosed={handleSessionClosed}
                 onExited={handleSessionClosed}
                 onPermissionRequest={handlePermissionRequest}
@@ -752,9 +809,7 @@ export function Workspace() {
             ) : null}
 
             <div className="workspace-scroll workspace-side-scroll">
-              {activeSidePanel === "changes" ? (
-                <ChangesSurface diffState={diffState} onDiffStateChange={handleDiffStateChange} />
-              ) : null}
+              {activeSidePanel === "changes" ? <ChangesSurface /> : null}
               {activeSidePanel === "files" ? <FilesSurface /> : null}
               {activeSidePanel === "app" ? (
                 <AppSurface appBuild={appBuild} onReload={handleAppReload} />

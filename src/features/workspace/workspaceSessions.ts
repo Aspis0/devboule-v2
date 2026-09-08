@@ -17,7 +17,11 @@ import { isAgentKind } from "../../types/ipc";
 
 export interface WorkspaceSessionSource {
   list: () => Promise<Session[]>;
-  create: (kind?: SessionKind, provider?: string | null) => Promise<Session>;
+  create: (
+    workspaceId: string | null,
+    kind?: SessionKind,
+    provider?: string | null,
+  ) => Promise<Session>;
   watch?: (listener: (snapshots: SessionStateSnapshot[]) => void) => Promise<() => void>;
 }
 
@@ -33,7 +37,11 @@ export interface WorkspaceSessionController {
   getState: () => WorkspaceSessionState;
   subscribe: (listener: () => void) => () => void;
   refresh: () => Promise<void>;
-  create: (kind?: SessionKind, provider?: string | null) => Promise<Session | null>;
+  create: (
+    kind?: SessionKind,
+    provider?: string | null,
+    workspaceId?: string | null,
+  ) => Promise<Session | null>;
   select: (sessionId: string) => void;
   open: (session: Session) => void;
   watch: () => () => void;
@@ -42,8 +50,10 @@ export interface WorkspaceSessionController {
 
 const DEFAULT_SOURCE: WorkspaceSessionSource = {
   list: sessionsList,
-  create: (kind = "acp", provider = null) =>
-    provider == null ? sessionCreate(null, kind) : sessionCreate(null, kind, provider),
+  create: (workspaceId, kind = "acp", provider = null) =>
+    provider == null
+      ? sessionCreate(workspaceId, kind)
+      : sessionCreate(workspaceId, kind, provider),
   watch: async (listener) => {
     const channel = createSessionStateChannel(listener);
     await sessionsWatch(channel);
@@ -194,8 +204,8 @@ export function createWorkspaceSessionController(
         ? { ...previous, ...carried }
         : {
             id: snapshot.id,
-            workspaceId: null,
-            kind: "terminal" as const,
+            workspaceId: snapshot.workspaceId,
+            kind: snapshot.kind,
             ...carried,
           };
     });
@@ -216,12 +226,13 @@ export function createWorkspaceSessionController(
   const create = async (
     kind: SessionKind = "acp",
     provider: string | null = null,
+    workspaceId: string | null = null,
   ): Promise<Session | null> => {
     if (state.creating) return null;
     ++refreshGeneration;
     publish({ ...state, creating: true, error: null });
     try {
-      const session = await source.create(kind, provider);
+      const session = await source.create(workspaceId, kind, provider);
       const sessions = [...state.sessions.filter((current) => current.id !== session.id), session];
       publish({
         ...state,
@@ -332,9 +343,13 @@ export function sessionCreateFromProvider(provider: ProviderInfo | undefined): {
   return { kind: "acp", provider: null };
 }
 
-export function useWorkspaceSessions(): WorkspaceSessionState & {
+export function useWorkspaceSessions(workspaceId: string | null = null): WorkspaceSessionState & {
   refresh: () => Promise<void>;
-  create: (kind?: SessionKind, provider?: string | null) => Promise<Session | null>;
+  create: (
+    kind?: SessionKind,
+    provider?: string | null,
+    workspaceId?: string | null,
+  ) => Promise<Session | null>;
   select: (sessionId: string) => void;
   open: (session: Session) => void;
   dismissError: () => void;
@@ -356,8 +371,13 @@ export function useWorkspaceSessions(): WorkspaceSessionState & {
 
   const refresh = useCallback(() => controller.refresh(), [controller]);
   const create = useCallback(
-    (kind?: SessionKind, provider?: string | null) => controller.create(kind, provider),
-    [controller],
+    (kind?: SessionKind, provider?: string | null, requestedWorkspaceId?: string | null) =>
+      controller.create(
+        kind,
+        provider,
+        requestedWorkspaceId === undefined ? workspaceId : requestedWorkspaceId,
+      ),
+    [controller, workspaceId],
   );
   const select = useCallback((sessionId: string) => controller.select(sessionId), [controller]);
   const open = useCallback((session: Session) => controller.open(session), [controller]);

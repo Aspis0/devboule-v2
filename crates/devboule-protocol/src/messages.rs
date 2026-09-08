@@ -675,6 +675,8 @@ mod tests {
             event: SessionEvent::SessionsSnapshot {
                 sessions: vec![SessionStateSnapshot {
                     id: "s.client.1".to_string(),
+                    workspace_id: Some("workspace-1".to_string()),
+                    kind: SessionKind::Terminal,
                     title: "Terminal".to_string(),
                     state: SessionState::Silent { generation: 3 },
                     elapsed_ms: Some(300_001),
@@ -688,8 +690,8 @@ mod tests {
         assert_eq!(value["event"]["sessions"][0]["title"], "Terminal");
         assert_eq!(value["event"]["sessions"][0]["state"]["type"], "silent");
         assert_eq!(value["event"]["sessions"][0]["elapsedMs"], 300_001);
-        assert!(value["event"]["sessions"][0].get("workspaceId").is_none());
-        assert!(value["event"]["sessions"][0].get("kind").is_none());
+        assert_eq!(value["event"]["sessions"][0]["workspaceId"], "workspace-1");
+        assert_eq!(value["event"]["sessions"][0]["kind"], "terminal");
     }
 
     #[test]
@@ -944,7 +946,7 @@ mod tests {
             "type": "status",
             "id": 5,
             "instanceId": "i",
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "daemonVersion": "0.0.0",
             "pid": 42,
             "uptimeMs": 7,

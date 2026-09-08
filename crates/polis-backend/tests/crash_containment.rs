@@ -11,6 +11,7 @@ use devboule_daemon::{connect_pipe, Framed};
 use devboule_plugin_rpc::{host_owner, PluginError, PluginSession, SpawnSpec, HOST_PID_ENV};
 use devboule_protocol::{
     caps, plugin_backend_capabilities, ClientHello, ClientMessage, DaemonMessage, ErrorCode,
+    PROTOCOL_VERSION,
 };
 use oracle_core::OracleDataPaths;
 use std::sync::Arc;
@@ -587,7 +588,7 @@ fn handshake_hello_is_the_plugin_tenant() {
     let dir = tempfile::tempdir().expect("tempdir");
     let session = PluginSession::spawn(spec(dir.path())).expect("spawn");
     let hello = session.hello();
-    assert_eq!(hello.protocol_version, 1);
+    assert_eq!(hello.protocol_version, PROTOCOL_VERSION);
     assert!(hello
         .capabilities
         .iter()

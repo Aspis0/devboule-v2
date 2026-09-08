@@ -21,6 +21,7 @@ import { WorkspaceComposer } from "./WorkspaceComposer";
 interface AgentChatSurfaceProps {
   sessionId: string;
   title: string;
+  cwd?: string;
   id?: string;
   observedState?: SessionState | null;
   elapsedMs?: number | null;
@@ -172,6 +173,7 @@ function renderItem(item: AgentChatItem) {
 export const AgentChatSurface = memo(function AgentChatSurface({
   sessionId,
   title,
+  cwd,
   id,
   observedState = null,
   elapsedMs = null,
@@ -268,6 +270,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         <span className="workspace-agent-status" role="status">
           {statusLabel}
         </span>
+        {cwd ? <span className="workspace-session-cwd">{cwd}</span> : null}
         {state.status === "running" ? (
           <button
             type="button"

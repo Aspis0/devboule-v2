@@ -44,13 +44,20 @@ What works today:
   `pubvia` (a placeholder), `design`, and `settings`.
 - **Plugin host** — installed plugins run in a cross-origin frame and can use
   an out-of-process backend over the plugin RPC protocol.
-- **Settings** — provider inventory and Oracle administration are wired;
-  Projects and Devices remain mock panels.
+- **Projects and workspaces** — register a folder with the native picker and it
+  is persisted by the daemon, recognised as a git repository or not, and
+  survives a restart. Sessions started inside a workspace run in that folder:
+  the frontend sends the workspace id, session kind, and selected provider;
+  it never sends a PATH. The daemon resolves the directory, then echoes back
+  the path the process actually received.
+- **Settings** — provider inventory, Oracle administration and Projects are
+  wired; Devices remains a mock panel.
 
-What is still mock: the Project/Workspace layer is a complete mock.
-`src/features/workspace/workspaceProjects.ts` initializes its state from
-`MOCK_PROJECTS` in `mockData.ts` and updates React state only. There is no
-Tauri command for projects or workspaces, and projects are not persisted.
+What is still mock: `worktree` isolation, which the daemon refuses until git
+worktrees are implemented, so every workspace is currently the project folder
+itself. The Workspace side panels — Changes, Files, the app preview and the
+Design panel — render hardcoded examples and say so; there is no git status or
+file tree on the wire yet.
 
 Developed and tested on Windows. Tauri itself is cross-platform, but no other
 platform has been verified, so treat them as unsupported for now.

@@ -1,55 +1,146 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { MOCK_PROJECTS, type MockProject, type MockWorkspace } from "./mockData";
-import type { ProjectCreationRoute } from "./NewProjectDialog";
+import { projectsList, reasonFromCause, workspaceCreate, workspacesList } from "../../lib/tauri";
+import type { Project, Session, Workspace } from "../../types/ipc";
 
-function projectNameFromDraft(route: ProjectCreationRoute, value: string): string {
-  if (route === "clone") {
-    const repositoryPath = value.split(/[?#]/, 1)[0].replace(/\/+$/, "");
-    const repositoryName = repositoryPath
-      .split("/")
-      .pop()
-      ?.replace(/\.git$/i, "");
-    return repositoryName || "cloned-project";
-  }
-
-  const pathWithoutTrailingSeparators = value.replace(/[\\/]+$/, "");
-  return pathWithoutTrailingSeparators.split(/[\\/]/).pop() || "new-project";
+export interface WorkspaceProject extends Project {
+  workspaces: WorkspaceView[];
+  workspaceError?: string;
 }
 
-function cloneProjects(): MockProject[] {
-  return MOCK_PROJECTS.map((project) => ({
+export interface WorkspaceView extends Workspace {
+  meta: string;
+  dotTone: "green" | "border";
+}
+
+interface ProjectRecord extends Project {
+  workspaces: Workspace[];
+  workspaceError?: string;
+}
+
+function reconcileProjectRecords(
+  loaded: ProjectRecord[],
+  current: ProjectRecord[],
+): ProjectRecord[] {
+  const currentById = new Map(current.map((project) => [project.id, project]));
+  const loadedIds = new Set(loaded.map((project) => project.id));
+  const reconciled = loaded.map((project) => {
+    const currentProject = currentById.get(project.id);
+    if (currentProject === undefined) return project;
+    const loadedWorkspaceIds = new Set(project.workspaces.map((workspace) => workspace.id));
+    return {
+      ...project,
+      workspaces: [
+        ...project.workspaces,
+        ...currentProject.workspaces.filter((workspace) => !loadedWorkspaceIds.has(workspace.id)),
+      ],
+    };
+  });
+  return [...reconciled, ...current.filter((project) => !loadedIds.has(project.id))];
+}
+
+export function workspaceView(
+  workspace: Workspace,
+  sessions: readonly Session[] = [],
+): WorkspaceView {
+  const liveSessions = sessions.filter(
+    (session) => session.workspaceId === workspace.id && session.state.type === "live",
+  ).length;
+  const sessionLabel = `${liveSessions} live session${liveSessions === 1 ? "" : "s"}`;
+  return {
+    ...workspace,
+    meta: `${sessionLabel} · ${workspace.isolation}`,
+    dotTone: liveSessions > 0 ? "green" : "border",
+  };
+}
+
+function projectView(project: ProjectRecord, sessions: readonly Session[]): WorkspaceProject {
+  return {
     ...project,
-    workspaces: project.workspaces.map((workspace) => ({ ...workspace })),
-  }));
+    workspaces: project.workspaces.map((workspace) => workspaceView(workspace, sessions)),
+  };
 }
 
 export function useWorkspaceProjects() {
-  const [projects, setProjects] = useState<MockProject[]>(cloneProjects);
-  const [selectedWorkspace, setSelectedWorkspace] = useState("rust-core");
+  const [projectRecords, setProjectRecords] = useState<ProjectRecord[]>([]);
+  const [sessionFacts, setSessionFactsState] = useState<Session[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const newProjectTriggerRef = useRef<HTMLButtonElement>(null);
+  const loadGenerationRef = useRef(0);
 
-  const addWorkspace = useCallback((projectId: string = "devboule") => {
-    const id = `mock-workspace-${Date.now()}`;
-    const workspace: MockWorkspace = {
-      id,
-      projectId,
-      title: "new-workspace",
-      meta: "idle · 0 d",
-      isolation: "worktree",
-      dotTone: "border",
-    };
+  const loadProjects = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const listedProjects = await projectsList();
+      const records = await Promise.all(
+        listedProjects.map(async (project): Promise<ProjectRecord> => {
+          try {
+            return { ...project, workspaces: await workspacesList(project.id) };
+          } catch (cause: unknown) {
+            return {
+              ...project,
+              workspaces: [],
+              workspaceError: reasonFromCause(cause),
+            };
+          }
+        }),
+      );
+      if (generation !== loadGenerationRef.current) return;
+      setProjectRecords((current) => reconcileProjectRecords(records, current));
+      setLoading(false);
+    } catch (cause: unknown) {
+      if (generation !== loadGenerationRef.current) return;
+      setLoading(false);
+      setError(reasonFromCause(cause));
+    }
+  }, []);
 
-    setProjects((currentProjects) =>
-      currentProjects.map((project) =>
-        project.id === projectId
-          ? { ...project, workspaces: [...project.workspaces, workspace] }
-          : project,
-      ),
+  useEffect(() => {
+    void loadProjects();
+  }, [loadProjects]);
+
+  const projectViews = useMemo(
+    () => projectRecords.map((project) => projectView(project, sessionFacts)),
+    [projectRecords, sessionFacts],
+  );
+
+  useEffect(() => {
+    if (loading || error !== null) return;
+    const workspaceIds = projectRecords.flatMap((project) =>
+      project.workspaces.map((workspace) => workspace.id),
     );
-    setSelectedWorkspace(id);
+    setSelectedWorkspace((current) =>
+      current !== null && workspaceIds.includes(current) ? current : (workspaceIds[0] ?? null),
+    );
+  }, [error, loading, projectRecords]);
+
+  const setSessionFacts = useCallback((sessions: readonly Session[]) => {
+    setSessionFactsState([...sessions]);
+  }, []);
+
+  const addWorkspace = useCallback(async (projectId: string): Promise<Workspace | null> => {
+    try {
+      const workspace = await workspaceCreate(projectId, "local");
+      setProjectRecords((currentProjects) =>
+        currentProjects.map((project) =>
+          project.id === projectId
+            ? { ...project, workspaces: [...project.workspaces, workspace] }
+            : project,
+        ),
+      );
+      setSelectedWorkspace(workspace.id);
+      setError(null);
+      return workspace;
+    } catch (cause: unknown) {
+      setError(reasonFromCause(cause));
+      return null;
+    }
   }, []);
 
   const openProjectDialog = useCallback(() => setProjectDialogOpen(true), []);
@@ -57,22 +148,24 @@ export function useWorkspaceProjects() {
     setProjectDialogOpen(false);
     newProjectTriggerRef.current?.focus();
   }, []);
-  const handleCreateProject = useCallback(
-    ({ route, value }: { route: ProjectCreationRoute; value: string }) => {
-      const trimmedValue = value.trim();
-      const project: MockProject = {
-        id: `mock-project-${Date.now()}`,
-        name: projectNameFromDraft(route, trimmedValue),
-        path: trimmedValue,
-        workspaces: [],
-      };
-
-      setProjects((currentProjects) => [...currentProjects, project]);
+  const handleCreateProject = useCallback(async (project: Project): Promise<void> => {
+    try {
+      const workspaces = await workspacesList(project.id);
+      setProjectRecords((currentProjects) => {
+        const next = { ...project, workspaces };
+        const existingIndex = currentProjects.findIndex((current) => current.id === project.id);
+        if (existingIndex < 0) return [...currentProjects, next];
+        return currentProjects.map((current, index) => (index === existingIndex ? next : current));
+      });
+      setSelectedWorkspace((current) => current ?? workspaces[0]?.id ?? null);
       setSearch("");
-      closeProjectDialog();
-    },
-    [closeProjectDialog],
-  );
+      setError(null);
+    } catch (cause: unknown) {
+      const message = reasonFromCause(cause);
+      setError(message);
+      throw cause;
+    }
+  }, []);
 
   function handleSearchChange(event: ChangeEvent<HTMLInputElement>) {
     setSearch(event.target.value);
@@ -81,7 +174,7 @@ export function useWorkspaceProjects() {
   const query = useMemo(() => search.trim().toLowerCase(), [search]);
   const visibleProjects = useMemo(
     () =>
-      projects
+      projectViews
         .map((project) => ({
           ...project,
           workspaces: project.workspaces.filter(
@@ -92,15 +185,21 @@ export function useWorkspaceProjects() {
         }))
         .filter(
           (project) =>
-            !query || project.workspaces.length > 0 || project.name.toLowerCase().includes(query),
+            !query ||
+            project.workspaceError !== undefined ||
+            project.workspaces.length > 0 ||
+            project.name.toLowerCase().includes(query),
         ),
-    [projects, query],
+    [projectViews, query],
   );
 
   return {
     visibleProjects,
+    loading,
+    error,
     selectedWorkspace,
     setSelectedWorkspace,
+    setSessionFacts,
     search,
     handleSearchChange,
     addWorkspace,
@@ -109,5 +208,6 @@ export function useWorkspaceProjects() {
     closeProjectDialog,
     handleCreateProject,
     newProjectTriggerRef,
+    retryProjects: loadProjects,
   };
 }

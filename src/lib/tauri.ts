@@ -16,10 +16,12 @@ import type {
   PermissionOutcome,
   PluginBackendStatus,
   PluginInventory,
+  Project,
   ProviderCatalog,
   ProviderUpdateOutcome,
   ResumeResult,
   Session,
+  Workspace,
   SessionEvent,
   SessionKind,
   SessionStateSnapshot,
@@ -36,6 +38,14 @@ export type CommandArgs = {
   daemon_status: undefined;
   daemon_restart: undefined;
   daemon_diagnostics: undefined;
+  projects_list: undefined;
+  project_add: { path: string };
+  workspaces_list: { projectId: Id };
+  workspace_create: {
+    projectId: Id;
+    isolation: Workspace["isolation"];
+    branch?: string | null;
+  };
   session_create: { workspaceId: Id | null; kind: SessionKind; provider?: string | null };
   session_resume: { sessionId: Id };
   session_attach: { id: Id; fromCursor: number | null; ch: SessionChannel };
@@ -85,6 +95,10 @@ type CommandResults = {
   daemon_status: DaemonStatus;
   daemon_restart: void;
   daemon_diagnostics: DaemonDiagnostics;
+  projects_list: Project[];
+  project_add: Project;
+  workspaces_list: Workspace[];
+  workspace_create: Workspace;
   session_create: Session;
   session_resume: ResumeResult;
   session_attach: void;
@@ -147,6 +161,10 @@ export const COMMAND_ARG_KEYS = {
   daemon_status: [],
   daemon_restart: [],
   daemon_diagnostics: [],
+  projects_list: [],
+  project_add: ["path"],
+  workspaces_list: ["projectId"],
+  workspace_create: ["projectId", "isolation", "branch"],
   session_create: ["workspaceId", "kind", "provider"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
@@ -276,6 +294,32 @@ export const daemonRestart = () => invokeTyped("daemon_restart");
  * renders it as given — never sanitises, never adds fields.
  */
 export const daemonDiagnostics = () => invokeTyped("daemon_diagnostics");
+/** Every folder the user has registered, oldest first. Persisted in the journal. */
+export const projectsList = () => invokeTyped("projects_list");
+/**
+ * Registers an absolute folder path. The daemon canonicalizes it, probes git,
+ * and returns the row it stored — re-registering the same folder updates the
+ * existing project instead of creating a second one, so the returned `id` is
+ * authoritative and must not be guessed at from the path.
+ */
+export const projectAdd = (path: string) => invokeTyped("project_add", { path });
+export const workspacesList = (projectId: Id) => invokeTyped("workspaces_list", { projectId });
+/**
+ * Creates a workspace inside a project. Only `local` isolation exists today;
+ * `worktree` and any `branch` are refused by the daemon with `unimplemented`
+ * until git worktrees land, and the caller must show that refusal rather than
+ * silently falling back to `local`.
+ */
+export const workspaceCreate = (
+  projectId: Id,
+  isolation: Workspace["isolation"] = "local",
+  branch?: string | null,
+) =>
+  invokeTyped("workspace_create", {
+    projectId,
+    isolation,
+    branch: branch ?? null,
+  });
 export const sessionCreate = (
   workspaceId: Id | null,
   kind: SessionKind = "terminal",

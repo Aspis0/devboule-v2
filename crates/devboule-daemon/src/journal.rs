@@ -326,12 +326,17 @@ impl SessionRecord {
         Session {
             id: self.id.clone(),
             workspace_id: self.workspace_id.clone(),
+            // The journal has no cwd column. The process is gone, and
+            // re-deriving a path from workspace_id would report a directory
+            // the dead process may never have received.
+            cwd: None,
             kind: self.kind.clone(),
             title: self.title.clone(),
             provider: self.provider.clone(),
             peer_session_id: self.peer_session_id.clone(),
             state,
             elapsed_ms: None,
+            created_at_ms: self.created_at_ms,
         }
     }
 }

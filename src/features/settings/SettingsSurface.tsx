@@ -1,15 +1,22 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { providerUpdate, providersList, providersRefresh, reasonFromCause } from "../../lib/tauri";
+import {
+  projectsList,
+  providerUpdate,
+  providersList,
+  providersRefresh,
+  reasonFromCause,
+  workspacesList,
+} from "../../lib/tauri";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
-import type { ProviderCatalog, ProviderInfo } from "../../types/ipc";
+import type { Project, ProviderCatalog, ProviderInfo } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
+import { NewProjectDialog } from "../workspace/NewProjectDialog";
 import {
   MOCK_DEVICES,
   MOCK_GENERAL_SETTINGS,
   MOCK_LABS,
-  MOCK_PROJECTS,
   MOCK_SETTINGS_TABS,
   MOCK_WORKTREE_DEFAULTS,
   type SettingsTab,
@@ -74,9 +81,6 @@ export function SettingsSurface() {
           <span className="settings-header-divider" aria-hidden="true" />
           <span className="settings-eyebrow">devboule 2.0 · rust · tauri shell</span>
         </div>
-        <button className="settings-lock-button" type="button">
-          Lock app
-        </button>
       </header>
 
       <div className="settings-tab-bar" role="tablist" aria-label="Settings sections">
@@ -518,6 +522,67 @@ function ProvidersPanel() {
 }
 
 function ProjectsPanel() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [workspaceCounts, setWorkspaceCounts] = useState<Record<string, number>>({});
+  const [workspaceErrors, setWorkspaceErrors] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const addProjectRef = useRef<HTMLButtonElement>(null);
+
+  const loadProjects = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const listed = await projectsList();
+      const results = await Promise.all(
+        listed.map(async (project) => {
+          try {
+            return { id: project.id, count: (await workspacesList(project.id)).length };
+          } catch (cause: unknown) {
+            return { id: project.id, error: reasonFromCause(cause) };
+          }
+        }),
+      );
+      const nextCounts: Record<string, number> = {};
+      const nextErrors: Record<string, string> = {};
+      for (const result of results) {
+        if (typeof result.count === "number") nextCounts[result.id] = result.count;
+        else if (typeof result.error === "string") nextErrors[result.id] = result.error;
+      }
+      setProjects(listed);
+      setWorkspaceCounts(nextCounts);
+      setWorkspaceErrors(nextErrors);
+    } catch (cause: unknown) {
+      setProjects([]);
+      setWorkspaceCounts({});
+      setWorkspaceErrors({});
+      setError(reasonFromCause(cause));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProjects();
+  }, [loadProjects]);
+
+  const closeDialog = useCallback(() => {
+    setDialogOpen(false);
+    addProjectRef.current?.focus();
+  }, []);
+
+  const handleProjectAdded = useCallback(async (project: Project) => {
+    const workspaces = await workspacesList(project.id);
+    setProjects((current) => {
+      const index = current.findIndex((entry) => entry.id === project.id);
+      if (index < 0) return [...current, project];
+      return current.map((entry, entryIndex) => (entryIndex === index ? project : entry));
+    });
+    setWorkspaceCounts((current) => ({ ...current, [project.id]: workspaces.length }));
+    setError(null);
+  }, []);
+
   return (
     <div id="settings-panel-projects" role="tabpanel" aria-label="Projects">
       <SettingsHeading
@@ -525,19 +590,55 @@ function ProjectsPanel() {
         description="A project is a git repository or any directory this daemon can reach. Workspaces live inside it."
       />
       <div className="settings-stack settings-stack-spaced">
-        {MOCK_PROJECTS.map((project) => (
-          <div className="settings-card settings-project-card" key={project.name}>
-            <span className="settings-card-copy">
-              <span className="settings-card-title">{project.name}</span>
-              <span className="settings-card-meta">{project.path}</span>
-            </span>
-            <span className="settings-card-value">{project.workspaces}</span>
+        {loading ? <div role="status">Loading projects…</div> : null}
+        {error !== null ? (
+          <div role="alert">
+            {error}
+            <button type="button" onClick={() => void loadProjects()}>
+              Retry
+            </button>
           </div>
-        ))}
-        <button className="settings-dashed-action" type="button">
+        ) : null}
+        {error === null
+          ? projects.map((project) => {
+              const workspaceCount = workspaceCounts[project.id];
+              const workspaceError = workspaceErrors[project.id];
+              return (
+                <div className="settings-card settings-project-card" key={project.id}>
+                  <span className="settings-card-copy">
+                    <span className="settings-card-title">{project.name}</span>
+                    <span className="settings-card-meta">{project.path}</span>
+                  </span>
+                  {workspaceError !== undefined ? (
+                    <span role="alert">
+                      Workspaces unavailable: {workspaceError}
+                      <button type="button" onClick={() => void loadProjects()}>
+                        Retry
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="settings-card-value">
+                      {workspaceCount ?? 0} workspace{workspaceCount === 1 ? "" : "s"}
+                    </span>
+                  )}
+                </div>
+              );
+            })
+          : null}
+        {!loading && error === null && projects.length === 0 ? (
+          <div role="status">No projects registered</div>
+        ) : null}
+        <button
+          className="settings-dashed-action"
+          type="button"
+          ref={addProjectRef}
+          onClick={() => setDialogOpen(true)}
+        >
           <span aria-hidden="true">+</span>Add project
         </button>
       </div>
+
+      <NewProjectDialog open={dialogOpen} onClose={closeDialog} onCreate={handleProjectAdded} />
 
       <div className="settings-subheading">Worktree defaults</div>
       <div className="settings-stack settings-stack-tight">
@@ -569,9 +670,6 @@ function DevicesPanel() {
             <span className="settings-card-value">{device.state}</span>
           </div>
         ))}
-        <button className="settings-dashed-action" type="button">
-          <span aria-hidden="true">+</span>Pair a device
-        </button>
       </div>
     </div>
   );
