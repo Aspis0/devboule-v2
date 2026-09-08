@@ -609,6 +609,57 @@ platform change required; `DOC-ONLY` = documentation must not over-promise.
 | F-12 | medium | The open capability set is a forward-compatibility trap: a manifest declaring grab-bag names today could silently gain powers when the platform grants them later. Mitigation: capability charset restriction + explicit grant review. | ROADMAP-GAP |
 | F-18 | medium | Where this document says "the platform enforces X", verify against code before building on it — this audit found doc-vs-enforcement drift is possible (see the findings table in the hostile report). | DOC-ONLY |
 
+### Recommended intervention order (platform)
+
+Verified by a direct re-read of the serving/invocation/mounting code
+(2026-09-08). Do these before installing any third-party plugin:
+
+**P0 — required before third-party plugins at all**
+
+1. **Per-plugin origin** (`http://plugin-{id}.localhost`) **or**
+   request-origin binding inside the asset scheme handler. Verified: the
+   asset handler takes `pluginId` from the URL's first segment and performs
+   NO check of which frame is asking — one malicious installed plugin reads
+   every other plugin's sources, assets, and backend binary same-origin
+   (F-01, F-04, F-08 all share this root).
+2. **`X-Content-Type-Options: nosniff` on every plugin asset response.**
+   Verified: `respond()` sends only Content-Type + ACAO + Cache-Control.
+   Latent today, but it is the precondition for guards 5–6 of the workspace
+   prefix (§7 1-bis).
+3. **Workspace-branch MIME allowlist** (never extension-derived; never
+   `text/javascript` / `text/html` / `image/svg+xml`; octet-stream
+   catch-all) — agreed guard 5.
+
+**P1 — high**
+
+4. Workspace-serving version validator stronger than mtime+size (mtime+size
+   is spoofable by any backend, F-02 ⊗ F-03 combined: `SetFileTime` +
+   same-size swap defeats the 412). Decide: content-hash, or accept and
+   document the threat — BEFORE shipping §7 1-bis.
+5. Job Object child-process policy: explicitly add children to the job (or
+   deny breakaway) so a backend cannot spawn survivors of host exit
+   (F-02 mitigation; real sandbox = AppContainer/restricted token, roadmap).
+6. Service-worker registration policy on `plugin.localhost` (scope header or
+   outright deny) — a frame can register a SW on the shared origin and
+   poison other plugins' asset cache (F-04).
+7. Capability charset validation at manifest parse (ASCII `[a-z0-9._-]`)
+   against unicode-confusable lookalikes and grab-bag forward-compatibility
+   (F-07, F-12).
+8. Do not serve backend binaries as assets (or explicit opt-in only) (F-08).
+
+**P2 — hardening**
+
+9. Bridge rate limiting / pending-map bounds (postMessage flood) (F-05).
+10. Digest re-check when an asset file's mtime changes after cache warm
+    (F-06, F-14 — `is_verified_asset` gates on the registry cache; a
+    modified file between scan and serve is the window).
+11. Caller binding for `plugin_invoke` (see §5 trust boundary note): today
+    the command is caller-agnostic and shell-trusted — write that boundary
+    down and revisit if plugin frames ever gain caller identities.
+12. Installed-plugin directory write protection (a backend can rewrite its
+    own directory = unreviewed self-update, F-13/F-15); Windows ACLs are
+    awkward — at minimum document the trust implication.
+
 Do not try to bypass any of these — they are the reason a reviewed plugin can
 be trusted with a surface in the shell.
 
