@@ -121,6 +121,7 @@ const SESSION: Session = {
   kind: "acp",
   title: "Design agent",
   peerSessionId: "peer-session-1",
+  createdAtMs: 1_000,
   state: { type: "live", generation: 1 },
   elapsedMs: 0,
 };
@@ -1481,6 +1482,7 @@ describe("ACP design host", () => {
         expect(result.artifactHtml).toBe('<div class="card">Hello</div>');
         expect(result.sessionId).toBe(SESSION.id);
         expect(result.peerSessionId).toBe(SESSION.peerSessionId);
+        expect(result.createdAtMs).toBe(SESSION.createdAtMs);
         expect(result.sources).toEqual(["src/comp.tsx"]);
 
         await disposeAgentHost(host);

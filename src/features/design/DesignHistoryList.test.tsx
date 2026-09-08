@@ -30,6 +30,7 @@ describe("DesignHistoryList", () => {
       {
         sessionId: "missing-session",
         peerSessionId: "peer-1",
+        createdAtMs: null,
         title: "Create the final card",
         savedAtMs: 100,
         origin: "design",

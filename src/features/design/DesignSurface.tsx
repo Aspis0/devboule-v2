@@ -32,10 +32,11 @@ import {
   selectedSlugs,
   type DesignSkillSelection,
 } from "./designSettings";
-import { designChatCapableProviders } from "./designProviders";
 import { DesignHistoryList } from "./DesignHistoryList";
 import { recordDesignHistoryEntry } from "./designHistory";
 import { buildSkillBlock } from "./skillLoader";
+import { useProviderConsent } from "../workspace/useProviderConsent";
+import { chatCapableProviders, requiresConsent } from "../workspace/workspaceSessions";
 import { providersList } from "../../lib/tauri";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
@@ -1049,6 +1050,11 @@ const DesignAssistant = memo(function DesignAssistant({
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const providerButtonRef = useRef<HTMLButtonElement>(null);
+  const providerPickerWrapRef = useRef<HTMLDivElement>(null);
+  const consentConfirmRef = useRef<HTMLButtonElement>(null);
+  const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
+  const consentRestoreProviderIdRef = useRef<string | null>(null);
   const manifest = agentState?.manifest ?? null;
   const currentModel = manifestModel(manifest);
   const modelLabel =
@@ -1083,6 +1089,79 @@ const DesignAssistant = memo(function DesignAssistant({
   useEffect(() => {
     if (modelButtonDisabled) setModelPickerOpen(false);
   }, [modelButtonDisabled]);
+
+  const handleConsentConfirmed = useCallback(
+    (provider: ProviderInfo) => {
+      onProviderSelect(provider);
+      setProviderPickerOpen(false);
+    },
+    [onProviderSelect],
+  );
+  const {
+    pending: consentProvider,
+    request: requestConsent,
+    confirm: confirmConsent,
+    cancel: cancelConsent,
+    inFlight: consentInFlight,
+    commandLine: consentCommandLine,
+  } = useProviderConsent({ onConfirmed: handleConsentConfirmed });
+
+  const dismissProviderPicker = useCallback(() => {
+    if (consentProvider !== null) {
+      cancelConsent();
+      return;
+    }
+    setProviderPickerOpen(false);
+  }, [cancelConsent, consentProvider]);
+
+  useEffect(() => {
+    if (consentProvider !== null) {
+      consentConfirmRef.current?.focus();
+      return;
+    }
+    const trigger = consentRestoreRef.current;
+    const providerId = consentRestoreProviderIdRef.current;
+    const restoredOption =
+      providerId === null
+        ? null
+        : [
+            ...(providerPickerWrapRef.current?.querySelectorAll<HTMLButtonElement>(
+              '[role="option"]',
+            ) ?? []),
+          ].find((option) => option.dataset.providerId === providerId);
+    if (restoredOption !== undefined && restoredOption !== null) {
+      restoredOption.focus();
+    } else if (trigger?.isConnected) {
+      trigger.focus();
+    } else if (trigger !== null || providerId !== null) {
+      providerButtonRef.current?.focus();
+    }
+    if (trigger !== null || providerId !== null) {
+      consentRestoreRef.current = null;
+      consentRestoreProviderIdRef.current = null;
+    }
+  }, [consentProvider]);
+
+  useEffect(() => {
+    if (!providerPickerOpen) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      dismissProviderPicker();
+    };
+    const onMouseDown = (event: globalThis.MouseEvent): void => {
+      const root = providerPickerWrapRef.current;
+      if (root !== null && event.target instanceof Node && !root.contains(event.target)) {
+        dismissProviderPicker();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("mousedown", onMouseDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [dismissProviderPicker, providerPickerOpen]);
 
   const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
   const resolvedSkillSlugs =
@@ -1324,8 +1403,9 @@ const DesignAssistant = memo(function DesignAssistant({
               rows={2}
             />
             <div className="design-composer-footer">
-              <div className="design-agent-picker-wrap">
+              <div className="design-agent-picker-wrap" ref={providerPickerWrapRef}>
                 <button
+                  ref={providerButtonRef}
                   className="design-provider-button"
                   type="button"
                   // A session keeps the agent it was opened with, so once one exists this
@@ -1347,6 +1427,7 @@ const DesignAssistant = memo(function DesignAssistant({
                   aria-controls={providerButtonDisabled ? undefined : "design-provider-picker"}
                   disabled={providerButtonDisabled}
                   onClick={() => {
+                    if (consentProvider !== null) return;
                     setProviderPickerOpen((open) => !open);
                     setModelPickerOpen(false);
                   }}
@@ -1359,39 +1440,84 @@ const DesignAssistant = memo(function DesignAssistant({
                   <div
                     id="design-provider-picker"
                     className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
-                    role="listbox"
-                    aria-label="Choose provider"
+                    role={consentProvider === null ? "listbox" : "group"}
+                    aria-label={consentProvider === null ? "Choose provider" : "Confirm provider"}
                   >
-                    <div className="design-agent-picker-label">Choose installed agent</div>
-                    <p className="design-agent-picker-notice">
-                      Agents downloaded on demand are not offered in Design yet. Use Workspace to
-                      run them.
-                    </p>
-                    {providersLoading ? (
-                      <div className="design-agent-picker-status">Loading installed agents…</div>
-                    ) : providers.length === 0 ? (
-                      <div className="design-agent-picker-status">
-                        No installed chat-capable agents found. Choose an agent in Workspace when
-                        one is available.
-                      </div>
-                    ) : (
-                      <div className="design-agent-picker-options">
-                        {providers.map((providerOption) => (
+                    {consentProvider !== null ? (
+                      <>
+                        <div className="design-agent-picker-label">Confirm provider</div>
+                        {/*
+                          Focus moves to Confirm as soon as this card appears, so a screen reader
+                          announces that button and whatever describes it — and nothing else. The
+                          description therefore has to carry the command itself: approving a
+                          package download while hearing only the word "Confirm" is not consent.
+                        */}
+                        <p className="design-agent-picker-notice" id="design-consent-notice">
+                          Approve this command to download and run third-party code:
+                        </p>
+                        <code className="design-agent-picker-command" id="design-consent-command">
+                          {consentCommandLine}
+                        </code>
+                        <div className="design-agent-picker-actions">
                           <button
                             type="button"
-                            role="option"
-                            aria-selected={providerOption.id === selectedProviderId}
-                            className="design-agent-picker-option"
-                            key={providerOption.id}
-                            onClick={() => {
-                              onProviderSelect(providerOption);
-                              setProviderPickerOpen(false);
-                            }}
+                            className="design-agent-picker-secondary"
+                            onClick={cancelConsent}
                           >
-                            {providerOption.id}
+                            Cancel
                           </button>
-                        ))}
-                      </div>
+                          <button
+                            ref={consentConfirmRef}
+                            type="button"
+                            className="design-agent-picker-primary"
+                            aria-describedby="design-consent-notice design-consent-command"
+                            onClick={confirmConsent}
+                            disabled={consentInFlight}
+                          >
+                            Confirm
+                          </button>
+                        </div>
+                      </>
+                    ) : providersLoading ? (
+                      <>
+                        <div className="design-agent-picker-label">Choose agent</div>
+                        <div className="design-agent-picker-status">Loading agents…</div>
+                      </>
+                    ) : providers.length === 0 ? (
+                      <>
+                        <div className="design-agent-picker-label">Choose agent</div>
+                        <div className="design-agent-picker-status">
+                          No chat-capable agents found.
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="design-agent-picker-label">Choose agent</div>
+                        <div className="design-agent-picker-options">
+                          {providers.map((providerOption) => (
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={providerOption.id === selectedProviderId}
+                              data-provider-id={providerOption.id}
+                              className="design-agent-picker-option"
+                              key={providerOption.id}
+                              onClick={(event) => {
+                                if (requiresConsent(providerOption)) {
+                                  consentRestoreRef.current = event.currentTarget;
+                                  consentRestoreProviderIdRef.current = providerOption.id;
+                                  requestConsent(providerOption);
+                                  return;
+                                }
+                                onProviderSelect(providerOption);
+                                setProviderPickerOpen(false);
+                              }}
+                            >
+                              {providerOption.id}
+                            </button>
+                          ))}
+                        </div>
+                      </>
                     )}
                   </div>
                 ) : null}
@@ -1658,7 +1784,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     void providersList()
       .then((catalog) => {
         if (!active) return;
-        const available = designChatCapableProviders(catalog.providers);
+        const available = chatCapableProviders(catalog.providers);
         setProviders(available);
         return loadDesignProviderId(available.map((provider) => provider.id)).then((storedId) => {
           if (!active) return;
@@ -2171,6 +2297,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             void recordDesignHistoryEntry({
               sessionId: result.sessionId,
               peerSessionId: result.peerSessionId,
+              createdAtMs: result.createdAtMs,
               title: prompt.trim(),
               savedAtMs: Date.now(),
               origin: "design",

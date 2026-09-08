@@ -52,6 +52,8 @@ export interface DesignGenerationResult {
   /** Identity of the session that produced this result, not whichever session is current later. */
   sessionId: string;
   peerSessionId: string | null;
+  /** Creation time of the session that produced this result, or null for non-session hosts. */
+  createdAtMs: number | null;
   prompt: string;
   title: string;
   desc: string;

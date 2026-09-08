@@ -284,6 +284,7 @@ describe("concurrent design settings writes", () => {
     const entry: DesignHistoryEntry = {
       sessionId: "session-history",
       peerSessionId: "peer-history",
+      createdAtMs: null,
       title: "A generated design",
       savedAtMs: 10,
       origin: "design",

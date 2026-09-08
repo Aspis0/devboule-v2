@@ -30,18 +30,20 @@ let storedSettings: unknown = null;
 const BASE_ENTRY: DesignHistoryEntry = {
   sessionId: "session-1",
   peerSessionId: "peer-1",
+  createdAtMs: 1_000,
   title: "First pass",
   savedAtMs: 100,
   origin: "design",
 };
 
-function session(id: string, peerSessionId?: string): Session {
+function session(id: string, peerSessionId?: string, createdAtMs?: number): Session {
   return {
     id,
     workspaceId: null,
     kind: "acp",
     title: "Agent",
     ...(peerSessionId === undefined ? {} : { peerSessionId }),
+    ...(createdAtMs === undefined ? {} : { createdAtMs }),
     state: { type: "ended", generation: 1, code: 0, integrity: { kind: "complete" } },
     elapsedMs: null,
   };
@@ -167,6 +169,52 @@ describe("design history persistence", () => {
     );
   });
 
+  it("uses matching creation times before peer ids", () => {
+    expect(
+      historyEntryStatus(BASE_ENTRY, [session(BASE_ENTRY.sessionId, "peer-reissued", 1_000)]),
+    ).toBe("available");
+  });
+
+  it("returns gone for differing creation times before peer ids", () => {
+    expect(historyEntryStatus(BASE_ENTRY, [session(BASE_ENTRY.sessionId, "peer-1", 2_000)])).toBe(
+      "gone",
+    );
+  });
+
+  it("falls back to peer ids when either creation time is absent", () => {
+    const missingEntryTime = { ...BASE_ENTRY, createdAtMs: null };
+    expect(
+      historyEntryStatus(missingEntryTime, [session(BASE_ENTRY.sessionId, "peer-1", 2_000)]),
+    ).toBe("available");
+    expect(historyEntryStatus(BASE_ENTRY, [session(BASE_ENTRY.sessionId, "peer-1")])).toBe(
+      "available",
+    );
+  });
+
+  it("keeps legacy entries without a creation time on the peer-id fallback", async () => {
+    const legacyEntry = {
+      sessionId: BASE_ENTRY.sessionId,
+      peerSessionId: BASE_ENTRY.peerSessionId,
+      title: BASE_ENTRY.title,
+      savedAtMs: BASE_ENTRY.savedAtMs,
+      origin: BASE_ENTRY.origin,
+    };
+    storedSettings = {
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      history: [legacyEntry],
+    };
+
+    const [loaded] = await loadDesignHistory();
+    expect(loaded).toEqual({ ...BASE_ENTRY, createdAtMs: null });
+    expect(
+      loaded === undefined
+        ? "gone"
+        : historyEntryStatus(loaded, [session(BASE_ENTRY.sessionId, "peer-1", 2_000)]),
+    ).toBe("available");
+  });
+
   it("returns gone when the entry has a peer id but the session does not", () => {
     expect(historyEntryStatus(BASE_ENTRY, [session(BASE_ENTRY.sessionId)])).toBe("gone");
   });
@@ -190,6 +238,7 @@ describe("design history settings size", () => {
       (_, index) => ({
         sessionId: `${String(index).padStart(2, "0")}${"s".repeat(MAX_HISTORY_SESSION_ID_CHARS - 2)}`,
         peerSessionId: pathologicalPeerSessionId,
+        createdAtMs: Number.MAX_SAFE_INTEGER - index,
         title: pathologicalTitle,
         savedAtMs: Number.MAX_SAFE_INTEGER - index,
         origin: "workspace",
@@ -204,6 +253,7 @@ describe("design history settings size", () => {
     const newestEntry: DesignHistoryEntry = {
       sessionId: "newest-session",
       peerSessionId: pathologicalPeerSessionId,
+      createdAtMs: Number.MAX_SAFE_INTEGER + 1,
       title: pathologicalTitle,
       savedAtMs: Number.MAX_SAFE_INTEGER + 1,
       origin: "design",

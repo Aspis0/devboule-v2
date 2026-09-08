@@ -43,6 +43,7 @@ export function createOracleHost(): DesignHost {
       return {
         sessionId: "oracle-host",
         peerSessionId: null,
+        createdAtMs: null,
         prompt,
         title:
           response.results.length === 0

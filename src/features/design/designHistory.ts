@@ -12,6 +12,8 @@ export interface DesignHistoryEntry {
   sessionId: string;
   /** From Session.peerSessionId; a differing value identifies a reused session id's other run. */
   peerSessionId: string | null;
+  /** From the producing Session; null preserves entries written before this field existed. */
+  createdAtMs: number | null;
   /** The prompt that started the run, trimmed. */
   title: string;
   savedAtMs: number;
@@ -31,6 +33,7 @@ function parseHistoryEntry(value: unknown): DesignHistoryEntry | null {
   if (!isRecord(value)) return null;
   const sessionId = value.sessionId;
   const peerSessionId = value.peerSessionId;
+  const createdAtMs = value.createdAtMs;
   const title = value.title;
   const savedAtMs = value.savedAtMs;
   const origin = value.origin;
@@ -42,6 +45,9 @@ function parseHistoryEntry(value: unknown): DesignHistoryEntry | null {
     (typeof peerSessionId === "string" &&
       (peerSessionId.length === 0 ||
         Array.from(peerSessionId).length > MAX_HISTORY_PEER_SESSION_ID_CHARS)) ||
+    (createdAtMs !== undefined &&
+      createdAtMs !== null &&
+      (typeof createdAtMs !== "number" || !Number.isFinite(createdAtMs))) ||
     typeof title !== "string" ||
     typeof savedAtMs !== "number" ||
     !Number.isFinite(savedAtMs) ||
@@ -53,6 +59,7 @@ function parseHistoryEntry(value: unknown): DesignHistoryEntry | null {
   return {
     sessionId,
     peerSessionId,
+    createdAtMs: typeof createdAtMs === "number" ? createdAtMs : null,
     title: trimCharacters(title.trim(), MAX_HISTORY_TITLE_CHARS),
     savedAtMs,
     origin,
@@ -107,6 +114,10 @@ export function historyEntryStatus(
 ): "available" | "gone" {
   const session = sessions.find((candidate) => candidate.id === entry.sessionId);
   if (session === undefined) return "gone";
+
+  if (typeof entry.createdAtMs === "number" && typeof session.createdAtMs === "number") {
+    return entry.createdAtMs === session.createdAtMs ? "available" : "gone";
+  }
 
   const currentPeerSessionId = session.peerSessionId;
   if (entry.peerSessionId === null) {

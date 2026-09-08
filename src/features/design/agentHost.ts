@@ -300,7 +300,7 @@ export function groundedPrompt(
 function resultFor(
   prompt: string,
   toolObservations: Map<string, ToolObservation>,
-): Omit<DesignGenerationResult, "sessionId" | "peerSessionId"> {
+): Omit<DesignGenerationResult, "sessionId" | "peerSessionId" | "createdAtMs"> {
   const observations = [...toolObservations.values()];
   const shellCommandsRan = observations.some(
     (observation) => observation.kind === "execute" && observation.completed,
@@ -727,6 +727,7 @@ export function createAgentHost(): DesignHost {
           ...result,
           sessionId: run.session.session.id,
           peerSessionId: run.session.session.peerSessionId ?? null,
+          createdAtMs: run.session.session.createdAtMs ?? null,
         };
         const artifact = extractArtifact(state, run.itemStart);
         settleRun(

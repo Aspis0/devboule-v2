@@ -1449,6 +1449,49 @@
   line-height: 1.4;
 }
 
+.design-agent-picker-command {
+  display: block;
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border-radius: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+}
+
+.design-agent-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.design-agent-picker-secondary,
+.design-agent-picker-primary {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.design-agent-picker-secondary {
+  color: var(--ink-soft);
+  background: transparent;
+}
+
+.design-agent-picker-primary {
+  color: var(--surface);
+  background: var(--terracotta);
+  border-color: var(--terracotta);
+}
+
+.design-agent-picker-secondary:disabled,
+.design-agent-picker-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .design-agent-picker-options {
   display: grid;
   gap: 3px;
