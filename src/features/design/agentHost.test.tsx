@@ -114,6 +114,7 @@ const WORKSPACE: Workspace = {
   projectId: PROJECT.id,
   title: "feat/design",
   isolation: "local",
+  path: "C:/devboule",
 };
 const SESSION: Session = {
   id: "session-1",

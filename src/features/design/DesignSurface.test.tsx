@@ -166,6 +166,7 @@ const WORKSPACE: Workspace = {
   projectId: PROJECT.id,
   title: "main workspace",
   isolation: "local",
+  path: "C:/design",
 };
 const REFRESHED_WORKSPACE: Workspace = {
   ...WORKSPACE,
