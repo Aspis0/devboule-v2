@@ -65,3 +65,10 @@ process left running.
 correct for this file: most of its assertions are about messages that must be _rejected_ —
 wrong origin, wrong window, oversized payload, ungranted capability, absent reply — and
 rejection paths are exactly what a refactor silently loosens.
+
+## Installing one
+
+There is no registry and nothing is downloaded. `install.ts` asks for the folder the plugin
+was unpacked into and installs from there, and it still reports the four states a download
+would — absent, installing, installed, error — because the surface has to say the same
+things either way.

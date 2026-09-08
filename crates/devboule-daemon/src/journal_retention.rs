@@ -179,12 +179,12 @@ pub(super) fn retain(
     limits: JournalLimits,
     session_id: &str,
     run_global_sweep: bool,
-) -> Result<(), JournalError> {
+) -> Result<bool, JournalError> {
     trim_session(conn, session_id, limits)?;
     if run_global_sweep {
-        retain_global(conn, pins, now_ms, limits)?;
+        return retain_global(conn, pins, now_ms, limits);
     }
-    Ok(())
+    Ok(false)
 }
 
 fn trim_session(
@@ -263,7 +263,8 @@ fn retain_global(
     pins: &HashSet<String>,
     now_ms: u64,
     limits: JournalLimits,
-) -> Result<(), JournalError> {
+) -> Result<bool, JournalError> {
+    let mut deleted = false;
     let ids: Vec<(String, String, String, i64, i64)> = {
         let mut stmt =
             conn.prepare("SELECT id, status, kind, updated_at_ms, payload_bytes FROM sessions")?;
@@ -290,6 +291,7 @@ fn retain_global(
             .collect();
         for id in aged {
             delete_session(conn, &id, DeleteReason::LimitAge)?;
+            deleted = true;
         }
     }
 
@@ -310,11 +312,12 @@ fn retain_global(
                     DeleteReason::LimitSessions
                 };
                 delete_session(conn, &id, reason)?;
+                deleted = true;
             }
             None => break,
         }
     }
-    Ok(())
+    Ok(deleted)
 }
 
 fn session_totals(conn: &rusqlite::Transaction<'_>) -> Result<(usize, u64), JournalError> {

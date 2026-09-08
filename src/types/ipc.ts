@@ -192,6 +192,8 @@ export interface Session {
   state: SessionState;
   /** Milliseconds since the last observed output; null for recovered records. */
   elapsedMs: number | null;
+  /** Mirror of the roster snapshot's attention; the frontend only renders it. */
+  attention?: Attention;
 }
 
 export type ResumeResult =
@@ -199,12 +201,99 @@ export type ResumeResult =
   | { type: "not_supported" }
   | { type: "failed"; message: string };
 
+/** Journal writer counters nested inside the daemon's health section. */
+export interface JournalStatsDiagnostics {
+  acceptedFrames: number;
+  acceptedBytes: number;
+  committedFrames: number;
+  committedBytes: number;
+  failedFrames: number;
+}
+
+/**
+ * Diagnostics report from the daemon, already redacted server-side. The
+ * frontend renders exactly what it is given and never sanitises it. This is a
+ * direct camelCase mirror of `DiagnosticsReport`; journal facts are nested in
+ * `health` on the wire and are presented as a derived Journal section by the
+ * panel.
+ */
+export interface DaemonDiagnostics {
+  /** Identity and version. */
+  daemon: {
+    version: string;
+    protocolVersion: number;
+    pid: number;
+    uptimeMs: number;
+    clients: number;
+    sessions: number;
+    capabilities: string[];
+    instanceId: string;
+  };
+  /** Health counters and nested journal facts. */
+  health: {
+    peakRingBytes: number;
+    ringEvictedBytes: number;
+    ringDroppedFrames: number;
+    journalStats: JournalStatsDiagnostics | null;
+    journalError?: string;
+    journalSchemaVersion: number;
+    journalFileBytes?: number;
+  };
+  /** Aggregate session counts. `oldestLiveAgeMs` is null when no session is live. */
+  sessions: {
+    total: number;
+    live: number;
+    silent: number;
+    ended: number;
+    recovered: number;
+    terminal: number;
+    acp: number;
+    claude: number;
+    resumable: number;
+    oldestLiveAgeMs: number | null;
+  };
+  /** One row per provider, redacted server-side. */
+  providers: Array<{
+    id: string;
+    protocol: string | null;
+    origin: string | null;
+    installChannel: string | null;
+    installedVersion: string | null;
+    latestVersion: string | null;
+    agentVersion: string | null;
+    installed: boolean;
+    authentication: string;
+  }>;
+  /** Environment facts. */
+  environment: {
+    osVersion: string;
+    appVersion: string;
+    runtimeDir: string;
+    pipeName: string;
+    loginShellCapture: {
+      state: "not_run" | "applied" | "skipped" | "failed";
+      appliedVariables: number;
+      preservedVariables: number;
+    };
+  };
+}
+
+/** Why a session wants the user's attention. Suppression is daemon-side policy. */
+export type AttentionReason = "finished" | "error" | "permission";
+
+export interface Attention {
+  reason: AttentionReason;
+  atMs: number;
+}
+
 /** Compact daemon push used to update the workspace tab roster. */
 export interface SessionStateSnapshot {
   id: Id;
   title: string;
   state: SessionState;
   elapsedMs: number | null;
+  /** Absent when the session needs no attention; suppression is daemon-side. */
+  attention?: Attention;
 }
 
 export type CursorShape = "block" | "underline" | "bar";
@@ -309,7 +398,12 @@ export type SessionEvent =
   | { type: "sessions_snapshot"; sessions: SessionStateSnapshot[] }
   | SessionSnapshot;
 
-export type DaemonConnectionState = "connected" | "connecting" | "disconnected" | "error";
+export type DaemonConnectionState =
+  | "connected"
+  | "connecting"
+  | "disconnected"
+  | "error"
+  | "unresponsive";
 
 export interface DaemonStatus {
   state: DaemonConnectionState;
@@ -318,6 +412,7 @@ export interface DaemonStatus {
   protocolVersion: number | null;
   clients: number | null;
   capabilities: string[];
+  /** For `unresponsive`: a human sentence from the supervisor, shown verbatim. */
   message: string | null;
 }
 
@@ -394,12 +489,12 @@ export interface ProviderInfo {
   /** How the CLI is installed; null when the daemon could not determine it. */
   installChannel?: "npm" | "npx-registry" | "native" | null;
   /**
-   * Whether the CLI is installed locally. ABSENT means true; `false` appears
-   * only on synthetic "known but not installed" rows the daemon builds from its
-   * npm-package table. Those rows carry no protocol, so the chat picker
-   * excludes them already.
+   * Whether the CLI is installed locally. ABSENT means installed; `false`
+   * appears only on synthetic "known but not installed" rows the daemon builds
+   * from its npm-package table. Those rows carry no protocol, so the chat
+   * picker excludes them already. The daemon never emits null.
    */
-  installed?: boolean | null;
+  installed?: boolean;
   /** npm package the row maps to, when known; the update/install consent shows it verbatim. */
   npmPackage?: string | null;
 }
@@ -409,7 +504,7 @@ export interface ProviderUpdateOutcome {
   ok: boolean;
   /** npm's exit code; null when npm never ran. */
   exitCode?: number | null;
-  /** Full npm output; the UI shows only the tail. */
+  /** Already tail-bounded at 64KB by the daemon; the UI shows the last ~500 chars. */
   log: string;
 }
 

@@ -8,14 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use windows_sys::Win32::Foundation::{
+    CloseHandle, SetHandleInformation, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ,
+    GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+};
 #[cfg(feature = "server")]
-use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, WAIT_OBJECT_0,
-};
-use windows_sys::Win32::Foundation::{
-    SetHandleInformation, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE,
-    HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
-};
+use windows_sys::Win32::Foundation::{ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, WAIT_OBJECT_0};
 #[cfg(feature = "server")]
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
@@ -24,6 +22,7 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 #[cfg(feature = "server")]
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 #[cfg(feature = "server")]
 use windows_sys::Win32::System::Pipes::{
@@ -32,6 +31,7 @@ use windows_sys::Win32::System::Pipes::{
 };
 #[cfg(feature = "server")]
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 #[cfg(feature = "server")]
 use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
@@ -251,6 +251,78 @@ pub fn inspect_pipe_dacl(file: &File) -> io::Result<String> {
     security::dacl_sddl(file.as_raw_handle() as HANDLE)
 }
 
+/// Return the OS-owned process at the server end of this connected pipe.
+/// This is stronger than trusting the PID carried in the daemon hello: the
+/// kernel answers for the handle we are actually connected to.
+pub fn server_process_id(file: &File) -> io::Result<u32> {
+    use std::os::windows::io::AsRawHandle;
+
+    let mut pid = 0u32;
+    let ok = unsafe { GetNamedPipeServerProcessId(file.as_raw_handle() as HANDLE, &mut pid) };
+    if ok == 0 {
+        return Err(last_os_error());
+    }
+    Ok(pid)
+}
+
+struct ProcessHandle(HANDLE);
+
+impl ProcessHandle {
+    fn open(pid: u32) -> io::Result<Self> {
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        if handle.is_null() {
+            return Err(last_os_error());
+        }
+        Ok(Self(handle))
+    }
+
+    fn terminate(self) -> io::Result<()> {
+        if unsafe { TerminateProcess(self.0, 1) } == 0 {
+            return Err(last_os_error());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+fn terminate_after_pipe_identity_check<P>(
+    expected_pid: u32,
+    open: impl FnOnce(u32) -> io::Result<P>,
+    observe: impl FnOnce() -> io::Result<u32>,
+    terminate: impl FnOnce(P) -> io::Result<()>,
+) -> io::Result<()> {
+    let process = open(expected_pid)?;
+    let observed_pid = observe()?;
+    if observed_pid != expected_pid {
+        return Err(io::Error::other(format!(
+            "connected daemon identity changed (expected server pid {expected_pid}, observed {observed_pid})"
+        )));
+    }
+    terminate(process)
+}
+
+/// Open the expected server process before rechecking the pipe identity, then
+/// terminate through that pinned handle. A PID alone is not stable enough: it
+/// may be recycled between the pipe query and termination.
+pub fn terminate_server_process_if_identity_matches(
+    file: &File,
+    expected_pid: u32,
+) -> io::Result<()> {
+    terminate_after_pipe_identity_check(
+        expected_pid,
+        ProcessHandle::open,
+        || server_process_id(file),
+        ProcessHandle::terminate,
+    )
+}
+
 #[cfg(feature = "server")]
 pub fn peer_identity(file: &File) -> io::Result<crate::agent_report::PeerIdentity> {
     use std::os::windows::io::AsRawHandle;
@@ -268,5 +340,44 @@ pub fn peer_identity(file: &File) -> io::Result<crate::agent_report::PeerIdentit
 impl Drop for NamedPipeListener {
     fn drop(&mut self) {
         let _ = self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::terminate_after_pipe_identity_check;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn process_is_opened_before_pipe_recheck_and_not_terminated_after_mismatch() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let open_calls = Arc::clone(&calls);
+        let observe_calls = Arc::clone(&calls);
+        let terminate_calls = Arc::clone(&calls);
+
+        let result = terminate_after_pipe_identity_check(
+            41,
+            move |pid| {
+                open_calls.lock().unwrap().push(format!("open:{pid}"));
+                Ok(())
+            },
+            move || {
+                observe_calls.lock().unwrap().push("observe".to_string());
+                Ok(42)
+            },
+            move |_| {
+                terminate_calls
+                    .lock()
+                    .unwrap()
+                    .push("terminate".to_string());
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["open:41".to_string(), "observe".to_string()]
+        );
     }
 }

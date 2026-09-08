@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -142,7 +142,14 @@ pub(super) enum PendingItem {
     Output { seq: u64, data: String },
     /// A structured ACP event. It travels through the same bounded live
     /// attachment queue as terminal output, but has no screen representation.
-    Agent { event: SessionEvent, bytes: usize },
+    Agent {
+        /// Journal sequence of the envelope that produced this event. None
+        /// is used for daemon-local events such as stderr and permission
+        /// resolution, which have no replay row to de-duplicate against.
+        seq: Option<u64>,
+        event: SessionEvent,
+        bytes: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -227,13 +234,38 @@ pub(super) struct PullState {
     /// session) or the live snapshot contract.
     pub(super) transcript: bool,
     /// Transcript-only: last replay sequence the client accounted for.
-    /// Live sessions keep no replay cursor; their screen boundary is the
-    /// snapshot's `as_of_seq`.
+    /// Live terminal sessions keep no replay cursor; their screen boundary is
+    /// the snapshot's `as_of_seq`. Live headless agents use `agent_replay`.
     pub(super) transcript_cursor: Option<u64>,
+    /// A live headless agent attach replays the durable prefix before its
+    /// watermark. This is deliberately per-connection state rather than
+    /// `StreamState.pending`, so a long journal remains page-bounded.
+    pub(super) agent_replay: Option<AgentReplay>,
+    pub(super) agent_backlog_after_replay: bool,
     pub(super) exit_sent: bool,
     pub(super) journal_degraded_sent: bool,
     pub(super) generation: u64,
     pub(super) attachment_generation: u64,
+}
+
+pub(super) struct AgentReplay {
+    pub(super) from_seq: u64,
+    pub(super) cursor: u64,
+    pub(super) watermark: u64,
+    pub(super) generation: u64,
+    pub(super) pending: VecDeque<(u64, SessionEvent)>,
+    pub(super) replayed_seqs: HashSet<u64>,
+    pub(super) claude_view: Option<crate::claude_view::ClaudeView>,
+    pub(super) manifest_emitted: bool,
+    /// Number of times a page boundary has extended the replay watermark to
+    /// catch live journal rows published during the replay.
+    pub(super) catch_up_extensions: u8,
+    pub(super) durable_done: bool,
+    pub(super) journal_lagged: bool,
+    /// Stop extending after the bounded catch-up policy gives up. The
+    /// replay still drains in order, then emits JournalDegraded before live
+    /// items so a permanent producer outrunning SQLite is never a spin loop.
+    pub(super) force_finish: bool,
 }
 
 #[derive(Debug)]

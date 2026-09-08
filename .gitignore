@@ -45,5 +45,15 @@ tmp-jobs/
 # ordinary file, so this is where stray error output collects unnoticed.
 nul
 
-# Workspace-local Oracle/Augur runtime data (CKG, findings ledger).
-oracle-data/
+# Workspace-local Oracle/Augur runtime data (CKG, findings ledger, indexes).
+# These are built by running Oracle against this checkout and belong to whoever
+# ran it, not to the repository.
+oracle-data/*
+
+# The model bundles are the exception: they are third-party weights that the
+# repository deliberately ships, and their LICENSE files must ship with them.
+# Written as `oracle-data/*` above plus this negation because git cannot
+# re-include a path whose parent directory is itself excluded — with a bare
+# `oracle-data/` rule the attribution files here are silently dropped from
+# every commit.
+!oracle-data/models/

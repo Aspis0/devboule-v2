@@ -38,7 +38,7 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
   if (command === "session_attach") {
     return sessionAttach(
       id,
-      typeof args?.from_cursor === "number" ? args.from_cursor : null,
+      typeof args?.fromCursor === "number" ? args.fromCursor : null,
       args?.ch as SessionChannel,
     ) as Promise<T>;
   }

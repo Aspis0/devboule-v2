@@ -279,7 +279,7 @@ describe("TerminalSession startup and channel ordering", () => {
     expect(harness.invoke).not.toHaveBeenCalledWith("session_create", expect.anything());
     expect(harness.invoke).toHaveBeenCalledWith(
       "session_attach",
-      expect.objectContaining({ id: "session-2", from_cursor: null }),
+      expect.objectContaining({ id: "session-2", fromCursor: null }),
     );
   });
 
@@ -289,7 +289,7 @@ describe("TerminalSession startup and channel ordering", () => {
 
     expect(harness.invoke).toHaveBeenNthCalledWith(1, "sessions_list");
     expect(harness.invoke).toHaveBeenNthCalledWith(2, "session_create", {
-      workspace_id: "rust-core",
+      workspaceId: "rust-core",
       kind: "terminal",
     });
     expect(harness.invoke).toHaveBeenNthCalledWith(
@@ -297,7 +297,7 @@ describe("TerminalSession startup and channel ordering", () => {
       "session_attach",
       expect.objectContaining({
         id: "session-1",
-        from_cursor: null,
+        fromCursor: null,
         ch: expect.anything(),
       }),
     );
@@ -313,7 +313,7 @@ describe("TerminalSession startup and channel ordering", () => {
       "session_attach",
       expect.objectContaining({
         id: "existing-session",
-        from_cursor: null,
+        fromCursor: null,
         ch: expect.anything(),
       }),
     );
@@ -352,7 +352,7 @@ describe("TerminalSession startup and channel ordering", () => {
       "session_attach",
       expect.objectContaining({
         id: "s.old.1",
-        from_cursor: null,
+        fromCursor: null,
       }),
     );
   });

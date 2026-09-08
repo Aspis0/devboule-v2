@@ -9,6 +9,7 @@ pub enum DaemonError {
     UnsupportedPlatform,
     Handshake(WireError),
     Protocol(String),
+    ConnectionLost,
     TimedOut(String),
     Io(io::Error),
 }
@@ -30,6 +31,7 @@ impl fmt::Display for DaemonError {
             }
             Self::Handshake(error) => write!(formatter, "{}", error.message),
             Self::Protocol(message) => write!(formatter, "{message}"),
+            Self::ConnectionLost => write!(formatter, "daemon connection was lost"),
             Self::TimedOut(what) => write!(formatter, "timed out: {what}"),
             Self::Io(error) => write!(formatter, "{error}"),
         }

@@ -1,14 +1,19 @@
 # Settings surface
 
-Six tabs: General, Projects, Oracle, Providers & models, Devices, and Labs.
+Seven tabs: General, Projects, Oracle, Providers & models, Devices, Labs, and
+Diagnostics.
 
-Only one of them is real. **Oracle** is wired to the local engine and lives in
-[`../oracle`](../oracle); everything else reads from `mockData.ts`.
+Two tabs are backed by typed daemon IPC: **Providers & models** lists the agent
+CLIs found on PATH and offers refresh plus consent-gated npm install/update
+(`providersList`, `providersRefresh`, `providerUpdate` in
+`SettingsSurface.tsx`), and **Oracle** embeds the Oracle panel, whose values
+and actions all come through the typed Oracle IPC wrappers.
 
-That boundary is deliberate and kept in one file rather than scattered through the
-components, so what is fixture and what is not can be answered by looking at the imports
-instead of by tracing a call. When the typed daemon IPC exists for a tab, the change is
-visible as an import that stops pointing at `mockData`.
+Two more are partially real: **General** contains journal-usage and
+journal-retention controls on real IPC (`JournalRetentionPanel.tsx`) next to
+mock rows from `mockData.ts`, and **Diagnostics** reports live daemon health
+through the typed `daemonDiagnostics` command (`DiagnosticsPanel.tsx`).
 
-`JournalRetentionPanel` is the exception worth knowing about: it edits a real policy, not
-a sample of one.
+The rest is still mock data from `mockData.ts` with no command behind it:
+**Projects** renders `MOCK_PROJECTS` and `MOCK_WORKTREE_DEFAULTS`, **Devices**
+renders `MOCK_DEVICES`, and **Labs** renders `MOCK_LABS`.

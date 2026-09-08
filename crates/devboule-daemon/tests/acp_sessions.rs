@@ -14,10 +14,11 @@ use std::time::{Duration, Instant};
 
 use devboule_daemon::{
     connect, current_user_sid, spawn_daemon, DaemonClient, EventHandler, RuntimePaths,
+    SessionStateHandler,
 };
 use devboule_protocol::{
-    ClientHello, ErrorCode, OwnerId, PermissionOutcome, Persistence, PersistenceKind, ResumeResult,
-    SessionEvent, SessionKind, SessionState,
+    AttentionReason, ClientHello, ErrorCode, OwnerId, PermissionOutcome, Persistence,
+    PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionStateSnapshot,
 };
 use rusqlite::Connection;
 use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
@@ -174,6 +175,73 @@ where
     );
 }
 
+fn collect_state_handler(
+    received: Arc<Mutex<Vec<Vec<SessionStateSnapshot>>>>,
+) -> SessionStateHandler {
+    Arc::new(move |snapshots| {
+        received
+            .lock()
+            .expect("state snapshots lock")
+            .push(snapshots);
+    })
+}
+
+fn wait_for_attention(
+    snapshots: &Mutex<Vec<Vec<SessionStateSnapshot>>>,
+    session_id: &str,
+    reason: AttentionReason,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if snapshots
+            .lock()
+            .expect("state snapshots lock")
+            .iter()
+            .any(|snapshot| {
+                snapshot.iter().any(|session| {
+                    session.id == session_id
+                        && session
+                            .attention
+                            .is_some_and(|attention| attention.reason == reason)
+                })
+            })
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "timed out waiting for {reason:?} attention: {:?}",
+        snapshots.lock().expect("state snapshots lock")
+    );
+}
+
+fn wait_for_cleared_attention(
+    snapshots: &Mutex<Vec<Vec<SessionStateSnapshot>>>,
+    session_id: &str,
+    after_count: usize,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        let snapshots_guard = snapshots.lock().expect("state snapshots lock");
+        if snapshots_guard.len() > after_count
+            && snapshots_guard.last().is_some_and(|snapshot| {
+                snapshot
+                    .iter()
+                    .any(|session| session.id == session_id && session.attention.is_none())
+            })
+        {
+            return;
+        }
+        drop(snapshots_guard);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!(
+        "timed out waiting for cleared attention: {:?}",
+        snapshots.lock().expect("state snapshots lock")
+    );
+}
+
 /// Make the stub's build directory resolvable by the daemon-side provider
 /// catalog, which scans PATH. The guard restores the original PATH on drop.
 struct PathGuard {
@@ -323,11 +391,43 @@ fn acp_framing_handles_partial_crlf_and_skips_malformed_lines() {
 #[test]
 fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id() {
     let _test_lock = lock_tests();
-    let test = AcpTest::new(&[]);
-    let session = test.create_session();
+    std::env::set_var("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS", "200");
+    let mut test = AcpTest::new(&[]);
+    test._env
+        .names
+        .push("DEVBOULE_ACP_STUB_PERMISSION_DELAY_MS");
+    let (session, _) = test.attached_session();
     test.client
         .session_send(&session.id, "please request permission")
         .expect("prompt");
+    test.client
+        .session_detach(&session.id)
+        .expect("detach before permission request arrives");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        test.client
+            .journal_usage()
+            .expect("flush permission request journal row before attach");
+        let connection =
+            Connection::open(test._harness.paths.journal_file()).expect("open journal");
+        let request_rows = connection
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE session_id = ?1 AND kind = 'acp_envelope'
+                   AND instr(CAST(payload AS TEXT), 'session/request_permission') > 0",
+                [&session.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("find permission request journal row");
+        if request_rows > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "permission request was not journaled before reattach"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
     let received = Arc::clone(&events);
@@ -353,6 +453,76 @@ fn acp_permission_request_is_queued_when_detached_and_answered_by_tool_call_id()
     test.client
         .session_close(&session.id)
         .expect("close ACP session");
+}
+
+#[test]
+fn acp_resolved_permission_is_not_reopened_after_live_reattach() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_send(&session.id, "initial replay")
+        .expect("initial prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    test.client
+        .session_send(&session.id, "please request permission")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm")
+        })
+    });
+    test.client
+        .session_permission_respond(&session.id, "tool-perm", PermissionOutcome::AllowOnce)
+        .expect("allow once");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::PermissionResolved { tool_call_id } if tool_call_id == "tool-perm")
+        })
+    });
+    test.client
+        .session_detach(&session.id)
+        .expect("detach resolved session");
+
+    let reattached = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&reattached);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received
+            .lock()
+            .expect("reattached events lock")
+            .push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, handler)
+        .expect("reattach resolved session");
+    wait_for(&reattached, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply"))
+    });
+    let reattached = reattached.lock().expect("reattached events lock");
+    assert!(reattached.iter().any(|event| {
+        matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+    }));
+    assert_eq!(
+        reattached
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::SessionManifest { .. }))
+            .count(),
+        1,
+        "reattach must deliver the stored/journaled manifest exactly once"
+    );
+    assert!(!reattached.iter().any(|event| {
+        matches!(event, SessionEvent::PermissionRequest { tool_call_id, .. } if tool_call_id == "tool-perm")
+    }));
+    drop(reattached);
+    test.client
+        .session_close(&session.id)
+        .expect("close resolved session");
 }
 
 #[test]
@@ -987,7 +1157,7 @@ fn acp_session_survives_daemon_restart_and_replays_agent_message() {
         .find(|listed| listed.id == session.id)
         .expect("recovered ACP session missing from sessions_list");
     assert!(
-        matches!(recovered.state, SessionState::Recovered { .. }),
+        matches!(recovered.state, devboule_protocol::SessionState::Recovered { .. }),
         "expected recovered ACP session, got {:?}",
         recovered.state
     );
@@ -1096,6 +1266,432 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
     test.client
         .session_close(&session.id)
         .expect("close resumed ACP session");
+}
+
+#[test]
+fn live_acp_session_journals_conversation_before_termination() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, initial_events) = test.attached_session();
+    test.client
+        .session_send(&session.id, "measure live journal")
+        .expect("prompt");
+    wait_for(&initial_events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        test.client.journal_usage().expect("flush journal");
+        let connection =
+            Connection::open(test._harness.paths.journal_file()).expect("open journal");
+        let reply_rows = connection
+            .query_row(
+                "SELECT COUNT(*) FROM events
+                 WHERE session_id = ?1 AND kind = 'acp_envelope'
+                   AND instr(CAST(payload AS TEXT), 'stub reply') > 0",
+                [&session.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("find live ACP journal row");
+        let live = test
+            .client
+            .sessions_list()
+            .expect("sessions list")
+            .into_iter()
+            .find(|row| row.id == session.id)
+            .is_some_and(|row| matches!(row.state, devboule_protocol::SessionState::Live { .. }));
+        if reply_rows > 0 && live {
+            eprintln!(
+                "premise measurement: live session {} has {} journaled stub-reply ACP row(s)",
+                session.id, reply_rows
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "live ACP conversation was not journaled while session remained live"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    test.client
+        .session_detach(&session.id)
+        .expect("detach before live reattach");
+    let reattached_events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let reattached_received = Arc::clone(&reattached_events);
+    let reattached_handler: EventHandler = Arc::new(move |envelope| {
+        reattached_received
+            .lock()
+            .expect("reattached events lock")
+            .push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, reattached_handler)
+        .expect("reattach live session");
+    wait_for(&reattached_events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+        })
+    });
+    let reattached_events = reattached_events.lock().expect("reattached events lock");
+    assert!(reattached_events.iter().any(|event| {
+        matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "measure live journal")
+    }));
+    drop(reattached_events);
+
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_non_echo_provider_gets_prompt_recorded_and_replayed_in_order() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&["--no-user-echo"]);
+    let (session, events) = test.attached_session();
+    let prompt = "the provider does not echo this";
+    test.client
+        .session_send(&session.id, prompt)
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let live = events.lock().expect("events lock").clone();
+    let user_index = live
+        .iter()
+        .position(
+            |event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == prompt),
+        )
+        .expect("daemon must publish the prompt even when the provider does not echo");
+    let reply_index = live
+        .iter()
+        .position(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply"))
+        .expect("stub reply");
+    assert!(
+        user_index < reply_index,
+        "prompt must precede its reply: {live:?}"
+    );
+
+    test.client.journal_usage().expect("flush journal");
+    test.client
+        .session_detach(&session.id)
+        .expect("detach before replay");
+    let replayed = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&replayed);
+    test.client
+        .session_attach(
+            &session.id,
+            None,
+            Arc::new(move |envelope| {
+                received
+                    .lock()
+                    .expect("replayed events lock")
+                    .push(envelope.event);
+            }),
+        )
+        .expect("reattach");
+    wait_for(&replayed, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+        })
+    });
+    let replayed = replayed.lock().expect("replayed events lock").clone();
+    let user_index = replayed
+        .iter()
+        .position(
+            |event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == prompt),
+        )
+        .expect("prompt must be journaled for replay");
+    let reply_index = replayed
+        .iter()
+        .position(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply"))
+        .expect("replayed stub reply");
+    assert!(
+        user_index < reply_index,
+        "replayed prompt must precede reply: {replayed:?}"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_echoing_provider_gets_one_synthesized_user_message_without_echo_row() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let prompt = "the provider echoes this";
+    test.client
+        .session_send(&session.id, prompt)
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    let users = events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .filter_map(|event| match event {
+            SessionEvent::AgentUserMessage { message_id, text } if text == prompt => {
+                Some(message_id.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        users.len(),
+        1,
+        "exactly one user bubble must reach the client"
+    );
+    assert!(
+        users[0].is_some(),
+        "the daemon-owned bubble needs a stable id"
+    );
+
+    test.client.journal_usage().expect("flush journal");
+    let connection = Connection::open(test._harness.paths.journal_file()).expect("open journal");
+    let echoed_rows = connection
+        .query_row(
+            "SELECT COUNT(*) FROM events
+             WHERE session_id = ?1 AND kind = 'acp_envelope'
+               AND instr(CAST(payload AS TEXT), 'user_message_chunk') > 0",
+            [&session.id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count echo rows");
+    assert_eq!(
+        echoed_rows, 0,
+        "the redundant provider echo must not be journaled"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_second_prompt_while_first_streams_precedes_both_replies() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&["--stream-first"]);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_send(&session.id, "first queued prompt")
+        .expect("first prompt");
+    wait_for(&events, Duration::from_secs(2), |events| {
+        events.iter().any(
+            |event| matches!(event, SessionEvent::AgentThought { text, .. } if text == "thinking"),
+        )
+    });
+    test.client
+        .session_send(&session.id, "second queued prompt")
+        .expect("second prompt while first streams");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply"))
+            .count()
+            >= 2
+    });
+    let events = events.lock().expect("events lock").clone();
+    let first_user = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "first queued prompt"))
+        .expect("first prompt event");
+    let second_user = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "second queued prompt"))
+        .expect("second prompt event");
+    let replies = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            matches!(event, SessionEvent::AgentMessage { text, .. } if text == "stub reply")
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replies.len(),
+        2,
+        "expected one reply per prompt: {events:?}"
+    );
+    assert!(
+        first_user < second_user && second_user < replies[0] && replies[0] < replies[1],
+        "queued turn order was not prompt1 < prompt2 < reply1 < reply2: {events:?}"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_raises_for_finish_and_permission_transitions() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&["--no-malformed"]);
+    let (session, events) = test.attached_session();
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+
+    test.client
+        .session_send(&session.id, "normal attention turn")
+        .expect("normal prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+    });
+    wait_for_attention(&snapshots, &session.id, AttentionReason::Finished);
+
+    test.client
+        .session_send(&session.id, "permission attention turn")
+        .expect("permission prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::PermissionRequest { .. }))
+    });
+    wait_for_attention(&snapshots, &session.id, AttentionReason::Permission);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_raises_error_for_a_real_agent_error_transition() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+    test.client
+        .session_send(&session.id, "malformed error attention turn")
+        .expect("error prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentError { .. }))
+    });
+    wait_for_attention(&snapshots, &session.id, AttentionReason::Error);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_is_suppressed_by_visible_focus() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+    test.client
+        .session_presence(Some(&session.id), true)
+        .expect("visible focus");
+    test.client
+        .session_send(&session.id, "focused attention turn")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+    });
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(!snapshots
+        .lock()
+        .expect("state snapshots lock")
+        .iter()
+        .any(|snapshot| {
+            snapshot
+                .iter()
+                .any(|entry| entry.id == session.id && entry.attention.is_some())
+        }));
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_clears_on_focus_and_is_raised_when_app_is_not_visible() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&["--no-malformed"]);
+    let (session, events) = test.attached_session();
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+
+    // The frontend sends null when the document is not visible, so this is
+    // the actual payload used for the minimised/background case.
+    test.client
+        .session_presence(None, false)
+        .expect("background presence");
+    test.client
+        .session_send(&session.id, "background attention turn")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+    });
+    wait_for_attention(&snapshots, &session.id, AttentionReason::Finished);
+    let before_clear = snapshots.lock().expect("state snapshots lock").len();
+    test.client
+        .session_presence(Some(&session.id), true)
+        .expect("focus acknowledges attention");
+    wait_for_cleared_attention(&snapshots, &session.id, before_clear);
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_attention_presence_is_per_connection() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, events) = test.attached_session();
+    let second = test._harness.client_named("second");
+    let snapshots = Arc::new(Mutex::new(Vec::<Vec<SessionStateSnapshot>>::new()));
+    test.client
+        .sessions_watch(collect_state_handler(Arc::clone(&snapshots)))
+        .expect("watch sessions");
+    test.client
+        .session_presence(Some(&session.id), true)
+        .expect("first connection focus");
+    second
+        .session_presence(Some("s.other.1"), true)
+        .expect("second connection focuses elsewhere");
+    test.client
+        .session_send(&session.id, "multi connection attention turn")
+        .expect("prompt");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::AgentFinished { .. }))
+    });
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(!snapshots
+        .lock()
+        .expect("state snapshots lock")
+        .iter()
+        .any(|snapshot| {
+            snapshot
+                .iter()
+                .any(|entry| entry.id == session.id && entry.attention.is_some())
+        }));
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
 }
 
 struct AcpTest {

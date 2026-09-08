@@ -1113,6 +1113,24 @@ fn acp_io_error(error: io::Error) -> WireError {
     WireError::new(ErrorCode::Io, format!("ACP stdio failed: {error}"))
 }
 
+fn is_user_message_chunk(value: &serde_json::Value, session_id: &str) -> bool {
+    let session_matches = match value.pointer("/params/sessionId") {
+        Some(value) => value.as_str() == Some(session_id),
+        None => {
+            // This daemon starts one ACP child per session, and ACP
+            // notifications may omit sessionId; an absent field is therefore
+            // treated as belonging to this reader.
+            true
+        }
+    };
+    value.get("method").and_then(serde_json::Value::as_str) == Some("session/update")
+        && value
+            .pointer("/params/update/sessionUpdate")
+            .and_then(serde_json::Value::as_str)
+            == Some("user_message_chunk")
+        && session_matches
+}
+
 struct AcpWriter {
     transport: Arc<AcpTransport>,
     pending: Vec<u8>,
@@ -1309,6 +1327,15 @@ impl AcpReader {
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
+        self.publish_at_seq(runtime, event, None);
+    }
+
+    fn publish_at_seq(
+        &self,
+        runtime: &SessionRuntime,
+        event: SessionEvent,
+        event_seq: Option<u64>,
+    ) {
         let event = if let Some(transport) = &self.transport {
             transport.override_manifest_effort(event)
         } else {
@@ -1320,7 +1347,7 @@ impl AcpReader {
             }
             runtime.store_session_manifest(event.clone());
         }
-        let _ = runtime.publish_agent_event(event, None);
+        let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
     }
 
     fn with_provider(&self, event: SessionEvent) -> SessionEvent {
@@ -1491,39 +1518,52 @@ impl AcpReader {
             return;
         }
         self.turn.note_activity();
-        runtime.journal_agent_envelope(value);
+        if is_user_message_chunk(value, &self.session_id) {
+            // The daemon records the outbound prompt before writing. Never
+            // allocate a sequence or journal grok's redundant
+            // echo: burning a sequence without a row would look like a
+            // durable journal hole during live replay. `acp_view` continues
+            // to map historical echo envelopes for backward compatibility.
+            return;
+        }
+        let event_seq = runtime.journal_agent_envelope(value);
         match classify_line(value) {
             Some(AcpLineKind::Request { method }) => {
                 if method == "session/request_permission" {
-                    self.dispatch_permission(value, runtime);
+                    self.dispatch_permission(value, runtime, event_seq);
                     return;
                 }
                 self.dispatch_client_request(&method, value, runtime);
             }
             Some(AcpLineKind::Response) => {
                 if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
-                    self.dispatch_response(id, value, runtime);
+                    self.dispatch_response(id, value, runtime, event_seq);
                 }
             }
             Some(AcpLineKind::Notification { .. }) => {
                 if value.get("method").and_then(serde_json::Value::as_str)
                     == Some("_x.ai/sessions/changed")
                 {
-                    self.dispatch_sessions_changed(value, runtime);
+                    self.dispatch_sessions_changed(value, runtime, event_seq);
                     return;
                 }
                 if let Some(view) =
                     view_from_envelope_in(value, &self.session_id, Some(self.host.cwd()))
                 {
                     let view = self.with_provider(view);
-                    self.publish(runtime, view);
+                    self.publish_at_seq(runtime, view, event_seq);
                 }
             }
             None => {}
         }
     }
 
-    fn dispatch_sessions_changed(&self, value: &serde_json::Value, runtime: &SessionRuntime) {
+    fn dispatch_sessions_changed(
+        &self,
+        value: &serde_json::Value,
+        runtime: &SessionRuntime,
+        event_seq: Option<u64>,
+    ) {
         let Some(upserted) = value
             .pointer("/params/upserted")
             .and_then(serde_json::Value::as_array)
@@ -1562,7 +1602,7 @@ impl AcpReader {
         else {
             return;
         };
-        self.publish(
+        self.publish_at_seq(
             runtime,
             SessionEvent::SessionManifest {
                 provider_id,
@@ -1570,6 +1610,7 @@ impl AcpReader {
                 models,
                 modes,
             },
+            event_seq,
         );
     }
 
@@ -1605,7 +1646,13 @@ impl AcpReader {
         self.host.dispatch(method, id, params, respond);
     }
 
-    fn dispatch_response(&self, id: u64, value: &serde_json::Value, runtime: &SessionRuntime) {
+    fn dispatch_response(
+        &self,
+        id: u64,
+        value: &serde_json::Value,
+        runtime: &SessionRuntime,
+        event_seq: Option<u64>,
+    ) {
         let response_was_pending = self
             .pending
             .lock()
@@ -1691,7 +1738,7 @@ impl AcpReader {
             return;
         }
         if let Some(view) = view_from_envelope_in(value, &self.session_id, Some(self.host.cwd())) {
-            self.publish(runtime, view);
+            self.publish_at_seq(runtime, view, event_seq);
         }
     }
 
@@ -1703,7 +1750,12 @@ impl AcpReader {
         self.publish(runtime, SessionEvent::AgentError { message: reason });
     }
 
-    fn dispatch_permission(&self, value: &serde_json::Value, runtime: &Arc<SessionRuntime>) {
+    fn dispatch_permission(
+        &self,
+        value: &serde_json::Value,
+        runtime: &Arc<SessionRuntime>,
+        event_seq: Option<u64>,
+    ) {
         let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
             self.publish(
                 runtime,
@@ -1879,7 +1931,7 @@ impl AcpReader {
             }
         };
         if timeout_started {
-            let _ = runtime.publish_agent_event(event, None);
+            let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
         }
     }
 }
@@ -2005,7 +2057,7 @@ mod tests {
     };
     use crate::journal::Journal;
     use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
-    use devboule_protocol::{PermissionOutcome, SessionEvent};
+    use devboule_protocol::{PermissionOutcome, SessionEvent, SessionKind};
     use std::collections::HashSet;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Barrier, Mutex};
@@ -2055,6 +2107,56 @@ mod tests {
             "ACP request 9 failed: ACP request failed (-32602): unknown model"
         );
         assert!(!message.contains("do-not-publish"));
+    }
+
+    #[test]
+    fn skipped_user_echo_does_not_burn_a_stream_sequence() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+        );
+        reader.dispatch_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"echo"}}}}
+"#,
+            &runtime,
+        );
+        assert_eq!(
+            runtime.current_agent_seq(),
+            0,
+            "skipped echo consumed a seq"
+        );
+        reader.dispatch_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"reply"}}}}
+"#,
+            &runtime,
+        );
+        let _event = conn
+            .pull_events()
+            .into_iter()
+            .find(|event| matches!(event.envelope.event, SessionEvent::AgentMessage { .. }))
+            .expect("reply event");
+        assert_eq!(runtime.current_agent_seq(), 1);
+    }
+
+    #[test]
+    fn foreign_user_echo_is_not_silently_dropped() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+        );
+        reader.dispatch_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other-session","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"foreign echo"}}}}
+"#,
+            &runtime,
+        );
+        assert_eq!(runtime.current_agent_seq(), 1);
+        assert!(conn.pull_events().is_empty());
     }
 
     #[test]
@@ -2142,6 +2244,45 @@ mod tests {
     }
 
     #[test]
+    fn old_journaled_user_echo_still_replays_as_a_user_message() {
+        let path = permission_path("old-user-echo-replay");
+        let journal = Journal::open(&path).expect("journal");
+        journal
+            .upsert_blocking(crate::journal::new_session_record(
+                "s.old-user-echo",
+                "owner",
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("upsert");
+        let envelope = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "stub-session",
+                "update": {
+                    "sessionUpdate": "user_message_chunk",
+                    "content": {"type": "text", "text": "old prompt"}
+                }
+            }
+        });
+        journal
+            .append_blocking(
+                crate::journal::acp_envelope_record("s.old-user-echo", 1, 1, &envelope)
+                    .expect("record"),
+            )
+            .expect("append");
+        let replay = journal.replay("s.old-user-echo", 0).expect("replay");
+        assert!(replay.events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentUserMessage { text, .. } if text == "old prompt"
+        )));
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn initialize_declares_only_implemented_fs_and_terminal() {
         let params = super::advertised_initialize_params().expect("initialize params");
         assert_eq!(params["clientCapabilities"]["fs"]["readTextFile"], true);
@@ -2187,6 +2328,7 @@ mod tests {
                 }
             }),
             &runtime,
+            None,
         );
         let sent = sent.lock().expect("sent lock");
         assert_eq!(sent.len(), 1);
@@ -2217,6 +2359,7 @@ mod tests {
                 }
             }),
             &runtime,
+            None,
         );
         let sent = sent.lock().expect("sent lock");
         assert_eq!(sent.len(), 1);
@@ -2249,15 +2392,16 @@ mod tests {
             Arc::clone(&broker),
         ));
         let first = ConnHandle::new(1);
-        let generation = runtime
-            .try_attach(None, &first, true)
+        let outcome = runtime
+            .try_attach_with_replay(None, &first, true)
             .expect("first attach");
-        first.track(
+        first.track_with_agent_replay(
             "s.permission.queue",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         runtime.detach_if_conn(first.id);
 
@@ -2268,13 +2412,16 @@ mod tests {
         runtime.publish_agent_event(request, None);
 
         let second = ConnHandle::new(2);
-        let generation = runtime.try_attach(None, &second, true).expect("reattach");
-        second.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &second, true)
+            .expect("reattach");
+        second.track_with_agent_replay(
             "s.permission.queue",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         assert!(second.pull_events().iter().any(|event| matches!(
             event.envelope.event,
@@ -2315,13 +2462,16 @@ mod tests {
         assert!(broker.expire("expired-detached", &pending));
 
         let conn = ConnHandle::new(3);
-        let generation = runtime.try_attach(None, &conn, true).expect("reattach");
-        conn.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("reattach");
+        conn.track_with_agent_replay(
             "s.permission.expired",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let events = conn.pull_events();
         assert!(
@@ -2346,13 +2496,16 @@ mod tests {
         });
 
         let first = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &first, true).expect("attach");
-        first.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &first, true)
+            .expect("attach");
+        first.track_with_agent_replay(
             "s.manifest.reattach",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let first_events = first.pull_events();
         assert!(
@@ -2368,13 +2521,16 @@ mod tests {
 
         runtime.detach_if_conn(first.id);
         let second = ConnHandle::new(2);
-        let generation = runtime.try_attach(None, &second, true).expect("reattach");
-        second.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &second, true)
+            .expect("reattach");
+        second.track_with_agent_replay(
             "s.manifest.reattach",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         let second_events = second.pull_events();
         assert!(
@@ -2616,8 +2772,17 @@ mod tests {
     ) -> (Arc<SessionRuntime>, Arc<ConnHandle>) {
         let runtime = SessionRuntime::for_acp(session_id.to_string(), None, Arc::clone(&broker));
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn, true).expect("attach");
-        conn.track(session_id, Arc::clone(&runtime), false, None, generation);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
         (runtime, conn)
     }
 
@@ -2692,6 +2857,7 @@ mod tests {
                 }
             }),
             &runtime,
+            None,
         );
         let kinds = event_kinds(&conn);
         assert_eq!(broker.pending_len(), 0, "late permission stayed pending");

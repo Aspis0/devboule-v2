@@ -2,6 +2,13 @@
 //!
 //! Moved out of the deleted `answer` module: query still redacts chunk text
 //! before it leaves the engine (file/line citations must not leak secrets).
+//!
+//! The diagnostics boundary has an independent mirror in
+//! `devboule_daemon::SafeText`. That diagnostics redactor is intentionally the
+//! superset: it mirrors these secret classes and also removes Windows home
+//! paths and SIDs. They stay separate because the daemon's client-only Tauri
+//! build must not take this heavier oracle-core dependency; a containment
+//! corpus test in `src-tauri` detects drift between the two.
 
 use std::sync::OnceLock;
 

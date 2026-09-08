@@ -476,7 +476,16 @@ impl ClaudeReader {
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
-        let _ = runtime.publish_agent_event(event, None);
+        self.publish_with_seq(runtime, event, None);
+    }
+
+    fn publish_with_seq(
+        &self,
+        runtime: &SessionRuntime,
+        event: SessionEvent,
+        event_seq: Option<u64>,
+    ) {
+        let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
     }
 
     fn dispatch_line(&mut self, line: &str, runtime: &Arc<SessionRuntime>) {
@@ -492,9 +501,9 @@ impl ClaudeReader {
                 return;
             }
         };
-        runtime.journal_agent_envelope(&value);
+        let event_seq = runtime.journal_agent_envelope(&value);
         if is_can_use_tool(&value) {
-            self.dispatch_permission(&value, runtime);
+            self.dispatch_permission(&value, runtime, event_seq);
             return;
         }
         for event in self.view.ingest(&value) {
@@ -504,11 +513,16 @@ impl ClaudeReader {
                     runtime.set_peer_session_id(session_id.to_string());
                 }
             }
-            self.publish(runtime, event);
+            self.publish_with_seq(runtime, event, event_seq);
         }
     }
 
-    fn dispatch_permission(&mut self, value: &Value, runtime: &Arc<SessionRuntime>) {
+    fn dispatch_permission(
+        &mut self,
+        value: &Value,
+        runtime: &Arc<SessionRuntime>,
+        event_seq: Option<u64>,
+    ) {
         let Some(request_id) = value.get("request_id").and_then(Value::as_str) else {
             self.publish(
                 runtime,
@@ -627,7 +641,7 @@ impl ClaudeReader {
             );
             return;
         }
-        self.publish(runtime, event);
+        self.publish_with_seq(runtime, event, event_seq);
     }
 }
 
@@ -809,13 +823,16 @@ mod tests {
         let runtime =
             SessionRuntime::for_acp("s.claude.test".to_string(), None, Arc::clone(broker));
         let conn = ConnHandle::new(1);
-        let generation = runtime.try_attach(None, &conn, true).expect("attach");
-        conn.track(
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
             "s.claude.test",
             Arc::clone(&runtime),
             false,
             None,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         (runtime, conn)
     }

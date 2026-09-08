@@ -49,3 +49,6 @@ the gap.
 The tab-level lifecycle — when a session is created, what detaching does, what an explicit
 Close calls — is documented in [`../workspace/README.md`](../workspace/README.md), because
 the Workspace tab drives it. This module implements it.
+
+`createTerminalView.ts` builds the xterm instance and its addons, so the two policy files
+above have one place to attach to rather than a view assembled at each call site.

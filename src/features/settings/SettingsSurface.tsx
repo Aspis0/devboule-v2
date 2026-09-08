@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { providerUpdate, providersList, providersRefresh, reasonFromCause } from "../../lib/tauri";
+import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import type { ProviderCatalog, ProviderInfo } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
@@ -60,6 +61,8 @@ export function SettingsSurface() {
         return <GeneralPanel />;
       case "labs":
         return <LabsPanel />;
+      case "diagnostics":
+        return <DiagnosticsPanel />;
     }
   }
 
@@ -105,7 +108,7 @@ interface SettingsHeadingProps {
   description?: string;
 }
 
-function SettingsHeading({ title, description }: SettingsHeadingProps) {
+export function SettingsHeading({ title, description }: SettingsHeadingProps) {
   return (
     <div className="settings-page-heading">
       <h2>{title}</h2>

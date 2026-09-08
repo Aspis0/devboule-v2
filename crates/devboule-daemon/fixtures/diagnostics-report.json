@@ -1,0 +1,69 @@
+{
+  "daemon": {
+    "version": "0.1.0",
+    "protocolVersion": 1,
+    "pid": 54596,
+    "uptimeMs": 20651,
+    "clients": 1,
+    "sessions": 0,
+    "capabilities": [
+      "ping",
+      "status",
+      "shutdown",
+      "sessions",
+      "journal",
+      "typed_permissions"
+    ],
+    "instanceId": "54596-1788767709103"
+  },
+  "health": {
+    "peakRingBytes": 0,
+    "ringEvictedBytes": 0,
+    "ringDroppedFrames": 0,
+    "journalStats": {
+      "acceptedFrames": 0,
+      "acceptedBytes": 0,
+      "committedFrames": 0,
+      "committedBytes": 0,
+      "failedFrames": 0
+    },
+    "journalSchemaVersion": 5,
+    "journalFileBytes": 9740288
+  },
+  "sessions": {
+    "total": 69,
+    "live": 0,
+    "silent": 0,
+    "ended": 10,
+    "recovered": 59,
+    "terminal": 7,
+    "acp": 57,
+    "claude": 5,
+    "resumable": 28,
+    "oldestLiveAgeMs": null
+  },
+  "providers": [
+    {
+      "id": "claude",
+      "protocol": "stream-json",
+      "origin": "user-binary",
+      "installChannel": "native",
+      "installedVersion": null,
+      "latestVersion": null,
+      "agentVersion": null,
+      "installed": true,
+      "authentication": "unknown"
+    }
+  ],
+  "environment": {
+    "osVersion": "Windows 10.0.26200 (x86_64)",
+    "appVersion": "0.1.0",
+    "runtimeDir": "[redacted-home]\\AppData\\Local\\Devboule",
+    "pipeName": "\\\\.\\pipe\\devboule-[redacted]",
+    "loginShellCapture": {
+      "state": "applied",
+      "appliedVariables": 12,
+      "preservedVariables": 2
+    }
+  }
+}

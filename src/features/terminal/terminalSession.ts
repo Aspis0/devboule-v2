@@ -152,7 +152,7 @@ export class TerminalSession {
       let session: Session;
       try {
         session = await this.deps.invoke<Session>("session_create", {
-          workspace_id: this.deps.workspaceId,
+          workspaceId: this.deps.workspaceId,
           kind: "terminal",
         });
       } catch (error: unknown) {
@@ -207,7 +207,7 @@ export class TerminalSession {
         id: sessionId,
         // A new xterm host needs the retained scrollback replayed in full.
         // The registry cursor is bookkeeping for a future resume path.
-        from_cursor: null,
+        fromCursor: null,
         ch: channel,
       });
     } catch (error: unknown) {

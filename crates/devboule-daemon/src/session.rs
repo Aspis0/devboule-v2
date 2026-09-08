@@ -65,6 +65,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, Weak};
@@ -77,11 +78,11 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, JournalRetention,
-    JournalStats, OwnerId, PermissionOutcome, RetentionPatch, Session, SessionEvent, SessionKind,
-    SessionState, SessionStateSnapshot, WireError,
+    JournalStats, OwnerId, PermissionOutcome, Project, RetentionPatch, Session, SessionEvent,
+    SessionKind, SessionState, SessionStateSnapshot, WireError, Workspace, WorkspaceIsolation,
 };
 
-use crate::journal::{new_session_record, Journal, PersistStatus};
+use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 #[cfg(test)]
@@ -389,6 +390,13 @@ fn unauthorized() -> WireError {
     )
 }
 
+fn not_attached() -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        "Session is not attached to this client.",
+    )
+}
+
 fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireError> {
     let mut parts = session_id.splitn(3, '.');
     if parts.next() != Some("s") {
@@ -401,11 +409,13 @@ fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireEr
     OwnerId::new(user, client).map_err(|_| unauthorized())
 }
 
-// Full-owner checks remain on client-scoped operations (send, resize, and
-// permission_respond). A live process must not be driven by a new app process;
-// pass A relaxed read-only reattach and lifecycle paths, while pass B's resume
-// is the deliberate ownership-transfer boundary that installs a new live
-// process under the resuming client's OwnerId.
+// The client token embedded in a session id is not the live-driver authority.
+// For input and control, same-user ownership plus exclusive attachment is the
+// real invariant: try_attach rejects a second connection and detach_conn
+// releases the only driver. The token was only a proxy for "same client" and
+// changes on an app restart, while the newly attached connection is the only
+// legitimate driver left. Full-owner checks remain only for operations that
+// deliberately retain client-token ownership semantics, currently detach.
 fn check_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> {
     if entry.owner() == owner {
         Ok(())
@@ -422,7 +432,80 @@ fn check_user_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireEr
     }
 }
 
+fn check_attached(runtime: &SessionRuntime, conn: &ConnHandle) -> Result<(), WireError> {
+    let attached_conn_id = runtime
+        .stream
+        .lock()
+        .map_err(|_| internal("Session state is unavailable."))?
+        .attached
+        .as_ref()
+        .map(|attached| attached.conn_id);
+    if attached_conn_id == Some(conn.id) {
+        Ok(())
+    } else {
+        Err(not_attached())
+    }
+}
+
 type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
+type JournalRosterCache = Arc<Mutex<Option<(u64, Vec<SessionRecord>)>>>;
+
+const WORKSPACE_PATH_CACHE_CAP: usize = 1024;
+
+#[derive(Default)]
+struct WorkspacePathCache {
+    entries: HashMap<String, (PathBuf, u64)>,
+    clock: u64,
+}
+
+impl WorkspacePathCache {
+    fn next_stamp(&mut self) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        self.clock
+    }
+
+    fn get(&mut self, workspace_id: &str) -> Option<PathBuf> {
+        let path = self
+            .entries
+            .get(workspace_id)
+            .map(|(path, _)| path.clone())?;
+        let stamp = self.next_stamp();
+        self.entries
+            .insert(workspace_id.to_string(), (path.clone(), stamp));
+        Some(path)
+    }
+
+    fn insert(&mut self, workspace_id: String, path: PathBuf) {
+        if self.entries.len() >= WORKSPACE_PATH_CACHE_CAP
+            && !self.entries.contains_key(&workspace_id)
+        {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, stamp))| *stamp)
+                .map(|(id, _)| id.clone())
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+        let stamp = self.next_stamp();
+        self.entries.insert(workspace_id, (path, stamp));
+    }
+
+    fn remove(&mut self, workspace_id: &str) {
+        self.entries.remove(workspace_id);
+    }
+}
+
+#[cfg(test)]
+type JournalRosterAfterListHook = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Clone)]
+struct ConnectionPresence {
+    user: String,
+    focused_session_id: Option<String>,
+    app_visible: bool,
+}
 
 #[derive(Clone)]
 pub struct SessionRegistry {
@@ -430,6 +513,25 @@ pub struct SessionRegistry {
     paths: RuntimePaths,
     journal: Option<Arc<Journal>>,
     transition_sink: Arc<Mutex<Option<TransitionSink>>>,
+    presence: Arc<Mutex<HashMap<u64, ConnectionPresence>>>,
+    /// Journal rows are the slow, mostly-static half of a roster. Keep them
+    /// out of live-session transition broadcasts; lifecycle operations below
+    /// invalidate this cache when they can change the row set.
+    journal_roster: JournalRosterCache,
+    /// Workspace paths change only through workspace mutations. Cache them
+    /// after the first successful lookup so session creation does not enqueue
+    /// a blocking SQLite RPC for every new process.
+    workspace_paths: Arc<Mutex<WorkspacePathCache>>,
+    /// Once materialized, a user's full wire roster is updated in place for
+    /// one live-session transition. This keeps the full-snapshot contract
+    /// while avoiding a second walk over every live entry.
+    state_roster_cache: Arc<Mutex<HashMap<String, Vec<SessionStateSnapshot>>>>,
+    #[cfg(test)]
+    journal_list_calls: Arc<AtomicU64>,
+    #[cfg(test)]
+    full_roster_builds: Arc<AtomicU64>,
+    #[cfg(test)]
+    journal_roster_after_list_hook: Arc<Mutex<Option<JournalRosterAfterListHook>>>,
 }
 
 /// Whether a resolved provider id came from the session-create request
@@ -446,15 +548,163 @@ impl SessionRegistry {
         &self.paths.dir
     }
 
+    pub(crate) fn pipe_name(&self) -> &str {
+        &self.paths.pipe_name
+    }
+
+    /// The journal worker owns SQLite, so its file-size query is a bounded
+    /// RPC just like `list`. Diagnostics reports the failure instead of
+    /// inventing a zero-sized database.
+    pub(crate) fn journal_file_bytes(&self) -> Option<Result<u64, String>> {
+        self.journal
+            .as_ref()
+            .map(|journal| journal.file_len().map_err(|error| error.to_string()))
+    }
+
     pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>) -> Self {
         let registry = Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             paths,
             journal,
             transition_sink: Arc::new(Mutex::new(None)),
+            presence: Arc::new(Mutex::new(HashMap::new())),
+            journal_roster: Arc::new(Mutex::new(None)),
+            workspace_paths: Arc::new(Mutex::new(WorkspacePathCache::default())),
+            state_roster_cache: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            journal_list_calls: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            full_roster_builds: Arc::new(AtomicU64::new(0)),
+            #[cfg(test)]
+            journal_roster_after_list_hook: Arc::new(Mutex::new(None)),
         };
         spawn_os_liveness_sweeper(&registry);
         registry
+    }
+
+    #[cfg(test)]
+    fn journal_list_call_count(&self) -> u64 {
+        self.journal_list_calls.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn full_roster_build_count(&self) -> u64 {
+        self.full_roster_builds.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    fn set_journal_roster_after_list_hook(&self, hook: JournalRosterAfterListHook) {
+        *self
+            .journal_roster_after_list_hook
+            .lock()
+            .expect("journal roster test hook") = Some(hook);
+    }
+
+    fn invalidate_journal_roster(&self) {
+        // A poisoned cache is not a reason to keep serving possibly stale
+        // roster data. Recover the guard and clear it so the next read is
+        // forced to consult the journal again.
+        *self
+            .journal_roster
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) = None;
+        self.invalidate_state_roster();
+    }
+
+    fn invalidate_state_roster(&self) {
+        self.state_roster_cache
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+
+    fn cached_workspace_path(&self, workspace_id: &str) -> Option<PathBuf> {
+        self.workspace_paths
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(workspace_id)
+    }
+
+    fn remember_workspace_path(&self, workspace_id: &str, path: PathBuf) {
+        self.workspace_paths
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(workspace_id.to_string(), path);
+    }
+
+    fn invalidate_workspace_path(&self, workspace_id: &str) {
+        self.workspace_paths
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(workspace_id);
+    }
+
+    fn invalidate_stale_journal_roster(&self) {
+        let Some(journal) = self.journal.as_ref() else {
+            return;
+        };
+        let revision = journal.session_set_revision();
+        let stale = self
+            .journal_roster
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .is_some_and(|(cached, _)| *cached != revision);
+        if stale {
+            self.invalidate_journal_roster();
+        }
+    }
+
+    fn journal_roster(&self) -> Option<Vec<SessionRecord>> {
+        let journal = self.journal.as_ref()?;
+        let before_revision = journal.session_set_revision();
+        let cached_rows = self
+            .journal_roster
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .as_ref()
+            .and_then(|(cached_revision, rows)| {
+                (*cached_revision == before_revision).then(|| rows.clone())
+            });
+        if cached_rows.is_some() {
+            return cached_rows;
+        }
+
+        #[cfg(test)]
+        self.journal_list_calls.fetch_add(1, Ordering::Relaxed);
+        let rows = journal.list().ok()?;
+
+        #[cfg(test)]
+        if let Some(hook) = self
+            .journal_roster_after_list_hook
+            .lock()
+            .ok()
+            .and_then(|mut hook| hook.take())
+        {
+            hook();
+        }
+
+        let after_revision = journal.session_set_revision();
+        if after_revision != before_revision {
+            // The rows and revision came from different points in the
+            // journal's mutation stream. Returning this point-in-time result
+            // is safe, but caching it under either revision would make the
+            // next reader trust data that it did not actually read at that
+            // revision. Let the next call retry instead.
+            return Some(rows);
+        }
+
+        let mut cache = self
+            .journal_roster
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if let Some((cached_revision, cached)) = cache.as_ref() {
+            if *cached_revision == after_revision {
+                return Some(cached.clone());
+            }
+        }
+        *cache = Some((before_revision, rows.clone()));
+        Some(rows)
     }
 
     pub(crate) fn set_transition_sink(&self, sink: TransitionSink) {
@@ -463,7 +713,7 @@ impl SessionRegistry {
         }
     }
 
-    fn notify_transition(&self, owner: &OwnerId) {
+    fn emit_transition(&self, owner: &OwnerId) {
         let sink = self
             .transition_sink
             .lock()
@@ -474,41 +724,169 @@ impl SessionRegistry {
         }
     }
 
+    fn notify_session_transition(&self, owner: &OwnerId, session_id: &str) {
+        self.refresh_state_snapshot(owner, session_id);
+        self.emit_transition(owner);
+    }
+
     pub(crate) fn state_snapshots(&self, owner: &OwnerId) -> Vec<SessionStateSnapshot> {
+        self.invalidate_stale_journal_roster();
+        if let Ok(cache) = self.state_roster_cache.lock() {
+            if let Some(snapshots) = cache.get(&owner.user) {
+                return snapshots.clone();
+            }
+        }
+
+        let snapshots = self.build_state_snapshots(owner);
+        // A failed journal read must remain retryable. Live state is still
+        // useful to return now, but do not let that partial roster become an
+        // unbounded cache entry.
+        let journal_is_cached = self.journal.is_none()
+            || self
+                .journal_roster
+                .lock()
+                .ok()
+                .is_some_and(|cache| cache.is_some());
+        if journal_is_cached {
+            if let Ok(mut cache) = self.state_roster_cache.lock() {
+                cache.insert(owner.user.clone(), snapshots.clone());
+            }
+        }
+        snapshots
+    }
+
+    fn build_state_snapshots(&self, owner: &OwnerId) -> Vec<SessionStateSnapshot> {
+        #[cfg(test)]
+        self.full_roster_builds.fetch_add(1, Ordering::Relaxed);
         let mut sessions = self
             .inner
             .lock()
             .map(|map| {
                 map.values()
                     .filter(|entry| entry.owner().user == owner.user)
-                    .map(RegistryEntry::to_session)
+                    .map(|entry| (entry.to_session(), entry.runtime().attention()))
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         let live_ids = sessions
             .iter()
-            .map(|session| session.id.clone())
+            .map(|(session, _)| session.id.clone())
             .collect::<std::collections::HashSet<_>>();
-        if let Some(journal) = &self.journal {
-            if let Ok(rows) = journal.list() {
-                sessions.extend(rows.into_iter().filter_map(|row| {
-                    if live_ids.contains(&row.id) {
-                        return None;
-                    }
-                    (row.owner == owner.user).then(|| row.to_session())
-                }));
-            }
+        if let Some(rows) = self.journal_roster() {
+            sessions.extend(rows.into_iter().filter_map(|row| {
+                if live_ids.contains(&row.id) {
+                    return None;
+                }
+                (row.owner == owner.user).then(|| (row.to_session(), None))
+            }));
         }
-        sessions.sort_by(|left, right| left.id.cmp(&right.id));
+        sessions.sort_by(|left, right| left.0.id.cmp(&right.0.id));
         sessions
             .into_iter()
-            .map(|session| SessionStateSnapshot {
+            .map(|(session, attention)| SessionStateSnapshot {
                 id: session.id,
                 title: session.title,
                 state: session.state,
                 elapsed_ms: session.elapsed_ms,
+                attention,
             })
             .collect()
+    }
+
+    fn refresh_state_snapshot(&self, owner: &OwnerId, session_id: &str) {
+        let snapshot = self.inner.lock().ok().and_then(|map| {
+            map.get(session_id)
+                .filter(|entry| entry.owner().user == owner.user)
+                .map(|entry| {
+                    let session = entry.to_session();
+                    SessionStateSnapshot {
+                        id: session.id,
+                        title: session.title,
+                        state: session.state,
+                        elapsed_ms: session.elapsed_ms,
+                        attention: entry.runtime().attention(),
+                    }
+                })
+        });
+        if let Ok(mut cache) = self.state_roster_cache.lock() {
+            let Some(roster) = cache.get_mut(&owner.user) else {
+                return;
+            };
+            roster.retain(|session| session.id != session_id);
+            if let Some(snapshot) = snapshot {
+                roster.push(snapshot);
+                roster.sort_by(|left, right| left.id.cmp(&right.id));
+            }
+        }
+    }
+
+    fn configure_runtime_attention(&self, runtime: &Arc<SessionRuntime>, owner: &OwnerId) {
+        let presence = Arc::clone(&self.presence);
+        let user = owner.user.clone();
+        let session_id = runtime.session_id.clone();
+        let suppressed_session_id = session_id.clone();
+        let suppressed = Arc::new(move || {
+            presence.lock().is_ok_and(|connections| {
+                connections.values().any(|connection| {
+                    connection.user == user
+                        && connection.app_visible
+                        && connection.focused_session_id.as_deref()
+                            == Some(suppressed_session_id.as_str())
+                })
+            })
+        });
+        let registry = self.clone();
+        let owner = owner.clone();
+        let notify = Arc::new(move || {
+            registry.notify_session_transition(&owner, &session_id);
+        });
+        runtime.set_attention_hooks(suppressed, notify);
+    }
+
+    pub(crate) fn set_presence(
+        &self,
+        conn_id: u64,
+        owner: &OwnerId,
+        focused_session_id: Option<String>,
+        app_visible: bool,
+    ) -> Result<(), WireError> {
+        if let Some(session_id) = focused_session_id.as_deref() {
+            validate_session_id(session_id)
+                .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        }
+        if let Ok(mut presence) = self.presence.lock() {
+            presence.insert(
+                conn_id,
+                ConnectionPresence {
+                    user: owner.user.clone(),
+                    focused_session_id: focused_session_id.clone(),
+                    app_visible,
+                },
+            );
+        } else {
+            return Err(internal("Session state is unavailable."));
+        }
+        // The presence guard is intentionally released before clearing
+        // attention: raises use the global attention -> presence order.
+        if app_visible {
+            if let Some(session_id) = focused_session_id {
+                let runtime = self.inner.lock().ok().and_then(|map| {
+                    map.get(&session_id).and_then(|entry| {
+                        (entry.owner().user == owner.user).then(|| entry.runtime())
+                    })
+                });
+                if runtime.is_some_and(|runtime| runtime.clear_attention()) {
+                    self.notify_session_transition(owner, &session_id);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn clear_presence(&self, conn_id: u64) {
+        if let Ok(mut presence) = self.presence.lock() {
+            presence.remove(&conn_id);
+        }
     }
 
     pub(crate) fn output_metrics(&self) -> OutputMetrics {
@@ -574,11 +952,142 @@ impl SessionRegistry {
         &self,
         patch: RetentionPatch,
     ) -> Result<JournalRetention, WireError> {
-        self.journal
+        let result = self
+            .journal
             .as_ref()
             .ok_or_else(journal_unavailable)?
             .retention_set(patch)
-            .map_err(Into::into)
+            .map_err(WireError::from);
+        if result.is_ok() {
+            self.invalidate_journal_roster();
+        }
+        result
+    }
+
+    pub fn projects_list(&self) -> Result<Vec<Project>, WireError> {
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .projects_list()
+            .map(|projects| {
+                projects
+                    .into_iter()
+                    .map(|project| project.to_project())
+                    .collect()
+            })
+            .map_err(WireError::from)
+    }
+
+    pub fn project_add(&self, path: &str) -> Result<Project, WireError> {
+        let record = crate::workspace::project_record(path)?;
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .project_add(record)
+            .map(|project| project.to_project())
+            .map_err(WireError::from)
+    }
+
+    pub fn workspaces_list(&self, project_id: &str) -> Result<Vec<Workspace>, WireError> {
+        self.journal
+            .as_ref()
+            .ok_or_else(journal_unavailable)?
+            .workspaces_list(project_id)
+            .map(|workspaces| {
+                workspaces
+                    .into_iter()
+                    .map(|workspace| workspace.to_workspace())
+                    .collect()
+            })
+            .map_err(WireError::from)
+    }
+
+    pub fn workspace_create(
+        &self,
+        project_id: &str,
+        isolation: WorkspaceIsolation,
+        branch: Option<String>,
+    ) -> Result<Workspace, WireError> {
+        if branch.is_some() {
+            return Err(WireError::new(
+                ErrorCode::Unimplemented,
+                "branch-based workspaces are not supported until worktree isolation is implemented.",
+            ));
+        }
+        if isolation != WorkspaceIsolation::Local {
+            return Err(WireError::new(
+                ErrorCode::Unimplemented,
+                "Worktree workspaces are not supported yet.",
+            ));
+        }
+        let journal = self.journal.as_ref().ok_or_else(journal_unavailable)?;
+        let project = journal
+            .project_get(project_id)
+            .map_err(WireError::from)?
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::WorkspaceUnavailable,
+                    format!("Project '{project_id}' does not exist."),
+                )
+            })?;
+        if !std::path::Path::new(&project.path).is_dir() {
+            return Err(WireError::new(
+                ErrorCode::WorkspaceUnavailable,
+                format!("Project '{project_id}' is no longer an existing folder."),
+            ));
+        }
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .map_err(WireError::from)?;
+        self.remember_workspace_path(&workspace.id, PathBuf::from(&workspace.path));
+        Ok(workspace.to_workspace())
+    }
+
+    fn workspace_cwd(&self, workspace_id: &str) -> Result<PathBuf, WireError> {
+        if let Some(path) = self.cached_workspace_path(workspace_id) {
+            if path.is_dir() {
+                return Ok(path);
+            }
+            // The path can disappear after it was cached. Drop it before a
+            // bounded journal refresh so a later mutation can repair it.
+            self.invalidate_workspace_path(workspace_id);
+        }
+        let journal = self.journal.as_ref().ok_or_else(|| {
+            workspace_journal_error(
+                workspace_id,
+                crate::journal::JournalError::Unavailable("journal is not open".to_string()),
+            )
+        })?;
+        let workspace = journal
+            .workspace_get_for_session(workspace_id)
+            .map_err(|error| workspace_journal_error(workspace_id, error))?
+            .ok_or_else(|| workspace_unavailable(workspace_id, "it does not exist"))?;
+        if workspace.isolation != WorkspaceIsolation::Local {
+            return Err(workspace_unavailable(
+                workspace_id,
+                "worktree workspaces are not supported yet",
+            ));
+        }
+        let path = PathBuf::from(workspace.path);
+        if !path.is_dir() {
+            return Err(workspace_unavailable(
+                workspace_id,
+                "its folder is no longer available",
+            ));
+        }
+        self.remember_workspace_path(workspace_id, path.clone());
+        Ok(path)
+    }
+
+    fn apply_workspace_cwd(
+        &self,
+        workspace_id: Option<&str>,
+        command: &mut PtyCommand,
+    ) -> Result<(), WireError> {
+        if let Some(workspace_id) = workspace_id {
+            command.cwd = self.workspace_cwd(workspace_id)?;
+        }
+        Ok(())
     }
 
     pub fn delete_session(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
@@ -620,13 +1129,14 @@ impl SessionRegistry {
         journal
             .delete_session(session_id)
             .map_err(WireError::from)?;
+        self.invalidate_journal_roster();
         if transcript_in_registry {
             if let Ok(mut map) = self.inner.lock() {
                 map.remove(session_id);
             }
             journal.unpin(session_id);
         }
-        self.notify_transition(owner);
+        self.notify_session_transition(owner, session_id);
         Ok(())
     }
 
@@ -728,6 +1238,10 @@ impl SessionRegistry {
         command: Option<PtyCommand>,
         env_provider: Option<&str>,
     ) -> Result<Session, WireError> {
+        let workspace_id_ref = workspace_id.as_deref();
+        let workspace_cwd = workspace_id_ref
+            .map(|workspace_id| self.workspace_cwd(workspace_id))
+            .transpose()?;
         let unique = format!("{:08x}", SESSION_COUNTER.fetch_add(1, Ordering::Relaxed));
         let id = compose_session_id(&owner.session_token(), &unique)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -745,6 +1259,9 @@ impl SessionRegistry {
             },
             None => resolve_pty_command(&self.paths)?,
         };
+        if let Some(cwd) = workspace_cwd {
+            command.cwd = cwd;
+        }
         let session_provider = match kind {
             SessionKind::Acp => provider.or_else(|| command.provider_id.clone()),
             SessionKind::Claude => Some("claude".to_string()),
@@ -787,6 +1304,7 @@ impl SessionRegistry {
             record.status = PersistStatus::Live;
             record_generation = record.generation;
             journal.try_upsert(record);
+            self.invalidate_journal_roster();
         }
         // The journal row above is the durable product boundary. A failed
         // spawn must end that row, or the next roster render resurrects a
@@ -845,23 +1363,25 @@ impl SessionRegistry {
             }
             Err(error) => return Err(error),
         };
-        let generation = runtime.try_attach(from_cursor, conn, typed_permissions)?;
-        // A live attach synchronises the screen (snapshot first, live after)
-        // and keeps no replay cursor. A transcript attach replays the journal
-        // from the cursor. These are different products and must not share a
-        // replay state machine.
+        let outcome = runtime.try_attach_with_replay(from_cursor, conn, typed_permissions)?;
+        // A terminal attach synchronises the screen (snapshot first, live
+        // after). A transcript attach replays its journal. A live headless
+        // agent needs the third contract: durable replay through a locked
+        // watermark, then the live queue. Keeping these states explicit avoids
+        // letting an agent's bounded backlog masquerade as history.
         let transcript = runtime.is_transcript();
         let transcript_cursor = if transcript {
             Some(from_cursor.map(|cursor| cursor.seq).unwrap_or(0))
         } else {
             None
         };
-        conn.track(
+        conn.track_with_agent_replay(
             session_id,
             Arc::clone(&runtime),
             transcript,
             transcript_cursor,
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
         // The journal writer records asynchronous failures in shared state;
         // attach must import that fact before returning even when the PTY is
@@ -889,10 +1409,8 @@ impl SessionRegistry {
         // The persisted provider is the original explicit provider choice.
         // In particular, a persisted npx wrapper is allowed through this
         // named path because its original create already supplied consent.
-        // Resume deliberately keeps the normal spawn cwd (currently the
-        // daemon process cwd). The known workspace/cwd debt is unchanged by
-        // this slice.
-        let command = acp_client::resolve_named(&provider, &self.paths)?;
+        let mut command = acp_client::resolve_named(&provider, &self.paths)?;
+        self.apply_workspace_cwd(record.workspace_id.as_deref(), &mut command)?;
         let generation = record.generation.saturating_add(1);
 
         // A previous-run transcript is replaced. A stopped live entry is also
@@ -943,6 +1461,7 @@ impl SessionRegistry {
             state.session_finished();
             return Err(error.into());
         }
+        self.invalidate_journal_roster();
         // Health is measured per provider id; `provider` is moved into the
         // metadata below, so keep a copy for the spawn outcome recording.
         let health_provider = provider.clone();
@@ -1086,13 +1605,8 @@ impl SessionRegistry {
                 "Permission request id is required.",
             ));
         }
-        let runtime = self.runtime_for_owner(session_id, owner)?;
-        if runtime.attached_conn_id() != Some(conn.id) {
-            return Err(WireError::new(
-                ErrorCode::InvalidRequest,
-                "Session is not attached to this client.",
-            ));
-        }
+        let runtime = self.runtime_for_user(session_id, owner)?;
+        check_attached(&runtime, conn)?;
         let broker = runtime.permission_broker().ok_or_else(|| {
             WireError::new(
                 ErrorCode::InvalidRequest,
@@ -1108,7 +1622,11 @@ impl SessionRegistry {
                 permission_broker::PermissionResponseError::Io(_) => ErrorCode::Io,
             };
             WireError::new(code, error.to_string())
-        })
+        })?;
+        if runtime.clear_attention() {
+            self.notify_session_transition(owner, session_id);
+        }
+        Ok(())
     }
 
     /// Drop every subscription this connection holds. The processes stay.
@@ -1172,17 +1690,19 @@ impl SessionRegistry {
                 if let Some(journal) = &self.journal {
                     journal.try_mark_closed(session_id);
                     journal.unpin(session_id);
+                    self.invalidate_journal_roster();
                 }
                 teardown_session(session);
-                self.notify_transition(owner);
+                self.notify_session_transition(owner, session_id);
                 Ok(true)
             }
             Some(RegistryEntry::Transcript(_)) => {
                 if let Some(journal) = &self.journal {
                     journal.try_mark_closed(session_id);
                     journal.unpin(session_id);
+                    self.invalidate_journal_roster();
                 }
-                self.notify_transition(owner);
+                self.notify_session_transition(owner, session_id);
                 Ok(false)
             }
             None => {
@@ -1194,7 +1714,8 @@ impl SessionRegistry {
                             return Err(unauthorized());
                         }
                         journal.try_mark_closed(session_id);
-                        self.notify_transition(owner);
+                        self.invalidate_journal_roster();
+                        self.notify_session_transition(owner, session_id);
                         return Ok(false);
                     }
                 }
@@ -1290,7 +1811,13 @@ impl SessionRegistry {
         switcher.set_model(model_id, effort)
     }
 
-    pub fn send(&self, session_id: &str, text: &str, owner: &OwnerId) -> Result<(), WireError> {
+    pub fn send(
+        &self,
+        session_id: &str,
+        text: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         if text.len() > MAX_WRITE_BYTES {
@@ -1299,31 +1826,75 @@ impl SessionRegistry {
                 "Session input is too large.",
             ));
         }
-        let writer = {
+        let (writer, runtime, is_agent) = {
             let map = self
                 .inner
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
-            check_owner(entry, owner)?;
+            check_user_owner(entry, owner)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
-            Arc::clone(&session.writer)
+            (
+                Arc::clone(&session.writer),
+                Arc::clone(&session.runtime),
+                session.metadata.kind.is_agent(),
+            )
         };
-        let mut writer = writer
-            .lock()
-            .map_err(|_| internal("Session state is unavailable."))?;
-        writer.write_all(text.as_bytes()).map_err(|error| {
+        check_attached(&runtime, conn)?;
+        let agent_runtime = is_agent.then_some(runtime);
+        if !text.is_empty() {
+            if let Some(runtime) = agent_runtime.as_ref() {
+                // Publish before writing: the provider cannot reply before it
+                // receives this prompt. If the write fails, the error event
+                // below makes the transcript honest instead of leaving a
+                // silent prompt that never reached the child.
+                // Recording is also the send precondition: a poisoned stream
+                // or closed output cannot accept the corresponding transcript
+                // event, so do not send an unrecordable prompt to the child.
+                if !runtime.publish_agent_user_message(text.to_string()) {
+                    return Err(internal("Agent input could not be recorded."));
+                }
+                if runtime.clear_attention() {
+                    self.notify_session_transition(owner, session_id);
+                }
+            }
+        }
+        let mut writer = match writer.lock() {
+            Ok(writer) => writer,
+            Err(_) => {
+                let error = internal("Session state is unavailable.");
+                if let Some(runtime) = agent_runtime.as_ref() {
+                    runtime.publish_agent_error(error.message.clone());
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = writer.write_all(text.as_bytes()).map_err(|error| {
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not send input to the terminal: {error}"),
             )
-        })?;
-        writer.flush().map_err(|error| {
+        }) {
+            drop(writer);
+            if let Some(runtime) = agent_runtime.as_ref() {
+                runtime.publish_agent_error(error.message.clone());
+            }
+            return Err(error);
+        }
+        if let Err(error) = writer.flush().map_err(|error| {
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not flush input to the terminal: {error}"),
             )
-        })
+        }) {
+            drop(writer);
+            if let Some(runtime) = agent_runtime.as_ref() {
+                runtime.publish_agent_error(error.message.clone());
+            }
+            return Err(error);
+        }
+        drop(writer);
+        Ok(())
     }
 
     pub fn report_agent(
@@ -1368,6 +1939,7 @@ impl SessionRegistry {
         cols: u16,
         rows: u16,
         owner: &OwnerId,
+        conn: &ConnHandle,
     ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -1377,10 +1949,11 @@ impl SessionRegistry {
                 .lock()
                 .map_err(|_| internal("Session state is unavailable."))?;
             let entry = map.get(session_id).ok_or_else(not_found)?;
-            check_owner(entry, owner)?;
+            check_user_owner(entry, owner)?;
             let session = entry.as_live().ok_or_else(process_gone)?;
             (Arc::clone(&session.runtime), session.master.clone())
         };
+        check_attached(&runtime, conn)?;
         // Resize is serialized with emulator parsing under the SAME state
         // lock as publish_output, in one defined order: emulator dimensions
         // first, then the PTY. A snapshot therefore sees the resize as wholly
@@ -1579,24 +2152,20 @@ pub fn spawn_session(
     command: PtyCommand,
 ) -> Result<(), WireError> {
     if metadata.kind == SessionKind::Claude {
-        return start_spawned_session(
-            state,
-            registry,
-            metadata,
-            owner,
-            None,
-            claude_client::spawn_process(state, command)?,
-        );
+        let workspace_id = metadata.workspace_id.clone();
+        let workspace_path = command.cwd.clone();
+        let spawned = claude_client::spawn_process(state, command).map_err(|error| {
+            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+        })?;
+        return start_spawned_session(state, registry, metadata, owner, None, spawned);
     }
     if metadata.kind == SessionKind::Acp {
-        return start_spawned_session(
-            state,
-            registry,
-            metadata,
-            owner,
-            None,
-            acp_client::spawn_process(state, command)?,
-        );
+        let workspace_id = metadata.workspace_id.clone();
+        let workspace_path = command.cwd.clone();
+        let spawned = acp_client::spawn_process(state, command).map_err(|error| {
+            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+        })?;
+        return start_spawned_session(state, registry, metadata, owner, None, spawned);
     }
 
     // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
@@ -1613,10 +2182,12 @@ pub fn spawn_session(
             pixel_height: 0,
         })
         .map_err(|error| pty_wire_error("Could not open the terminal.", error))?;
+    let workspace_id = metadata.workspace_id.clone();
+    let workspace_path = command.cwd.clone();
     let mut child = pair
         .slave
         .spawn_command(command.to_command_builder())
-        .map_err(|error| pty_wire_error("Could not start the terminal shell.", error))?;
+        .map_err(|error| workspace_spawn_error(workspace_id.as_deref(), &workspace_path, error))?;
 
     // portable-pty 0.9 exposes the native Windows process handle on Child,
     // but does not expose CREATE_SUSPENDED. Assign immediately after spawn so
@@ -1795,10 +2366,12 @@ fn start_spawned_session(
     {
         let registry = registry.clone();
         let owner = owner.clone();
+        let session_id = metadata.id.clone();
         runtime.set_roster_notify(Arc::new(move || {
-            registry.notify_transition(&owner);
+            registry.notify_session_transition(&owner, &session_id);
         }));
     }
+    registry.configure_runtime_attention(&runtime, &owner);
     if metadata.kind.is_agent() {
         let death_killer = Mutex::new(killer.clone_killer());
         let job = Arc::clone(&process_job);
@@ -1820,6 +2393,7 @@ fn start_spawned_session(
             .expect("pty writer registered exactly once");
     }
     let id = metadata.id.clone();
+    let wait_id = id.clone();
     let wait_runtime = Arc::clone(&runtime);
     let wait_registry = registry.clone();
     let wait_owner = owner.clone();
@@ -1832,7 +2406,7 @@ fn start_spawned_session(
                 .store(code.is_some(), Ordering::Release);
             wait_runtime.mark_exited(code);
             if wait_runtime.should_publish_exit_transition() {
-                wait_registry.notify_transition(&wait_owner);
+                wait_registry.notify_session_transition(&wait_owner, &wait_id);
             }
             code
         })
@@ -1871,6 +2445,7 @@ fn start_spawned_session(
             let (coalesce_tx, coalesce_rx) = mpsc::channel::<Vec<u8>>();
             let coalesce_runtime = Arc::clone(&runtime);
             let coalesce_registry = registry.clone();
+            let coalesce_session_id = id.clone();
             let coalesce_owner = owner.clone();
             let coalesce_handle = match std::thread::Builder::new()
                 .name(format!("session-coalesce-{id}"))
@@ -1879,6 +2454,7 @@ fn start_spawned_session(
                         coalesce_rx,
                         coalesce_runtime,
                         coalesce_registry,
+                        coalesce_session_id,
                         coalesce_owner,
                     )
                 }) {
@@ -1969,10 +2545,10 @@ fn start_spawned_session(
     if runtime.process_exited() {
         runtime.exit_transition_sent.store(true, Ordering::Release);
     }
-    registry.notify_transition(&owner);
+    registry.notify_session_transition(&owner, &id);
     runtime.transition_ready.store(true, Ordering::Release);
     if runtime.process_exited() && runtime.should_publish_exit_transition() {
-        registry.notify_transition(&owner);
+        registry.notify_session_transition(&owner, &id);
     }
     Ok(())
 }
@@ -2028,6 +2604,7 @@ fn coalesce_loop(
     rx: mpsc::Receiver<Vec<u8>>,
     runtime: Arc<SessionRuntime>,
     registry: SessionRegistry,
+    session_id: String,
     owner: OwnerId,
 ) {
     let mut pending = Vec::new();
@@ -2038,7 +2615,7 @@ fn coalesce_loop(
             match rx.recv_timeout(COALESCE_FLUSH) {
                 Ok(bytes) => Some(bytes),
                 Err(RecvTimeoutError::Timeout) => {
-                    flush_coalesced(&mut pending, &runtime, &registry, &owner);
+                    flush_coalesced(&mut pending, &runtime, &registry, &session_id, &owner);
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => None,
@@ -2048,11 +2625,11 @@ fn coalesce_loop(
             Some(bytes) => {
                 pending.extend_from_slice(&bytes);
                 if pending.len() >= COALESCE_MAX_BYTES || pending.len() == COALESCE_EAGER_BYTES {
-                    flush_coalesced(&mut pending, &runtime, &registry, &owner);
+                    flush_coalesced(&mut pending, &runtime, &registry, &session_id, &owner);
                 }
             }
             None => {
-                flush_coalesced(&mut pending, &runtime, &registry, &owner);
+                flush_coalesced(&mut pending, &runtime, &registry, &session_id, &owner);
                 break;
             }
         }
@@ -2063,6 +2640,7 @@ fn flush_coalesced(
     pending: &mut Vec<u8>,
     runtime: &SessionRuntime,
     registry: &SessionRegistry,
+    session_id: &str,
     owner: &OwnerId,
 ) {
     if pending.is_empty() {
@@ -2071,7 +2649,7 @@ fn flush_coalesced(
     let data = String::from_utf8_lossy(pending).into_owned();
     pending.clear();
     if runtime.publish_output(&data) && runtime.transition_ready() {
-        registry.notify_transition(owner);
+        registry.notify_session_transition(owner, session_id);
     }
 }
 
@@ -2143,6 +2721,7 @@ fn journal_mark_ended(registry: &SessionRegistry, runtime: &SessionRuntime) {
             runtime.session_id
         );
     }
+    registry.invalidate_journal_roster();
 }
 
 fn terminate_spawned_child(pair: portable_pty::PtyPair, mut child: Box<dyn Child + Send + Sync>) {
@@ -2285,21 +2864,83 @@ fn journal_unavailable() -> WireError {
     )
 }
 
+fn workspace_unavailable(workspace_id: &str, reason: &str) -> WireError {
+    WireError::new(
+        ErrorCode::WorkspaceUnavailable,
+        format!("Workspace '{workspace_id}' is unavailable: {reason}."),
+    )
+}
+
+fn workspace_journal_error(workspace_id: &str, error: crate::journal::JournalError) -> WireError {
+    let mut wire = WireError::from(error);
+    wire.message = format!(
+        "Workspace '{workspace_id}' could not be read from the journal: {}",
+        wire.message
+    );
+    wire
+}
+
 pub(super) fn internal(message: impl Into<String>) -> WireError {
     WireError::new(ErrorCode::Internal, message)
 }
 
 fn pty_wire_error(context: &str, error: impl std::fmt::Display) -> WireError {
     let detail = error.to_string();
-    eprintln!("{context} {detail}");
     let message = match extract_os_error_code(&detail) {
-        Some(code) => format!(
-            "{context} (OS error {code}: {}).",
-            os_error_description(code)
-        ),
-        None => format!("{context} (unknown OS error)."),
+        Some(code) => {
+            eprintln!("{context} (OS error {code})");
+            format!(
+                "{context} (OS error {code}: {}).",
+                os_error_description(code)
+            )
+        }
+        None => {
+            eprintln!("{context} (unknown OS error)");
+            format!("{context} (unknown OS error).")
+        }
     };
     WireError::new(ErrorCode::Io, message)
+}
+
+fn workspace_spawn_error(
+    workspace_id: Option<&str>,
+    path: &std::path::Path,
+    error: impl std::fmt::Display,
+) -> WireError {
+    let detail = error.to_string();
+    workspace_directory_error(workspace_id, path, &detail)
+        .unwrap_or_else(|| pty_wire_error("Could not start the terminal shell.", detail))
+}
+
+fn map_workspace_spawn_wire_error(
+    workspace_id: Option<&str>,
+    path: &std::path::Path,
+    error: WireError,
+) -> WireError {
+    workspace_directory_error(workspace_id, path, &error.message).unwrap_or(error)
+}
+
+fn workspace_directory_error(
+    workspace_id: Option<&str>,
+    path: &std::path::Path,
+    detail: &str,
+) -> Option<WireError> {
+    let workspace_id = workspace_id?;
+    let code = extract_os_error_code(detail)?;
+    if !matches!(code, 2 | 3 | 267) {
+        return None;
+    }
+    // The path is intentionally included only in the user-facing error. Do
+    // not put this personal location in daemon logs or diagnostics.
+    let display_path = crate::workspace::display_path(path.to_string_lossy().as_ref());
+    eprintln!("workspace working directory became unavailable during spawn (OS error {code})");
+    Some(WireError::new(
+        ErrorCode::WorkspaceUnavailable,
+        format!(
+            "Workspace '{workspace_id}' at '{display_path}' became unavailable while starting the session (OS error {code}: {}).",
+            os_error_description(code)
+        ),
+    ))
 }
 
 fn extract_os_error_code(detail: &str) -> Option<u32> {
@@ -2313,9 +2954,12 @@ fn extract_os_error_code(detail: &str) -> Option<u32> {
 
 fn os_error_description(code: u32) -> &'static str {
     match code {
+        2 => "no such file or directory",
+        3 => "path not found",
         8 => "not enough memory",
         232 => "no data",
         1450 => "no system resources",
+        267 => "directory name is invalid",
         _ => "unknown error",
     }
 }
@@ -2408,16 +3052,19 @@ mod tests {
     }
 
     fn attach_tracked(runtime: &Arc<SessionRuntime>, conn: &Arc<ConnHandle>) -> u64 {
-        let generation = runtime.try_attach(None, conn, false).expect("attach");
+        let outcome = runtime
+            .try_attach_with_replay(None, conn, false)
+            .expect("attach");
         let transcript = runtime.is_transcript();
-        conn.track(
+        conn.track_with_agent_replay(
             "s.a.1",
             Arc::clone(runtime),
             transcript,
             Some(0),
-            generation,
+            outcome.generation,
+            outcome.live_agent_replay,
         );
-        generation
+        outcome.generation
     }
 
     #[test]
@@ -2881,7 +3528,7 @@ mod tests {
             let started = Instant::now();
             let conn = ConnHandle::new(epoch + 1);
             runtime
-                .try_attach(None, &conn, false)
+                .try_attach_with_replay(None, &conn, false)
                 .expect("attach under flood");
             runtime.detach_if_conn(conn.id);
             worst = worst.max(started.elapsed());
@@ -2904,8 +3551,13 @@ mod tests {
         let runtime = SessionRuntime::new();
         let first = ConnHandle::new(1);
         let second = ConnHandle::new(2);
-        runtime.try_attach(None, &first, false).expect("first");
-        let err = runtime.try_attach(None, &second, false).unwrap_err();
+        runtime
+            .try_attach_with_replay(None, &first, false)
+            .expect("first");
+        let err = runtime
+            .try_attach_with_replay(None, &second, false)
+            .err()
+            .expect("second connection must be rejected");
         assert_eq!(err.code, ErrorCode::InvalidRequest);
         assert!(err.message.contains("already attached"));
         assert_eq!(runtime.attached_conn_id(), Some(1));
@@ -2915,9 +3567,11 @@ mod tests {
     fn same_connection_can_reattach() {
         let runtime = SessionRuntime::new();
         let conn = ConnHandle::new(7);
-        runtime.try_attach(None, &conn, false).expect("first");
         runtime
-            .try_attach(
+            .try_attach_with_replay(None, &conn, false)
+            .expect("first");
+        runtime
+            .try_attach_with_replay(
                 Some(Cursor {
                     generation: 1,
                     seq: 0,
@@ -2935,7 +3589,7 @@ mod tests {
         runtime.bump_generation();
         let conn = ConnHandle::new(1);
         let err = runtime
-            .try_attach(
+            .try_attach_with_replay(
                 Some(Cursor {
                     generation: 1,
                     seq: 0,
@@ -2943,7 +3597,8 @@ mod tests {
                 &conn,
                 false,
             )
-            .unwrap_err();
+            .err()
+            .expect("stale generation must be rejected");
         assert_eq!(err.code, ErrorCode::SessionGenerationMismatch);
     }
 
@@ -2951,7 +3606,9 @@ mod tests {
     fn detach_clears_only_this_connection() {
         let runtime = SessionRuntime::new();
         let conn = ConnHandle::new(3);
-        runtime.try_attach(None, &conn, false).expect("attach");
+        runtime
+            .try_attach_with_replay(None, &conn, false)
+            .expect("attach");
         runtime.detach_if_conn(3);
         assert_eq!(runtime.attached_conn_id(), None);
     }
@@ -3036,6 +3693,177 @@ mod tests {
         assert!(!wire.message.contains("secret"));
     }
 
+    #[test]
+    #[cfg(windows)]
+    fn workspace_spawn_directory_error_names_workspace_and_display_path() {
+        let parent =
+            std::env::temp_dir().join(format!("devboule-missing-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&parent).expect("parent");
+        let path = parent.join("Project With Spaces");
+        let error = std::process::Command::new("cmd.exe")
+            .current_dir(&path)
+            .spawn()
+            .expect_err("CreateProcess must reject the missing cwd");
+        let wire = workspace_spawn_error(Some("w.race"), &path, error);
+        assert_eq!(wire.code, ErrorCode::WorkspaceUnavailable);
+        assert!(wire.message.contains("w.race"));
+        assert!(wire.message.contains("Project With Spaces"));
+        assert!(!wire.message.contains(r"\\?\"));
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn a_real_local_workspace_supplies_the_session_command_cwd() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("Project With Spaces");
+        std::fs::create_dir(&project_path).expect("project folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .expect("persist workspace");
+
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut command)
+            .expect("workspace cwd");
+        assert_eq!(
+            command.cwd,
+            project_path.canonicalize().expect("canonical cwd")
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unknown_workspace_fails_without_using_the_daemon_cwd() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let daemon_cwd = dir.clone();
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), daemon_cwd.clone(), Vec::new());
+        let error = registry
+            .apply_workspace_cwd(Some("w.missing"), &mut command)
+            .expect_err("unknown workspace must fail");
+        assert_eq!(error.code, ErrorCode::WorkspaceUnavailable);
+        assert!(error.message.contains("w.missing"));
+        assert_eq!(command.cwd, daemon_cwd);
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_cwd_cache_avoids_a_journal_rpc_after_first_lookup() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("cached-project");
+        std::fs::create_dir(&project_path).expect("project folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .expect("persist workspace");
+
+        let mut first = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut first)
+            .expect("first workspace lookup");
+        journal.shutdown();
+
+        let mut cached = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut cached)
+            .expect("cached workspace lookup");
+        assert_eq!(
+            cached.cwd,
+            project_path.canonicalize().expect("canonical path")
+        );
+        // This second call succeeds with the journal already shut down, so
+        // it proves the hit did not enqueue another workspace RPC.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_lookup_reports_journal_failure_not_a_missing_workspace() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        journal.shutdown();
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        let error = registry
+            .apply_workspace_cwd(Some("w.journal-stopped"), &mut command)
+            .expect_err("stopped journal must fail");
+        assert_eq!(error.code, ErrorCode::Journal);
+        assert!(error.message.contains("journal writer has stopped"));
+        assert!(!error.message.contains("does not exist"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_path_cache_evicts_old_entries_at_its_bound() {
+        let mut cache = WorkspacePathCache::default();
+        for index in 0..=WORKSPACE_PATH_CACHE_CAP {
+            cache.insert(
+                format!("w.{index}"),
+                PathBuf::from(format!("C:\\workspace-{index}")),
+            );
+        }
+        assert_eq!(cache.entries.len(), WORKSPACE_PATH_CACHE_CAP);
+        assert!(cache.get("w.0").is_none());
+        assert!(cache
+            .get(&format!("w.{WORKSPACE_PATH_CACHE_CAP}"))
+            .is_some());
+    }
+
+    #[test]
+    fn workspace_cache_invalidation_reports_a_missing_folder_not_a_deadline() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("missing-project");
+        std::fs::create_dir(&project_path).expect("project folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .expect("persist workspace");
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut command)
+            .expect("cache workspace");
+        std::fs::remove_dir_all(&project_path).expect("remove workspace folder");
+
+        let mut missing = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        let error = registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut missing)
+            .expect_err("missing workspace folder");
+        assert_eq!(error.code, ErrorCode::WorkspaceUnavailable);
+        assert!(error.message.contains("folder is no longer available"));
+        assert!(!error.message.contains("deadline"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_create_rejects_branch_until_worktrees_exist() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let error = registry
+            .workspace_create(
+                "p.not-needed-for-branch-rejection",
+                WorkspaceIsolation::Local,
+                Some("feature-x".to_string()),
+            )
+            .expect_err("branch must not be silently ignored");
+        assert_eq!(error.code, ErrorCode::Unimplemented);
+        assert!(error.message.contains("branch"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn tmp_delete_registry() -> (std::path::PathBuf, SessionRegistry, Arc<Journal>) {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let process_id = std::process::id();
@@ -3056,6 +3884,291 @@ mod tests {
 
     fn test_owner(user: &str, client: &str) -> OwnerId {
         OwnerId::new(user, client).expect("owner")
+    }
+
+    fn permission_attention_event() -> SessionEvent {
+        SessionEvent::PermissionRequest {
+            tool_call_id: "tool-attention".to_string(),
+            title: "Run attention test".to_string(),
+            description: None,
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            options: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn attention_priority_preserves_permission_and_allows_escalation() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        let finished_at = runtime.attention().expect("finished attention");
+        assert_eq!(
+            finished_at.reason,
+            devboule_protocol::AttentionReason::Finished
+        );
+        std::thread::sleep(Duration::from_millis(2));
+        runtime.publish_agent_event(
+            SessionEvent::AgentError {
+                message: "attention error".to_string(),
+            },
+            None,
+        );
+        let error_at = runtime.attention().expect("error attention");
+        assert_eq!(error_at.reason, devboule_protocol::AttentionReason::Error);
+        assert!(error_at.at_ms > finished_at.at_ms);
+        runtime.publish_agent_event(permission_attention_event(), None);
+        assert_eq!(
+            runtime.attention().expect("permission attention").reason,
+            devboule_protocol::AttentionReason::Permission
+        );
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert_eq!(
+            runtime
+                .attention()
+                .expect("permission stays pending")
+                .reason,
+            devboule_protocol::AttentionReason::Permission
+        );
+    }
+
+    #[test]
+    fn attention_clear_cannot_complete_during_the_suppression_decision() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let suppression_entered = Arc::new(std::sync::Barrier::new(2));
+        let release_suppression = Arc::new(std::sync::Barrier::new(2));
+        let entered = Arc::clone(&suppression_entered);
+        let release = Arc::clone(&release_suppression);
+        runtime.set_attention_hooks(
+            Arc::new(move || {
+                entered.wait();
+                release.wait();
+                false
+            }),
+            Arc::new(|| {}),
+        );
+
+        let raising = Arc::clone(&runtime);
+        let raise_thread = std::thread::spawn(move || {
+            raising.publish_agent_event(
+                SessionEvent::AgentFinished {
+                    stop_reason: "end_turn".to_string(),
+                    model_id: None,
+                    usage: None,
+                },
+                None,
+            );
+        });
+        suppression_entered.wait();
+
+        let (clear_started, clear_started_rx) = std::sync::mpsc::channel();
+        let (clear_done, clear_done_rx) = std::sync::mpsc::channel();
+        let clearing = Arc::clone(&runtime);
+        let clear_thread = std::thread::spawn(move || {
+            clear_started.send(()).expect("clear thread started");
+            clear_done
+                .send(clearing.clear_attention())
+                .expect("clear result");
+        });
+        clear_started_rx
+            .recv()
+            .expect("clear thread reached the call");
+        let clear_was_blocked = clear_done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err();
+
+        release_suppression.wait();
+        raise_thread.join().expect("raise thread");
+        clear_thread.join().expect("clear thread");
+        assert!(
+            clear_was_blocked,
+            "clear completed while the suppression decision was still open"
+        );
+        assert!(runtime.attention().is_none());
+    }
+
+    #[test]
+    fn visible_focus_suppresses_attention_and_presence_clears_it() {
+        let (_dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attention", "process-attention");
+        let runtime = insert_live_agent(&registry, "s.attention.1", owner.clone());
+        registry
+            .set_presence(1, &owner, Some("s.attention.1".to_string()), true)
+            .expect("presence");
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(
+            runtime.attention().is_none(),
+            "visible focus suppresses raise"
+        );
+        registry.clear_presence(1);
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(runtime.attention().is_some());
+        registry
+            .set_presence(1, &owner, Some("s.attention.1".to_string()), true)
+            .expect("focus clears attention");
+        assert!(
+            runtime.attention().is_none(),
+            "focus acknowledges attention"
+        );
+        drop(journal);
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn invisible_presence_raises_and_a_second_connection_elsewhere_does_not_suppress() {
+        let (_dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-presence", "process-presence");
+        let runtime = insert_live_agent(&registry, "s.presence.1", owner.clone());
+        registry
+            .set_presence(1, &owner, None, false)
+            .expect("invisible presence");
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(
+            runtime.attention().is_some(),
+            "invisible app is not watching"
+        );
+        assert!(runtime.clear_attention());
+        registry
+            .set_presence(1, &owner, Some("s.presence.1".to_string()), true)
+            .expect("focused connection");
+        registry
+            .set_presence(2, &owner, Some("s.other.1".to_string()), true)
+            .expect("second connection elsewhere");
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(
+            runtime.attention().is_none(),
+            "the focused connection suppresses"
+        );
+        drop(journal);
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn sending_a_prompt_acknowledges_attention() {
+        let (_dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-send-attention", "process-send-attention");
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "s.send.1",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::new(Mutex::new(Vec::new())))),
+        );
+        let conn = ConnHandle::new(7);
+        registry
+            .attach("s.send.1", None, &conn, &owner, true)
+            .expect("attach");
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        assert!(runtime.attention().is_some());
+        registry
+            .send("s.send.1", "next", &owner, &conn)
+            .expect("send");
+        assert!(
+            runtime.attention().is_none(),
+            "prompt acknowledges attention"
+        );
+        drop(journal);
+        let _ = std::fs::remove_dir_all(_dir);
+    }
+
+    #[test]
+    fn answering_permission_acknowledges_attention() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner(
+            "S-1-5-21-permission-attention",
+            "process-permission-attention",
+        );
+        let session_id = "s.permission-attention.1";
+        let runtime = insert_live_agent(&registry, session_id, owner.clone());
+        journal
+            .upsert_blocking(new_session_record(
+                session_id,
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("session row");
+        let conn = ConnHandle::new(8);
+        registry
+            .attach(session_id, None, &conn, &owner, true)
+            .expect("attach");
+        let request = permission_broker::permission("ack-permission");
+        runtime.publish_agent_event(request.clone(), None);
+        runtime
+            .permission_broker()
+            .expect("permission broker")
+            .register(12, request, &runtime)
+            .expect("permission request");
+        assert_eq!(
+            runtime.attention().expect("permission attention").reason,
+            devboule_protocol::AttentionReason::Permission
+        );
+
+        registry
+            .permission_respond(
+                session_id,
+                "ack-permission",
+                PermissionOutcome::AllowOnce,
+                &conn,
+                &owner,
+            )
+            .expect("permission response");
+        assert!(
+            runtime.attention().is_none(),
+            "answering permission acknowledges attention"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn ended_record(id: &str, user: &str) -> crate::journal::SessionRecord {
@@ -3102,6 +4215,113 @@ mod tests {
         }
     }
 
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "forced writer failure",
+            ))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct RecordingWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for RecordingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("recording writer lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn insert_live_agent(
+        registry: &SessionRegistry,
+        id: &str,
+        owner: OwnerId,
+    ) -> Arc<SessionRuntime> {
+        insert_live_agent_with_writer(
+            registry,
+            id,
+            owner,
+            Box::new(FailingWriter) as Box<dyn Write + Send>,
+        )
+    }
+
+    fn insert_live_agent_with_writer(
+        registry: &SessionRegistry,
+        id: &str,
+        owner: OwnerId,
+        writer: Box<dyn Write + Send>,
+    ) -> Arc<SessionRuntime> {
+        let metadata = Session {
+            id: id.to_string(),
+            workspace_id: None,
+            kind: SessionKind::Acp,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            provider: Some("test-agent".to_string()),
+            peer_session_id: None,
+        };
+        let (broker, _) = permission_broker::test_broker();
+        let runtime = SessionRuntime::for_acp(id.to_string(), registry.journal.clone(), broker);
+        registry.configure_runtime_attention(&runtime, &owner);
+        let session = PtySession {
+            metadata,
+            owner,
+            process_job: Arc::new(JobObject::new().expect("job")),
+            master: None,
+            killer: Box::new(NoopKiller),
+            switcher: None,
+            stderr_handle: None,
+            child_wait: None,
+            writer: Arc::new(Mutex::new(writer)),
+            reader_handle: None,
+            coalesce_handle: None,
+            runtime: Arc::clone(&runtime),
+            exited: Arc::new(AtomicBool::new(false)),
+            preserve_on_exit: Arc::new(AtomicBool::new(false)),
+        };
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .insert(id.to_string(), RegistryEntry::Live(session));
+        runtime
+    }
+
+    fn attach_live_agent_for_test(
+        runtime: &Arc<SessionRuntime>,
+        session_id: &str,
+        conn_id: u64,
+    ) -> Arc<ConnHandle> {
+        let conn = ConnHandle::new(conn_id);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            session_id,
+            Arc::clone(runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        conn
+    }
+
     fn insert_live(registry: &SessionRegistry, id: &str, owner: OwnerId) {
         let metadata = Session {
             id: id.to_string(),
@@ -3117,6 +4337,7 @@ mod tests {
             id.to_string(),
             registry.journal.clone(),
         ));
+        registry.configure_runtime_attention(&runtime, &owner);
         let session = PtySession {
             metadata,
             owner,
@@ -3138,6 +4359,542 @@ mod tests {
             .lock()
             .expect("registry")
             .insert(id.to_string(), RegistryEntry::Live(session));
+    }
+
+    #[test]
+    fn terminal_send_does_not_publish_an_agent_user_message() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-terminal", "process-terminal");
+        insert_live(&registry, "terminal-send", owner.clone());
+        let conn = ConnHandle::new(108);
+        registry
+            .attach("terminal-send", None, &conn, &owner, false)
+            .expect("terminal attaches");
+        registry
+            .send("terminal-send", "typed terminal input", &owner, &conn)
+            .expect("terminal send");
+        let runtime = registry.runtime("terminal-send").expect("runtime");
+        assert_eq!(runtime.current_agent_seq(), 0);
+        assert!(!runtime
+            .stream
+            .lock()
+            .expect("stream")
+            .pending
+            .iter()
+            .any(|item| matches!(
+                item,
+                PendingItem::Agent {
+                    event: SessionEvent::AgentUserMessage { .. },
+                    ..
+                }
+            )));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_attached_restarted_client_can_send() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-reconnect-send", "process-1111");
+        let restarted = test_owner("S-1-5-21-reconnect-send", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "send01").expect("id");
+        insert_live(&registry, &session_id, original);
+        let conn = ConnHandle::new(101);
+        registry
+            .attach(&session_id, None, &conn, &restarted, false)
+            .expect("restarted same-user client attaches");
+        registry
+            .send(&session_id, "restart input", &restarted, &conn)
+            .expect("attached restarted client can send");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_unattached_client_cannot_send() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-unattached-send", "process-1111");
+        let caller = test_owner("S-1-5-21-unattached-send", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "send02").expect("id");
+        insert_live(&registry, &session_id, owner);
+        let attached = ConnHandle::new(113);
+        registry
+            .attach(&session_id, None, &attached, &caller, false)
+            .expect("a same-user connection attaches");
+        let conn = ConnHandle::new(111);
+        let error = registry
+            .send(&session_id, "unattached input", &caller, &conn)
+            .expect_err("unattached client must not send");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not attached"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_attached_restarted_client_can_resize_terminal() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-reconnect-resize", "process-1111");
+        let restarted = test_owner("S-1-5-21-reconnect-resize", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "resize01").expect("id");
+        insert_live(&registry, &session_id, original);
+        let conn = ConnHandle::new(102);
+        registry
+            .attach(&session_id, None, &conn, &restarted, false)
+            .expect("restarted same-user client attaches");
+        registry
+            .resize(&session_id, 100, 30, &restarted, &conn)
+            .expect("attached restarted client can resize");
+        let runtime = registry.runtime(&session_id).expect("runtime");
+        assert_eq!(
+            runtime
+                .stream
+                .lock()
+                .expect("stream")
+                .screen
+                .as_ref()
+                .expect("terminal screen")
+                .dimensions(),
+            (100, 30)
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_unattached_client_cannot_resize_terminal() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-unattached-resize", "process-1111");
+        let caller = test_owner("S-1-5-21-unattached-resize", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "resize02").expect("id");
+        insert_live(&registry, &session_id, owner);
+        let attached = ConnHandle::new(114);
+        registry
+            .attach(&session_id, None, &attached, &caller, false)
+            .expect("a same-user connection attaches");
+        let conn = ConnHandle::new(112);
+        let error = registry
+            .resize(&session_id, 100, 30, &caller, &conn)
+            .expect_err("unattached client must not resize");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not attached"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_attached_restarted_client_can_respond_to_permission() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let original = test_owner("S-1-5-21-reconnect-permission", "process-1111");
+        let restarted = test_owner("S-1-5-21-reconnect-permission", "process-2222");
+        let session_id = compose_session_id(&original.session_token(), "perm01").expect("id");
+        let runtime = insert_live_agent(&registry, &session_id, original);
+        let conn = ConnHandle::new(103);
+        registry
+            .attach(&session_id, None, &conn, &restarted, false)
+            .expect("restarted same-user client attaches");
+        runtime
+            .permission_broker()
+            .expect("permission broker")
+            .register(
+                7,
+                permission_broker::permission("restart-permission"),
+                &runtime,
+            )
+            .expect("permission request");
+        registry
+            .permission_respond(
+                &session_id,
+                "restart-permission",
+                PermissionOutcome::AllowOnce,
+                &conn,
+                &restarted,
+            )
+            .expect("attached restarted client can respond");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn same_user_unattached_client_cannot_respond_to_permission() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-unattached-permission", "process-1111");
+        let caller = test_owner("S-1-5-21-unattached-permission", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "perm02").expect("id");
+        let runtime = insert_live_agent(&registry, &session_id, owner.clone());
+        let attached = ConnHandle::new(104);
+        registry
+            .attach(&session_id, None, &attached, &owner, false)
+            .expect("owner attaches");
+        runtime
+            .permission_broker()
+            .expect("permission broker")
+            .register(
+                8,
+                permission_broker::permission("unattached-permission"),
+                &runtime,
+            )
+            .expect("permission request");
+        let unattached = ConnHandle::new(105);
+        let error = registry
+            .permission_respond(
+                &session_id,
+                "unattached-permission",
+                PermissionOutcome::AllowOnce,
+                &unattached,
+                &caller,
+            )
+            .expect_err("unattached client must not respond");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not attached"));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn different_user_cannot_send_or_resize() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-security-terminal", "process-1111");
+        let stranger = test_owner("S-1-5-21-security-stranger", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "secure01").expect("id");
+        insert_live(&registry, &session_id, owner.clone());
+        let conn = ConnHandle::new(106);
+        registry
+            .attach(&session_id, None, &conn, &owner, false)
+            .expect("owner attaches");
+        assert_eq!(
+            registry
+                .send(&session_id, "hostile input", &stranger, &conn)
+                .expect_err("different user must not send")
+                .code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            registry
+                .resize(&session_id, 100, 30, &stranger, &conn)
+                .expect_err("different user must not resize")
+                .code,
+            ErrorCode::Unauthorized
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn different_user_cannot_respond_to_permission() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-security-permission", "process-1111");
+        let stranger = test_owner("S-1-5-21-security-stranger-2", "process-2222");
+        let session_id = compose_session_id(&owner.session_token(), "secure02").expect("id");
+        let runtime = insert_live_agent(&registry, &session_id, owner.clone());
+        let conn = ConnHandle::new(107);
+        registry
+            .attach(&session_id, None, &conn, &owner, false)
+            .expect("owner attaches");
+        runtime
+            .permission_broker()
+            .expect("permission broker")
+            .register(
+                9,
+                permission_broker::permission("foreign-permission"),
+                &runtime,
+            )
+            .expect("permission request");
+        let error = registry
+            .permission_respond(
+                &session_id,
+                "foreign-permission",
+                PermissionOutcome::AllowOnce,
+                &conn,
+                &stranger,
+            )
+            .expect_err("different user must not respond");
+        assert_eq!(error.code, ErrorCode::Unauthorized);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_agent_send_replays_prompt_then_error() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-agent", "process-agent");
+        let runtime = insert_live_agent(&registry, "agent-send-failure", owner.clone());
+        journal
+            .upsert_blocking(new_session_record(
+                "agent-send-failure",
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("agent session row");
+        let conn = ConnHandle::new(1);
+        let outcome = runtime
+            .try_attach_with_replay(None, &conn, true)
+            .expect("attach");
+        conn.track_with_agent_replay(
+            "agent-send-failure",
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+
+        let error = registry
+            .send(
+                "agent-send-failure",
+                "prompt that cannot be sent",
+                &owner,
+                &conn,
+            )
+            .expect_err("writer must fail");
+        assert_eq!(error.code, ErrorCode::Io);
+        journal.flush().expect("flush prompt and error");
+
+        let live = conn
+            .pull_events()
+            .into_iter()
+            .map(|event| event.envelope.event)
+            .collect::<Vec<_>>();
+        let user_index = live
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
+            })
+            .expect("failed send prompt must reach the live client");
+        let error_index = live
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentError { message } if message.contains("forced writer failure"))
+            })
+            .expect("failed send error must reach the live client");
+        assert!(user_index < error_index, "live failed send order: {live:?}");
+
+        runtime.detach_if_conn(conn.id);
+        conn.untrack("agent-send-failure");
+        let reattached = ConnHandle::new(2);
+        let outcome = runtime
+            .try_attach_with_replay(None, &reattached, true)
+            .expect("reattach");
+        reattached.track_with_agent_replay(
+            "agent-send-failure",
+            Arc::clone(&runtime),
+            false,
+            None,
+            outcome.generation,
+            outcome.live_agent_replay,
+        );
+        let replayed = reattached
+            .pull_events()
+            .into_iter()
+            .map(|event| event.envelope.event)
+            .collect::<Vec<_>>();
+        let user_index = replayed
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
+            })
+            .expect("failed send prompt must replay");
+        let error_index = replayed
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentError { message } if message.contains("forced writer failure"))
+            })
+            .expect("failed send error must replay");
+        assert!(
+            user_index < error_index,
+            "replayed failed send order: {replayed:?}"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn poisoned_agent_writer_publishes_prompt_then_error() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-poisoned-writer", "process-agent");
+        let runtime = insert_live_agent(&registry, "agent-poisoned-writer", owner.clone());
+        journal
+            .upsert_blocking(new_session_record(
+                "agent-poisoned-writer",
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("agent session row");
+        let conn = attach_live_agent_for_test(&runtime, "agent-poisoned-writer", 3);
+        let writer = {
+            let map = registry.inner.lock().expect("registry");
+            match map.get("agent-poisoned-writer").expect("session") {
+                RegistryEntry::Live(session) => Arc::clone(&session.writer),
+                RegistryEntry::Transcript(_) => panic!("expected live session"),
+            }
+        };
+        std::thread::spawn(move || {
+            let _guard = writer.lock().expect("writer lock");
+            panic!("poison writer for test");
+        })
+        .join()
+        .expect_err("writer lock must be poisoned");
+
+        let error = registry
+            .send(
+                "agent-poisoned-writer",
+                "prompt with poisoned writer",
+                &owner,
+                &conn,
+            )
+            .expect_err("poisoned writer must reject the send");
+        assert_eq!(error.code, ErrorCode::Internal);
+        journal.flush().expect("flush prompt and writer error");
+
+        let live = conn
+            .pull_events()
+            .into_iter()
+            .map(|event| event.envelope.event)
+            .collect::<Vec<_>>();
+        let user_index = live
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
+            })
+            .expect("poisoned writer prompt must reach the client");
+        let error_index = live
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentError { message } if message == "Session state is unavailable.")
+            })
+            .expect("poisoned writer error must reach the client");
+        assert!(
+            user_index < error_index,
+            "live poisoned writer order: {live:?}"
+        );
+
+        let replay = journal
+            .replay("agent-poisoned-writer", 0)
+            .expect("replay poisoned writer");
+        let replayed = replay.events;
+        let user_index = replayed
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
+            })
+            .expect("poisoned writer prompt must replay");
+        let error_index = replayed
+            .iter()
+            .position(|event| {
+                matches!(event, SessionEvent::AgentError { message } if message == "Session state is unavailable.")
+            })
+            .expect("poisoned writer error must replay");
+        assert!(
+            user_index < error_index,
+            "replayed poisoned writer order: {replayed:?}"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn closed_agent_output_refuses_unrecordable_prompt() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-closed-agent", "process-agent");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "agent-closed-output",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&written))),
+        );
+        journal
+            .upsert_blocking(new_session_record(
+                "agent-closed-output",
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("agent session row");
+        let conn = attach_live_agent_for_test(&runtime, "agent-closed-output", 109);
+        runtime.close_output();
+
+        let error = registry
+            .send(
+                "agent-closed-output",
+                "prompt after output closed",
+                &owner,
+                &conn,
+            )
+            .expect_err("closed output must reject an unrecordable prompt");
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert_eq!(error.message, "Agent input could not be recorded.");
+        assert!(written.lock().expect("written lock").is_empty());
+        assert_eq!(runtime.current_agent_seq(), 0);
+        journal.flush().expect("flush closed-output journal");
+        let replayed = journal
+            .replay("agent-closed-output", 0)
+            .expect("replay closed output")
+            .events;
+        assert!(!replayed.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentUserMessage { text, .. } if text == "prompt after output closed"
+        )));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn poisoned_agent_stream_refuses_unrecordable_prompt() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-poisoned-stream", "process-agent");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "agent-poisoned-stream",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&written))),
+        );
+        journal
+            .upsert_blocking(new_session_record(
+                "agent-poisoned-stream",
+                &owner.user,
+                None,
+                SessionKind::Acp,
+                "Agent",
+            ))
+            .expect("agent session row");
+        let conn = attach_live_agent_for_test(&runtime, "agent-poisoned-stream", 110);
+        let poisoned_runtime = Arc::clone(&runtime);
+        std::thread::spawn(move || {
+            let _guard = poisoned_runtime.stream.lock().expect("stream lock");
+            panic!("poison stream for test");
+        })
+        .join()
+        .expect_err("stream lock must be poisoned");
+
+        let error = registry
+            .send(
+                "agent-poisoned-stream",
+                "prompt after stream poison",
+                &owner,
+                &conn,
+            )
+            .expect_err("poisoned stream must reject an unrecordable prompt");
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert_eq!(error.message, "Session state is unavailable.");
+        assert!(written.lock().expect("written lock").is_empty());
+        journal.flush().expect("flush poisoned-stream journal");
+        let replayed = journal
+            .replay("agent-poisoned-stream", 0)
+            .expect("replay poisoned stream")
+            .events;
+        assert!(!replayed.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentUserMessage { text, .. } if text == "prompt after stream poison"
+        )));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -3458,6 +5215,127 @@ mod tests {
         let history = registry.list(&caller).expect("history");
         assert!(history.iter().any(|session| session.id == previous_id));
         assert!(history.iter().all(|session| session.id != stranger_id));
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_transition_does_not_requery_the_journal_roster() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-roster-cache", "process-roster-cache");
+        let runtime = insert_live_agent(&registry, "s.roster-cache.1", owner.clone());
+        let journal_id =
+            compose_session_id(&owner.session_token(), "roster-cache-history").expect("journal id");
+        journal
+            .upsert_blocking(ended_record(&journal_id, &owner.user))
+            .expect("journal row");
+
+        let _ = registry.state_snapshots(&owner);
+        assert_eq!(registry.journal_list_call_count(), 1);
+
+        runtime.publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        let _ = registry.state_snapshots(&owner);
+
+        assert_eq!(
+            registry.journal_list_call_count(),
+            1,
+            "a live transition must reuse the cached journal roster"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_roster_does_not_cache_rows_under_revision_that_changed_after_list() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-roster-race", "process-roster-race");
+        let initial_id = compose_session_id(&owner.session_token(), "roster-race-initial")
+            .expect("initial journal id");
+        let added_after_list_id =
+            compose_session_id(&owner.session_token(), "roster-race-after-list")
+                .expect("post-list journal id");
+        journal
+            .upsert_blocking(ended_record(&initial_id, &owner.user))
+            .expect("initial journal row");
+
+        let hook_journal = Arc::clone(&journal);
+        let hook_owner = owner.clone();
+        let hook_id = added_after_list_id.clone();
+        registry.set_journal_roster_after_list_hook(Arc::new(move || {
+            hook_journal
+                .upsert_blocking(ended_record(&hook_id, &hook_owner.user))
+                .expect("post-list journal row");
+        }));
+
+        // The hook queues a real roster mutation after list() has returned,
+        // deterministically reproducing the revision/data mismatch without
+        // depending on sleeps or scheduler timing.
+        let first = registry.state_snapshots(&owner);
+        assert!(first
+            .iter()
+            .all(|session| session.id != added_after_list_id));
+
+        let second = registry.state_snapshots(&owner);
+        assert!(
+            second
+                .iter()
+                .any(|session| session.id == added_after_list_id),
+            "a row added after list() must not be hidden by a stale cache"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn live_transition_does_not_rebuild_a_large_roster() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-large-roster", "process-large-roster");
+        for index in 0..64 {
+            let id = compose_session_id(
+                &owner.session_token(),
+                &format!("roster-history-{index:02}"),
+            )
+            .expect("journal id");
+            journal
+                .upsert_blocking(ended_record(&id, &owner.user))
+                .expect("journal row");
+        }
+        let runtimes = (0..8)
+            .map(|index| {
+                insert_live_agent(&registry, &format!("s.large-roster-{index}"), owner.clone())
+            })
+            .collect::<Vec<_>>();
+
+        let roster = registry.state_snapshots(&owner);
+        assert_eq!(roster.len(), 72);
+        assert_eq!(registry.full_roster_build_count(), 1);
+        assert_eq!(registry.journal_list_call_count(), 1);
+
+        runtimes[0].publish_agent_event(
+            SessionEvent::AgentFinished {
+                stop_reason: "end_turn".to_string(),
+                model_id: None,
+                usage: None,
+            },
+            None,
+        );
+        let updated = registry.state_snapshots(&owner);
+
+        assert_eq!(updated.len(), 72);
+        assert_eq!(registry.full_roster_build_count(), 1);
+        assert_eq!(
+            registry.journal_list_call_count(),
+            1,
+            "the transition must not make work proportional to journal-only sessions"
+        );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(&dir);
     }

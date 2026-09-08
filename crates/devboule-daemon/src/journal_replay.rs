@@ -3,8 +3,109 @@ use rusqlite::{params, Connection, OptionalExtension};
 use devboule_protocol::SessionEvent;
 
 use super::{
-    crc32, decode_chunks, parse_kind, EventKind, JournalError, PersistStatus, Replay, SessionRecord,
+    crc32, decode_chunks, parse_kind, EventKind, EventRecord, JournalError, PersistStatus, Replay,
+    SessionRecord,
 };
+
+#[derive(Debug)]
+pub(crate) struct AgentReplayPage {
+    pub(crate) generation: u64,
+    pub(crate) last_seq: u64,
+    pub(crate) records: Vec<EventRecord>,
+}
+
+/// Read one bounded page of structured agent records. The live attach path
+/// deliberately pages raw journal rows instead of calling `replay_session`:
+/// rebuilding a long conversation into one Vec would merely move the memory
+/// spike from `stream.pending` to the writer thread. View derivation happens
+/// incrementally in `event_pull`, under the same pull budget as live events.
+pub(super) fn replay_agent_page(
+    conn: &Connection,
+    session_id: &str,
+    expected_generation: u64,
+    from_seq: u64,
+    through_seq: u64,
+    limit: usize,
+) -> Result<AgentReplayPage, JournalError> {
+    let (generation, last_seq, closed): (u64, u64, bool) = conn
+        .query_row(
+            "SELECT generation, last_seq, closed FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    row.get::<_, i64>(1)? as u64,
+                    row.get::<_, i64>(2)? != 0,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(JournalError::SessionNotFound)?;
+    if closed {
+        return Err(JournalError::SessionNotFound);
+    }
+    if generation != expected_generation {
+        return Ok(AgentReplayPage {
+            generation,
+            last_seq,
+            records: Vec::new(),
+        });
+    }
+
+    let mut statement = conn.prepare(
+        "SELECT seq, kind, ts_ms, payload, checksum FROM events
+         WHERE session_id = ?1 AND generation = ?2
+           AND seq > ?3 AND seq <= ?4
+           AND kind IN ('agent_report', 'acp_envelope')
+         ORDER BY seq LIMIT ?5",
+    )?;
+    let rows = statement.query_map(
+        params![
+            session_id,
+            generation as i64,
+            from_seq as i64,
+            through_seq as i64,
+            limit as i64
+        ],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? as u64,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, i64>(4)? as u32,
+            ))
+        },
+    )?;
+    let mut records = Vec::new();
+    for row in rows {
+        let (seq, kind, ts_ms, payload, checksum) = row?;
+        if crc32(&payload) != checksum {
+            return Err(JournalError::Checksum {
+                session_id: session_id.to_string(),
+                seq,
+            });
+        }
+        let kind = EventKind::parse(&kind).ok_or_else(|| {
+            JournalError::Corrupt(format!(
+                "unknown agent event kind at {session_id} seq {seq}"
+            ))
+        })?;
+        records.push(EventRecord {
+            session_id: session_id.to_string(),
+            generation,
+            seq,
+            kind,
+            ts_ms,
+            payload,
+        });
+    }
+    Ok(AgentReplayPage {
+        generation,
+        last_seq,
+        records,
+    })
+}
 
 pub(super) fn list_sessions(conn: &Connection) -> Result<Vec<SessionRecord>, JournalError> {
     let mut stmt = conn.prepare(

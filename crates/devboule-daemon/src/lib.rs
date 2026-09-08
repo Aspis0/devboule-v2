@@ -14,14 +14,18 @@ mod atomic;
 #[cfg(feature = "server")]
 mod claude_view;
 mod client;
+mod diagnostics;
 mod error;
 mod framing;
+#[cfg(feature = "server")]
+mod git;
 #[cfg(feature = "server")]
 mod idempotency;
 #[cfg(feature = "server")]
 mod journal;
 #[cfg(feature = "server")]
 mod lock;
+mod login_shell_env;
 #[cfg(feature = "server")]
 mod outbound;
 mod paths;
@@ -39,6 +43,8 @@ mod server;
 mod session;
 mod spawn;
 mod transport;
+#[cfg(feature = "server")]
+mod workspace;
 
 #[cfg(windows)]
 mod security;
@@ -55,6 +61,12 @@ pub use client::{
     connect, connect_or_spawn, handshake, test_owner, DaemonClient, EventHandler,
     SessionStateHandler,
 };
+#[cfg(feature = "server")]
+pub use diagnostics::DiagnosticsInput;
+pub use diagnostics::{
+    DaemonDiagnostics, DiagnosticsReport, EnvironmentDiagnostics, HealthDiagnostics,
+    ProviderDiagnostics, SafeText, SessionDiagnostics,
+};
 pub use error::DaemonError;
 pub use framing::Framed;
 #[cfg(feature = "server")]
@@ -62,6 +74,10 @@ pub use journal::{
     Journal, JournalError, JournalLimits, Replay, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_BYTES,
     JOURNAL_MAX_SESSIONS, JOURNAL_QUEUE_CAP, JOURNAL_SCHEMA_VERSION, JOURNAL_SESSION_MAX_BYTES,
     SNAPSHOT_EVERY_BYTES,
+};
+pub use login_shell_env::{
+    initialize_login_shell_environment, login_shell_capture_outcome, LoginShellCaptureOutcome,
+    LoginShellCaptureState,
 };
 pub use paths::RuntimePaths;
 pub use process_tree::JobObject;

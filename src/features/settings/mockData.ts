@@ -1,6 +1,13 @@
 /** M1b mock boundary. Replace these values with typed settings IPC responses. */
 
-export type SettingsTab = "general" | "projects" | "oracle" | "providers" | "devices" | "labs";
+export type SettingsTab =
+  | "general"
+  | "projects"
+  | "oracle"
+  | "providers"
+  | "devices"
+  | "labs"
+  | "diagnostics";
 
 export const MOCK_SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
@@ -9,6 +16,7 @@ export const MOCK_SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] =
   { id: "providers", label: "Providers & models" },
   { id: "devices", label: "Devices" },
   { id: "labs", label: "Labs" },
+  { id: "diagnostics", label: "Diagnostics" },
 ];
 
 export const MOCK_PROJECTS = [
@@ -38,7 +46,12 @@ export const MOCK_DEVICES = [
 export const MOCK_GENERAL_SETTINGS = [
   { label: "Crescent reveal zone", value: "top centre · 13 px sliver", tone: "default" },
   { label: "Default send", value: "enter sends ▾", tone: "default" },
-  { label: "Daemon shuts down with the app", value: "off", tone: "danger" },
+  // Not a preference yet, but the value must not contradict the product: on
+  // RunEvent::Exit the app calls daemon.shutdown() (src-tauri/src/lib.rs), so
+  // sessions do not survive a restart. This row said "off" while the code did
+  // the opposite and the README said so too. A mock that lies about real
+  // behaviour is worse than no row at all.
+  { label: "Daemon shuts down with the app", value: "on", tone: "danger" },
   { label: "Telemetry", value: "none, ever", tone: "muted" },
 ] as const;
 

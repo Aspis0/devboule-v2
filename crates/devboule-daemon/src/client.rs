@@ -10,10 +10,12 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{
     AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
     DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PermissionOutcome,
-    Persistence, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError,
+    Persistence, Project, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
+    SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError, Workspace,
+    WorkspaceIsolation,
 };
 
+use crate::diagnostics::DiagnosticsReport;
 use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::paths::RuntimePaths;
@@ -30,14 +32,21 @@ const JOIN_BUDGET: Duration = Duration::from_millis(500);
 pub type EventHandler = Arc<dyn Fn(SessionEventEnvelope) + Send + Sync>;
 pub type SessionStateHandler = Arc<dyn Fn(Vec<SessionStateSnapshot>) + Send + Sync>;
 
+struct PendingSubscription {
+    session_id: String,
+    handler: EventHandler,
+}
+
 struct ClientInner {
     framed: Framed,
     next_id: AtomicU64,
     pending: Mutex<HashMap<u64, mpsc::Sender<DaemonMessage>>>,
+    pending_subscriptions: Mutex<HashMap<u64, PendingSubscription>>,
     subscriptions: Mutex<HashMap<String, EventHandler>>,
     session_state_subscription: Mutex<Option<SessionStateHandler>>,
     stop: AtomicBool,
     hello: DaemonHello,
+    server_pid: Option<u32>,
 }
 
 pub struct DaemonClient {
@@ -62,6 +71,23 @@ impl DaemonClient {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::Status { id })? {
             DaemonMessage::Status { body, .. } => Ok(body),
+            DaemonMessage::Error(error) if error.code == ErrorCode::Io => {
+                Err(DaemonError::ConnectionLost)
+            }
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn daemon_diagnostics(&self) -> Result<DiagnosticsReport, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::DaemonDiagnostics { id })? {
+            DaemonMessage::Diagnostics { report, .. } => {
+                serde_json::from_value(report).map_err(|error| {
+                    DaemonError::Protocol(format!("invalid diagnostics report: {error}"))
+                })
+            }
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
     }
@@ -72,6 +98,29 @@ impl DaemonClient {
             DaemonMessage::Shutdown { accepted, .. } if accepted => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
+        }
+    }
+
+    /// Kill the daemon at the server end of this connection. The pipe PID is
+    /// captured at handshake and checked again immediately before termination;
+    /// a changed identity is refused rather than risking a recycled PID.
+    pub fn restart_daemon(&self) -> Result<(), DaemonError> {
+        #[cfg(windows)]
+        {
+            let expected = self.inner.server_pid.ok_or_else(|| {
+                DaemonError::Protocol(
+                    "cannot prove the identity of the connected daemon".to_string(),
+                )
+            })?;
+            crate::transport::terminate_server_process_if_identity_matches(
+                &self.inner.framed.as_file(),
+                expected,
+            )
+            .map_err(DaemonError::from)
+        }
+        #[cfg(not(windows))]
+        {
+            Err(DaemonError::UnsupportedPlatform)
         }
     }
 
@@ -111,15 +160,21 @@ impl DaemonClient {
         from_cursor: Option<Cursor>,
         handler: EventHandler,
     ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
         {
             let mut subscriptions = self
                 .inner
-                .subscriptions
+                .pending_subscriptions
                 .lock()
                 .unwrap_or_else(|err| err.into_inner());
-            subscriptions.insert(session_id.to_string(), handler);
+            subscriptions.insert(
+                id,
+                PendingSubscription {
+                    session_id: session_id.to_string(),
+                    handler,
+                },
+            );
         }
-        let id = self.alloc_id();
         let result = self.roundtrip(ClientMessage::SessionAttach {
             id,
             session_id: session_id.to_string(),
@@ -128,15 +183,15 @@ impl DaemonClient {
         match result {
             Ok(DaemonMessage::Ok { .. }) => Ok(()),
             Ok(DaemonMessage::Error(error)) => {
-                self.unsubscribe(session_id);
+                self.remove_pending_subscription(id);
                 Err(DaemonError::Handshake(error))
             }
             Ok(other) => {
-                self.unsubscribe(session_id);
+                self.remove_pending_subscription(id);
                 unexpected(other)
             }
             Err(error) => {
-                self.unsubscribe(session_id);
+                self.remove_pending_subscription(id);
                 Err(error)
             }
         }
@@ -149,6 +204,7 @@ impl DaemonClient {
             session_id: session_id.to_string(),
         });
         self.unsubscribe(session_id);
+        self.remove_pending_subscriptions(session_id);
         match result? {
             DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
@@ -325,6 +381,58 @@ impl DaemonClient {
         }
     }
 
+    pub fn projects_list(&self) -> Result<Vec<Project>, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProjectsList { id })? {
+            DaemonMessage::Projects { projects, .. } => Ok(projects),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn project_add(&self, path: &str) -> Result<Project, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::ProjectAdd {
+            id,
+            path: path.to_string(),
+        })? {
+            DaemonMessage::Project { project, .. } => Ok(project),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn workspaces_list(&self, project_id: &str) -> Result<Vec<Workspace>, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspacesList {
+            id,
+            project_id: project_id.to_string(),
+        })? {
+            DaemonMessage::Workspaces { workspaces, .. } => Ok(workspaces),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn workspace_create(
+        &self,
+        project_id: &str,
+        isolation: WorkspaceIsolation,
+        branch: Option<String>,
+    ) -> Result<Workspace, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::WorkspaceCreate {
+            id,
+            project_id: project_id.to_string(),
+            isolation,
+            branch,
+        })? {
+            DaemonMessage::Workspace { workspace, .. } => Ok(workspace),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn journal_usage(&self) -> Result<JournalUsage, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::JournalUsage { id })? {
@@ -462,6 +570,26 @@ impl DaemonClient {
         }
     }
 
+    /// Report this connection's foreground presence to the daemon. The
+    /// daemon keeps it per connection so another same-user window cannot
+    /// accidentally suppress attention for this one.
+    pub fn session_presence(
+        &self,
+        focused_session_id: Option<&str>,
+        app_visible: bool,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionsPresence {
+            id,
+            focused_session_id: focused_session_id.map(str::to_string),
+            app_visible,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     pub fn roundtrip(&self, message: ClientMessage) -> Result<DaemonMessage, DaemonError> {
         self.roundtrip_with_deadline(message, RPC_TIMEOUT)
     }
@@ -505,9 +633,7 @@ impl DaemonClient {
                     .remove(&id);
                 Err(DaemonError::timed_out("waiting for a daemon reply"))
             }
-            Err(RecvTimeoutError::Disconnected) => Err(DaemonError::Protocol(
-                "daemon connection was lost".to_string(),
-            )),
+            Err(RecvTimeoutError::Disconnected) => Err(DaemonError::ConnectionLost),
         }
     }
 
@@ -515,9 +641,7 @@ impl DaemonClient {
     /// uses this so we can prove other connections still make progress.
     pub fn write_frame(&self, message: &ClientMessage) -> Result<(), DaemonError> {
         if self.inner.stop.load(Ordering::SeqCst) {
-            return Err(DaemonError::Protocol(
-                "daemon connection was lost".to_string(),
-            ));
+            return Err(DaemonError::ConnectionLost);
         }
         self.inner.framed.send(message)
     }
@@ -538,6 +662,22 @@ impl DaemonClient {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .remove(session_id);
+    }
+
+    fn remove_pending_subscription(&self, request_id: u64) {
+        self.inner
+            .pending_subscriptions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .remove(&request_id);
+    }
+
+    fn remove_pending_subscriptions(&self, session_id: &str) {
+        self.inner
+            .pending_subscriptions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .retain(|_, pending| pending.session_id != session_id);
     }
 
     fn unsubscribe_sessions_watch(&self) {
@@ -587,9 +727,25 @@ pub fn connect_or_spawn(
         Some(path) => path.to_path_buf(),
         None => resolve_daemon_binary()?,
     };
+    connect_or_spawn_with(paths, hello, &binary, connect, |binary, paths| {
+        spawn_daemon(binary, paths).map(|_| ())
+    })
+}
+
+fn connect_or_spawn_with<T, Connect, Spawn>(
+    paths: &RuntimePaths,
+    hello: ClientHello,
+    daemon_binary: &Path,
+    mut connect_fn: Connect,
+    mut spawn_fn: Spawn,
+) -> Result<T, DaemonError>
+where
+    Connect: FnMut(&RuntimePaths, ClientHello) -> Result<T, DaemonError>,
+    Spawn: FnMut(&Path, &RuntimePaths) -> Result<(), DaemonError>,
+{
     let mut spawned = false;
     for attempt in 0..SPAWN_ATTEMPTS {
-        match connect(paths, hello.clone()) {
+        match connect_fn(paths, hello.clone()) {
             Ok(client) => return Ok(client),
             Err(error) => {
                 if attempt + 1 == SPAWN_ATTEMPTS {
@@ -598,9 +754,8 @@ pub fn connect_or_spawn(
             }
         }
         if !spawned {
-            match spawn_daemon(&binary, paths) {
-                Ok(child) => {
-                    drop(child);
+            match spawn_fn(daemon_binary, paths) {
+                Ok(()) => {
                     spawned = true;
                 }
                 Err(error) => {
@@ -616,6 +771,10 @@ pub fn connect_or_spawn(
 }
 
 pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonError> {
+    #[cfg(windows)]
+    let server_pid = crate::transport::server_process_id(&file).ok();
+    #[cfg(not(windows))]
+    let server_pid = None;
     let framed = Framed::new(file);
     framed.send(&ClientMessage::Hello(hello))?;
     let reply: DaemonMessage = framed.recv_timeout(HANDSHAKE_TIMEOUT)?;
@@ -625,10 +784,12 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
                 framed,
                 next_id: AtomicU64::new(1),
                 pending: Mutex::new(HashMap::new()),
+                pending_subscriptions: Mutex::new(HashMap::new()),
                 subscriptions: Mutex::new(HashMap::new()),
                 session_state_subscription: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 hello: daemon_hello,
+                server_pid,
             });
             let reader_inner = Arc::clone(&inner);
             let reader = std::thread::Builder::new()
@@ -660,7 +821,10 @@ pub fn test_owner(client: &str) -> Result<OwnerId, DaemonError> {
 fn client_read_loop(inner: Arc<ClientInner>) {
     loop {
         if inner.stop.load(Ordering::SeqCst) {
-            fail_connection(&inner, "daemon connection was closed");
+            fail_connection(
+                &inner,
+                DaemonError::Protocol("daemon connection was closed".to_string()),
+            );
             return;
         }
         match inner
@@ -696,6 +860,28 @@ fn client_read_loop(inner: Arc<ClientInner>) {
             },
             Ok(message) => {
                 if let Some(id) = daemon_message_id(&message) {
+                    if matches!(&message, DaemonMessage::Ok { .. }) {
+                        // The pipe is FIFO for replies and events. Keep a new
+                        // handler pending until its Ok has been consumed, so
+                        // frames before that boundary remain with the prior
+                        // attachment (or are dropped if it is gone).
+                        let pending_subscription = inner
+                            .pending_subscriptions
+                            .lock()
+                            .unwrap_or_else(|err| err.into_inner())
+                            .remove(&id);
+                        if let Some(PendingSubscription {
+                            session_id,
+                            handler,
+                        }) = pending_subscription
+                        {
+                            inner
+                                .subscriptions
+                                .lock()
+                                .unwrap_or_else(|err| err.into_inner())
+                                .insert(session_id, handler);
+                        }
+                    }
                     let tx = inner
                         .pending
                         .lock()
@@ -708,26 +894,34 @@ fn client_read_loop(inner: Arc<ClientInner>) {
             }
             Err(DaemonError::TimedOut(_)) => continue,
             Err(_) => {
-                fail_connection(&inner, "daemon connection was lost");
+                fail_connection(&inner, DaemonError::ConnectionLost);
                 return;
             }
         }
     }
 }
 
-fn fail_connection(inner: &ClientInner, message: &str) {
+fn fail_connection(inner: &ClientInner, error: DaemonError) {
     inner.stop.store(true, Ordering::SeqCst);
     inner
         .session_state_subscription
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .take();
-    let subscriptions: Vec<(String, EventHandler)> = inner
+    let mut subscriptions: Vec<(String, EventHandler)> = inner
         .subscriptions
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .drain()
         .collect();
+    subscriptions.extend(
+        inner
+            .pending_subscriptions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .drain()
+            .map(|(_, pending)| (pending.session_id, pending.handler)),
+    );
     for (session_id, handler) in subscriptions {
         handler(SessionEventEnvelope {
             session_id,
@@ -742,7 +936,7 @@ fn fail_connection(inner: &ClientInner, message: &str) {
         .drain()
         .map(|(_, tx)| tx)
         .collect();
-    let error = DaemonMessage::Error(WireError::new(ErrorCode::Io, message));
+    let error = DaemonMessage::Error(WireError::new(ErrorCode::Io, error.to_string()));
     for tx in pending {
         let _ = tx.send(error.clone());
     }
@@ -754,9 +948,14 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         DaemonMessage::Error(error) => error.id,
         DaemonMessage::Pong { id, .. }
         | DaemonMessage::Status { id, .. }
+        | DaemonMessage::Diagnostics { id, .. }
         | DaemonMessage::Shutdown { id, .. }
         | DaemonMessage::Session { id, .. }
         | DaemonMessage::Sessions { id, .. }
+        | DaemonMessage::Projects { id, .. }
+        | DaemonMessage::Project { id, .. }
+        | DaemonMessage::Workspaces { id, .. }
+        | DaemonMessage::Workspace { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }
         | DaemonMessage::Providers { id, .. }
@@ -771,4 +970,314 @@ fn unexpected<T>(message: DaemonMessage) -> Result<T, DaemonError> {
     Err(DaemonError::Protocol(format!(
         "unexpected daemon frame: {message:?}"
     )))
+}
+
+#[cfg(all(test, feature = "server"))]
+mod tests {
+    use super::{PROVIDER_UPDATE_RPC_TIMEOUT, RPC_TIMEOUT};
+    use crate::framing::Framed;
+    use crate::provider_update::UPDATE_TIMEOUT;
+    #[cfg(windows)]
+    use crate::transport::{Listener, NamedPipeListener};
+    use devboule_protocol::{ClientMessage, DaemonHello, DaemonMessage, SessionEvent};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn provider_update_deadline_has_install_headroom() {
+        // Keep the RPC deadline above the runner timeout plus 30 seconds: reverting
+        // provider_update to the normal 30-second RPC default would silently cut
+        // off long installs. The complete wiring needs a fake pipe to test; these
+        // constants protect the deadline relationship directly.
+        assert!(PROVIDER_UPDATE_RPC_TIMEOUT > UPDATE_TIMEOUT + Duration::from_secs(30));
+        assert_eq!(RPC_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn dead_connection_recovery_still_spawns_then_retries() {
+        let paths = crate::paths::RuntimePaths::from_dir("fake-dead-daemon");
+        let hello = devboule_protocol::ClientHello::m3a(
+            super::test_owner("dead-recovery-test").expect("owner"),
+            "dead-recovery-test",
+        );
+        let mut connects = 0;
+        let mut spawns = 0;
+        let result = super::connect_or_spawn_with(
+            &paths,
+            hello,
+            std::path::Path::new("fake-daemon.exe"),
+            |_, _| {
+                connects += 1;
+                if connects == 1 {
+                    Err(crate::DaemonError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "dead daemon",
+                    )))
+                } else {
+                    Ok(42u32)
+                }
+            },
+            |_, _| {
+                spawns += 1;
+                Ok(())
+            },
+        )
+        .expect("the next connection recovers");
+        assert_eq!(result, 42);
+        assert_eq!(connects, 2);
+        assert_eq!(spawns, 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn attach_reply_promotes_the_pending_handler_at_the_fifo_boundary() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-client-routing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let paths = crate::paths::RuntimePaths::from_dir(&dir);
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let file = listener.accept().expect("accept");
+            let framed = Framed::new(file);
+            let hello = framed.recv::<ClientMessage>().expect("client hello");
+            assert!(matches!(hello, ClientMessage::Hello(_)));
+            framed
+                .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                    "routing-test",
+                    std::process::id(),
+                )))
+                .expect("hello reply");
+
+            let first = framed
+                .recv::<ClientMessage>()
+                .expect("first attach request");
+            let first_id = first.request_id().expect("first attach id");
+            framed
+                .send(&DaemonMessage::Ok { id: first_id })
+                .expect("first attach reply");
+            framed
+                .send(&DaemonMessage::Event(
+                    devboule_protocol::SessionEventEnvelope {
+                        session_id: "s.routing".to_string(),
+                        generation: 1,
+                        event: SessionEvent::AgentMessage {
+                            message_id: None,
+                            text: "a-1".to_string(),
+                        },
+                    },
+                ))
+                .expect("first A event");
+
+            let second = framed
+                .recv::<ClientMessage>()
+                .expect("second attach request");
+            let second_id = second.request_id().expect("second attach id");
+            framed
+                .send(&DaemonMessage::Event(
+                    devboule_protocol::SessionEventEnvelope {
+                        session_id: "s.routing".to_string(),
+                        generation: 1,
+                        event: SessionEvent::AgentMessage {
+                            message_id: None,
+                            text: "a-2".to_string(),
+                        },
+                    },
+                ))
+                .expect("remaining A event");
+            framed
+                .send(&DaemonMessage::Ok { id: second_id })
+                .expect("second attach reply");
+            framed
+                .send(&DaemonMessage::Event(
+                    devboule_protocol::SessionEventEnvelope {
+                        session_id: "s.routing".to_string(),
+                        generation: 1,
+                        event: SessionEvent::AgentMessage {
+                            message_id: None,
+                            text: "b-1".to_string(),
+                        },
+                    },
+                ))
+                .expect("B event");
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+        });
+
+        let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let connection = loop {
+            match crate::transport::connect(&paths) {
+                Ok(connection) => break connection,
+                Err(_) if std::time::Instant::now() < connection_deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("connect: {error}"),
+            }
+        };
+        let client = super::handshake(
+            connection,
+            devboule_protocol::ClientHello::m3a(
+                super::test_owner("client-routing-test").expect("owner"),
+                "client-routing-test",
+            ),
+        )
+        .expect("handshake");
+        let (a_tx, a_rx) = mpsc::channel();
+        client
+            .session_attach(
+                "s.routing",
+                None,
+                Arc::new(move |envelope| {
+                    let _ = a_tx.send(envelope);
+                }),
+            )
+            .expect("attach A");
+        let (b_tx, b_rx) = mpsc::channel();
+        client
+            .session_attach(
+                "s.routing",
+                None,
+                Arc::new(move |envelope| {
+                    let _ = b_tx.send(envelope);
+                }),
+            )
+            .expect("attach B");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut a_events = Vec::new();
+        let mut b_events = Vec::new();
+        while std::time::Instant::now() < deadline && a_events.len() + b_events.len() < 3 {
+            a_events.extend(a_rx.try_iter().map(|envelope| envelope.event));
+            b_events.extend(b_rx.try_iter().map(|envelope| envelope.event));
+            thread::sleep(Duration::from_millis(5));
+        }
+        a_events.extend(a_rx.try_iter().map(|envelope| envelope.event));
+        b_events.extend(b_rx.try_iter().map(|envelope| envelope.event));
+        let text = |event: &SessionEvent| match event {
+            SessionEvent::AgentMessage { text, .. } => text.clone(),
+            other => format!("{other:?}"),
+        };
+        assert_eq!(
+            a_events.iter().map(text).collect::<Vec<_>>(),
+            vec!["a-1", "a-2"]
+        );
+        assert_eq!(
+            b_events.iter().map(text).collect::<Vec<_>>(),
+            vec!["b-1"],
+            "the promoted handler must not receive A's FIFO-prefix events"
+        );
+
+        let _ = release_tx.send(());
+        drop(client);
+        server.join().expect("server joins");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn session_detach_drops_a_pending_attach_handler() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-client-detach-pending-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let paths = crate::paths::RuntimePaths::from_dir(&dir);
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut listener = NamedPipeListener::bind(&paths, Arc::clone(&stop)).expect("bind");
+        let (attach_seen_tx, attach_seen_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let file = listener.accept().expect("accept");
+            let framed = Framed::new(file);
+            let hello = framed.recv::<ClientMessage>().expect("client hello");
+            assert!(matches!(hello, ClientMessage::Hello(_)));
+            framed
+                .send(&DaemonMessage::Hello(DaemonHello::plugin_backend(
+                    "detach-pending-test",
+                    std::process::id(),
+                )))
+                .expect("hello reply");
+
+            let attach = framed.recv::<ClientMessage>().expect("attach request");
+            let attach_id = attach.request_id().expect("attach id");
+            attach_seen_tx.send(()).expect("attach seen");
+            let detach = framed.recv::<ClientMessage>().expect("detach request");
+            let detach_id = detach.request_id().expect("detach id");
+            framed
+                .send(&DaemonMessage::Ok { id: detach_id })
+                .expect("detach reply");
+            release_rx.recv().expect("release late attach");
+            framed
+                .send(&DaemonMessage::Ok { id: attach_id })
+                .expect("late attach reply");
+            framed
+                .send(&DaemonMessage::Event(
+                    devboule_protocol::SessionEventEnvelope {
+                        session_id: "s.detach.pending".to_string(),
+                        generation: 1,
+                        event: SessionEvent::AgentMessage {
+                            message_id: None,
+                            text: "resurrected".to_string(),
+                        },
+                    },
+                ))
+                .expect("late event");
+        });
+
+        let connection_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let connection = loop {
+            match crate::transport::connect(&paths) {
+                Ok(connection) => break connection,
+                Err(_) if std::time::Instant::now() < connection_deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("connect: {error}"),
+            }
+        };
+        let client = Arc::new(
+            super::handshake(
+                connection,
+                devboule_protocol::ClientHello::m3a(
+                    super::test_owner("client-detach-pending-test").expect("owner"),
+                    "client-detach-pending-test",
+                ),
+            )
+            .expect("handshake"),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let attach_client = Arc::clone(&client);
+        let attach_thread = thread::spawn(move || {
+            attach_client.session_attach(
+                "s.detach.pending",
+                None,
+                Arc::new(move |envelope| {
+                    let _ = event_tx.send(envelope);
+                }),
+            )
+        });
+        attach_seen_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("attach reached server");
+        client
+            .session_detach("s.detach.pending")
+            .expect("detach roundtrip");
+        release_tx.send(()).expect("release server");
+        assert!(attach_thread.join().expect("attach joins").is_ok());
+        assert!(event_rx.recv_timeout(Duration::from_millis(100)).is_err());
+
+        drop(client);
+        server.join().expect("server joins");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

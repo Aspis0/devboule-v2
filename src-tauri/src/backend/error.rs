@@ -52,6 +52,7 @@ impl From<DaemonError> for CommandError {
             DaemonError::Io(error) => Self::new(ErrorCode::Io, error.to_string()),
             // Timeouts here are pipe/connect/reply waits, not a protocol code.
             DaemonError::TimedOut(what) => Self::new(ErrorCode::Io, format!("timed out: {what}")),
+            DaemonError::ConnectionLost => Self::new(ErrorCode::Io, "daemon connection was lost"),
             // Framing, unexpected frames, serde: no more specific code exists.
             DaemonError::Protocol(message) => Self::new(ErrorCode::Internal, message),
             DaemonError::AlreadyRunning => Self::new(

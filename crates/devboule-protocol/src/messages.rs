@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::capability::Capability;
 use crate::error::WireError;
 use crate::handshake::{ClientHello, DaemonHello};
+use crate::project::{Project, Workspace, WorkspaceIsolation};
 use crate::session::{
     AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult, Session,
     SessionEvent, SessionKind,
@@ -42,6 +43,9 @@ pub enum ClientMessage {
         id: u64,
     },
     Status {
+        id: u64,
+    },
+    DaemonDiagnostics {
         id: u64,
     },
     Shutdown {
@@ -140,6 +144,13 @@ pub enum ClientMessage {
     SessionsUnwatch {
         id: u64,
     },
+    /// Per-connection foreground presence. `focused_session_id` is only
+    /// meaningful while `app_visible` is true.
+    SessionsPresence {
+        id: u64,
+        focused_session_id: Option<String>,
+        app_visible: bool,
+    },
     SessionResume {
         id: u64,
         persistence: Persistence,
@@ -171,6 +182,24 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
+    ProjectsList {
+        id: u64,
+    },
+    ProjectAdd {
+        id: u64,
+        path: String,
+    },
+    WorkspacesList {
+        id: u64,
+        project_id: String,
+    },
+    WorkspaceCreate {
+        id: u64,
+        project_id: String,
+        isolation: WorkspaceIsolation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
     ProvidersList {
         id: u64,
     },
@@ -198,6 +227,7 @@ impl ClientMessage {
             Self::Hello(_) => None,
             Self::Ping { id }
             | Self::Status { id }
+            | Self::DaemonDiagnostics { id }
             | Self::Shutdown { id }
             | Self::SessionCreate { id, .. }
             | Self::SessionAttach { id, .. }
@@ -213,11 +243,16 @@ impl ClientMessage {
             | Self::SessionsList { id }
             | Self::SessionsWatch { id }
             | Self::SessionsUnwatch { id }
+            | Self::SessionsPresence { id, .. }
             | Self::SessionResume { id, .. }
             | Self::JournalUsage { id }
             | Self::JournalRetentionGet { id }
             | Self::JournalRetentionSet { id, .. }
             | Self::SessionDelete { id, .. }
+            | Self::ProjectsList { id }
+            | Self::ProjectAdd { id, .. }
+            | Self::WorkspacesList { id, .. }
+            | Self::WorkspaceCreate { id, .. }
             | Self::ProvidersList { id }
             | Self::ProvidersRefresh { id }
             | Self::ProviderUpdate { id, .. }
@@ -251,6 +286,7 @@ impl ClientMessage {
             Self::Hello(_)
             | Self::Ping { .. }
             | Self::Status { .. }
+            | Self::DaemonDiagnostics { .. }
             | Self::Shutdown { .. }
             | Self::SessionAttach { .. }
             | Self::SessionDetach { .. }
@@ -262,11 +298,16 @@ impl ClientMessage {
             | Self::SessionsList { .. }
             | Self::SessionsWatch { .. }
             | Self::SessionsUnwatch { .. }
+            | Self::SessionsPresence { .. }
             | Self::JournalUsage { .. }
             | Self::JournalRetentionGet { .. }
             | Self::ProvidersList { .. }
             | Self::ProvidersRefresh { .. }
             | Self::ProviderUpdate { .. }
+            | Self::ProjectsList { .. }
+            | Self::ProjectAdd { .. }
+            | Self::WorkspacesList { .. }
+            | Self::WorkspaceCreate { .. }
             | Self::Invoke { .. } => None,
         }
     }
@@ -293,6 +334,10 @@ pub enum DaemonMessage {
         #[serde(flatten)]
         body: DaemonStatusBody,
     },
+    Diagnostics {
+        id: u64,
+        report: serde_json::Value,
+    },
     Shutdown {
         id: u64,
         accepted: bool,
@@ -304,6 +349,22 @@ pub enum DaemonMessage {
     Sessions {
         id: u64,
         sessions: Vec<Session>,
+    },
+    Projects {
+        id: u64,
+        projects: Vec<Project>,
+    },
+    Project {
+        id: u64,
+        project: Project,
+    },
+    Workspaces {
+        id: u64,
+        workspaces: Vec<Workspace>,
+    },
+    Workspace {
+        id: u64,
+        workspace: Workspace,
     },
     Ok {
         id: u64,
@@ -617,6 +678,7 @@ mod tests {
                     title: "Terminal".to_string(),
                     state: SessionState::Silent { generation: 3 },
                     elapsed_ms: Some(300_001),
+                    attention: None,
                 }],
             },
         });
@@ -643,6 +705,48 @@ mod tests {
         .expect("json");
         assert_eq!(value["fromCursor"]["generation"], 2);
         assert_eq!(value["fromCursor"]["seq"], 40);
+    }
+
+    #[test]
+    fn presence_carries_focus_and_visibility_per_connection() {
+        let message = ClientMessage::SessionsPresence {
+            id: 4,
+            focused_session_id: Some("s.a.1".to_string()),
+            app_visible: true,
+        };
+        let value = serde_json::to_value(&message).expect("presence json");
+        assert_eq!(value["type"], "sessions_presence");
+        assert_eq!(value["focusedSessionId"], "s.a.1");
+        assert_eq!(value["appVisible"], true);
+        let decoded: ClientMessage = serde_json::from_value(value).expect("presence round trip");
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn project_workspace_wire_fields_are_camel_case() {
+        let request = ClientMessage::WorkspaceCreate {
+            id: 7,
+            project_id: "p.one".to_string(),
+            isolation: WorkspaceIsolation::Local,
+            branch: Some("main".to_string()),
+        };
+        let value = serde_json::to_value(&request).expect("workspace request json");
+        assert_eq!(value["type"], "workspace_create");
+        assert_eq!(value["projectId"], "p.one");
+        assert_eq!(value["isolation"], "local");
+        assert_eq!(value["branch"], "main");
+        assert!(value.get("project_id").is_none());
+
+        let workspace = Workspace {
+            id: "w.one".to_string(),
+            project_id: "p.one".to_string(),
+            title: "Project".to_string(),
+            isolation: WorkspaceIsolation::Local,
+        };
+        let reply = serde_json::to_value(DaemonMessage::Workspace { id: 7, workspace })
+            .expect("workspace reply json");
+        assert_eq!(reply["workspace"]["projectId"], "p.one");
+        assert!(reply["workspace"].get("project_id").is_none());
     }
 
     #[test]
@@ -1199,5 +1303,33 @@ mod tests {
         .expect("older provider row");
         assert!(installed.installed);
         assert_eq!(installed.npm_package, None);
+    }
+
+    #[test]
+    fn synthetic_provider_info_round_trips_installed_package_and_latest_version() {
+        let synthetic = ProviderInfo {
+            id: "qwen".to_string(),
+            executable: String::new(),
+            acp_available: false,
+            authentication: "unknown".to_string(),
+            protocol: None,
+            origin: None,
+            launch_args: None,
+            pickable: Some(false),
+            installed_version: None,
+            latest_version: Some("0.23.0".to_string()),
+            agent_version: None,
+            install_channel: Some("npm".to_string()),
+            installed: false,
+            npm_package: Some("@qwen-code/qwen-code".to_string()),
+        };
+        let encoded = serde_json::to_value(&synthetic).expect("synthetic json");
+        assert_eq!(encoded["installed"], false);
+        assert_eq!(encoded["npmPackage"], "@qwen-code/qwen-code");
+        assert_eq!(encoded["latestVersion"], "0.23.0");
+        assert_eq!(
+            serde_json::from_value::<ProviderInfo>(encoded).expect("synthetic round trip"),
+            synthetic
+        );
     }
 }

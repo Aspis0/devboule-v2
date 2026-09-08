@@ -15,11 +15,13 @@ use devboule_protocol::{
     Unreclaimable as WireUnreclaimable, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
+use crate::diagnostics::{DiagnosticsInput, DiagnosticsReport};
 use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::idempotency::{IdempotencyOutcome, IdempotencyStore};
-use crate::journal::Journal;
+use crate::journal::{Journal, JOURNAL_SCHEMA_VERSION};
 use crate::lock::SingleInstanceLock;
+use crate::login_shell_env::login_shell_capture_outcome;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
 use crate::process_tree::JobObject;
@@ -95,6 +97,7 @@ struct CliVersionFingerprint {
 struct SessionWatch {
     owner: OwnerId,
     conn: Arc<ConnHandle>,
+    last_snapshot: Option<Vec<devboule_protocol::SessionStateSnapshot>>,
 }
 
 fn session_state_event(
@@ -112,10 +115,15 @@ fn session_state_event(
 impl ServerState {
     #[cfg(test)]
     pub fn new(instance_id: String) -> Arc<Self> {
+        static TEST_STATE_COUNTER: AtomicU64 = AtomicU64::new(1);
+        let counter = TEST_STATE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Each test state needs its own SQLite path: parallel WAL writers
+        // sharing one test database can legitimately hold each other locked.
         Self::with_paths(
             instance_id,
             RuntimePaths::from_dir(
-                std::env::temp_dir().join(format!("devboule-test-{}", std::process::id())),
+                std::env::temp_dir()
+                    .join(format!("devboule-test-{}-{counter}", std::process::id())),
             ),
         )
         .expect("create daemon process job")
@@ -181,17 +189,18 @@ impl ServerState {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         conn.clear_state_events();
+        // Registration and the initial snapshot share the watcher lock with
+        // transition broadcasts, so the first pushed change cannot overtake
+        // the state that established this subscription.
+        let snapshots = self.sessions.state_snapshots(owner);
         watchers.insert(
             conn.id,
             SessionWatch {
                 owner: owner.clone(),
                 conn: Arc::clone(conn),
+                last_snapshot: Some(snapshots.clone()),
             },
         );
-        // Registration and the initial snapshot share the watcher lock with
-        // transition broadcasts, so the first pushed change cannot overtake
-        // the state that established this subscription.
-        let snapshots = self.sessions.state_snapshots(owner);
         conn.queue_state_event(session_state_event(snapshots));
     }
 
@@ -203,21 +212,22 @@ impl ServerState {
     }
 
     fn broadcast_session_state(&self, owner: &OwnerId) {
-        let watchers = self
+        let mut watchers = self
             .session_watchers
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let connections = watchers
-            .values()
-            .filter(|watch| watch.owner == *owner)
-            .map(|watch| Arc::clone(&watch.conn))
-            .collect::<Vec<_>>();
-        if connections.is_empty() {
+        if !watchers.values().any(|watch| watch.owner == *owner) {
             return;
         }
-        let event = session_state_event(self.sessions.state_snapshots(owner));
-        for conn in connections {
-            conn.queue_state_event(event.clone());
+        let snapshots = self.sessions.state_snapshots(owner);
+        for watch in watchers.values_mut().filter(|watch| watch.owner == *owner) {
+            if watch.last_snapshot.as_ref() == Some(&snapshots) {
+                continue;
+            }
+            watch.last_snapshot = Some(snapshots.clone());
+            watch
+                .conn
+                .queue_state_event(session_state_event(snapshots.clone()));
         }
     }
 
@@ -346,6 +356,8 @@ impl ServerState {
                 format!("failed: {}", collapse_health_reason(base))
             }
         };
+        // This raw String is internal pre-boundary state. Diagnostics wraps
+        // it in SafeText; any future consumer must cross that boundary too.
         self.provider_health
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -410,15 +422,14 @@ impl ServerState {
         cli_version_cache_is_current(cached, current.as_ref()).then(|| version.clone())
     }
 
-    fn invalidate_provider_update_caches(&self, provider_id: &str, package: &str) {
+    fn invalidate_provider_update_caches(&self, provider_id: &str) {
         self.provider_cli_versions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(provider_id);
-        // The executable fingerprint and npm latest caches are both dropped:
-        // the former forces the next --version observation to be fresh, while
-        // the latter prevents a stale registry value from hiding the update.
-        crate::registry::invalidate_latest_npm_version(package);
+        // Only the installed state changed: dropping the executable fingerprint
+        // forces the next --version observation to be fresh. npm latest is a
+        // registry property, so it remains valid under its six-hour TTL.
     }
 
     #[cfg(test)]
@@ -512,6 +523,133 @@ fn arm_idle_shutdown(state: Arc<ServerState>, generation: u64) {
                 state.signal_shutdown();
             }
         });
+}
+
+fn diagnostics_reply(state: &Arc<ServerState>, request_id: u64, owner: &OwnerId) -> DaemonMessage {
+    match diagnostics_report(state, owner) {
+        Ok(report) => match serde_json::to_value(report) {
+            Ok(report) => DaemonMessage::Diagnostics {
+                id: request_id,
+                report,
+            },
+            Err(error) => DaemonMessage::Error(
+                WireError::new(
+                    ErrorCode::Internal,
+                    format!("could not encode diagnostics: {error}"),
+                )
+                .with_id(request_id),
+            ),
+        },
+        Err(error) => DaemonMessage::Error(error.with_id(request_id)),
+    }
+}
+
+#[cfg(windows)]
+fn host_os_version() -> String {
+    use std::mem::MaybeUninit;
+    use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+    use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+    let mut info = MaybeUninit::<OSVERSIONINFOW>::zeroed();
+    let size = std::mem::size_of::<OSVERSIONINFOW>() as u32;
+    // RtlGetVersion reports the kernel version without the GetVersionEx
+    // compatibility shim, which otherwise makes an unmanifested process look
+    // like Windows 8. This is a bounded, local API; no shell command or
+    // user-provided executable path is involved.
+    unsafe {
+        (*info.as_mut_ptr()).dwOSVersionInfoSize = size;
+        if RtlGetVersion(info.as_mut_ptr()) == 0 {
+            let info = info.assume_init();
+            return format!(
+                "Windows {}.{}.{} ({})",
+                info.dwMajorVersion,
+                info.dwMinorVersion,
+                info.dwBuildNumber,
+                std::env::consts::ARCH
+            );
+        }
+    }
+    format!("Windows ({})", std::env::consts::ARCH)
+}
+
+#[cfg(not(windows))]
+fn host_os_version() -> String {
+    format!("{} ({})", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn diagnostics_report(
+    state: &Arc<ServerState>,
+    owner: &OwnerId,
+) -> Result<DiagnosticsReport, WireError> {
+    state.sessions.refresh_journal_degradation();
+    let sessions = state.sessions.list(owner)?;
+    let output_metrics = state.sessions.output_metrics();
+    let lifecycle = state
+        .lifecycle
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let clients = lifecycle.clients;
+    let daemon_sessions = lifecycle.sessions;
+    drop(lifecycle);
+
+    // These are the same bounded provider discovery and journal queries used
+    // by existing RPCs: registry fetches and journal worker calls have finite
+    // deadlines. Diagnostics never waits on a child process or an unbounded
+    // database operation.
+    let providers = match providers_reply(state, 0, false) {
+        DaemonMessage::Providers { providers, .. } => providers,
+        _ => Vec::new(),
+    };
+    let (journal_file_bytes, journal_file_error) = match state.sessions.journal_file_bytes() {
+        Some(Ok(bytes)) => (Some(bytes), None),
+        Some(Err(error)) => (None, Some(error)),
+        None => (None, None),
+    };
+    let mut journal_error = state
+        .journal_error
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+        .or_else(|| {
+            state
+                .sessions
+                .has_live_journal_degradation()
+                .then(|| "Journal output is degraded; some output may not be saved.".to_string())
+        });
+    if let Some(error) = journal_file_error {
+        journal_error = Some(match journal_error {
+            Some(previous) => format!("{previous}; journal file size: {error}"),
+            None => format!("journal file size: {error}"),
+        });
+    }
+
+    Ok(DiagnosticsReport::new(DiagnosticsInput {
+        instance_id: state.instance_id.clone(),
+        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+        protocol_version: PROTOCOL_VERSION,
+        pid: std::process::id(),
+        uptime_ms: u64::try_from(state.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        clients,
+        daemon_sessions,
+        capabilities: m3a_daemon_capabilities()
+            .into_iter()
+            .map(|capability| capability.as_str().to_string())
+            .collect(),
+        peak_ring_bytes: output_metrics.peak_pending_bytes,
+        ring_evicted_bytes: output_metrics.coalesced_bytes,
+        ring_dropped_frames: output_metrics.coalesced_frames,
+        journal_stats: state.sessions.journal_stats(),
+        journal_error,
+        journal_schema_version: JOURNAL_SCHEMA_VERSION,
+        journal_file_bytes,
+        sessions,
+        providers,
+        os_version: host_os_version(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        runtime_dir: state.sessions.runtime_dir().to_string_lossy().into_owned(),
+        pipe_name: state.sessions.pipe_name().to_string(),
+        login_shell_capture: login_shell_capture_outcome(),
+    }))
 }
 
 pub fn run() -> Result<(), DaemonError> {
@@ -851,6 +989,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     let _ = framed.flush_pipe();
     state.sessions.detach_conn(&conn);
     state.unwatch_sessions(conn.id);
+    state.sessions.clear_presence(conn.id);
     loop_result
 }
 
@@ -1097,6 +1236,7 @@ fn dispatch_immediate(
             ts_ms: unix_millis(),
         },
         ClientMessage::Status { id } => state.status_body(id),
+        ClientMessage::DaemonDiagnostics { id } => diagnostics_reply(state, id, owner),
         ClientMessage::Shutdown { id } => {
             // The reply is the app's last chance to know the journal is on
             // disk. Flush before accepting so a follow-up kill/restart cannot
@@ -1107,7 +1247,11 @@ fn dispatch_immediate(
         ClientMessage::JournalUsage { .. }
         | ClientMessage::JournalRetentionGet { .. }
         | ClientMessage::JournalRetentionSet { .. }
-        | ClientMessage::SessionDelete { .. } => {
+        | ClientMessage::SessionDelete { .. }
+        | ClientMessage::ProjectsList { .. }
+        | ClientMessage::ProjectAdd { .. }
+        | ClientMessage::WorkspacesList { .. }
+        | ClientMessage::WorkspaceCreate { .. } => {
             if !journal_ok {
                 return capability_not_supported(request.request_id(), caps::JOURNAL);
             }
@@ -1126,6 +1270,7 @@ fn dispatch_immediate(
         | ClientMessage::SessionsList { .. }
         | ClientMessage::SessionsWatch { .. }
         | ClientMessage::SessionsUnwatch { .. }
+        | ClientMessage::SessionsPresence { .. }
         | ClientMessage::SessionResume { .. }
         | ClientMessage::SessionReportAgent { .. } => {
             if !sessions_ok {
@@ -1406,7 +1551,7 @@ fn provider_update_reply(state: &Arc<ServerState>, id: u64, provider_id: &str) -
         .run(&program, &prefix_args, &args, &state.process_job);
     let ok = result.exit_code == Some(0);
     if ok {
-        state.invalidate_provider_update_caches(provider_id, package);
+        state.invalidate_provider_update_caches(provider_id);
     }
     DaemonMessage::ProviderUpdated {
         id,
@@ -1622,6 +1767,32 @@ fn dispatch_journal(
                 Err(error) => DaemonMessage::Error(error.with_id(id)),
             }
         }
+        ClientMessage::ProjectsList { id } => match state.sessions.projects_list() {
+            Ok(projects) => DaemonMessage::Projects { id, projects },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::ProjectAdd { id, path } => match state.sessions.project_add(&path) {
+            Ok(project) => DaemonMessage::Project { id, project },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::WorkspacesList { id, project_id } => {
+            match state.sessions.workspaces_list(&project_id) {
+                Ok(workspaces) => DaemonMessage::Workspaces { id, workspaces },
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+            }
+        }
+        ClientMessage::WorkspaceCreate {
+            id,
+            project_id,
+            isolation,
+            branch,
+        } => match state
+            .sessions
+            .workspace_create(&project_id, isolation, branch)
+        {
+            Ok(workspace) => DaemonMessage::Workspace { id, workspace },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
         other => DaemonMessage::Error(WireError::new(
             ErrorCode::InvalidRequest,
             format!("unexpected journal frame {other:?}"),
@@ -1740,6 +1911,17 @@ fn dispatch_session(
             conn.clear_state_events();
             DaemonMessage::Ok { id }
         }
+        ClientMessage::SessionsPresence {
+            id,
+            focused_session_id,
+            app_visible,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .set_presence(conn.id, owner, focused_session_id, app_visible)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
         ClientMessage::SessionStop { id, session_id } => reply_result(
             id,
             state
@@ -1752,7 +1934,7 @@ fn dispatch_session(
             session_id,
             text,
             idempotency_key,
-        } => session_send(state, owner, id, session_id, text, idempotency_key),
+        } => session_send(state, owner, conn, id, session_id, text, idempotency_key),
         ClientMessage::SessionResize {
             id,
             session_id,
@@ -1762,7 +1944,7 @@ fn dispatch_session(
             id,
             state
                 .sessions
-                .resize(&session_id, cols, rows, owner)
+                .resize(&session_id, cols, rows, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionsList { id } => match state.sessions.list(owner) {
@@ -1928,6 +2110,7 @@ fn session_create(
 fn session_send(
     state: &Arc<ServerState>,
     owner: &OwnerId,
+    conn: &ConnHandle,
     id: u64,
     session_id: String,
     text: String,
@@ -1938,7 +2121,7 @@ fn session_send(
     {
         return reply;
     }
-    match state.sessions.send(&session_id, &text, owner) {
+    match state.sessions.send(&session_id, &text, owner, conn) {
         Ok(()) => {
             let reply = DaemonMessage::Ok { id };
             remember(
@@ -2017,6 +2200,12 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
         DaemonMessage::Session { session, .. } => DaemonMessage::Session { id, session },
         DaemonMessage::Ok { .. } => DaemonMessage::Ok { id },
         DaemonMessage::Sessions { sessions, .. } => DaemonMessage::Sessions { id, sessions },
+        DaemonMessage::Projects { projects, .. } => DaemonMessage::Projects { id, projects },
+        DaemonMessage::Project { project, .. } => DaemonMessage::Project { id, project },
+        DaemonMessage::Workspaces { workspaces, .. } => {
+            DaemonMessage::Workspaces { id, workspaces }
+        }
+        DaemonMessage::Workspace { workspace, .. } => DaemonMessage::Workspace { id, workspace },
         DaemonMessage::JournalRetention { retention, .. } => {
             DaemonMessage::JournalRetention { id, retention }
         }
@@ -2100,6 +2289,23 @@ mod tests {
         let collapsed = collapse_health_reason(&"\u{e8}".repeat(300));
         assert_eq!(collapsed, "\u{e8}".repeat(200));
         assert_eq!(collapse_health_reason("a\n\tb   c"), "a b c");
+    }
+
+    #[test]
+    fn unchanged_roster_transition_is_not_resent() {
+        let state = state();
+        let owner = OwnerId::new("roster-user", "roster-client").expect("owner");
+        let conn = ConnHandle::new(1);
+
+        state.watch_sessions(&owner, &conn);
+        assert_eq!(conn.pull_state_events().len(), 1, "initial snapshot");
+
+        state.broadcast_session_state(&owner);
+
+        assert!(
+            conn.pull_state_events().is_empty(),
+            "an unchanged full roster must not be resent"
+        );
     }
 
     fn wait_for_shutdown(state: &ServerState) {
@@ -2257,6 +2463,91 @@ mod tests {
         }
     }
 
+    #[test]
+    fn diagnostics_rpc_reports_the_open_journal_without_user_content() {
+        let state = state();
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(3);
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::DaemonDiagnostics { id: 12 },
+            &conn,
+            true,
+            true,
+            true,
+        )
+        .expect("immediate diagnostics reply");
+        let DaemonMessage::Diagnostics { id, report } = reply else {
+            panic!("diagnostics must reply with Diagnostics");
+        };
+        assert_eq!(id, 12);
+        assert_eq!(report["daemon"]["instanceId"], "test-instance");
+        assert_eq!(
+            report["health"]["journalSchemaVersion"],
+            JOURNAL_SCHEMA_VERSION
+        );
+        assert!(
+            report["health"]["journalFileBytes"]
+                .as_u64()
+                .is_some_and(|bytes| bytes > 0),
+            "journal file bytes were not positive: report={report}, journal_error={:?}",
+            state
+                .journal_error
+                .lock()
+                .ok()
+                .and_then(|error| error.clone())
+        );
+        let encoded = report.to_string();
+        assert!(!encoded.contains("title"));
+        assert!(!encoded.contains("transcript"));
+        assert!(!encoded.contains("AgentStderr"));
+        assert!(!encoded.contains("permission env"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn host_os_version_matches_an_independent_windows_version_report() {
+        // Resolve PowerShell by absolute path. A child spawned from a POSIX shell can
+        // inherit a PATH without System32, and `program not found` would then read exactly
+        // like a version mismatch — the environment failing, disguised as the assertion failing.
+        let system_root = std::env::var("SystemRoot").expect("SystemRoot must be set on Windows");
+        let powershell = std::path::Path::new(&system_root)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        assert!(
+            powershell.is_file(),
+            "PowerShell must exist at {}",
+            powershell.display()
+        );
+        let output = std::process::Command::new(&powershell)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_OperatingSystem).Version",
+            ])
+            .output()
+            .expect("PowerShell must report the Windows version");
+        assert!(
+            output.status.success(),
+            "PowerShell version query failed: {:?}",
+            output.status
+        );
+        let independent = String::from_utf8(output.stdout)
+            .expect("PowerShell version must be UTF-8")
+            .trim()
+            .to_string();
+        let reported = host_os_version();
+        let reported_version = reported
+            .strip_prefix("Windows ")
+            .and_then(|value| value.split_whitespace().next())
+            .expect("host OS report must contain a Windows version");
+        assert_eq!(reported_version, independent);
+    }
+
     struct RecordingNpmRunner {
         calls: Arc<Mutex<Vec<Vec<String>>>>,
         result: crate::provider_update::NpmInstallResult,
@@ -2319,7 +2610,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_update_dispatches_to_fake_runner_and_invalidates_both_version_caches() {
+    fn provider_update_drops_fingerprint_but_preserves_latest_version_cache() {
         let path = std::env::temp_dir().join(format!(
             "devboule-provider-update-test-{}-{}",
             std::process::id(),
@@ -2355,7 +2646,7 @@ mod tests {
         state.set_provider_update_npm_command(std::path::PathBuf::from(r"C:\fake\npm.cmd"), vec![]);
         let fingerprint = executable_fingerprint(&executable).expect("fingerprint");
         state.record_provider_cli_version("codex", "1.0.0", fingerprint);
-        crate::registry::invalidate_latest_npm_version("@openai/codex");
+        crate::registry::reset_npm_version_cache("@openai/codex");
         struct FakeNpmVersion;
         impl crate::registry::NpmVersionFetch for FakeNpmVersion {
             fn latest(&self, _package: &str) -> Result<String, String> {
@@ -2413,8 +2704,8 @@ mod tests {
         );
         assert_eq!(
             crate::registry::cached_latest_npm_version("@openai/codex"),
-            None,
-            "successful update must drop the npm latest cache entry"
+            Some("9.9.9".to_string()),
+            "successful update must preserve the npm latest cache entry"
         );
         let _ = std::fs::remove_dir_all(path);
     }

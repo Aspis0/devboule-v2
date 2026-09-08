@@ -5,6 +5,18 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PermissionRequest, Session } from "../../types/ipc";
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  // The recovery confirmation dialog; each test that needs a specific answer
+  // overrides the resolved value.
+  ask: vi.fn(async () => false),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  // Presence reporting starts with the Workspace mount; keep its sends
+  // hermetic here (presence.test.ts covers the reporter itself).
+  invoke: vi.fn(async () => undefined),
+}));
+
 vi.mock("../../lib/tauri", () => ({
   daemonStatus: vi.fn(async () => ({
     state: "connected",
@@ -23,6 +35,8 @@ vi.mock("../../lib/tauri", () => ({
   ),
   sessionCreate: vi.fn(),
   providersList: vi.fn(),
+  sessionPresence: vi.fn(async () => undefined),
+  daemonRestart: vi.fn(async () => undefined),
   sessionPermissionRespond: vi.fn(async () => undefined),
   createSessionStateChannel: vi.fn((onSnapshot: (snapshots: unknown[]) => void) => ({
     onSnapshot,
@@ -112,6 +126,8 @@ vi.mock("./AgentChatSurface", () => ({
 }));
 
 import {
+  daemonRestart,
+  daemonStatus,
   journalUsage,
   providersList,
   sessionCreate,
@@ -119,6 +135,7 @@ import {
   sessionPermissionRespond,
   sessionsList,
 } from "../../lib/tauri";
+import { ask } from "@tauri-apps/plugin-dialog";
 import type { JournalUsage } from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
 
@@ -991,5 +1008,148 @@ describe("Workspace sessions", () => {
     expect(sessionCreate).toHaveBeenCalledTimes(1);
     expect(sessionCreate).toHaveBeenCalledWith(null, "acp", "codex-acp");
     expect(container.querySelectorAll(".workspace-row").length).toBe(rowsBefore + 1);
+  });
+
+  describe("session attention badges", () => {
+    const attentionSession = (
+      id: string,
+      title: string,
+      reason: "finished" | "error" | "permission",
+    ): Session => ({
+      ...acpSession(id, title),
+      attention: { reason, atMs: 1_000 },
+    });
+
+    it("renders an attention badge on tabs that carry attention and none on tabs without", async () => {
+      vi.mocked(sessionsList).mockResolvedValue([
+        attentionSession("session-a", "agent finished", "finished"),
+        attentionSession("session-b", "agent error", "error"),
+        attentionSession("session-c", "agent permission", "permission"),
+        acpSession("session-d", "agent quiet"),
+      ]);
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace />);
+      });
+      await act(async () => undefined);
+
+      const findTab = (title: string): HTMLButtonElement => {
+        const tab = [
+          ...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab"),
+        ].find((candidate) => candidate.textContent?.includes(title));
+        if (tab === undefined) throw new Error(`tab for ${title} did not render`);
+        return tab;
+      };
+
+      expect(findTab("agent finished").querySelector(".workspace-tab-attention")?.textContent).toBe(
+        "finished",
+      );
+      expect(findTab("agent error").querySelector(".workspace-tab-attention")?.textContent).toBe(
+        "error",
+      );
+      expect(
+        findTab("agent permission").querySelector(".workspace-tab-attention")?.textContent,
+      ).toBe("needs approval");
+      const quiet = findTab("agent quiet");
+      expect(quiet.querySelector(".workspace-tab-attention")).toBeNull();
+    });
+
+    it("says the reason in the tab's accessible name, not only by colour", async () => {
+      vi.mocked(sessionsList).mockResolvedValue([
+        attentionSession("session-a", "agent blocked", "permission"),
+      ]);
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace />);
+      });
+      await act(async () => undefined);
+
+      const tab = [...container.querySelectorAll<HTMLButtonElement>(".workspace-session-tab")][0];
+      if (tab === undefined) throw new Error("attention tab did not render");
+      // The tab has no aria-label override, so its accessible name is built
+      // from its text content — which must carry the reason, not just a colour.
+      expect(tab.getAttribute("aria-label")).toBeNull();
+      expect(tab.textContent).toContain("agent blocked");
+      expect(tab.textContent).toContain("needs approval");
+    });
+  });
+
+  describe("daemon unresponsive recovery", () => {
+    const UNRESPONSIVE_MESSAGE = "the daemon stopped answering";
+
+    beforeEach(() => {
+      vi.mocked(daemonStatus).mockResolvedValue({
+        state: "unresponsive",
+        pid: 42,
+        instanceId: "daemon-test",
+        protocolVersion: 1,
+        clients: 1,
+        capabilities: ["typed_permissions"],
+        message: UNRESPONSIVE_MESSAGE,
+      });
+    });
+
+    it("shows the daemon's unresponsive sentence verbatim in the status strip", async () => {
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace />);
+      });
+      await act(async () => undefined);
+
+      const strip = container.querySelector(".workspace-daemon-status");
+      if (strip === null) throw new Error("daemon status strip did not render");
+      expect(strip.textContent).toContain(UNRESPONSIVE_MESSAGE);
+    });
+
+    it("asks once when a session is live, and a decline keeps the state visible without restarting", async () => {
+      vi.mocked(ask).mockResolvedValue(false);
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace />);
+      });
+      await act(async () => undefined);
+
+      // The default roster has one live terminal session, so the destructive
+      // restart must not happen on its own.
+      expect(daemonRestart).not.toHaveBeenCalled();
+      expect(ask).toHaveBeenCalledTimes(1);
+      const message = String(vi.mocked(ask).mock.calls[0]?.[0]);
+      expect(message).toContain("stop");
+      expect(message).toContain("conversations are kept");
+
+      // The state stays visible after the decline instead of disappearing.
+      const strip = container.querySelector(".workspace-daemon-status");
+      if (strip === null) throw new Error("daemon status strip did not render");
+      expect(strip.textContent).toContain(UNRESPONSIVE_MESSAGE);
+    });
+
+    it("restarts without asking when no session is live", async () => {
+      vi.mocked(sessionsList).mockResolvedValue([]);
+      vi.mocked(ask).mockResolvedValue(true);
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace />);
+      });
+      await act(async () => undefined);
+
+      expect(daemonRestart).toHaveBeenCalledTimes(1);
+      expect(ask).not.toHaveBeenCalled();
+    });
+
+    it("says a restart attempt did not complete when the command rejects", async () => {
+      vi.mocked(sessionsList).mockResolvedValue([]);
+      vi.mocked(daemonRestart).mockRejectedValue(new Error("daemon identity changed"));
+      root = createRoot(container);
+      await act(async () => {
+        root.render(<Workspace />);
+      });
+      await act(async () => undefined);
+
+      const strip = container.querySelector(".workspace-daemon-status");
+      if (strip === null) throw new Error("daemon status strip did not render");
+      // Both facts at once: the daemon's own sentence and the failed attempt.
+      expect(strip.textContent).toContain(UNRESPONSIVE_MESSAGE);
+      expect(strip.textContent).toContain("a restart was attempted, but it did not complete");
+    });
   });
 });
