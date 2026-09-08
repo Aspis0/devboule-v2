@@ -14,6 +14,12 @@ journal-retention controls on real IPC (`JournalRetentionPanel.tsx`) next to
 mock rows from `mockData.ts`, and **Diagnostics** reports live daemon health
 through the typed `daemonDiagnostics` command (`DiagnosticsPanel.tsx`).
 
+**Projects** lists the daemon's persisted projects through `projects_list` and
+registers new ones through the same native-picker flow as the Workspace
+sidebar. Its `MOCK_WORKTREE_DEFAULTS` rows are still hardcoded, because
+`worktree` isolation does not exist yet for them to describe.
+
 The rest is still mock data from `mockData.ts` with no command behind it:
-**Projects** renders `MOCK_PROJECTS` and `MOCK_WORKTREE_DEFAULTS`, **Devices**
-renders `MOCK_DEVICES`, and **Labs** renders `MOCK_LABS`.
+**Devices** renders `MOCK_DEVICES` and **Labs** renders `MOCK_LABS`. The two
+controls that promised features this product does not have — "Lock app" and
+"+ Pair a device" — were removed rather than left drawn with no handler.

@@ -7,6 +7,7 @@ import { terminalSessionRegistry } from "./terminalRegistry";
 interface TerminalSurfaceProps {
   workspaceId: string | null;
   sessionId: string;
+  cwd?: string;
   id?: string;
   onClosed?: () => void;
   onExited?: () => void;
@@ -84,6 +85,7 @@ export function bannerText(banner: TerminalBanner): string | null {
 export const TerminalSurface = memo(function TerminalSurface({
   workspaceId,
   sessionId,
+  cwd,
   id,
   onClosed,
   onExited,
@@ -163,6 +165,7 @@ export const TerminalSurface = memo(function TerminalSurface({
         <span className="workspace-terminal-status">
           {message ?? "Connected to the local shell"}
         </span>
+        {cwd ? <span className="workspace-session-cwd">{cwd}</span> : null}
         <button
           type="button"
           className="workspace-terminal-interrupt"

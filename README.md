@@ -44,11 +44,19 @@ What works today:
   `pubvia` (a placeholder), `design`, and `settings`.
 - **Plugin host** — installed plugins run in a cross-origin frame and can use
   an out-of-process backend over the plugin RPC protocol.
+- **Projects and workspaces** — register a folder with the native picker and it
+  is persisted by the daemon, recognised as a git repository or not, and
+  survives a restart. Sessions started inside a workspace run in that folder:
+  the frontend sends the workspace id, session kind, and selected provider;
+  it never sends a PATH. The daemon resolves the directory, then echoes back
+  the path the process actually received.
 - **Design** — a chat grounded in the repository by Oracle, driving that same
   agent, with a canvas that renders what the agent produced inside a sandboxed
   frame. It chooses its agent and model from the same provider inventory the
   Workspace uses, and reports what it wrote from the structured tool events the
-  protocol carries rather than by reading the agent's prose. The canvas is for
+  protocol carries rather than by reading the agent's prose. Finished work
+  survives a restart: the history stores an index into the journal that already
+  holds the transcript, not a second copy of the artifact. The canvas is for
   looking and pointing, not for dragging. Its layers are the repository's own
   components, each carrying the file it came from, so a request can be scoped to
   one of them. They are drawn as labelled rectangles rather than previews:
@@ -56,16 +64,14 @@ What works today:
   packaged app. See
   [`src/features/design/README.md`](src/features/design/README.md) for what else
   is not real yet.
-- **Settings** — provider inventory and Oracle administration are wired;
-  Projects and Devices remain mock panels.
+- **Settings** — provider inventory, Oracle administration and Projects are
+  wired; Devices remains a mock panel.
 
-What is still mock is the Project/Workspace layer *in the frontend*.
-`src/features/workspace/workspaceProjects.ts` initializes its state from
-`MOCK_PROJECTS` in `mockData.ts` and updates React state only. The daemon side is
-no longer missing: `projects_list`, `project_add`, `workspaces_list` and
-`workspace_create` are registered, and the daemon resolves a workspace id to a
-real directory and spawns there. Nothing in the frontend calls them yet, so
-projects still do not survive a restart.
+What is still mock: `worktree` isolation, which the daemon refuses until git
+worktrees are implemented, so every workspace is currently the project folder
+itself. The Workspace side panels — Changes, Files, the app preview and the
+Design panel — render hardcoded examples and say so; there is no git status or
+file tree on the wire yet.
 
 Developed and tested on Windows. Tauri itself is cross-platform, but no other
 platform has been verified, so treat them as unsupported for now.

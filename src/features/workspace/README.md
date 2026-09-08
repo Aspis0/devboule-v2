@@ -7,15 +7,29 @@ What is wired and what is not:
   (`sessions_list`, `session_create`, `sessions_watch`), and daemon liveness
   in the left sidebar footer is the polled `daemonStatus` result
   (`workspaceDaemon.ts`).
-- **Projects and workspaces are mock.** `workspaceProjects.ts` builds its
-  state from `MOCK_PROJECTS` in `mockData.ts`, `selectedWorkspace` starts as
-  the literal `"rust-core"`, and creating a project appends a
-  `mock-project-${Date.now()}` row to component state. There is no
-  persistence and no Tauri command for projects or workspaces yet.
-- **Side panels are mock.** The Changes/Files/app/Design/PR panels in
-  `sidePanels.tsx` render hardcoded examples (`MOCK_DIFF_LINES`,
-  `MOCK_SHIP_STEPS`); the Changes panel says so in its own mockup note. Real
-  git integration is not built.
+- **Projects and workspaces are real.** `workspaceProjects.ts` loads them over
+  `projects_list` and `workspaces_list`, `NewProjectDialog` registers a folder
+  chosen with the native picker through `project_add`, and the daemon persists
+  them in the journal. `selectedWorkspace` starts as `null` and settles on real
+  data. The id returned by the daemon is authoritative: registering the same
+  folder twice updates the existing project rather than adding a second one, so
+  nothing here derives an id or a name from the path.
+
+  The selected workspace id is what reaches `session_create` and
+  `TerminalSurface`. Only the id travels — the daemon resolves the directory
+  from it and echoes back `Session.cwd`, which is display-only and lossy and
+  must never be compared, keyed on, or sent back.
+
+  `worktree` isolation is still refused by the daemon, so every workspace is
+  the project folder itself until git worktrees land.
+
+- **Side panels are mock, and no longer pretend otherwise.** The
+  Changes/Files/app/Design panels in `sidePanels.tsx` render hardcoded examples
+  and each carries a note saying so. Their rows are non-interactive rather than
+  buttons that do nothing, and the controls that named operations this app
+  cannot perform — Stage, Discard, Reindex, Export, Generate — were removed
+  instead of left drawn. "Open Design" is real and selects the Design surface.
+  There is no git status and no file tree on the wire yet.
 
 History lives in the left sidebar footer beside the daemon status. It is a
 separate journal log view, not terminal screen restore.

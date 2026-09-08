@@ -19,19 +19,6 @@ export const MOCK_SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] =
   { id: "diagnostics", label: "Diagnostics" },
 ];
 
-export const MOCK_PROJECTS = [
-  {
-    name: "devboule",
-    path: "~/dev/devboule · github.com/Aspis0/devboule",
-    workspaces: "3 workspaces",
-  },
-  {
-    name: "pubvia",
-    path: "~/papers/somatic-clones · local only",
-    workspaces: "1 workspace",
-  },
-] as const;
-
 export const MOCK_WORKTREE_DEFAULTS = [
   { label: "Base branch", value: "origin/main", tone: "default" },
   { label: "Setup script", value: "cargo fetch && npm ci", tone: "default" },

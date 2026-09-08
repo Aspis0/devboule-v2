@@ -77,6 +77,13 @@ pub struct Attention {
 pub struct Session {
     pub id: String,
     pub workspace_id: Option<String>,
+    /// Working directory the daemon actually handed the spawned process.
+    /// `Some` only as an echo of that directory; `None` means the daemon does
+    /// not know — never a path re-derived from the workspace row. Lossy
+    /// (unpaired surrogates become U+FFFD) and for DISPLAY ONLY: never a
+    /// filesystem key, never compared against a real path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     pub kind: SessionKind,
     pub title: String,
     /// Catalog provider id for ACP sessions, when one was persisted.
@@ -91,15 +98,22 @@ pub struct Session {
     /// the previous daemon.
     #[serde(default)]
     pub elapsed_ms: Option<u64>,
+    /// Unix time in milliseconds when this session was first created.
+    /// Stable across resume: a stored `(id, created_at_ms)` pair tells a
+    /// caller whether a later session with the same id is the same session
+    /// or a reissued id.
+    pub created_at_ms: u64,
 }
 
-/// The connection-scoped roster update. It deliberately carries only the
-/// fields needed to update session tabs; workspace and kind are not repeated
-/// on every spontaneous transition frame.
+/// The connection-scoped roster update. It carries the fields the tab strip
+/// needs for each session, including its workspace and kind identity. Identity
+/// is authoritative on the wire and must never be inferred by the client.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStateSnapshot {
     pub id: String,
+    pub workspace_id: Option<String>,
+    pub kind: SessionKind,
     pub title: String,
     pub state: SessionState,
     pub elapsed_ms: Option<u64>,
@@ -713,12 +727,16 @@ mod tests {
 
         let snapshot = SessionStateSnapshot {
             id: "s.client.1".to_string(),
+            workspace_id: Some("ws-1".to_string()),
+            kind: SessionKind::Acp,
             title: "Agent".to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: None,
             attention: None,
         };
         let encoded = serde_json::to_value(snapshot).expect("snapshot json");
+        assert_eq!(encoded["workspaceId"], "ws-1");
+        assert_eq!(encoded["kind"], "acp");
         assert!(encoded.get("attention").is_none());
     }
 
@@ -727,15 +745,18 @@ mod tests {
         let session = Session {
             id: "session-1-1".to_string(),
             workspace_id: Some("ws-1".to_string()),
+            cwd: None,
             kind: SessionKind::Terminal,
             title: "Terminal".to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: None,
             provider: None,
             peer_session_id: None,
+            created_at_ms: 1,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["workspaceId"], "ws-1");
+        assert_eq!(value["createdAtMs"], 1);
         assert_eq!(value["kind"], "terminal");
         assert!(value.get("generation").is_none());
         assert_eq!(value["state"]["type"], "live");
@@ -743,16 +764,46 @@ mod tests {
     }
 
     #[test]
+    fn session_json_without_created_at_ms_fails_to_deserialize() {
+        let session = Session {
+            id: "session-1-1".to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Terminal,
+            title: "Terminal".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: None,
+            provider: None,
+            peer_session_id: None,
+            created_at_ms: 1,
+        };
+        let mut value = serde_json::to_value(&session).expect("json");
+        value
+            .as_object_mut()
+            .expect("session object")
+            .remove("createdAtMs");
+        let error = serde_json::from_value::<Session>(value)
+            .expect_err("missing createdAtMs must not default to 0");
+        let message = error.to_string();
+        assert!(
+            message.contains("createdAtMs") || message.contains("created_at_ms"),
+            "error must name the missing field, got {message}"
+        );
+    }
+
+    #[test]
     fn silent_session_carries_elapsed_age_and_event_is_distinct() {
         let session = Session {
             id: "session-1-1".to_string(),
             workspace_id: None,
+            cwd: None,
             kind: SessionKind::Terminal,
             title: "Terminal".to_string(),
             state: SessionState::Silent { generation: 1 },
             elapsed_ms: Some(300_042),
             provider: None,
             peer_session_id: None,
+            created_at_ms: 1,
         };
         let encoded = serde_json::to_value(&session).expect("session json");
         assert_eq!(encoded["state"]["type"], "silent");
@@ -771,6 +822,7 @@ mod tests {
         let session = Session {
             id: "session-1-1".to_string(),
             workspace_id: None,
+            cwd: None,
             kind: SessionKind::Acp,
             title: "Agent".to_string(),
             state: SessionState::Recovered {
@@ -784,6 +836,7 @@ mod tests {
             elapsed_ms: None,
             provider: Some("grok".to_string()),
             peer_session_id: Some("peer-session-1".to_string()),
+            created_at_ms: 1,
         };
         let value = serde_json::to_value(&session).expect("json");
         assert_eq!(value["provider"], "grok");
@@ -1137,12 +1190,14 @@ mod tests {
             session: Session {
                 id: "s.client.1".to_string(),
                 workspace_id: None,
+                cwd: None,
                 kind: SessionKind::Acp,
                 title: "t".to_string(),
                 state: SessionState::Live { generation: 2 },
                 elapsed_ms: None,
                 provider: Some("grok".to_string()),
                 peer_session_id: Some("peer-1".to_string()),
+                created_at_ms: 1,
             },
         };
         let value = serde_json::to_value(&resumed).expect("json");

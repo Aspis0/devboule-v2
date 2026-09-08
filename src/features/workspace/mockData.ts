@@ -1,19 +1,6 @@
-import type { Project, Workspace } from "../../types/ipc";
-
 // MOCK DATA ONLY — this is a UI view model over the future IPC entities. The
 // shared entity fields stay aligned, while presentation fields remain local to
 // the Workspace surface.
-
-export type WorkspaceIsolation = Workspace["isolation"];
-
-export interface MockWorkspace extends Workspace {
-  meta: string;
-  dotTone: "terracotta" | "green" | "border";
-}
-
-export interface MockProject extends Project {
-  workspaces: MockWorkspace[];
-}
 
 export interface MockSurface {
   id: "changes" | "files" | "app" | "design" | "pr";
@@ -21,55 +8,6 @@ export interface MockSurface {
   meta: string;
   dotTone: "terracotta" | "silence" | "green" | "purple" | "ochre";
 }
-
-export const MOCK_PROJECTS: MockProject[] = [
-  {
-    id: "devboule",
-    name: "devboule",
-    path: "~/dev/devboule",
-    workspaces: [
-      {
-        id: "rust-core",
-        projectId: "devboule",
-        title: "rust-core",
-        meta: "2 sessions · 7 dirty",
-        isolation: "worktree",
-        dotTone: "terracotta",
-      },
-      {
-        id: "main",
-        projectId: "devboule",
-        title: "main",
-        meta: "1 terminal",
-        isolation: "local",
-        dotTone: "green",
-      },
-      {
-        id: "windows-port",
-        projectId: "devboule",
-        title: "windows-port",
-        meta: "idle · 3 d",
-        isolation: "worktree",
-        dotTone: "border",
-      },
-    ],
-  },
-  {
-    id: "oracle-core",
-    name: "oracle-core",
-    path: "~/dev/oracle-core",
-    workspaces: [
-      {
-        id: "bench-embedder",
-        projectId: "oracle-core",
-        title: "bench-embedder",
-        meta: "1 session",
-        isolation: "worktree",
-        dotTone: "border",
-      },
-    ],
-  },
-];
 
 export const MOCK_SURFACES: MockSurface[] = [
   { id: "changes", name: "Changes", meta: "+118 −64", dotTone: "terracotta" },

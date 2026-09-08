@@ -192,6 +192,30 @@ export interface Session {
   state: SessionState;
   /** Milliseconds since the last observed output; null for recovered records. */
   elapsedMs: number | null;
+  /**
+   * The directory the process was actually given, echoed back by the daemon in
+   * display form. Absent means the daemon does not know it — a journal-only
+   * transcript whose process died in a previous run. The frontend must render
+   * it or say nothing; it must never substitute a guess, and it must never
+   * send a cwd of its own: the daemon resolves the path from `workspaceId`.
+   */
+  cwd?: string;
+  /**
+   * Unix milliseconds when the session was first created, stable across
+   * resume. Pair it with `id` to tell "my saved id still means this session"
+   * from "this id was reissued": ids are `s.{clientPid}.{counter}` where the
+   * counter restarts at 1 on every daemon run and the PID comes from an OS
+   * that recycles them, so an id alone is unique today but not durable.
+   *
+   * Optional here and never optional on the wire: every session from
+   * `sessionsList` has it. It is absent only on a session this frontend
+   * synthesized from a roster push (`sessions_watch`) for an id it had not
+   * listed yet, because the tab strip does not need creation time. The
+   * snapshot carries workspace and kind identity separately. Absent therefore
+   * means "this row came from a roster push", never "the creation time is
+   * unknown" — do not fill it in.
+   */
+  createdAtMs?: number;
   /** Mirror of the roster snapshot's attention; the frontend only renders it. */
   attention?: Attention;
 }
@@ -289,6 +313,8 @@ export interface Attention {
 /** Compact daemon push used to update the workspace tab roster. */
 export interface SessionStateSnapshot {
   id: Id;
+  workspaceId: Id | null;
+  kind: SessionKind;
   title: string;
   state: SessionState;
   elapsedMs: number | null;

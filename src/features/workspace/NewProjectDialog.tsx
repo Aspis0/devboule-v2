@@ -1,30 +1,14 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-
-type ProjectCreationRoute = "existing" | "new" | "clone";
-
-const PROJECT_CREATION_ROUTES: readonly {
-  id: ProjectCreationRoute;
-  label: string;
-  description: string;
-}[] = [
-  {
-    id: "existing",
-    label: "Existing folder",
-    description: "Open a repository or folder already on disk.",
-  },
-  { id: "new", label: "New folder", description: "Create a project folder at a path." },
-  { id: "clone", label: "Clone from GitHub", description: "Start from a GitHub repository URL." },
-];
-
-function isGitHubRepositoryUrl(value: string): boolean {
-  return /^https:\/\/(?:www\.)?github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?\/?(?:[?#].*)?$/i.test(value);
-}
+import { open } from "@tauri-apps/plugin-dialog";
+import { projectAdd, reasonFromCause } from "../../lib/tauri";
+import type { Project } from "../../types/ipc";
+import "./Workspace.css";
 
 interface NewProjectDialogProps {
   open: boolean;
   onClose: () => void;
-  onCreate: (draft: { route: ProjectCreationRoute; value: string }) => void;
+  onCreate: (project: Project) => void | Promise<void>;
 }
 
 function getFocusableElements(container: HTMLElement): HTMLElement[] {
@@ -38,21 +22,25 @@ function getFocusableElements(container: HTMLElement): HTMLElement[] {
 }
 
 export const NewProjectDialog = memo(function NewProjectDialog({
-  open,
+  open: isOpen,
   onClose,
   onCreate,
 }: NewProjectDialogProps) {
-  const [route, setRoute] = useState<ProjectCreationRoute>("existing");
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!isOpen) return;
 
-    setRoute("existing");
     setValue("");
     setError(null);
+    setChoosing(false);
+    setSubmitting(false);
+    submittingRef.current = false;
 
     const dialog = dialogRef.current;
     if (dialog === null) return;
@@ -63,7 +51,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
     const handleDialogKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        if (!submittingRef.current) onClose();
         return;
       }
       if (event.key !== "Tab") return;
@@ -91,50 +79,60 @@ export const NewProjectDialog = memo(function NewProjectDialog({
 
     document.addEventListener("keydown", handleDialogKeyDown);
     return () => document.removeEventListener("keydown", handleDialogKeyDown);
-  }, [onClose, open]);
+  }, [isOpen, onClose]);
 
-  const handleRouteChange = useCallback((nextRoute: ProjectCreationRoute) => {
-    setRoute(nextRoute);
-    setValue("");
+  const handleChooseFolder = useCallback(async () => {
+    if (choosing || submitting) return;
+    setChoosing(true);
     setError(null);
-  }, []);
+    try {
+      const selected = await open({ directory: true });
+      if (typeof selected === "string") {
+        setValue(selected);
+        setError(null);
+        dialogRef.current?.querySelector<HTMLInputElement>("#workspace-project-input")?.focus();
+      }
+    } catch (cause: unknown) {
+      setError(reasonFromCause(cause));
+    } finally {
+      setChoosing(false);
+    }
+  }, [choosing, submitting]);
 
   const handleSubmit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
+    async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      const trimmedValue = value.trim();
-      if (!trimmedValue) {
-        setError(route === "clone" ? "Enter a GitHub repository URL." : "Enter a folder path.");
+      const path = value.trim();
+      if (!path) {
+        setError("Choose or enter an absolute folder path.");
         return;
       }
-      if (route === "clone" && !isGitHubRepositoryUrl(trimmedValue)) {
-        setError("Use a GitHub repository URL such as https://github.com/org/repo.");
-        return;
-      }
+      if (submitting) return;
 
-      onCreate({ route, value: trimmedValue });
+      setSubmitting(true);
+      submittingRef.current = true;
+      setError(null);
+      try {
+        const project = await projectAdd(path);
+        await onCreate(project);
+        onClose();
+      } catch (cause: unknown) {
+        setError(reasonFromCause(cause));
+      } finally {
+        setSubmitting(false);
+        submittingRef.current = false;
+      }
     },
-    [onCreate, route, value],
+    [onClose, onCreate, submitting, value],
   );
 
-  if (!open) return null;
-
-  const inputLabel =
-    route === "clone"
-      ? "GitHub repository URL"
-      : route === "new"
-        ? "Folder path to create"
-        : "Folder path";
-  const inputPlaceholder =
-    route === "clone" ? "https://github.com/org/repo" : "C:\\Users\\you\\project";
-  const submitLabel =
-    route === "clone" ? "Clone project" : route === "new" ? "Create project" : "Add project";
+  if (!isOpen) return null;
 
   return (
     <div
       className="workspace-project-dialog-backdrop"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget && !submitting) onClose();
       }}
     >
       <div
@@ -148,75 +146,66 @@ export const NewProjectDialog = memo(function NewProjectDialog({
         <div className="workspace-project-dialog-header">
           <div>
             <div className="workspace-dialog-eyebrow">Project</div>
-            <h2 id="workspace-project-dialog-title">New project</h2>
+            <h2 id="workspace-project-dialog-title">Add project</h2>
           </div>
           <button
             type="button"
             className="workspace-dialog-close"
             onClick={onClose}
-            aria-label="Close new project dialog"
+            aria-label="Close add project dialog"
+            disabled={submitting}
           >
             ×
           </button>
         </div>
         <p className="workspace-project-dialog-copy">
-          A project is a repository or folder on disk. Workspaces and sessions are added after it
-          exists.
+          Register a repository or folder that already exists on disk. Workspaces and sessions are
+          added after it exists.
         </p>
-        <div
-          className="workspace-project-route-list"
-          role="tablist"
-          aria-label="Project creation route"
-        >
-          {PROJECT_CREATION_ROUTES.map((projectRoute) => (
+        <form onSubmit={handleSubmit}>
+          <label className="workspace-project-input-label" htmlFor="workspace-project-input">
+            Existing folder
+          </label>
+          <div className="workspace-project-picker-row">
             <button
               type="button"
-              role="tab"
-              aria-selected={route === projectRoute.id}
-              aria-controls={`workspace-project-route-${projectRoute.id}`}
-              className={`workspace-project-route${route === projectRoute.id ? " workspace-project-route-selected" : ""}`}
-              key={projectRoute.id}
-              onClick={() => handleRouteChange(projectRoute.id)}
-            >
-              <span className="workspace-project-route-label">{projectRoute.label}</span>
-              <span className="workspace-project-route-description">
-                {projectRoute.description}
-              </span>
-            </button>
-          ))}
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div id={`workspace-project-route-${route}`} role="tabpanel" aria-label={inputLabel}>
-            <label className="workspace-project-input-label" htmlFor="workspace-project-input">
-              {inputLabel}
-            </label>
-            <input
-              id="workspace-project-input"
+              className="workspace-secondary-action workspace-project-picker-button"
               data-dialog-initial-focus="true"
-              value={value}
-              onChange={(event) => {
-                setValue(event.target.value);
-                setError(null);
-              }}
-              placeholder={inputPlaceholder}
-              aria-invalid={error !== null}
-              aria-describedby={error !== null ? "workspace-project-error" : undefined}
-            />
-            {error !== null ? (
-              <div id="workspace-project-error" className="workspace-project-error" role="alert">
-                {error}
-              </div>
-            ) : null}
+              onClick={() => void handleChooseFolder()}
+              disabled={choosing || submitting}
+            >
+              {choosing ? "Choosing…" : "Choose folder…"}
+            </button>
+            <span className="workspace-project-picker-hint">or type an absolute path</span>
           </div>
-          <div className="workspace-project-dialog-note">
-            Mock only · no filesystem, git, or network access.
-          </div>
+          <input
+            id="workspace-project-input"
+            value={value}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setError(null);
+            }}
+            placeholder="C:\\Users\\you\\project"
+            aria-invalid={error !== null}
+            aria-describedby={error !== null ? "workspace-project-error" : undefined}
+            disabled={submitting}
+          />
+          {error !== null ? (
+            <div id="workspace-project-error" className="workspace-project-error" role="alert">
+              {error}
+            </div>
+          ) : null}
           <div className="workspace-project-dialog-actions">
-            <button type="button" className="workspace-secondary-action" onClick={onClose}>
+            <button
+              type="button"
+              className="workspace-secondary-action"
+              onClick={onClose}
+              disabled={submitting}
+            >
               Cancel
             </button>
-            <button type="submit" className="workspace-primary-action">
-              {submitLabel}
+            <button type="submit" className="workspace-primary-action" disabled={submitting}>
+              {submitting ? "Adding…" : "Add project"}
             </button>
           </div>
         </form>
@@ -224,5 +213,3 @@ export const NewProjectDialog = memo(function NewProjectDialog({
     </div>
   );
 });
-
-export type { ProjectCreationRoute };

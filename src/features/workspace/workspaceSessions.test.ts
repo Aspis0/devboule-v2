@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProviderInfo, Session, SessionStateSnapshot } from "../../types/ipc";
+import type {
+  ProviderInfo,
+  Session,
+  SessionKind,
+  SessionStateSnapshot,
+  Workspace,
+} from "../../types/ipc";
 import {
   chatCapableProviders,
   createWorkspaceSessionController,
@@ -7,6 +13,7 @@ import {
   sessionCreateFromProvider,
   sessionStateLabel,
 } from "./workspaceSessions";
+import { workspaceView } from "./workspaceProjects";
 
 const liveSession = (id: string, title = id): Session => ({
   id,
@@ -216,6 +223,20 @@ describe("workspace session controller", () => {
     expect(controller.getState().selectedSessionId).toBe("terminal-3");
   });
 
+  it("passes only the selected workspace id to session creation", async () => {
+    const created = { ...liveSession("agent-2", "agent"), workspaceId: "workspace-42" };
+    const create = vi.fn(async (_workspaceId: string | null, _kind?: SessionKind) => created);
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => []),
+      create,
+    });
+
+    await controller.create("acp", null, "workspace-42");
+
+    expect(create).toHaveBeenCalledWith("workspace-42", "acp", null);
+    expect(controller.getState().sessions).toEqual([created]);
+  });
+
   it("keeps the daemon's real failure message when create is rejected", async () => {
     const controller = createWorkspaceSessionController({
       list: vi.fn(async () => [liveSession("terminal-1")]),
@@ -322,7 +343,9 @@ describe("workspace session controller", () => {
       listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
     } = { listener: null };
     const controller = createWorkspaceSessionController({
-      list: vi.fn(async () => [liveSession("terminal-1", "old title")]),
+      list: vi.fn(async () => [
+        { ...liveSession("terminal-1", "old title"), workspaceId: "workspace-1" },
+      ]),
       create: vi.fn(async () => liveSession("terminal-2")),
       watch: vi.fn(async (listener) => {
         watched.listener = listener;
@@ -337,6 +360,8 @@ describe("workspace session controller", () => {
     watched.listener?.([
       {
         id: "terminal-1",
+        workspaceId: "workspace-1",
+        kind: "terminal",
         title: "killed shell",
         state: { type: "ended", generation: 1, code: 137, integrity: { kind: "complete" } },
         elapsedMs: 42,
@@ -346,11 +371,109 @@ describe("workspace session controller", () => {
     expect(controller.getState().sessions).toEqual([
       {
         ...liveSession("terminal-1", "old title"),
+        workspaceId: "workspace-1",
         title: "killed shell",
         state: { type: "ended", generation: 1, code: 137, integrity: { kind: "complete" } },
         elapsedMs: 42,
       },
     ]);
+    release();
+  });
+
+  it("keeps a pushed attention state when an older list response resolves afterward", async () => {
+    let resolveList!: (sessions: Session[]) => void;
+    const list = vi.fn(
+      () =>
+        new Promise<Session[]>((resolve) => {
+          resolveList = resolve;
+        }),
+    );
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list,
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+
+    const release = controller.watch();
+    const refresh = controller.refresh();
+    watched.listener?.([
+      {
+        id: "agent-1",
+        workspaceId: "workspace-1",
+        kind: "acp",
+        title: "waiting agent",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 10,
+        attention: { reason: "permission", atMs: 42 },
+      },
+    ]);
+    resolveList([liveSession("agent-1", "older list title")]);
+    await refresh;
+
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(controller.getState().sessions[0]).toMatchObject({
+      id: "agent-1",
+      attention: { reason: "permission", atMs: 42 },
+    });
+    release();
+  });
+
+  it("uses pushed identity for an unknown session and counts it in its workspace", async () => {
+    const watched: {
+      listener: ((snapshots: SessionStateSnapshot[]) => void) | null;
+    } = { listener: null };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => []),
+      create: vi.fn(async () => liveSession("terminal-2")),
+      watch: vi.fn(async (listener) => {
+        watched.listener = listener;
+        return () => {
+          watched.listener = null;
+        };
+      }),
+    });
+    const release = controller.watch();
+    await controller.refresh();
+
+    watched.listener?.([
+      {
+        id: "push-only",
+        workspaceId: "workspace-agent",
+        kind: "acp",
+        title: "restored agent",
+        state: { type: "live", generation: 1 },
+        elapsedMs: 10,
+      },
+    ]);
+
+    const sessions = controller.getState().sessions;
+    expect(sessions[0]).toMatchObject({
+      id: "push-only",
+      workspaceId: "workspace-agent",
+      kind: "acp",
+    });
+    const workspaceOne: Workspace = {
+      id: "workspace-one",
+      projectId: "project-1",
+      title: "one",
+      isolation: "local",
+    };
+    const workspaceWithAgent: Workspace = {
+      id: "workspace-agent",
+      projectId: "project-1",
+      title: "agent",
+      isolation: "local",
+    };
+    expect(workspaceView(workspaceOne, sessions).meta).toBe("0 live sessions · local");
+    expect(workspaceView(workspaceWithAgent, sessions).meta).toBe("1 live session · local");
     release();
   });
 });

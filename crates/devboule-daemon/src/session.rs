@@ -334,6 +334,33 @@ fn elapsed_ms_since_last_life(
     )
 }
 
+/// Wire metadata for a resumed session. `created_at_ms` is copied from the
+/// journal row — resume does not mint a new session, and a fresh timestamp
+/// would make a stored `(id, created_at_ms)` pair look stale.
+fn session_metadata_for_resume(
+    session_id: &str,
+    record: SessionRecord,
+    command: &PtyCommand,
+    provider: String,
+    peer_session_id: String,
+    generation: u64,
+) -> Session {
+    Session {
+        id: session_id.to_string(),
+        workspace_id: record.workspace_id,
+        cwd: Some(crate::workspace::display_path(
+            &command.cwd.to_string_lossy(),
+        )),
+        kind: SessionKind::Acp,
+        title: record.title,
+        provider: Some(provider),
+        peer_session_id: Some(peer_session_id),
+        state: SessionState::Live { generation },
+        elapsed_ms: Some(0),
+        created_at_ms: record.created_at_ms,
+    }
+}
+
 fn live_session_view(session: &PtySession) -> Session {
     let mut metadata = session.metadata.clone();
     metadata.peer_session_id = session.runtime.peer_session_id();
@@ -785,6 +812,8 @@ impl SessionRegistry {
             .into_iter()
             .map(|(session, attention)| SessionStateSnapshot {
                 id: session.id,
+                workspace_id: session.workspace_id,
+                kind: session.kind,
                 title: session.title,
                 state: session.state,
                 elapsed_ms: session.elapsed_ms,
@@ -801,6 +830,8 @@ impl SessionRegistry {
                     let session = entry.to_session();
                     SessionStateSnapshot {
                         id: session.id,
+                        workspace_id: session.workspace_id,
+                        kind: session.kind,
                         title: session.title,
                         state: session.state,
                         elapsed_ms: session.elapsed_ms,
@@ -1267,19 +1298,35 @@ impl SessionRegistry {
             SessionKind::Claude => Some("claude".to_string()),
             SessionKind::Terminal => None,
         };
-        let metadata = Session {
-            id: id.clone(),
-            workspace_id,
-            kind: kind.clone(),
-            title: match kind {
+        // One clock read: the journal row and the wire metadata must carry
+        // the same instant so a caller can compare them.
+        let mut record = new_session_record(
+            id.clone(),
+            owner.user.clone(),
+            workspace_id.clone(),
+            kind.clone(),
+            match kind {
                 SessionKind::Terminal => "Terminal",
                 SessionKind::Acp | SessionKind::Claude => "Agent",
             }
             .to_string(),
+        );
+        record.provider = session_provider.clone();
+        record.status = PersistStatus::Live;
+        let record_generation = record.generation;
+        let metadata = Session {
+            id: id.clone(),
+            workspace_id,
+            cwd: Some(crate::workspace::display_path(
+                &command.cwd.to_string_lossy(),
+            )),
+            kind: kind.clone(),
+            title: record.title.clone(),
             provider: session_provider.clone(),
             peer_session_id: None,
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
+            created_at_ms: record.created_at_ms,
         };
         crate::agent_env::inject_session_env(
             &mut command,
@@ -1291,18 +1338,7 @@ impl SessionRegistry {
         // can EOF and enqueue MarkEnded before this function would otherwise
         // reach try_upsert, and the journal thread would then see a missing
         // session and leave status=live — recovered-as-killed on reopen.
-        let mut record_generation = 1;
         if let Some(journal) = &self.journal {
-            let mut record = new_session_record(
-                metadata.id.clone(),
-                owner.user.clone(),
-                metadata.workspace_id.clone(),
-                metadata.kind.clone(),
-                metadata.title.clone(),
-            );
-            record.provider = session_provider;
-            record.status = PersistStatus::Live;
-            record_generation = record.generation;
             journal.try_upsert(record);
             self.invalidate_journal_roster();
         }
@@ -1465,16 +1501,17 @@ impl SessionRegistry {
         // Health is measured per provider id; `provider` is moved into the
         // metadata below, so keep a copy for the spawn outcome recording.
         let health_provider = provider.clone();
-        let metadata = Session {
-            id: session_id.to_string(),
-            workspace_id: record.workspace_id,
-            kind: SessionKind::Acp,
-            title: record.title,
-            provider: Some(provider),
-            peer_session_id: Some(peer_session_id.clone()),
-            state: SessionState::Live { generation },
-            elapsed_ms: Some(0),
-        };
+        // Resume does not create a session: echo the journal's original
+        // created_at_ms. Re-stamping now would break the staleness check
+        // this field exists for.
+        let metadata = session_metadata_for_resume(
+            session_id,
+            record,
+            &command,
+            provider,
+            peer_session_id.clone(),
+            generation,
+        );
         match spawn_resumed_session(
             state,
             self,
@@ -3789,6 +3826,89 @@ mod tests {
     }
 
     #[test]
+    fn a_session_against_a_real_local_workspace_echoes_cwd_in_display_form() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let project_path = dir.join("Project With Spaces");
+        std::fs::create_dir(&project_path).expect("project folder");
+        let project = crate::workspace::project_record(
+            project_path.to_str().expect("project path is valid UTF-8"),
+        )
+        .expect("project record");
+        let project = journal.project_add(project).expect("persist project");
+        let workspace = journal
+            .workspace_create(crate::workspace::local_workspace_record(&project))
+            .expect("persist workspace");
+
+        let mut command = PtyCommand::new("cmd.exe", Vec::new(), dir.clone(), Vec::new());
+        registry
+            .apply_workspace_cwd(Some(&workspace.id), &mut command)
+            .expect("workspace cwd");
+        // The spawn sites echo this exact value onto Session.cwd. A real
+        // process is not required to observe the echo: command.cwd is final
+        // once apply_workspace_cwd has run.
+        let cwd = Some(crate::workspace::display_path(
+            &command.cwd.to_string_lossy(),
+        ));
+        let expected = crate::workspace::display_path(
+            project_path
+                .canonicalize()
+                .expect("canonical cwd")
+                .to_str()
+                .expect("canonical cwd is valid UTF-8"),
+        );
+        assert_eq!(cwd.as_deref(), Some(expected.as_str()));
+        assert!(
+            !cwd.as_deref().expect("cwd echo").starts_with(r"\\?\"),
+            "wire cwd must not carry the verbatim prefix: {cwd:?}"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_only_transcript_session_does_not_invent_a_cwd() {
+        let record = new_session_record(
+            "s.client.1",
+            "S-1-5-21-1",
+            Some("w.1".to_string()),
+            SessionKind::Terminal,
+            "Terminal",
+        );
+        let session = record.to_session();
+        assert_eq!(session.workspace_id.as_deref(), Some("w.1"));
+        assert_eq!(
+            session.cwd, None,
+            "journal rows have no cwd column; None means unknown, not a guessed workspace path"
+        );
+        assert_eq!(session.created_at_ms, record.created_at_ms);
+    }
+
+    #[test]
+    fn resume_preserves_the_original_created_at_ms() {
+        let mut record = new_session_record(
+            "s.client.1",
+            "S-1-5-21-1",
+            Some("w.1".to_string()),
+            SessionKind::Acp,
+            "Agent",
+        );
+        record.created_at_ms = 1_700_000_000_123;
+        let command = PtyCommand::new("cmd.exe", Vec::new(), std::env::temp_dir(), Vec::new());
+        let session = session_metadata_for_resume(
+            "s.client.1",
+            record,
+            &command,
+            "grok".to_string(),
+            "peer-1".to_string(),
+            2,
+        );
+        assert_eq!(session.created_at_ms, 1_700_000_000_123);
+        assert_eq!(session.id, "s.client.1");
+        assert_eq!(session.state, SessionState::Live { generation: 2 });
+    }
+
+    #[test]
     fn workspace_lookup_reports_journal_failure_not_a_missing_workspace() {
         let (dir, registry, journal) = tmp_delete_registry();
         journal.shutdown();
@@ -4181,6 +4301,7 @@ mod tests {
         let metadata = Session {
             id: id.to_string(),
             workspace_id: None,
+            cwd: None,
             kind: SessionKind::Terminal,
             title: "Terminal".to_string(),
             state: SessionState::Ended {
@@ -4191,6 +4312,7 @@ mod tests {
             elapsed_ms: Some(0),
             provider: None,
             peer_session_id: None,
+            created_at_ms: 1,
         };
         let runtime = Arc::new(SessionRuntime::with_journal(
             id.to_string(),
@@ -4268,12 +4390,14 @@ mod tests {
         let metadata = Session {
             id: id.to_string(),
             workspace_id: None,
+            cwd: None,
             kind: SessionKind::Acp,
             title: "Agent".to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
             provider: Some("test-agent".to_string()),
             peer_session_id: None,
+            created_at_ms: 1,
         };
         let (broker, _) = permission_broker::test_broker();
         let runtime = SessionRuntime::for_acp(id.to_string(), registry.journal.clone(), broker);
@@ -4326,12 +4450,14 @@ mod tests {
         let metadata = Session {
             id: id.to_string(),
             workspace_id: None,
+            cwd: None,
             kind: SessionKind::Terminal,
             title: "Terminal".to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
             provider: None,
             peer_session_id: None,
+            created_at_ms: 1,
         };
         let runtime = Arc::new(SessionRuntime::with_journal(
             id.to_string(),

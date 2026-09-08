@@ -616,18 +616,21 @@ mod tests {
     use crate::journal::{Journal, JOURNAL_SCHEMA_VERSION};
     use devboule_protocol::{
         JournalStats, ProviderInfo, Session, SessionKind, SessionState, TranscriptIntegrity,
+        PROTOCOL_VERSION,
     };
 
     fn session(id: &str, kind: SessionKind, state: SessionState, title: &str) -> Session {
         Session {
             id: id.to_string(),
             workspace_id: None,
+            cwd: None,
             kind,
             title: title.to_string(),
             provider: None,
             peer_session_id: None,
             state,
             elapsed_ms: Some(123),
+            created_at_ms: 1,
         }
     }
 
@@ -635,7 +638,7 @@ mod tests {
         DiagnosticsInput {
             instance_id: "instance".to_string(),
             daemon_version: "0.1.0".to_string(),
-            protocol_version: 1,
+            protocol_version: PROTOCOL_VERSION,
             pid: 7,
             uptime_ms: 8,
             clients: 2,
@@ -681,7 +684,7 @@ mod tests {
         DiagnosticsReport {
             daemon: DaemonDiagnostics {
                 version: "0.1.0".to_string(),
-                protocol_version: 1,
+                protocol_version: PROTOCOL_VERSION,
                 pid: 54_596,
                 uptime_ms: 20_651,
                 clients: 1,

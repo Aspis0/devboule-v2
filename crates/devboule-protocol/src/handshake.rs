@@ -151,6 +151,7 @@ mod tests {
     use super::*;
     use crate::capability::Capability;
     use crate::ids::OwnerId;
+    use crate::{PROTOCOL_MIN_VERSION, PROTOCOL_VERSION};
     use std::collections::BTreeMap;
 
     fn owner() -> OwnerId {
@@ -219,11 +220,30 @@ mod tests {
     }
 
     #[test]
+    fn current_crate_refuses_a_v1_peer() {
+        let err = negotiate(
+            &client(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
+            &daemon(1, 1),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProtocolVersionMismatch);
+        assert!(err.message.contains("daemon is older"));
+
+        let err = negotiate(
+            &client(1, 1),
+            &daemon(PROTOCOL_VERSION, PROTOCOL_MIN_VERSION),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ProtocolVersionMismatch);
+        assert!(err.message.contains("daemon is newer"));
+    }
+
+    #[test]
     fn hello_uses_camel_case() {
         let hello = ClientHello::m3a(owner(), "devboule-app");
         let value = serde_json::to_value(&hello).expect("json");
-        assert_eq!(value["protocolVersion"], 1);
-        assert_eq!(value["minProtocolVersion"], 1);
+        assert_eq!(value["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(value["minProtocolVersion"], PROTOCOL_MIN_VERSION);
         assert_eq!(value["clientName"], "devboule-app");
         assert!(value["owner"]["user"].is_string());
         assert!(

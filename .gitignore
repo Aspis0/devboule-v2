@@ -45,6 +45,12 @@ tmp-jobs/
 # ordinary file, so this is where stray error output collects unnoticed.
 nul
 
+# Whole-output captures from gate runs. Every check here is run by redirecting
+# its complete output to a file and searching the file afterwards, because a
+# summary narrowed while capturing is evidence about the filter, not the run.
+# Those captures are scratch and must never reach a public repository.
+.gate-*.txt
+
 # Workspace-local Oracle/Augur runtime data (CKG, findings ledger, indexes).
 # These are built by running Oracle against this checkout and belong to whoever
 # ran it, not to the repository.

@@ -1326,7 +1326,7 @@ mod tests {
     use super::*;
     use devboule_daemon::{DaemonError, EventHandler, SessionStateHandler};
     use devboule_protocol::DaemonStatusBody;
-    use devboule_protocol::{SessionState, SessionStateSnapshot};
+    use devboule_protocol::{SessionKind, SessionState, SessionStateSnapshot};
     use std::collections::HashSet;
     use std::sync::atomic::AtomicUsize;
 
@@ -1538,6 +1538,8 @@ mod tests {
         registry.begin_replacement();
         registry.observe_roster(&[SessionStateSnapshot {
             id: "session-2".to_string(),
+            workspace_id: None,
+            kind: SessionKind::Acp,
             title: "agent".to_string(),
             state: SessionState::Live { generation: 5 },
             elapsed_ms: None,
@@ -1578,6 +1580,8 @@ mod tests {
         registry.begin_replacement();
         registry.observe_roster(&[SessionStateSnapshot {
             id: "ended".to_string(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
             title: "ended".to_string(),
             state: SessionState::Ended {
                 generation: 4,
@@ -1756,6 +1760,8 @@ mod tests {
     fn roster_snapshot(id: &str) -> SessionStateSnapshot {
         SessionStateSnapshot {
             id: id.to_string(),
+            workspace_id: None,
+            kind: SessionKind::Terminal,
             title: "new daemon".to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(1),

@@ -1,41 +1,26 @@
 import { memo } from "react";
 import { MOCK_DIFF_LINES, MOCK_SHIP_STEPS } from "./mockData";
+import { useAppStore } from "../../store/appStore";
 
-export type DiffState = "unstaged" | "staged" | "discarded";
-
-const DIFF_LABELS: Record<DiffState, string> = {
-  unstaged: "Unstaged · 3 hunks",
-  staged: "Staged",
-  discarded: "Discarded",
-};
-
-interface ChangesSurfaceProps {
-  diffState: DiffState;
-  onDiffStateChange: (state: DiffState) => void;
-}
-
-export const ChangesSurface = memo(function ChangesSurface({
-  diffState,
-  onDiffStateChange,
-}: ChangesSurfaceProps) {
+export const ChangesSurface = memo(function ChangesSurface() {
   return (
     <div>
       <div className="workspace-changes-mockup-note" role="note">
         Mockup — these rows are hardcoded examples. Real git integration is not built yet.
       </div>
       <div className="workspace-file-changes">
-        <button type="button" className="workspace-file-change workspace-file-change-selected">
+        <div className="workspace-file-change workspace-file-change-selected">
           <span>index_writer.rs</span>
           <span>+92 −41</span>
-        </button>
-        <button type="button" className="workspace-file-change">
+        </div>
+        <div className="workspace-file-change">
           <span>embedder.rs</span>
           <span>+14 −3</span>
-        </button>
-        <button type="button" className="workspace-file-change workspace-file-change-muted">
+        </div>
+        <div className="workspace-file-change workspace-file-change-muted">
           <span>writer.ts</span>
           <span>deleted</span>
-        </button>
+        </div>
       </div>
 
       <div className="workspace-diff-card">
@@ -54,23 +39,6 @@ export const ChangesSurface = memo(function ChangesSurface({
             </div>
           ))}
         </div>
-        <div className="workspace-diff-actions">
-          <span className="workspace-diff-status">{DIFF_LABELS[diffState]}</span>
-          <button
-            type="button"
-            className="workspace-secondary-action workspace-discard-action"
-            onClick={() => onDiffStateChange("discarded")}
-          >
-            Discard
-          </button>
-          <button
-            type="button"
-            className="workspace-primary-action"
-            onClick={() => onDiffStateChange("staged")}
-          >
-            Stage
-          </button>
-        </div>
       </div>
 
       <div className="workspace-test-card">
@@ -88,20 +56,15 @@ export const ChangesSurface = memo(function ChangesSurface({
 export const FilesSurface = memo(function FilesSurface() {
   return (
     <div className="workspace-files-tree">
+      <div className="workspace-changes-mockup-note" role="note">
+        Mockup — these files are hardcoded examples. No workspace file tree is read yet.
+      </div>
       <div>oracle-core/</div>
-      <button type="button" className="workspace-tree-file workspace-tree-file-selected">
-        index_writer.rs
-      </button>
-      <button type="button" className="workspace-tree-file">
-        embedder.rs
-      </button>
-      <button type="button" className="workspace-tree-file">
-        lance/mod.rs
-      </button>
+      <div className="workspace-tree-file workspace-tree-file-selected">index_writer.rs</div>
+      <div className="workspace-tree-file">embedder.rs</div>
+      <div className="workspace-tree-file">lance/mod.rs</div>
       <div>devboule-mcp/</div>
-      <button type="button" className="workspace-tree-file">
-        tools.rs
-      </button>
+      <div className="workspace-tree-file">tools.rs</div>
     </div>
   );
 });
@@ -114,6 +77,9 @@ interface AppSurfaceProps {
 export const AppSurface = memo(function AppSurface({ appBuild, onReload }: AppSurfaceProps) {
   return (
     <div>
+      <div className="workspace-changes-mockup-note" role="note">
+        Mockup — this browser page is a static example. The dev-server preview is not built yet.
+      </div>
       <div className="workspace-browser-card">
         <div className="workspace-browser-toolbar">
           <span className="workspace-browser-dots">
@@ -142,14 +108,6 @@ export const AppSurface = memo(function AppSurface({ appBuild, onReload }: AppSu
             <div className="workspace-skeleton-64" />
             <div className="workspace-skeleton-74" />
           </div>
-          <div className="workspace-browser-actions">
-            <button type="button" className="workspace-browser-primary">
-              Reindex
-            </button>
-            <button type="button" className="workspace-browser-secondary">
-              Export
-            </button>
-          </div>
         </div>
       </div>
       <div className="workspace-browser-status">
@@ -161,12 +119,20 @@ export const AppSurface = memo(function AppSurface({ appBuild, onReload }: AppSu
 });
 
 export const DesignPanel = memo(function DesignPanel() {
+  const selectSurface = useAppStore((state) => state.selectSurface);
   return (
     <div>
+      <div className="workspace-changes-mockup-note" role="note">
+        Mockup — these generations are hardcoded examples. Generation runs on the Design surface.
+      </div>
       <div className="workspace-grounding-row">
         <span className="workspace-status-dot workspace-dot-green" />
         <span>Grounded · devboule</span>
-        <button type="button" className="workspace-open-design">
+        <button
+          type="button"
+          className="workspace-open-design"
+          onClick={() => selectSurface("design")}
+        >
           Open Design
         </button>
       </div>
@@ -186,19 +152,6 @@ export const DesignPanel = memo(function DesignPanel() {
             <span>oracle-core/src/classify.rs</span>
             <span>tokens.json</span>
           </div>
-        </div>
-      </div>
-      <div className="workspace-design-composer">
-        <textarea
-          placeholder="Describe what to generate…"
-          rows={2}
-          aria-label="Describe what to generate"
-        />
-        <div className="workspace-design-composer-footer">
-          <span>Claude Code · High</span>
-          <button type="button" className="workspace-primary-action">
-            Generate
-          </button>
         </div>
       </div>
       <div className="workspace-design-note">
