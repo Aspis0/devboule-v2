@@ -287,8 +287,18 @@ struct PayloadLimitSink {
     exceeded: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Counts `PayloadLimitSink::write` calls on this thread. The public
+    /// predicate must go through the sink; a `to_vec` rewrite would leave
+    /// this at zero. Thread-local so parallel tests do not share the count.
+    static SINK_WRITE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl std::io::Write for PayloadLimitSink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        #[cfg(test)]
+        SINK_WRITE_CALLS.with(|count| count.set(count.get() + 1));
         if buf.is_empty() {
             return Ok(0);
         }
@@ -489,6 +499,26 @@ mod tests {
     }
 
     #[test]
+    fn plugin_payload_within_limit_serializes_through_the_counting_sink() {
+        let value = serde_json::json!({"k": "v"});
+        let size = serde_json::to_vec(&value)
+            .expect("fixture must serialize")
+            .len();
+        SINK_WRITE_CALLS.with(|count| count.set(0));
+        assert!(plugin_payload_within_limit(Some(&value), size));
+        assert!(
+            SINK_WRITE_CALLS.with(|count| count.get()) > 0,
+            "within-limit must write through PayloadLimitSink, not materialise a Vec"
+        );
+        SINK_WRITE_CALLS.with(|count| count.set(0));
+        assert!(!plugin_payload_within_limit(Some(&value), size - 1));
+        assert!(
+            SINK_WRITE_CALLS.with(|count| count.get()) > 0,
+            "over-limit must abort inside PayloadLimitSink::write"
+        );
+    }
+
+    #[test]
     fn plugin_payload_budget_defaults_and_clamps_independently_of_daemon_frame_cap() {
         assert_eq!(
             effective_plugin_payload_bytes(None),
@@ -501,6 +531,20 @@ mod tests {
         );
         assert!(!plugin_payload_budget_clamped(None));
         assert!(!plugin_payload_budget_clamped(Some(1024)));
+        assert!(
+            !plugin_payload_budget_clamped(Some(PLUGIN_PAYLOAD_CEILING_BYTES as u64)),
+            "an ask exactly at the ceiling is granted, not clamped"
+        );
+        assert_eq!(
+            effective_plugin_payload_bytes(Some(PLUGIN_PAYLOAD_CEILING_BYTES as u64)),
+            PLUGIN_PAYLOAD_CEILING_BYTES
+        );
+        let at_ceiling = plugin_payload_limit_reason(Some(PLUGIN_PAYLOAD_CEILING_BYTES as u64));
+        assert!(at_ceiling.contains("plugin manifest"));
+        assert!(
+            !at_ceiling.contains("host ceiling"),
+            "exactly the ceiling is a grant, not a clamp: {at_ceiling}"
+        );
         assert!(plugin_payload_budget_clamped(Some(u64::MAX)));
         assert!(
             plugin_payload_limit_reason(None).contains(&DEFAULT_PLUGIN_PAYLOAD_BYTES.to_string())

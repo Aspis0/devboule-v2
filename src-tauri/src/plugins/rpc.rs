@@ -17,7 +17,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Runtime};
 
-use super::manifest::quote;
+use super::manifest::{quote, PluginManifest};
 use super::{plugins_root, PluginRegistry};
 use crate::backend::error::CommandError;
 use crate::oracle::OracleRuntime;
@@ -446,7 +446,13 @@ fn plugin_payload_budget<R: Runtime>(
                 format!("plugin {} is not installed and verified", quote(plugin_id)),
             )
         })?;
-    Ok((manifest.max_payload_bytes, manifest.declared_payload_bytes))
+    Ok(plugin_payload_budget_of(&manifest))
+}
+
+/// Pure half of [`plugin_payload_budget`]: the verified manifest already
+/// carries the granted limit and the original ask.
+fn plugin_payload_budget_of(manifest: &PluginManifest) -> (usize, Option<u64>) {
+    (manifest.max_payload_bytes, manifest.declared_payload_bytes)
 }
 
 fn oversize_payload_error(direction: &str, declared: Option<u64>) -> CommandError {
@@ -497,6 +503,50 @@ mod tests {
         assert!(clamped.message.contains("host ceiling"));
         assert!(clamped.message.contains(&asked.to_string()));
         assert!(!clamped.message.contains("maximum 1 MiB"));
+    }
+
+    #[test]
+    fn plugin_payload_budget_of_uses_the_verified_manifest_not_a_host_constant() {
+        use devboule_protocol::{DEFAULT_PLUGIN_PAYLOAD_BYTES, PLUGIN_PAYLOAD_CEILING_BYTES};
+
+        fn manifest(declared: Option<u64>, max: usize) -> PluginManifest {
+            PluginManifest {
+                id: "polis".into(),
+                name: "Polis".into(),
+                version: "0.1.0".into(),
+                ui_entry: "ui/index.html".into(),
+                backend_entry: None,
+                capabilities: Vec::new(),
+                files: std::collections::BTreeMap::new(),
+                declared_payload_bytes: declared,
+                max_payload_bytes: max,
+            }
+        }
+
+        assert_eq!(
+            plugin_payload_budget_of(&manifest(None, DEFAULT_PLUGIN_PAYLOAD_BYTES)),
+            (DEFAULT_PLUGIN_PAYLOAD_BYTES, None)
+        );
+        let declared = 2 * 1024 * 1024;
+        assert_eq!(
+            plugin_payload_budget_of(&manifest(Some(declared), declared as usize)),
+            (declared as usize, Some(declared))
+        );
+        let asked = 4 * 1024 * 1024 * 1024;
+        assert_eq!(
+            plugin_payload_budget_of(&manifest(Some(asked), PLUGIN_PAYLOAD_CEILING_BYTES)),
+            (PLUGIN_PAYLOAD_CEILING_BYTES, Some(asked))
+        );
+        assert_ne!(
+            plugin_payload_budget_of(&manifest(Some(asked), PLUGIN_PAYLOAD_CEILING_BYTES)).0,
+            DEFAULT_PLUGIN_PAYLOAD_BYTES,
+            "a clamped ask must not collapse to the host default"
+        );
+        assert_ne!(
+            plugin_payload_budget_of(&manifest(Some(declared), declared as usize)).0,
+            devboule_protocol::MAX_FRAME_BYTES,
+            "the invoke limit is the plugin budget, not the daemon frame cap"
+        );
     }
 
     #[test]

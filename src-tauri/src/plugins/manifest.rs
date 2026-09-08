@@ -39,7 +39,6 @@ use std::collections::BTreeMap;
 
 use devboule_protocol::effective_plugin_payload_bytes;
 
-use super::assets::safe_relative_segments;
 use super::VerifiedPluginPath;
 
 /// The only manifest version this build understands.
@@ -65,9 +64,9 @@ const MAX_CAPABILITIES: usize = 64;
 
 /// A manifest that parsed and passed every check.
 ///
-/// Paths are normalised: exactly the form [`safe_relative_segments`] produces,
-/// which is exactly the form the asset server resolves a request to. Hashes are
-/// lowercase hex, 64 characters.
+/// Paths are [`super::VerifiedPluginPath`] values: the form the asset
+/// server uses for installed plugin files, which excludes the reserved
+/// `__workspace` segment. Hashes are lowercase hex, 64 characters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginManifest {
     pub id: String,
@@ -279,8 +278,13 @@ fn check_entry(
     value: &str,
     files: &BTreeMap<String, String>,
 ) -> Result<String, String> {
-    let normalised = safe_relative_segments(value)
-        .ok_or_else(|| format!("{field} is not a path inside the plugin: {}", quote(value)))?;
+    let normalised = VerifiedPluginPath::parse(value).ok_or_else(|| {
+        format!(
+            "{field} is not an addressable plugin path: {}",
+            quote(value)
+        )
+    })?;
+    let normalised = normalised.into_string();
     if !files.contains_key(&normalised) {
         return Err(format!(
             "{field} is {}, which files does not list, so it would run unverified",
@@ -532,6 +536,34 @@ mod tests {
         assert_ne!(
             manifest.max_payload_bytes as u64, asked,
             "a 4 GiB ask must not look like it was granted"
+        );
+    }
+
+    #[test]
+    fn a_declared_payload_budget_exactly_at_the_ceiling_is_granted_not_clamped() {
+        let mut value = good_manifest();
+        let asked = devboule_protocol::PLUGIN_PAYLOAD_CEILING_BYTES as u64;
+        value["maxPayloadBytes"] = serde_json::json!(asked);
+        let manifest = parse(&value).expect("exactly the ceiling is a grant");
+        assert_eq!(manifest.declared_payload_bytes, Some(asked));
+        assert_eq!(manifest.max_payload_bytes, asked as usize);
+        assert!(!plugin_payload_budget_clamped(
+            manifest.declared_payload_bytes
+        ));
+    }
+
+    #[test]
+    fn an_entry_on_the_workspace_route_is_not_addressable() {
+        let mut value = good_manifest();
+        value["entry"]["ui"] = serde_json::json!("__workspace/index.html");
+        let message = parse(&value).expect_err("reserved first segment is not a plugin file");
+        assert!(
+            message.contains("addressable plugin path"),
+            "must refuse because the newtype rejects the path, not because files is missing it: {message}"
+        );
+        assert!(
+            !message.contains("would run unverified"),
+            "the files lookup is the wrong reason: {message}"
         );
     }
 

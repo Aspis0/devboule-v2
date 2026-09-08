@@ -140,16 +140,21 @@ enum WorkspaceContentType {
 }
 
 impl WorkspaceContentType {
+    /// Every variant, in declaration order. The match is exhaustive: adding a
+    /// variant without listing it here is a compile error, so the guard test
+    /// cannot silently miss a new MIME type.
     #[cfg(test)]
-    const ALL: [Self; 7] = [
-        Self::Png,
-        Self::Jpeg,
-        Self::Webp,
-        Self::Gif,
-        Self::Bmp,
-        Self::Tiff,
-        Self::OctetStream,
-    ];
+    fn all() -> impl Iterator<Item = Self> {
+        std::iter::successors(Some(Self::Png), |kind| match *kind {
+            Self::Png => Some(Self::Jpeg),
+            Self::Jpeg => Some(Self::Webp),
+            Self::Webp => Some(Self::Gif),
+            Self::Gif => Some(Self::Bmp),
+            Self::Bmp => Some(Self::Tiff),
+            Self::Tiff => Some(Self::OctetStream),
+            Self::OctetStream => None,
+        })
+    }
 
     const fn as_str(self) -> &'static str {
         match self {
@@ -300,7 +305,7 @@ fn workspace_root_for_request<R: Runtime>(app: &AppHandle<R>, plugin_id: &str) -
         .then_some(confined)
 }
 
-fn response(
+fn finish_response(
     status: StatusCode,
     kind: &str,
     body: Vec<u8>,
@@ -316,7 +321,6 @@ fn response(
     if allow_cross_origin {
         // ES modules are fetched in CORS mode even from the app's own window,
         // so without this a bundle module fails to load rather than 404ing.
-        // The workspace branch deliberately does not set ACAO.
         builder = builder.header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*");
     }
     if let Some(policy) = content_security_policy_for(kind) {
@@ -327,15 +331,38 @@ fn response(
         .expect("plugin asset response is always well formed")
 }
 
-fn respond(
+/// Bundle/self-test responses: CORS is required for ES modules. The workspace
+/// constructors below cannot set this header.
+fn bundle_response(status: StatusCode, kind: &str, body: Vec<u8>) -> Response<Vec<u8>> {
+    finish_response(status, kind, body, true)
+}
+
+/// Successful workspace asset. MIME comes from the workspace allowlist type,
+/// not a free `&str`, and CORS is not a parameter.
+fn workspace_asset_response(kind: WorkspaceContentType, body: Vec<u8>) -> Response<Vec<u8>> {
+    finish_response(StatusCode::OK, kind.as_str(), body, false)
+}
+
+/// Workspace 404/413. `text/plain` is fixed so the branch cannot smuggle an
+/// executable MIME type, and CORS is not a parameter.
+fn workspace_plain_response(status: StatusCode, body: Vec<u8>) -> Response<Vec<u8>> {
+    finish_response(status, "text/plain", body, false)
+}
+
+fn respond_bundle(responder: UriSchemeResponder, status: StatusCode, kind: &str, body: Vec<u8>) {
+    responder.respond(bundle_response(status, kind, body));
+}
+
+fn respond_workspace_asset(
     responder: UriSchemeResponder,
-    status: StatusCode,
-    kind: &str,
+    kind: WorkspaceContentType,
     body: Vec<u8>,
-    allow_cross_origin: bool,
 ) {
-    let response = response(status, kind, body, allow_cross_origin);
-    responder.respond(response);
+    responder.respond(workspace_asset_response(kind, body));
+}
+
+fn respond_workspace_plain(responder: UriSchemeResponder, status: StatusCode, body: Vec<u8>) {
+    responder.respond(workspace_plain_response(status, body));
 }
 
 /// Serve one request for a plugin file.
@@ -347,23 +374,21 @@ fn handle<R: tauri::Runtime>(
     let path = request.uri().path().to_string();
 
     if path.trim_start_matches('/') == SELF_TEST_PATH {
-        respond(
+        respond_bundle(
             responder,
             StatusCode::OK,
             "text/javascript",
             SELF_TEST_MODULE.as_bytes().to_vec(),
-            true,
         );
         return;
     }
 
     let Some(relative) = safe_relative_path(&path) else {
-        respond(
+        respond_bundle(
             responder,
             StatusCode::BAD_REQUEST,
             "text/plain",
             b"rejected plugin asset path".to_vec(),
-            true,
         );
         return;
     };
@@ -372,12 +397,11 @@ fn handle<R: tauri::Runtime>(
     // sitting loose at the plugins root has no manifest vouching for it, so
     // there is nothing that could authorise serving it.
     let Some((plugin_id, inside)) = relative.split_once('/') else {
-        respond(
+        respond_bundle(
             responder,
             StatusCode::NOT_FOUND,
             "text/plain",
             b"no such plugin asset".to_vec(),
-            true,
         );
         return;
     };
@@ -387,53 +411,48 @@ fn handle<R: tauri::Runtime>(
         else {
             // Missing state, no active workspace, a refused root, and a
             // plugin without an effective grant are all deliberately absent.
-            respond(
+            respond_workspace_plain(
                 responder,
                 StatusCode::NOT_FOUND,
-                "text/plain",
                 b"no such plugin asset".to_vec(),
-                false,
             );
             return;
         };
         match read_workspace_asset(&workspace_root, workspace_relative) {
-            Some(WorkspaceAsset::Bytes(bytes)) => respond(
+            Some(WorkspaceAsset::Bytes(bytes)) => respond_workspace_asset(
                 responder,
-                StatusCode::OK,
-                workspace_content_type_for(workspace_relative).as_str(),
+                workspace_content_type_for(workspace_relative),
                 bytes,
-                false,
             ),
-            Some(WorkspaceAsset::TooLarge) => respond(
+            Some(WorkspaceAsset::TooLarge) => respond_workspace_plain(
                 responder,
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "text/plain",
-                // This 413 is not a new filesystem oracle: only a plugin with
-                // an effective workspace.root grant reaches this branch, and
-                // its backend already runs as the user and can read the tree.
-                // Unlike the bundle branch, the status can therefore explain
-                // the per-request memory cap without becoming a filesystem oracle.
+                // A plugin with an effective workspace.root grant reaches this
+                // branch, including a UI-only plugin that has no backend. For
+                // those, this 413 is new information the frame did not already
+                // have: the named file exists and is larger than the
+                // per-request cap. That is the point of the branch — the host
+                // is showing the plugin the user's files — and the status
+                // names the cap so the frame can tell "too large to fetch"
+                // from "not there". The grant is still required; without it
+                // this is a 404.
                 b"workspace asset exceeds the 8 MiB per-request cap".to_vec(),
-                false,
             ),
-            None => respond(
+            None => respond_workspace_plain(
                 responder,
                 StatusCode::NOT_FOUND,
-                "text/plain",
                 b"no such plugin asset".to_vec(),
-                false,
             ),
         }
         return;
     }
 
     let Some(root) = super::plugins_root(context.app_handle()) else {
-        respond(
+        respond_bundle(
             responder,
             StatusCode::INTERNAL_SERVER_ERROR,
             "text/plain",
             b"no plugin directory on this machine".to_vec(),
-            true,
         );
         return;
     };
@@ -446,32 +465,29 @@ fn handle<R: tauri::Runtime>(
         .try_state::<super::PluginRegistry>()
         .is_some_and(|registry| registry.is_verified_asset(&root, plugin_id, inside));
     if !verified {
-        respond(
+        respond_bundle(
             responder,
             StatusCode::NOT_FOUND,
             "text/plain",
             b"no such plugin asset".to_vec(),
-            true,
         );
         return;
     }
 
     match read_plugin_asset(&root, plugin_id, inside) {
-        Some(bytes) => respond(
+        Some(bytes) => respond_bundle(
             responder,
             StatusCode::OK,
             content_type_for(&relative),
             bytes,
-            true,
         ),
         // One status for "not there" and for "not allowed", deliberately:
         // telling them apart turns this handler into a filesystem probe.
-        None => respond(
+        None => respond_bundle(
             responder,
             StatusCode::NOT_FOUND,
             "text/plain",
             b"no such plugin asset".to_vec(),
-            true,
         ),
     }
 }
@@ -514,8 +530,14 @@ fn read_workspace_asset(root: &Path, relative: &str) -> Option<WorkspaceAsset> {
     if metadata.len() > MAX_WORKSPACE_ASSET_BYTES {
         return Some(WorkspaceAsset::TooLarge);
     }
+    read_workspace_file_bounded(file)
+}
 
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+/// Bounded read of an already-open file. Does not consult metadata: a file
+/// that grew after the size check is still cut off by `take` and the length
+/// check, so those two steps can be tested without reproducing the race.
+fn read_workspace_file_bounded(file: std::fs::File) -> Option<WorkspaceAsset> {
+    let mut bytes = Vec::new();
     let mut limited = file.take(MAX_WORKSPACE_ASSET_BYTES + 1);
     limited.read_to_end(&mut bytes).ok()?;
     if bytes.len() as u64 > MAX_WORKSPACE_ASSET_BYTES {
@@ -688,6 +710,24 @@ mod tests {
     }
 
     #[test]
+    fn workspace_bounded_read_stops_after_the_cap_without_trusting_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("grown.bin");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_WORKSPACE_ASSET_BYTES + 1)
+            .unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        assert!(
+            matches!(
+                read_workspace_file_bounded(file),
+                Some(WorkspaceAsset::TooLarge)
+            ),
+            "take and the length check must refuse a file already larger than the cap"
+        );
+    }
+
+    #[test]
     fn a_link_into_another_plugin_is_not_served() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("plugins");
@@ -749,7 +789,7 @@ mod tests {
         // workspace_content_type_for because WorkspaceContentType has no such
         // variant.
         let executable = ["text/html", "text/javascript", "image/svg+xml"];
-        for kind in WorkspaceContentType::ALL {
+        for kind in WorkspaceContentType::all() {
             assert!(
                 !executable.contains(&kind.as_str()),
                 "workspace MIME codomain unexpectedly contains {}",
@@ -759,15 +799,35 @@ mod tests {
     }
 
     #[test]
-    fn all_asset_responses_carry_nosniff_but_workspace_responses_do_not_cors() {
-        let bundle = response(StatusCode::OK, "application/octet-stream", Vec::new(), true);
-        let workspace = response(
-            StatusCode::OK,
-            "application/octet-stream",
-            Vec::new(),
-            false,
+    fn workspace_content_type_for_maps_raster_names_and_falls_back() {
+        assert_eq!(
+            workspace_content_type_for("images/sample.tif"),
+            WorkspaceContentType::Tiff
         );
-        for asset_response in [&bundle, &workspace] {
+        assert_eq!(
+            workspace_content_type_for("shot.PNG"),
+            WorkspaceContentType::Png
+        );
+        assert_eq!(
+            workspace_content_type_for("shot.jpg"),
+            WorkspaceContentType::Jpeg
+        );
+        assert_eq!(
+            workspace_content_type_for("shot.nd2"),
+            WorkspaceContentType::OctetStream
+        );
+        assert_eq!(
+            workspace_content_type_for("no-extension"),
+            WorkspaceContentType::OctetStream
+        );
+    }
+
+    #[test]
+    fn all_asset_responses_carry_nosniff_but_workspace_responses_do_not_cors() {
+        let bundle = bundle_response(StatusCode::OK, "application/octet-stream", Vec::new());
+        let workspace = workspace_asset_response(WorkspaceContentType::OctetStream, Vec::new());
+        let workspace_error = workspace_plain_response(StatusCode::PAYLOAD_TOO_LARGE, Vec::new());
+        for asset_response in [&bundle, &workspace, &workspace_error] {
             assert_eq!(
                 asset_response
                     .headers()
@@ -787,6 +847,17 @@ mod tests {
             .headers()
             .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
             .is_none());
+        assert!(workspace_error
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none());
+        assert_eq!(
+            workspace_error
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/plain")
+        );
     }
 
     #[test]
