@@ -98,9 +98,8 @@ export function PolisSurface({ surface }: { surface: SurfaceDefinition }) {
           </p>
           <p className="polis-readiness-note">
             A plugin is a directory holding a manifest that lists every one of its files with a
-            digest. Devboule reads nothing it was not told about, and a plugin whose files no
-            longer match what the manifest describes is refused with a reason instead of half
-            loaded.
+            digest. Devboule reads nothing it was not told about, and a plugin whose files no longer
+            match what the manifest describes is refused with a reason instead of half loaded.
           </p>
           {installError ? (
             <div className="polis-readiness-error" role="alert">
