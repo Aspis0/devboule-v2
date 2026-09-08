@@ -24,10 +24,11 @@ use sha2::{Digest, Sha256};
 
 use devboule_protocol::plugin_payload_budget_clamped;
 
-use super::assets::{safe_relative_segments, MAX_ASSET_BYTES};
+use super::assets::MAX_ASSET_BYTES;
 use super::manifest::{
     parse_manifest, PluginManifest, MANIFEST_FILE_NAME, MAX_MANIFEST_BYTES, MAX_PLUGIN_FILES,
 };
+use super::VerifiedPluginPath;
 
 /// A plugin whose files add up to more than this is refused before a single
 /// byte is hashed. Verification reads everything it verifies, so without a
@@ -326,11 +327,12 @@ pub(super) fn list_files(directory: &Path) -> Result<BTreeMap<String, u64>, Stri
             };
             // The same grammar the asset server resolves a request with: a file
             // it could never address has no business being installed.
-            let Some(relative) = safe_relative_segments(&relative) else {
+            let Some(relative) = VerifiedPluginPath::parse(&relative) else {
                 return Err(format!(
                     "{relative} cannot be addressed by the plugin server and must be renamed"
                 ));
             };
+            let relative = relative.into_string();
 
             let file_type = entry
                 .file_type()

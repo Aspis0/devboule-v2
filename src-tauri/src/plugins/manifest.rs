@@ -40,6 +40,7 @@ use std::collections::BTreeMap;
 use devboule_protocol::effective_plugin_payload_bytes;
 
 use super::assets::safe_relative_segments;
+use super::VerifiedPluginPath;
 
 /// The only manifest version this build understands.
 pub const SUPPORTED_MANIFEST_VERSION: u32 = 1;
@@ -150,8 +151,9 @@ pub fn parse_manifest(bytes: &[u8], directory_name: &str) -> Result<PluginManife
     }
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     for (path, hash) in &raw.files {
-        let normalised = safe_relative_segments(path)
+        let normalised = VerifiedPluginPath::parse(path)
             .ok_or_else(|| format!("files names a path outside the plugin: {}", quote(path)))?;
+        let normalised = normalised.into_string();
         if normalised == MANIFEST_FILE_NAME {
             return Err(format!(
                 "files lists {MANIFEST_FILE_NAME}, which cannot describe its own digest"
