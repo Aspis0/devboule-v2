@@ -599,9 +599,9 @@ platform change required; `DOC-ONLY` = documentation must not over-promise.
 
 | # | Severity | Limitation | Status |
 |---|----------|-----------|--------|
-| F-01 | critical | All plugins share `http://plugin.localhost`: every plugin can READ every other plugin's JS, assets, and backend binary (asset server answers cross-frame fetches from the shared origin, `ACAO: *`). Do not ship secrets in plugin bundles. Fix (roadmap): per-plugin unique origins OR request-origin binding in the scheme handler. | ENFORCED-BY-CODE |
+| F-01 | critical | All plugins share `http://plugin.localhost`: every plugin can READ every other plugin's JS, assets, and backend binary (asset server answers cross-frame fetches from the shared origin, `ACAO: *`). Do not ship secrets in plugin bundles. Platform status (2026-09-08, verified in code): **OPEN, honestly documented in `assets.rs`** — the workspace module states "all installed plugins are one trust domain" and "the plugin id in the URL is self-declared"; the capability guard is best-effort, not a boundary. The real closure (non-forgeable host token delivered to the plugin frame via postMessage) is recorded as DEBT for the surface-registration work. | ENFORCED-BY-CODE |
 | F-02 | critical | Backends have full user-level access — the Job Object only kills orphans; child processes spawned before close survive. Roadmap: restricted tokens / AppContainer + child-process job policy. | ENFORCED-BY-CODE |
-| F-03 | high | The mtime+size ETag proposed for workspace serving is spoofable (`SetFileTime` + same-size swap, attacker = a backend with full user access, F-02). The workspace-serving roadmap (§7 1-bis) must ship a stronger validator or accept this threat explicitly. | ROADMAP-GAP |
+| F-03 | high | The mtime+size ETag proposed for workspace serving is spoofable (`SetFileTime` + same-size swap, attacker = a backend with full user access, F-02). Platform status (2026-09-08, verified in code): **NOT YET IMPLEMENTED** — the shipped workspace branch has no ETag/If-Range/412 (only the deliberate 413 per-request memory cap), so multi-window reads of files rewritten mid-read remain an accepted coherence risk. Client-side plumbing (AiMacro) is already built and inert until a validator lands. | ROADMAP-GAP |
 | F-04 | high | A plugin frame can register a service worker on the shared origin and poison the cache for OTHER plugins' assets. Roadmap: `Service-Worker-Allowed` scoping or per-plugin origins. | ENFORCED-BY-CODE |
 | F-08 | high | Backend BINARIES are served like any manifest-listed file — a frame can download another plugin's exe for reverse engineering (same root as F-01). | ENFORCED-BY-CODE |
 | F-07 | medium | Capability names are an open set: unicode-confusable names (`сapabilities` with Cyrillic с) parse as distinct-but-lookalike entries. Platform should restrict capability charset at manifest validation. | ROADMAP-GAP |
@@ -616,19 +616,27 @@ Verified by a direct re-read of the serving/invocation/mounting code
 
 **P0 — required before third-party plugins at all**
 
+0. **CLOSED 2026-09-08** (commits c668804, 6d3be1b, 46c74f9): per-plugin payload
+   budget — declared in the manifest (`max_payload_bytes`), capped by the host
+   (`effective_plugin_payload_bytes` = min(declared, ceiling)), and the budget
+   ACTUALLY applies: plugin pipes now derive their frame limit from the host
+   budget instead of inheriting the daemon's 1 MiB framing cap
+   (`Framed::with_limit`). The effective budget travels in the host→plugin
+   handshake (`handshake.rs`), so AiMacro's supervisor can read it.
+   
 1. **Per-plugin origin** (`http://plugin-{id}.localhost`) **or**
    request-origin binding inside the asset scheme handler. Verified: the
    asset handler takes `pluginId` from the URL's first segment and performs
    NO check of which frame is asking — one malicious installed plugin reads
    every other plugin's sources, assets, and backend binary same-origin
    (F-01, F-04, F-08 all share this root).
-2. **`X-Content-Type-Options: nosniff` on every plugin asset response.**
-   Verified: `respond()` sends only Content-Type + ACAO + Cache-Control.
-   Latent today, but it is the precondition for guards 5–6 of the workspace
-   prefix (§7 1-bis).
-3. **Workspace-branch MIME allowlist** (never extension-derived; never
-   `text/javascript` / `text/html` / `image/svg+xml`; octet-stream
-   catch-all) — agreed guard 5.
+2. **CLOSED 2026-09-08** (commit 8a4f859 + 8c8bb03): `nosniff` on every
+   asset response, with a regression test
+   (`all_asset_responses_carry_nosniff_but_workspace_responses_do_not_cors`).
+3. **CLOSED 2026-09-08** (commit 8a4f859): workspace-branch MIME allowlist
+   (inert types only, never extension-derived), no ACAO on the workspace
+   branch (tested), 413 per-request memory cap instead of a per-file limit.
+   Remaining in this area: no ETag/If-Range validator yet (see F-03).
 
 **P1 — high**
 
