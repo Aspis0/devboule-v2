@@ -72,6 +72,8 @@ pub struct ServerState {
     provider_versions: Mutex<HashMap<String, String>>,
     /// Version obtained by an explicit native `--version` refresh probe.
     provider_cli_versions: Mutex<HashMap<String, (String, CliVersionFingerprint)>>,
+    /// Executable paths whose Claude version probe is already running.
+    claude_version_probes: Mutex<HashSet<std::path::PathBuf>>,
     /// The only process-launch seam for provider updates. Tests replace this
     /// runner so no npm or network is ever started by the test suite.
     npm_install_runner: Arc<dyn NpmInstallRunner>,
@@ -164,6 +166,7 @@ impl ServerState {
             provider_health: Mutex::new(HashMap::new()),
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
+            claude_version_probes: Mutex::new(HashSet::new()),
             npm_install_runner,
             #[cfg(test)]
             provider_update_catalog: Mutex::new(None),
@@ -420,6 +423,75 @@ impl ServerState {
             .unwrap_or_else(|error| error.into_inner());
         let (version, cached) = guard.get(provider_id)?;
         cli_version_cache_is_current(cached, current.as_ref()).then(|| version.clone())
+    }
+
+    pub(crate) fn claude_models(self: &Arc<Self>) -> Vec<devboule_protocol::SessionModel> {
+        let Some(agent) = crate::provider_catalog::find_available("claude") else {
+            return crate::claude_catalog::fallback_models();
+        };
+        if agent.install_channel != crate::provider_catalog::InstallChannel::Native {
+            return crate::claude_catalog::fallback_models();
+        }
+        let version = self
+            .provider_cli_version("claude", &agent.executable)
+            .or_else(|| std::env::var_os("DEVBOULE_TEST_NO_NETWORK").map(|_| "test".to_string()));
+        let Some(version) = version else {
+            self.start_claude_version_probe(agent);
+            return crate::claude_catalog::fallback_models();
+        };
+        if let Some(models) = crate::claude_catalog::cached(self.sessions.runtime_dir(), &version) {
+            return models;
+        }
+        self.start_claude_derivation(agent.executable, version);
+        crate::claude_catalog::fallback_models()
+    }
+
+    fn start_claude_version_probe(
+        self: &Arc<Self>,
+        agent: crate::provider_catalog::InstalledAgent,
+    ) {
+        let mut probes = self
+            .claude_version_probes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !probes.insert(agent.executable.clone()) {
+            return;
+        }
+        drop(probes);
+
+        let state = Arc::clone(self);
+        let executable = agent.executable.clone();
+        let probe_path = agent.executable.clone();
+        let cleanup_path = probe_path.clone();
+        let spawn = std::thread::Builder::new()
+            .name("claude-version-probe".to_string())
+            .spawn(move || {
+                if let Some((version, fingerprint)) = probe_native_version(&state, &agent) {
+                    state.record_provider_cli_version("claude", &version, fingerprint);
+                    state.start_claude_derivation(executable, version);
+                }
+                state
+                    .claude_version_probes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&cleanup_path);
+            });
+        if spawn.is_err() {
+            self.claude_version_probes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&probe_path);
+        }
+    }
+
+    fn start_claude_derivation(self: &Arc<Self>, executable: std::path::PathBuf, version: String) {
+        let state = Arc::clone(self);
+        let runtime_dir = self.sessions.runtime_dir().to_path_buf();
+        let source = crate::claude_catalog::source_for(&executable);
+        let _ =
+            crate::claude_catalog::start_derivation(source, runtime_dir, version, move |models| {
+                state.sessions.publish_claude_catalog(models)
+            });
     }
 
     fn invalidate_provider_update_caches(&self, provider_id: &str) {
@@ -1305,6 +1377,12 @@ fn dispatch_immediate(
 }
 
 fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) -> DaemonMessage {
+    // The settings list is also the normal pre-session discovery path. Make
+    // sure a Claude session can start with a non-empty model manifest even if
+    // the user has not opened the settings panel's Refresh button.
+    if !force {
+        let _ = state.claude_models();
+    }
     let discovery = if force {
         refresh_provider_catalog(state)
     } else {
@@ -1391,6 +1469,8 @@ fn refresh_provider_catalog(
             state.record_provider_cli_version(&provider_id, &version, fingerprint);
         }
     }
+
+    let _ = state.claude_models();
 
     crate::provider_catalog::discover_catalog_in_paths(
         &crate::registry::CdnRegistryFetch,
@@ -1582,6 +1662,9 @@ fn probe_native_version(
     }
     #[cfg(not(test))]
     {
+        if agent.id == "claude" && std::env::var_os("DEVBOULE_TEST_NO_NETWORK").is_some() {
+            return None;
+        }
         #[cfg(not(windows))]
         let _ = state;
         let fingerprint = executable_fingerprint(&agent.executable)?;

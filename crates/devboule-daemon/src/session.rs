@@ -79,8 +79,8 @@ use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, ErrorDetails,
     JournalRetention, JournalStats, OwnerId, PermissionOutcome, Project, RetentionPatch, Session,
-    SessionEvent, SessionKind, SessionState, SessionStateSnapshot, WireError, Workspace,
-    WorkspaceIsolation,
+    SessionEvent, SessionKind, SessionModel, SessionState, SessionStateSnapshot, WireError,
+    Workspace, WorkspaceIsolation,
 };
 #[cfg(test)]
 use std::sync::Barrier;
@@ -2212,7 +2212,7 @@ impl SessionRegistry {
                 "A model or effort is required.",
             ));
         }
-        let switcher = {
+        let (switcher, kind, runtime) = {
             let mut map = self
                 .inner
                 .lock()
@@ -2226,7 +2226,7 @@ impl SessionRegistry {
                     "Only agent sessions support switching the model or effort.",
                 ));
             }
-            session
+            let switcher = session
                 .switcher
                 .as_ref()
                 .map(|switcher| switcher.clone_switcher())
@@ -2235,9 +2235,68 @@ impl SessionRegistry {
                         ErrorCode::InvalidRequest,
                         "This provider does not support switching the model or effort.",
                     )
-                })?
+                })?;
+            (
+                switcher,
+                session.metadata.kind.clone(),
+                Arc::clone(&session.runtime),
+            )
         };
+        if kind == SessionKind::Claude {
+            Self::validate_claude_effort(runtime.session_manifest().as_ref(), model_id, effort)?;
+        }
         switcher.set_model(model_id, effort)
+    }
+
+    fn validate_claude_effort(
+        manifest: Option<&SessionEvent>,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), WireError> {
+        let Some(effort) = effort else {
+            return Ok(());
+        };
+        let Some(SessionEvent::SessionManifest {
+            current_model_id,
+            models,
+            ..
+        }) = manifest
+        else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Claude has not published its model catalog yet.",
+            ));
+        };
+        let model_id = model_id
+            .filter(|model_id| !model_id.is_empty())
+            .or(current_model_id.as_deref())
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Claude has not reported a current model yet.",
+                )
+            })?;
+        let model = models
+            .iter()
+            .find(|model| model.model_id == model_id)
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Claude model '{model_id}' is not in the current catalog."),
+                )
+            })?;
+        let valid = model
+            .efforts
+            .as_ref()
+            .is_some_and(|efforts| efforts.iter().any(|entry| entry.id == effort));
+        if valid {
+            Ok(())
+        } else {
+            Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Effort '{effort}' is not supported by Claude model '{model_id}'."),
+            ))
+        }
     }
 
     #[cfg(test)]
@@ -2497,6 +2556,37 @@ impl SessionRegistry {
             .lock()
             .map(|map| map.values().any(|entry| entry.runtime().journal_degraded()))
             .unwrap_or(true)
+    }
+
+    pub(crate) fn publish_claude_catalog(&self, models: Vec<SessionModel>) {
+        let runtimes = self
+            .inner
+            .lock()
+            .map(|map| {
+                map.values()
+                    .filter_map(|entry| {
+                        let session = entry.as_live()?;
+                        (session.metadata.kind == SessionKind::Claude)
+                            .then(|| Arc::clone(&session.runtime))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for runtime in runtimes {
+            let current_model_id = runtime.session_manifest().and_then(|event| match event {
+                SessionEvent::SessionManifest {
+                    current_model_id, ..
+                } => current_model_id,
+                _ => None,
+            });
+            let manifest =
+                crate::claude_catalog::manifest_with_current(models.clone(), current_model_id);
+            if runtime.session_manifest().as_ref() == Some(&manifest) {
+                continue;
+            }
+            let manifest = runtime.store_claude_catalog(manifest);
+            runtime.publish_agent_event(manifest, None);
+        }
     }
 
     fn runtime(&self, session_id: &str) -> Result<Arc<SessionRuntime>, WireError> {
@@ -2796,6 +2886,11 @@ fn start_spawned_session(
     }
     if let Some(generation) = generation {
         runtime.set_generation(generation);
+    }
+    if metadata.kind == SessionKind::Claude {
+        runtime.store_session_manifest(crate::claude_catalog::initial_manifest(
+            state.claude_models(),
+        ));
     }
     if let Some(handle) = os_handle {
         runtime.install_os_handle(handle);
@@ -6583,6 +6678,32 @@ mod tests {
             Some(crate::provider_catalog::ProviderOrigin::NpxWrapper),
         )
         .expect("explicit npx is the consent path");
+    }
+
+    #[test]
+    fn invalid_claude_effort_is_rejected_before_switcher() {
+        let manifest = SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: Some("claude-sonnet-5".to_string()),
+            models: vec![devboule_protocol::SessionModel {
+                model_id: "claude-sonnet-5".to_string(),
+                name: "Claude Sonnet 5".to_string(),
+                description: None,
+                context_tokens: None,
+                current_effort: Some("high".to_string()),
+                efforts: Some(vec![devboule_protocol::SessionModelEffort {
+                    id: "high".to_string(),
+                    label: "High".to_string(),
+                    description: None,
+                    default: Some(true),
+                }]),
+            }],
+            modes: None,
+        };
+        let error = SessionRegistry::validate_claude_effort(Some(&manifest), None, Some("bogus"))
+            .expect_err("unknown effort must be rejected locally");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not supported"));
     }
 
     fn tmp_registry_cache() -> std::path::PathBuf {

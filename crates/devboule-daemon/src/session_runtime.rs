@@ -154,6 +154,139 @@ pub(crate) struct AttachOutcome {
     pub(crate) live_agent_replay: Option<LiveAgentReplay>,
 }
 
+fn merge_claude_manifest(previous: &SessionEvent, incoming: SessionEvent) -> SessionEvent {
+    let SessionEvent::SessionManifest {
+        provider_id: previous_provider,
+        current_model_id: previous_current,
+        models: previous_models,
+        modes: previous_modes,
+    } = previous
+    else {
+        return incoming;
+    };
+    let (provider_id, current_model_id, models, modes) = match incoming {
+        SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        } => (provider_id, current_model_id, models, modes),
+        other => return other,
+    };
+    let mut merged_models = previous_models.clone();
+    for incoming_model in models {
+        let match_id = merged_models
+            .iter()
+            .position(|model| model.model_id == incoming_model.model_id)
+            .or_else(|| {
+                incoming_model
+                    .model_id
+                    .strip_suffix("[1m]")
+                    .and_then(|base| {
+                        merged_models
+                            .iter()
+                            .position(|model| model.model_id == base)
+                    })
+            });
+        if let Some(index) = match_id {
+            let previous_model = &merged_models[index];
+            let mut merged = incoming_model;
+            merged.name = previous_model.name.clone();
+            merged.description = merged
+                .description
+                .or_else(|| previous_model.description.clone());
+            merged.context_tokens = merged.context_tokens.or(previous_model.context_tokens);
+            merged.current_effort = merged
+                .current_effort
+                .or_else(|| previous_model.current_effort.clone());
+            merged.efforts = merged
+                .efforts
+                .filter(|efforts| !efforts.is_empty())
+                .or_else(|| previous_model.efforts.clone());
+            if previous_model.model_id != merged.model_id {
+                merged_models.push(merged);
+            } else {
+                merged_models[index] = merged;
+            }
+        } else {
+            merged_models.push(incoming_model);
+        }
+    }
+    SessionEvent::SessionManifest {
+        provider_id: provider_id.or_else(|| previous_provider.clone()),
+        current_model_id: current_model_id.or_else(|| previous_current.clone()),
+        models: merged_models,
+        modes: modes.or_else(|| previous_modes.clone()),
+    }
+}
+
+fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> SessionEvent {
+    let SessionEvent::SessionManifest {
+        provider_id: previous_provider,
+        current_model_id: previous_current,
+        models: previous_models,
+        modes: previous_modes,
+    } = previous
+    else {
+        return incoming;
+    };
+    let (provider_id, current_model_id, models, modes) = match incoming {
+        SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        } => (provider_id, current_model_id, models, modes),
+        other => return other,
+    };
+    let current_model_id = current_model_id.or_else(|| previous_current.clone());
+    let mut merged_models = models
+        .into_iter()
+        .map(|mut model| {
+            let previous_model = previous_models.iter().find(|previous| {
+                previous.model_id == model.model_id
+                    || model
+                        .model_id
+                        .strip_suffix("[1m]")
+                        .is_some_and(|base| previous.model_id == base)
+            });
+            if let Some(previous_model) = previous_model {
+                model.current_effort = model
+                    .current_effort
+                    .or_else(|| previous_model.current_effort.clone());
+                model.efforts = model
+                    .efforts
+                    .filter(|efforts| !efforts.is_empty())
+                    .or_else(|| previous_model.efforts.clone());
+            }
+            model
+        })
+        .collect::<Vec<_>>();
+    if let Some(current_model_id) = current_model_id.as_deref() {
+        let present = merged_models
+            .iter()
+            .any(|model| model.model_id == current_model_id);
+        if !present {
+            if let Some(previous_model) = previous_models.iter().find(|model| {
+                model.model_id == current_model_id
+                    || current_model_id
+                        .strip_suffix("[1m]")
+                        .is_some_and(|base| model.model_id == base)
+            }) {
+                let mut current_model = previous_model.clone();
+                current_model.model_id = current_model_id.to_string();
+                merged_models.push(current_model);
+            }
+        }
+    }
+    SessionEvent::SessionManifest {
+        provider_id: provider_id.or_else(|| previous_provider.clone()),
+        current_model_id,
+        models: merged_models,
+        modes: modes.or_else(|| previous_modes.clone()),
+    }
+}
+
 impl SessionRuntime {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
@@ -526,10 +659,47 @@ impl SessionRuntime {
         Some(seq)
     }
 
-    pub(crate) fn store_session_manifest(&self, event: SessionEvent) {
+    pub(crate) fn store_session_manifest(&self, event: SessionEvent) -> SessionEvent {
+        let event = if matches!(
+            &event,
+            SessionEvent::SessionManifest {
+                provider_id: Some(provider_id),
+                ..
+            } if provider_id == "claude"
+        ) {
+            let previous = self
+                .session_manifest
+                .lock()
+                .ok()
+                .and_then(|stored| stored.clone());
+            previous
+                .as_ref()
+                .map(|previous| merge_claude_manifest(previous, event.clone()))
+                .unwrap_or(event)
+        } else {
+            event
+        };
         if let Ok(mut stored) = self.session_manifest.lock() {
-            *stored = Some(event);
+            *stored = Some(event.clone());
         }
+        event
+    }
+
+    pub(crate) fn store_claude_catalog(&self, event: SessionEvent) -> SessionEvent {
+        let event = self
+            .session_manifest
+            .lock()
+            .ok()
+            .and_then(|stored| {
+                stored
+                    .as_ref()
+                    .map(|previous| replace_claude_catalog(previous, event.clone()))
+            })
+            .unwrap_or(event);
+        if let Ok(mut stored) = self.session_manifest.lock() {
+            *stored = Some(event.clone());
+        }
+        event
     }
 
     pub(crate) fn set_peer_session_id(&self, session_id: String) {
