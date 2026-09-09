@@ -25,6 +25,7 @@ import {
 export { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
 import { createOracleHost } from "./oracleHost";
 import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
+import { rankSkillsForQuery } from "./skillRanking";
 
 interface AgentSessionHandle {
   session: Session;
@@ -208,6 +209,40 @@ export function composeAutomaticSkillSlugs(
     applied.push(slug);
   }
   return applied;
+}
+
+/**
+ * The resolved head of a skill selection, whatever mode produced it: the
+ * slugs to compose, in order, and whether the mode's own chooser had to be
+ * replaced by the default priority order.
+ */
+interface ResolvedSkillChoice {
+  slugs: readonly string[];
+  fallback: boolean;
+}
+
+/**
+ * Matched selection: the deterministic lexical ranker orders the corpus for
+ * this request, the never-routed baseline is prepended on top, and the head
+ * is capped like the automatic mode — same budget arithmetic, no model
+ * turn. When the ranker reports no strong match it hands back the priority
+ * order and the fallback mirrors the automatic one: request every section
+ * and let the composed budget keep the priority head.
+ */
+export function matchSkillChoice(prompt: string): ResolvedSkillChoice {
+  const index = builtInSkillIndex();
+  const ranking = rankSkillsForQuery(prompt, index);
+  if (ranking.fallback) {
+    return { slugs: index.map((entry) => entry.slug), fallback: true };
+  }
+  const baselineSlugs = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
+  const routed = ranking.slugs
+    .filter((slug) => !baselineSlugs.has(slug))
+    .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS);
+  return {
+    slugs: composeAutomaticSkillSlugs(routed, index.map((entry) => entry.slug)),
+    fallback: false,
+  };
 }
 
 export function extractFencedHtml(text: string): string | undefined {
@@ -623,28 +658,23 @@ export function createAgentHost(): DesignHost {
     }
   };
 
-  interface AutomaticSkillChoice {
-    slugs: readonly string[];
-    fallback: boolean;
-  }
-
   const automaticSkillChoice = async (
     handle: AgentSessionHandle,
     prompt: string,
     signal: AbortSignal,
-  ): Promise<AutomaticSkillChoice> => {
+  ): Promise<ResolvedSkillChoice> => {
     const index = builtInSkillIndex();
     const allSlugs = index.map((entry) => entry.slug);
-    const fallback = (): AutomaticSkillChoice => ({ slugs: allSlugs, fallback: true });
+    const fallback = (): ResolvedSkillChoice => ({ slugs: allSlugs, fallback: true });
     throwIfAborted(signal);
 
-    let settle: (choice: AutomaticSkillChoice) => void = () => undefined;
+    let settle: (choice: ResolvedSkillChoice) => void = () => undefined;
     let reject: (error: unknown) => void = () => undefined;
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let unsubscribe = (): void => undefined;
     const itemStart = handle.controller.getState().items.length;
-    const outcome = new Promise<AutomaticSkillChoice>((resolve, rejectPromise) => {
+    const outcome = new Promise<ResolvedSkillChoice>((resolve, rejectPromise) => {
       settle = (choice) => {
         if (settled) return;
         settled = true;
@@ -723,10 +753,14 @@ export function createAgentHost(): DesignHost {
     const handle = await ensureSession(selectedWorkspace);
     throwIfAborted(signal);
 
-    const automatic = options?.skillMode === "auto";
-    const skillChoice = automatic
-      ? await automaticSkillChoice(handle, prompt, signal)
-      : { slugs: options?.skills ?? builtInSkillSlugs(), fallback: false };
+    const skillMode = options?.skillMode ?? "all";
+    const pinnedSkills = options?.skillMode === "manual" ? options.skills : [];
+    const skillChoice =
+      skillMode === "auto"
+        ? await automaticSkillChoice(handle, prompt, signal)
+        : skillMode === "manual"
+          ? { slugs: pinnedSkills, fallback: false }
+          : matchSkillChoice(prompt);
     throwIfAborted(signal);
     const skillSlugs = skillChoice.slugs;
 
@@ -773,13 +807,14 @@ export function createAgentHost(): DesignHost {
       const state = handle.controller.getState();
       if (state.lastFinished !== null) {
         const baseResult = resultFor(run.prompt, run.toolObservations);
-        const result = automatic
-          ? {
-              ...baseResult,
-              appliedSkillSlugs: [...skillSlugs],
-              skillSelectionFallback: skillChoice.fallback,
-            }
-          : baseResult;
+        // Provenance is reported for every mode: the ordered branch is where
+        // a chooser (ranker or pin) decides on the user's behalf, so it needs
+        // the report at least as much as the automatic branch does.
+        const result = {
+          ...baseResult,
+          appliedSkillSlugs: [...skillSlugs],
+          skillSelectionFallback: skillChoice.fallback,
+        };
         const resultWithSession = {
           ...result,
           sessionId: run.session.session.id,

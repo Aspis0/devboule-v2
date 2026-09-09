@@ -105,7 +105,7 @@ import {
   MAX_ARTIFACT_BYTES,
 } from "./agentHost";
 import { buildSkillBlock } from "./skillLoader";
-import { SKILL_MODE_LABELS } from "./designSettings";
+import { SKILL_MODE_LABELS, type DesignSkillSelection } from "./designSettings";
 import { nodesBounds } from "../../lib/canvas/viewportMath";
 import { rectIntersects } from "../../lib/canvas/hitTest";
 import type { NodeRect } from "../../types/geometry";
@@ -273,6 +273,41 @@ async function fillDraft(container: HTMLDivElement, prompt: string): Promise<HTM
     draft.dispatchEvent(new Event("input", { bubbles: true }));
   });
   return draft;
+}
+
+async function openSkillModePopover(container: HTMLDivElement): Promise<HTMLDivElement> {
+  const trigger = container.querySelector<HTMLButtonElement>(
+    'button[data-design-skill-mode-trigger="true"]',
+  );
+  if (trigger === null) throw new Error("Craft mode trigger missing");
+  await act(async () => trigger.click());
+  const popover = container.querySelector<HTMLDivElement>("#design-skill-picker");
+  if (popover === null) throw new Error("Craft mode popover missing");
+  return popover;
+}
+
+async function chooseSkillMode(
+  container: HTMLDivElement,
+  mode: DesignSkillSelection["mode"],
+): Promise<HTMLButtonElement> {
+  const popover = await openSkillModePopover(container);
+  const choice = popover.querySelector<HTMLButtonElement>(
+    `button[data-design-skill-mode="${mode}"]`,
+  );
+  if (choice === null) throw new Error(`Craft mode choice missing: ${mode}`);
+  await act(async () => choice.click());
+  const trigger = container.querySelector<HTMLButtonElement>(
+    'button[data-design-skill-mode-trigger="true"]',
+  );
+  if (trigger === null) throw new Error("Craft mode trigger missing after selection");
+  return trigger;
+}
+
+async function openSkillCraft(container: HTMLDivElement): Promise<void> {
+  const popover = await openSkillModePopover(container);
+  const action = popover.querySelector<HTMLButtonElement>(".design-skill-picker-action");
+  if (action === null) throw new Error("Craft sections action missing");
+  await act(async () => action.click());
 }
 
 async function renderDesign(host: DesignHost): Promise<{
@@ -795,7 +830,7 @@ describe("DesignSurface host capabilities", () => {
     if (settledModelButton === null || settledPicker === null || settledSelect === null) {
       throw new Error("Settled model picker missing");
     }
-    expect(settledModelButton.textContent).toBe(`Model: ${secondModel.name} ▾`);
+    expect(settledModelButton.textContent).toBe(`${secondModel.name} ▾`);
     expect(settledModelButton.getAttribute("aria-label")).toBe(`Model: ${secondModel.name}`);
     expect(settledPicker.getAttribute("aria-busy")).not.toBe("true");
     expect(settledSelect.disabled).toBe(false);
@@ -1616,7 +1651,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Make the header quieter.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skills: expect.any(Array) },
+      { skillMode: "all" },
     );
     await act(async () => root.unmount());
   });
@@ -1633,7 +1668,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => send.click());
 
     expect(generate).toHaveBeenCalledWith("Make the header quieter.", expect.any(AbortSignal), {
-      skills: expect.any(Array),
+      skillMode: "all",
     });
     await act(async () => root.unmount());
   });
@@ -1662,7 +1697,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       expect.stringContaining("source file: src/components/Header.tsx"),
       expect.any(AbortSignal),
-      { skills: expect.any(Array) },
+      { skillMode: "all" },
     );
     await act(async () => root.unmount());
   });
@@ -1833,7 +1868,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenLastCalledWith(
       "Refine this artifact.\n\nScope: Editing Generated artifact; the user is refining the artifact the agent just produced.",
       expect.any(AbortSignal),
-      { skills: expect.any(Array) },
+      { skillMode: "all" },
     );
 
     await act(async () => {
@@ -2015,7 +2050,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skills: expect.any(Array) },
+      { skillMode: "all" },
     );
     await act(async () => root.unmount());
   });
@@ -2048,7 +2083,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skills: expect.any(Array) },
+      { skillMode: "all" },
     );
     await act(async () => root.unmount());
   });
@@ -2333,26 +2368,160 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps the priority mode compact and sends the same resolved slugs", async () => {
-    const skillIndex = builtInSkillIndex();
+  it("exposes the craft descriptions in one keyboard-safe popover", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[data-design-skill-mode-trigger="true"]',
+    );
+    if (trigger === null) throw new Error("Craft mode trigger missing");
+
+    expect(trigger.textContent).toContain(SKILL_MODE_LABELS.all.name);
+    expect(container.querySelectorAll(".design-skill-mode-option")).toHaveLength(0);
+
+    trigger.focus();
+    await act(async () => trigger.click());
+    const popover = container.querySelector<HTMLDivElement>("#design-skill-picker");
+    if (popover === null) throw new Error("Craft mode popover missing");
+    expect(container.querySelectorAll(".design-skill-mode-option")).toHaveLength(3);
+    expect(popover.querySelector(".design-skill-picker-default")?.textContent).toContain(
+      SKILL_MODE_LABELS.all.defaultNotice,
+    );
+    expect(popover.querySelector(".design-skill-picker-default")?.textContent).not.toContain(
+      SKILL_MODE_LABELS.all.blurb,
+    );
+    expect(popover.textContent).toContain(SKILL_MODE_LABELS.all.blurb);
+    expect(popover.textContent).toContain(SKILL_MODE_LABELS.manual.blurb);
+    expect(popover.textContent).toContain(SKILL_MODE_LABELS.auto.blurb);
+    expect(popover.textContent).toContain("one extra model turn");
+    expect(popover.querySelector(".design-skill-picker-action")?.textContent).toBe("Read more");
+    expect(document.activeElement).toBe(
+      popover.querySelector('button[data-design-skill-mode="all"]'),
+    );
+
+    await act(async () => {
+      popover.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector("#design-skill-picker")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => root.unmount());
+  });
+
+  it("shows matched result provenance, including fallback copy, and clears it on mode change", async () => {
+    const generate = vi.fn<NonNullable<DesignHost["generate"]>>().mockResolvedValue({
+      ...GENERATION_RESULT,
+      appliedSkillSlugs: ["anti-ai-slop", "motion"],
+      skillSelectionFallback: true,
+    });
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "animate the drawer opening");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+    await act(async () => Promise.resolve());
+
+    const notice = container.querySelector<HTMLElement>(".design-skill-result");
+    expect(notice?.textContent).toContain(SKILL_MODE_LABELS.all.fallbackNotice);
+    expect(notice?.textContent).toContain("Applied: anti-ai-slop, motion.");
+
+    await openSkillCraft(container);
+    const motion = builtInSkillIndex().find((entry) => entry.slug === "motion");
+    if (motion === undefined) throw new Error("Motion skill missing");
+    const motionRow = [...container.querySelectorAll<HTMLElement>(".design-craft-title-row")].find(
+      (row) => row.textContent?.includes(motion.title),
+    );
+    if (motionRow === undefined) throw new Error("Motion craft row missing");
+    expect(motionRow.textContent).toContain("Included");
+    const color = builtInSkillIndex().find((entry) => entry.slug === "color");
+    if (color === undefined) throw new Error("Color skill missing");
+    const colorRow = [...container.querySelectorAll<HTMLElement>(".design-craft-title-row")].find(
+      (row) => row.textContent?.includes(color.title),
+    );
+    if (colorRow === undefined) throw new Error("Color craft row missing");
+    expect(colorRow.textContent).toContain("Not selected");
+
+    const close = container.querySelector<HTMLButtonElement>('button[aria-label="Close Craft"]');
+    if (close === null) throw new Error("Craft close control missing");
+    await act(async () => close.click());
+    await chooseSkillMode(container, "auto");
+    expect(container.querySelector(".design-skill-result")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("clears generation skill provenance when reopening a history entry", async () => {
+    const generate = vi.fn<NonNullable<DesignHost["generate"]>>().mockResolvedValue({
+      ...GENERATION_RESULT,
+      appliedSkillSlugs: ["anti-ai-slop", "motion"],
+      skillSelectionFallback: false,
+    });
+    historyOpenMocks.open.mockReturnValue({ dispose: vi.fn() });
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "animate the drawer opening");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    const historyTrigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    if (send === null || historyTrigger === null) throw new Error("History controls missing");
+
+    await act(async () => send.click());
+    await act(async () => Promise.resolve());
+    expect(container.querySelector<HTMLElement>(".design-skill-result")?.textContent).toContain(
+      "Matched craft: anti-ai-slop, motion.",
+    );
+
+    await act(async () => historyTrigger.click());
+    const onOpen = historyListMocks.onOpen;
+    if (onOpen === null) throw new Error("History list did not receive an open handler");
+    await act(async () => onOpen({ sessionId: "history-session", title: "Older design" }));
+
+    expect(container.querySelector(".design-skill-result")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("offers an explicit sections action for the active Manual mode", async () => {
+    skillSettingsMocks.load.mockResolvedValueOnce({
+      version: 1,
+      mode: "manual",
+      enabledSlugs: [],
+    });
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    const popover = await openSkillModePopover(container);
+    expect(popover.querySelector(".design-skill-picker-action")?.textContent).toBe(
+      "Choose sections…",
+    );
+    await act(async () =>
+      popover.querySelector<HTMLButtonElement>(".design-skill-picker-action")?.click(),
+    );
+    expect(container.querySelector(".design-craft-sheet")).not.toBeNull();
+    expect(container.querySelector("#design-skill-picker")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the matched mode compact and sends the declared mode", async () => {
     const generate = vi
       .fn<NonNullable<DesignHost["generate"]>>()
       .mockResolvedValue(GENERATION_RESULT);
     const { container, root } = await renderDesign(createHost({ generate }));
-    const priority = container.querySelector<HTMLButtonElement>(
+    const popover = await openSkillModePopover(container);
+    const matched = popover.querySelector<HTMLButtonElement>(
       'button[data-design-skill-mode="all"]',
     );
-    if (priority === null) throw new Error("Priority mode missing");
+    if (matched === null) throw new Error("Matched mode missing");
 
-    expect(priority.getAttribute("aria-checked")).toBe("true");
+    expect(matched.getAttribute("aria-checked")).toBe("true");
     expect(container.querySelector(".design-craft-sheet")).toBeNull();
     await fillDraft(container, "Use every craft rule.");
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
+    // The mode is declared, not inferred from a list: matched mode carries no
+    // list at all — the host ranks the corpus itself.
     expect(generate.mock.calls[0]?.[2]).toEqual({
-      skills: skillIndex.map((entry) => entry.slug),
+      skillMode: "all",
     });
     await act(async () => root.unmount());
   });
@@ -2365,9 +2534,7 @@ describe("DesignSurface host capabilities", () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );
-    const readMore = container.querySelector<HTMLButtonElement>(".design-skill-read-more");
-    if (readMore === null) throw new Error("Craft read-more control missing");
-    await act(async () => readMore.click());
+    await openSkillCraft(container);
 
     for (const entry of skillIndex) {
       const row = [...container.querySelectorAll<HTMLElement>(".design-craft-title-row")].find(
@@ -2395,11 +2562,7 @@ describe("DesignSurface host capabilities", () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );
-    const manualMode = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="manual"]',
-    );
-    if (manualMode === null) throw new Error("Manual mode missing");
-    await act(async () => manualMode.click());
+    await openSkillCraft(container);
 
     expect(container.textContent).toContain(
       `${MAX_AUTOMATIC_SKILL_SECTIONS} / ${MAX_AUTOMATIC_SKILL_SECTIONS}`,
@@ -2432,13 +2595,13 @@ describe("DesignSurface host capabilities", () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );
-    const manualMode = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="manual"]',
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[data-design-skill-mode-trigger="true"]',
     );
-    if (manualMode === null) throw new Error("Manual mode missing");
-    expect(manualMode.getAttribute("aria-checked")).toBe("true");
+    if (trigger === null) throw new Error("Craft mode trigger missing");
+    expect(trigger.textContent).toContain(SKILL_MODE_LABELS.manual.name);
 
-    await act(async () => manualMode.click());
+    await openSkillCraft(container);
     const selectedCheckbox = container.querySelector<HTMLInputElement>(
       `input[aria-label="Apply ${selected.title}"]`,
     );
@@ -2460,11 +2623,7 @@ describe("DesignSurface host capabilities", () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );
-    const manualMode = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="manual"]',
-    );
-    if (manualMode === null) throw new Error("Manual mode missing");
-    await act(async () => manualMode.click());
+    await chooseSkillMode(container, "manual");
     const checkbox = container.querySelector<HTMLInputElement>(
       `input[aria-label="Apply ${selected.title}"]`,
     );
@@ -2488,25 +2647,23 @@ describe("DesignSurface host capabilities", () => {
       .fn<NonNullable<DesignHost["generate"]>>()
       .mockResolvedValue(GENERATION_RESULT);
     const { container, root } = await renderDesign(createHost({ generate }));
-    const manual = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="manual"]',
-    );
-    if (manual === null) throw new Error("Manual mode missing");
-    await act(async () => manual.click());
+    const manual = await chooseSkillMode(container, "manual");
     const checkbox = container.querySelector<HTMLInputElement>(
       `input[aria-label="Apply ${selected.title}"]`,
     );
     if (checkbox === null) throw new Error("Craft choices missing");
     await act(async () => checkbox.click());
 
-    expect(manual.getAttribute("aria-checked")).toBe("true");
+    expect(manual.getAttribute("aria-label")).toBe(
+      `Craft mode: ${SKILL_MODE_LABELS.manual.name} · ${SKILL_MODE_LABELS.manual.summary}`,
+    );
     expect(container.textContent).toContain(`1 / ${MAX_AUTOMATIC_SKILL_SECTIONS}`);
     await fillDraft(container, "Use the selected craft section.");
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
-    expect(generate.mock.calls[0]?.[2]).toEqual({ skills: [selected.slug] });
+    expect(generate.mock.calls[0]?.[2]).toEqual({ skillMode: "manual", skills: [selected.slug] });
     await act(async () => root.unmount());
   });
 
@@ -2514,15 +2671,16 @@ describe("DesignSurface host capabilities", () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );
-    const auto = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="auto"]',
-    );
-    if (auto === null) throw new Error("Automatic mode choice missing");
-    await act(async () => auto.click());
-    const readMore = container.querySelector<HTMLButtonElement>(".design-skill-read-more");
-    if (readMore === null) throw new Error("Craft read-more control missing");
-    await act(async () => readMore.click());
+    await chooseSkillMode(container, "auto");
+    await openSkillCraft(container);
 
+    const budget = container.querySelector<HTMLElement>(".design-craft-budget");
+    if (budget === null) throw new Error("Craft budget missing");
+    expect(budget.querySelector("strong")?.textContent).toBe("Automatic selection");
+    expect(budget.querySelector("strong")?.textContent).not.toBe("0 sections included");
+    expect(budget.querySelector("span")?.textContent).toContain(
+      `up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections`,
+    );
     expect(container.querySelectorAll(".design-craft-title-row")).toHaveLength(
       builtInSkillIndex().length,
     );
@@ -2551,9 +2709,7 @@ describe("DesignSurface host capabilities", () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );
-    const readMore = container.querySelector<HTMLButtonElement>(".design-skill-read-more");
-    if (readMore === null) throw new Error("Craft read-more control missing");
-    await act(async () => readMore.click());
+    await openSkillCraft(container);
 
     const rows = () => [...container.querySelectorAll(".design-craft-title-row")];
     expect(rows()).toHaveLength(builtInSkillIndex().length);
@@ -2564,11 +2720,7 @@ describe("DesignSurface host capabilities", () => {
     const close = container.querySelector<HTMLButtonElement>('button[aria-label="Close Craft"]');
     if (close === null) throw new Error("Craft close control missing");
     await act(async () => close.click());
-    const manual = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="manual"]',
-    );
-    if (manual === null) throw new Error("Craft mode choice missing");
-    await act(async () => manual.click());
+    await chooseSkillMode(container, "manual");
 
     expect(
       container.querySelectorAll('.design-craft-title-row input[type="checkbox"]'),
@@ -2581,13 +2733,11 @@ describe("DesignSurface host capabilities", () => {
       .fn<NonNullable<DesignHost["generate"]>>()
       .mockResolvedValue(GENERATION_RESULT);
     const { container, root } = await renderDesign(createHost({ generate }));
-    const manual = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="manual"]',
-    );
-    if (manual === null) throw new Error("Manual mode missing");
-    await act(async () => manual.click());
+    const manual = await chooseSkillMode(container, "manual");
 
-    expect(manual.getAttribute("aria-checked")).toBe("true");
+    expect(manual.getAttribute("aria-label")).toBe(
+      `Craft mode: ${SKILL_MODE_LABELS.manual.name} · ${SKILL_MODE_LABELS.manual.summary}`,
+    );
     expect(container.textContent).toContain("0 / 4");
     expect(container.querySelector(".design-craft-detail")).toBeNull();
     await fillDraft(container, "Do not apply craft doctrine.");
@@ -2595,7 +2745,7 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
-    expect(generate.mock.calls[0]?.[2]).toEqual({ skills: [] });
+    expect(generate.mock.calls[0]?.[2]).toEqual({ skillMode: "manual", skills: [] });
     await act(async () => root.unmount());
   });
 
@@ -2605,11 +2755,7 @@ describe("DesignSurface host capabilities", () => {
     );
     expect(container.querySelector(".design-craft-sheet")).toBeNull();
     expect(container.querySelector(".design-assistant .design-craft-sheet")).toBeNull();
-    const manual = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="manual"]',
-    );
-    if (manual === null) throw new Error("Manual mode missing");
-    await act(async () => manual.click());
+    await chooseSkillMode(container, "manual");
     expect(container.querySelector(".design-assistant .design-craft-sheet")).toBeNull();
     expect(container.querySelectorAll(".design-craft-title-row")).toHaveLength(
       builtInSkillIndex().length,
@@ -2627,11 +2773,7 @@ describe("DesignSurface host capabilities", () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );
-    const manual = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="manual"]',
-    );
-    if (manual === null) throw new Error("Manual mode missing");
-    await act(async () => manual.click());
+    await chooseSkillMode(container, "manual");
     const selectedCheckbox = container.querySelector<HTMLInputElement>(
       `input[aria-label="Apply ${selected.title}"]`,
     );
@@ -2676,11 +2818,12 @@ describe("DesignSurface host capabilities", () => {
       skillSelectionFallback: false,
     });
     const { container, root } = await renderDesign(createHost({ generate }));
-    const automatic = container.querySelector<HTMLButtonElement>(
+    const popover = await openSkillModePopover(container);
+    const automatic = popover.querySelector<HTMLButtonElement>(
       'button[data-design-skill-mode="auto"]',
     );
     if (automatic === null) throw new Error("Automatic mode missing");
-    expect(automatic.getAttribute("aria-label")).toContain(SKILL_MODE_LABELS.auto.blurb);
+    expect(automatic.textContent).toContain(SKILL_MODE_LABELS.auto.blurb);
 
     await fillDraft(container, "Use automatic craft selection.");
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
@@ -2689,7 +2832,7 @@ describe("DesignSurface host capabilities", () => {
 
     expect(generate.mock.calls[0]?.[2]).toEqual({ skillMode: "auto" });
     await act(async () => Promise.resolve());
-    expect(container.textContent).toContain(`Automatic craft: ${selected.title}`);
+    expect(container.textContent).toContain(`Automatic craft: ${selected.slug}`);
     await act(async () => root.unmount());
   });
 
@@ -2710,11 +2853,6 @@ describe("DesignSurface host capabilities", () => {
       skillSelectionFallback: true,
     });
     const { container, root } = await renderDesign(createHost({ generate }));
-    const automatic = container.querySelector<HTMLButtonElement>(
-      'button[data-design-skill-mode="auto"]',
-    );
-    if (automatic === null) throw new Error("Automatic mode missing");
-    await act(async () => automatic.click());
     await fillDraft(container, "Use automatic craft selection.");
     const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
     if (send === null) throw new Error("Generate control missing");
@@ -2724,9 +2862,7 @@ describe("DesignSurface host capabilities", () => {
     expect(container.textContent).toContain(
       "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted.",
     );
-    const readMore = container.querySelector<HTMLButtonElement>(".design-skill-read-more");
-    if (readMore === null) throw new Error("Craft read-more control missing");
-    await act(async () => readMore.click());
+    await openSkillCraft(container);
     for (const entry of skillIndex) {
       const row = [...container.querySelectorAll<HTMLElement>(".design-craft-title-row")].find(
         (candidate) => candidate.textContent?.includes(entry.title),

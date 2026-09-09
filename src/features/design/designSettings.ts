@@ -9,26 +9,49 @@ export interface DesignSkillSelection {
 
 /**
  * Visible copy is centralized because these persisted ids are deliberately
- * stable. `all` remains the current priority-order fallback until deterministic
- * request matching lands; the other two descriptions state who chooses and
- * what an extra agent turn costs.
+ * stable — the ids (`all` | `manual` | `auto`) are written into surface
+ * settings and validated on parse; only the words under them may change.
+ * Deterministic request matching has landed, so `all` no longer means
+ * priority order: the sections are ranked against the request text with no
+ * model turn, and the priority order is only what a weak request falls back
+ * to. Each blurb is one self-sufficient sentence — it is shown as visible
+ * copy, not a tooltip — and each states who chooses and what the mode
+ * costs; `one extra model turn` in `auto` is the only real price difference
+ * between the modes, so it stays. The matched fallback is not crammed into
+ * the blurb: it is announced through `fallbackNotice` when a generation
+ * reports `skillSelectionFallback`.
  */
 export const SKILL_MODE_LABELS: Record<
   DesignSkillSelection["mode"],
-  { name: string; blurb: string; summary?: string }
+  {
+    name: string;
+    blurb: string;
+    summary?: string;
+    badge: string;
+    defaultNotice?: string;
+    fallbackNotice?: string;
+  }
 > = {
   all: {
-    name: "Priority",
-    blurb: "Most important sections that fit; the rest are omitted.",
-    summary: "Craft: priority sections that fit",
+    name: "Matched",
+    blurb: `Up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections matched to this request; no extra model turn.`,
+    summary: "request match · no extra turn",
+    badge: "Default",
+    defaultNotice:
+      "Matched is used when you do not choose a mode; it selects relevant sections from your request without another model turn.",
+    fallbackNotice: "No strong match — using the default order.",
   },
   manual: {
     name: "Manual",
     blurb: `Choose up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections yourself; no extra model turn.`,
+    summary: "choose sections",
+    badge: "You choose",
   },
   auto: {
     name: "Automatic",
     blurb: `Up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections chosen by the agent for this request; one extra model turn.`,
+    summary: "agent picks · +1 model turn",
+    badge: "Extra model turn",
   },
 };
 

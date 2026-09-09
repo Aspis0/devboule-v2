@@ -44,6 +44,7 @@
 .design-composer-context button,
 .design-zoom-controls button,
 .design-inspector-actions button,
+.design-inspector-close,
 .design-layer-select,
 .design-layer-visibility,
 .design-radius-option,
@@ -373,11 +374,12 @@
   min-height: 0;
   overflow: hidden;
   background: var(--design-canvas);
+  --design-canvas-reserved-right: 264px;
 }
 
 .design-canvas {
   position: absolute;
-  inset: 0;
+  inset: 0 var(--design-canvas-reserved-right) 0 0;
   overflow: hidden;
   background: var(--design-canvas);
 }
@@ -836,9 +838,23 @@
 }
 
 .design-inspector-close {
+  display: grid;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  place-items: center;
   margin-left: auto;
+  padding: 0;
   color: var(--silence);
+  background: transparent;
+  border-radius: 999px;
   font-size: 11px;
+}
+
+.design-inspector-close:hover,
+.design-inspector-close:focus-visible {
+  color: var(--ink);
+  background: var(--selection);
 }
 
 .design-inspector-section {
@@ -1055,6 +1071,22 @@
   border-color: var(--terracotta);
 }
 
+.design-assistant-workspace-wrap {
+  position: relative;
+  flex: none;
+  min-width: 0;
+}
+
+.design-assistant-header .design-provider-button {
+  width: max-content;
+  max-width: 130px;
+}
+
+.design-assistant-header .design-agent-picker {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
 .design-assistant-scroll {
   display: flex;
   flex: 1;
@@ -1222,11 +1254,11 @@
 }
 
 .design-skill-controls {
+  position: relative;
   display: flex;
+  flex: none;
   min-width: 0;
   align-items: center;
-  gap: 7px;
-  grid-column: 1 / -1;
 }
 
 .design-skill-mode-fieldset {
@@ -1238,58 +1270,54 @@
 
 .design-skill-mode-control {
   display: flex;
-  gap: 2px;
-  padding: 2px;
+  max-width: 100%;
+  width: max-content;
+  min-width: 0;
+  height: 24px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  color: var(--ink-soft);
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 9px;
-}
-
-.design-skill-mode {
-  height: 24px;
-  padding: 0 9px;
-  color: var(--ink-soft);
-  background: transparent;
-  border-radius: 6px;
   cursor: pointer;
-  font-size: 10px;
   font-weight: 600;
 }
 
-.design-skill-mode:hover,
-.design-skill-mode:focus-visible,
-.design-skill-mode-selected {
+.design-skill-mode-control-name {
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+
+.design-skill-mode-control-chevron {
+  flex: none;
+}
+
+.design-skill-mode-control:hover,
+.design-skill-mode-control:focus-visible,
+.design-skill-mode-control[aria-expanded="true"] {
   color: var(--terracotta-deep);
   background: var(--selection);
 }
 
-.design-skill-mode:focus-visible,
-.design-skill-read-more:focus-visible,
+.design-skill-mode-control:focus-visible,
+.design-skill-mode-option:focus-visible,
+.design-skill-picker-action:focus-visible,
 .design-craft-title-button:focus-visible,
 .design-craft-close:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 
-.design-skill-read-more {
-  padding: 2px 3px;
-  color: var(--silence);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.design-skill-read-more:hover {
-  color: var(--terracotta-deep);
-}
-
 .design-skill-result {
-  grid-column: 1 / -1;
-  margin: -1px 0 0;
+  margin: 4px 0 0;
   color: var(--silence);
-  font-size: 9.5px;
+  font-size: 10px;
   line-height: 1.35;
 }
 
@@ -1633,10 +1661,22 @@
 }
 
 .design-composer-footer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
+  display: flex;
+  min-width: 0;
+  align-items: center;
   gap: 6px;
   margin-top: 3px;
+}
+
+.design-composer-footer > .design-skill-controls,
+.design-composer-footer > .design-agent-picker-wrap {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.design-composer-footer .design-provider-button {
+  width: max-content;
+  max-width: 100%;
 }
 
 .design-provider-button {
@@ -1693,6 +1733,113 @@
   border-radius: 10px;
   box-shadow: 0 6px 22px rgba(var(--ink-rgb), 0.13);
   font-size: 11px;
+}
+
+.design-skill-picker {
+  min-width: min(320px, calc(100vw - 28px));
+  max-width: min(320px, calc(100vw - 28px));
+  max-height: min(420px, calc(100vh - 24px));
+  overflow-y: auto;
+}
+
+.design-skill-picker-default {
+  margin: -2px 0 0;
+  color: var(--silence);
+  line-height: 1.35;
+}
+
+.design-skill-picker-default strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.design-skill-mode-options {
+  display: grid;
+  gap: 3px;
+}
+
+.design-skill-mode-option {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 7px 8px;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.design-skill-mode-option:hover,
+.design-skill-mode-option:focus-visible,
+.design-skill-mode-option[aria-checked="true"] {
+  color: var(--ink);
+  background: var(--surface-muted);
+  border-color: var(--border);
+}
+
+.design-skill-mode-option-name {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.design-skill-mode-option-default {
+  border-color: var(--border-strong);
+}
+
+.design-skill-mode-option-badge {
+  margin-left: auto;
+  color: var(--silence);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.design-skill-mode-option-default .design-skill-mode-option-badge {
+  color: var(--terracotta-deep);
+}
+
+.design-skill-mode-option-auto .design-skill-mode-option-badge {
+  color: var(--terracotta-deep);
+}
+
+.design-skill-mode-option-manual .design-skill-mode-option-badge {
+  color: var(--purple-deep);
+}
+
+.design-skill-mode-option-blurb {
+  color: var(--silence);
+  line-height: 1.35;
+}
+
+.design-skill-mode-option-selected {
+  flex: none;
+  margin-left: 0;
+  color: var(--terracotta-deep);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.design-skill-picker-action {
+  padding: 5px 8px;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.design-skill-picker-action:hover {
+  color: var(--terracotta-deep);
+  background: var(--surface-muted);
 }
 
 .design-agent-picker-label {
@@ -1813,7 +1960,7 @@
 
 .design-generate-button {
   display: grid;
-  min-width: 77px;
+  min-width: 72px;
   height: 26px;
   margin-left: 0;
   padding: 0 13px;

@@ -174,6 +174,7 @@ interface InspectorProps {
   onElevationChange: (flat: boolean) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onClose: () => void;
   canDuplicate: boolean;
   canDelete: boolean;
 }
@@ -204,7 +205,7 @@ interface DesignSkillViewProps {
   skillSelection: DesignSkillSelection;
   selectedSkillSlugs: readonly string[];
   resolvedSkillSlugs: readonly string[] | null;
-  autoAppliedSkillSlugs: readonly string[] | null;
+  appliedSkillSlugs: readonly string[] | null;
   hasResolvedComposition: boolean;
   skillBlock: ReturnType<typeof buildSkillBlock>;
   resolvedSkillSlugSet: ReadonlySet<string>;
@@ -246,7 +247,7 @@ interface AssistantProps extends DesignSkillViewProps {
   onWorkspacePickerOpen: () => void;
   onModelSelect: (modelId: string) => void;
   onEffortSelect: (effort: string) => void;
-  autoSkillNotice: string | null;
+  skillResultNotice: string | null;
   onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
   onCraftOpen: () => void;
   onCraftReadMore: () => void;
@@ -258,7 +259,7 @@ interface DesignCraftSheetProps extends DesignSkillViewProps {
   onSkillToggle: (slug: string) => void;
 }
 
-const DESIGN_SKILL_MODES: readonly DesignSkillSelection["mode"][] = ["manual", "all", "auto"];
+const DESIGN_SKILL_MODES: readonly DesignSkillSelection["mode"][] = ["all", "manual", "auto"];
 
 function renderCraftInline(text: string) {
   return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
@@ -291,43 +292,135 @@ const DesignSkillModeControl = memo(function DesignSkillModeControl({
   onCraftOpen: () => void;
   onCraftReadMore: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const selectedModeRef = useRef<HTMLButtonElement>(null);
+  const activeCopy = SKILL_MODE_LABELS[skillSelection.mode];
+
+  const closePopover = useCallback(() => {
+    setOpen(false);
+    queueMicrotask(() => triggerRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    selectedModeRef.current?.focus();
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closePopover();
+    };
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !popoverRef.current?.contains(target) &&
+        !triggerRef.current?.contains(target)
+      ) {
+        closePopover();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [closePopover, open]);
+
+  const chooseMode = useCallback(
+    (mode: DesignSkillSelection["mode"]) => {
+      if (skillSelection.mode === mode) return;
+      onSkillModeChange(mode);
+      closePopover();
+      if (mode === "manual") onCraftOpen();
+    },
+    [closePopover, onCraftOpen, onSkillModeChange, skillSelection.mode],
+  );
+
+  const openCraft = useCallback(() => {
+    closePopover();
+    if (skillSelection.mode === "manual") onCraftOpen();
+    else onCraftReadMore();
+  }, [closePopover, onCraftOpen, onCraftReadMore, skillSelection.mode]);
+
   return (
     <div className="design-skill-controls">
       <fieldset className="design-skill-mode-fieldset">
         <legend className="design-sr-only">Craft mode</legend>
-        <div className="design-skill-mode-control" role="radiogroup" aria-label="Craft mode">
-          {DESIGN_SKILL_MODES.map((mode) => {
-            const copy = SKILL_MODE_LABELS[mode];
-            const selected = skillSelection.mode === mode;
-            return (
-              <button
-                className={`design-skill-mode${selected ? " design-skill-mode-selected" : ""}`}
-                key={mode}
-                type="button"
-                role="radio"
-                data-design-skill-mode={mode}
-                aria-checked={selected}
-                aria-label={`${copy.name}: ${copy.blurb}`}
-                title={copy.blurb}
-                onClick={() => {
-                  if (selected) {
-                    if (mode === "manual") onCraftOpen();
-                    return;
-                  }
-                  onSkillModeChange(mode);
-                  if (mode === "manual") onCraftOpen();
-                }}
-              >
-                {copy.name}
-              </button>
-            );
-          })}
-        </div>
-      </fieldset>
-      {skillSelection.mode !== "manual" ? (
-        <button className="design-skill-read-more" type="button" onClick={onCraftReadMore}>
-          Read more
+        <button
+          ref={triggerRef}
+          className="design-skill-mode-control"
+          type="button"
+          data-design-skill-mode-trigger="true"
+          aria-label={`Craft mode: ${activeCopy.name} · ${activeCopy.summary ?? activeCopy.blurb}`}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls="design-skill-picker"
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="design-skill-mode-control-name">{activeCopy.name}</span>
+          <span className="design-skill-mode-control-chevron" aria-hidden="true">
+            ⌄
+          </span>
         </button>
+      </fieldset>
+      {open ? (
+        <div
+          ref={popoverRef}
+          id="design-skill-picker"
+          className="design-agent-picker design-skill-picker"
+          role="dialog"
+          aria-labelledby="design-skill-picker-title"
+          tabIndex={-1}
+        >
+          <div className="design-agent-picker-label" id="design-skill-picker-title">
+            Craft mode
+          </div>
+          <p className="design-skill-picker-default">
+            <strong>Default:</strong> {SKILL_MODE_LABELS.all.defaultNotice}
+          </p>
+          <div className="design-skill-mode-options" role="radiogroup" aria-label="Craft mode">
+            {DESIGN_SKILL_MODES.map((mode) => {
+              const copy = SKILL_MODE_LABELS[mode];
+              const selected = skillSelection.mode === mode;
+              return (
+                <button
+                  ref={selected ? selectedModeRef : undefined}
+                  className={[
+                    "design-skill-mode-option",
+                    `design-skill-mode-option-${mode}`,
+                    mode === "all" ? "design-skill-mode-option-default" : null,
+                  ]
+                    .filter((className): className is string => className !== null)
+                    .join(" ")}
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  data-design-skill-mode={mode}
+                  aria-checked={selected}
+                  onClick={() => chooseMode(mode)}
+                >
+                  <span className="design-skill-mode-option-name">
+                    {copy.name}
+                    <span className="design-skill-mode-option-badge">{copy.badge}</span>
+                    {selected ? (
+                      <span className="design-skill-mode-option-selected">Selected</span>
+                    ) : null}
+                  </span>
+                  <span className="design-skill-mode-option-blurb">{copy.blurb}</span>
+                </button>
+              );
+            })}
+          </div>
+          <button className="design-skill-picker-action" type="button" onClick={openCraft}>
+            {skillSelection.mode === "manual" ? "Choose sections…" : "Read more"}
+          </button>
+        </div>
       ) : null}
     </div>
   );
@@ -338,7 +431,7 @@ const DesignCraftSheet = memo(function DesignCraftSheet({
   skillSelection,
   selectedSkillSlugs,
   resolvedSkillSlugs,
-  autoAppliedSkillSlugs,
+  appliedSkillSlugs,
   hasResolvedComposition,
   skillBlock,
   resolvedSkillSlugSet,
@@ -360,8 +453,7 @@ const DesignCraftSheet = memo(function DesignCraftSheet({
     return hasResolvedComposition && isRequested && droppedSkillSlugSet.has(entry.slug);
   });
   const expandedEntry = skillIndex.find((entry) => entry.slug === expandedSlug) ?? null;
-  const isWaitingForAutomaticChoice =
-    skillSelection.mode === "auto" && autoAppliedSkillSlugs === null;
+  const isWaitingForAutomaticChoice = skillSelection.mode === "auto" && appliedSkillSlugs === null;
   const budgetHeading = hasResolvedComposition
     ? `${includedSkillCount} sections included`
     : "Automatic selection";
@@ -433,7 +525,7 @@ const DesignCraftSheet = memo(function DesignCraftSheet({
                   !isDropped && ((hasResolvedComposition && isRequested) || isAutomaticBaseline);
                 const isAutomaticallyUnselected =
                   skillSelection.mode === "auto" &&
-                  autoAppliedSkillSlugs !== null &&
+                  appliedSkillSlugs !== null &&
                   !isRequested &&
                   !isAutomaticBaseline;
                 const status = isDropped
@@ -889,6 +981,7 @@ const ARTIFACT_CONTEXT_NAME = "Generated artifact";
 const ARTIFACT_CSP =
   "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; manifest-src 'none'";
 const ARTIFACT_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_CSP}" />`;
+const DESIGN_FIT_MARGIN = 80;
 
 function layerRectsFor(layers: readonly DesignLayer[]): NodeRect[] {
   return layers.map((layer, index) => ({
@@ -1126,6 +1219,7 @@ const DesignCanvas = memo(function DesignCanvas({
       ref={canvasRef}
       className="design-canvas"
       aria-label="Design canvas"
+      tabIndex={-1}
       onClick={handleCanvasClick}
     >
       <div className="design-canvas-grid" aria-hidden="true" />
@@ -1231,6 +1325,7 @@ const InspectorPanel = memo(function InspectorPanel({
   onElevationChange,
   onDuplicate,
   onDelete,
+  onClose,
   canDuplicate,
   canDelete,
 }: InspectorProps) {
@@ -1248,9 +1343,14 @@ const InspectorPanel = memo(function InspectorPanel({
           {layer.name}
         </span>
         <span className="design-inspector-kind">{layer.kind}</span>
-        <span className="design-inspector-close" aria-hidden="true">
-          ✕
-        </span>
+        <button
+          className="design-inspector-close"
+          type="button"
+          aria-label="Close inspector"
+          onClick={onClose}
+        >
+          ×
+        </button>
       </div>
 
       <div className="design-inspector-section">
@@ -1446,7 +1546,7 @@ const DesignAssistant = memo(function DesignAssistant({
   onModelSelect,
   onEffortSelect,
   skillSelection,
-  autoSkillNotice,
+  skillResultNotice,
   onSkillModeChange,
   onCraftOpen,
   onCraftReadMore,
@@ -1466,6 +1566,7 @@ const DesignAssistant = memo(function DesignAssistant({
     currentModel?.name ??
     manifest?.currentModelId ??
     (agentState === null ? "No agent running" : "No model selected");
+  const modelButtonLabel = modelLabel === "No model selected" ? "No model" : modelLabel;
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? null;
   const providerLabel =
     selectedProvider?.id ??
@@ -1611,6 +1712,113 @@ const DesignAssistant = memo(function DesignAssistant({
           Assistant
         </span>
         <span className="design-generation-label">{generationLabel}</span>
+        <div
+          className="design-agent-picker-wrap design-assistant-workspace-wrap"
+          ref={workspacePickerWrapRef}
+        >
+          <button
+            className="design-provider-button"
+            type="button"
+            aria-label={
+              workspaceButtonDisabled
+                ? `Workspace for this session: ${workspaceLabel}. Choose a workspace before the first generation.`
+                : `Choose workspace: ${workspaceLabel}`
+            }
+            title={
+              workspaceButtonDisabled
+                ? "This session keeps the workspace it started with. Choose a workspace before the first generation."
+                : undefined
+            }
+            aria-expanded={workspaceButtonDisabled ? undefined : workspacePickerOpen}
+            aria-controls={workspaceButtonDisabled ? undefined : "design-workspace-picker"}
+            disabled={workspaceButtonDisabled}
+            onClick={() => {
+              const nextOpen = !workspacePickerOpen;
+              if (nextOpen) onWorkspacePickerOpen();
+              setWorkspacePickerOpen(nextOpen);
+              setProviderPickerOpen(false);
+              setModelPickerOpen(false);
+            }}
+          >
+            <span className="design-provider-dot" aria-hidden="true" />
+            {workspaceLabel}
+            {workspaceButtonDisabled ? null : " ▾"}
+          </button>
+          {workspacePickerOpen && !workspaceButtonDisabled ? (
+            <div
+              id="design-workspace-picker"
+              className="design-agent-picker"
+              role="listbox"
+              aria-label="Choose workspace"
+            >
+              <div className="design-agent-picker-label">Choose workspace</div>
+              {workspacesLoading && workspaceProjects.length === 0 ? (
+                <div className="design-agent-picker-status">Loading workspaces.</div>
+              ) : (
+                <>
+                  {workspacesRefreshing ? (
+                    <div className="design-agent-picker-status">Refreshing workspaces.</div>
+                  ) : null}
+                  {workspacesError !== null ? (
+                    <div className="design-agent-picker-status">{workspacesError}</div>
+                  ) : null}
+                  {workspaceSelectionNotice !== null ? (
+                    <div className="design-agent-picker-status">{workspaceSelectionNotice}</div>
+                  ) : null}
+                  <div className="design-agent-picker-options">
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={selectedWorkspaceId === null}
+                      className="design-agent-picker-option"
+                      onClick={() => {
+                        onWorkspaceSelect(null);
+                        setWorkspacePickerOpen(false);
+                      }}
+                    >
+                      No workspace — use the daemon directory
+                    </button>
+                  </div>
+                  {workspaceProjects.length === 0 ? (
+                    <div className="design-agent-picker-status">No projects registered.</div>
+                  ) : (
+                    workspaceProjects.map((project) => (
+                      <div className="design-workspace-project" key={project.id}>
+                        <div className="design-agent-picker-label">{project.name}</div>
+                        {project.workspaceError !== undefined ? (
+                          <div className="design-agent-picker-status">{project.workspaceError}</div>
+                        ) : project.workspaces.length === 0 ? (
+                          <div className="design-agent-picker-status">
+                            A workspace has to be created in Workspace first.
+                          </div>
+                        ) : (
+                          <div className="design-agent-picker-options">
+                            {project.workspaces.map((workspace) => (
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={workspace.id === selectedWorkspaceId}
+                                data-workspace-id={workspace.id}
+                                className="design-agent-picker-option"
+                                key={workspace.id}
+                                onClick={() => {
+                                  onWorkspaceSelect(workspace);
+                                  setWorkspacePickerOpen(false);
+                                }}
+                              >
+                                {workspace.title}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </>
+              )}
+            </div>
+          ) : null}
+        </div>
         {canGenerate ? (
           <button
             className="design-visual-check"
@@ -1661,8 +1869,13 @@ const DesignAssistant = memo(function DesignAssistant({
               onKeyDown={onComposerKeyDown}
               placeholder={draftPlaceholder}
               aria-label="Describe a design change"
-              rows={2}
+              rows={3}
             />
+            {skillResultNotice ? (
+              <div className="design-skill-result" role="status">
+                {skillResultNotice}
+              </div>
+            ) : null}
             <div className="design-composer-footer">
               <DesignSkillModeControl
                 skillSelection={skillSelection}
@@ -1670,11 +1883,6 @@ const DesignAssistant = memo(function DesignAssistant({
                 onCraftOpen={onCraftOpen}
                 onCraftReadMore={onCraftReadMore}
               />
-              {autoSkillNotice ? (
-                <div className="design-skill-result" role="status">
-                  {autoSkillNotice}
-                </div>
-              ) : null}
               <div className="design-agent-picker-wrap" ref={providerPickerWrapRef}>
                 <button
                   ref={providerButtonRef}
@@ -1795,114 +2003,6 @@ const DesignAssistant = memo(function DesignAssistant({
                   </div>
                 ) : null}
               </div>
-              <div className="design-agent-picker-wrap" ref={workspacePickerWrapRef}>
-                <button
-                  className="design-provider-button"
-                  type="button"
-                  aria-label={
-                    workspaceButtonDisabled
-                      ? `Workspace for this session: ${workspaceLabel}. Choose a workspace before the first generation.`
-                      : `Choose workspace: ${workspaceLabel}`
-                  }
-                  title={
-                    workspaceButtonDisabled
-                      ? "This session keeps the workspace it started in. Choose a workspace before the first generation."
-                      : undefined
-                  }
-                  aria-expanded={workspaceButtonDisabled ? undefined : workspacePickerOpen}
-                  aria-controls={workspaceButtonDisabled ? undefined : "design-workspace-picker"}
-                  disabled={workspaceButtonDisabled}
-                  onClick={() => {
-                    const nextOpen = !workspacePickerOpen;
-                    if (nextOpen) onWorkspacePickerOpen();
-                    setWorkspacePickerOpen(nextOpen);
-                    setProviderPickerOpen(false);
-                    setModelPickerOpen(false);
-                  }}
-                >
-                  <span className="design-provider-dot" aria-hidden="true" />
-                  {workspaceLabel}
-                  {workspaceButtonDisabled ? null : " ▾"}
-                </button>
-                {workspacePickerOpen && !workspaceButtonDisabled ? (
-                  <div
-                    id="design-workspace-picker"
-                    className="design-agent-picker"
-                    role="listbox"
-                    aria-label="Choose workspace"
-                  >
-                    <div className="design-agent-picker-label">Choose workspace</div>
-                    {workspacesLoading && workspaceProjects.length === 0 ? (
-                      <div className="design-agent-picker-status">Loading workspaces.</div>
-                    ) : (
-                      <>
-                        {workspacesRefreshing ? (
-                          <div className="design-agent-picker-status">Refreshing workspaces.</div>
-                        ) : null}
-                        {workspacesError !== null ? (
-                          <div className="design-agent-picker-status">{workspacesError}</div>
-                        ) : null}
-                        {workspaceSelectionNotice !== null ? (
-                          <div className="design-agent-picker-status">
-                            {workspaceSelectionNotice}
-                          </div>
-                        ) : null}
-                        <div className="design-agent-picker-options">
-                          <button
-                            type="button"
-                            role="option"
-                            aria-selected={selectedWorkspaceId === null}
-                            className="design-agent-picker-option"
-                            onClick={() => {
-                              onWorkspaceSelect(null);
-                              setWorkspacePickerOpen(false);
-                            }}
-                          >
-                            No workspace — use the daemon directory
-                          </button>
-                        </div>
-                        {workspaceProjects.length === 0 ? (
-                          <div className="design-agent-picker-status">No projects registered.</div>
-                        ) : (
-                          workspaceProjects.map((project) => (
-                            <div className="design-workspace-project" key={project.id}>
-                              <div className="design-agent-picker-label">{project.name}</div>
-                              {project.workspaceError !== undefined ? (
-                                <div className="design-agent-picker-status">
-                                  {project.workspaceError}
-                                </div>
-                              ) : project.workspaces.length === 0 ? (
-                                <div className="design-agent-picker-status">
-                                  A workspace has to be created in Workspace first.
-                                </div>
-                              ) : (
-                                <div className="design-agent-picker-options">
-                                  {project.workspaces.map((workspace) => (
-                                    <button
-                                      type="button"
-                                      role="option"
-                                      aria-selected={workspace.id === selectedWorkspaceId}
-                                      data-workspace-id={workspace.id}
-                                      className="design-agent-picker-option"
-                                      key={workspace.id}
-                                      onClick={() => {
-                                        onWorkspaceSelect(workspace);
-                                        setWorkspacePickerOpen(false);
-                                      }}
-                                    >
-                                      {workspace.title}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </>
-                    )}
-                  </div>
-                ) : null}
-              </div>
               <div className="design-agent-picker-wrap">
                 <button
                   className="design-provider-button"
@@ -1921,7 +2021,7 @@ const DesignAssistant = memo(function DesignAssistant({
                   }}
                 >
                   <span className="design-provider-dot" aria-hidden="true" />
-                  Model: {modelLabel}
+                  {modelButtonLabel}
                   {modelButtonDisabled ? null : " ▾"}
                 </button>
                 {modelButtonDisabled ? null : modelPickerOpen ? (
@@ -2102,10 +2202,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const [skillSelection, setSkillSelectionState] = useState<DesignSkillSelection>(
     DEFAULT_DESIGN_SKILL_SELECTION,
   );
-  const [autoAppliedSkillSlugs, setAutoAppliedSkillSlugs] = useState<readonly string[] | null>(
-    null,
-  );
-  const [autoSkillNotice, setAutoSkillNotice] = useState<string | null>(null);
+  const [appliedSkillSlugs, setAppliedSkillSlugs] = useState<readonly string[] | null>(null);
+  const [skillResultNotice, setSkillResultNotice] = useState<string | null>(null);
   const [craftSheetMode, setCraftSheetMode] = useState<"manual" | "readonly" | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
@@ -2135,6 +2233,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const documentRevisionRef = useRef(0);
   const layerCopyCounterRef = useRef(0);
   const skillSelectionInteractedRef = useRef(false);
+  const skillSelectionRef = useRef(skillSelection);
   const providerSelectionInteractedRef = useRef(false);
   const workspaceSelectionInteractedRef = useRef(false);
   const workspaceSelectionIdRef = useRef<string | null>(null);
@@ -2383,6 +2482,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     };
   }, [knownSkillSlugs]);
 
+  useEffect(() => {
+    skillSelectionRef.current = skillSelection;
+  }, [skillSelection]);
+
   const selectedLayer = useMemo(
     () => layers.find((layer) => layer.id === selectedLayerId) ?? null,
     [layers, selectedLayerId],
@@ -2396,6 +2499,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const updateSkillSelection = useCallback(
     (selection: DesignSkillSelection) => {
       skillSelectionInteractedRef.current = true;
+      skillSelectionRef.current = selection;
       setSkillSelectionState(selection);
       void saveDesignSkillSelection(selection).then((saved) => reportPersistence("skill", saved));
     },
@@ -2404,8 +2508,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const handleSkillModeChange = useCallback(
     (mode: DesignSkillSelection["mode"]) => {
       if (skillSelection.mode === mode) return;
-      setAutoSkillNotice(null);
-      setAutoAppliedSkillSlugs(null);
+      setSkillResultNotice(null);
+      setAppliedSkillSlugs(null);
       updateSkillSelection({
         ...skillSelection,
         mode,
@@ -2430,6 +2534,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         ...skillSelection,
         enabledSlugs: [...enabled],
       });
+      setSkillResultNotice(null);
+      setAppliedSkillSlugs(null);
     },
     [skillSelection, updateSkillSelection],
   );
@@ -2449,7 +2555,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   }, [closeCraftSheet, craftSheetMode]);
 
   const resolvedSkillSlugs =
-    skillSelection.mode === "auto" ? autoAppliedSkillSlugs : selectedSkillSlugs;
+    appliedSkillSlugs !== null
+      ? appliedSkillSlugs
+      : skillSelection.mode === "auto"
+        ? null
+        : selectedSkillSlugs;
   // Manual belongs here too: `resolvedSkillSlugs` is the user's own ticks, so the composition
   // is as resolved as it is in `all`. Leaving it out meant a manual selection that overflowed
   // the budget kept every box ticked and said nothing, which is the same lie this row status
@@ -2458,7 +2568,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const hasResolvedComposition =
     skillSelection.mode === "all" ||
     skillSelection.mode === "manual" ||
-    (skillSelection.mode === "auto" && autoAppliedSkillSlugs !== null);
+    (skillSelection.mode === "auto" && appliedSkillSlugs !== null);
   const skillBlock = useMemo(
     () => buildSkillBlock(builtInSkillSources(), resolvedSkillSlugs ?? []),
     [resolvedSkillSlugs],
@@ -2631,6 +2741,37 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     },
     [composerContextLayerId, markDocumentDirty, selectedLayerId],
   );
+  const closeInspector = useCallback(() => {
+    selectLayer("");
+    queueMicrotask(() => {
+      designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas")?.focus();
+    });
+  }, [selectLayer]);
+
+  useEffect(() => {
+    if (selectedLayer === null) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      const surface = designSurfaceRef.current;
+      if (!surface) return;
+      const eventTarget = event.target;
+      const focusTarget =
+        eventTarget instanceof Element && eventTarget.isConnected
+          ? eventTarget
+          : globalThis.document.activeElement instanceof Element &&
+              globalThis.document.activeElement.isConnected
+            ? globalThis.document.activeElement
+            : null;
+      const escapeOwner = focusTarget?.closest<HTMLElement>(
+        '[role="dialog"], [role="listbox"], [role="group"][aria-label]',
+      );
+      if (escapeOwner) return;
+      event.preventDefault();
+      closeInspector();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [closeInspector, selectedLayer]);
 
   const duplicateLayer = useCallback(() => {
     const source = layers.find((layer) => layer.id === selectedLayerId);
@@ -2724,7 +2865,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
     if (!canvas) return;
     const bounds = canvas.getBoundingClientRect();
-    setViewport(fitViewport(nodesBounds(fitRectsRef.current), bounds.width, bounds.height));
+    setViewport(
+      fitViewport(nodesBounds(fitRectsRef.current), bounds.width, bounds.height, DESIGN_FIT_MARGIN),
+    );
   }, [setViewport]);
 
   const undo = useCallback(() => {
@@ -2850,6 +2993,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         return;
       }
 
+      // Provenance belongs to the generation that produced it. History entries do not persist
+      // that metadata, so clear the live result before showing a different artifact.
+      setAppliedSkillSlugs(null);
+      setSkillResultNotice(null);
       disposeHistoryOpen();
       historyOpenInFlightRef.current = true;
       const openGeneration = historyOpenGenerationRef.current;
@@ -2934,12 +3081,19 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       setMessages((current) => [...current, userMessage, assistantMessage]);
       useAppStore.getState().setDesignGeneration(host, { assistantId, controller });
       setDraft("");
-      setAutoSkillNotice(null);
-      setAutoAppliedSkillSlugs(null);
+      setSkillResultNotice(null);
+      setAppliedSkillSlugs(null);
+      const generationSkillSelection = skillSelectionRef.current;
+      // The wire mode repeats the persisted selection id: the caller knows
+      // which mode is active and states it, the host never infers intention
+      // from the list shape. `all` carries no list — the host ranks the
+      // corpus itself.
       const generationOptions =
         skillSelection.mode === "auto"
           ? { skillMode: "auto" as const }
-          : { skills: selectedSkillSlugs };
+          : skillSelection.mode === "manual"
+            ? { skillMode: "manual" as const, skills: selectedSkillSlugs }
+            : { skillMode: "all" as const };
       void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
           const currentGeneration = useAppStore.getState().designSession.generation;
@@ -2992,31 +3146,35 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
               },
             );
           }
-          if (skillSelection.mode === "auto" && result.appliedSkillSlugs !== undefined) {
-            const composedAutoSkillBlock = buildSkillBlock(
+          if (
+            skillSelectionRef.current === generationSkillSelection &&
+            result.appliedSkillSlugs !== undefined
+          ) {
+            const composedSkillBlock = buildSkillBlock(
               builtInSkillSources(),
               result.appliedSkillSlugs,
             );
-            const droppedAutoSkillSlugs = new Set(composedAutoSkillBlock.dropped);
-            const appliedTitles = result.appliedSkillSlugs
-              .filter((slug) => !droppedAutoSkillSlugs.has(slug))
-              .map((slug) => skillIndex.find((entry) => entry.slug === slug)?.title)
-              .filter((title): title is string => title !== undefined);
-            const droppedTitles = result.appliedSkillSlugs
-              .filter((slug) => droppedAutoSkillSlugs.has(slug))
-              .map((slug) => skillIndex.find((entry) => entry.slug === slug)?.title)
-              .filter((title): title is string => title !== undefined);
-            setAutoAppliedSkillSlugs([...result.appliedSkillSlugs]);
-            setAutoSkillNotice(
+            const droppedSkillSlugs = new Set(composedSkillBlock.dropped);
+            const appliedSlugs = result.appliedSkillSlugs.filter(
+              (slug) => !droppedSkillSlugs.has(slug),
+            );
+            const omittedSlugs = result.appliedSkillSlugs.filter((slug) =>
+              droppedSkillSlugs.has(slug),
+            );
+            const modeCopy = SKILL_MODE_LABELS[generationSkillSelection.mode];
+            const appliedSummary = appliedSlugs.length > 0 ? appliedSlugs.join(", ") : "none";
+            const omittedSummary =
+              omittedSlugs.length > 0
+                ? ` Omitted: ${omittedSlugs.join(", ")} did not fit within the ${composedSkillBlock.ceiling.toLocaleString()}-character budget.`
+                : "";
+            const fallbackSummary =
+              modeCopy.fallbackNotice ??
+              `${modeCopy.name} choice did not happen; the most important sections that fit were used, and the rest were omitted.`;
+            setAppliedSkillSlugs([...result.appliedSkillSlugs]);
+            setSkillResultNotice(
               result.skillSelectionFallback
-                ? `${SKILL_MODE_LABELS.auto.name} choice did not happen; the most important sections that fit were used, and the rest were omitted.`
-                : appliedTitles.length > 0
-                  ? `${SKILL_MODE_LABELS.auto.name} craft: ${appliedTitles.join(", ")}${
-                      droppedTitles.length > 0
-                        ? `. Omitted: ${droppedTitles.join(", ")} did not fit within the ${composedAutoSkillBlock.ceiling.toLocaleString()}-character budget.`
-                        : ""
-                    }`
-                  : `${SKILL_MODE_LABELS.auto.name} craft: no sections were used.`,
+                ? `${fallbackSummary} Applied: ${appliedSummary}.${omittedSummary}`
+                : `${modeCopy.name} craft: ${appliedSummary}.${omittedSummary}`,
             );
           }
           useAppStore.getState().setDesignGeneration(host, null);
@@ -3063,7 +3221,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       generate,
       host,
       reportPersistence,
-      skillIndex,
       skillSelection.mode,
       selectedSkillSlugs,
       setMessages,
@@ -3194,7 +3351,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           skillSelection={skillSelection}
           selectedSkillSlugs={selectedSkillSlugs}
           resolvedSkillSlugs={resolvedSkillSlugs}
-          autoAppliedSkillSlugs={autoAppliedSkillSlugs}
+          appliedSkillSlugs={appliedSkillSlugs}
           hasResolvedComposition={hasResolvedComposition}
           skillBlock={skillBlock}
           resolvedSkillSlugSet={resolvedSkillSlugSet}
@@ -3207,7 +3364,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       ) : null}
 
       <div className="design-main">
-        <div className="design-workspace">
+        <div
+          className={`design-workspace${selectedLayer ? " design-workspace-inspector-open" : ""}`}
+        >
           <DesignCanvas
             layers={layers}
             hiddenLayerIds={snapshot.hiddenLayerIds}
@@ -3245,6 +3404,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
               onElevationChange={setElevation}
               onDuplicate={duplicateLayer}
               onDelete={deleteLayer}
+              onClose={closeInspector}
               canDuplicate={selectedLayer.source === undefined}
               canDelete={layers.length > 1}
             />
@@ -3291,13 +3451,13 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           skillSelection={skillSelection}
           selectedSkillSlugs={selectedSkillSlugs}
           resolvedSkillSlugs={resolvedSkillSlugs}
-          autoAppliedSkillSlugs={autoAppliedSkillSlugs}
+          appliedSkillSlugs={appliedSkillSlugs}
           hasResolvedComposition={hasResolvedComposition}
           skillBlock={skillBlock}
           resolvedSkillSlugSet={resolvedSkillSlugSet}
           automaticBaselineSlugSet={automaticBaselineSlugSet}
           droppedSkillSlugSet={droppedSkillSlugSet}
-          autoSkillNotice={autoSkillNotice}
+          skillResultNotice={skillResultNotice}
           onSkillModeChange={handleSkillModeChange}
           onCraftOpen={openManualCraftSheet}
           onCraftReadMore={openCraftReadOnlySheet}

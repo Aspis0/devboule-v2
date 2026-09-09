@@ -86,6 +86,7 @@ import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
 import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
+import { rankSkillsForQuery } from "./skillRanking";
 import {
   buildSkillBlock,
   DOCTRINE_DESCRIPTION_CEILING_CHARS,
@@ -241,8 +242,9 @@ function emitToolUpdate(
 async function startRun(
   host: ReturnType<typeof createAgentHost>,
   options?: DesignGenerationOptions,
+  prompt = "Update the design",
 ): Promise<{ run: Promise<DesignGenerationResult> }> {
-  const run = host.generate?.("Update the design", new AbortController().signal, options);
+  const run = host.generate?.(prompt, new AbortController().signal, options);
   let failure: unknown;
   void run?.catch((error: unknown) => {
     failure = error;
@@ -828,9 +830,9 @@ describe("ACP design host", () => {
     if (selected === undefined || omitted === undefined) throw new Error("Built-in skills missing");
 
     const host = createAgentHost();
-    const { run } = await startRun(host, { skills: [selected.slug] });
+    const { run } = await startRun(host, { skillMode: "manual", skills: [selected.slug] });
     finishRun();
-    await run;
+    const result = await run;
 
     const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
     expect(sentText).toContain(`## ${selected.title}`);
@@ -843,32 +845,143 @@ describe("ACP design host", () => {
     expect(sentText).toContain(selectedSection.section.body);
     expect(sentText).not.toContain(`## ${omitted.title}`);
 
+    // A pin is reported like any other selection, and it never falls back.
+    expect(result.appliedSkillSlugs).toEqual([selected.slug]);
+    expect(result.skillSelectionFallback).toBe(false);
+
     await disposeAgentHost(host);
   });
 
-  it("omits the doctrine block when an empty skill list is selected", async () => {
+  it("omits the doctrine block when an empty skill list is pinned", async () => {
     const host = createAgentHost();
-    const { run } = await startRun(host, { skills: [] });
+    const { run } = await startRun(host, { skillMode: "manual", skills: [] });
     finishRun();
-    await run;
+    const result = await run;
 
     const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
     expect(sentText).not.toContain(DESIGN_DOCTRINE_BEGIN);
     expect(sentText).not.toContain(DESIGN_DOCTRINE_END);
 
+    // An empty pin is a real selection of nothing, distinct from an absent report.
+    expect(result.appliedSkillSlugs).toEqual([]);
+    expect(result.skillSelectionFallback).toBe(false);
+
     await disposeAgentHost(host);
   });
 
-  it("requests every built-in doctrine section but sends the priority head that fits", async () => {
+  it("falls back to the priority head when matched mode finds nothing strong", async () => {
     const index = builtInSkillIndex();
     const host = createAgentHost();
-    const { run } = await startRun(host, { skills: index.map((entry) => entry.slug) });
+    // "make it prettier" is the fallback side of the ranker's own calibration
+    // test, so this pins the fallback contract to the same anchor.
+    const { run } = await startRun(host, { skillMode: "all" }, "make it prettier");
     finishRun();
     await run;
 
     const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
     expectPriorityHead(sentText);
 
+    const result = await run;
+    // The fallback requests every section in priority order and lets the
+    // composed budget keep the head, exactly like the automatic fallback.
+    // The fallback fact lives only in `skillSelectionFallback`: the list
+    // length is the request size, not a signal.
+    expect(result.appliedSkillSlugs).toEqual(index.map((entry) => entry.slug));
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
+  it("ranks the corpus against the request when matched mode is declared, and prepends the baseline", async () => {
+    const index = builtInSkillIndex();
+    const prompt = "animate the drawer opening";
+    const ranking = rankSkillsForQuery(prompt, index);
+    // The strong-match side of the ranker's own calibration test: if this
+    // ever falls back, the ranker or corpus drifted and this contract test
+    // must be re-anchored, not silenced.
+    expect(ranking.fallback).toBe(false);
+    const baselineSlugs = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
+    const routed = ranking.slugs
+      .filter((slug) => !baselineSlugs.has(slug))
+      .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS);
+    const expected = composeAutomaticSkillSlugs(
+      routed,
+      index.map((entry) => entry.slug),
+    );
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "all" }, prompt);
+    finishRun();
+
+    const result = await run;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    for (const slug of expected) {
+      const entry = index.find((candidate) => candidate.slug === slug);
+      if (entry === undefined) throw new Error(`Expected built-in skill missing: ${slug}`);
+      expect(sentText).toContain(`## ${entry.title}`);
+    }
+    // The weakest-ranked section must not ride along on a matched request.
+    const weakestSlug = ranking.slugs[ranking.slugs.length - 1];
+    const weakest = index.find((candidate) => candidate.slug === weakestSlug);
+    if (weakest === undefined) throw new Error("Built-in skills missing");
+    expect(expected).not.toContain(weakest.slug);
+    expect(sentText).not.toContain(`## ${weakest.title}`);
+
+    // The baseline leads the matched selection, as it leads the automatic one.
+    expect(expected[0]).toBe(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0]);
+    expect(result.appliedSkillSlugs).toEqual(expected);
+    expect(result.skillSelectionFallback).toBe(false);
+    await disposeAgentHost(host);
+  });
+
+  it("honors a pin with the full corpus in a different order, verbatim, without ranking it", async () => {
+    // The slug set of matched mode, reordered: with a shape-derived mode this
+    // list would silently rank (or silently pin while claiming a match). With
+    // a declared mode it is a pin, honored verbatim: same slugs, reversed
+    // order, the budget keeps the reversed head and the anti-AI-slop baseline
+    // never enters by itself.
+    const index = builtInSkillIndex();
+    const pinned = [...index.map((entry) => entry.slug)].reverse();
+    const baseline = index.find(
+      (entry) => entry.slug === AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0],
+    );
+    if (baseline === undefined) throw new Error("Built-in skills missing");
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "manual", skills: pinned });
+    finishRun();
+
+    const result = await run;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    // The reversed head is what fits: the first reversed sections are in, the
+    // baseline — last in the reversed order — is not.
+    expect(sentText).toContain(`## ${index[index.length - 1]!.title}`);
+    expect(sentText).not.toContain(`## ${baseline.title}`);
+    // The report states the pin verbatim and never claims a match happened.
+    expect(result.appliedSkillSlugs).toEqual(pinned);
+    expect(result.skillSelectionFallback).toBe(false);
+    await disposeAgentHost(host);
+  });
+
+  it("defaults to matched mode when no options are sent", async () => {
+    const index = builtInSkillIndex();
+    const prompt = "animate the drawer opening";
+    const host = createAgentHost();
+    const { run } = await startRun(host, undefined, prompt);
+    finishRun();
+
+    const result = await run;
+    const ranking = rankSkillsForQuery(prompt, index);
+    const baselineSlugs = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
+    const routed = ranking.slugs
+      .filter((slug) => !baselineSlugs.has(slug))
+      .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS);
+    expect(result.appliedSkillSlugs).toEqual(
+      composeAutomaticSkillSlugs(
+        routed,
+        index.map((entry) => entry.slug),
+      ),
+    );
+    expect(result.skillSelectionFallback).toBe(false);
     await disposeAgentHost(host);
   });
 

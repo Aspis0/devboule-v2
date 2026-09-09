@@ -61,14 +61,49 @@ export interface DesignGenerationResult {
   nodeIds: readonly string[];
   artifactHtml?: string;
   artifactError?: string;
+  /**
+   * The skill sections requested for this generation, in composition order,
+   * before composed-budget truncation. That is the list's one meaning: its
+   * length carries no signal, and whether the mode's own chooser decided is
+   * reported by `skillSelectionFallback`, never by counting entries. Present
+   * for every host that runs a skill-selection step; an empty array is a
+   * real, reported selection of nothing (e.g. a manual pin of zero
+   * sections). Absent means the host performed no skill selection at all,
+   * not "unknown".
+   */
   appliedSkillSlugs?: readonly string[];
+  /**
+   * True when the mode's own chooser could not decide and the default
+   * priority order was used instead (a failed automatic pre-flight turn, or
+   * a matched request with no strong section match). A user pin never falls
+   * back, so a pinned generation is always false. This field is the only
+   * authority on "did the chooser decide"; consumers must not infer it from
+   * anything else.
+   */
   skillSelectionFallback?: boolean;
 }
 
-export interface DesignGenerationOptions {
-  skills?: readonly string[];
-  skillMode?: "auto";
-}
+/**
+ * Call-time options, never persisted. The skill mode is declared on the wire
+ * with the same ids the persisted selection uses (`all` | `manual` | `auto`):
+ * the caller knows which mode is active and says so; the host never has to
+ * infer intention from the shape of the list. Inference from shape was tried
+ * and rejected — a list-coverage heuristic died silently whenever a derived
+ * constant moved, misreported a reordered list as a pin, and made callers
+ * encode meaning in array length.
+ *
+ * - `{ skillMode: "all" }` — Matched: the host ranks the built-in corpus
+ *   against the request text with the deterministic lexical ranker, no model
+ *   turn. No list travels: the corpus is the host's to index.
+ * - `{ skillMode: "manual", skills }` — exactly the listed sections,
+ *   composed verbatim in the given order.
+ * - `{ skillMode: "auto" }` — a pre-flight agent turn picks the sections;
+ *   the only mode that costs an extra model turn.
+ */
+export type DesignGenerationOptions =
+  | { skillMode: "auto" }
+  | { skillMode: "all" }
+  | { skillMode: "manual"; skills: readonly string[] };
 
 export interface DesignInitialState {
   // Initial values; zoom seeds the view but is not rewritten by document saves.

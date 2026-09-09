@@ -64,10 +64,24 @@ beforeEach(() => {
 describe("loadDesignSkillSelection", () => {
   it("keeps the visible mode names centralized", () => {
     expect(SKILL_MODE_LABELS).toMatchObject({
-      all: { name: "Priority" },
-      manual: { name: "Manual" },
-      auto: { name: "Automatic" },
+      all: {
+        name: "Matched",
+        summary: "request match · no extra turn",
+        badge: "Default",
+        defaultNotice:
+          "Matched is used when you do not choose a mode; it selects relevant sections from your request without another model turn.",
+        fallbackNotice: "No strong match — using the default order.",
+      },
+      manual: { name: "Manual", summary: "choose sections", badge: "You choose" },
+      auto: {
+        name: "Automatic",
+        summary: "agent picks · +1 model turn",
+        badge: "Extra model turn",
+      },
     });
+    // The fallback microcopy must be readable on its own, not embedded in the blurb.
+    expect(SKILL_MODE_LABELS.all.blurb).not.toContain("No strong match");
+    expect(SKILL_MODE_LABELS.all.blurb).toContain("no extra model turn");
   });
 
   it("falls back for null", async () => {
