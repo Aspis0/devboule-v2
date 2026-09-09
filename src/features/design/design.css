@@ -1,16 +1,31 @@
 .design-surface {
+  position: relative;
   background: var(--surface-muted);
 }
 
-.design-demo-disclosure {
-  flex: none;
-  padding: 7px 14px 0;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+/* The shared shell translates its page layer to reveal the crescent. Design
+   keeps the translated layer inside the viewport instead of losing its bottom
+   controls to the shell's clipping boundary. The displacement is one local
+   value because the shared shell is intentionally outside this surface's
+   scope. */
+.app-shell-design {
+  --design-nav-displacement: 34px;
+}
+
+.app-shell-design .page-layer {
+  transition:
+    transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
+    opacity 0.3s ease,
+    height 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
+}
+
+.app-shell-design:has(.crescent-nav-open) .page-layer {
+  height: calc(100% - var(--design-nav-displacement));
 }
 
 .design-toolbar {
+  position: relative;
+  z-index: 4;
   display: flex;
   flex: none;
   align-items: center;
@@ -148,6 +163,47 @@
   cursor: not-allowed;
 }
 
+.design-history-menu {
+  position: relative;
+  flex: none;
+}
+
+.design-history-menu-button {
+  height: 26px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.design-history-menu-button:hover,
+.design-history-menu-button:focus-visible,
+.design-history-menu-button[aria-expanded="true"] {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta);
+}
+
+.design-history-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 6;
+  width: min(360px, calc(100vw - 28px));
+  max-height: min(60vh, 430px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(var(--ink-rgb), 0.16);
+}
+
+.design-history-popover:focus {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+
 .design-grounding-toggle {
   display: flex;
   flex: none;
@@ -200,23 +256,20 @@
 
 .design-history-list {
   flex: none;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  padding: 14px;
 }
 
 .design-history-heading {
-  margin: 0 0 8px;
-  color: var(--silence);
-  font-size: 9.5px;
+  margin: 0 0 12px;
+  color: var(--ink);
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 16px;
   font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .design-history-list ul {
   display: grid;
-  gap: 6px;
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -225,22 +278,28 @@
 .design-history-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 10px;
+  gap: 4px 12px;
+  padding: 8px 0;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.design-history-row + .design-history-row {
+  border-top: 1px solid var(--line-subtle);
 }
 
 .design-history-open {
   display: grid;
   width: 100%;
+  min-width: 0;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 10px;
-  padding: 0;
+  gap: 4px 12px;
+  padding: 7px 10px 7px 8px;
   border: 0;
-  border-inline-start: 2px solid var(--selection);
+  border-inline-start: 3px solid var(--terracotta-deep);
   color: inherit;
   font: inherit;
-  padding-inline-start: 6px;
   text-align: left;
   background: transparent;
   cursor: pointer;
@@ -248,7 +307,7 @@
 
 .design-history-open:hover,
 .design-history-open:focus-visible {
-  outline: 1px solid var(--selection);
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 
@@ -257,16 +316,26 @@
   color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .design-history-row time,
 .design-history-gone {
-  color: var(--silence);
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
   font-size: 10px;
 }
 
 .design-history-gone {
   grid-column: 1 / -1;
+  color: var(--silence);
+}
+
+.design-history-current {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+  font-size: 10.5px;
 }
 
 .design-history-open-status {
@@ -559,9 +628,9 @@
 }
 
 .design-layers-panel {
-  top: 14px;
+  bottom: 40px;
   left: 14px;
-  width: 218px;
+  width: 204px;
   border-radius: 12px;
 }
 
@@ -1153,59 +1222,344 @@
 }
 
 .design-skill-controls {
-  flex: 1;
+  display: flex;
   min-width: 0;
+  align-items: center;
+  gap: 7px;
+  grid-column: 1 / -1;
 }
 
-.design-skill-summary {
-  width: 100%;
-  padding: 2px 0;
-  color: var(--ink-soft);
-  text-align: left;
-  background: transparent;
+.design-skill-mode-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
   border: 0;
+}
+
+.design-skill-mode-control {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.design-skill-mode {
+  height: 24px;
+  padding: 0 9px;
+  color: var(--ink-soft);
+  background: transparent;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: 10px;
+  font-weight: 600;
 }
 
-.design-skill-summary:hover,
-.design-skill-summary:focus-visible {
+.design-skill-mode:hover,
+.design-skill-mode:focus-visible,
+.design-skill-mode-selected {
   color: var(--terracotta-deep);
+  background: var(--selection);
 }
 
-.design-skill-summary:focus-visible {
-  outline: 1px solid var(--terracotta);
+.design-skill-mode:focus-visible,
+.design-skill-read-more:focus-visible,
+.design-craft-title-button:focus-visible,
+.design-craft-close:focus-visible {
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 
+.design-skill-read-more {
+  padding: 2px 3px;
+  color: var(--silence);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.design-skill-read-more:hover {
+  color: var(--terracotta-deep);
+}
+
 .design-skill-result {
-  margin-top: 3px;
+  grid-column: 1 / -1;
+  margin: -1px 0 0;
   color: var(--silence);
   font-size: 9.5px;
   line-height: 1.35;
 }
 
-.design-skill-modes input:focus-visible,
-.design-skill-option input:focus-visible {
-  outline: 1px solid var(--terracotta);
-  outline-offset: 2px;
+.design-craft-overlay {
+  position: absolute;
+  top: 58px;
+  right: 14px;
+  z-index: 20;
+  width: min(748px, calc(100% - 28px));
+  pointer-events: none;
 }
 
-.design-skill-picker {
-  max-height: 230px;
-  margin-top: 6px;
-  padding: 9px 10px;
+.design-craft-sheet {
+  pointer-events: auto;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(var(--ink-rgb), 0.18);
+}
+
+.design-craft-sheet-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, auto) auto;
+  gap: 16px;
+  min-height: 60px;
+  align-items: center;
+  padding: 10px 14px 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.design-craft-sheet-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.design-craft-sheet-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.design-craft-sheet-heading span {
+  color: var(--terracotta-deep);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.design-craft-budget {
+  display: grid;
+  gap: 2px;
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: right;
+}
+
+.design-craft-budget strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.design-craft-close {
+  width: 28px;
+  height: 28px;
+  color: var(--silence);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.design-craft-close:hover {
+  color: var(--terracotta-deep);
+  background: var(--selection);
+}
+
+.design-craft-sheet-content {
+  display: grid;
+  gap: 17px;
+  padding: 14px 16px 16px;
+}
+
+.design-craft-sheet-expanded .design-craft-sheet-content {
+  grid-template-columns: minmax(174px, 0.42fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.design-craft-index {
+  min-width: 0;
+}
+
+.design-craft-index-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.design-craft-count-limit {
+  color: var(--terracotta-deep);
+}
+
+.design-craft-budget-note {
+  margin: 0 0 7px;
+  color: var(--silence);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.design-craft-budget-note-limit {
+  color: var(--terracotta-deep);
+}
+
+.design-craft-title-list {
+  display: grid;
+  max-height: min(374px, calc(100vh - 176px));
+  margin: 0;
+  padding: 0;
   overflow-y: auto;
+  list-style: none;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.design-craft-title-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  min-height: 28px;
+  align-items: center;
+  border-top: 1px solid var(--line-subtle);
+}
+
+.design-craft-title-row:first-child {
+  border-top-color: var(--border);
+}
+
+.design-craft-title-row input {
+  margin: 0;
+}
+
+.design-craft-title-row input:disabled {
+  opacity: 0.55;
+}
+
+.design-craft-title-button {
+  display: flex;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 5px 4px 0;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.design-craft-title-button > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-craft-title-row-selected .design-craft-title-button,
+.design-craft-title-row-included .design-craft-title-button {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.design-craft-title-row-dropped .design-craft-title-button,
+.design-craft-title-row-not-selected .design-craft-title-button {
+  color: var(--silence);
+}
+
+.design-craft-title-button[aria-expanded="true"] {
+  color: var(--terracotta-deep);
+  background: var(--selection);
+}
+
+.design-craft-title-status {
+  flex: none;
+  color: var(--silence);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.design-craft-title-row-dropped .design-craft-title-status {
+  color: var(--terracotta-deep);
+}
+
+.design-craft-title-mark {
+  width: 7px;
+  height: 7px;
+  margin-left: 5px;
+  border-radius: 999px;
+  background: var(--silence);
+}
+
+.design-craft-title-mark-included {
+  background: var(--terracotta);
+}
+
+.design-craft-title-mark-dropped {
+  background: var(--terracotta-deep);
+}
+
+.design-craft-detail {
+  min-width: 0;
+  padding-left: 17px;
+  border-left: 1px solid var(--border);
+}
+
+.design-craft-detail h3 {
+  margin: 0 0 5px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.design-craft-detail > p {
+  margin: 0 0 10px;
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.design-craft-detail-body {
+  color: var(--ink-soft);
+  column-count: 2;
+  column-gap: 17px;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.design-craft-detail-body p {
+  margin: 0 0 10px;
+  break-inside: avoid;
+}
+
+.design-craft-detail-body strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.design-craft-detail-body code {
+  padding: 1px 3px;
+  color: var(--terracotta-deep);
   background: var(--surface-muted);
   border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.design-skill-purpose {
-  margin: 0 0 9px;
-  color: var(--ink-soft);
-  font-size: 10px;
-  line-height: 1.4;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.92em;
 }
 
 .design-composer-meta .design-composer-context {
@@ -1213,150 +1567,10 @@
   margin-bottom: 0;
 }
 
-.design-skill-modes {
-  display: grid;
-  gap: 5px;
-  margin: 0 0 9px;
-  padding: 0;
-  border: 0;
-}
-
-.design-skill-modes legend {
-  margin-bottom: 5px;
-  color: var(--ink);
-  font-size: 10.5px;
-  font-weight: 600;
-}
-
-.design-skill-modes label,
-.design-skill-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-size: 10px;
-}
-
-.design-skill-modes label {
-  flex-wrap: wrap;
-}
-
-.design-skill-modes small {
-  flex-basis: 100%;
-  margin-left: 20px;
-  color: var(--silence);
-  font-size: 9px;
-}
-
-.design-skill-list {
-  display: grid;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.design-skill-option {
-  cursor: pointer;
-}
-
-.design-skill-option input {
-  flex: none;
-  margin: 2px 0 0;
-}
-
-.design-skill-option input:disabled {
-  opacity: 0.55;
-}
-
-/* In "all" and "automatic" modes every box is locked.  Dimming only the 13px checkbox
-   leaves a row that still reads as interactive and still shows a pointer, which
-   invites a click that does nothing — the exact defect this surface shipped once
-   before.  The whole row has to say it is not editable. */
-.design-skill-option.design-skill-option-locked {
-  /* Two classes deliberately: at equal specificity this would depend on source
-     order, and source order is the thing a refactor silently reorders. */
-  cursor: default;
-}
-
-.design-skill-option-locked .design-skill-option-title,
-.design-skill-option-locked .design-skill-option-description {
-  color: var(--silence);
-}
-
-.design-skill-option-locked.design-skill-option-included {
-  color: var(--ink-soft);
-}
-
-.design-skill-option-locked.design-skill-option-included .design-skill-option-title {
-  color: var(--ink);
-}
-
-.design-skill-option-locked.design-skill-option-included .design-skill-option-description {
-  color: var(--ink-soft);
-}
-
-.design-skill-option-locked.design-skill-option-dropped,
-.design-skill-option-locked.design-skill-option-not-selected {
-  color: var(--silence);
-}
-
-.design-skill-option-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.design-skill-option-status {
-  color: inherit;
-  font-size: 9px;
-  font-weight: 500;
-}
-
-.design-skill-option-title {
-  color: var(--ink);
-  font-size: 10.5px;
-  font-weight: 600;
-}
-
-.design-skill-option-description {
-  color: var(--ink-soft);
-  line-height: 1.35;
-}
-
-.design-skill-preview {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.design-skill-preview summary {
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-size: 10px;
-}
-
-.design-skill-preview summary:focus-visible {
+.design-skill-mode input:focus-visible,
+.design-craft-title-row input:focus-visible {
   outline: 1px solid var(--terracotta);
   outline-offset: 2px;
-}
-
-.design-skill-preview pre {
-  max-height: 160px;
-  margin: 6px 0 0;
-  padding: 8px;
-  overflow: auto;
-  color: var(--silence);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: "JetBrains Mono", monospace;
-  /* Matches the controls around it rather than shrinking below them.  This
-     preview is how a person learns what the sections do, so it must not be the
-     least readable text in the panel. */
-  font-size: 10px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .design-composer {
@@ -1419,14 +1633,16 @@
 }
 
 .design-composer-footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 6px;
   margin-top: 3px;
 }
 
 .design-provider-button {
   display: flex;
+  width: 100%;
+  min-width: 0;
   align-items: center;
   gap: 7px;
   height: 24px;
@@ -1439,6 +1655,10 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 10.5px;
+}
+
+.design-agent-picker-wrap {
+  min-width: 0;
 }
 
 .design-provider-button:hover,
@@ -1593,9 +1813,9 @@
 
 .design-generate-button {
   display: grid;
-  flex: none;
+  min-width: 77px;
   height: 26px;
-  margin-left: auto;
+  margin-left: 0;
   padding: 0 13px;
   place-items: center;
   color: var(--white);
@@ -1604,6 +1824,7 @@
   cursor: pointer;
   font-size: 11.5px;
   font-weight: 500;
+  justify-self: start;
 }
 
 .design-generate-button:disabled {
@@ -1618,6 +1839,83 @@
   margin-top: 7px;
   color: var(--silence);
   font-size: 10px;
+}
+
+@media (max-height: 700px) {
+  .design-craft-overlay {
+    top: 52px;
+  }
+
+  .design-craft-sheet-header {
+    min-height: 50px;
+    padding: 7px 12px 7px 14px;
+  }
+
+  .design-craft-sheet-content {
+    gap: 8px;
+    padding: 9px 12px 11px;
+  }
+
+  .design-craft-sheet-expanded .design-craft-sheet-content {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-list {
+    display: flex;
+    flex-wrap: wrap;
+    max-height: 74px;
+    gap: 1px 4px;
+    overflow-y: auto;
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-row {
+    flex: 0 0 calc(20% - 4px);
+    grid-template-columns: 13px minmax(0, 1fr);
+    gap: 4px;
+    min-height: 23px;
+    border-top: 0;
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-row input {
+    transform: scale(0.85);
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-button {
+    min-height: 23px;
+    padding: 3px 2px 3px 0;
+    font-size: 9px;
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-status {
+    display: none;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail {
+    padding: 8px 0 0;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail h3 {
+    margin-bottom: 3px;
+    font-size: 13px;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail > p {
+    margin-bottom: 6px;
+    font-size: 9.5px;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail-body {
+    column-gap: 13px;
+    font-size: 9px;
+    line-height: 1.35;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail-body p {
+    margin-bottom: 6px;
+  }
 }
 
 .design-sr-only {

@@ -8,7 +8,6 @@ import type {
 } from "react";
 import type {
   DesignAssistantMessage,
-  DesignDisclosure,
   DesignDocument,
   DesignAgentSession,
   DesignHost,
@@ -20,6 +19,7 @@ import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic } from "./artifactRenderCritic";
 import { ARTIFACT_TOO_LARGE_MESSAGE, AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
 import {
+  MAX_AUTOMATIC_SKILL_SECTIONS,
   builtInSkillIndex,
   builtInSkillSources,
   type BuiltInSkillIndexEntry,
@@ -34,6 +34,7 @@ import {
   saveDesignSkillSelection,
   saveDesignWorkspaceId,
   selectedSlugs,
+  SKILL_MODE_LABELS,
   type DesignSkillSelection,
 } from "./designSettings";
 import { DesignHistoryList } from "./DesignHistoryList";
@@ -75,12 +76,7 @@ import {
 } from "./designViewport";
 import "./design.css";
 
-export type {
-  DesignDisclosure,
-  DesignDisclosureContext,
-  DesignDocument,
-  DesignHost,
-} from "./designHost";
+export type { DesignDocument, DesignHost } from "./designHost";
 
 type MessageAction = "stop" | "retry" | "select" | "regenerate";
 
@@ -124,10 +120,13 @@ interface DesignToolbarProps {
   saveError: string | null;
   canUndo: boolean;
   canRedo: boolean;
+  historyRefreshKey: number;
+  liveSessionId: string | null;
   onGroundingToggle: () => void;
   onSave: () => void;
   onUndo: () => void;
   onRedo: () => void;
+  onHistoryOpen: (entry: DesignHistoryEntry) => void;
 }
 
 interface LayerPanelProps {
@@ -200,7 +199,20 @@ const PERSISTENCE_NOTICE_TEXT = {
 
 type PersistenceNoticeKind = keyof typeof PERSISTENCE_NOTICE_TEXT;
 
-interface AssistantProps {
+interface DesignSkillViewProps {
+  skillIndex: readonly BuiltInSkillIndexEntry[];
+  skillSelection: DesignSkillSelection;
+  selectedSkillSlugs: readonly string[];
+  resolvedSkillSlugs: readonly string[] | null;
+  autoAppliedSkillSlugs: readonly string[] | null;
+  hasResolvedComposition: boolean;
+  skillBlock: ReturnType<typeof buildSkillBlock>;
+  resolvedSkillSlugSet: ReadonlySet<string>;
+  automaticBaselineSlugSet: ReadonlySet<string>;
+  droppedSkillSlugSet: ReadonlySet<string>;
+}
+
+interface AssistantProps extends DesignSkillViewProps {
   canGenerate: boolean;
   contextPrefix: string;
   generationLabel: string;
@@ -234,14 +246,273 @@ interface AssistantProps {
   onWorkspacePickerOpen: () => void;
   onModelSelect: (modelId: string) => void;
   onEffortSelect: (effort: string) => void;
-  skillIndex: readonly BuiltInSkillIndexEntry[];
-  skillSelection: DesignSkillSelection;
-  selectedSkillSlugs: readonly string[];
-  autoAppliedSkillSlugs: readonly string[] | null;
   autoSkillNotice: string | null;
   onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
+  onCraftOpen: () => void;
+  onCraftReadMore: () => void;
+}
+
+interface DesignCraftSheetProps extends DesignSkillViewProps {
+  readOnly: boolean;
+  onClose: () => void;
   onSkillToggle: (slug: string) => void;
 }
+
+const DESIGN_SKILL_MODES: readonly DesignSkillSelection["mode"][] = ["manual", "all", "auto"];
+
+function renderCraftInline(text: string) {
+  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={index}>{part.slice(1, -1)}</code>;
+    }
+    return part;
+  });
+}
+
+function renderCraftBody(body: string) {
+  return body
+    .split(/\n\s*\n/)
+    .map((paragraph, index) => (
+      <p key={index}>{renderCraftInline(paragraph.replace(/\n/g, " "))}</p>
+    ));
+}
+
+const DesignSkillModeControl = memo(function DesignSkillModeControl({
+  skillSelection,
+  onSkillModeChange,
+  onCraftOpen,
+  onCraftReadMore,
+}: {
+  skillSelection: DesignSkillSelection;
+  onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
+  onCraftOpen: () => void;
+  onCraftReadMore: () => void;
+}) {
+  return (
+    <div className="design-skill-controls">
+      <fieldset className="design-skill-mode-fieldset">
+        <legend className="design-sr-only">Craft mode</legend>
+        <div className="design-skill-mode-control" role="radiogroup" aria-label="Craft mode">
+          {DESIGN_SKILL_MODES.map((mode) => {
+            const copy = SKILL_MODE_LABELS[mode];
+            const selected = skillSelection.mode === mode;
+            return (
+              <button
+                className={`design-skill-mode${selected ? " design-skill-mode-selected" : ""}`}
+                key={mode}
+                type="button"
+                role="radio"
+                data-design-skill-mode={mode}
+                aria-checked={selected}
+                aria-label={`${copy.name}: ${copy.blurb}`}
+                title={copy.blurb}
+                onClick={() => {
+                  if (selected) {
+                    if (mode === "manual") onCraftOpen();
+                    return;
+                  }
+                  onSkillModeChange(mode);
+                  if (mode === "manual") onCraftOpen();
+                }}
+              >
+                {copy.name}
+              </button>
+            );
+          })}
+        </div>
+      </fieldset>
+      {skillSelection.mode !== "manual" ? (
+        <button className="design-skill-read-more" type="button" onClick={onCraftReadMore}>
+          Read more
+        </button>
+      ) : null}
+    </div>
+  );
+});
+
+const DesignCraftSheet = memo(function DesignCraftSheet({
+  skillIndex,
+  skillSelection,
+  selectedSkillSlugs,
+  resolvedSkillSlugs,
+  autoAppliedSkillSlugs,
+  hasResolvedComposition,
+  skillBlock,
+  resolvedSkillSlugSet,
+  automaticBaselineSlugSet,
+  droppedSkillSlugSet,
+  readOnly,
+  onClose,
+  onSkillToggle,
+}: DesignCraftSheetProps) {
+  const [expandedSlug, setExpandedSlug] = useState<string | null>(null);
+  const modeCopy = SKILL_MODE_LABELS[skillSelection.mode];
+  const manualLimitReached =
+    skillSelection.mode === "manual" && selectedSkillSlugs.length >= MAX_AUTOMATIC_SKILL_SECTIONS;
+  const includedSkillCount = hasResolvedComposition
+    ? Math.max(0, (resolvedSkillSlugs?.length ?? 0) - skillBlock.dropped.length)
+    : 0;
+  const droppedEntries = skillIndex.filter((entry) => {
+    const isRequested = resolvedSkillSlugSet.has(entry.slug);
+    return hasResolvedComposition && isRequested && droppedSkillSlugSet.has(entry.slug);
+  });
+  const expandedEntry = skillIndex.find((entry) => entry.slug === expandedSlug) ?? null;
+  const isWaitingForAutomaticChoice =
+    skillSelection.mode === "auto" && autoAppliedSkillSlugs === null;
+  const budgetHeading = hasResolvedComposition
+    ? `${includedSkillCount} sections included`
+    : "Automatic selection";
+  const budgetValue = hasResolvedComposition
+    ? `${skillBlock.totalChars.toLocaleString()} / ${skillBlock.ceiling.toLocaleString()} characters`
+    : `up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections · ${skillBlock.ceiling.toLocaleString()}-character budget`;
+
+  return (
+    <div className="design-craft-overlay">
+      <section
+        className={`design-craft-sheet${expandedEntry !== null ? " design-craft-sheet-expanded" : ""}`}
+        role="dialog"
+        aria-labelledby="design-craft-sheet-title"
+        aria-describedby="design-craft-sheet-budget"
+      >
+        <header className="design-craft-sheet-header">
+          <div className="design-craft-sheet-heading">
+            <h2 id="design-craft-sheet-title">Craft</h2>
+            <span>{modeCopy.name}</span>
+          </div>
+          <div className="design-craft-budget" id="design-craft-sheet-budget" role="status">
+            <strong>{budgetHeading}</strong>
+            <span>{budgetValue}</span>
+          </div>
+          <button
+            className="design-craft-close"
+            type="button"
+            aria-label="Close Craft"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="design-craft-sheet-content">
+          <div className="design-craft-index">
+            <div className="design-craft-index-heading">
+              <span>{readOnly ? "Sections" : "Choose sections"}</span>
+              {!readOnly ? (
+                <span className={manualLimitReached ? "design-craft-count-limit" : ""}>
+                  {selectedSkillSlugs.length} / {MAX_AUTOMATIC_SKILL_SECTIONS}
+                </span>
+              ) : null}
+            </div>
+            {readOnly && droppedEntries.length > 0 ? (
+              <p className="design-craft-budget-note">
+                {droppedEntries.length} sections left out; the character budget is full.
+              </p>
+            ) : null}
+            {readOnly && isWaitingForAutomaticChoice ? (
+              <p className="design-craft-budget-note">
+                The agent will choose sections for this request.
+              </p>
+            ) : null}
+            {!readOnly && manualLimitReached ? (
+              <p className="design-craft-budget-note design-craft-budget-note-limit">
+                Maximum reached. Clear one to choose another.
+              </p>
+            ) : null}
+            <ul className="design-craft-title-list">
+              {skillIndex.map((entry) => {
+                const isSelected = selectedSkillSlugs.includes(entry.slug);
+                const isAutomaticBaseline =
+                  skillSelection.mode === "auto" && automaticBaselineSlugSet.has(entry.slug);
+                const isRequested = resolvedSkillSlugSet.has(entry.slug);
+                const isDropped =
+                  hasResolvedComposition && isRequested && droppedSkillSlugSet.has(entry.slug);
+                const isIncluded =
+                  !isDropped && ((hasResolvedComposition && isRequested) || isAutomaticBaseline);
+                const isAutomaticallyUnselected =
+                  skillSelection.mode === "auto" &&
+                  autoAppliedSkillSlugs !== null &&
+                  !isRequested &&
+                  !isAutomaticBaseline;
+                const status = isDropped
+                  ? "Left out"
+                  : isAutomaticBaseline
+                    ? "Always included"
+                    : isWaitingForAutomaticChoice
+                      ? "Chosen per request"
+                      : isAutomaticallyUnselected
+                        ? "Not chosen"
+                        : isIncluded
+                          ? "Included"
+                          : "Not selected";
+                const rowClass = [
+                  "design-craft-title-row",
+                  isSelected ? "design-craft-title-row-selected" : null,
+                  isIncluded ? "design-craft-title-row-included" : null,
+                  isDropped ? "design-craft-title-row-dropped" : null,
+                  isAutomaticallyUnselected ? "design-craft-title-row-not-selected" : null,
+                ]
+                  .filter((className): className is string => className !== null)
+                  .join(" ");
+                const detailId = `design-craft-detail-${entry.slug}`;
+
+                return (
+                  <li className={rowClass} key={entry.slug}>
+                    {readOnly ? (
+                      <span
+                        className={`design-craft-title-mark design-craft-title-mark-${
+                          isDropped ? "dropped" : isIncluded ? "included" : "pending"
+                        }`}
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <input
+                        type="checkbox"
+                        aria-label={`Apply ${entry.title}`}
+                        checked={isSelected}
+                        disabled={manualLimitReached && !isSelected}
+                        onChange={() => {
+                          if (!manualLimitReached || isSelected) onSkillToggle(entry.slug);
+                        }}
+                      />
+                    )}
+                    <button
+                      className="design-craft-title-button"
+                      type="button"
+                      aria-expanded={expandedSlug === entry.slug}
+                      aria-controls={detailId}
+                      onClick={() =>
+                        setExpandedSlug((current) => (current === entry.slug ? null : entry.slug))
+                      }
+                    >
+                      <span>{entry.title}</span>
+                      {readOnly ? (
+                        <span className="design-craft-title-status">{status}</span>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+
+          {expandedEntry !== null ? (
+            <article
+              className="design-craft-detail"
+              id={`design-craft-detail-${expandedEntry.slug}`}
+            >
+              <h3>{expandedEntry.title}</h3>
+              <p>{expandedEntry.description}</p>
+              <div className="design-craft-detail-body">{renderCraftBody(expandedEntry.body)}</div>
+            </article>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+});
 
 type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
 
@@ -327,12 +598,48 @@ const DesignToolbar = memo(function DesignToolbar({
   saveError,
   canUndo,
   canRedo,
+  historyRefreshKey,
+  liveSessionId,
   onGroundingToggle,
   onSave,
   onUndo,
   onRedo,
+  onHistoryOpen,
 }: DesignToolbarProps) {
   const saveText = saving ? "Saving…" : saved ? "Saved" : "Unsaved changes";
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyMenuRef = useRef<HTMLDivElement>(null);
+  const historyTriggerRef = useRef<HTMLButtonElement>(null);
+  const historyPopoverRef = useRef<HTMLDivElement>(null);
+
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    queueMicrotask(() => historyTriggerRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!historyOpen) return;
+    historyPopoverRef.current?.focus();
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeHistory();
+    };
+    const handlePointerDown = (event: PointerEvent): void => {
+      const target = event.target;
+      if (target instanceof Node && !historyMenuRef.current?.contains(target)) {
+        closeHistory();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [closeHistory, historyOpen]);
 
   return (
     <header className="design-toolbar">
@@ -382,6 +689,40 @@ const DesignToolbar = memo(function DesignToolbar({
           ↷
         </button>
       </span>
+      <div className="design-history-menu" ref={historyMenuRef}>
+        <button
+          ref={historyTriggerRef}
+          className="design-history-menu-button"
+          type="button"
+          aria-controls="design-history-popover"
+          aria-expanded={historyOpen}
+          aria-haspopup="dialog"
+          onClick={() => {
+            if (historyOpen) {
+              closeHistory();
+            } else {
+              setHistoryOpen(true);
+            }
+          }}
+        >
+          History
+        </button>
+        <div
+          ref={historyPopoverRef}
+          id="design-history-popover"
+          className="design-history-popover"
+          role="dialog"
+          aria-label="Design history"
+          tabIndex={-1}
+          hidden={!historyOpen}
+        >
+          <DesignHistoryList
+            refreshKey={historyRefreshKey}
+            liveSessionId={liveSessionId}
+            onOpen={onHistoryOpen}
+          />
+        </div>
+      </div>
       <button
         className="design-grounding-toggle"
         type="button"
@@ -1104,15 +1445,12 @@ const DesignAssistant = memo(function DesignAssistant({
   onWorkspacePickerOpen,
   onModelSelect,
   onEffortSelect,
-  skillIndex,
   skillSelection,
-  selectedSkillSlugs,
-  autoAppliedSkillSlugs,
   autoSkillNotice,
   onSkillModeChange,
-  onSkillToggle,
+  onCraftOpen,
+  onCraftReadMore,
 }: AssistantProps) {
-  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -1265,41 +1603,6 @@ const DesignAssistant = memo(function DesignAssistant({
     };
   }, [dismissWorkspacePicker, workspacePickerOpen]);
 
-  const selectedSlugSet = useMemo(() => new Set(selectedSkillSlugs), [selectedSkillSlugs]);
-  const resolvedSkillSlugs =
-    skillSelection.mode === "auto" ? autoAppliedSkillSlugs : selectedSkillSlugs;
-  // Manual belongs here too: `resolvedSkillSlugs` is the user's own ticks, so the composition
-  // is as resolved as it is in `all`. Leaving it out meant a manual selection that overflowed
-  // the budget kept every box ticked and said nothing, which is the same lie this row status
-  // exists to prevent — and the larger the corpus grows, the easier it is to tick past the
-  // ceiling.
-  const hasResolvedComposition =
-    skillSelection.mode === "all" ||
-    skillSelection.mode === "manual" ||
-    (skillSelection.mode === "auto" && autoAppliedSkillSlugs !== null);
-  const skillBlock = useMemo(
-    () => buildSkillBlock(builtInSkillSources(), resolvedSkillSlugs ?? []),
-    [resolvedSkillSlugs],
-  );
-  const resolvedSkillSlugSet = useMemo(
-    () => new Set(resolvedSkillSlugs ?? []),
-    [resolvedSkillSlugs],
-  );
-  const automaticBaselineSlugSet = useMemo(
-    () => new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS),
-    [],
-  );
-  const droppedSkillSlugSet = useMemo(() => new Set(skillBlock.dropped), [skillBlock]);
-  const skillSummary =
-    skillSelection.mode === "auto"
-      ? "Craft: automatic"
-      : skillSelection.mode === "all"
-        ? "Craft: priority sections that fit"
-        : selectedSkillSlugs.length === 0
-          ? `Craft: 0 of ${skillIndex.length} · no design guidance`
-          : `Craft: ${selectedSkillSlugs.length} of ${skillIndex.length}`;
-  const skillPreview = useMemo(() => skillBlock.text, [skillBlock]);
-
   return (
     <aside className="design-assistant" aria-labelledby="design-assistant-title">
       <div className="design-assistant-header">
@@ -1350,150 +1653,6 @@ const DesignAssistant = memo(function DesignAssistant({
                 </button>
               </div>
             ) : null}
-            <div className="design-skill-controls">
-              <button
-                className="design-skill-summary"
-                type="button"
-                aria-expanded={skillPickerOpen}
-                aria-controls="design-skill-picker"
-                aria-label="Configure design craft"
-                onClick={() => setSkillPickerOpen((open) => !open)}
-              >
-                {skillSummary}
-              </button>
-              {autoSkillNotice ? (
-                <div className="design-skill-result" role="status">
-                  {autoSkillNotice}
-                </div>
-              ) : null}
-              {skillPickerOpen ? (
-                <div
-                  id="design-skill-picker"
-                  className="design-skill-picker"
-                  role="group"
-                  aria-label="Design craft sections"
-                >
-                  <p className="design-skill-purpose">
-                    These sections are added to every design request, so the agent works to the same
-                    standards each time.
-                  </p>
-                  <fieldset className="design-skill-modes">
-                    <legend>Apply craft sections</legend>
-                    <label>
-                      <input
-                        type="radio"
-                        name="design-skill-mode"
-                        value="all"
-                        checked={skillSelection.mode === "all"}
-                        onChange={() => onSkillModeChange("all")}
-                      />
-                      <span>Priority</span>
-                      <small>Most important sections that fit; the rest are omitted.</small>
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="design-skill-mode"
-                        value="manual"
-                        checked={skillSelection.mode === "manual"}
-                        onChange={() => onSkillModeChange("manual")}
-                      />
-                      <span>Manual</span>
-                      <small>Exactly the sections you tick.</small>
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="design-skill-mode"
-                        value="auto"
-                        checked={skillSelection.mode === "auto"}
-                        onChange={() => onSkillModeChange("auto")}
-                      />
-                      <span>Automatic</span>
-                      <small>The agent chooses relevant sections for each request.</small>
-                    </label>
-                  </fieldset>
-                  <div className="design-skill-list">
-                    {skillIndex.map((entry) => {
-                      const isAutomaticBaseline =
-                        skillSelection.mode === "auto" && automaticBaselineSlugSet.has(entry.slug);
-                      const isRequested = resolvedSkillSlugSet.has(entry.slug);
-                      const isDropped =
-                        hasResolvedComposition &&
-                        isRequested &&
-                        droppedSkillSlugSet.has(entry.slug);
-                      const isIncluded =
-                        !isDropped &&
-                        ((hasResolvedComposition && isRequested) || isAutomaticBaseline);
-                      const isAutomaticallyUnselected =
-                        skillSelection.mode === "auto" &&
-                        autoAppliedSkillSlugs !== null &&
-                        !isRequested &&
-                        !isAutomaticBaseline;
-                      const status = isDropped
-                        ? `Omitted: did not fit within the ${skillBlock.ceiling.toLocaleString()}-character budget.`
-                        : isAutomaticBaseline
-                          ? "Always included automatically."
-                          : isAutomaticallyUnselected
-                            ? "Not chosen automatically."
-                            : null;
-                      const rowClass = [
-                        "design-skill-option",
-                        skillSelection.mode !== "manual" ? "design-skill-option-locked" : null,
-                        isIncluded ? "design-skill-option-included" : null,
-                        isDropped ? "design-skill-option-dropped" : null,
-                        isAutomaticBaseline ? "design-skill-option-always-included" : null,
-                        isAutomaticallyUnselected ? "design-skill-option-not-selected" : null,
-                      ]
-                        .filter((className): className is string => className !== null)
-                        .join(" ");
-
-                      return (
-                        <label className={rowClass} key={entry.slug}>
-                          <input
-                            type="checkbox"
-                            aria-label={`Apply ${entry.title}`}
-                            // Automatic has not decided yet, and an empty box would say it
-                            // decided no.  `indeterminate` is the state HTML already has for
-                            // exactly this, announced as "mixed" rather than "not checked".
-                            ref={(node) => {
-                              if (node !== null) {
-                                node.indeterminate =
-                                  skillSelection.mode === "auto" &&
-                                  autoAppliedSkillSlugs === null &&
-                                  !isAutomaticBaseline;
-                              }
-                            }}
-                            checked={
-                              skillSelection.mode === "manual"
-                                ? selectedSlugSet.has(entry.slug)
-                                : isIncluded
-                            }
-                            disabled={skillSelection.mode !== "manual"}
-                            onChange={() => onSkillToggle(entry.slug)}
-                          />
-                          <span className="design-skill-option-copy">
-                            <span className="design-skill-option-title">{entry.title}</span>
-                            <span className="design-skill-option-description">
-                              {entry.description}
-                            </span>
-                            {status !== null ? (
-                              <span className="design-skill-option-status">{status}</span>
-                            ) : null}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                  {skillPreview.length > 0 ? (
-                    <details className="design-skill-preview">
-                      <summary>What the agent will be told</summary>
-                      <pre>{skillPreview}</pre>
-                    </details>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
           </div>
           <div className="design-composer">
             <textarea
@@ -1505,6 +1664,17 @@ const DesignAssistant = memo(function DesignAssistant({
               rows={2}
             />
             <div className="design-composer-footer">
+              <DesignSkillModeControl
+                skillSelection={skillSelection}
+                onSkillModeChange={onSkillModeChange}
+                onCraftOpen={onCraftOpen}
+                onCraftReadMore={onCraftReadMore}
+              />
+              {autoSkillNotice ? (
+                <div className="design-skill-result" role="status">
+                  {autoSkillNotice}
+                </div>
+              ) : null}
               <div className="design-agent-picker-wrap" ref={providerPickerWrapRef}>
                 <button
                   ref={providerButtonRef}
@@ -1754,11 +1924,7 @@ const DesignAssistant = memo(function DesignAssistant({
                   Model: {modelLabel}
                   {modelButtonDisabled ? null : " ▾"}
                 </button>
-                {modelButtonDisabled ? (
-                  <div className="design-agent-picker-status" role="status">
-                    {modelUnavailableMessage}
-                  </div>
-                ) : modelPickerOpen ? (
+                {modelButtonDisabled ? null : modelPickerOpen ? (
                   <div
                     id="design-model-picker"
                     className={`design-agent-picker${pendingSwitch ? " design-agent-picker-pending" : ""}`}
@@ -1830,17 +1996,9 @@ const DesignAssistant = memo(function DesignAssistant({
 
 export interface DesignSurfaceProps {
   host: DesignHost;
-  disclosure?: DesignDisclosure;
 }
 
-function resolveDesignDisclosure(
-  disclosure: DesignDisclosure | undefined,
-  context: { session: Session | null; selectedWorkspace: Workspace | null },
-): string | undefined {
-  return typeof disclosure === "function" ? disclosure(context) : disclosure;
-}
-
-export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
+export function DesignSurface({ host }: DesignSurfaceProps) {
   const storedDocument = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.document : null,
   );
@@ -1882,17 +2040,9 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
     };
   }, [host]);
 
-  const initialDisclosure = resolveDesignDisclosure(disclosure, {
-    session: null,
-    selectedWorkspace: null,
-  });
-
   if (loadError !== null) {
     return (
       <section className="surface-card design-surface" data-screen-label="Design">
-        {initialDisclosure ? (
-          <div className="design-demo-disclosure">{initialDisclosure}</div>
-        ) : null}
         <div role="alert">Unable to load the design document: {loadError}</div>
       </section>
     );
@@ -1901,24 +2051,20 @@ export function DesignSurface({ host, disclosure }: DesignSurfaceProps) {
   if (document === null) {
     return (
       <section className="surface-card design-surface" data-screen-label="Design">
-        {initialDisclosure ? (
-          <div className="design-demo-disclosure">{initialDisclosure}</div>
-        ) : null}
         <div role="status">Loading…</div>
       </section>
     );
   }
 
-  return <DesignSurfaceContent host={host} document={document} disclosure={disclosure} />;
+  return <DesignSurfaceContent host={host} document={document} />;
 }
 
 interface DesignSurfaceContentProps {
   host: DesignHost;
   document: DesignDocument;
-  disclosure?: DesignDisclosure;
 }
 
-function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceContentProps) {
+function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const messages = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.messages : EMPTY_DESIGN_MESSAGES,
   );
@@ -1960,6 +2106,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     null,
   );
   const [autoSkillNotice, setAutoSkillNotice] = useState<string | null>(null);
+  const [craftSheetMode, setCraftSheetMode] = useState<"manual" | "readonly" | null>(null);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
@@ -2221,7 +2368,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
 
   useEffect(() => {
     messagesRef.current = messages;
-    if (assistantRef.current) assistantRef.current.scrollTop = assistantRef.current.scrollHeight;
+    if (assistantRef.current && messages.length > 0) {
+      assistantRef.current.scrollTop = assistantRef.current.scrollHeight;
+    }
   }, [messages, busy]);
 
   useEffect(() => {
@@ -2257,7 +2406,14 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       if (skillSelection.mode === mode) return;
       setAutoSkillNotice(null);
       setAutoAppliedSkillSlugs(null);
-      updateSkillSelection({ ...skillSelection, mode });
+      updateSkillSelection({
+        ...skillSelection,
+        mode,
+        enabledSlugs:
+          mode === "manual"
+            ? skillSelection.enabledSlugs.slice(0, MAX_AUTOMATIC_SKILL_SECTIONS)
+            : skillSelection.enabledSlugs,
+      });
     },
     [skillSelection, updateSkillSelection],
   );
@@ -2266,7 +2422,10 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       if (skillSelection.mode !== "manual") return;
       const enabled = new Set(skillSelection.enabledSlugs);
       if (enabled.has(slug)) enabled.delete(slug);
-      else enabled.add(slug);
+      else {
+        if (enabled.size >= MAX_AUTOMATIC_SKILL_SECTIONS) return;
+        enabled.add(slug);
+      }
       updateSkillSelection({
         ...skillSelection,
         enabledSlugs: [...enabled],
@@ -2274,6 +2433,45 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     },
     [skillSelection, updateSkillSelection],
   );
+  const openManualCraftSheet = useCallback(() => setCraftSheetMode("manual"), []);
+  const openCraftReadOnlySheet = useCallback(() => setCraftSheetMode("readonly"), []);
+  const closeCraftSheet = useCallback(() => setCraftSheetMode(null), []);
+
+  useEffect(() => {
+    if (craftSheetMode === null) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeCraftSheet();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeCraftSheet, craftSheetMode]);
+
+  const resolvedSkillSlugs =
+    skillSelection.mode === "auto" ? autoAppliedSkillSlugs : selectedSkillSlugs;
+  // Manual belongs here too: `resolvedSkillSlugs` is the user's own ticks, so the composition
+  // is as resolved as it is in `all`. Leaving it out meant a manual selection that overflowed
+  // the budget kept every box ticked and said nothing, which is the same lie this row status
+  // exists to prevent — and the larger the corpus grows, the easier it is to tick past the
+  // ceiling.
+  const hasResolvedComposition =
+    skillSelection.mode === "all" ||
+    skillSelection.mode === "manual" ||
+    (skillSelection.mode === "auto" && autoAppliedSkillSlugs !== null);
+  const skillBlock = useMemo(
+    () => buildSkillBlock(builtInSkillSources(), resolvedSkillSlugs ?? []),
+    [resolvedSkillSlugs],
+  );
+  const resolvedSkillSlugSet = useMemo(
+    () => new Set(resolvedSkillSlugs ?? []),
+    [resolvedSkillSlugs],
+  );
+  const automaticBaselineSlugSet = useMemo(
+    () => new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS),
+    [],
+  );
+  const droppedSkillSlugSet = useMemo(() => new Set(skillBlock.dropped), [skillBlock]);
 
   const layerRows = useMemo(
     () =>
@@ -2327,13 +2525,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const generate = host.generate;
   const canSave = saveDocument !== undefined;
   const canGenerate = generate !== undefined;
-  const selectedWorkspace = useMemo(
-    () =>
-      workspaceProjects
-        .flatMap((project) => project.workspaces)
-        .find((workspace) => workspace.id === selectedWorkspaceId) ?? null,
-    [selectedWorkspaceId, workspaceProjects],
-  );
   const selectProvider = useCallback(
     (provider: ProviderInfo) => {
       if (agentSession !== null) return;
@@ -2406,10 +2597,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     };
   }, [artifactError, artifactHtml, composerContextLayerId, document.contextPrefix, layers]);
   const composerContextLayerName = composerContextTarget?.label ?? null;
-  const resolvedDisclosure = resolveDesignDisclosure(disclosure, {
-    session: agentSessionRecord,
-    selectedWorkspace,
-  });
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
 
@@ -2822,14 +3009,14 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
             setAutoAppliedSkillSlugs([...result.appliedSkillSlugs]);
             setAutoSkillNotice(
               result.skillSelectionFallback
-                ? "Automatic choice did not happen; the most important sections that fit were used, and the rest were omitted."
+                ? `${SKILL_MODE_LABELS.auto.name} choice did not happen; the most important sections that fit were used, and the rest were omitted.`
                 : appliedTitles.length > 0
-                  ? `Automatic craft: ${appliedTitles.join(", ")}${
+                  ? `${SKILL_MODE_LABELS.auto.name} craft: ${appliedTitles.join(", ")}${
                       droppedTitles.length > 0
                         ? `. Omitted: ${droppedTitles.join(", ")} did not fit within the ${composedAutoSkillBlock.ceiling.toLocaleString()}-character budget.`
                         : ""
                     }`
-                  : "Automatic craft: no sections were used.",
+                  : `${SKILL_MODE_LABELS.auto.name} craft: no sections were used.`,
             );
           }
           useAppStore.getState().setDesignGeneration(host, null);
@@ -2963,9 +3150,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       <h1 className="design-sr-only" id="design-surface-title">
         Design
       </h1>
-      {resolvedDisclosure ? (
-        <div className="design-demo-disclosure">{resolvedDisclosure}</div>
-      ) : null}
       <DesignToolbar
         documentName={document.name}
         documentPath={document.path}
@@ -2976,10 +3160,13 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         saveError={saveError}
         canUndo={canUndo}
         canRedo={canRedo}
+        historyRefreshKey={historyRefreshKey}
+        liveSessionId={agentSessionRecord?.id ?? null}
         onGroundingToggle={toggleGrounding}
         onSave={save}
         onUndo={undo}
         onRedo={redo}
+        onHistoryOpen={openHistoryEntry}
       />
       {persistenceNotice ? (
         <div className="design-history-open-status" role="status">
@@ -2987,11 +3174,6 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         </div>
       ) : null}
 
-      <DesignHistoryList
-        refreshKey={historyRefreshKey}
-        liveSessionId={agentSessionRecord?.id ?? null}
-        onOpen={openHistoryEntry}
-      />
       {historyOpenResult?.status === "loading" ? (
         <div className="design-history-open-status" role="status">
           Opening design history…
@@ -3004,6 +3186,24 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         <div className="design-history-open-status" role="alert">
           {historyOpenResult.message}
         </div>
+      ) : null}
+
+      {craftSheetMode !== null ? (
+        <DesignCraftSheet
+          skillIndex={skillIndex}
+          skillSelection={skillSelection}
+          selectedSkillSlugs={selectedSkillSlugs}
+          resolvedSkillSlugs={resolvedSkillSlugs}
+          autoAppliedSkillSlugs={autoAppliedSkillSlugs}
+          hasResolvedComposition={hasResolvedComposition}
+          skillBlock={skillBlock}
+          resolvedSkillSlugSet={resolvedSkillSlugSet}
+          automaticBaselineSlugSet={automaticBaselineSlugSet}
+          droppedSkillSlugSet={droppedSkillSlugSet}
+          readOnly={craftSheetMode === "readonly"}
+          onClose={closeCraftSheet}
+          onSkillToggle={handleSkillToggle}
+        />
       ) : null}
 
       <div className="design-main">
@@ -3090,10 +3290,17 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           skillIndex={skillIndex}
           skillSelection={skillSelection}
           selectedSkillSlugs={selectedSkillSlugs}
+          resolvedSkillSlugs={resolvedSkillSlugs}
           autoAppliedSkillSlugs={autoAppliedSkillSlugs}
+          hasResolvedComposition={hasResolvedComposition}
+          skillBlock={skillBlock}
+          resolvedSkillSlugSet={resolvedSkillSlugSet}
+          automaticBaselineSlugSet={automaticBaselineSlugSet}
+          droppedSkillSlugSet={droppedSkillSlugSet}
           autoSkillNotice={autoSkillNotice}
           onSkillModeChange={handleSkillModeChange}
-          onSkillToggle={handleSkillToggle}
+          onCraftOpen={openManualCraftSheet}
+          onCraftReadMore={openCraftReadOnlySheet}
         />
       </div>
     </section>

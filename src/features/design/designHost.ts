@@ -115,13 +115,6 @@ export interface DesignHost {
   selectWorkspace?(workspace: Workspace | null): void;
 }
 
-export interface DesignDisclosureContext {
-  session: Session | null;
-  selectedWorkspace: Workspace | null;
-}
-
-export type DesignDisclosure = string | ((context: DesignDisclosureContext) => string);
-
 export interface DesignAgentSession {
   getState(): AgentSessionState;
   subscribe(listener: () => void): () => void;

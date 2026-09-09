@@ -1,10 +1,36 @@
 import { surfaceSettingsGet, surfaceSettingsSet } from "../../lib/tauri";
+import { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
 
 export interface DesignSkillSelection {
   version: 1;
   mode: "all" | "manual" | "auto";
   enabledSlugs: readonly string[];
 }
+
+/**
+ * Visible copy is centralized because these persisted ids are deliberately
+ * stable. `all` remains the current priority-order fallback until deterministic
+ * request matching lands; the other two descriptions state who chooses and
+ * what an extra agent turn costs.
+ */
+export const SKILL_MODE_LABELS: Record<
+  DesignSkillSelection["mode"],
+  { name: string; blurb: string; summary?: string }
+> = {
+  all: {
+    name: "Priority",
+    blurb: "Most important sections that fit; the rest are omitted.",
+    summary: "Craft: priority sections that fit",
+  },
+  manual: {
+    name: "Manual",
+    blurb: `Choose up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections yourself; no extra model turn.`,
+  },
+  auto: {
+    name: "Automatic",
+    blurb: `Up to ${MAX_AUTOMATIC_SKILL_SECTIONS} sections chosen by the agent for this request; one extra model turn.`,
+  },
+};
 
 export const DEFAULT_DESIGN_SKILL_SELECTION: DesignSkillSelection = {
   version: 1,
@@ -162,10 +188,15 @@ export async function loadDesignSkillSelection(
   const stored = await readStoredDesignSettings();
   if (stored === null || stored === undefined) return defaultSelection();
 
+  const enabledSlugs = orderedIntersection(stored.selection.enabledSlugs, knownSlugs);
+
   return {
     version: 1,
     mode: stored.selection.mode,
-    enabledSlugs: orderedIntersection(stored.selection.enabledSlugs, knownSlugs),
+    enabledSlugs:
+      stored.selection.mode === "manual"
+        ? enabledSlugs.slice(0, MAX_AUTOMATIC_SKILL_SECTIONS)
+        : enabledSlugs,
   };
 }
 
@@ -235,15 +266,22 @@ export async function saveDesignWorkspaceId(workspaceId: string | null): Promise
   }
 }
 
+export function selectPrioritySkillSlugs(knownSlugs: readonly string[]): readonly string[] {
+  return [...new Set(knownSlugs)];
+}
+
 export function selectedSlugs(
   selection: DesignSkillSelection,
   knownSlugs: readonly string[],
 ): readonly string[] {
-  if (selection.mode === "all") return [...new Set(knownSlugs)];
+  if (selection.mode === "all") return selectPrioritySkillSlugs(knownSlugs);
   // Automatic selection needs the request text and an agent round trip, so this pure helper
   // cannot resolve it. The generation path performs that resolution instead.
   if (selection.mode === "auto") return [];
-  return orderedIntersection(selection.enabledSlugs, knownSlugs);
+  return orderedIntersection(selection.enabledSlugs, knownSlugs).slice(
+    0,
+    MAX_AUTOMATIC_SKILL_SECTIONS,
+  );
 }
 
 export async function loadStoredDesignHistory(): Promise<readonly unknown[] | null> {

@@ -81,7 +81,7 @@ vi.mock("../../features/workspace/Workspace", () => ({
   Workspace: () => <div data-screen-label="Workspace">Workspace</div>,
 }));
 
-import { AGENT_DESIGN_DISCLOSURE, App } from "../../app/App";
+import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
@@ -133,6 +133,40 @@ const SESSION: Session = {
   state: { type: "live", generation: 1 },
   elapsedMs: 0,
 };
+
+function providerInfo(id: string): ProviderInfo {
+  return {
+    id,
+    executable: id,
+    acpAvailable: true,
+    authentication: "unknown",
+    protocol: "acp",
+    origin: "user-binary",
+  };
+}
+
+function sessionRecord(id: string): Session {
+  return {
+    ...SESSION,
+    id,
+    peerSessionId: `${id}-peer`,
+  };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 const READY_STATUS = {
   state: "ready",
   indexed_files: 1,
@@ -312,6 +346,120 @@ describe("ACP design host", () => {
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
     channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
     await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+  });
+
+  it("opens and attaches a session immediately after provider selection", async () => {
+    const host = createAgentHost();
+    host.selectProvider?.(providerInfo("grok"));
+
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    expect(mocks.oracleAsk).not.toHaveBeenCalled();
+    expect(mocks.sessionSend).not.toHaveBeenCalled();
+    expect(host.getAgentSessionRecord?.()?.id).toBe(SESSION.id);
+    expect(host.getAgentSession?.()?.getState().status).toBe("idle");
+
+    await disposeAgentHost(host);
+  });
+
+  it("does not create a second session when the same provider is selected twice", async () => {
+    const host = createAgentHost();
+    const provider = providerInfo("grok");
+    host.selectProvider?.(provider);
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    host.selectProvider?.({ ...provider });
+    await Promise.resolve();
+
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(1);
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    expect(host.getAgentSessionRecord?.()?.id).toBe(SESSION.id);
+
+    await disposeAgentHost(host);
+  });
+
+  it("closes the old provider session before the replacement becomes current", async () => {
+    const host = createAgentHost();
+    const first = providerInfo("provider-a");
+    const second = providerInfo("provider-b");
+    mocks.sessionCreate
+      .mockResolvedValueOnce(sessionRecord("session-a"))
+      .mockResolvedValueOnce(sessionRecord("session-b"));
+
+    host.selectProvider?.(first);
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+    host.selectProvider?.(second);
+
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(2));
+
+    expect(mocks.sessionDetach).toHaveBeenCalledWith("session-a");
+    expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
+
+    await disposeAgentHost(host);
+  });
+
+  it("lets the last rapid provider selection win and closes the stale slow create", async () => {
+    const firstCreate = deferred<Session>();
+    const secondCreate = deferred<Session>();
+    const host = createAgentHost();
+    mocks.sessionCreate.mockImplementation((...args: unknown[]) => {
+      if (args[2] === "provider-a") return firstCreate.promise;
+      if (args[2] === "provider-b") return secondCreate.promise;
+      throw new Error(`unexpected provider: ${String(args[2])}`);
+    });
+
+    host.selectProvider?.(providerInfo("provider-a"));
+    await vi.waitFor(() => expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-a"));
+
+    host.selectProvider?.(providerInfo("provider-b"));
+    await vi.waitFor(() => expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-b"));
+
+    secondCreate.resolve(sessionRecord("session-b"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+    expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
+
+    firstCreate.resolve(sessionRecord("session-a"));
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a"));
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
+
+    await disposeAgentHost(host);
+  });
+
+  it("leaves a failed provider start empty and allows the same selection to retry", async () => {
+    const host = createAgentHost();
+    const provider = providerInfo("grok");
+    mocks.sessionCreate
+      .mockRejectedValueOnce(new Error("provider unavailable"))
+      .mockResolvedValueOnce(sessionRecord("session-retry"));
+
+    host.selectProvider?.(provider);
+    await vi.waitFor(() => expect(mocks.reasonFromCause).toHaveBeenCalledWith(expect.any(Error)));
+    expect(host.getAgentSession?.()).toBeNull();
+    expect(host.getAgentSessionRecord?.()).toBeNull();
+
+    host.selectProvider?.({ ...provider });
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
+    expect(host.getAgentSessionRecord?.()?.id).toBe("session-retry");
+
+    await disposeAgentHost(host);
+  });
+
+  it("reuses the session opened by provider selection during generation", async () => {
+    const host = createAgentHost();
+    host.selectProvider?.(providerInfo("grok"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    const { run } = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenCalledTimes(1);
+    finishRun();
+    await expect(run).resolves.toMatchObject({ sessionId: SESSION.id });
+
+    await disposeAgentHost(host);
   });
 
   it("keeps the selected provider when Generate is ahead of session creation", async () => {
@@ -1028,7 +1176,7 @@ describe("ACP design host", () => {
     expect(mocks.sessionCreate).not.toHaveBeenCalled();
   });
 
-  it("loads the workspace registry, reaches ACP, and retains its artifact", async () => {
+  it("loads the workspace registry, reaches ACP, and omits the debug disclosure", async () => {
     mocks.oracleStatus.mockResolvedValue(READY_STATUS);
     mocks.providersList.mockResolvedValue({
       providers: [
@@ -1055,9 +1203,7 @@ describe("ACP design host", () => {
         ),
       ).not.toBeNull(),
     );
-    expect(container.textContent).toContain(
-      "ACP agent — will run in the directory the app was launched from.",
-    );
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
     const providerButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label^="Choose provider:"]',
     );
@@ -1578,36 +1724,57 @@ describe("ACP design host", () => {
   });
 });
 
-describe("agent design disclosure", () => {
-  it("names the daemon-reported directory for a live session", () => {
-    expect(
-      AGENT_DESIGN_DISCLOSURE({
-        session: { ...SESSION, cwd: "C:/actual/design" },
-        selectedWorkspace: WORKSPACE,
+describe("design disclosure removal", () => {
+  it("does not render the old disclosure while the host is resolving", async () => {
+    let resolveStatus: ((status: OracleIndexStatus) => void) | undefined;
+    mocks.oracleStatus.mockReturnValue(
+      new Promise((resolve) => {
+        resolveStatus = resolve;
       }),
-    ).toBe("ACP agent — running in C:/actual/design.");
-  });
-
-  it("does not guess a path when a live session has no cwd", () => {
-    const disclosure = AGENT_DESIGN_DISCLOSURE({
-      session: SESSION,
-      selectedWorkspace: WORKSPACE,
-    });
-
-    expect(disclosure).toBe("ACP agent — the directory is not known for this session.");
-    expect(disclosure).not.toContain("C:/");
-    expect(disclosure).not.toContain(WORKSPACE.title);
-  });
-
-  it("describes the selected workspace before a session exists", () => {
-    expect(AGENT_DESIGN_DISCLOSURE({ session: null, selectedWorkspace: WORKSPACE })).toBe(
-      "ACP agent — will run in workspace feat/design.",
     );
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<App />));
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
+    resolveStatus?.(READY_STATUS);
+    await act(async () => root.unmount());
   });
 
-  it("describes the launch-directory fallback before a session exists", () => {
-    expect(AGENT_DESIGN_DISCLOSURE({ session: null, selectedWorkspace: null })).toBe(
-      "ACP agent — will run in the directory the app was launched from.",
+  it("does not render the old disclosure on an ACP surface after workspace selection", async () => {
+    mocks.oracleStatus.mockResolvedValue(READY_STATUS);
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<App />));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
     );
+    const workspaceButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Choose workspace:"]',
+    );
+    if (workspaceButton === null) throw new Error("Workspace picker did not render");
+    await act(async () => workspaceButton.click());
+    const workspaceOption = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((option) => option.textContent?.includes(WORKSPACE.title));
+    if (workspaceOption === undefined) throw new Error("Workspace option did not render");
+    await act(async () => workspaceOption.click());
+
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("does not render the old disclosure on the demo fallback surface", async () => {
+    mocks.oracleStatus.mockRejectedValue(new Error("Oracle daemon unavailable"));
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<App />));
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
+    await act(async () => root.unmount());
   });
 });

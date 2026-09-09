@@ -55,6 +55,7 @@ describe("built-in design skills", () => {
               slug: result.section.slug,
               title: result.section.title,
               description: result.section.description,
+              body: result.section.body,
             },
           ]
         : [];

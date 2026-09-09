@@ -240,7 +240,7 @@ describe("Oracle design host", () => {
     await act(async () => root.unmount());
   });
 
-  it("discloses when App falls back to the demo host", async () => {
+  it("omits the debug disclosure when App falls back to the demo host", async () => {
     mocks.oracleStatus.mockRejectedValue(new Error("Oracle daemon unavailable"));
     const { container, root } = createRootContainer();
 
@@ -248,7 +248,7 @@ describe("Oracle design host", () => {
     await act(async () => undefined);
     await act(async () => undefined);
 
-    expect(container.textContent).toContain("Demo design — fixtures, not a live store.");
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
     await act(async () => root.unmount());
   });
 });

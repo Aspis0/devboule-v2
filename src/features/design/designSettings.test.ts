@@ -20,10 +20,12 @@ import {
   saveDesignProviderId,
   saveDesignSkillSelection,
   saveDesignWorkspaceId,
+  SKILL_MODE_LABELS,
   selectedSlugs,
   updateStoredDesignHistory,
   type DesignSkillSelection,
 } from "./designSettings";
+import { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
 import { recordDesignHistoryEntry, type DesignHistoryEntry } from "./designHistory";
 
 const KNOWN_SLUGS = ["color", "motion", "spacing"] as const;
@@ -60,6 +62,14 @@ beforeEach(() => {
 });
 
 describe("loadDesignSkillSelection", () => {
+  it("keeps the visible mode names centralized", () => {
+    expect(SKILL_MODE_LABELS).toMatchObject({
+      all: { name: "Priority" },
+      manual: { name: "Manual" },
+      auto: { name: "Automatic" },
+    });
+  });
+
   it("falls back for null", async () => {
     await expectDefaultFor(null);
   });
@@ -139,6 +149,24 @@ describe("loadDesignSkillSelection", () => {
       version: 1,
       mode: "manual",
       enabledSlugs: expectedSlugs,
+    });
+  });
+
+  it("clamps persisted manual selections to the derived safe maximum", async () => {
+    const knownSlugs = ["one", "two", "three", "four", "five"];
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "value",
+      value: {
+        version: 1,
+        mode: "manual",
+        enabledSlugs: knownSlugs,
+      },
+    });
+
+    await expect(loadDesignSkillSelection(knownSlugs)).resolves.toEqual({
+      version: 1,
+      mode: "manual",
+      enabledSlugs: knownSlugs.slice(0, MAX_AUTOMATIC_SKILL_SECTIONS),
     });
   });
 

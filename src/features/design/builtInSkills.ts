@@ -1,4 +1,10 @@
-import { parseSkillFile, type SkillSource } from "./skillLoader";
+import {
+  DOCTRINE_CEILING_CHARS,
+  DOCTRINE_SECTION_CEILING_CHARS,
+  parseSkillFile,
+  SECTION_SEPARATOR,
+  type SkillSource,
+} from "./skillLoader";
 
 const BUILT_IN_SKILL_FILES = import.meta.glob<string>("./craft/*.md", {
   query: "?raw",
@@ -50,6 +56,7 @@ export interface BuiltInSkillIndexEntry {
   slug: string;
   title: string;
   description: string;
+  body: string;
 }
 
 export function builtInSkillIndex(): readonly BuiltInSkillIndexEntry[] {
@@ -61,11 +68,29 @@ export function builtInSkillIndex(): readonly BuiltInSkillIndexEntry[] {
         slug: result.section.slug,
         title: result.section.title,
         description: result.section.description,
+        body: result.section.body,
       });
     }
   }
   return index.sort((left, right) => compareBuiltInSkillSlugs(left.slug, right.slug));
 }
+
+const MAX_BUILT_IN_SKILL_TITLE_CHARS = Math.max(
+  0,
+  ...builtInSkillIndex().map((entry) => entry.title.length),
+);
+const MAX_SKILL_BLOCK_CHARS =
+  DOCTRINE_SECTION_CEILING_CHARS + "## ".length + MAX_BUILT_IN_SKILL_TITLE_CHARS + "\n\n".length;
+const MAX_SKILL_BLOCK_WITH_SEPARATOR_CHARS = MAX_SKILL_BLOCK_CHARS + SECTION_SEPARATOR.length;
+
+/**
+ * Shared cap for automatic and manual selection. It is derived from the
+ * worst-case built-in block: section ceiling + longest title header + the
+ * separator between blocks. Four fit under the composed ceiling; five do not.
+ */
+export const MAX_AUTOMATIC_SKILL_SECTIONS = Math.floor(
+  (DOCTRINE_CEILING_CHARS + SECTION_SEPARATOR.length) / MAX_SKILL_BLOCK_WITH_SEPARATOR_CHARS,
+);
 
 // The slug list `buildSkillBlock` wants, derived from the index rather than a
 // second parse.  Kept as its own function because composing needs only slugs

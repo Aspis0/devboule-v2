@@ -16,7 +16,13 @@ import type { OracleResult, ProviderInfo, Session, SessionEvent, Workspace } fro
 import type { DesignGenerationOptions, DesignGenerationResult, DesignHost } from "./designHost";
 // These helpers are shared with Workspace for now; they would eventually belong in src/lib/.
 import { sessionCreateFromProvider } from "../workspace/workspaceSessions";
-import { builtInSkillIndex, builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
+import {
+  builtInSkillIndex,
+  builtInSkillSlugs,
+  builtInSkillSources,
+  MAX_AUTOMATIC_SKILL_SECTIONS,
+} from "./builtInSkills";
+export { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
 import { createOracleHost } from "./oracleHost";
 import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
 
@@ -24,6 +30,16 @@ interface AgentSessionHandle {
   session: Session;
   controller: AgentSession;
   closed: boolean;
+  closePromise: Promise<void> | null;
+}
+
+interface SessionTarget {
+  provider: ProviderInfo | undefined;
+  workspace: Workspace | null;
+}
+
+interface SessionRequest extends SessionTarget {
+  promise: Promise<AgentSessionHandle>;
 }
 
 interface ActiveRun {
@@ -51,15 +67,6 @@ export const MAX_ARTIFACT_BYTES = 256 * 1024;
 export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
 // This is a real ACP turn, so eight seconds bounds a missing answer without pretending it is instant.
 export const AUTO_SKILL_PREFLIGHT_TIMEOUT_MS = 8_000;
-// Four, because it is the largest cap under which everything the router can choose arrives
-// intact. Measured exhaustively over the corpus: all 220 four-section selections compose with
-// nothing dropped, while of 495 five-section selections only 8 fit and 487 overflow — so at
-// five, almost every generation would silently discard the router's own last choice. An
-// earlier version of this comment said five could never fit at all; that was true of an
-// eleven-section corpus and stopped being true when two smaller sections were added. The
-// arithmetic moves with the corpus, so the invariant test in agentHost.test.tsx is what
-// actually holds this, not the numbers written here.
-export const MAX_AUTOMATIC_SKILL_SECTIONS = 4;
 // A relevance router structurally cannot select a section whose value is universal:
 // that section loses to three sections specific to the request.  This was measured
 // three times at 2/15, so automatic mode includes it as a baseline instead.  Keep
@@ -364,6 +371,19 @@ function sessionError(prefix: string, cause: unknown): Error {
   return new Error(`${prefix}: ${reasonFromCause(cause)}`);
 }
 
+function sameProvider(left: ProviderInfo | undefined, right: ProviderInfo | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  // The catalog id is the provider identity; the rest of the row can be
+  // refreshed while the same provider remains selected.
+  return left.id === right.id;
+}
+
+function sameSessionTarget(left: SessionTarget, right: SessionTarget): boolean {
+  return (
+    sameProvider(left.provider, right.provider) && left.workspace?.id === right.workspace?.id
+  );
+}
+
 function lastErrorText(state: AgentSessionState): string {
   for (let index = state.items.length - 1; index >= 0; index -= 1) {
     const item = state.items[index];
@@ -401,10 +421,14 @@ export function createAgentHost(): DesignHost {
   let activeRun: ActiveRun | null = null;
   let runPending = false;
   let sessionHandle: AgentSessionHandle | null = null;
-  let sessionPromise: Promise<AgentSessionHandle> | null = null;
+  let sessionRequest: SessionRequest | null = null;
+  const pendingSessionPromises = new Set<Promise<AgentSessionHandle>>();
+  let sessionTeardownPromise: Promise<void> | null = null;
   let disposalPromise: Promise<void> | null = null;
   let activePreflight: { sessionId: string; reject: (error: Error) => void } | null = null;
   let selectedProvider: ProviderInfo | undefined;
+  let sessionOwner: SessionTarget | null = null;
+  let providerSelectionGeneration = 0;
   /**
    * The explicit selection is the SINGLE resolution that both generation and the per-project
    * doctrine settings read, so they cannot disagree about which project is current; two
@@ -429,33 +453,59 @@ export function createAgentHost(): DesignHost {
     else run.reject(value);
   };
 
-  const closeSession = async (handle: AgentSessionHandle): Promise<void> => {
-    if (handle.closed) return;
+  const closeSession = (handle: AgentSessionHandle): Promise<void> => {
+    if (handle.closePromise !== null) return handle.closePromise;
+    if (handle.closed) return Promise.resolve();
     handle.closed = true;
     if (sessionHandle === handle) {
       sessionHandle = null;
+      sessionOwner = null;
       publishSessionChange();
     }
-    handle.controller.dispose();
-    // AgentSession.dispose() starts session_detach without awaiting it. The daemon's
-    // close path (server.rs:536-541) safely accepts session_close while attached.
-    try {
-      await sessionClose(handle.session.id);
-    } catch {
-      // The surface is already gone; there is no useful UI action for cleanup failure.
-    }
+    const closing = (async () => {
+      handle.controller.dispose();
+      // AgentSession.dispose() starts session_detach without awaiting it. The daemon's
+      // close path (server.rs:536-541) safely accepts session_close while attached.
+      try {
+        await sessionClose(handle.session.id);
+      } catch {
+        // The surface is already gone; there is no useful UI action for cleanup failure.
+      }
+    })();
+    handle.closePromise = closing;
+    sessionTeardownPromise = closing;
+    void closing.then(() => {
+      if (sessionTeardownPromise === closing) sessionTeardownPromise = null;
+    });
+    return closing;
   };
 
-  const openSession = async (workspace: Workspace | null): Promise<AgentSessionHandle> => {
+  const openSession = async (
+    target: SessionTarget,
+    isCurrent: () => boolean,
+  ): Promise<AgentSessionHandle> => {
     let session: Session;
     try {
-      const args = sessionCreateFromProvider(selectedProvider);
+      const args = sessionCreateFromProvider(target.provider);
       session =
         args.provider === null
-          ? await sessionCreate(workspace?.id ?? null, args.kind)
-          : await sessionCreate(workspace?.id ?? null, args.kind, args.provider);
+          ? await sessionCreate(target.workspace?.id ?? null, args.kind)
+          : await sessionCreate(target.workspace?.id ?? null, args.kind, args.provider);
     } catch (cause) {
+      if (!isCurrent()) throw abortError();
       throw sessionError("Could not start the agent session", cause);
+    }
+
+    // session_create has no abort signal. If a newer provider won while it was
+    // in flight, close the daemon session as soon as its id exists instead of
+    // allowing the slow request to become the current session.
+    if (!isCurrent()) {
+      try {
+        await sessionClose(session.id);
+      } catch {
+        // The stale session has no UI owner; there is no useful recovery here.
+      }
+      throw abortError();
     }
 
     const sessionId = session.id;
@@ -499,8 +549,14 @@ export function createAgentHost(): DesignHost {
         );
       },
     });
-    const handle: AgentSessionHandle = { session, controller, closed: false };
+    const handle: AgentSessionHandle = {
+      session,
+      controller,
+      closed: false,
+      closePromise: null,
+    };
     sessionHandle = handle;
+    sessionOwner = target;
     publishSessionChange();
 
     try {
@@ -520,25 +576,50 @@ export function createAgentHost(): DesignHost {
       await closeSession(handle);
       throw abortError();
     }
+    if (!isCurrent()) {
+      await closeSession(handle);
+      throw abortError();
+    }
     return handle;
   };
 
-  const ensureSession = async (workspace: Workspace | null): Promise<AgentSessionHandle> => {
+  const ensureSession = async (
+    workspace: Workspace | null,
+    provider = selectedProvider,
+  ): Promise<AgentSessionHandle> => {
     if (disposed) throw new Error("The design surface is no longer available.");
+    const target: SessionTarget = { provider, workspace };
     if (sessionHandle !== null && !sessionHandle.closed) {
-      if (sessionHandle.controller.getState().status !== "closed") {
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionHandle.controller.getState().status !== "closed"
+      ) {
         // An "error" is an agent-reported failure, not a dead session; keep it reusable.
         return sessionHandle;
       }
       await closeSession(sessionHandle);
     }
-    if (sessionPromise !== null) return sessionPromise;
-    const pending = openSession(workspace);
-    sessionPromise = pending;
+    if (sessionTeardownPromise !== null) await sessionTeardownPromise;
+    if (sessionRequest !== null) {
+      if (sameSessionTarget(sessionRequest, target)) return sessionRequest.promise;
+      // A provider selection superseded this request. Its openSession callback
+      // will close any session id that arrives after this point.
+      sessionRequest = null;
+    }
+    let request: SessionRequest;
+    const pending = openSession(target, () => !disposed && sessionRequest === request);
+    request = { ...target, promise: pending };
+    sessionRequest = request;
+    pendingSessionPromises.add(pending);
+    void pending.then(
+      () => pendingSessionPromises.delete(pending),
+      () => pendingSessionPromises.delete(pending),
+    );
     try {
       return await pending;
     } finally {
-      if (sessionPromise === pending) sessionPromise = null;
+      if (sessionRequest === request) sessionRequest = null;
     }
   };
 
@@ -777,7 +858,12 @@ export function createAgentHost(): DesignHost {
         void sessionInterrupt(activePreflight.sessionId).catch(() => undefined);
         activePreflight.reject(abortError());
       }
-      if (sessionPromise !== null) await sessionPromise.catch(() => undefined);
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      await Promise.all(
+        [...pendingSessionPromises].map((pending) => pending.catch(() => undefined)),
+      );
+      if (sessionTeardownPromise !== null) await sessionTeardownPromise;
       if (sessionHandle !== null) await closeSession(sessionHandle);
     })();
     return disposalPromise;
@@ -793,13 +879,38 @@ export function createAgentHost(): DesignHost {
       return () => sessionListeners.delete(listener);
     },
     selectProvider: (provider) => {
-      // Generate clicked, session not yet created: keep the committed provider.
-      if (runPending || activeRun !== null || sessionHandle !== null || sessionPromise !== null)
-        return;
+      if (disposed || runPending || activeRun !== null) return;
       selectedProvider = provider;
+      const target: SessionTarget = { provider, workspace: selectedWorkspace };
+      const generation = ++providerSelectionGeneration;
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionHandle !== null &&
+        !sessionHandle.closed &&
+        sessionHandle.controller.getState().status !== "closed"
+      ) {
+        return;
+      }
+      if (sessionRequest !== null && sameSessionTarget(sessionRequest, target)) return;
+
+      // Invalidate an older open immediately. openSession cannot cancel the
+      // underlying IPC create call, so its generation guard will close any id
+      // that eventually comes back from the daemon.
+      sessionRequest = null;
+      void (async () => {
+        if (sessionHandle !== null && !sessionHandle.closed) await closeSession(sessionHandle);
+        if (disposed || generation !== providerSelectionGeneration) return;
+        try {
+          await ensureSession(target.workspace, target.provider);
+        } catch {
+          // Keep the committed provider. A later selection of the same provider
+          // starts a fresh request after this failed one has been cleared.
+        }
+      })();
     },
     selectWorkspace: (workspace) => {
-      if (runPending || activeRun !== null || sessionHandle !== null || sessionPromise !== null)
+      if (runPending || activeRun !== null || sessionHandle !== null || sessionRequest !== null)
         return;
       selectedWorkspace = workspace;
     },

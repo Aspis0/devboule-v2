@@ -75,6 +75,10 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+body:has(.app-shell-design) {
+  min-width: 0;
+}
+
 button,
 input,
 textarea {
@@ -101,6 +105,11 @@ button:focus-visible {
   min-width: 1280px;
   overflow: hidden;
   background: var(--sand);
+}
+
+.app-shell-design {
+  min-width: 0;
+  width: 100vw;
 }
 
 .page-layer {
