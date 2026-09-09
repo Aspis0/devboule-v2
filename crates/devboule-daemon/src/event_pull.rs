@@ -1209,7 +1209,16 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(texts, vec!["first", "second"]);
-        assert!(runtime.stream.lock().unwrap().agent_backlog.is_empty());
+        let stream = runtime.stream.lock().unwrap();
+        assert_eq!(
+            stream
+                .agent_backlog
+                .iter()
+                .filter(|item| matches!(item, PendingItem::Agent { .. }))
+                .count(),
+            2
+        );
+        drop(stream);
 
         drop(runtime);
         drop(journal);
@@ -1893,6 +1902,144 @@ mod tests {
         };
         assert_eq!(output_text(drain(&first)), vec!["one", "two", "three"]);
         assert_eq!(output_text(drain(&second)), vec!["two", "three"]);
+    }
+
+    #[test]
+    fn third_live_agent_observer_keeps_the_shared_backlog() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-delayed-observer-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            "s.live.agent.delayed-observer".to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = 3;
+            let event = SessionEvent::AgentMessage {
+                message_id: Some("delayed".to_string()),
+                text: "must survive".to_string(),
+            };
+            let bytes = serde_json::to_vec(&event).unwrap().len();
+            stream.agent_backlog.push_back(PendingItem::Agent {
+                seq: Some(2),
+                event,
+                bytes,
+            });
+            stream.agent_backlog_bytes = bytes;
+            stream.agent_backlog_frames = 1;
+        }
+
+        let fast = ConnHandle::new(1);
+        let fast_outcome = runtime
+            .try_attach_with_subscription(
+                101,
+                Some(Cursor {
+                    generation: 1,
+                    seq: 2,
+                }),
+                &fast,
+                true,
+            )
+            .expect("fast observer attaches");
+        fast.track_with_agent_replay(
+            "s.live.agent.delayed-observer",
+            Arc::clone(&runtime),
+            false,
+            None,
+            fast_outcome.generation,
+            fast_outcome.live_agent_replay,
+        );
+        runtime.finish_live_agent_replay(
+            AttachmentKey {
+                conn_id: fast.id,
+                subscription_id: 101,
+            },
+            2,
+            &std::collections::HashSet::new(),
+        );
+
+        let middle = ConnHandle::new(2);
+        let middle_outcome = runtime
+            .try_attach_with_subscription(
+                202,
+                Some(Cursor {
+                    generation: 1,
+                    seq: 2,
+                }),
+                &middle,
+                true,
+            )
+            .expect("middle observer attaches");
+        middle.track_with_agent_replay(
+            "s.live.agent.delayed-observer",
+            Arc::clone(&runtime),
+            false,
+            None,
+            middle_outcome.generation,
+            middle_outcome.live_agent_replay,
+        );
+
+        let delayed = ConnHandle::new(3);
+        let delayed_outcome = runtime
+            .try_attach_with_subscription(
+                303,
+                Some(Cursor {
+                    generation: 1,
+                    seq: 0,
+                }),
+                &delayed,
+                true,
+            )
+            .expect("delayed observer attaches");
+        delayed.track_with_agent_replay(
+            "s.live.agent.delayed-observer",
+            Arc::clone(&runtime),
+            false,
+            None,
+            delayed_outcome.generation,
+            delayed_outcome.live_agent_replay,
+        );
+        runtime.finish_live_agent_replay(
+            AttachmentKey {
+                conn_id: delayed.id,
+                subscription_id: 303,
+            },
+            0,
+            &std::collections::HashSet::new(),
+        );
+
+        let stream = runtime.stream.lock().unwrap();
+        assert!(stream
+            .observers
+            .get(&AttachmentKey {
+                conn_id: delayed.id,
+                subscription_id: 303,
+            })
+            .unwrap()
+            .pending
+            .iter()
+            .any(|item| matches!(
+                item,
+                PendingItem::Agent {
+                    event: SessionEvent::AgentMessage { text, .. },
+                    ..
+                } if text == "must survive"
+            )));
+
+        drop(stream);
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn recovered_integrity() -> TranscriptIntegrity {

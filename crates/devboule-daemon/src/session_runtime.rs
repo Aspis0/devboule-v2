@@ -9,7 +9,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, SessionEvent,
-    TranscriptIntegrity, WireError,
+    SessionEventEnvelope, TranscriptIntegrity, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -45,13 +45,11 @@ fn remove_replayed_agent_items(
     queue: &mut VecDeque<PendingItem>,
     from_seq: u64,
     replayed_seqs: &HashSet<u64>,
-    drop_unsequenced_manifests: bool,
 ) {
     queue.retain(|item| match item {
         PendingItem::Agent { seq, event, .. } => {
             let replayed = seq.is_some_and(|seq| seq <= from_seq || replayed_seqs.contains(&seq));
-            let drop_manifest = matches!(event, SessionEvent::SessionManifest { .. })
-                && (drop_unsequenced_manifests || replayed);
+            let drop_manifest = matches!(event, SessionEvent::SessionManifest { .. }) && replayed;
             !replayed && !drop_manifest
         }
         PendingItem::Output { .. } | PendingItem::Snapshot { .. } => true,
@@ -1102,17 +1100,12 @@ impl SessionRuntime {
             return 0;
         };
         let current_seq = stream.next_seq.saturating_sub(1);
-        // The journal recovers agent frames evicted by the bounded live
-        // queue. Remove matching survivors from this observer's queue at the
-        // seam, so a frame that happened to survive eviction is not delivered
-        // twice. Other observers keep their own queues and replay boundaries.
-        remove_replayed_agent_items(&mut stream.agent_backlog, from_seq, replayed_seqs, true);
-        let (backlog_bytes, backlog_frames) = agent_queue_extent(&stream.agent_backlog);
-        stream.agent_backlog_bytes = backlog_bytes;
-        stream.agent_backlog_frames = backlog_frames;
+        // The stream backlog is shared; leave it intact so each observer can
+        // apply its own replay boundary. Only this observer's queue is pruned
+        // at the replay seam.
         let backlog = stream.agent_backlog.iter().cloned().collect::<Vec<_>>();
         if let Some(attachment) = stream.observers.get_mut(&key) {
-            remove_replayed_agent_items(&mut attachment.pending, from_seq, replayed_seqs, false);
+            remove_replayed_agent_items(&mut attachment.pending, from_seq, replayed_seqs);
             for item in backlog {
                 let eligible = match &item {
                     PendingItem::Agent { seq, event, .. } => {
@@ -1437,6 +1430,33 @@ impl SessionRuntime {
                 if !stream.transcript && stream.screen.is_none() {
                     move_agent_pending_to_backlog(&mut stream, attachment);
                 }
+            }
+        }
+    }
+
+    pub(crate) fn notify_generation_replaced(&self, conn_id: u64) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        let generation = stream.generation;
+        for (key, attachment) in &mut stream.observers {
+            if key.conn_id != conn_id {
+                // The old pull may already have consumed Exit; direct queueing
+                // keeps this replacement signal deliverable through that seam.
+                attachment
+                    .outbound
+                    .enqueue_reply(devboule_protocol::DaemonMessage::SubscriptionEvent {
+                    subscription_id: key.subscription_id,
+                    envelope: SessionEventEnvelope {
+                        session_id: self.session_id.clone(),
+                        generation,
+                        event: SessionEvent::AgentError {
+                            message:
+                                "Session generation was replaced; reattach to continue observing."
+                                    .to_string(),
+                        },
+                    },
+                });
             }
         }
     }

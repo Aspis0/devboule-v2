@@ -262,7 +262,7 @@ impl DaemonClient {
     }
 
     pub fn session_claim(&self, session_id: &str) -> Result<(), DaemonError> {
-        self.session_claim_with_subscription(session_id, self.control_subscription_id(session_id))
+        self.session_claim_with_subscription(session_id, self.control_subscription_id(session_id)?)
     }
 
     pub fn session_claim_with_subscription(
@@ -298,7 +298,7 @@ impl DaemonClient {
     }
 
     pub fn session_stop(&self, session_id: &str) -> Result<(), DaemonError> {
-        self.session_stop_with_subscription(session_id, self.control_subscription_id(session_id))
+        self.session_stop_with_subscription(session_id, self.control_subscription_id(session_id)?)
     }
 
     pub fn session_stop_with_subscription(
@@ -321,7 +321,7 @@ impl DaemonClient {
     pub fn session_interrupt(&self, session_id: &str) -> Result<(), DaemonError> {
         self.session_interrupt_with_subscription(
             session_id,
-            self.control_subscription_id(session_id),
+            self.control_subscription_id(session_id)?,
         )
     }
 
@@ -364,7 +364,7 @@ impl DaemonClient {
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
         self.session_send_with_subscription(
             session_id,
-            self.control_subscription_id(session_id),
+            self.control_subscription_id(session_id)?,
             text,
         )
     }
@@ -397,7 +397,7 @@ impl DaemonClient {
     ) -> Result<(), DaemonError> {
         self.session_resize_with_subscription(
             session_id,
-            self.control_subscription_id(session_id),
+            self.control_subscription_id(session_id)?,
             cols,
             rows,
         )
@@ -464,7 +464,7 @@ impl DaemonClient {
     ) -> Result<(), DaemonError> {
         self.session_permission_respond_with_subscription(
             session_id,
-            self.control_subscription_id(session_id),
+            self.control_subscription_id(session_id)?,
             request_id,
             outcome,
         )
@@ -821,8 +821,12 @@ impl DaemonClient {
             .copied()
     }
 
-    fn control_subscription_id(&self, session_id: &str) -> SubscriptionId {
-        self.default_subscription(session_id).unwrap_or(0)
+    fn control_subscription_id(&self, session_id: &str) -> Result<SubscriptionId, DaemonError> {
+        self.default_subscription(session_id).ok_or_else(|| {
+            DaemonError::Protocol(
+                "Session is not attached; attach before sending session commands.".to_string(),
+            )
+        })
     }
 
     fn unsubscribe(&self, subscription_id: SubscriptionId) {

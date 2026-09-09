@@ -1793,10 +1793,12 @@ impl SessionRegistry {
             match old_entry {
                 RegistryEntry::Live(session) => {
                     session.runtime.detach_if_conn(conn.id);
+                    session.runtime.notify_generation_replaced(conn.id);
                     teardown_session_for_resume(session);
                 }
                 RegistryEntry::Transcript(session) => {
                     session.runtime.detach_if_conn(conn.id);
+                    session.runtime.notify_generation_replaced(conn.id);
                     journal.unpin(session_id);
                 }
             }
@@ -1949,6 +1951,7 @@ impl SessionRegistry {
         let runtime = self.runtime_for_user(session_id, owner)?;
         runtime.detach_subscription(conn.id, subscription_id);
         conn.untrack_subscription(subscription_id);
+        self.drop_transcript_if_idle(session_id);
         Ok(())
     }
 
@@ -2064,11 +2067,34 @@ impl SessionRegistry {
         let ids = conn.take_attached_ids();
         for (subscription_id, session_id) in ids {
             self.detach_runtime(&session_id, conn.id, subscription_id);
+            self.drop_transcript_if_idle(&session_id);
         }
     }
     fn detach_runtime(&self, session_id: &str, conn_id: u64, subscription_id: u64) {
         if let Ok(runtime) = self.runtime(session_id) {
             runtime.detach_subscription(conn_id, subscription_id);
+        }
+    }
+
+    fn drop_transcript_if_idle(&self, session_id: &str) {
+        let Ok(mut map) = self.inner.lock() else {
+            return;
+        };
+        let is_idle_transcript = map.get(session_id).is_some_and(|entry| {
+            matches!(entry, RegistryEntry::Transcript(session) if {
+                session
+                    .runtime
+                    .stream
+                    .lock()
+                    .map(|stream| stream.observers.is_empty())
+                    .unwrap_or(true)
+            })
+        });
+        if is_idle_transcript {
+            map.remove(session_id);
+            if let Some(journal) = &self.journal {
+                journal.unpin(session_id);
+            }
         }
     }
 
@@ -4156,6 +4182,29 @@ mod tests {
     }
 
     #[test]
+    fn last_transcript_detach_removes_idle_registry_entry() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-transcript-idle", "process-transcript-idle");
+        let session_id = "s.transcript-idle.1";
+        journal
+            .upsert_blocking(ended_record(session_id, &owner.user))
+            .expect("journal row");
+        insert_transcript(&registry, session_id, owner.clone());
+
+        let conn = ConnHandle::new(7);
+        registry
+            .attach_with_subscription(session_id, 701, None, &conn, &owner, false)
+            .expect("transcript observer attaches");
+        registry
+            .detach_with_subscription(session_id, 701, &conn, &owner)
+            .expect("transcript observer detaches");
+
+        assert!(registry.runtime(session_id).is_err());
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn stale_generation_is_rejected() {
         let runtime = SessionRuntime::new();
         runtime.bump_generation();
@@ -5040,15 +5089,24 @@ mod tests {
         }
     }
 
-    struct BytewiseRecordingWriter(Arc<Mutex<Vec<u8>>>);
+    struct BytewiseRecordingWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        first_write: Arc<Barrier>,
+        first_write_seen: AtomicBool,
+    }
 
     impl Write for BytewiseRecordingWriter {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             let Some(byte) = bytes.first() else {
                 return Ok(0);
             };
-            self.0.lock().expect("recording writer lock").push(*byte);
-            std::thread::yield_now();
+            self.bytes
+                .lock()
+                .expect("recording writer lock")
+                .push(*byte);
+            if !self.first_write_seen.swap(true, Ordering::AcqRel) {
+                self.first_write.wait();
+            }
             Ok(1)
         }
 
@@ -5141,11 +5199,19 @@ mod tests {
         let owner = test_owner("S-1-5-21-multi-writer", "process-multi-writer");
         let written = Arc::new(Mutex::new(Vec::new()));
         let session_id = "s.multi-writer.1";
+        let first_text = "first observer input\n".repeat(32);
+        let second_text = "second observer input\n".repeat(32);
+        let start = Arc::new(Barrier::new(3));
+        let first_write = Arc::new(Barrier::new(2));
         insert_live_agent_with_writer(
             &registry,
             session_id,
             owner.clone(),
-            Box::new(BytewiseRecordingWriter(Arc::clone(&written))),
+            Box::new(BytewiseRecordingWriter {
+                bytes: Arc::clone(&written),
+                first_write: Arc::clone(&first_write),
+                first_write_seen: AtomicBool::new(false),
+            }),
         );
         let first = ConnHandle::new(1);
         let second = ConnHandle::new(2);
@@ -5156,9 +5222,6 @@ mod tests {
             .attach_with_subscription(session_id, 202, None, &second, &owner, true)
             .expect("second observer attaches");
 
-        let first_text = "first observer input\n".repeat(32);
-        let second_text = "second observer input\n".repeat(32);
-        let start = Arc::new(Barrier::new(3));
         let first_registry = registry.clone();
         let first_start = Arc::clone(&start);
         let first_owner = owner.clone();
@@ -5188,6 +5251,7 @@ mod tests {
             second_text
         });
         start.wait();
+        first_write.wait();
         let first_text = first_handle.join().expect("first sender joins");
         let second_text = second_handle.join().expect("second sender joins");
         let received = written.lock().expect("writer").clone();

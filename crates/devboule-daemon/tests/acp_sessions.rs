@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
@@ -1157,7 +1157,10 @@ fn acp_session_survives_daemon_restart_and_replays_agent_message() {
         .find(|listed| listed.id == session.id)
         .expect("recovered ACP session missing from sessions_list");
     assert!(
-        matches!(recovered.state, devboule_protocol::SessionState::Recovered { .. }),
+        matches!(
+            recovered.state,
+            devboule_protocol::SessionState::Recovered { .. }
+        ),
         "expected recovered ACP session, got {:?}",
         recovered.state
     );
@@ -1266,6 +1269,97 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
     test.client
         .session_close(&session.id)
         .expect("close resumed ACP session");
+}
+
+#[test]
+fn acp_session_resume_notifies_other_observer_of_replaced_generation() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    test.client
+        .session_attach(&session.id, None, Arc::new(|_| {}))
+        .expect("resumer observer attaches");
+    let other = test._harness.client_named("other");
+    let other_events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&other_events);
+    let armed = Arc::new(AtomicBool::new(false));
+    let first_blocked = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(Barrier::new(2));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let handler_armed = Arc::clone(&armed);
+    let handler_release = Arc::clone(&release);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        if handler_armed.load(Ordering::Acquire) && !first_blocked.swap(true, Ordering::AcqRel) {
+            let _ = entered_tx.send(());
+            handler_release.wait();
+        }
+        received
+            .lock()
+            .expect("other events lock")
+            .push(envelope.event);
+    });
+    other
+        .session_attach(&session.id, None, handler)
+        .expect("other observer attaches");
+    armed.store(true, Ordering::Release);
+
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_stop(&session.id)
+        .expect("stop ACP session");
+    wait_until_gone(pid);
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("observer receives the old generation event");
+
+    test.client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume ACP session");
+    release.wait();
+
+    wait_for(&other_events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::AgentError { message }
+                    if message
+                        == "Session generation was replaced; reattach to continue observing."
+            )
+        })
+    });
+
+    test.client
+        .session_attach(&session.id, None, Arc::new(|_| {}))
+        .expect("reattach resumed ACP session");
+    test.client
+        .session_close(&session.id)
+        .expect("close resumed ACP session");
+}
+
+#[test]
+fn client_without_attachment_explains_how_to_send() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let other = test._harness.client_named("unattached");
+
+    let error = other
+        .session_send(&session.id, "must be rejected locally")
+        .expect_err("unattached client must be rejected");
+    assert_eq!(
+        error.to_string(),
+        "Session is not attached; attach before sending session commands."
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
 }
 
 #[test]

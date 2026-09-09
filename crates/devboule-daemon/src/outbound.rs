@@ -50,9 +50,8 @@ impl ConnOut {
         self.cvar.notify_all();
     }
 
-    /// Queue a correlated RPC reply for the connection writer. Refresh
-    /// workers use this same outbound path as session events; they never
-    /// write to the framed pipe directly.
+    /// Queue an outbound daemon message for the connection writer. Worker
+    /// threads use this path instead of writing to the framed pipe directly.
     pub fn enqueue_reply(&self, reply: DaemonMessage) {
         let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         inner.replies.push_back(reply);
