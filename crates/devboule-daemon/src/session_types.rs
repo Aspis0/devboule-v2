@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -123,9 +123,19 @@ impl Scrollback {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AttachmentKey {
+    pub(crate) conn_id: u64,
+    pub(crate) subscription_id: u64,
+}
+
 pub(super) struct Attachment {
-    pub(super) conn_id: u64,
     pub(super) outbound: Arc<ConnOut>,
+    pub(super) typed_permissions: bool,
+    pub(super) pending: VecDeque<PendingItem>,
+    pub(super) pending_bytes: usize,
+    pub(super) pending_frames: u64,
+    pub(super) pending_silences: VecDeque<u64>,
 }
 
 /// One item queued for the attached viewer, in wire order.
@@ -175,27 +185,17 @@ pub(crate) struct StreamState {
     /// Recovered transcripts have no screen; live ACP sessions also have no
     /// screen, so this explicit bit keeps those two contracts distinct.
     pub(super) transcript: bool,
-    /// The single attached viewer, if any.
-    pub(super) attached: Option<Attachment>,
-    /// Unsent items for the attachment, in wire order. Bounded: when the
-    /// Output extent exceeds the budget, the whole queue is replaced by one
-    /// fresh snapshot.
-    pub(super) pending: VecDeque<PendingItem>,
-    /// Byte extent of `pending`'s Output items (snapshots are not counted;
-    /// a replacement resets this to zero).
-    pub(super) pending_bytes: usize,
-    /// Frame count of `pending`'s Output items.
-    pub(super) pending_frames: u64,
+    /// The single subscription allowed to resize the session, if any.
+    pub(super) resize_owner: Option<AttachmentKey>,
+    /// All live observers. Their queues and notification handles are
+    /// independent so one slow or departing view cannot replace another.
+    pub(super) observers: HashMap<AttachmentKey, Attachment>,
     /// Structured ACP events observed before an attachment exists. Unlike a
     /// terminal, a headless live session has no screen snapshot that can
     /// represent these events for a later attach.
     pub(super) agent_backlog: VecDeque<PendingItem>,
     pub(super) agent_backlog_bytes: usize,
     pub(super) agent_backlog_frames: u64,
-    /// Whether the attached client negotiated typed permission prompts.
-    /// Detached sessions keep permission requests in `agent_backlog` until a
-    /// capable client attaches.
-    pub(super) typed_permissions: bool,
     /// Transcript replay buffer. Unused by live sessions, which never
     /// replay bytes to synchronise a screen.
     pub(super) scrollback: Scrollback,
@@ -206,7 +206,6 @@ pub(crate) struct StreamState {
     pub(super) exit_code: Option<u32>,
     pub(super) last_publish: Option<Instant>,
     pub(super) exit_at: Option<Instant>,
-    pub(super) pending_silences: VecDeque<u64>,
     pub(super) disposition: Disposition,
     /// Last accepted hook report per source. Seq is checked under the
     /// stream lock so two concurrent announcements cannot both apply.
@@ -230,6 +229,7 @@ pub(crate) struct OutputMetrics {
 
 pub(super) struct PullState {
     pub(super) runtime: Arc<super::SessionRuntime>,
+    pub(super) attachment_key: AttachmentKey,
     /// Whether this pull follows the transcript replay contract (recovered
     /// session) or the live snapshot contract.
     pub(super) transcript: bool,
@@ -241,7 +241,6 @@ pub(super) struct PullState {
     /// watermark. This is deliberately per-connection state rather than
     /// `StreamState.pending`, so a long journal remains page-bounded.
     pub(super) agent_replay: Option<AgentReplay>,
-    pub(super) agent_backlog_after_replay: bool,
     pub(super) exit_sent: bool,
     pub(super) journal_degraded_sent: bool,
     pub(super) generation: u64,
@@ -271,6 +270,7 @@ pub(super) struct AgentReplay {
 #[derive(Debug)]
 pub(crate) struct PendingEvent {
     pub(crate) session_id: String,
+    pub(crate) subscription_id: u64,
     pub(crate) attachment_generation: u64,
     pub(crate) envelope: SessionEventEnvelope,
     /// Transcript-only: journal seq of this envelope, including ACP views

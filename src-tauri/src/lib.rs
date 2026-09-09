@@ -54,6 +54,7 @@ pub fn run() {
             backend::session::session_resume,
             backend::session::session_attach,
             backend::session::session_detach,
+            backend::session::session_claim,
             backend::session::session_presence,
             backend::session::session_send,
             backend::session::session_interrupt,

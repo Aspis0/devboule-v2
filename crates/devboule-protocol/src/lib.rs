@@ -20,10 +20,11 @@
 //!   versions and which binary to update. Neither side may hang or try to
 //!   parse the rest of the stream as the other version.
 //!
-//! This crate speaks only version [`PROTOCOL_VERSION`] (3), with
-//! [`PROTOCOL_MIN_VERSION`] also 3. Older dialects are refused: required
-//! fields (`created_at_ms`, `Workspace.path`) were added and the daemon
-//! always serializes the current struct, so agreeing on an older version
+//! This crate speaks only version [`PROTOCOL_VERSION`] (4), with
+//! [`PROTOCOL_MIN_VERSION`] also 4. Older dialects are refused: required
+//! fields (`created_at_ms`, `Workspace.path`, subscription identity) were
+//! added and the daemon always serializes the current struct, so agreeing on
+//! an older version
 //! would not produce an old-shaped payload. Bumping
 //! `PROTOCOL_MIN_VERSION` is how an old dialect is dropped.
 //!
@@ -103,7 +104,7 @@ pub use session::{
     CursorShape, PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence,
     PersistenceKind, ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind,
     SessionModeStateView, SessionModeView, SessionModel, SessionModelEffort, SessionState,
-    SessionStateSnapshot, ToolLocation, TranscriptIntegrity, TurnUsage,
+    SessionStateSnapshot, SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
 };
 
 /// Current protocol dialect spoken by this crate.
@@ -115,11 +116,11 @@ pub use session::{
 /// The daemon always serializes the current struct regardless of the agreed
 /// version, so negotiating down does not produce an old-shaped payload;
 /// refusing the handshake is the only protection.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still
 /// emit the new struct, and the peer would fail to parse it.
-pub const PROTOCOL_MIN_VERSION: u32 = 3;
+pub const PROTOCOL_MIN_VERSION: u32 = 4;
 
 /// Well-known capability names. These are strings on the wire so a peer that
 /// does not know a name can still complete the handshake.
@@ -371,9 +372,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protocol_version_is_three_and_min_matches() {
-        assert_eq!(PROTOCOL_VERSION, 3);
-        assert_eq!(PROTOCOL_MIN_VERSION, 3);
+    fn protocol_version_and_min_match() {
+        assert_eq!(PROTOCOL_VERSION, 4);
+        assert_eq!(PROTOCOL_MIN_VERSION, 4);
     }
 
     #[test]

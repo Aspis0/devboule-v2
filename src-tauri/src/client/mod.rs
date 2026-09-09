@@ -1,6 +1,6 @@
 //! Daemon client hosted by the Tauri process. Sessions live in the daemon;
-//! this process forwards RPCs and fans `SessionEventEnvelope` frames into
-//! Tauri Channels. A failed daemon must not hang a terminal: attached
+//! This process forwards RPCs and binds daemon subscriptions to Tauri
+//! Channels. A failed daemon must not hang a terminal: attached
 //! Channels receive `exit` with a null code.
 
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ use devboule_daemon::{
 };
 use devboule_protocol::{
     ClientHello, Cursor, DaemonStatusBody, ErrorCode, SessionEvent, SessionEventEnvelope,
-    SessionState, SessionStateSnapshot,
+    SessionState, SessionStateSnapshot, SubscriptionId,
 };
 use serde::Serialize;
 use tauri::State;
@@ -279,24 +279,33 @@ pub(crate) type AttachmentSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
 trait SessionAttachmentClient {
     fn session_attach(
         &self,
+        subscription_id: SubscriptionId,
         session_id: &str,
         from_cursor: Option<Cursor>,
         handler: EventHandler,
-    ) -> Result<(), DaemonError>;
+    ) -> Result<SubscriptionId, DaemonError>;
 }
 
 impl SessionAttachmentClient for DaemonClient {
     fn session_attach(
         &self,
+        subscription_id: SubscriptionId,
         session_id: &str,
         from_cursor: Option<Cursor>,
         handler: EventHandler,
-    ) -> Result<(), DaemonError> {
-        DaemonClient::session_attach(self, session_id, from_cursor, handler)
+    ) -> Result<SubscriptionId, DaemonError> {
+        DaemonClient::session_attach_with_subscription(
+            self,
+            subscription_id,
+            session_id,
+            from_cursor,
+            handler,
+        )
     }
 }
 
 struct AttachmentEntry {
+    session_id: String,
     sink: AttachmentSink,
     cursor: Option<Cursor>,
     binding: Option<u64>,
@@ -304,8 +313,9 @@ struct AttachmentEntry {
 
 #[derive(Default)]
 struct AttachmentRegistryState {
-    entries: HashMap<String, AttachmentEntry>,
+    entries: HashMap<SubscriptionId, AttachmentEntry>,
     roster: Option<HashMap<String, SessionStateSnapshot>>,
+    next_subscription_id: SubscriptionId,
     next_binding: u64,
 }
 
@@ -319,24 +329,50 @@ struct AttachmentRegistry {
 }
 
 impl AttachmentRegistry {
-    fn insert(&self, session_id: &str, cursor: Option<Cursor>, sink: AttachmentSink) {
+    fn insert(
+        &self,
+        session_id: &str,
+        cursor: Option<Cursor>,
+        sink: AttachmentSink,
+    ) -> SubscriptionId {
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        state.next_subscription_id = state.next_subscription_id.saturating_add(1);
+        let subscription_id = state.next_subscription_id;
         state.entries.insert(
-            session_id.to_string(),
+            subscription_id,
             AttachmentEntry {
+                session_id: session_id.to_string(),
                 sink,
                 cursor,
                 binding: None,
             },
         );
+        subscription_id
     }
 
-    fn remove(&self, session_id: &str) {
+    fn remove(&self, subscription_id: SubscriptionId) {
         self.state
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .entries
-            .remove(session_id);
+            .remove(&subscription_id);
+    }
+
+    fn remove_session(&self, session_id: &str) {
+        self.state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .retain(|_, entry| entry.session_id != session_id);
+    }
+
+    fn session_id_for(&self, subscription_id: SubscriptionId) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .get(&subscription_id)
+            .map(|entry| entry.session_id.clone())
     }
 
     #[cfg(test)]
@@ -354,16 +390,16 @@ impl AttachmentRegistry {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .entries
-            .get(session_id)
-            .and_then(|entry| entry.binding)
-            .is_some()
+            .values()
+            .any(|entry| entry.session_id == session_id && entry.binding.is_some())
     }
 
     fn generation_for(&self, session_id: &str) -> Option<u64> {
         let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
         state
             .entries
-            .get(session_id)
+            .values()
+            .find(|entry| entry.session_id == session_id)
             .and_then(|entry| entry.cursor)
             .map(|cursor| cursor.generation)
             .or_else(|| {
@@ -408,17 +444,19 @@ impl AttachmentRegistry {
             let Some(event) = terminal_event(&snapshot.state) else {
                 continue;
             };
-            let Some(entry) = state.entries.get(&snapshot.id) else {
-                continue;
-            };
             // A normal live attachment receives its authoritative exit from
             // the session stream. During replacement all bindings are cleared,
             // so this branch is specifically the new daemon's roster answer.
-            if entry.binding.is_none() {
-                let Some(entry) = state.entries.remove(&snapshot.id) else {
-                    continue;
-                };
-                terminal.push((entry.sink, event));
+            let ids = state
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.session_id == snapshot.id && entry.binding.is_none())
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            for id in ids {
+                if let Some(entry) = state.entries.remove(&id) {
+                    terminal.push((entry.sink, event.clone()));
+                }
             }
         }
         drop(state);
@@ -430,62 +468,84 @@ impl AttachmentRegistry {
     fn bind<C: SessionAttachmentClient>(
         self: &Arc<Self>,
         client: &C,
-        session_id: &str,
+        subscription_id: SubscriptionId,
     ) -> Result<(), DaemonError> {
         let cursor = self
             .state
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .entries
-            .get(session_id)
+            .get(&subscription_id)
             .and_then(|entry| entry.cursor);
-        self.bind_with_cursor(client, session_id, cursor)
+        self.bind_with_cursor(client, subscription_id, cursor)
     }
 
     fn bind_with_cursor<C: SessionAttachmentClient>(
         self: &Arc<Self>,
         client: &C,
-        session_id: &str,
+        subscription_id: SubscriptionId,
         cursor: Option<Cursor>,
     ) -> Result<(), DaemonError> {
-        let (binding, handler) = {
+        let (binding, session_id, handler) = {
             let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
             let binding = next_binding(&mut state);
-            let Some(entry) = state.entries.get_mut(session_id) else {
+            let Some(entry) = state.entries.get_mut(&subscription_id) else {
                 return Err(DaemonError::Protocol(
                     "session attachment is no longer registered".to_string(),
                 ));
             };
             entry.binding = Some(binding);
-            (binding, self.handler(session_id.to_string(), binding))
+            let session_id = entry.session_id.clone();
+            let handler = self.handler(subscription_id, session_id.clone(), binding);
+            (binding, session_id, handler)
         };
-        let result = client.session_attach(session_id, cursor, handler);
-        if result.is_err() {
-            self.clear_binding(session_id, binding);
+        let result = client.session_attach(subscription_id, &session_id, cursor, handler);
+        match result {
+            Ok(confirmed) if confirmed == subscription_id => Ok(()),
+            Ok(_) => {
+                self.clear_binding(subscription_id, binding);
+                Err(DaemonError::Protocol(
+                    "daemon returned a different subscription id".to_string(),
+                ))
+            }
+            Err(error) => {
+                self.clear_binding(subscription_id, binding);
+                Err(error)
+            }
         }
-        result
     }
 
-    fn handler(self: &Arc<Self>, session_id: String, binding: u64) -> EventHandler {
+    fn handler(
+        self: &Arc<Self>,
+        subscription_id: SubscriptionId,
+        session_id: String,
+        binding: u64,
+    ) -> EventHandler {
         let registry = Arc::clone(self);
-        Arc::new(move |envelope| registry.dispatch(&session_id, binding, envelope))
+        Arc::new(move |envelope| registry.dispatch(subscription_id, &session_id, binding, envelope))
     }
 
-    fn clear_binding(&self, session_id: &str, binding: u64) {
+    fn clear_binding(&self, subscription_id: SubscriptionId, binding: u64) {
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
         if state
             .entries
-            .get(session_id)
+            .get(&subscription_id)
             .and_then(|entry| entry.binding)
             == Some(binding)
         {
-            if let Some(entry) = state.entries.get_mut(session_id) {
+            if let Some(entry) = state.entries.get_mut(&subscription_id) {
                 entry.binding = None;
             }
         }
     }
 
-    fn dispatch(&self, session_id: &str, binding: u64, envelope: SessionEventEnvelope) {
+    fn dispatch(
+        &self,
+        subscription_id: SubscriptionId,
+        session_id: &str,
+        binding: u64,
+        envelope: SessionEventEnvelope,
+    ) {
         // DaemonClient uses generation 0 only for the synthetic Exit emitted
         // when a connection fails. A real daemon Exit always belongs to the
         // session generation and must still reach the tab.
@@ -495,10 +555,10 @@ impl AttachmentRegistry {
         let (sink, event) = {
             let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
             let (sink, event, remove) = {
-                let Some(entry) = state.entries.get_mut(session_id) else {
+                let Some(entry) = state.entries.get_mut(&subscription_id) else {
                     return;
                 };
-                if entry.binding != Some(binding) {
+                if entry.binding != Some(binding) || entry.session_id != session_id {
                     return;
                 }
                 advance_cursor(entry, &envelope);
@@ -511,16 +571,18 @@ impl AttachmentRegistry {
                 (sink, event, remove)
             };
             if remove {
-                state.entries.remove(session_id);
+                state.entries.remove(&subscription_id);
             }
             (sink, event)
         };
         sink(event);
     }
 
-    fn reattach_cursor(&self, session_id: &str) -> Option<Cursor> {
+    fn reattach_cursor(&self, subscription_id: SubscriptionId) -> Option<Cursor> {
         let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
-        let cursor = state.entries.get(session_id).and_then(|entry| entry.cursor);
+        let entry = state.entries.get(&subscription_id)?;
+        let session_id = entry.session_id.as_str();
+        let cursor = entry.cursor;
         let cursor = cursor?;
         let Some(snapshot) = state
             .roster
@@ -540,30 +602,34 @@ impl AttachmentRegistry {
         }
     }
 
-    fn terminal_for_replacement(&self, session_id: &str) -> Option<(AttachmentSink, SessionEvent)> {
+    fn terminal_for_replacement(
+        &self,
+        subscription_id: SubscriptionId,
+    ) -> Option<(AttachmentSink, SessionEvent)> {
         let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let session_id = state.entries.get(&subscription_id)?.session_id.clone();
         let snapshot = state
             .roster
             .as_ref()
-            .and_then(|roster| roster.get(session_id))?;
+            .and_then(|roster| roster.get(&session_id))?;
         let event = terminal_event(&snapshot.state)?;
-        let entry = state.entries.remove(session_id)?;
+        let entry = state.entries.remove(&subscription_id)?;
         Some((entry.sink, event))
     }
 
     fn attach_one<C: SessionAttachmentClient>(
         self: &Arc<Self>,
         client: &C,
-        session_id: &str,
+        subscription_id: SubscriptionId,
     ) -> Result<(), DaemonError> {
-        let cursor = self.reattach_cursor(session_id);
-        let result = self.bind_with_cursor(client, session_id, cursor);
+        let cursor = self.reattach_cursor(subscription_id);
+        let result = self.bind_with_cursor(client, subscription_id, cursor);
         match result {
             Err(error) if is_generation_mismatch(&error) && cursor.is_some() => {
                 // Without a fresh roster generation, the daemon is the
                 // authority. Retry exactly once from the new stream's
                 // beginning; this is still one active RPC at a time.
-                self.bind_with_cursor(client, session_id, None)
+                self.bind_with_cursor(client, subscription_id, None)
             }
             other => other,
         }
@@ -572,25 +638,25 @@ impl AttachmentRegistry {
     fn retry_one<C: SessionAttachmentClient>(
         self: &Arc<Self>,
         client: &C,
-        session_id: &str,
+        subscription_id: SubscriptionId,
     ) -> Result<(), DaemonError> {
         let should_retry = self
             .state
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .entries
-            .get(session_id)
+            .get(&subscription_id)
             .is_some_and(|entry| entry.binding.is_none());
         if !should_retry {
             return Ok(());
         }
-        if let Some((sink, event)) = self.terminal_for_replacement(session_id) {
+        if let Some((sink, event)) = self.terminal_for_replacement(subscription_id) {
             sink(event);
             return Ok(());
         }
-        let result = self.attach_one(client, session_id);
+        let result = self.attach_one(client, subscription_id);
         if let Err(error) = &result {
-            self.emit_reattach_error(session_id, error);
+            self.emit_reattach_error(subscription_id, error);
         }
         result
     }
@@ -610,21 +676,24 @@ impl AttachmentRegistry {
             .cloned()
             .collect::<Vec<_>>();
         let mut failures = Vec::new();
-        for session_id in ids {
-            if let Err(error) = self.retry_one(client, &session_id) {
+        for subscription_id in ids {
+            let session_id = self
+                .session_id_for(subscription_id)
+                .unwrap_or_else(|| "unknown".to_string());
+            if let Err(error) = self.retry_one(client, subscription_id) {
                 failures.push((session_id, error));
             }
         }
         failures
     }
 
-    fn emit_reattach_error(&self, session_id: &str, error: &DaemonError) {
+    fn emit_reattach_error(&self, subscription_id: SubscriptionId, error: &DaemonError) {
         let sink = self
             .state
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .entries
-            .get(session_id)
+            .get(&subscription_id)
             .map(|entry| Arc::clone(&entry.sink));
         if let Some(sink) = sink {
             sink(SessionEvent::AgentError {
@@ -743,16 +812,26 @@ impl DaemonBridge {
         session_id: &str,
         from_seq: Option<u64>,
         sink: AttachmentSink,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<SubscriptionId, DaemonError> {
         self.inner.session_attach(session_id, from_seq, sink)
     }
 
-    pub(crate) fn ensure_session_attached(&self, session_id: &str) -> Result<(), DaemonError> {
-        self.inner.ensure_session_attached(session_id)
+    pub(crate) fn ensure_subscription_attached(
+        &self,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
+        self.inner.ensure_subscription_attached(subscription_id)
     }
 
-    pub(crate) fn session_detach(&self, session_id: &str) -> Result<(), DaemonError> {
-        self.inner.session_detach(session_id)
+    pub(crate) fn session_detach(
+        &self,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
+        self.inner.session_detach(subscription_id)
+    }
+
+    pub(crate) fn session_claim(&self, subscription_id: SubscriptionId) -> Result<(), DaemonError> {
+        self.inner.session_claim(subscription_id)
     }
 
     pub(crate) fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
@@ -893,7 +972,10 @@ impl BridgeInner {
         self.attachments.observe_roster(snapshots);
     }
 
-    pub(crate) fn ensure_session_attached(&self, session_id: &str) -> Result<(), DaemonError> {
+    pub(crate) fn ensure_subscription_attached(
+        &self,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
         let _lifecycle = self
             .client_lifecycle
             .lock()
@@ -904,7 +986,29 @@ impl BridgeInner {
             .unwrap_or_else(|err| err.into_inner())
             .clone()
             .ok_or(DaemonError::ConnectionLost)?;
-        self.attachments.retry_one(client.as_ref(), session_id)
+        self.attachments.retry_one(client.as_ref(), subscription_id)
+    }
+
+    pub(crate) fn session_claim(&self, subscription_id: SubscriptionId) -> Result<(), DaemonError> {
+        let _lifecycle = self
+            .client_lifecycle
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let session_id = self
+            .attachments
+            .session_id_for(subscription_id)
+            .ok_or_else(|| {
+                DaemonError::Protocol("session attachment is not registered".to_string())
+            })?;
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+            .ok_or(DaemonError::ConnectionLost)?;
+        self.attachments
+            .retry_one(client.as_ref(), subscription_id)?;
+        client.session_claim_with_subscription(&session_id, subscription_id)
     }
 
     pub(crate) fn session_attach(
@@ -912,7 +1016,7 @@ impl BridgeInner {
         session_id: &str,
         from_seq: Option<u64>,
         sink: AttachmentSink,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<SubscriptionId, DaemonError> {
         let _lifecycle = self
             .client_lifecycle
             .lock()
@@ -927,27 +1031,36 @@ impl BridgeInner {
             generation: self.attachments.generation_for(session_id).unwrap_or(1),
             seq,
         });
-        self.attachments.insert(session_id, cursor, sink);
-        if let Err(error) = self.attachments.bind(client.as_ref(), session_id) {
-            self.attachments.remove(session_id);
+        let subscription_id = self.attachments.insert(session_id, cursor, sink);
+        if let Err(error) = self.attachments.bind(client.as_ref(), subscription_id) {
+            self.attachments.remove(subscription_id);
             return Err(error);
         }
-        Ok(())
+        Ok(subscription_id)
     }
 
-    pub(crate) fn session_detach(&self, session_id: &str) -> Result<(), DaemonError> {
+    pub(crate) fn session_detach(
+        &self,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
         let _lifecycle = self
             .client_lifecycle
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        self.attachments.remove(session_id);
+        let session_id = self
+            .attachments
+            .session_id_for(subscription_id)
+            .ok_or_else(|| {
+                DaemonError::Protocol("session attachment is not registered".to_string())
+            })?;
+        self.attachments.remove(subscription_id);
         let client = self
             .client
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone()
             .ok_or(DaemonError::ConnectionLost)?;
-        client.session_detach(session_id)
+        client.session_detach_with_subscription(&session_id, subscription_id)
     }
 
     pub(crate) fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
@@ -955,7 +1068,7 @@ impl BridgeInner {
             .client_lifecycle
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        self.attachments.remove(session_id);
+        self.attachments.remove_session(session_id);
         let client = self
             .client
             .lock()
@@ -1341,14 +1454,15 @@ mod tests {
 
     impl FakeAttachmentClient {
         fn emit(&self, session_id: &str, envelope: devboule_protocol::SessionEventEnvelope) {
-            if let Some(handler) = self
+            let handlers = self
                 .handlers
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .get(session_id)
-                .and_then(|handlers| handlers.last().cloned())
-            {
-                handler(envelope);
+                .cloned()
+                .unwrap_or_default();
+            for handler in handlers {
+                handler(envelope.clone());
             }
         }
 
@@ -1382,10 +1496,11 @@ mod tests {
     impl SessionAttachmentClient for FakeAttachmentClient {
         fn session_attach(
             &self,
+            subscription_id: SubscriptionId,
             session_id: &str,
             from_cursor: Option<devboule_protocol::Cursor>,
             handler: EventHandler,
-        ) -> Result<(), DaemonError> {
+        ) -> Result<SubscriptionId, DaemonError> {
             self.calls
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -1407,7 +1522,7 @@ mod tests {
                 .entry(session_id.to_string())
                 .or_default()
                 .push(handler);
-            Ok(())
+            Ok(subscription_id)
         }
     }
 
@@ -1425,9 +1540,9 @@ mod tests {
         let old_client = FakeAttachmentClient::default();
         let new_client = FakeAttachmentClient::default();
 
-        registry.insert("session-1", None, sink);
+        let subscription_id = registry.insert("session-1", None, sink);
         registry
-            .bind(&old_client, "session-1")
+            .bind(&old_client, subscription_id)
             .expect("initial attach");
         old_client.emit(
             "session-1",
@@ -1515,14 +1630,65 @@ mod tests {
     }
 
     #[test]
+    fn attachment_registry_keeps_same_session_subscriptions_independent() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let first_events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+        let second_events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+        let first_sink_events = Arc::clone(&first_events);
+        let second_sink_events = Arc::clone(&second_events);
+        let first = registry.insert(
+            "shared",
+            None,
+            Arc::new(move |event| {
+                first_sink_events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+        );
+        let second = registry.insert(
+            "shared",
+            None,
+            Arc::new(move |event| {
+                second_sink_events
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(event);
+            }),
+        );
+        let client = FakeAttachmentClient::default();
+        registry.bind(&client, first).expect("first attach");
+        registry.bind(&client, second).expect("second attach");
+
+        let event = devboule_protocol::SessionEventEnvelope {
+            session_id: "shared".to_string(),
+            generation: 1,
+            event: SessionEvent::AgentMessage {
+                message_id: None,
+                text: "shared event".to_string(),
+            },
+        };
+        client.emit("shared", event.clone());
+        assert_eq!(first_events.lock().unwrap().len(), 1);
+        assert_eq!(second_events.lock().unwrap().len(), 1);
+
+        registry.remove(first);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.session_id_for(second).as_deref(), Some("shared"));
+        client.emit("shared", event);
+        assert_eq!(first_events.lock().unwrap().len(), 1);
+        assert_eq!(second_events.lock().unwrap().len(), 2);
+    }
+
+    #[test]
     fn generation_bump_discards_the_old_sequence_but_keeps_the_session_binding() {
         let registry = Arc::new(AttachmentRegistry::default());
         let sink: AttachmentSink = Arc::new(|_| {});
         let old_client = FakeAttachmentClient::default();
         let new_client = FakeAttachmentClient::default();
-        registry.insert("session-2", None, sink);
+        let subscription_id = registry.insert("session-2", None, sink);
         registry
-            .bind(&old_client, "session-2")
+            .bind(&old_client, subscription_id)
             .expect("initial attach");
         old_client.emit(
             "session-2",
@@ -1575,8 +1741,10 @@ mod tests {
         });
         let old_client = FakeAttachmentClient::default();
         let new_client = FakeAttachmentClient::default();
-        registry.insert("ended", None, sink);
-        registry.bind(&old_client, "ended").expect("initial attach");
+        let subscription_id = registry.insert("ended", None, sink);
+        registry
+            .bind(&old_client, subscription_id)
+            .expect("initial attach");
         registry.begin_replacement();
         registry.observe_roster(&[SessionStateSnapshot {
             id: "ended".to_string(),
@@ -1662,14 +1830,14 @@ mod tests {
         });
         let client = FakeAttachmentClient::default();
         client.fail_for("retry");
-        registry.insert("retry", None, sink);
+        let subscription_id = registry.insert("retry", None, sink);
         registry.begin_replacement();
         assert_eq!(registry.reattach_all(&client).len(), 1);
         assert!(!registry.is_bound("retry"));
 
         client.allow_for("retry");
         registry
-            .retry_one(&client, "retry")
+            .retry_one(&client, subscription_id)
             .expect("the later action retries the attachment");
         assert!(registry.is_bound("retry"));
         client.emit(
@@ -1707,8 +1875,8 @@ mod tests {
     fn closed_session_events_remove_the_registry_entry() {
         let registry = Arc::new(AttachmentRegistry::default());
         let client = FakeAttachmentClient::default();
-        registry.insert("closed", None, Arc::new(|_| {}));
-        registry.bind(&client, "closed").expect("attach");
+        let subscription_id = registry.insert("closed", None, Arc::new(|_| {}));
+        registry.bind(&client, subscription_id).expect("attach");
         client.emit(
             "closed",
             devboule_protocol::SessionEventEnvelope {

@@ -1041,7 +1041,7 @@ fn send_pending_event(
     conn: &ConnHandle,
     event: PendingEvent,
 ) -> Result<(), DaemonError> {
-    if !conn.event_is_current(&event.session_id, event.attachment_generation) {
+    if !conn.event_is_current(event.subscription_id, event.attachment_generation) {
         let sequence = match &event.envelope.event {
             SessionEvent::Output { seq, .. } => format!(" seq={seq}"),
             SessionEvent::Exit { .. } => " exit".to_string(),
@@ -1071,7 +1071,10 @@ fn send_pending_event(
         );
         return Ok(());
     }
-    framed.send_unflushed(&DaemonMessage::Event(event.envelope.clone()))?;
+    framed.send_unflushed(&DaemonMessage::SubscriptionEvent {
+        subscription_id: event.subscription_id,
+        envelope: event.envelope.clone(),
+    })?;
     // The cursor is advanced after the complete frame has been written. The
     // clone above is only for the serialized message; the original envelope
     // retains the acknowledgement metadata.
@@ -1261,6 +1264,7 @@ fn dispatch_immediate(
         ClientMessage::SessionCreate { .. }
         | ClientMessage::SessionAttach { .. }
         | ClientMessage::SessionDetach { .. }
+        | ClientMessage::SessionClaim { .. }
         | ClientMessage::SessionClose { .. }
         | ClientMessage::SessionStop { .. }
         | ClientMessage::SessionSend { .. }
@@ -1867,19 +1871,45 @@ fn dispatch_session(
         ClientMessage::SessionAttach {
             id,
             session_id,
+            subscription_id,
             from_cursor,
         } => reply_result(
             id,
             state
                 .sessions
-                .attach(&session_id, from_cursor, conn, owner, typed_permissions_ok)
-                .map(|()| DaemonMessage::Ok { id }),
+                .attach_with_subscription(
+                    &session_id,
+                    subscription_id,
+                    from_cursor,
+                    conn,
+                    owner,
+                    typed_permissions_ok,
+                )
+                .map(|()| DaemonMessage::SessionAttached {
+                    id,
+                    subscription_id,
+                }),
         ),
-        ClientMessage::SessionDetach { id, session_id } => reply_result(
+        ClientMessage::SessionDetach {
+            id,
+            session_id,
+            subscription_id,
+        } => reply_result(
             id,
             state
                 .sessions
-                .detach(&session_id, conn, owner)
+                .detach_with_subscription(&session_id, subscription_id, conn, owner)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
+        ClientMessage::SessionClaim {
+            id,
+            session_id,
+            subscription_id,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .claim_resize_with_subscription(&session_id, subscription_id, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionClose {
@@ -1931,29 +1961,44 @@ fn dispatch_session(
                 .set_presence(conn.id, owner, focused_session_id, app_visible)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
-        ClientMessage::SessionStop { id, session_id } => reply_result(
+        ClientMessage::SessionStop {
+            id,
+            session_id,
+            subscription_id,
+        } => reply_result(
             id,
             state
                 .sessions
-                .stop(&session_id, owner)
+                .stop_with_subscription(&session_id, subscription_id, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionSend {
             id,
             session_id,
+            subscription_id,
             text,
             idempotency_key,
-        } => session_send(state, owner, conn, id, session_id, text, idempotency_key),
+        } => session_send(
+            state,
+            owner,
+            conn,
+            id,
+            session_id,
+            subscription_id,
+            text,
+            idempotency_key,
+        ),
         ClientMessage::SessionResize {
             id,
             session_id,
+            subscription_id,
             cols,
             rows,
         } => reply_result(
             id,
             state
                 .sessions
-                .resize(&session_id, cols, rows, owner, conn)
+                .resize_with_subscription(&session_id, subscription_id, cols, rows, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionsList { id } => match state.sessions.list(owner) {
@@ -2009,11 +2054,15 @@ fn dispatch_session(
                 }
             }
         },
-        ClientMessage::SessionInterrupt { id, session_id } => reply_result(
+        ClientMessage::SessionInterrupt {
+            id,
+            session_id,
+            subscription_id,
+        } => reply_result(
             id,
             state
                 .sessions
-                .interrupt(&session_id, owner)
+                .interrupt_with_subscription(&session_id, subscription_id, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionSetModel {
@@ -2031,6 +2080,7 @@ fn dispatch_session(
         ClientMessage::SessionPermissionRespond {
             id,
             session_id,
+            subscription_id,
             request_id,
             outcome,
             idempotency_key,
@@ -2041,10 +2091,14 @@ fn dispatch_session(
             {
                 return reply;
             }
-            match state
-                .sessions
-                .permission_respond(&session_id, &request_id, outcome, conn, owner)
-            {
+            match state.sessions.permission_respond_with_subscription(
+                &session_id,
+                &request_id,
+                outcome,
+                subscription_id,
+                conn,
+                owner,
+            ) {
                 Ok(()) => {
                     let reply = DaemonMessage::Ok { id };
                     remember(
@@ -2116,12 +2170,14 @@ fn session_create(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn session_send(
     state: &Arc<ServerState>,
     owner: &OwnerId,
     conn: &ConnHandle,
     id: u64,
     session_id: String,
+    subscription_id: u64,
     text: String,
     idempotency_key: Option<String>,
 ) -> DaemonMessage {
@@ -2130,7 +2186,10 @@ fn session_send(
     {
         return reply;
     }
-    match state.sessions.send(&session_id, &text, owner, conn) {
+    match state
+        .sessions
+        .send_with_subscription(&session_id, subscription_id, &text, owner, conn)
+    {
         Ok(()) => {
             let reply = DaemonMessage::Ok { id };
             remember(
@@ -2215,6 +2274,12 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
             DaemonMessage::Workspaces { id, workspaces }
         }
         DaemonMessage::Workspace { workspace, .. } => DaemonMessage::Workspace { id, workspace },
+        DaemonMessage::SessionAttached {
+            subscription_id, ..
+        } => DaemonMessage::SessionAttached {
+            id,
+            subscription_id,
+        },
         DaemonMessage::JournalRetention { retention, .. } => {
             DaemonMessage::JournalRetention { id, retention }
         }
@@ -2403,6 +2468,7 @@ mod tests {
             ClientMessage::SessionPermissionRespond {
                 id: 9,
                 session_id: "s.test-client.missing".to_string(),
+                subscription_id: 1,
                 request_id: "tool-1".to_string(),
                 outcome: PermissionOutcome::AllowOnce,
                 idempotency_key: None,

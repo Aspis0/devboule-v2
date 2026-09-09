@@ -1,10 +1,13 @@
-//! Session wire types. `SessionKind`, `Session`, and `SessionEvent` are the
-//! M2 contract; moving them here must not change the JSON the TypeScript
-//! frontend already consumes.
+//! Session wire types shared by the daemon and its clients. Changes to these
+//! types are protocol changes and must be reflected in the negotiated dialect.
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ErrorCode, ErrorDetails, WireError};
+
+/// Identifies one live observer of a session. It is scoped by the daemon
+/// connection and must be retained by the client until that observer detaches.
+pub type SubscriptionId = u64;
 
 /// M2 implements Terminal; ACP/Agent can be added as another serialized
 /// variant without changing the command signatures or the existing
