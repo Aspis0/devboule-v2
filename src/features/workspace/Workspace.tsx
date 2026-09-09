@@ -110,7 +110,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
   const [permissionQueue, setPermissionQueue] = useState<
-    Array<{ sessionId: string; request: PermissionRequest }>
+    Array<{ sessionId: string; subscriptionId: number; request: PermissionRequest }>
   >([]);
   const daemon = useWorkspaceDaemon();
   const {
@@ -309,18 +309,22 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
-  const handlePermissionRequest = useCallback((sessionId: string, request: PermissionRequest) => {
-    setPermissionQueue((queue) => {
-      if (
-        queue.some(
-          (item) => item.sessionId === sessionId && item.request.toolCallId === request.toolCallId,
-        )
-      ) {
-        return queue;
-      }
-      return [...queue, { sessionId, request }];
-    });
-  }, []);
+  const handlePermissionRequest = useCallback(
+    (sessionId: string, subscriptionId: number, request: PermissionRequest) => {
+      setPermissionQueue((queue) => {
+        if (
+          queue.some(
+            (item) =>
+              item.sessionId === sessionId && item.request.toolCallId === request.toolCallId,
+          )
+        ) {
+          return queue;
+        }
+        return [...queue, { sessionId, subscriptionId, request }];
+      });
+    },
+    [],
+  );
   const handlePermissionResolved = useCallback((sessionId: string, toolCallId: string) => {
     setPermissionQueue((queue) =>
       queue.filter(
@@ -329,7 +333,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     );
   }, []);
   const selectedPermission =
-    permissionQueue.find((item) => item.sessionId === selectedSessionId)?.request ?? null;
+    permissionQueue.find((item) => item.sessionId === selectedSessionId) ?? null;
   const sessionStatusText = sessionsError
     ? sessionsError
     : sessionCreating
@@ -718,7 +722,8 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
             isAgentKind(selectedSession.kind) ? (
               <WorkspacePermissionCard
                 sessionId={selectedSessionId}
-                request={selectedPermission}
+                subscriptionId={selectedPermission.subscriptionId}
+                request={selectedPermission.request}
                 capabilities={daemon.capabilities}
                 onResolved={handlePermissionResolved}
               />
@@ -880,6 +885,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
 
 interface WorkspacePermissionCardProps {
   sessionId: string;
+  subscriptionId: number;
   request: PermissionRequest;
   capabilities: readonly string[];
   onResolved?: (sessionId: string, toolCallId: string) => void;
@@ -888,6 +894,7 @@ interface WorkspacePermissionCardProps {
 /** A real ACP permission prompt; it is inert unless the handshake negotiated typed_permissions. */
 export function WorkspacePermissionCard({
   sessionId,
+  subscriptionId,
   request,
   capabilities,
   onResolved,
@@ -912,7 +919,7 @@ export function WorkspacePermissionCard({
     setPermission("submitting");
     setError(null);
     try {
-      await sessionPermissionRespond(sessionId, request.toolCallId, outcome);
+      await sessionPermissionRespond(sessionId, subscriptionId, request.toolCallId, outcome);
       setPermission(outcome === "allow_once" ? "allowed" : "denied");
       onResolved?.(sessionId, request.toolCallId);
     } catch (cause) {

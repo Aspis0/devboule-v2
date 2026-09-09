@@ -50,6 +50,7 @@ struct ClientInner {
     pending: Mutex<HashMap<u64, mpsc::Sender<DaemonMessage>>>,
     pending_subscriptions: Mutex<HashMap<u64, PendingSubscription>>,
     subscriptions: Mutex<HashMap<SubscriptionId, Subscription>>,
+    #[cfg(feature = "server")]
     default_subscriptions: Mutex<HashMap<String, SubscriptionId>>,
     session_state_subscription: Mutex<Option<SessionStateHandler>>,
     stop: AtomicBool,
@@ -232,6 +233,9 @@ impl DaemonClient {
         }
     }
 
+    // These session-id helpers exist only for the in-process server test harnesses. Client builds
+    // use the subscription-bearing methods so two observers can never share an implicit default.
+    #[cfg(feature = "server")]
     pub fn session_detach(&self, session_id: &str) -> Result<(), DaemonError> {
         let subscription_id = self
             .default_subscription(session_id)
@@ -261,6 +265,7 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_claim(&self, session_id: &str) -> Result<(), DaemonError> {
         self.session_claim_with_subscription(session_id, self.control_subscription_id(session_id)?)
     }
@@ -297,6 +302,7 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_stop(&self, session_id: &str) -> Result<(), DaemonError> {
         self.session_stop_with_subscription(session_id, self.control_subscription_id(session_id)?)
     }
@@ -318,6 +324,7 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_interrupt(&self, session_id: &str) -> Result<(), DaemonError> {
         self.session_interrupt_with_subscription(
             session_id,
@@ -361,6 +368,7 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
         self.session_send_with_subscription(
             session_id,
@@ -389,6 +397,7 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_resize(
         &self,
         session_id: &str,
@@ -456,6 +465,7 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_permission_respond(
         &self,
         session_id: &str,
@@ -812,6 +822,7 @@ impl DaemonClient {
             .fetch_add(1, Ordering::Relaxed)
     }
 
+    #[cfg(feature = "server")]
     fn default_subscription(&self, session_id: &str) -> Option<SubscriptionId> {
         self.inner
             .default_subscriptions
@@ -821,6 +832,7 @@ impl DaemonClient {
             .copied()
     }
 
+    #[cfg(feature = "server")]
     fn control_subscription_id(&self, session_id: &str) -> Result<SubscriptionId, DaemonError> {
         self.default_subscription(session_id).ok_or_else(|| {
             DaemonError::Protocol(
@@ -836,6 +848,9 @@ impl DaemonClient {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .remove(&subscription_id);
+        #[cfg(not(feature = "server"))]
+        let _ = removed;
+        #[cfg(feature = "server")]
         if let Some(removed) = removed {
             let mut defaults = self
                 .inner
@@ -998,6 +1013,7 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
                 pending: Mutex::new(HashMap::new()),
                 pending_subscriptions: Mutex::new(HashMap::new()),
                 subscriptions: Mutex::new(HashMap::new()),
+                #[cfg(feature = "server")]
                 default_subscriptions: Mutex::new(HashMap::new()),
                 session_state_subscription: Mutex::new(None),
                 stop: AtomicBool::new(false),
@@ -1115,14 +1131,16 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                                         handler,
                                     },
                                 );
-                            // A reattach can follow a resume that replaced the
-                            // runtime, so the old default token may no longer
-                            // belong to this session generation.
-                            inner
-                                .default_subscriptions
-                                .lock()
-                                .unwrap_or_else(|err| err.into_inner())
-                                .insert(session_id, *subscription_id);
+                            #[cfg(feature = "server")]
+                            {
+                                // A reattach can follow a resume that replaced the runtime, so
+                                // the old test helper token may no longer be current.
+                                inner
+                                    .default_subscriptions
+                                    .lock()
+                                    .unwrap_or_else(|err| err.into_inner())
+                                    .insert(session_id, *subscription_id);
+                            }
                         }
                     }
                     let tx = inner
@@ -1185,6 +1203,7 @@ fn fail_connection(inner: &ClientInner, error: DaemonError) {
             event: SessionEvent::Exit { code: None },
         });
     }
+    #[cfg(feature = "server")]
     inner
         .default_subscriptions
         .lock()

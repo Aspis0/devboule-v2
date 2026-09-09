@@ -10,8 +10,8 @@ interface Harness {
 
 function makeHarness(): Harness {
   let emit: (event: SessionEvent) => void = () => undefined;
-  const invoke = vi.fn(
-    async (_command: string, _args?: Record<string, unknown>) => undefined,
+  const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) =>
+    command === "session_attach" ? 41 : undefined,
   ) as unknown as AgentSessionDeps["invoke"];
   const deps: AgentSessionDeps = {
     sessionId: "agent-1",
@@ -276,7 +276,9 @@ describe("ACP agent session", () => {
     const onPermissionResolved = vi.fn();
     const session = new AgentSession({
       sessionId: "agent-1",
-      invoke: vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"],
+      invoke: vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"],
       createChannel: (onEvent) => {
         emit = onEvent;
         return {} as AgentChannel;
@@ -286,6 +288,82 @@ describe("ACP agent session", () => {
     await session.start();
     emit({ type: "permission_resolved", toolCallId: "tool-timeout" });
     expect(onPermissionResolved).toHaveBeenCalledWith("tool-timeout");
+  });
+
+  it("keeps its subscription id for commands and its own detach", async () => {
+    const harness = makeHarness();
+
+    await harness.session.start();
+    await harness.session.send("hello");
+    harness.session.dispose();
+
+    expect(harness.session.getSubscriptionId()).toBeNull();
+    expect(harness.invoke).toHaveBeenCalledWith("session_send", {
+      id: "agent-1",
+      subscriptionId: 41,
+      text: "hello",
+    });
+    expect(harness.invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 41 });
+  });
+
+  it("does not detach when attach did not return a subscription id", async () => {
+    const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke,
+      createChannel: () => ({}) as AgentChannel,
+    });
+
+    await session.start();
+    session.dispose();
+
+    expect(invoke).not.toHaveBeenCalledWith("session_detach", expect.anything());
+  });
+
+  it("keeps rapid replacement attaches separate from an in-flight detach", async () => {
+    let nextSubscriptionId = 40;
+    let releaseDetach!: () => void;
+    let detachStarted!: () => void;
+    const detachGate = new Promise<void>((resolve) => {
+      releaseDetach = resolve;
+    });
+    const detachStartedGate = new Promise<void>((resolve) => {
+      detachStarted = resolve;
+    });
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "session_attach") return ++nextSubscriptionId;
+      if (command === "session_detach") {
+        detachStarted();
+        await detachGate;
+      }
+      return undefined;
+    }) as unknown as AgentSessionDeps["invoke"];
+    const createSession = (sessionId: string) =>
+      new AgentSession({
+        sessionId,
+        invoke,
+        createChannel: () => ({}) as AgentChannel,
+      });
+
+    const first = createSession("agent-1");
+    await first.start();
+    first.dispose();
+    const firstDetach = first.detach();
+    await detachStartedGate;
+
+    const second = createSession("agent-1");
+    await second.start();
+    releaseDetach();
+    await firstDetach;
+
+    second.dispose();
+    await second.detach();
+    const third = createSession("agent-1");
+    await third.start();
+
+    expect(invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 41 });
+    expect(invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 42 });
+    expect(third.getSubscriptionId()).toBe(43);
   });
 
   it("switches the model and clears the pending switch when a manifest confirms", async () => {

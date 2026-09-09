@@ -73,7 +73,11 @@ vi.mock("./AgentChatSurface", () => ({
     onPermissionResolved,
   }: {
     sessionId: string;
-    onPermissionRequest?: (sessionId: string, request: PermissionRequest) => void;
+    onPermissionRequest?: (
+      sessionId: string,
+      subscriptionId: number,
+      request: PermissionRequest,
+    ) => void;
     onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
   }) => (
     <div data-testid="agent-chat-surface">
@@ -82,7 +86,7 @@ vi.mock("./AgentChatSurface", () => ({
         type="button"
         data-testid="emit-permission-a"
         onClick={() =>
-          onPermissionRequest?.(sessionId, {
+          onPermissionRequest?.(sessionId, 41, {
             type: "permission_request",
             toolCallId: "tool-a",
             title: "Run command",
@@ -100,7 +104,7 @@ vi.mock("./AgentChatSurface", () => ({
         type="button"
         data-testid="emit-permission-b"
         onClick={() =>
-          onPermissionRequest?.(sessionId, {
+          onPermissionRequest?.(sessionId, 41, {
             type: "permission_request",
             toolCallId: "tool-b",
             title: "Run command",
@@ -123,7 +127,7 @@ vi.mock("./AgentChatSurface", () => ({
         type="button"
         data-testid="emit-permission-shared"
         onClick={() =>
-          onPermissionRequest?.(sessionId, {
+          onPermissionRequest?.(sessionId, 41, {
             type: "permission_request",
             toolCallId: "shared-tool",
             title: "Run command",
@@ -993,6 +997,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={permissionRequest}
           capabilities={[]}
         />,
@@ -1009,6 +1014,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={permissionRequest}
           capabilities={["typed_permissions"]}
         />,
@@ -1023,7 +1029,12 @@ describe("Workspace sessions", () => {
     });
 
     expect(sessionPermissionRespond).toHaveBeenCalledTimes(1);
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-1", "tool-test", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "tool-test",
+      "allow_once",
+    );
   });
 
   it("shows the command, args, and cwd that will be spawned", async () => {
@@ -1032,6 +1043,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={spawnPermissionRequest}
           capabilities={["typed_permissions"]}
         />,
@@ -1079,7 +1091,7 @@ describe("Workspace sessions", () => {
     if (next === null) throw new Error("second permission card did not render");
     expect(next.textContent).toContain("ping.exe");
     expect(next.textContent).toContain("C:\\beta");
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", "tool-a", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 41, "tool-a", "allow_once");
   });
 
   it("quotes args that contain spaces so they are not split visually", async () => {
@@ -1088,6 +1100,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={{
             ...spawnPermissionRequest,
             args: ["hello world"],
@@ -1142,6 +1155,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={{
             ...spawnPermissionRequest,
             command: `${"echo ".padEnd(2100, "x")}${suffix}`,
@@ -1162,6 +1176,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={{
             ...spawnPermissionRequest,
             env: [{ name: "DB_GATE", value: "SAFE & echo PWNED" }],
@@ -1249,7 +1264,12 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     expect(container.querySelector(".workspace-permission-card")).toBeNull();
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-a", "shared-tool", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-a",
+      41,
+      "shared-tool",
+      "allow_once",
+    );
 
     await act(async () => tabB.click());
     await act(async () => undefined);

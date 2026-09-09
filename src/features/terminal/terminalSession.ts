@@ -48,7 +48,7 @@ export interface TerminalSessionDeps {
   onBanner: (banner: TerminalBanner) => void;
   onCtrlCArmed: (armed: boolean) => void;
   onExited?: (code: number | null) => void;
-  onPermissionRequest?: (request: PermissionRequest) => void;
+  onPermissionRequest?: (request: PermissionRequest, subscriptionId: number) => void;
   onPermissionResolved?: (toolCallId: string) => void;
   setTimeout?: (callback: () => void, milliseconds: number) => number;
   clearTimeout?: (id: number) => void;
@@ -90,6 +90,7 @@ export class TerminalSession {
   private readonly cancelFrame: (id: number) => void;
 
   private sessionId: string | null = null;
+  private subscriptionId: number | null = null;
   private channel: TerminalChannel | null = null;
   private view: TerminalViewHandle | null = null;
   private started = false;
@@ -203,13 +204,19 @@ export class TerminalSession {
     let attachError: unknown;
     this.attachPending = true;
     try {
-      await this.deps.invoke<void>("session_attach", {
+      const subscriptionId = await this.deps.invoke<number>("session_attach", {
         id: sessionId,
         // A new xterm host needs the retained scrollback replayed in full.
         // The registry cursor is bookkeeping for a future resume path.
         fromCursor: null,
         ch: channel,
       });
+      if (!Number.isSafeInteger(subscriptionId) || subscriptionId <= 0) {
+        throw new Error("The daemon returned an invalid session subscription.");
+      }
+      this.subscriptionId = subscriptionId;
+      // Claim at attach makes the first resize deterministic; a later view may replace the owner.
+      if (!this.disposed) await this.deps.invoke<void>("session_claim", { subscriptionId });
     } catch (error: unknown) {
       attachFailed = true;
       attachError = error;
@@ -219,6 +226,10 @@ export class TerminalSession {
     }
 
     if (attachFailed) {
+      if (this.subscriptionId !== null) {
+        this.backendTeardown = "detach";
+        this.requestBackendTeardown();
+      }
       this.clearSnapshotState();
       this.disposeViewAndChannel();
       if (adopted && isMissingSessionError(attachError) && !this.disposed) {
@@ -237,6 +248,10 @@ export class TerminalSession {
     // The host may have just become visible. Let ResizeObserver/layout settle
     // before fitting; doResize also ignores zero-sized hosts defensively.
     this.requestResize();
+  }
+
+  getSubscriptionId(): number | null {
+    return this.subscriptionId;
   }
 
   /** The first Ctrl+C arms; a second press within three seconds sends ETX. */
@@ -285,9 +300,11 @@ export class TerminalSession {
 
   private async sendToPty(data: string): Promise<void> {
     if (this.disposed || this.exited || this.sessionId === null) return;
+    if (this.subscriptionId === null) return;
     const sessionId = this.sessionId;
+    const subscriptionId = this.subscriptionId;
     try {
-      await this.deps.invoke<void>("session_send", { id: sessionId, text: data });
+      await this.deps.invoke<void>("session_send", { id: sessionId, subscriptionId, text: data });
       this.writeFailCount = 0;
     } catch {
       if (this.disposed) return;
@@ -398,7 +415,8 @@ export class TerminalSession {
         // treating a known protocol event as unknown.
         break;
       case "permission_request":
-        this.deps.onPermissionRequest?.(event);
+        if (this.subscriptionId !== null)
+          this.deps.onPermissionRequest?.(event, this.subscriptionId);
         break;
       case "permission_resolved":
         this.deps.onPermissionResolved?.(event.toolCallId);
@@ -521,6 +539,7 @@ export class TerminalSession {
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
+    this.subscriptionId = null;
     this.persistentBanner = {
       kind: "exited",
       code,
@@ -538,6 +557,7 @@ export class TerminalSession {
     const sessionId = this.sessionId;
     if (sessionId !== null) this.deps.registry.remove(this.deps.workspaceId, sessionId);
     this.sessionId = null;
+    this.subscriptionId = null;
     this.persistentBanner = { kind: "recovered", integrity };
     this.deps.onBanner(this.persistentBanner);
     this.deps.onExited?.(null);
@@ -571,6 +591,7 @@ export class TerminalSession {
       this.exited ||
       this.applyingSnapshot ||
       this.sessionId === null ||
+      this.subscriptionId === null ||
       this.view === null
     )
       return;
@@ -581,7 +602,12 @@ export class TerminalSession {
     if (!fitted || cols <= 0 || rows <= 0) return;
 
     void this.deps
-      .invoke<void>("session_resize", { id: this.sessionId, cols, rows })
+      .invoke<void>("session_resize", {
+        id: this.sessionId,
+        subscriptionId: this.subscriptionId,
+        cols,
+        rows,
+      })
       .catch(() => undefined);
   }
 
@@ -609,13 +635,15 @@ export class TerminalSession {
       this.backendTeardown === null ||
       this.backendTeardownSent ||
       this.attachPending ||
-      this.sessionId === null
+      this.sessionId === null ||
+      (this.backendTeardown === "detach" && this.subscriptionId === null)
     ) {
       return;
     }
 
     const sessionId = this.sessionId;
     const teardown = this.backendTeardown;
+    const subscriptionId = this.subscriptionId;
     this.backendTeardownSent = true;
     if (teardown === "close") {
       this.deps.registry.remove(this.deps.workspaceId, sessionId);
@@ -623,7 +651,8 @@ export class TerminalSession {
       return;
     }
 
-    void this.deps.invoke<void>("session_detach", { id: sessionId }).catch(() => undefined);
+    this.subscriptionId = null;
+    void this.deps.invoke<void>("session_detach", { subscriptionId }).catch(() => undefined);
   }
 }
 

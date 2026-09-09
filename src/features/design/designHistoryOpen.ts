@@ -92,7 +92,7 @@ const tauriInvoke: AgentSessionDeps["invoke"] = <T>(
         args.ch as SessionChannel,
       ) as Promise<T>;
     case "session_detach":
-      return sessionDetach(args.id as string) as Promise<T>;
+      return sessionDetach(args.subscriptionId as number) as Promise<T>;
     default:
       return Promise.reject(new Error(`Unsupported design history command: ${command}`));
   }

@@ -3,11 +3,13 @@
 import { StrictMode, act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import type { SessionEvent, SessionState } from "../../types/ipc";
+import type { PermissionRequest, SessionEvent, SessionState } from "../../types/ipc";
 
 const channelHarness = vi.hoisted(() => ({
   emit: null as ((event: SessionEvent) => void) | null,
   active: null as ((event: SessionEvent) => void) | null,
+  activeSubscriptionId: null as number | null,
+  nextSubscriptionId: 41,
   handlers: new WeakMap<object, (event: SessionEvent) => void>(),
 }));
 
@@ -96,12 +98,17 @@ vi.mock("../../lib/tauri", () => ({
   sessionAttach: vi.fn(async (...args: unknown[]) => {
     await Promise.resolve();
     const channel = args[2];
+    const subscriptionId = channelHarness.nextSubscriptionId++;
+    channelHarness.activeSubscriptionId = subscriptionId;
     channelHarness.active =
       typeof channel === "object" && channel !== null
         ? (channelHarness.handlers.get(channel) ?? null)
         : null;
+    return subscriptionId;
   }),
-  sessionDetach: vi.fn(async () => {
+  sessionDetach: vi.fn(async (subscriptionId: number) => {
+    if (channelHarness.activeSubscriptionId !== subscriptionId) return;
+    channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;
   }),
   sessionSend: vi.fn(async () => undefined),
@@ -129,12 +136,15 @@ describe("AgentChatSurface", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     channelHarness.emit = null;
+    channelHarness.activeSubscriptionId = null;
+    channelHarness.nextSubscriptionId = 41;
     localStorage.removeItem("devboule.modelEffortPrefs");
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;
     vi.clearAllMocks();
   });
@@ -161,7 +171,7 @@ describe("AgentChatSurface", () => {
     setValue.call(textarea, "Say hello");
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await act(async () => send.click());
-    expect(sessionSend).toHaveBeenCalledWith("agent-1", "Say hello");
+    expect(sessionSend).toHaveBeenCalledWith("agent-1", 41, "Say hello");
 
     await act(async () => {
       channelHarness.emit?.({
@@ -184,7 +194,7 @@ describe("AgentChatSurface", () => {
     expect(container.textContent).toContain("total 3 tokens");
 
     await act(async () => root.unmount());
-    expect(sessionDetach).toHaveBeenCalledWith("agent-1");
+    expect(sessionDetach).toHaveBeenCalledWith(41);
   });
 
   it("recreates its session across StrictMode cleanup and can send after a remount", async () => {
@@ -227,7 +237,34 @@ describe("AgentChatSurface", () => {
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await act(async () => send.click());
 
-    expect(sessionSend).toHaveBeenCalledWith("strict-agent", "After remount");
+    expect(sessionSend).toHaveBeenCalledWith("strict-agent", 44, "After remount");
+  });
+
+  it("keeps the subscription id on permission requests", async () => {
+    const onPermissionRequest = vi.fn(
+      (_sessionId: string, _subscriptionId: number, _request: PermissionRequest) => undefined,
+    );
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          sessionId="permission-agent"
+          title="Agent"
+          onPermissionRequest={onPermissionRequest}
+        />,
+      );
+    });
+    await act(async () => undefined);
+
+    const request: PermissionRequest = {
+      type: "permission_request",
+      toolCallId: "tool-1",
+      title: "Run command",
+      options: [],
+    };
+    await act(async () => channelHarness.active?.(request));
+
+    expect(onPermissionRequest).toHaveBeenCalledWith("permission-agent", 41, request);
   });
 
   it("renders a complete live ACP turn delivered through the attached channel", async () => {
@@ -838,7 +875,7 @@ describe("AgentChatSurface", () => {
     expect(stop).not.toBeNull();
     expect(stop?.getAttribute("type")).toBe("button");
     await act(async () => stop?.click());
-    expect(sessionInterrupt).toHaveBeenCalledWith("stop-agent");
+    expect(sessionInterrupt).toHaveBeenCalledWith("stop-agent", 42);
 
     await act(async () => {
       channelHarness.active?.({ type: "agent_finished", stopReason: "cancelled" });

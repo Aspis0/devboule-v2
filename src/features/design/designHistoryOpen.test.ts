@@ -59,7 +59,7 @@ describe("design history reopen", () => {
   });
 
   it("detaches exactly once when disposed while attach is in flight", async () => {
-    const attach = deferred<void>();
+    const attach = deferred<number>();
     const bridge = vi.fn(async (command: string) => {
       if (command === "session_attach") return attach.promise;
       return undefined;
@@ -68,17 +68,20 @@ describe("design history reopen", () => {
     const { handle } = historyHarness(invoke);
 
     handle.dispose();
-    attach.resolve(undefined);
+    attach.resolve(41);
     for (let index = 0; index < 6; index += 1) await Promise.resolve();
 
     expect(bridge.mock.calls.filter(([command]) => command === "session_detach")).toHaveLength(1);
+    expect(bridge).toHaveBeenCalledWith("session_detach", { subscriptionId: 41 });
     expect(bridge.mock.calls.filter(([command]) => command === "session_close")).toHaveLength(0);
   });
 
   it("reports timeout distinctly from an artifact", async () => {
     vi.useFakeTimers();
     try {
-      const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
+      const invoke = vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"];
       const timeoutHarness = historyHarness(invoke);
       await Promise.resolve();
       vi.advanceTimersByTime(5_000);
@@ -106,7 +109,9 @@ describe("design history reopen", () => {
   it("uses the formatted number when choosing singular or plural timeout wording", async () => {
     vi.useFakeTimers();
     try {
-      const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
+      const invoke = vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"];
       const singularHarness = historyHarness(invoke, { timeoutMs: 999 });
       await Promise.resolve();
       vi.advanceTimersByTime(999);
@@ -130,7 +135,9 @@ describe("design history reopen", () => {
   it("settles an artifact during the quiescence window and detaches once", async () => {
     vi.useFakeTimers();
     try {
-      const bridge = vi.fn(async (_command: string) => undefined);
+      const bridge = vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      );
       const invoke = bridge as unknown as AgentSessionDeps["invoke"];
       const harness = historyHarness(invoke);
       await Promise.resolve();
@@ -160,7 +167,9 @@ describe("design history reopen", () => {
   it("settles on the latest artifact after replay quiescence", async () => {
     vi.useFakeTimers();
     try {
-      const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
+      const invoke = vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"];
       const harness = historyHarness(invoke);
       await Promise.resolve();
 
@@ -192,7 +201,9 @@ describe("design history reopen", () => {
   it("uses an observed artifact instead of timing out at the hard limit", async () => {
     vi.useFakeTimers();
     try {
-      const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
+      const invoke = vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"];
       const harness = historyHarness(invoke);
       await Promise.resolve();
       vi.advanceTimersByTime(4_999);
@@ -213,7 +224,9 @@ describe("design history reopen", () => {
   it("reports an oversized artifact as a failure instead of waiting for timeout", async () => {
     vi.useFakeTimers();
     try {
-      const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
+      const invoke = vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"];
       const harness = historyHarness(invoke);
       await Promise.resolve();
       harness.emit({
