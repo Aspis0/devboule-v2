@@ -874,7 +874,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                         refill_pending_events(&conn, &mut pending_events);
                         refill_pending_state_events(&conn, &mut pending_state_events);
                     }
-                    drain_pending_events(&framed, &conn, &mut pending_events)?;
+                    drain_pending_events(&framed, &conn, &mut pending_events, &state.sessions)?;
                     drain_pending_state_events(&framed, &mut pending_state_events)?;
                 } else {
                     // Give the event stream one turn before every ordinary
@@ -885,7 +885,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     refill_pending_events(&conn, &mut pending_events);
                     refill_pending_state_events(&conn, &mut pending_state_events);
                     if let Some(event) = pending_events.pop_front() {
-                        send_pending_event(&framed, &conn, event)?;
+                        send_pending_event(&framed, &conn, event, &state.sessions)?;
                     } else if let Some(event) = pending_state_events.pop_front() {
                         send_state_event(&framed, event)?;
                     }
@@ -916,7 +916,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     // which can publish the teardown tail after the pre-drain.
                     refill_pending_events(&conn, &mut pending_events);
                     refill_pending_state_events(&conn, &mut pending_state_events);
-                    drain_pending_events(&framed, &conn, &mut pending_events)?;
+                    drain_pending_events(&framed, &conn, &mut pending_events, &state.sessions)?;
                     drain_pending_state_events(&framed, &mut pending_state_events)?;
                 }
                 let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
@@ -957,7 +957,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
             // In particular, no bulk output batch can hold a DSR, resize, or
             // kill request behind a sequence of flushes.
             if let Some(event) = pending_events.pop_front() {
-                send_pending_event(&framed, &conn, event)?;
+                send_pending_event(&framed, &conn, event, &state.sessions)?;
             } else {
                 let event = pending_state_events
                     .pop_front()
@@ -976,7 +976,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     bounded_join(reader, JOIN_BUDGET);
     refill_pending_events(&conn, &mut pending_events);
     refill_pending_state_events(&conn, &mut pending_state_events);
-    if let Err(error) = drain_pending_events(&framed, &conn, &mut pending_events) {
+    if let Err(error) = drain_pending_events(&framed, &conn, &mut pending_events, &state.sessions) {
         eprintln!("daemon connection final event drain failed: {error}");
     }
     if let Err(error) = drain_pending_state_events(&framed, &mut pending_state_events) {
@@ -1006,9 +1006,10 @@ fn drain_pending_events(
     framed: &Framed,
     conn: &ConnHandle,
     pending_events: &mut VecDeque<PendingEvent>,
+    sessions: &SessionRegistry,
 ) -> Result<(), DaemonError> {
     while let Some(event) = pending_events.pop_front() {
-        send_pending_event(framed, conn, event)?;
+        send_pending_event(framed, conn, event, sessions)?;
     }
     Ok(())
 }
@@ -1040,6 +1041,7 @@ fn send_pending_event(
     framed: &Framed,
     conn: &ConnHandle,
     event: PendingEvent,
+    sessions: &SessionRegistry,
 ) -> Result<(), DaemonError> {
     if !conn.event_is_current(event.subscription_id, event.attachment_generation) {
         let sequence = match &event.envelope.event {
@@ -1078,7 +1080,9 @@ fn send_pending_event(
     // The cursor is advanced after the complete frame has been written. The
     // clone above is only for the serialized message; the original envelope
     // retains the acknowledgement metadata.
-    conn.event_sent(&event);
+    if let Some(session_id) = conn.event_sent(&event) {
+        sessions.subscription_event_sent(&session_id);
+    }
     Ok(())
 }
 

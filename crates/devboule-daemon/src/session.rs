@@ -1716,14 +1716,17 @@ impl SessionRegistry {
         } else {
             None
         };
-        conn.track_with_subscription(
+        if let Err(error) = conn.track_with_subscription(
             subscription_id,
             Arc::clone(&runtime),
             transcript,
             transcript_cursor,
             outcome.generation,
             outcome.live_agent_replay,
-        );
+        ) {
+            runtime.detach_subscription(conn.id, subscription_id);
+            return Err(error);
+        }
         // The journal writer records asynchronous failures in shared state;
         // attach must import that fact before returning even when the PTY is
         // otherwise quiet and no status request or later output occurs.
@@ -2070,6 +2073,11 @@ impl SessionRegistry {
             self.drop_transcript_if_idle(&session_id);
         }
     }
+
+    pub(crate) fn subscription_event_sent(&self, session_id: &str) {
+        self.drop_transcript_if_idle(session_id);
+    }
+
     fn detach_runtime(&self, session_id: &str, conn_id: u64, subscription_id: u64) {
         if let Ok(runtime) = self.runtime(session_id) {
             runtime.detach_subscription(conn_id, subscription_id);
@@ -2275,39 +2283,23 @@ impl SessionRegistry {
         };
         check_attached(&runtime, conn, subscription_id)?;
         let agent_runtime = is_agent.then_some(runtime);
-        // Hold this lock across the complete write and flush: two clients may
-        // send arbitrary-sized messages, and neither message may be split by
-        // the other client's bytes.
+        if let Some(runtime) = agent_runtime.as_ref() {
+            if !text.is_empty() && !runtime.can_publish_agent_user_message() {
+                return Err(internal("Agent input could not be recorded."));
+            }
+        }
+        // Keep the complete write and its transcript event under this lock so
+        // the journal preserves the same order the process receives.
         let mut writer = match writer.lock() {
             Ok(writer) => writer,
             Err(_) => {
                 let error = internal("Session state is unavailable.");
                 if let Some(runtime) = agent_runtime.as_ref() {
-                    if !text.is_empty() {
-                        let _ = runtime.publish_agent_user_message(text.to_string());
-                    }
                     runtime.publish_agent_error(error.message.clone());
                 }
                 return Err(error);
             }
         };
-        if !text.is_empty() {
-            if let Some(runtime) = agent_runtime.as_ref() {
-                // Publish before writing: the provider cannot reply before it
-                // receives this prompt. If the write fails, the error event
-                // below makes the transcript honest instead of leaving a
-                // silent prompt that never reached the child.
-                // Recording is also the send precondition: a poisoned stream
-                // or closed output cannot accept the corresponding transcript
-                // event, so do not send an unrecordable prompt to the child.
-                if !runtime.publish_agent_user_message(text.to_string()) {
-                    return Err(internal("Agent input could not be recorded."));
-                }
-                if runtime.clear_attention() {
-                    self.notify_session_transition(owner, session_id);
-                }
-            }
-        }
         if let Err(error) = writer.write_all(text.as_bytes()).map_err(|error| {
             WireError::new(
                 ErrorCode::Io,
@@ -2331,6 +2323,16 @@ impl SessionRegistry {
                 runtime.publish_agent_error(error.message.clone());
             }
             return Err(error);
+        }
+        if !text.is_empty() {
+            if let Some(runtime) = agent_runtime.as_ref() {
+                if !runtime.publish_agent_user_message(text.to_string()) {
+                    return Err(internal("Agent input could not be recorded."));
+                }
+                if runtime.clear_attention() {
+                    self.notify_session_transition(owner, session_id);
+                }
+            }
         }
         drop(writer);
         Ok(())
@@ -4035,25 +4037,29 @@ mod tests {
         let first_outcome = runtime
             .try_attach_with_subscription(101, None, &first, false)
             .expect("first observer");
-        first.track_with_subscription(
-            101,
-            Arc::clone(&runtime),
-            false,
-            None,
-            first_outcome.generation,
-            first_outcome.live_agent_replay,
-        );
+        first
+            .track_with_subscription(
+                101,
+                Arc::clone(&runtime),
+                false,
+                None,
+                first_outcome.generation,
+                first_outcome.live_agent_replay,
+            )
+            .expect("first subscription");
         let second_outcome = runtime
             .try_attach_with_subscription(202, None, &second, false)
             .expect("second observer");
-        second.track_with_subscription(
-            202,
-            Arc::clone(&runtime),
-            false,
-            None,
-            second_outcome.generation,
-            second_outcome.live_agent_replay,
-        );
+        second
+            .track_with_subscription(
+                202,
+                Arc::clone(&runtime),
+                false,
+                None,
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
         runtime
             .claim_resize(first.id, 101)
             .expect("first observer claims resize control");
@@ -4107,25 +4113,29 @@ mod tests {
         let first_outcome = runtime
             .try_attach_with_subscription(301, None, &first, false)
             .expect("first observer");
-        first.track_with_subscription(
-            301,
-            Arc::clone(&runtime),
-            false,
-            None,
-            first_outcome.generation,
-            first_outcome.live_agent_replay,
-        );
+        first
+            .track_with_subscription(
+                301,
+                Arc::clone(&runtime),
+                false,
+                None,
+                first_outcome.generation,
+                first_outcome.live_agent_replay,
+            )
+            .expect("first subscription");
         let second_outcome = runtime
             .try_attach_with_subscription(402, None, &second, false)
             .expect("second observer");
-        second.track_with_subscription(
-            402,
-            Arc::clone(&runtime),
-            false,
-            None,
-            second_outcome.generation,
-            second_outcome.live_agent_replay,
-        );
+        second
+            .track_with_subscription(
+                402,
+                Arc::clone(&runtime),
+                false,
+                None,
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
         let _ = drain(&first);
         let _ = drain(&second);
 
@@ -4140,6 +4150,96 @@ mod tests {
                 seq: 1,
                 data: "still-live".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn typed_permission_request_reaches_a_late_observer() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.stream.lock().unwrap().screen = None;
+        let first = ConnHandle::new(5);
+        let first_outcome = runtime
+            .try_attach_with_subscription(501, None, &first, true)
+            .expect("first observer");
+        first
+            .track_with_subscription(
+                501,
+                Arc::clone(&runtime),
+                false,
+                None,
+                first_outcome.generation,
+                first_outcome.live_agent_replay,
+            )
+            .expect("first subscription");
+
+        runtime.publish_agent_event(permission_attention_event(), None);
+        let first_events = first.pull_events();
+        assert!(first_events.iter().any(|event| matches!(
+            event.envelope.event,
+            SessionEvent::PermissionRequest { ref tool_call_id, .. } if tool_call_id == "tool-attention"
+        )));
+        for event in &first_events {
+            first.event_sent(event);
+        }
+
+        let second = ConnHandle::new(6);
+        let second_outcome = runtime
+            .try_attach_with_subscription(602, None, &second, true)
+            .expect("late observer");
+        second
+            .track_with_subscription(
+                602,
+                Arc::clone(&runtime),
+                false,
+                None,
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
+        let second_events = second.pull_events();
+        assert!(second_events.iter().any(|event| matches!(
+            event.envelope.event,
+            SessionEvent::PermissionRequest { ref tool_call_id, .. } if tool_call_id == "tool-attention"
+        )));
+    }
+
+    #[test]
+    fn detached_permission_request_reaches_a_late_observer_once() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.stream.lock().unwrap().screen = None;
+        let first = ConnHandle::new(7);
+        runtime
+            .try_attach_with_subscription(701, None, &first, true)
+            .expect("first observer");
+
+        runtime.publish_agent_event(permission_attention_event(), None);
+        runtime.detach_subscription(first.id, 701);
+
+        let second = ConnHandle::new(8);
+        let second_outcome = runtime
+            .try_attach_with_subscription(802, None, &second, true)
+            .expect("late observer");
+        second
+            .track_with_subscription(
+                802,
+                Arc::clone(&runtime),
+                false,
+                None,
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
+        let events = second.pull_events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event.envelope.event,
+                    SessionEvent::PermissionRequest { ref tool_call_id, .. }
+                        if tool_call_id == "tool-attention"
+                ))
+                .count(),
+            1
         );
     }
 
@@ -4198,6 +4298,34 @@ mod tests {
         registry
             .detach_with_subscription(session_id, 701, &conn, &owner)
             .expect("transcript observer detaches");
+
+        assert!(registry.runtime(session_id).is_err());
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn delivered_transcript_exit_removes_the_idle_registry_entry() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-transcript-exit", "process-transcript-exit");
+        let session_id = "s.transcript-exit.1";
+        journal
+            .upsert_blocking(ended_record(session_id, &owner.user))
+            .expect("journal row");
+        insert_transcript(&registry, session_id, owner.clone());
+
+        let conn = ConnHandle::new(8);
+        registry
+            .attach_with_subscription(session_id, 801, None, &conn, &owner, false)
+            .expect("transcript observer attaches");
+        let events = conn.pull_events();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.envelope.event, SessionEvent::Exit { .. })));
+        for event in &events {
+            conn.event_sent(event);
+        }
+        registry.subscription_event_sent(session_id);
 
         assert!(registry.runtime(session_id).is_err());
         journal.shutdown();
@@ -5035,10 +5163,17 @@ mod tests {
             peer_session_id: None,
             created_at_ms: 1,
         };
-        let runtime = Arc::new(SessionRuntime::with_journal(
+        let runtime = SessionRuntime::from_replay(
             id.to_string(),
             registry.journal.clone(),
-        ));
+            crate::journal::Replay {
+                generation: 1,
+                last_seq: 0,
+                integrity: TranscriptIntegrity::Complete,
+                event_seqs: Vec::new(),
+                events: Vec::new(),
+            },
+        );
         registry.inner.lock().expect("registry").insert(
             id.to_string(),
             RegistryEntry::Transcript(TranscriptSession {
@@ -5603,7 +5738,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_agent_send_replays_prompt_then_error() {
+    fn failed_agent_send_replays_error_without_prompt() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-agent", "process-agent");
         let runtime = insert_live_agent(&registry, "agent-send-failure", owner.clone());
@@ -5645,19 +5780,19 @@ mod tests {
             .into_iter()
             .map(|event| event.envelope.event)
             .collect::<Vec<_>>();
-        let user_index = live
-            .iter()
-            .position(|event| {
-                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
-            })
-            .expect("failed send prompt must reach the live client");
+        assert!(!live.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
+        }));
         let error_index = live
             .iter()
             .position(|event| {
                 matches!(event, SessionEvent::AgentError { message } if message.contains("forced writer failure"))
             })
             .expect("failed send error must reach the live client");
-        assert!(user_index < error_index, "live failed send order: {live:?}");
+        assert!(
+            error_index < live.len(),
+            "live failed send events: {live:?}"
+        );
 
         runtime.detach_if_conn(conn.id);
         conn.untrack("agent-send-failure");
@@ -5678,12 +5813,9 @@ mod tests {
             .into_iter()
             .map(|event| event.envelope.event)
             .collect::<Vec<_>>();
-        let user_index = replayed
-            .iter()
-            .position(|event| {
-                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
-            })
-            .expect("failed send prompt must replay");
+        assert!(!replayed.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
+        }));
         let error_index = replayed
             .iter()
             .position(|event| {
@@ -5691,15 +5823,15 @@ mod tests {
             })
             .expect("failed send error must replay");
         assert!(
-            user_index < error_index,
-            "replayed failed send order: {replayed:?}"
+            error_index < replayed.len(),
+            "replayed failed send events: {replayed:?}"
         );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn poisoned_agent_writer_publishes_prompt_then_error() {
+    fn poisoned_agent_writer_publishes_error_without_prompt() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-poisoned-writer", "process-agent");
         let runtime = insert_live_agent(&registry, "agent-poisoned-writer", owner.clone());
@@ -5743,12 +5875,9 @@ mod tests {
             .into_iter()
             .map(|event| event.envelope.event)
             .collect::<Vec<_>>();
-        let user_index = live
-            .iter()
-            .position(|event| {
-                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
-            })
-            .expect("poisoned writer prompt must reach the client");
+        assert!(!live.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
+        }));
         let error_index = live
             .iter()
             .position(|event| {
@@ -5756,20 +5885,17 @@ mod tests {
             })
             .expect("poisoned writer error must reach the client");
         assert!(
-            user_index < error_index,
-            "live poisoned writer order: {live:?}"
+            error_index < live.len(),
+            "live poisoned writer events: {live:?}"
         );
 
         let replay = journal
             .replay("agent-poisoned-writer", 0)
             .expect("replay poisoned writer");
         let replayed = replay.events;
-        let user_index = replayed
-            .iter()
-            .position(|event| {
-                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
-            })
-            .expect("poisoned writer prompt must replay");
+        assert!(!replayed.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
+        }));
         let error_index = replayed
             .iter()
             .position(|event| {
@@ -5777,8 +5903,8 @@ mod tests {
             })
             .expect("poisoned writer error must replay");
         assert!(
-            user_index < error_index,
-            "replayed poisoned writer order: {replayed:?}"
+            error_index < replayed.len(),
+            "replayed poisoned writer: {replayed:?}"
         );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);

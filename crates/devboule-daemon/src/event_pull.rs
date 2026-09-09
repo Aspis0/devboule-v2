@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use devboule_protocol::{CursorShape, ScreenCursor, SessionEvent, SessionEventEnvelope};
+use devboule_protocol::{
+    CursorShape, ErrorCode, ScreenCursor, SessionEvent, SessionEventEnvelope, WireError,
+};
 
 use crate::agent_report::PeerIdentity;
 use crate::outbound::ConnOut;
@@ -144,7 +146,8 @@ impl ConnHandle {
             transcript_cursor,
             generation,
             live_agent_replay,
-        );
+        )
+        .expect("test subscription id must be unique");
     }
 
     pub(super) fn track_with_subscription(
@@ -155,14 +158,20 @@ impl ConnHandle {
         transcript_cursor: Option<u64>,
         generation: u64,
         live_agent_replay: Option<LiveAgentReplay>,
-    ) {
-        let attachment_generation = self
-            .next_attachment_generation
-            .fetch_add(1, Ordering::Relaxed);
+    ) -> Result<(), WireError> {
         let mut map = self
             .attached
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if map.contains_key(&subscription_id) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "subscription id is already in use on this connection",
+            ));
+        }
+        let attachment_generation = self
+            .next_attachment_generation
+            .fetch_add(1, Ordering::Relaxed);
         map.insert(
             subscription_id,
             PullState {
@@ -194,6 +203,7 @@ impl ConnHandle {
             },
         );
         self.outbound.notify();
+        Ok(())
     }
 
     pub(super) fn untrack_subscription(&self, subscription_id: u64) {
@@ -324,17 +334,15 @@ impl ConnHandle {
     /// the connection. Only the transcript replay cursor advances here: live
     /// screen state is synchronised by snapshots, so an Output written to a
     /// live stream must not look like a replay position.
-    pub(crate) fn event_sent(&self, event: &PendingEvent) {
+    pub(crate) fn event_sent(&self, event: &PendingEvent) -> Option<String> {
         let mut map = self
             .attached
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let remove = {
-            let Some(pull) = map.get_mut(&event.subscription_id) else {
-                return;
-            };
+            let pull = map.get_mut(&event.subscription_id)?;
             if pull.attachment_generation != event.attachment_generation {
-                return;
+                return None;
             }
             match &event.envelope.event {
                 SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => {
@@ -369,9 +377,19 @@ impl ConnHandle {
                 }
             }
         };
-        if remove {
-            map.remove(&event.subscription_id);
-        }
+        let pull = remove
+            .then(|| map.remove(&event.subscription_id))
+            .flatten()?;
+        drop(map);
+        // Exit and Recovered are terminal for this pull. Remove the runtime
+        // observer at the same delivery boundary so transcript idle cleanup
+        // cannot be stranded behind an already-drained connection entry.
+        let session_id = pull.runtime.session_id.clone();
+        pull.runtime.detach_subscription(
+            pull.attachment_key.conn_id,
+            pull.attachment_key.subscription_id,
+        );
+        Some(session_id)
     }
 
     pub(crate) fn pull_events(&self) -> Vec<PendingEvent> {
@@ -841,6 +859,41 @@ mod tests {
             outcome.live_agent_replay,
         );
         outcome.generation
+    }
+
+    #[test]
+    fn delivered_exit_removes_the_runtime_observer() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        attach_tracked(&runtime, &conn);
+
+        runtime.finish(Some(0));
+        let events = drain(&conn);
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::Exit { .. })));
+        assert!(runtime.stream.lock().unwrap().observers.is_empty());
+    }
+
+    #[test]
+    fn duplicate_subscription_id_does_not_replace_another_session() {
+        let conn = ConnHandle::new(1);
+        let first = Arc::new(SessionRuntime::new());
+        let second = Arc::new(SessionRuntime::new());
+
+        conn.track_with_subscription(7, Arc::clone(&first), false, None, 1, None)
+            .expect("first subscription");
+        let error = conn
+            .track_with_subscription(7, Arc::clone(&second), false, None, 1, None)
+            .expect_err("duplicate subscription id must be rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+
+        let attached = conn.attached.lock().unwrap();
+        assert!(Arc::ptr_eq(
+            &attached.get(&7).expect("subscription").runtime,
+            &first
+        ));
     }
 
     fn live_agent_replay_fixture(
@@ -1863,14 +1916,16 @@ mod tests {
                 false,
             )
             .expect("first replay observer");
-        first.track_with_subscription(
-            1101,
-            Arc::clone(&runtime),
-            true,
-            Some(0),
-            first_outcome.generation,
-            first_outcome.live_agent_replay,
-        );
+        first
+            .track_with_subscription(
+                1101,
+                Arc::clone(&runtime),
+                true,
+                Some(0),
+                first_outcome.generation,
+                first_outcome.live_agent_replay,
+            )
+            .expect("first subscription");
         let second_outcome = runtime
             .try_attach_with_subscription(
                 2202,
@@ -1882,14 +1937,16 @@ mod tests {
                 false,
             )
             .expect("second replay observer");
-        second.track_with_subscription(
-            2202,
-            Arc::clone(&runtime),
-            true,
-            Some(1),
-            second_outcome.generation,
-            second_outcome.live_agent_replay,
-        );
+        second
+            .track_with_subscription(
+                2202,
+                Arc::clone(&runtime),
+                true,
+                Some(1),
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
 
         let output_text = |events: Vec<SessionEvent>| {
             events

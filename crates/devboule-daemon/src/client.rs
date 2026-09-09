@@ -287,6 +287,7 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         let result = self.roundtrip(ClientMessage::SessionClose {
@@ -294,9 +295,32 @@ impl DaemonClient {
             session_id: session_id.to_string(),
             idempotency_key: None,
         });
-        self.unsubscribe_session(session_id);
+        if matches!(result.as_ref(), Ok(DaemonMessage::Ok { .. })) {
+            self.unsubscribe_session(session_id);
+        }
         match result? {
             DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn session_close_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionClose {
+            id,
+            session_id: session_id.to_string(),
+            idempotency_key: None,
+        })? {
+            DaemonMessage::Ok { .. } => {
+                self.unsubscribe(subscription_id);
+                self.remove_pending_subscription_for_id(subscription_id);
+                Ok(())
+            }
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
@@ -875,6 +899,7 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     fn unsubscribe_session(&self, session_id: &str) {
         let ids = self
             .inner

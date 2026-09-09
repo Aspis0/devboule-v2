@@ -180,10 +180,15 @@ pub fn session_set_model(
 }
 
 #[tauri::command]
-pub fn session_close(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
+pub fn session_close(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    subscription_id: SubscriptionId,
+) -> Result<(), CommandError> {
     require_session_id(&id)?;
+    bridge.session_close(&id, subscription_id)?;
     bridge.forget_generation(&id);
-    Ok(bridge.session_close(&id)?)
+    Ok(())
 }
 
 #[tauri::command]

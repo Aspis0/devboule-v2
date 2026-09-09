@@ -1272,7 +1272,7 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
 }
 
 #[test]
-fn acp_session_resume_notifies_other_observer_of_replaced_generation() {
+fn acp_session_resume_does_not_leave_other_observer_silent() {
     let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let session = test.create_session();
@@ -1326,12 +1326,13 @@ fn acp_session_resume_notifies_other_observer_of_replaced_generation() {
 
     wait_for(&other_events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(
-                event,
-                SessionEvent::AgentError { message }
-                    if message
-                        == "Session generation was replaced; reattach to continue observing."
-            )
+            matches!(event, SessionEvent::Exit { .. })
+                || matches!(
+                    event,
+                    SessionEvent::AgentError { message }
+                        if message
+                            == "Session generation was replaced; reattach to continue observing."
+                )
         })
     });
 

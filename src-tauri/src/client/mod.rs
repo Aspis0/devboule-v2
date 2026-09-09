@@ -358,14 +358,6 @@ impl AttachmentRegistry {
             .remove(&subscription_id);
     }
 
-    fn remove_session(&self, session_id: &str) {
-        self.state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .entries
-            .retain(|_, entry| entry.session_id != session_id);
-    }
-
     fn session_id_for(&self, subscription_id: SubscriptionId) -> Option<String> {
         self.state
             .lock()
@@ -640,13 +632,15 @@ impl AttachmentRegistry {
         client: &C,
         subscription_id: SubscriptionId,
     ) -> Result<(), DaemonError> {
-        let should_retry = self
-            .state
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .entries
-            .get(&subscription_id)
-            .is_some_and(|entry| entry.binding.is_none());
+        let should_retry = {
+            let state = self.state.lock().unwrap_or_else(|err| err.into_inner());
+            let Some(entry) = state.entries.get(&subscription_id) else {
+                return Err(DaemonError::Protocol(
+                    "session attachment is not registered".to_string(),
+                ));
+            };
+            entry.binding.is_none()
+        };
         if !should_retry {
             return Ok(());
         }
@@ -834,8 +828,12 @@ impl DaemonBridge {
         self.inner.session_claim(subscription_id)
     }
 
-    pub(crate) fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
-        self.inner.session_close(session_id)
+    pub(crate) fn session_close(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
+        self.inner.session_close(session_id, subscription_id)
     }
 
     pub fn forget_generation(&self, session_id: &str) {
@@ -980,6 +978,11 @@ impl BridgeInner {
             .client_lifecycle
             .lock()
             .unwrap_or_else(|err| err.into_inner());
+        if self.attachments.session_id_for(subscription_id).is_none() {
+            return Err(DaemonError::Protocol(
+                "session attachment is not registered".to_string(),
+            ));
+        }
         let client = self
             .client
             .lock()
@@ -1053,29 +1056,65 @@ impl BridgeInner {
             .ok_or_else(|| {
                 DaemonError::Protocol("session attachment is not registered".to_string())
             })?;
-        self.attachments.remove(subscription_id);
         let client = self
             .client
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone()
-            .ok_or(DaemonError::ConnectionLost)?;
-        client.session_detach_with_subscription(&session_id, subscription_id)
+            .ok_or_else(|| {
+                self.attachments.remove(subscription_id);
+                DaemonError::ConnectionLost
+            })?;
+        match client.session_detach_with_subscription(&session_id, subscription_id) {
+            Ok(()) => {
+                self.attachments.remove(subscription_id);
+                Ok(())
+            }
+            Err(DaemonError::ConnectionLost) => {
+                self.attachments.remove(subscription_id);
+                Err(DaemonError::ConnectionLost)
+            }
+            Err(error) => Err(error),
+        }
     }
 
-    pub(crate) fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
+    pub(crate) fn session_close(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
         let _lifecycle = self
             .client_lifecycle
             .lock()
             .unwrap_or_else(|err| err.into_inner());
-        self.attachments.remove_session(session_id);
+        let attached_session = self
+            .attachments
+            .session_id_for(subscription_id)
+            .ok_or_else(|| {
+                DaemonError::Protocol("session attachment is not registered".to_string())
+            })?;
+        if attached_session != session_id {
+            return Err(DaemonError::Protocol(
+                "session subscription does not belong to this session".to_string(),
+            ));
+        }
         let client = self
             .client
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clone()
             .ok_or(DaemonError::ConnectionLost)?;
-        client.session_close(session_id)
+        match client.session_close_with_subscription(session_id, subscription_id) {
+            Ok(()) => {
+                self.attachments.remove(subscription_id);
+                Ok(())
+            }
+            Err(DaemonError::ConnectionLost) => {
+                self.attachments.remove(subscription_id);
+                Err(DaemonError::ConnectionLost)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn forget_generation(&self, session_id: &str) {
@@ -1887,6 +1926,35 @@ mod tests {
         );
 
         assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn removing_one_session_subscription_keeps_the_other() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let first = registry.insert("shared", None, Arc::new(|_| {}));
+        let second = registry.insert("shared", None, Arc::new(|_| {}));
+
+        registry.remove(first);
+
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.session_id_for(second).as_deref(), Some("shared"));
+        assert_eq!(registry.session_id_for(first), None);
+    }
+
+    #[test]
+    fn retrying_an_unknown_subscription_is_rejected() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let client = FakeAttachmentClient::default();
+
+        let error = registry
+            .retry_one(&client, 41)
+            .expect_err("unknown subscriptions must not pass command validation");
+        match error {
+            DaemonError::Protocol(message) => {
+                assert_eq!(message, "session attachment is not registered")
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[derive(Default)]

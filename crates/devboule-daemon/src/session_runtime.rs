@@ -595,10 +595,7 @@ impl SessionRuntime {
     {
         let (event, generation, seq, was_silent) = {
             let Ok(mut stream) = self.lock_stream() else {
-                // This is the transcript commit point for agent input. A
-                // false result means the stream cannot accept the event
-                // (poisoned or already closed); callers must refuse child I/O
-                // rather than create a prompt/transcript divergence.
+                // A false result means the stream cannot accept the event.
                 return false;
             };
             if stream.output_closed {
@@ -754,9 +751,15 @@ impl SessionRuntime {
         self.permission_broker.as_ref().map(Arc::clone)
     }
 
-    /// `None` means no client is attached. A detached request is retained so
-    /// a later capable attach can display it; `Some(false)` means observers
-    /// exist but none negotiated typed permissions.
+    pub(crate) fn can_publish_agent_user_message(&self) -> bool {
+        self.lock_stream()
+            .map(|stream| !stream.output_closed)
+            .unwrap_or(false)
+    }
+
+    /// `None` means no client is attached. A pending request is retained until
+    /// resolved so a later capable attach can display it; `Some(false)` means
+    /// observers exist but none negotiated typed permissions.
     pub(crate) fn permission_delivery_enabled(&self) -> Option<bool> {
         self.lock_stream().ok().and_then(|stream| {
             (!stream.observers.is_empty())
@@ -1116,7 +1119,20 @@ impl SessionRuntime {
                     }
                     PendingItem::Output { .. } | PendingItem::Snapshot { .. } => false,
                 };
-                if eligible {
+                let already_pending = matches!(
+                    &item,
+                    PendingItem::Agent {
+                        event: SessionEvent::PermissionRequest { tool_call_id, .. },
+                        ..
+                    } if attachment.pending.iter().any(|pending| matches!(
+                        pending,
+                        PendingItem::Agent {
+                            event: SessionEvent::PermissionRequest { tool_call_id: pending_id, .. },
+                            ..
+                        } if pending_id == tool_call_id
+                    ))
+                );
+                if eligible && !already_pending {
                     attachment.pending.push_back(item);
                 }
             }
@@ -1224,6 +1240,7 @@ impl SessionRuntime {
         // The test helper keeps the old single-view setup; the wire path
         // receives a caller-owned token and only a claim grants resize rights.
         self.detach_subscription(conn.id, conn.id);
+        conn.untrack_subscription(conn.id);
         let outcome =
             self.try_attach_with_subscription(conn.id, from_cursor, conn, typed_permissions)?;
         self.claim_resize(conn.id, conn.id)?;
@@ -1315,7 +1332,10 @@ impl SessionRuntime {
                         ..
                     }
                 );
-                if is_permission && !typed_permissions {
+                if is_permission {
+                    if typed_permissions {
+                        attachment.pending.push_back(item.clone());
+                    }
                     deferred.push_back(item);
                 } else {
                     attachment.pending.push_back(item);
@@ -1697,7 +1717,7 @@ fn enqueue_agent(stream: &mut StreamState, event: SessionEvent, seq: Option<u64>
         enqueue_agent_for_attachment(attachment, event.clone(), seq);
         delivered = true;
     }
-    if !delivered {
+    if permission || !delivered {
         push_bounded_agent(
             &mut stream.agent_backlog,
             &mut stream.agent_backlog_bytes,
@@ -1756,6 +1776,23 @@ fn push_bounded_agent(
     event: SessionEvent,
     seq: Option<u64>,
 ) {
+    if let SessionEvent::PermissionRequest { tool_call_id, .. } = &event {
+        let already_queued = queue.iter().any(|item| {
+            matches!(
+                item,
+                PendingItem::Agent {
+                    event: SessionEvent::PermissionRequest {
+                        tool_call_id: queued_id,
+                        ..
+                    },
+                    ..
+                } if queued_id == tool_call_id
+            )
+        });
+        if already_queued {
+            return;
+        }
+    }
     let bytes = serde_json::to_vec(&event)
         .map(|value| value.len())
         .unwrap_or(0);
@@ -1784,25 +1821,14 @@ fn push_bounded_agent(
 
 fn move_agent_pending_to_backlog(stream: &mut StreamState, mut attachment: Attachment) {
     while let Some(item) = attachment.pending.pop_front() {
-        if let PendingItem::Agent { bytes, .. } = &item {
-            stream.agent_backlog_bytes = stream.agent_backlog_bytes.saturating_add(*bytes);
-            stream.agent_backlog_frames = stream.agent_backlog_frames.saturating_add(1);
-            stream.agent_backlog.push_back(item);
-        }
-    }
-    if stream.agent_backlog_bytes > PENDING_OUTPUT_BUDGET_BYTES
-        || stream.agent_backlog_frames > PENDING_OUTPUT_BUDGET_FRAMES
-    {
-        let newest = stream.agent_backlog.pop_back();
-        stream.agent_backlog.clear();
-        stream.agent_backlog_bytes = 0;
-        stream.agent_backlog_frames = 0;
-        if let Some(item) = newest {
-            if let PendingItem::Agent { bytes, .. } = &item {
-                stream.agent_backlog_bytes = *bytes;
-                stream.agent_backlog_frames = 1;
-            }
-            stream.agent_backlog.push_back(item);
+        if let PendingItem::Agent { event, seq, .. } = item {
+            push_bounded_agent(
+                &mut stream.agent_backlog,
+                &mut stream.agent_backlog_bytes,
+                &mut stream.agent_backlog_frames,
+                event,
+                seq,
+            );
         }
     }
 }
