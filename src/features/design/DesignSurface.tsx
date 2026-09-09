@@ -2865,9 +2865,13 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
     if (!canvas) return;
     const bounds = canvas.getBoundingClientRect();
-    setViewport(
-      fitViewport(nodesBounds(fitRectsRef.current), bounds.width, bounds.height, DESIGN_FIT_MARGIN),
+    const { pan: fittedPan, zoom: fittedZoom } = fitViewport(
+      nodesBounds(fitRectsRef.current),
+      bounds.width,
+      bounds.height,
+      DESIGN_FIT_MARGIN,
     );
+    setViewport({ pan: fittedPan, zoom: fittedZoom });
   }, [setViewport]);
 
   const undo = useCallback(() => {

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createViewport,
   createViewportCommitScheduler,
+  DESIGN_MIN_ZOOM,
   fitViewport,
   panViewport,
   pointerToWorld,
@@ -60,7 +61,22 @@ describe("design viewport", () => {
     expect(fitViewport({ x: 0, y: 0, w: 100, h: 100 }, 800, 600)).toEqual({
       zoom: 3,
       pan: { x: 250, y: 150 },
+      fitWasTruncated: false,
     });
+  });
+
+  it("reports a normal fit without truncation", () => {
+    const result = fitViewport({ x: 0, y: 0, w: 1216, h: 312 }, 650, 600, 80);
+
+    expect(result.fitWasTruncated).toBe(false);
+    expect(result.zoom).toBeGreaterThan(DESIGN_MIN_ZOOM);
+  });
+
+  it("reports when the minimum zoom truncates an oversized fit", () => {
+    const result = fitViewport({ x: 0, y: 0, w: 2500, h: 312 }, 650, 600, 80);
+
+    expect(result.fitWasTruncated).toBe(true);
+    expect(result.zoom).toBe(DESIGN_MIN_ZOOM);
   });
 
   it("formats a single world container transform", () => {

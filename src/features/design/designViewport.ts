@@ -38,6 +38,11 @@ export interface DesignViewport {
   zoom: number;
 }
 
+export interface FitViewportResult extends DesignViewport {
+  /** True when the minimum zoom prevented the full bounds from fitting. */
+  fitWasTruncated: boolean;
+}
+
 export interface ViewportClientRect {
   left: number;
   top: number;
@@ -95,10 +100,10 @@ export function fitViewport(
   width: number,
   height: number,
   margin = 80,
-): DesignViewport {
+): FitViewportResult {
   if (!bounds || bounds.w <= 0 || bounds.h <= 0) {
     const fitted = fitToBounds(bounds, width, height, margin);
-    return { ...fitted, zoom: clampViewportZoom(fitted.zoom) };
+    return { ...fitted, zoom: clampViewportZoom(fitted.zoom), fitWasTruncated: false };
   }
 
   // The ported engine's fit helper has a separate 2x clamp. Derive the valid
@@ -106,11 +111,13 @@ export function fitViewport(
   // convention as the interactive zoom path.
   const availableWidth = Math.max(1, width - margin * 2);
   const availableHeight = Math.max(1, height - margin * 2);
-  const zoom = clampViewportZoom(Math.min(availableWidth / bounds.w, availableHeight / bounds.h));
+  const requestedZoom = Math.min(availableWidth / bounds.w, availableHeight / bounds.h);
+  const zoom = clampViewportZoom(requestedZoom);
   const scaledWidth = bounds.w * zoom;
   const scaledHeight = bounds.h * zoom;
   return {
     zoom,
+    fitWasTruncated: requestedZoom < DESIGN_MIN_ZOOM,
     pan: {
       x: margin + (availableWidth - scaledWidth) / 2 - bounds.x * zoom,
       y: margin + (availableHeight - scaledHeight) / 2 - bounds.y * zoom,
