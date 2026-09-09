@@ -156,6 +156,7 @@ import {
 } from "../../lib/tauri";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JournalUsage, Project, Workspace as IpcWorkspace } from "../../types/ipc";
+import { useAppStore } from "../../store/appStore";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
 
 const terminal = (
@@ -258,6 +259,7 @@ describe("Workspace sessions", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    useAppStore.setState({ installedSkills: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);
@@ -501,6 +503,40 @@ describe("Workspace sessions", () => {
 
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp");
     expect(container.querySelector("[data-testid=agent-chat-surface]")).not.toBeNull();
+  });
+
+  it("shows an empty Skills section when no skills are installed", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    expect(container.textContent).toContain("Skills");
+    expect(container.textContent).toContain("No skills yet.");
+    expect(container.querySelector(".workspace-skills-note")).toBeNull();
+  });
+
+  it("shows an installed skill in the Skills section", async () => {
+    useAppStore.setState({
+      installedSkills: [
+        {
+          id: "repo-rhythm",
+          name: "Repo Rhythm",
+          author: "@lena-code",
+          description: "Turn a repository snapshot into a clear working plan.",
+        },
+      ],
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+
+    expect(container.textContent).toContain("Skills");
+    expect(container.textContent).toContain("Repo Rhythm");
+    expect(container.querySelector(".workspace-skills-note")?.textContent).toBe(
+      "Session only — not saved to disk.",
+    );
   });
 
   it("shows a workspace creation error without falling back or creating a session", async () => {
