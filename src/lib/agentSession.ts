@@ -73,6 +73,8 @@ export class AgentSession {
   private turn = 0;
   private started = false;
   private attached = false;
+  private channel: AgentChannel | null = null;
+  private readonly pendingPermissionRequests: PermissionRequest[] = [];
   private subscriptionId: number | null = null;
   private detachPromise: Promise<void> | null = null;
   private turnOpen = false;
@@ -94,6 +96,7 @@ export class AgentSession {
     if (this.started || this.disposed) return;
     this.started = true;
     const channel = this.deps.createChannel((event) => this.handleEvent(event));
+    this.channel = channel;
 
     try {
       const subscriptionId = await this.deps.invoke<number>("session_attach", {
@@ -106,7 +109,10 @@ export class AgentSession {
       }
       this.subscriptionId = subscriptionId;
       this.attached = true;
-      if (!this.disposed) this.update({ status: "idle" });
+      if (!this.disposed) {
+        this.update({ status: "idle" });
+        this.deliverPendingPermissionRequests();
+      }
     } catch (error) {
       this.fail(`Could not attach the agent session: ${eventError(error)}`);
     }
@@ -227,8 +233,11 @@ export class AgentSession {
         this.update({ availableCommands: event.commands });
         return;
       case "permission_request":
-        if (this.subscriptionId !== null)
-          this.deps.onPermissionRequest?.(event, this.subscriptionId);
+        // The channel is live before session_attach confirms, so a request
+        // can arrive while the subscription id is still unknown; hold it and
+        // deliver it once the id exists instead of dropping it.
+        if (this.subscriptionId === null) this.pendingPermissionRequests.push(event);
+        else this.deps.onPermissionRequest?.(event, this.subscriptionId);
         return;
       case "permission_resolved":
         this.deps.onPermissionResolved?.(event.toolCallId);
@@ -281,6 +290,11 @@ export class AgentSession {
     if (this.disposed) return;
     this.disposed = true;
     this.clearSwitchTimer();
+    this.pendingPermissionRequests.length = 0;
+    if (this.channel !== null) {
+      this.channel.onmessage = () => undefined;
+      this.channel = null;
+    }
     if (this.subscriptionId !== null) void this.detach();
     this.listeners.clear();
   }
@@ -310,6 +324,14 @@ export class AgentSession {
       event.currentModelId !== undefined &&
       event.currentModelId !== previous.currentModelId
     );
+  }
+
+  /** Deliver the requests held while the subscription id was still unknown, exactly once. */
+  private deliverPendingPermissionRequests(): void {
+    if (this.disposed || this.subscriptionId === null) return;
+    const requests = this.pendingPermissionRequests.splice(0);
+    const subscriptionId = this.subscriptionId;
+    for (const request of requests) this.deps.onPermissionRequest?.(request, subscriptionId);
   }
 
   private clearSwitchTimer(): void {

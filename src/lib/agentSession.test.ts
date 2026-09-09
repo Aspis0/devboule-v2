@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
-import type { SessionEvent } from "../types/ipc";
+import type { PermissionRequest, SessionEvent } from "../types/ipc";
 import { AgentSession, type AgentChannel, type AgentSessionDeps } from "./agentSession";
 
 interface Harness {
@@ -271,6 +271,111 @@ describe("ACP agent session", () => {
     expect(harness.session.getState().manifest?.providerId).toBe("grok");
   });
 
+  it("delivers a permission request that arrives while the attach is still in flight", async () => {
+    const onPermissionRequest = vi.fn();
+    const request: PermissionRequest = {
+      type: "permission_request",
+      toolCallId: "tool-early",
+      title: "Read file",
+      options: [],
+    };
+    let emit: (event: SessionEvent) => void = () => undefined;
+    let releaseAttach!: () => void;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "session_attach") {
+        await new Promise<void>((resolve) => {
+          releaseAttach = resolve;
+        });
+        return 41;
+      }
+      return undefined;
+    }) as unknown as AgentSessionDeps["invoke"];
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke,
+      createChannel: (onEvent) => {
+        emit = onEvent;
+        return {} as AgentChannel;
+      },
+      onPermissionRequest,
+    });
+
+    const started = session.start();
+    // The daemon delivers over the live channel before the attach confirms.
+    emit(request);
+    releaseAttach();
+    await started;
+
+    expect(onPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(onPermissionRequest).toHaveBeenCalledWith(request, 41);
+
+    // A later request goes straight through; the held one is never re-sent.
+    emit({ ...request, toolCallId: "tool-late" });
+    expect(onPermissionRequest).toHaveBeenCalledTimes(2);
+    expect(onPermissionRequest).toHaveBeenLastCalledWith(
+      expect.objectContaining({ toolCallId: "tool-late" }),
+      41,
+    );
+  });
+
+  it("does not deliver a held permission request twice or after dispose", async () => {
+    const onPermissionRequest = vi.fn();
+    const request: PermissionRequest = {
+      type: "permission_request",
+      toolCallId: "tool-early",
+      title: "Read file",
+      options: [],
+    };
+    let emit: (event: SessionEvent) => void = () => undefined;
+    let releaseAttach!: () => void;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "session_attach") {
+        await new Promise<void>((resolve) => {
+          releaseAttach = resolve;
+        });
+        return 41;
+      }
+      return undefined;
+    }) as unknown as AgentSessionDeps["invoke"];
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke,
+      createChannel: (onEvent) => {
+        emit = onEvent;
+        return {} as AgentChannel;
+      },
+      onPermissionRequest,
+    });
+
+    const started = session.start();
+    emit(request);
+    session.dispose();
+    releaseAttach();
+    await started;
+
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+  });
+
+  it("clears its channel on dispose", async () => {
+    const ref: { channel: AgentChannel | null } = { channel: null };
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke: vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"],
+      createChannel: (onEvent) => {
+        ref.channel = { onmessage: onEvent } as AgentChannel;
+        return ref.channel;
+      },
+    });
+
+    await session.start();
+    const handler = ref.channel?.onmessage;
+    session.dispose();
+
+    expect(ref.channel?.onmessage).not.toBe(handler);
+  });
+
   it("forwards permission_resolved to the host callback", async () => {
     let emit: (event: SessionEvent) => void = () => undefined;
     const onPermissionResolved = vi.fn();
@@ -289,7 +394,6 @@ describe("ACP agent session", () => {
     emit({ type: "permission_resolved", toolCallId: "tool-timeout" });
     expect(onPermissionResolved).toHaveBeenCalledWith("tool-timeout");
   });
-
   it("keeps its subscription id for commands and its own detach", async () => {
     const harness = makeHarness();
 

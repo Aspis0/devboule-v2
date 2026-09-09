@@ -378,12 +378,15 @@ function lastErrorText(state: AgentSessionState): string {
   return "The agent session did not answer.";
 }
 
-function invokeAgentCommand<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+export function invokeAgentCommand<T>(
+  command: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
   switch (command) {
     case "session_attach":
       return sessionAttach(
         args.id as string,
-        (args.from_cursor as number | null | undefined) ?? null,
+        (args.fromCursor as number | null | undefined) ?? null,
         args.ch as SessionChannel,
       ) as Promise<T>;
     case "session_send":

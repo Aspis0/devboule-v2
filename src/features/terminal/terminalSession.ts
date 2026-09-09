@@ -106,6 +106,7 @@ export class TerminalSession {
 
   private readonly pendingOutput: Array<{ seq: number; data: string }> = [];
   private readonly pendingSnapshotEvents: TerminalEvent[] = [];
+  private readonly pendingPermissionRequests: PermissionRequest[] = [];
   private readonly pendingInput: string[] = [];
   private outputFrame: number | null = null;
   private ctrlCArmed = false;
@@ -245,6 +246,7 @@ export class TerminalSession {
     }
 
     if (this.disposed || this.exited) return;
+    this.flushPermissionRequests();
     // The host may have just become visible. Let ResizeObserver/layout settle
     // before fitting; doResize also ignores zero-sized hosts defensively.
     this.requestResize();
@@ -352,6 +354,7 @@ export class TerminalSession {
       this.outputFrame = null;
     }
     this.pendingOutput.length = 0;
+    this.pendingPermissionRequests.length = 0;
     this.clearSnapshotState();
     this.disposeViewAndChannel();
   }
@@ -415,8 +418,11 @@ export class TerminalSession {
         // treating a known protocol event as unknown.
         break;
       case "permission_request":
-        if (this.subscriptionId !== null)
-          this.deps.onPermissionRequest?.(event, this.subscriptionId);
+        // The channel is live before session_attach confirms, so a request
+        // can arrive while the subscription id is still unknown; hold it and
+        // deliver it once the id exists instead of dropping it.
+        if (this.subscriptionId === null) this.pendingPermissionRequests.push(event);
+        else this.deps.onPermissionRequest?.(event, this.subscriptionId);
         break;
       case "permission_resolved":
         this.deps.onPermissionResolved?.(event.toolCallId);
@@ -609,6 +615,14 @@ export class TerminalSession {
         rows,
       })
       .catch(() => undefined);
+  }
+
+  /** Deliver the requests held while the subscription id was still unknown, exactly once. */
+  private flushPermissionRequests(): void {
+    if (this.disposed || this.subscriptionId === null) return;
+    const requests = this.pendingPermissionRequests.splice(0);
+    const subscriptionId = this.subscriptionId;
+    for (const request of requests) this.deps.onPermissionRequest?.(request, subscriptionId);
   }
 
   private disposeViewAndChannel(): void {

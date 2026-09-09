@@ -152,10 +152,11 @@ export const TerminalSurface = memo(function TerminalSurface({
 
   useEffect(() => {
     const host = hostRef.current;
-    const session = sessionRef.current;
-    if (host === null || session === null || typeof ResizeObserver === "undefined") return;
+    if (host === null || typeof ResizeObserver === "undefined") return;
 
-    const observer = new ResizeObserver(() => session.requestResize());
+    // Read the current session inside the callback: the session effect can
+    // replace the controller while this observer stays mounted.
+    const observer = new ResizeObserver(() => sessionRef.current?.requestResize());
     observer.observe(host);
     return () => observer.disconnect();
   }, [workspaceId, sessionId]);

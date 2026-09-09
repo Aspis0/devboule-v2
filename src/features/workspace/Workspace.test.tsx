@@ -102,6 +102,24 @@ vi.mock("./AgentChatSurface", () => ({
       />
       <button
         type="button"
+        data-testid="emit-permission-a-renewed"
+        onClick={() =>
+          onPermissionRequest?.(sessionId, 42, {
+            type: "permission_request",
+            toolCallId: "tool-a",
+            title: "Run command",
+            command: "cmd.exe",
+            args: ["/c", "echo", "alpha"],
+            cwd: "C:\\alpha",
+            options: [
+              { optionId: "allow", name: "Allow once", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          })
+        }
+      />
+      <button
+        type="button"
         data-testid="emit-permission-b"
         onClick={() =>
           onPermissionRequest?.(sessionId, 41, {
@@ -1092,6 +1110,38 @@ describe("Workspace sessions", () => {
     expect(next.textContent).toContain("ping.exe");
     expect(next.textContent).toContain("C:\\beta");
     expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 41, "tool-a", "allow_once");
+  });
+
+  it("adopts the fresh subscription id when the same request is re-emitted after a remount", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    const emitRenewed = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-a-renewed]",
+    );
+    if (emitA === null || emitRenewed === null)
+      throw new Error("permission emitters did not render");
+    await act(async () => emitA.click());
+    await act(async () => emitRenewed.click());
+
+    const allow = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    if (allow === null) throw new Error("permission allow control did not render");
+    await act(async () => allow.click());
+    await act(async () => undefined);
+
+    // The first emit queued subscription 41; the surface then remounted and
+    // re-attached with subscription 42. The queued card must respond with 42.
+    expect(sessionPermissionRespond).toHaveBeenCalledTimes(1);
+    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 42, "tool-a", "allow_once");
   });
 
   it("quotes args that contain spaces so they are not split visually", async () => {

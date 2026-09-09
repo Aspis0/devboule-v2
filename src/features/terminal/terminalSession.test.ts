@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionSnapshot } from "../../types/ipc";
+import type { PermissionRequest, SessionSnapshot } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
 import {
   TerminalSession,
@@ -33,6 +33,7 @@ interface Harness {
   resolveAttach: () => void;
   banners: TerminalBanner[];
   ctrlCStates: boolean[];
+  permissionRequests: Array<[PermissionRequest, number]>;
   registry: TerminalSessionRegistry;
 }
 
@@ -205,6 +206,8 @@ function makeHarness(options?: {
     },
     onBanner: (banner) => banners.push(banner),
     onCtrlCArmed: (armed) => ctrlCStates.push(armed),
+    onPermissionRequest: (request, subscriptionId) =>
+      permissionRequests.push([request, subscriptionId]),
     setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds) as unknown as number,
     clearTimeout: (id) => clearTimeout(id),
     scheduleFrame: (callback) => {
@@ -217,6 +220,7 @@ function makeHarness(options?: {
   };
   const banners: TerminalBanner[] = [];
   const ctrlCStates: boolean[] = [];
+  const permissionRequests: Array<[PermissionRequest, number]> = [];
 
   return {
     session: new TerminalSession(deps),
@@ -234,6 +238,7 @@ function makeHarness(options?: {
     resolveAttach,
     banners,
     ctrlCStates,
+    permissionRequests,
     registry,
   };
 }
@@ -530,6 +535,45 @@ describe("TerminalSession lifecycle and errors", () => {
     ).toHaveLength(1);
     expect(harness.invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 17 });
     expect(harness.view.disposeCount).toBe(1);
+  });
+
+  it("delivers a permission request that arrives while the attach is still pending", async () => {
+    const harness = makeHarness({ deferAttach: true });
+    const startPromise = harness.session.start();
+    await harness.attachStarted;
+
+    // The daemon already streams over the live channel before the attach
+    // invoke returns, so the subscription id is still unknown here.
+    harness.emit({
+      type: "permission_request",
+      toolCallId: "tool-1",
+      title: "Run command",
+      options: [],
+    });
+    harness.resolveAttach();
+    await startPromise;
+
+    expect(harness.permissionRequests).toEqual([
+      [expect.objectContaining({ toolCallId: "tool-1" }), 17],
+    ]);
+  });
+
+  it("does not deliver a held permission request after dispose", async () => {
+    const harness = makeHarness({ deferAttach: true });
+    const startPromise = harness.session.start();
+    await harness.attachStarted;
+
+    harness.emit({
+      type: "permission_request",
+      toolCallId: "tool-1",
+      title: "Run command",
+      options: [],
+    });
+    harness.session.dispose();
+    harness.resolveAttach();
+    await startPromise;
+
+    expect(harness.permissionRequests).toEqual([]);
   });
 
   it("marks exit once and ignores writes after exit", async () => {

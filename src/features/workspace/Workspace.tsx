@@ -312,15 +312,17 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   const handlePermissionRequest = useCallback(
     (sessionId: string, subscriptionId: number, request: PermissionRequest) => {
       setPermissionQueue((queue) => {
-        if (
-          queue.some(
-            (item) =>
-              item.sessionId === sessionId && item.request.toolCallId === request.toolCallId,
-          )
-        ) {
-          return queue;
-        }
-        return [...queue, { sessionId, subscriptionId, request }];
+        const index = queue.findIndex(
+          (item) => item.sessionId === sessionId && item.request.toolCallId === request.toolCallId,
+        );
+        if (index === -1) return [...queue, { sessionId, subscriptionId, request }];
+        // A remounted surface re-attaches with a fresh subscription id; the
+        // queued card must adopt it or its response reaches the daemon with
+        // a dead id.
+        if (queue[index].subscriptionId === subscriptionId) return queue;
+        const next = [...queue];
+        next[index] = { ...next[index], subscriptionId };
+        return next;
       });
     },
     [],

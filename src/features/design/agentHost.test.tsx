@@ -102,6 +102,7 @@ import {
   extractArtifactHtml,
   extractFencedHtml,
   groundedPrompt,
+  invokeAgentCommand,
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
   composeAutomaticSkillSlugs,
@@ -723,6 +724,19 @@ describe("ACP design host", () => {
     expectPriorityHead(sentText);
 
     await disposeAgentHost(host);
+  });
+
+  it("forwards the camelCase fromCursor through the agent command adapter", async () => {
+    const channel = {};
+    await invokeAgentCommand("session_attach", {
+      id: "session-1",
+      fromCursor: 7,
+      ch: channel,
+    });
+
+    // The daemon's option is from_cursor, but Tauri v2 camelCases the key;
+    // a snake_case read here would silently null a real cursor.
+    expect(mocks.sessionAttach).toHaveBeenCalledWith("session-1", 7, channel);
   });
 
   it("reports paths from a completed write tool as sources", async () => {
