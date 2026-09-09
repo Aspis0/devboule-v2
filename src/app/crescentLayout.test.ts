@@ -85,6 +85,15 @@ describe("layoutCrescent", () => {
     );
   });
 
+  it("binds the .nav-point-label max-width in CSS to CRESCENT_LABEL_MAX_WIDTH", () => {
+    const globalCss = readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
+    const labelRule = globalCss.match(/\.nav-point-label\s*\{([\s\S]*?)\n\}/)?.[1];
+    expect(labelRule).toBeDefined();
+    const maxWidth = labelRule?.match(/max-width:\s*([\d.]+)px/);
+    expect(maxWidth).not.toBeNull();
+    expect(Number(maxWidth?.[1])).toBe(CRESCENT_LABEL_MAX_WIDTH);
+  });
+
   it("guards the install error band against the arc stroke", () => {
     const globalCss = readFileSync(new URL("../styles/global.css", import.meta.url), "utf8");
     const errorRule = globalCss.match(/\.crescent-install-error\s*\{([\s\S]*?)\n\}/)?.[1];

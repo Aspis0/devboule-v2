@@ -539,6 +539,64 @@ describe("Workspace sessions", () => {
     );
   });
 
+  it("keeps the Skills section visible while projects are still loading", async () => {
+    // A project load that never settles keeps projectsLoading true for the
+    // whole test, so whatever renders during loading is what we assert on.
+    vi.mocked(projectsList).mockReturnValue(new Promise(() => {}));
+    useAppStore.setState({
+      installedSkills: [
+        {
+          id: "repo-rhythm",
+          name: "Repo Rhythm",
+          author: "@lena-code",
+          description: "Turn a repository snapshot into a clear working plan.",
+        },
+      ],
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("Loading projects…");
+    expect(container.textContent).toContain("Skills");
+    expect(container.textContent).toContain("Repo Rhythm");
+  });
+
+  it("keeps the Skills section visible when the project load has failed", async () => {
+    vi.mocked(projectsList).mockRejectedValueOnce(new Error("journal is unavailable"));
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "journal is unavailable",
+    );
+    expect(container.textContent).toContain("Skills");
+    expect(container.querySelector(".workspace-skills-empty")?.textContent).toBe("No skills yet.");
+  });
+
+  it("hides the Skills section while the History panel is open", async () => {
+    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("Skills");
+    const historyToggle = container.querySelector<HTMLButtonElement>(".workspace-history-button");
+    if (!historyToggle) throw new Error("History toggle did not render");
+    await act(async () => historyToggle.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector("#workspace-history-panel")).not.toBeNull();
+    expect(container.textContent).not.toContain("Skills");
+  });
+
   it("shows a workspace creation error without falling back or creating a session", async () => {
     vi.mocked(workspaceCreate).mockRejectedValueOnce(
       new Error("worktree isolation is unimplemented"),
