@@ -425,9 +425,11 @@ impl ServerState {
         cli_version_cache_is_current(cached, current.as_ref()).then(|| version.clone())
     }
 
-    pub(crate) fn claude_models(self: &Arc<Self>) -> Vec<devboule_protocol::SessionModel> {
+    pub(crate) fn claude_models(self: &Arc<Self>) -> crate::claude_catalog::ClaudeCatalogSnapshot {
         let Some(agent) = crate::provider_catalog::find_available("claude") else {
-            return crate::claude_catalog::fallback_models();
+            return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                crate::claude_catalog::fallback_models(),
+            );
         };
         let (catalog_path, version, script) = match agent.install_channel {
             crate::provider_catalog::InstallChannel::Native => {
@@ -438,32 +440,42 @@ impl ServerState {
                     });
                 let Some(version) = version else {
                     self.start_claude_version_probe(agent);
-                    return crate::claude_catalog::fallback_models();
+                    return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                        crate::claude_catalog::fallback_models(),
+                    );
                 };
                 (agent.executable, version, false)
             }
             crate::provider_catalog::InstallChannel::Npm => {
                 let Some(script) = agent.prefix_args.first().map(std::path::PathBuf::from) else {
                     eprintln!("Claude npm installation has no local script to scrape");
-                    return crate::claude_catalog::fallback_models();
+                    return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                        crate::claude_catalog::fallback_models(),
+                    );
                 };
                 let Some(version) = agent.installed_version else {
                     eprintln!(
                         "Claude npm installation has no package version; model catalog unavailable"
                     );
-                    return crate::claude_catalog::fallback_models();
+                    return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                        crate::claude_catalog::fallback_models(),
+                    );
                 };
                 (script, version, true)
             }
             crate::provider_catalog::InstallChannel::NpxRegistry => {
-                return crate::claude_catalog::fallback_models();
+                return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                    crate::claude_catalog::fallback_models(),
+                );
             }
         };
         if let Some(models) = crate::claude_catalog::cached(self.sessions.runtime_dir(), &version) {
-            return models;
+            return crate::claude_catalog::ClaudeCatalogSnapshot::derived(models);
         }
         self.start_claude_derivation(catalog_path, version, script);
-        crate::claude_catalog::fallback_models()
+        crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+            crate::claude_catalog::fallback_models(),
+        )
     }
 
     fn start_claude_version_probe(

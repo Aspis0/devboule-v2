@@ -119,6 +119,7 @@ pub(crate) struct SessionRuntime {
     pub(crate) published_frames: AtomicU64,
     pub(crate) published_bytes: AtomicUsize,
     pub(crate) session_manifest: Mutex<Option<SessionEvent>>,
+    claude_catalog_state: Mutex<crate::claude_catalog::ClaudeCatalogState>,
     /// Attention is deliberately runtime-only. It is a user's current view
     /// state, not transcript history, so it is not journaled and does not
     /// survive a daemon restart.
@@ -214,8 +215,8 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
     let SessionEvent::SessionManifest {
         provider_id: previous_provider,
         current_model_id: previous_current,
-        models: previous_models,
         modes: previous_modes,
+        ..
     } = previous
     else {
         return incoming;
@@ -229,34 +230,17 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
         } => (provider_id, current_model_id, models, modes),
         other => return other,
     };
-    let current_model_id = current_model_id.or_else(|| previous_current.clone());
-    let mut merged_models = models
-        .into_iter()
-        .map(|mut model| {
-            let previous_model = previous_models.iter().find(|previous| {
-                crate::claude_catalog::model_ids_match(&previous.model_id, &model.model_id)
-            });
-            if let Some(previous_model) = previous_model {
-                model.current_effort = model
-                    .current_effort
-                    .or_else(|| previous_model.current_effort.clone());
-                model.efforts = model
-                    .efforts
-                    .filter(|efforts| !efforts.is_empty())
-                    .or_else(|| previous_model.efforts.clone());
-            }
-            model
-        })
-        .collect::<Vec<_>>();
+    let current_model_id = previous_current.clone().or(current_model_id);
+    let mut merged_models = models;
     if let Some(current_model_id) = current_model_id.as_deref() {
         let present = merged_models
             .iter()
             .any(|model| model.model_id == current_model_id);
         if !present {
-            if let Some(previous_model) = previous_models.iter().find(|model| {
+            if let Some(derived_model) = merged_models.iter().find(|model| {
                 crate::claude_catalog::model_ids_match(&model.model_id, current_model_id)
             }) {
-                let mut current_model = previous_model.clone();
+                let mut current_model = derived_model.clone();
                 current_model.model_id = current_model_id.to_string();
                 merged_models.push(current_model);
             } else {
@@ -331,6 +315,9 @@ impl SessionRuntime {
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
+            claude_catalog_state: Mutex::new(
+                crate::claude_catalog::ClaudeCatalogState::Provisional,
+            ),
             attention: Mutex::new(None),
             attention_hooks: Mutex::new(None),
             os_handle: Mutex::new(None),
@@ -677,19 +664,31 @@ impl SessionRuntime {
         event
     }
 
+    pub(crate) fn store_claude_manifest(
+        &self,
+        event: SessionEvent,
+        state: crate::claude_catalog::ClaudeCatalogState,
+    ) -> SessionEvent {
+        let event = self.store_session_manifest(event);
+        if let Ok(mut stored_state) = self.claude_catalog_state.lock() {
+            *stored_state = state;
+        }
+        event
+    }
+
     pub(crate) fn store_claude_catalog(&self, event: SessionEvent) -> SessionEvent {
-        let event = self
-            .session_manifest
-            .lock()
-            .ok()
-            .and_then(|stored| {
-                stored
-                    .as_ref()
-                    .map(|previous| replace_claude_catalog(previous, event.clone()))
-            })
-            .unwrap_or(event);
-        if let Ok(mut stored) = self.session_manifest.lock() {
+        let event = if let Ok(mut stored) = self.session_manifest.lock() {
+            let event = stored
+                .as_ref()
+                .map(|previous| replace_claude_catalog(previous, event.clone()))
+                .unwrap_or(event);
             *stored = Some(event.clone());
+            event
+        } else {
+            event
+        };
+        if let Ok(mut stored_state) = self.claude_catalog_state.lock() {
+            *stored_state = crate::claude_catalog::ClaudeCatalogState::Derived;
         }
         event
     }
@@ -1243,6 +1242,13 @@ impl SessionRuntime {
             .lock()
             .ok()
             .and_then(|stored| stored.clone())
+    }
+
+    pub(crate) fn claude_catalog_state(&self) -> crate::claude_catalog::ClaudeCatalogState {
+        self.claude_catalog_state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or(crate::claude_catalog::ClaudeCatalogState::Provisional)
     }
 
     pub(crate) fn has_journal(&self) -> bool {

@@ -34,6 +34,34 @@ type ModelMemory = HashMap<MemoryKey, Vec<SessionModel>>;
 
 static MEMORY_CACHE: OnceLock<Mutex<ModelMemory>> = OnceLock::new();
 static IN_FLIGHT: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+static EMPTY_DERIVATIONS: OnceLock<Mutex<HashSet<MemoryKey>>> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClaudeCatalogState {
+    Provisional,
+    Derived,
+}
+
+pub(crate) struct ClaudeCatalogSnapshot {
+    pub(crate) models: Vec<SessionModel>,
+    pub(crate) state: ClaudeCatalogState,
+}
+
+impl ClaudeCatalogSnapshot {
+    pub(crate) fn provisional(models: Vec<SessionModel>) -> Self {
+        Self {
+            models,
+            state: ClaudeCatalogState::Provisional,
+        }
+    }
+
+    pub(crate) fn derived(models: Vec<SessionModel>) -> Self {
+        Self {
+            models,
+            state: ClaudeCatalogState::Derived,
+        }
+    }
+}
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct CacheFile {
@@ -130,6 +158,13 @@ pub(crate) fn start_derivation(
         return false;
     }
     let key = (runtime_dir.clone(), cli_version.clone());
+    if empty_derivations()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(&key)
+    {
+        return false;
+    }
     let job_key = runtime_dir.clone();
     let mut in_flight = IN_FLIGHT
         .get_or_init(|| Mutex::new(HashSet::new()))
@@ -147,20 +182,38 @@ pub(crate) fn start_derivation(
         .spawn(move || {
             let (models, should_cache) = match cached(&runtime_dir, &cli_version) {
                 Some(models) => (Some(models), false),
-                None => (
-                    source.derive().ok().filter(|models| !models.is_empty()),
-                    true,
-                ),
+                None => match source.derive() {
+                    Ok(models) if !models.is_empty() => (Some(models), true),
+                    Ok(_) => {
+                        empty_derivations()
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .insert((runtime_dir.clone(), cli_version.clone()));
+                        (None, false)
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "Claude model catalog derivation failed for CLI version {cli_version}: {error}"
+                        );
+                        (None, false)
+                    }
+                },
             };
             let Some(models) = models else {
                 IN_FLIGHT
                     .get_or_init(|| Mutex::new(HashSet::new()))
                     .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&cleanup_key);
+                if !empty_derivations()
+                    .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .remove(&cleanup_key);
-                eprintln!(
-                    "Claude model catalog derivation failed for CLI version {cli_version}; retrying later"
-                );
+                    .contains(&(runtime_dir.clone(), cli_version.clone()))
+                {
+                    eprintln!(
+                        "Claude model catalog derivation failed for CLI version {cli_version}; retrying later"
+                    );
+                }
                 return;
             };
             if should_cache {
@@ -535,13 +588,14 @@ fn write_cache(runtime_dir: &Path, cli_version: &str, models: &[SessionModel]) -
 }
 
 fn cleanup_cache_temps(runtime_dir: &Path) {
+    let prefix = format!(".{CACHE_FILE}.tmp-{}-", std::process::id());
     if let Ok(entries) = fs::read_dir(runtime_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&format!(".{CACHE_FILE}.tmp-")))
+                .is_some_and(|name| name.starts_with(&prefix))
             {
                 if let Err(error) = fs::remove_file(path) {
                     eprintln!("could not remove stale Claude model catalog temp file: {error}");
@@ -549,6 +603,10 @@ fn cleanup_cache_temps(runtime_dir: &Path) {
             }
         }
     }
+}
+
+fn empty_derivations() -> &'static Mutex<HashSet<MemoryKey>> {
+    EMPTY_DERIVATIONS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 pub(crate) fn model_ids_match(left: &str, right: &str) -> bool {
@@ -573,6 +631,15 @@ mod tests {
         first_done: mpsc::Sender<()>,
     }
 
+    struct CountingSource {
+        calls: Arc<AtomicU64>,
+        models: Vec<SessionModel>,
+    }
+
+    struct EmptySource {
+        done: mpsc::Sender<()>,
+    }
+
     impl CatalogSource for BlockingSource {
         fn derive(&self) -> Result<Vec<SessionModel>, String> {
             self.calls.fetch_add(1, Ordering::Relaxed);
@@ -590,6 +657,20 @@ mod tests {
                 return Err("temporary scrape failure".to_string());
             }
             Ok(fallback_models())
+        }
+    }
+
+    impl CatalogSource for CountingSource {
+        fn derive(&self) -> Result<Vec<SessionModel>, String> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Ok(self.models.clone())
+        }
+    }
+
+    impl CatalogSource for EmptySource {
+        fn derive(&self) -> Result<Vec<SessionModel>, String> {
+            self.done.send(()).expect("empty attempt observed");
+            Ok(Vec::new())
         }
     }
 
@@ -670,42 +751,75 @@ mod tests {
     fn unchanged_version_reads_cache_without_deriving_again() {
         let dir = temp_dir("cache");
         let expected = fallback_models();
-        let calls = std::cell::Cell::new(0);
-        let first = load_with_deriver(&dir, "2.1.260", || {
-            calls.set(calls.get() + 1);
-            expected.clone()
+        let calls = Arc::new(AtomicU64::new(0));
+        let source = Arc::new(CountingSource {
+            calls: Arc::clone(&calls),
+            models: expected.clone(),
         });
-        memory_cache().lock().expect("memory cache").clear();
-        let second = load_with_deriver(&dir, "2.1.260", || {
-            calls.set(calls.get() + 1);
-            Vec::new()
-        });
-        assert_eq!(first, second);
-        assert_eq!(calls.get(), 1);
+        let (done_tx, done_rx) = mpsc::channel();
+        assert!(start_derivation(
+            source.clone(),
+            dir.clone(),
+            "2.1.260".to_string(),
+            move |_| done_tx.send(()).expect("derivation callback"),
+        ));
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("first derivation completes");
+        memory_cache()
+            .lock()
+            .expect("memory cache")
+            .remove(&(dir.clone(), "2.1.260".to_string()));
+        assert_eq!(cached(&dir, "2.1.260"), Some(expected));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
     fn changed_version_derives_again() {
         let dir = temp_dir("version");
-        let calls = std::cell::Cell::new(0);
-        let _ = load_with_deriver(&dir, "2.1.260", || {
-            calls.set(calls.get() + 1);
-            fallback_models()
+        let calls = Arc::new(AtomicU64::new(0));
+        let source = Arc::new(CountingSource {
+            calls: Arc::clone(&calls),
+            models: fallback_models(),
         });
-        memory_cache().lock().expect("memory cache").clear();
-        let _ = load_with_deriver(&dir, "2.1.261", || {
-            calls.set(calls.get() + 1);
-            fallback_models()
-        });
-        assert_eq!(calls.get(), 2);
+        for version in ["2.1.260", "2.1.261"] {
+            let (done_tx, done_rx) = mpsc::channel();
+            assert!(start_derivation(
+                source.clone(),
+                dir.clone(),
+                version.to_string(),
+                move |_| done_tx.send(()).expect("derivation callback"),
+            ));
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .expect("derivation completes");
+        }
+        assert_eq!(calls.load(Ordering::Acquire), 2);
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn empty_scrape_explicitly_falls_back_to_aliases() {
+    fn empty_scrape_falls_back_to_aliases_without_repeating() {
         let dir = temp_dir("fallback");
-        let models = load_with_deriver(&dir, "unknown", Vec::new);
+        let (done_tx, done_rx) = mpsc::channel();
+        let source = Arc::new(EmptySource { done: done_tx });
+        assert!(start_derivation(
+            source.clone(),
+            dir.clone(),
+            "unknown".to_string(),
+            |_| panic!("empty derivation must not publish a catalog"),
+        ));
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("empty derivation completes");
+        assert!(!start_derivation(
+            source,
+            dir.clone(),
+            "unknown".to_string(),
+            |_| panic!("remembered empty derivation must not retry"),
+        ));
+        let models = fallback_models();
         assert_eq!(
             models
                 .iter()
@@ -886,6 +1000,11 @@ mod tests {
         assert!(models
             .iter()
             .any(|model| model.model_id == "claude-opus-5[1m]"));
+        let variant = models
+            .iter()
+            .find(|model| model.model_id == "claude-opus-5[1m]")
+            .expect("current variant");
+        assert_eq!(variant.efforts.as_ref().expect("derived efforts").len(), 4);
     }
 
     #[test]
@@ -922,34 +1041,30 @@ mod tests {
             .any(|model| model.model_id == "claude-opus-4-6"));
     }
 
-    fn load_with_deriver<F>(dir: &Path, version: &str, derive: F) -> Vec<SessionModel>
-    where
-        F: FnOnce() -> Vec<SessionModel>,
-    {
-        let key = (dir.to_path_buf(), version.to_string());
-        if let Some(models) = memory_cache()
-            .lock()
-            .expect("memory cache")
-            .get(&key)
-            .cloned()
-        {
-            return models;
-        }
-        let models = read_cache(dir, version);
-        let models = if let Some(models) = models {
-            models
-        } else {
-            let models = derive();
-            if models.is_empty() {
-                return fallback_models();
-            }
-            let _ = write_cache(dir, version, &models);
-            memory_cache()
-                .lock()
-                .expect("memory cache")
-                .insert(key, models.clone());
-            models
+    #[test]
+    fn catalog_update_does_not_replace_runtime_current_model() {
+        let runtime = crate::session::SessionRuntime::with_journal("claude-test".to_string(), None);
+        runtime.store_session_manifest(manifest_with_current(
+            fallback_models(),
+            Some("claude-opus-5".to_string()),
+        ));
+        let stored = runtime.store_claude_catalog(manifest_with_current(
+            vec![SessionModel {
+                model_id: "claude-sonnet-5".to_string(),
+                name: "Claude Sonnet 5".to_string(),
+                description: None,
+                context_tokens: None,
+                current_effort: Some("high".to_string()),
+                efforts: Some(efforts(false, "high")),
+            }],
+            Some("claude-sonnet-5".to_string()),
+        ));
+        let SessionEvent::SessionManifest {
+            current_model_id, ..
+        } = stored
+        else {
+            panic!("catalog update must remain a manifest");
         };
-        models
+        assert_eq!(current_model_id.as_deref(), Some("claude-opus-5"));
     }
 }

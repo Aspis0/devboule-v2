@@ -2243,17 +2243,26 @@ impl SessionRegistry {
             )
         };
         if kind == SessionKind::Claude {
-            Self::validate_claude_effort(runtime.session_manifest().as_ref(), model_id, effort)?;
+            Self::validate_claude_effort(
+                runtime.session_manifest().as_ref(),
+                runtime.claude_catalog_state(),
+                model_id,
+                effort,
+            )?;
         }
         switcher.set_model(model_id, effort)
     }
 
     fn validate_claude_effort(
         manifest: Option<&SessionEvent>,
+        catalog_state: crate::claude_catalog::ClaudeCatalogState,
         model_id: Option<&str>,
         effort: Option<&str>,
     ) -> Result<(), WireError> {
         if model_id.is_none() && effort.is_none() {
+            return Ok(());
+        }
+        if catalog_state == crate::claude_catalog::ClaudeCatalogState::Provisional {
             return Ok(());
         }
         let Some(SessionEvent::SessionManifest {
@@ -2576,18 +2585,9 @@ impl SessionRegistry {
             })
             .unwrap_or_default();
         for runtime in runtimes {
-            let current_model_id = runtime.session_manifest().and_then(|event| match event {
-                SessionEvent::SessionManifest {
-                    current_model_id, ..
-                } => current_model_id,
-                _ => None,
-            });
-            let manifest =
-                crate::claude_catalog::manifest_with_current(models.clone(), current_model_id);
-            if runtime.session_manifest().as_ref() == Some(&manifest) {
-                continue;
-            }
-            let manifest = runtime.store_claude_catalog(manifest);
+            let manifest = runtime.store_claude_catalog(
+                crate::claude_catalog::manifest_with_current(models.clone(), None),
+            );
             runtime.publish_agent_event(manifest, None);
         }
     }
@@ -2891,9 +2891,11 @@ fn start_spawned_session(
         runtime.set_generation(generation);
     }
     if metadata.kind == SessionKind::Claude {
-        runtime.store_session_manifest(crate::claude_catalog::initial_manifest(
-            state.claude_models(),
-        ));
+        let catalog = state.claude_models();
+        runtime.store_claude_manifest(
+            crate::claude_catalog::initial_manifest(catalog.models),
+            catalog.state,
+        );
     }
     if let Some(handle) = os_handle {
         runtime.install_os_handle(handle);
@@ -5291,6 +5293,23 @@ mod tests {
         }
     }
 
+    struct RecordingSwitcher(Arc<AtomicU64>);
+
+    impl ModelSwitcher for RecordingSwitcher {
+        fn set_model(
+            &self,
+            _model_id: Option<&str>,
+            _effort: Option<&str>,
+        ) -> Result<(), WireError> {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
+
+        fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
+            Box::new(Self(Arc::clone(&self.0)))
+        }
+    }
+
     struct FailingWriter;
 
     impl Write for FailingWriter {
@@ -6685,7 +6704,58 @@ mod tests {
 
     #[test]
     fn invalid_claude_effort_is_rejected_before_switcher() {
-        let manifest = SessionEvent::SessionManifest {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-set-model", "process-set-model");
+        let session_id = "claude-set-model";
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            registry.journal.clone(),
+        ));
+        runtime.store_claude_manifest(
+            crate::claude_catalog::initial_manifest(crate::claude_catalog::fallback_models()),
+            crate::claude_catalog::ClaudeCatalogState::Provisional,
+        );
+        let calls = Arc::new(AtomicU64::new(0));
+        let metadata = Session {
+            id: session_id.to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Claude,
+            title: "Claude".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            provider: Some("claude".to_string()),
+            peer_session_id: None,
+            created_at_ms: 1,
+        };
+        let session = PtySession {
+            metadata,
+            owner: owner.clone(),
+            process_job: Arc::new(JobObject::new().expect("job")),
+            master: None,
+            killer: Box::new(NoopKiller),
+            switcher: Some(Box::new(RecordingSwitcher(Arc::clone(&calls)))),
+            stderr_handle: None,
+            child_wait: None,
+            writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            reader_handle: None,
+            coalesce_handle: None,
+            runtime: Arc::clone(&runtime),
+            exited: Arc::new(AtomicBool::new(false)),
+            preserve_on_exit: Arc::new(AtomicBool::new(false)),
+        };
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .insert(session_id.to_string(), RegistryEntry::Live(session));
+
+        registry
+            .set_model(session_id, &owner, Some("claude-opus-5"), None)
+            .expect("a provisional catalog must not reject a model");
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        runtime.store_claude_catalog(SessionEvent::SessionManifest {
             provider_id: Some("claude".to_string()),
             current_model_id: Some("claude-sonnet-5".to_string()),
             models: vec![devboule_protocol::SessionModel {
@@ -6702,27 +6772,33 @@ mod tests {
                 }]),
             }],
             modes: None,
-        };
-        let error = SessionRegistry::validate_claude_effort(Some(&manifest), None, Some("bogus"))
-            .expect_err("unknown effort must be rejected locally");
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
-        assert!(error.message.contains("not supported"));
+        });
 
-        let error = SessionRegistry::validate_claude_effort(
-            Some(&manifest),
-            Some("claude-bogus-999"),
-            None,
-        )
-        .expect_err("unknown model must be rejected locally");
+        let error = registry
+            .set_model(session_id, &owner, Some("claude-bogus-999"), None)
+            .expect_err("unknown model must be rejected before the switcher");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert!(error.message.contains("not in the current catalog"));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
 
-        SessionRegistry::validate_claude_effort(
-            Some(&manifest),
-            Some("claude-sonnet-5[1m]"),
-            Some("high"),
-        )
-        .expect("model variants must use the base model catalog");
+        let error = registry
+            .set_model(session_id, &owner, None, Some("bogus"))
+            .expect_err("unknown effort must be rejected before the switcher");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not supported"));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        registry
+            .set_model(
+                session_id,
+                &owner,
+                Some("claude-sonnet-5[1m]"),
+                Some("high"),
+            )
+            .expect("model variants must use the base model catalog");
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn tmp_registry_cache() -> std::path::PathBuf {
