@@ -1157,7 +1157,10 @@ fn acp_session_survives_daemon_restart_and_replays_agent_message() {
         .find(|listed| listed.id == session.id)
         .expect("recovered ACP session missing from sessions_list");
     assert!(
-        matches!(recovered.state, devboule_protocol::SessionState::Recovered { .. }),
+        matches!(
+            recovered.state,
+            devboule_protocol::SessionState::Recovered { .. }
+        ),
         "expected recovered ACP session, got {:?}",
         recovered.state
     );
