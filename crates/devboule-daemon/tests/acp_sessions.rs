@@ -17,7 +17,7 @@ use devboule_daemon::{
     SessionStateHandler,
 };
 use devboule_protocol::{
-    AttentionReason, ClientHello, ErrorCode, OwnerId, PermissionOutcome, Persistence,
+    AttentionReason, ClientHello, Cursor, ErrorCode, OwnerId, PermissionOutcome, Persistence,
     PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionStateSnapshot,
 };
 use rusqlite::Connection;
@@ -523,6 +523,85 @@ fn acp_resolved_permission_is_not_reopened_after_live_reattach() {
     test.client
         .session_close(&session.id)
         .expect("close resolved session");
+}
+
+// The app attaches right after picking a provider, before any prompt. With
+// the journal configured (the daemon always configures it), attach delegates
+// delivery to the live-agent replay pull; the manifest must still arrive.
+#[test]
+fn attach_delivers_the_manifest_before_any_prompt() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::SessionManifest { models, .. } if !models.is_empty())
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+// Mid-session reattach with an advanced cursor goes through the same
+// live-agent replay pull; the stored manifest must still arrive at the seam.
+#[test]
+fn attach_mid_session_with_advanced_cursor_still_delivers_the_manifest() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, first) = test.attached_session();
+    test.client
+        .session_send(&session.id, "start the session")
+        .expect("prompt");
+    wait_for(&first, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    test.client.journal_usage().expect("flush journal");
+    let connection = Connection::open(test._harness.paths.journal_file()).expect("open journal");
+    let (generation, seq) = connection
+        .query_row(
+            "SELECT MAX(generation), MAX(seq) FROM events WHERE session_id = ?1",
+            [&session.id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .expect("read journal watermark");
+    test.client
+        .session_detach(&session.id)
+        .expect("detach first observer");
+
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    test.client
+        .session_attach(
+            &session.id,
+            Some(Cursor {
+                generation: generation as u64,
+                seq: seq as u64,
+            }),
+            handler,
+        )
+        .expect("attach mid-session with advanced cursor");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::SessionManifest { models, .. } if !models.is_empty())
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
 }
 
 #[test]
