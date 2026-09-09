@@ -214,12 +214,14 @@ export function extractFencedHtml(text: string): string | undefined {
   return lastContent;
 }
 
-interface ArtifactExtraction {
+export interface ArtifactExtraction {
   html?: string;
   error?: string;
 }
 
-function extractArtifact(state: AgentSessionState, startIndex = 0): ArtifactExtraction {
+// Reopen needs the size error as well as the optional HTML; collapsing this to undefined would
+// make an oversized transcript indistinguishable from one that has not produced a design yet.
+export function extractArtifact(state: AgentSessionState, startIndex = 0): ArtifactExtraction {
   for (let index = state.items.length - 1; index >= 0; index -= 1) {
     if (index < startIndex) break;
     const item = state.items[index];

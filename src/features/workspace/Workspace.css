@@ -422,8 +422,7 @@
 
 .workspace-daemon-status .workspace-status-dot,
 .workspace-browser-status .workspace-status-dot,
-.workspace-test-heading .workspace-status-dot,
-.workspace-grounding-row .workspace-status-dot {
+.workspace-test-heading .workspace-status-dot {
   width: 5px;
   height: 5px;
 }
@@ -510,7 +509,6 @@
 .workspace-browser-address,
 .workspace-browser-build,
 .workspace-browser-status,
-.workspace-generation-sources,
 .workspace-pr-number {
   font-family: "JetBrains Mono", monospace;
 }
@@ -1266,7 +1264,6 @@
 }
 
 .workspace-menu-label,
-.workspace-generation-label,
 .workspace-ship-label {
   color: var(--silence);
   font-size: 9.5px;
@@ -1669,7 +1666,9 @@
   font-size: 11.5px;
 }
 
-.workspace-grounding-row > span:nth-child(2) {
+/* The grounding row is [label span, button]; the label is the only span child, so it gets
+   the truncation treatment. */
+.workspace-grounding-row > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1696,16 +1695,6 @@
   border-color: var(--terracotta);
 }
 
-.workspace-generation-label {
-  margin: 12px 0 8px;
-}
-
-.workspace-generation-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
 .workspace-generation-card {
   overflow: hidden;
   background: var(--surface);
@@ -1722,41 +1711,23 @@
   font-weight: 600;
 }
 
-.workspace-generation-icon {
-  display: grid;
-  width: 15px;
-  height: 15px;
-  flex: none;
-  place-items: center;
-  color: var(--surface);
-  background: var(--green);
-  border-radius: 999px;
-  font-size: 9px;
-}
-
-.workspace-generation-copy {
+.workspace-design-desc {
   padding: 0 11px 9px;
   color: var(--ink-soft);
   font-size: 11px;
   line-height: 1.55;
 }
 
-.workspace-generation-sources {
+.workspace-design-sources {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
   padding: 0 11px 9px;
 }
 
-.workspace-generation-sources span {
-  display: grid;
-  height: auto;
-  padding: 0;
-  place-items: center;
+.workspace-design-sources span {
   color: var(--silence);
-  background: transparent;
-  border: 0;
-  border-radius: 0;
+  font-family: "JetBrains Mono", monospace;
   font-size: 9px;
 }
 

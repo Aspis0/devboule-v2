@@ -230,6 +230,28 @@
   font-size: 11px;
 }
 
+.design-history-open {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  padding: 0;
+  border: 0;
+  border-inline-start: 2px solid var(--selection);
+  color: inherit;
+  font: inherit;
+  padding-inline-start: 6px;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.design-history-open:hover,
+.design-history-open:focus-visible {
+  outline: 1px solid var(--selection);
+  outline-offset: 2px;
+}
+
 .design-history-title {
   overflow: hidden;
   color: var(--ink);
@@ -247,7 +269,23 @@
   grid-column: 1 / -1;
 }
 
+.design-history-open-status {
+  flex: none;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--silence);
+  font-size: 11px;
+  background: var(--surface);
+}
+
 .design-history-empty {
+  margin: 0;
+  color: var(--silence);
+  font-size: 11px;
+}
+
+.design-history-read-failure,
+.design-history-unavailable {
   margin: 0;
   color: var(--silence);
   font-size: 11px;

@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { MOCK_DIFF_LINES, MOCK_SHIP_STEPS } from "./mockData";
-import { useAppStore } from "../../store/appStore";
+import { DesignPreviewPanel } from "../design/DesignPreviewPanel";
 
 export const ChangesSurface = memo(function ChangesSurface() {
   return (
@@ -119,47 +119,12 @@ export const AppSurface = memo(function AppSurface({ appBuild, onReload }: AppSu
 });
 
 export const DesignPanel = memo(function DesignPanel() {
-  const selectSurface = useAppStore((state) => state.selectSurface);
-  return (
-    <div>
-      <div className="workspace-changes-mockup-note" role="note">
-        Mockup — these generations are hardcoded examples. Generation runs on the Design surface.
-      </div>
-      <div className="workspace-grounding-row">
-        <span className="workspace-status-dot workspace-dot-green" />
-        <span>Grounded · devboule</span>
-        <button
-          type="button"
-          className="workspace-open-design"
-          onClick={() => selectSurface("design")}
-        >
-          Open Design
-        </button>
-      </div>
-      <div className="workspace-generation-label">1 generation</div>
-      <div className="workspace-generation-cards">
-        <div className="workspace-generation-card">
-          <div className="workspace-generation-heading">
-            <span className="workspace-generation-icon">✓</span>
-            <span>Edited Index header</span>
-          </div>
-          <div className="workspace-generation-copy">
-            Pulled the count from the real hygiene snapshot and removed the duplicate action. Radius
-            and shadow snapped to radius.md / shadow.soft.
-          </div>
-          <div className="workspace-generation-sources">
-            <span>WorkspaceView.tsx</span>
-            <span>oracle-core/src/classify.rs</span>
-            <span>tokens.json</span>
-          </div>
-        </div>
-      </div>
-      <div className="workspace-design-note">
-        Generations land on the Design canvas in this worktree; Save to repo writes them back as
-        components.
-      </div>
-    </div>
-  );
+  // memo is load-bearing, not a no-op: Workspace re-renders on every mousemove during a
+  // panel resize drag (rightWidth feeds both style.width and aria-valuenow), and memo is
+  // what keeps that drag from re-rendering this subtree. Do not remove it.
+  // The body is owned by the Design feature: it mirrors the live design session
+  // from the app store, not Workspace mock data.
+  return <DesignPreviewPanel />;
 });
 
 interface PullRequestSurfaceProps {

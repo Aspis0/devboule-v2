@@ -1,13 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { MOCK_SURFACES, type MockSurface } from "./mockData";
 import { NewProjectDialog } from "./NewProjectDialog";
-import {
-  AppSurface,
-  ChangesSurface,
-  DesignPanel,
-  FilesSurface,
-  PullRequestSurface,
-} from "./sidePanels";
+import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 import { TerminalSurface } from "../terminal/TerminalSurface";
 import { AgentChatSurface } from "./AgentChatSurface";
 import { HistoryPanel } from "../history/HistoryPanel";
@@ -38,7 +31,7 @@ import {
 } from "../../lib/tauri";
 import "./Workspace.css";
 
-type ActiveSidePanel = MockSurface["id"];
+type ActiveSidePanel = SidePanelEntry["id"];
 type PermissionState = "waiting" | "submitting" | "allowed" | "denied";
 const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
 
@@ -76,7 +69,11 @@ export function formatPermissionCommand(request: PermissionRequest): string | nu
   return [request.command, ...request.args].map(quotePermissionArg).join(" ");
 }
 
-export function Workspace() {
+interface WorkspaceProps {
+  sidePanelRegistry?: readonly SidePanelEntry[];
+}
+
+export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: WorkspaceProps = {}) {
   const {
     visibleProjects,
     loading: projectsLoading,
@@ -129,8 +126,13 @@ export function Workspace() {
   useEffect(() => {
     setSessionFacts(sessions);
   }, [sessions, setSessionFacts]);
+  // An unknown id means persisted state points to a removed panel, including a plugin that is no
+  // longer loaded. Keep that id so the fallback is not shown as the user's selected option; use
+  // the first available entry only because rendering safe panel content is better than a blank side panel.
   const selectedSurface =
-    MOCK_SURFACES.find((surface) => surface.id === activeSidePanel) ?? MOCK_SURFACES[0];
+    sidePanelRegistry.find((surface) => surface.id === activeSidePanel) ??
+    sidePanelRegistry[0] ??
+    SIDE_PANEL_REGISTRY[0];
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? null;
   // The recovery decision is a small external store: it holds the episode, the
   // roster answer, and the attempt-failed note, which only change from pushed
@@ -803,7 +805,7 @@ export function Workspace() {
               >
                 <div className="workspace-menu-label">Show in this panel</div>
                 <div className="workspace-surface-options">
-                  {MOCK_SURFACES.map((surface) => (
+                  {sidePanelRegistry.map((surface) => (
                     <button
                       type="button"
                       role="option"
@@ -827,15 +829,12 @@ export function Workspace() {
             ) : null}
 
             <div className="workspace-scroll workspace-side-scroll">
-              {activeSidePanel === "changes" ? <ChangesSurface /> : null}
-              {activeSidePanel === "files" ? <FilesSurface /> : null}
-              {activeSidePanel === "app" ? (
-                <AppSurface appBuild={appBuild} onReload={handleAppReload} />
-              ) : null}
-              {activeSidePanel === "design" ? <DesignPanel /> : null}
-              {activeSidePanel === "pr" ? (
-                <PullRequestSurface prLabel={prLabel} onOpen={handleOpenPullRequest} />
-              ) : null}
+              {selectedSurface.render({
+                appBuild,
+                onReload: handleAppReload,
+                prLabel,
+                onOpenPullRequest: handleOpenPullRequest,
+              })}
             </div>
           </div>
         )}

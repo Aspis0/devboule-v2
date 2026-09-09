@@ -23,6 +23,16 @@ describe("side panel dead controls", () => {
     await act(async () => root.unmount());
     container.remove();
     useAppStore.setState({ activeSurface: "workspace" });
+    // DesignPreviewPanel reads the live session; leave it empty for the next test.
+    useAppStore.setState({
+      designSession: {
+        host: null,
+        document: null,
+        messages: [],
+        latestArtifact: null,
+        generation: null,
+      },
+    });
   });
 
   async function render(ui: ReactNode) {
@@ -144,6 +154,19 @@ describe("side panel dead controls", () => {
     });
 
     it("no longer renders the dead composer textarea or Generate button", async () => {
+      useAppStore.setState({
+        designSession: {
+          host: {
+            loadDocument: async () => {
+              throw new Error("not used in this test");
+            },
+          },
+          document: null,
+          messages: [],
+          latestArtifact: { html: "<p>latest artifact</p>" },
+          generation: null,
+        },
+      });
       await render(<DesignPanel />);
 
       // Anchor on the panel's real content first so the absence assertions
@@ -157,14 +180,20 @@ describe("side panel dead controls", () => {
       expect(labels).not.toContain("Generate");
     });
 
-    it("labels the hardcoded generations as a mockup", async () => {
+    it("no longer claims to be a mockup and carries no hardcoded generation", async () => {
       await render(<DesignPanel />);
 
-      const note = container.querySelector('[role="note"]');
-      if (note === null) throw new Error("mockup notice did not render");
-      expect(note.textContent).toBe(
-        "Mockup — these generations are hardcoded examples. Generation runs on the Design surface.",
-      );
+      // Positive anchor: the panel must render its live-session row, the Open Design
+      // control and the not-opened note, so the absence assertions below cannot pass on
+      // a panel that renders nothing at all.
+      expect(container.querySelector(".workspace-grounding-row")).not.toBeNull();
+      expect(container.querySelector(".workspace-open-design")).not.toBeNull();
+      expect(container.textContent).toContain("Design has not been opened in this session yet");
+
+      expect(container.textContent).not.toContain("Mockup");
+      // The invented generation card from the mockup must be gone for good.
+      expect(container.textContent).not.toContain("Edited Index header");
+      expect(container.querySelector('[role="note"]')).toBeNull();
     });
   });
 });

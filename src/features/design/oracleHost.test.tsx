@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   providersList: vi.fn(),
   projectsList: vi.fn(),
   workspacesList: vi.fn(),
+  surfaceSettingsGet: vi.fn(),
+  surfaceSettingsSet: vi.fn(),
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -28,6 +30,11 @@ vi.mock("../../lib/tauri", () => ({
   sessionsList: vi.fn(),
   sessionsUnwatch: vi.fn(),
   sessionsWatch: vi.fn(),
+  // DesignSurface loads its persisted settings on mount; the mock must answer
+  // in the wrapper's SurfaceSettingsRead shape. Absent keeps every assertion
+  // here running against defaults.
+  surfaceSettingsGet: mocks.surfaceSettingsGet,
+  surfaceSettingsSet: mocks.surfaceSettingsSet,
 }));
 
 import { App } from "../../app/App";
@@ -90,6 +97,11 @@ beforeEach(() => {
   mocks.providersList.mockReset();
   mocks.projectsList.mockReset();
   mocks.workspacesList.mockReset();
+  mocks.surfaceSettingsGet.mockReset();
+  mocks.surfaceSettingsSet.mockReset();
+
+  mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
+  mocks.surfaceSettingsSet.mockResolvedValue(undefined);
   mocks.oracleFiles.mockResolvedValue([]);
   mocks.pluginsList.mockResolvedValue({ root: "", plugins: [], problem: null });
   mocks.providersList.mockResolvedValue({ providers: [], unreadableDirs: 0 });

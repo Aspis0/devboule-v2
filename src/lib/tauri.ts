@@ -402,13 +402,42 @@ export const oracleFiles = (tab: FileTab, page: number) =>
   invokeTyped("oracle_files", { tab, page });
 export const oracleAsk = (query: string) => invokeTyped("oracle_ask", { query });
 /**
- * One surface's persisted settings document, or null. The backend answers
- * null for a missing, unreadable, or malformed file alike — "never saved" and
- * "corrupt" are the same signal to a caller, which should fall back to its
- * defaults.
+ * The three ways a surface settings read can land, distinguished in the type
+ * so a consumer cannot collapse them into one falsy value. The backend
+ * (`surface_settings.rs`) returns `Ok(None)` only when the settings file does
+ * not exist; an unreadable or corrupt file is an `Err`, which arrives here as
+ * a rejected `invoke`. On the wire `Ok(None)` serializes to `null`, so a
+ * resolved `null` means absent. (A stored JSON `null` document would be
+ * indistinguishable from an absent file, but callers of `surfaceSettingsSet`
+ * write documents, never `null`.)
  */
-export const surfaceSettingsGet = (surfaceId: string) =>
-  invokeTyped("surface_settings_get", { surfaceId });
+export type SurfaceSettingsRead =
+  | { status: "absent" }
+  | { status: "value"; value: unknown }
+  | { status: "unreadable"; message: string };
+
+/**
+ * Reads one surface's persisted settings document.
+ *
+ * WHY a read failure is a value here instead of a throw: every other wrapper
+ * in this file rejects on failure, and a caller that mistakes a rejection for
+ * "nothing saved yet" rebuilds the stored document from defaults — exactly the
+ * read-modify-write data-loss bug the backend was fixed for. Folding the
+ * rejection into `{ status: "unreadable" }` makes the compiler force every
+ * consumer through all three outcomes instead of trusting each one to remember
+ * the difference by attention. This is deliberately the only wrapper shaped
+ * this way; do not simplify it back to a bare `invokeTyped` call.
+ */
+export async function surfaceSettingsGet(surfaceId: string): Promise<SurfaceSettingsRead> {
+  try {
+    const value = await invokeTyped("surface_settings_get", { surfaceId });
+    // The backend's Ok(None) is null on the wire; anything else is the document.
+    if (value === null) return { status: "absent" };
+    return { status: "value", value };
+  } catch (cause) {
+    return { status: "unreadable", message: reasonFromCause(cause) };
+  }
+}
 /** Stores `value` verbatim as pretty JSON; rejects surface ids outside `^[a-z0-9-]{1,32}$` and values over the ~64 KB cap. */
 export const surfaceSettingsSet = (surfaceId: string, value: unknown) =>
   invokeTyped("surface_settings_set", { surfaceId, value });

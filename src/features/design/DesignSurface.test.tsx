@@ -26,6 +26,16 @@ const historyMocks = vi.hoisted(() => ({
   record: vi.fn(),
 }));
 
+const historyListMocks = vi.hoisted(() => ({
+  onOpen: null as ((entry: unknown) => void) | null,
+  liveSessionId: null as string | null,
+  refreshKey: 0,
+}));
+
+const historyOpenMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+}));
+
 vi.mock("./designSettings", async () => {
   const actual = await vi.importActual<typeof import("./designSettings")>("./designSettings");
   return {
@@ -44,6 +54,23 @@ vi.mock("./designHistory", async () => {
   const actual = await vi.importActual<typeof import("./designHistory")>("./designHistory");
   return { ...actual, recordDesignHistoryEntry: historyMocks.record };
 });
+
+vi.mock("./DesignHistoryList", () => ({
+  DesignHistoryList: (props: {
+    onOpen: (entry: unknown) => void;
+    liveSessionId?: string | null;
+    refreshKey?: number;
+  }) => {
+    historyListMocks.onOpen = props.onOpen;
+    historyListMocks.liveSessionId = props.liveSessionId ?? null;
+    historyListMocks.refreshKey = props.refreshKey ?? 0;
+    return null;
+  },
+}));
+
+vi.mock("./designHistoryOpen", () => ({
+  openDesignHistoryEntry: historyOpenMocks.open,
+}));
 
 vi.mock("../../lib/tauri", () => ({
   providersList: providerMocks.list,
@@ -83,6 +110,7 @@ import type {
   ProviderInfo,
   SessionManifest,
   SessionModel,
+  Session,
   Workspace,
 } from "../../types/ipc";
 
@@ -327,14 +355,20 @@ beforeEach(() => {
   skillSettingsMocks.loadStoredWorkspace.mockReset();
   skillSettingsMocks.saveWorkspace.mockReset();
   historyMocks.record.mockReset();
-  historyMocks.record.mockResolvedValue(undefined);
+  // The real recordDesignHistoryEntry resolves a boolean (true = reached disk); the mock must
+  // honor that contract, otherwise the surface would raise a false persistence notice.
+  historyMocks.record.mockResolvedValue(true);
+  historyListMocks.onOpen = null;
+  historyListMocks.liveSessionId = null;
+  historyListMocks.refreshKey = 0;
+  historyOpenMocks.open.mockReset();
   skillSettingsMocks.load.mockResolvedValue({ version: 1, mode: "all", enabledSlugs: [] });
-  skillSettingsMocks.save.mockResolvedValue(undefined);
+  skillSettingsMocks.save.mockResolvedValue(true);
   skillSettingsMocks.loadProvider.mockResolvedValue(null);
-  skillSettingsMocks.saveProvider.mockResolvedValue(undefined);
+  skillSettingsMocks.saveProvider.mockResolvedValue(true);
   skillSettingsMocks.loadWorkspace.mockResolvedValue(null);
   skillSettingsMocks.loadStoredWorkspace.mockResolvedValue(null);
-  skillSettingsMocks.saveWorkspace.mockResolvedValue(undefined);
+  skillSettingsMocks.saveWorkspace.mockResolvedValue(true);
   providerMocks.list.mockReset();
   providerMocks.list.mockResolvedValue({ providers: [], unreadableDirs: 0 });
   providerMocks.projectsList.mockReset();
@@ -348,6 +382,107 @@ afterEach(() => {
 });
 
 describe("DesignSurface host capabilities", () => {
+  it("does not start a second history attach from the same tick", async () => {
+    const firstDispose = vi.fn();
+    const secondDispose = vi.fn();
+    historyOpenMocks.open
+      .mockReturnValueOnce({ dispose: firstDispose })
+      .mockReturnValueOnce({ dispose: secondDispose });
+    const { root } = await renderDesign(createHost());
+    await act(settle);
+
+    const onOpen = historyListMocks.onOpen;
+    if (onOpen === null) throw new Error("History list did not receive an open handler");
+    await act(async () => {
+      onOpen({ sessionId: "history-one" });
+      onOpen({ sessionId: "history-two" });
+    });
+
+    expect(historyOpenMocks.open).toHaveBeenCalledTimes(1);
+    expect(firstDispose).not.toHaveBeenCalled();
+    expect(secondDispose).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    expect(firstDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not expose an attach path for the live session", async () => {
+    const host = createHost({
+      getAgentSessionRecord: () => ({ id: "session-design" }) as Session,
+    });
+    const { root } = await renderDesign(host);
+    await act(settle);
+
+    expect(historyListMocks.liveSessionId).toBe("session-design");
+    const onOpen = historyListMocks.onOpen;
+    if (onOpen === null) throw new Error("History list did not receive an open handler");
+    await act(async () => onOpen({ sessionId: "session-design" }));
+
+    expect(historyOpenMocks.open).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a same-tick reopen and generation mutually exclusive", async () => {
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    historyOpenMocks.open.mockReturnValue({ dispose: vi.fn() });
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    const onOpen = historyListMocks.onOpen;
+    if (send === null || onOpen === null) throw new Error("Design controls missing");
+
+    await act(async () => {
+      onOpen({ sessionId: "history-session" });
+      send.click();
+    });
+
+    expect(historyOpenMocks.open).toHaveBeenCalledTimes(1);
+    expect(generate).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a same-tick generation and reopen mutually exclusive", async () => {
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    const onOpen = historyListMocks.onOpen;
+    if (send === null || onOpen === null) throw new Error("Design controls missing");
+
+    await act(async () => {
+      send.click();
+      onOpen({ sessionId: "history-session" });
+    });
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(historyOpenMocks.open).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("renders a timeout result as a timeout rather than an artifact", async () => {
+    historyOpenMocks.open.mockImplementation(
+      (_sessionId: string, deps: { onResult: (result: unknown) => void }) => {
+        deps.onResult({ status: "loading" });
+        deps.onResult({
+          status: "timeout",
+          message: "The transcript did not produce a design within 5 seconds.",
+        });
+        return { dispose: vi.fn() };
+      },
+    );
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const onOpen = historyListMocks.onOpen;
+    if (onOpen === null) throw new Error("History list did not receive an open handler");
+    await act(async () => onOpen({ sessionId: "history-timeout" }));
+
+    expect(container.querySelector('[role="status"].design-history-open-status')?.textContent).toBe(
+      "The transcript did not produce a design within 5 seconds.",
+    );
+    expect(container.querySelector(".design-canvas-artifact")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
   it("offers npx agents after the shared chat-capable filter and asks for consent", async () => {
     const installed = provider("grok");
     const downloadedOnDemand = provider("downloaded-agent", "npx-wrapper");
@@ -1215,6 +1350,167 @@ describe("DesignSurface host capabilities", () => {
       savedAtMs: expect.any(Number),
       origin: "design",
     });
+    await act(async () => root.unmount());
+  });
+
+  describe("DesignSurface persistence notices", () => {
+    it("names the agent choice when saving it does not reach disk", async () => {
+      skillSettingsMocks.saveProvider.mockResolvedValue(false);
+      const installed = provider("grok");
+      providerMocks.list.mockResolvedValueOnce({ providers: [installed], unreadableDirs: 0 });
+      const { container, root } = await renderDesign(
+        createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+      );
+      await act(settle);
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('button[aria-label^="Choose provider:"]')
+          ?.click(),
+      );
+      await act(async () => container.querySelector<HTMLButtonElement>('[role="option"]')?.click());
+
+      // The save was attempted; only its outcome differed.
+      expect(skillSettingsMocks.saveProvider).toHaveBeenCalledWith("grok");
+      expect(container.querySelector(".design-history-open-status")?.textContent).toBe(
+        "Your agent choice was not saved.",
+      );
+      await act(async () => root.unmount());
+    });
+
+    it("shows no notice when the agent choice reaches disk", async () => {
+      skillSettingsMocks.saveProvider.mockResolvedValue(true);
+      const installed = provider("grok");
+      providerMocks.list.mockResolvedValueOnce({ providers: [installed], unreadableDirs: 0 });
+      const { container, root } = await renderDesign(
+        createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+      );
+      await act(settle);
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('button[aria-label^="Choose provider:"]')
+          ?.click(),
+      );
+      await act(async () => container.querySelector<HTMLButtonElement>('[role="option"]')?.click());
+
+      expect(skillSettingsMocks.saveProvider).toHaveBeenCalledWith("grok");
+      expect(container.querySelector(".design-history-open-status")).toBeNull();
+      await act(async () => root.unmount());
+    });
+
+    it("names the design history when its write does not reach disk", async () => {
+      historyMocks.record.mockResolvedValue(false);
+      const generate = vi.fn(async () => ARTIFACT_RESULT);
+      const { container, root } = await renderDesign(createHost({ generate }));
+      await fillDraft(container, "Create the final card.");
+      const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+      if (send === null) throw new Error("Generate control missing");
+
+      await act(async () => send.click());
+      await act(settle);
+
+      expect(container.querySelector(".design-history-open-status")?.textContent).toBe(
+        "This design was not added to your history.",
+      );
+      // The history list still learns about the write attempt even though nothing was recorded.
+      expect(historyListMocks.refreshKey).toBe(1);
+      await act(async () => root.unmount());
+    });
+
+    it("shows no notice when the design history write reaches disk", async () => {
+      historyMocks.record.mockResolvedValue(true);
+      const generate = vi.fn(async () => ARTIFACT_RESULT);
+      const { container, root } = await renderDesign(createHost({ generate }));
+      await fillDraft(container, "Create the final card.");
+      const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+      if (send === null) throw new Error("Generate control missing");
+
+      await act(async () => send.click());
+      await act(settle);
+
+      expect(container.querySelector(".design-history-open-status")).toBeNull();
+      expect(historyListMocks.refreshKey).toBe(1);
+      await act(async () => root.unmount());
+    });
+  });
+
+  it("records an artifact even when the surface unmounts before generation settles", async () => {
+    let resolveGeneration: ((result: DesignGenerationResult) => void) | undefined;
+    const generate = vi.fn(
+      () =>
+        new Promise<DesignGenerationResult>((resolve) => {
+          resolveGeneration = resolve;
+        }),
+    );
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+    await act(async () => root.unmount());
+
+    await act(async () => {
+      resolveGeneration?.(ARTIFACT_RESULT);
+      await settle();
+    });
+
+    expect(historyMocks.record).toHaveBeenCalledWith({
+      sessionId: "session-design",
+      peerSessionId: "peer-design",
+      createdAtMs: 1_000,
+      title: "Create the final card.",
+      savedAtMs: expect.any(Number),
+      origin: "design",
+    });
+  });
+
+  it("refreshes history only after the artifact history write resolves", async () => {
+    // The write resolves a boolean now, so the deferred must carry it.
+    const historyWrite = deferred<boolean>();
+    historyMocks.record.mockReturnValue(historyWrite.promise);
+    const generate = vi.fn(async () => ARTIFACT_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+
+    await act(async () => send.click());
+    await act(settle);
+    expect(historyMocks.record).toHaveBeenCalledTimes(1);
+    expect(historyListMocks.refreshKey).toBe(0);
+
+    await act(async () => {
+      historyWrite.resolve(true);
+      await settle();
+    });
+    expect(historyListMocks.refreshKey).toBe(1);
+    await act(async () => root.unmount());
+  });
+
+  it("marks a saved document dirty when reopening an artifact appends its message", async () => {
+    historyOpenMocks.open.mockImplementation(
+      (_sessionId: string, deps: { onResult: (result: unknown) => void }) => {
+        deps.onResult({ status: "loading" });
+        deps.onResult({ status: "artifact", html: "<main>Reopened</main>" });
+        return { dispose: vi.fn() };
+      },
+    );
+    const savedDocument: DesignDocument = {
+      ...DOCUMENT,
+      initialState: { ...DOCUMENT.initialState, saved: true },
+    };
+    const { container, root } = await renderDesign(
+      createHost({ saveDocument: vi.fn(async () => undefined) }, savedDocument),
+    );
+    await act(settle);
+    const onOpen = historyListMocks.onOpen;
+    if (onOpen === null) throw new Error("History list did not receive an open handler");
+
+    await act(async () => onOpen({ sessionId: "history-session", title: "Reopened card" }));
+
+    expect(container.querySelector(".design-save-status")?.textContent).toContain(
+      "Unsaved changes",
+    );
+    expect(container.querySelector(".design-save-status")?.textContent).not.toContain("Saved");
     await act(async () => root.unmount());
   });
 

@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => ({
   sessionsList: vi.fn(),
   sessionsUnwatch: vi.fn(),
   sessionsWatch: vi.fn(),
+  surfaceSettingsGet: vi.fn(),
+  surfaceSettingsSet: vi.fn(),
 }));
 
 vi.mock("../../lib/tauri", () => ({
@@ -68,6 +70,11 @@ vi.mock("../../lib/tauri", () => ({
   sessionsList: mocks.sessionsList,
   sessionsUnwatch: mocks.sessionsUnwatch,
   sessionsWatch: mocks.sessionsWatch,
+  // DesignSurface loads its persisted settings on mount; the mock must answer
+  // in the wrapper's SurfaceSettingsRead shape. Absent keeps every assertion
+  // here running against defaults, as the swallowed read did before.
+  surfaceSettingsGet: mocks.surfaceSettingsGet,
+  surfaceSettingsSet: mocks.surfaceSettingsSet,
 }));
 
 vi.mock("../../features/workspace/Workspace", () => ({
@@ -240,6 +247,11 @@ beforeEach(() => {
   mocks.sessionPermissionRespond.mockReset();
   mocks.pluginsList.mockReset();
   mocks.providersList.mockReset();
+  mocks.surfaceSettingsGet.mockReset();
+  mocks.surfaceSettingsSet.mockReset();
+
+  mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
+  mocks.surfaceSettingsSet.mockResolvedValue(undefined);
 
   mocks.oracleAsk.mockResolvedValue({
     query: "Update the design",

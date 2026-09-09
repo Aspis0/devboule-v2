@@ -18,7 +18,7 @@ import type {
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic } from "./artifactRenderCritic";
-import { AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
+import { ARTIFACT_TOO_LARGE_MESSAGE, AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
 import {
   builtInSkillIndex,
   builtInSkillSources,
@@ -37,7 +37,12 @@ import {
   type DesignSkillSelection,
 } from "./designSettings";
 import { DesignHistoryList } from "./DesignHistoryList";
-import { recordDesignHistoryEntry } from "./designHistory";
+import { recordDesignHistoryEntry, type DesignHistoryEntry } from "./designHistory";
+import {
+  openDesignHistoryEntry,
+  type DesignHistoryOpenHandle,
+  type DesignHistoryOpenResult,
+} from "./designHistoryOpen";
 import { buildSkillBlock } from "./skillLoader";
 import { useProviderConsent } from "../workspace/useProviderConsent";
 import { chatCapableProviders, requiresConsent } from "../workspace/workspaceSessions";
@@ -183,6 +188,18 @@ const WORKSPACE_NOT_REGISTERED_NOTICE = "The selected workspace is no longer reg
 const WORKSPACE_UNCONFIRMED_NOTICE =
   "The selected workspace could not be confirmed because its project failed to load.";
 
+// The persistence calls report a boolean: false means the value never reached disk and will
+// revert on reload. One notice region serves all four callers because they fail the same way,
+// but each message names what was lost, because the four mean different things to the user.
+const PERSISTENCE_NOTICE_TEXT = {
+  provider: "Your agent choice was not saved.",
+  workspace: "Your workspace choice was not saved.",
+  skill: "Your craft selection was not saved.",
+  history: "This design was not added to your history.",
+} as const;
+
+type PersistenceNoticeKind = keyof typeof PERSISTENCE_NOTICE_TEXT;
+
 interface AssistantProps {
   canGenerate: boolean;
   contextPrefix: string;
@@ -229,6 +246,11 @@ interface AssistantProps {
 type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
 
 const EMPTY_DESIGN_MESSAGES: readonly DesignMessage[] = [];
+const HISTORY_OPEN_MESSAGE_PREFIX = "design-history-open-";
+
+function isHistoryOpenMessage(message: DesignMessage): boolean {
+  return message.id.startsWith(HISTORY_OPEN_MESSAGE_PREFIX);
+}
 
 function cloneMessages(document: DesignDocument): DesignMessage[] {
   return cloneMessageList(document.messages).map((message) =>
@@ -1930,6 +1952,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [draft, setDraft] = useState(document.initialState.draft);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
   const [skillSelection, setSkillSelectionState] = useState<DesignSkillSelection>(
     DEFAULT_DESIGN_SKILL_SELECTION,
   );
@@ -1956,6 +1979,8 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const [agentSessionRecord, setAgentSessionRecord] = useState<Session | null>(
     () => host.getAgentSessionRecord?.() ?? null,
   );
+  const [historyOpenResult, setHistoryOpenResult] = useState<DesignHistoryOpenResult | null>(null);
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
   const savingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -1968,6 +1993,15 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const workspaceSelectionIdRef = useRef<string | null>(null);
   const workspaceSelectionUnresolvedRef = useRef(false);
   const workspaceRequestTokenRef = useRef(0);
+  // Which kind the currently shown persistence notice belongs to, so a later successful save
+  // clears only its own kind's warning and leaves the others untouched.
+  const persistenceNoticeKindRef = useRef<PersistenceNoticeKind | null>(null);
+  const historyOpenRef = useRef<DesignHistoryOpenHandle | null>(null);
+  const historyOpenInFlightRef = useRef(false);
+  const historyOpenGenerationRef = useRef(0);
+  const historyOpenMessageCounterRef = useRef(0);
+  const generationInFlightRef = useRef(generation !== null);
+  const liveSessionIdRef = useRef<string | null>(agentSessionRecord?.id ?? null);
   const assistantRef = useRef<HTMLDivElement>(null);
   const designSurfaceRef = useRef<HTMLElement>(null);
   const setMessages = useCallback(
@@ -1980,6 +2014,23 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     },
     [host],
   );
+
+  // `saved === false` is the only definitive failure; `true` clears the same kind's notice, and
+  // anything else (a rejected call is "we do not know") changes nothing. Only the notice is
+  // mount-guarded here — the persistence calls themselves must still run after unmount.
+  const reportPersistence = useCallback((kind: PersistenceNoticeKind, saved: boolean): void => {
+    if (!mountedRef.current) return;
+    if (saved === false) {
+      persistenceNoticeKindRef.current = kind;
+      setPersistenceNotice(PERSISTENCE_NOTICE_TEXT[kind]);
+      return;
+    }
+    if (saved === true && persistenceNoticeKindRef.current === kind) {
+      // A later successful save of the same kind clears the warning; other kinds stay shown.
+      persistenceNoticeKindRef.current = null;
+      setPersistenceNotice(null);
+    }
+  }, []);
 
   const updateWorkspaceSelection = useCallback(
     (workspaceId: string | null, unresolved: boolean, notice: string | null): void => {
@@ -1995,9 +2046,12 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   useEffect(() => {
     const updateAgentSession = (): void => {
       const next = host.getAgentSession?.() ?? null;
+      const nextRecord = host.getAgentSessionRecord?.() ?? null;
+      // An absent record means this host has no live session to protect from a history attach.
+      liveSessionIdRef.current = nextRecord?.id ?? null;
       setAgentSession(next);
       setAgentState(next?.getState() ?? null);
-      setAgentSessionRecord(host.getAgentSessionRecord?.() ?? null);
+      setAgentSessionRecord(nextRecord);
     };
     const unsubscribe = host.subscribeAgentSession?.(updateAgentSession);
     updateAgentSession();
@@ -2116,7 +2170,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         } else if (!initialLoad && candidateId !== null) {
           updateWorkspaceSelection(null, false, WORKSPACE_NOT_REGISTERED_NOTICE);
           host.selectWorkspace?.(null);
-          void saveDesignWorkspaceId(null);
+          void saveDesignWorkspaceId(null).then((saved) => reportPersistence("workspace", saved));
         } else if (candidateId !== null || initialLoad) {
           updateWorkspaceSelection(null, false, null);
         }
@@ -2131,7 +2185,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         setWorkspacesLoading(false);
       }
     },
-    [host, updateWorkspaceSelection],
+    [host, reportPersistence, updateWorkspaceSelection],
   );
 
   useEffect(() => {
@@ -2147,6 +2201,16 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
   const saved = history.saved;
   const busy = generation !== null;
   const { pan, selectedLayerId, zoom } = viewState;
+
+  const disposeHistoryOpen = useCallback(() => {
+    historyOpenGenerationRef.current += 1;
+    historyOpenInFlightRef.current = false;
+    const current = historyOpenRef.current;
+    historyOpenRef.current = null;
+    current?.dispose();
+  }, []);
+
+  useEffect(() => disposeHistoryOpen, [disposeHistoryOpen]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -2180,11 +2244,14 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     () => selectedSlugs(skillSelection, knownSkillSlugs),
     [knownSkillSlugs, skillSelection],
   );
-  const updateSkillSelection = useCallback((selection: DesignSkillSelection) => {
-    skillSelectionInteractedRef.current = true;
-    setSkillSelectionState(selection);
-    void saveDesignSkillSelection(selection);
-  }, []);
+  const updateSkillSelection = useCallback(
+    (selection: DesignSkillSelection) => {
+      skillSelectionInteractedRef.current = true;
+      setSkillSelectionState(selection);
+      void saveDesignSkillSelection(selection).then((saved) => reportPersistence("skill", saved));
+    },
+    [reportPersistence],
+  );
   const handleSkillModeChange = useCallback(
     (mode: DesignSkillSelection["mode"]) => {
       if (skillSelection.mode === mode) return;
@@ -2273,9 +2340,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       providerSelectionInteractedRef.current = true;
       setSelectedProviderId(provider.id);
       host.selectProvider?.(provider);
-      void saveDesignProviderId(provider.id);
+      void saveDesignProviderId(provider.id).then((saved) => reportPersistence("provider", saved));
     },
-    [agentSession, host],
+    [agentSession, host, reportPersistence],
   );
   const selectWorkspace = useCallback(
     (workspace: Workspace | null) => {
@@ -2283,9 +2350,12 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       workspaceSelectionInteractedRef.current = true;
       updateWorkspaceSelection(workspace?.id ?? null, false, null);
       host.selectWorkspace?.(workspace);
-      void saveDesignWorkspaceId(workspace?.id ?? null);
+      const workspaceId = workspace?.id ?? null;
+      void saveDesignWorkspaceId(workspaceId).then((saved) =>
+        reportPersistence("workspace", saved),
+      );
     },
-    [agentSession, host, updateWorkspaceSelection],
+    [agentSession, host, reportPersistence, updateWorkspaceSelection],
   );
   const openWorkspacePicker = useCallback(() => {
     if (agentSession !== null) return;
@@ -2308,7 +2378,9 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     () =>
       messages.filter(
         (message): message is DesignAssistantMessage =>
-          message.role === "assistant" && message.status === "done",
+          message.role === "assistant" &&
+          message.status === "done" &&
+          !isHistoryOpenMessage(message),
       ).length,
     [messages],
   );
@@ -2580,9 +2652,72 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
     setGrounded((value) => !value);
   }, [markDocumentDirty]);
 
+  const openHistoryEntry = useCallback(
+    (entry: DesignHistoryEntry) => {
+      if (
+        busy ||
+        generationInFlightRef.current ||
+        historyOpenInFlightRef.current ||
+        entry.sessionId === liveSessionIdRef.current
+      ) {
+        return;
+      }
+
+      disposeHistoryOpen();
+      historyOpenInFlightRef.current = true;
+      const openGeneration = historyOpenGenerationRef.current;
+      setHistoryOpenResult({ status: "loading" });
+      const handle = openDesignHistoryEntry(entry.sessionId, {
+        onResult: (result) => {
+          if (openGeneration !== historyOpenGenerationRef.current) return;
+          if (result.status !== "loading") historyOpenInFlightRef.current = false;
+          const isOversizedArtifact =
+            result.status === "failed" && result.message === ARTIFACT_TOO_LARGE_MESSAGE;
+          // The oversized error is rendered in the canvas message below, so a banner would duplicate it.
+          setHistoryOpenResult(isOversizedArtifact ? null : result);
+          if (result.status === "artifact" || isOversizedArtifact) {
+            const messageId = `${HISTORY_OPEN_MESSAGE_PREFIX}${++historyOpenMessageCounterRef.current}`;
+            markDocumentDirty();
+            setMessages((current) => [
+              ...current,
+              {
+                id: messageId,
+                role: "assistant",
+                status: "done",
+                title: entry.title || "Untitled design",
+                desc:
+                  result.status === "artifact"
+                    ? "Reopened from design history."
+                    : "The reopened artifact could not be displayed.",
+                sources: [],
+                nodeIds: [],
+                instruction: entry.title,
+                ...(result.status === "artifact"
+                  ? { artifactHtml: result.html }
+                  : { artifactError: result.message }),
+              },
+            ]);
+          }
+        },
+      });
+      historyOpenRef.current = handle;
+    },
+    [busy, disposeHistoryOpen, markDocumentDirty, setMessages],
+  );
+
   const startGeneration = useCallback(
     (prompt: string) => {
-      if (busy || generate === undefined) return;
+      if (
+        busy ||
+        generate === undefined ||
+        generationInFlightRef.current ||
+        historyOpenInFlightRef.current
+      ) {
+        return;
+      }
+      generationInFlightRef.current = true;
+      disposeHistoryOpen();
+      setHistoryOpenResult(null);
       const scopedPrompt = composerContextTarget
         ? `${prompt}\n\nScope: ${composerContextTarget.scope}`
         : prompt;
@@ -2628,6 +2763,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           ) {
             return;
           }
+          generationInFlightRef.current = false;
           documentRevisionRef.current += 1;
           setMessages((current) =>
             current.map((message) =>
@@ -2646,19 +2782,28 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
                 : message,
             ),
           );
-          if (
-            result.artifactHtml !== undefined &&
-            mountedRef.current &&
-            useAppStore.getState().designSession.host === host
-          ) {
-            void recordDesignHistoryEntry({
-              sessionId: result.sessionId,
-              peerSessionId: result.peerSessionId,
-              createdAtMs: result.createdAtMs,
-              title: prompt.trim(),
-              savedAtMs: Date.now(),
-              origin: "design",
-            });
+          const historyWrite =
+            result.artifactHtml !== undefined && useAppStore.getState().designSession.host === host
+              ? recordDesignHistoryEntry({
+                  sessionId: result.sessionId,
+                  peerSessionId: result.peerSessionId,
+                  createdAtMs: result.createdAtMs,
+                  title: prompt.trim(),
+                  savedAtMs: Date.now(),
+                  origin: "design",
+                })
+              : null;
+          if (historyWrite !== null) {
+            void historyWrite.then(
+              (saved) => {
+                reportPersistence("history", saved);
+                if (mountedRef.current) setHistoryRefreshKey((current) => current + 1);
+              },
+              // A rejected write is "we do not know": no notice, but the list still refreshes.
+              () => {
+                if (mountedRef.current) setHistoryRefreshKey((current) => current + 1);
+              },
+            );
           }
           if (skillSelection.mode === "auto" && result.appliedSkillSlugs !== undefined) {
             const composedAutoSkillBlock = buildSkillBlock(
@@ -2701,6 +2846,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
           ) {
             return;
           }
+          generationInFlightRef.current = false;
           documentRevisionRef.current += 1;
           setMessages((current) =>
             current.map((message) =>
@@ -2725,9 +2871,11 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
       composerContextLayerName,
       composerContextTarget,
       document.contextPrefix,
+      disposeHistoryOpen,
       document.workingMessage,
       generate,
       host,
+      reportPersistence,
       skillIndex,
       skillSelection.mode,
       selectedSkillSlugs,
@@ -2767,6 +2915,7 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         if (activeGeneration === null || activeGeneration.assistantId !== message.id) return;
 
         activeGeneration.controller.abort();
+        generationInFlightRef.current = false;
         documentRevisionRef.current += 1;
         useAppStore.getState().setDesignGeneration(host, null);
         setMessages((current) =>
@@ -2832,8 +2981,30 @@ function DesignSurfaceContent({ host, document, disclosure }: DesignSurfaceConte
         onUndo={undo}
         onRedo={redo}
       />
+      {persistenceNotice ? (
+        <div className="design-history-open-status" role="status">
+          {persistenceNotice}
+        </div>
+      ) : null}
 
-      <DesignHistoryList refreshKey={generationCount} />
+      <DesignHistoryList
+        refreshKey={historyRefreshKey}
+        liveSessionId={agentSessionRecord?.id ?? null}
+        onOpen={openHistoryEntry}
+      />
+      {historyOpenResult?.status === "loading" ? (
+        <div className="design-history-open-status" role="status">
+          Opening design history…
+        </div>
+      ) : historyOpenResult?.status === "timeout" ? (
+        <div className="design-history-open-status" role="status">
+          {historyOpenResult.message}
+        </div>
+      ) : historyOpenResult?.status === "failed" ? (
+        <div className="design-history-open-status" role="alert">
+          {historyOpenResult.message}
+        </div>
+      ) : null}
 
       <div className="design-main">
         <div className="design-workspace">

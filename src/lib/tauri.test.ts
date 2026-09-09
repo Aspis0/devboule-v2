@@ -107,6 +107,45 @@ describe("surface settings wrappers", () => {
       value: { split: true, count: 3 },
     });
   });
+
+  it("maps a resolved null to the absent case", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(null as never);
+
+    // The backend's Ok(None) serializes to null: genuinely absent file.
+    await expect(surfaceSettingsGet("design")).resolves.toEqual({ status: "absent" });
+  });
+
+  it("maps a resolved document to the value case", async () => {
+    vi.mocked(invoke).mockClear();
+    const document = { version: 1, mode: "all", enabledSlugs: [] };
+    vi.mocked(invoke).mockResolvedValue(document as never);
+
+    await expect(surfaceSettingsGet("design")).resolves.toEqual({
+      status: "value",
+      value: document,
+    });
+  });
+
+  it("maps a rejected read to the unreadable case carrying the message", async () => {
+    vi.mocked(invoke).mockClear();
+    // A structured CommandError is what Tauri rejects a Serialize error with.
+    vi.mocked(invoke).mockRejectedValueOnce({
+      code: "io_error",
+      message: "settings file unreadable",
+    });
+    await expect(surfaceSettingsGet("design")).resolves.toEqual({
+      status: "unreadable",
+      message: "settings file unreadable",
+    });
+
+    // A plain Error rejection lands in the same case, message preserved.
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("bridge down"));
+    await expect(surfaceSettingsGet("design")).resolves.toEqual({
+      status: "unreadable",
+      message: "bridge down",
+    });
+  });
 });
 
 describe("resume command wrapper", () => {

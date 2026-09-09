@@ -439,6 +439,8 @@ export class AgentSession {
 
   private update(patch: Partial<AgentSessionState>): void {
     this.state = { ...this.state, ...patch };
-    for (const listener of this.listeners) listener();
+    // A listener may dispose or unsubscribe during notification; a snapshot prevents that
+    // mutation from skipping listeners that were already subscribed for this update.
+    for (const listener of [...this.listeners]) listener();
   }
 }

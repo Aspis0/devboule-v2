@@ -55,7 +55,11 @@ beforeEach(() => {
   mocks.surfaceSettingsSet.mockReset();
   mocks.surfaceSettingsGet.mockImplementation(async () => {
     await Promise.resolve();
-    return storedSettings;
+    // Emulate the real wrapper's SurfaceSettingsRead result: null storage is
+    // the backend's Ok(None), i.e. an absent surface file.
+    return storedSettings === null
+      ? { status: "absent" }
+      : { status: "value", value: storedSettings };
   });
   mocks.surfaceSettingsSet.mockImplementation(async (_surfaceId: string, value: unknown) => {
     await Promise.resolve();
@@ -81,13 +85,26 @@ describe("design history persistence", () => {
     ]);
   });
 
-  it("replaces the previous result for the same session and trims the title", async () => {
-    await recordDesignHistoryEntry(BASE_ENTRY);
-    await recordDesignHistoryEntry({
-      ...BASE_ENTRY,
-      title: `  ${"x".repeat(MAX_HISTORY_TITLE_CHARS + 10)}  `,
-      savedAtMs: 200,
+  it("distinguishes a failed history read from a successful empty read", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "unreadable",
+      message: "settings unavailable",
     });
+    await expect(loadDesignHistory()).resolves.toBeNull();
+
+    storedSettings = null;
+    await expect(loadDesignHistory()).resolves.toEqual([]);
+  });
+
+  it("replaces the previous result for the same session and trims the title", async () => {
+    await expect(recordDesignHistoryEntry(BASE_ENTRY)).resolves.toBe(true);
+    await expect(
+      recordDesignHistoryEntry({
+        ...BASE_ENTRY,
+        title: `  ${"x".repeat(MAX_HISTORY_TITLE_CHARS + 10)}  `,
+        savedAtMs: 200,
+      }),
+    ).resolves.toBe(true);
 
     await expect(loadDesignHistory()).resolves.toEqual([
       {
@@ -100,14 +117,17 @@ describe("design history persistence", () => {
 
   it("keeps only the newest entries at the cap", async () => {
     for (let index = 0; index < MAX_HISTORY_ENTRIES + 3; index += 1) {
-      await recordDesignHistoryEntry({
-        ...BASE_ENTRY,
-        sessionId: `session-${index}`,
-        savedAtMs: index,
-      });
+      await expect(
+        recordDesignHistoryEntry({
+          ...BASE_ENTRY,
+          sessionId: `session-${index}`,
+          savedAtMs: index,
+        }),
+      ).resolves.toBe(true);
     }
 
     const history = await loadDesignHistory();
+    if (history === null) throw new Error("History read unexpectedly failed");
     expect(history).toHaveLength(MAX_HISTORY_ENTRIES);
     expect(history[0]?.sessionId).toBe(`session-${MAX_HISTORY_ENTRIES + 2}`);
     expect(history.at(-1)?.sessionId).toBe("session-3");
@@ -161,6 +181,29 @@ describe("design history persistence", () => {
     });
   });
 
+  it("reports whether a history entry was persisted", async () => {
+    await expect(recordDesignHistoryEntry(BASE_ENTRY)).resolves.toBe(true);
+
+    mocks.surfaceSettingsSet.mockRejectedValueOnce(new Error("settings unavailable"));
+    await expect(recordDesignHistoryEntry(BASE_ENTRY)).resolves.toBe(false);
+  });
+
+  it("reports false without writing when reading the existing document fails", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "unreadable",
+      message: "settings unavailable",
+    });
+
+    await expect(recordDesignHistoryEntry(BASE_ENTRY)).resolves.toBe(false);
+    // A failed read cannot safely supply the document the append must preserve.
+    expect(mocks.surfaceSettingsSet).not.toHaveBeenCalled();
+  });
+
+  it("reports false for a malformed entry without touching storage", async () => {
+    await expect(recordDesignHistoryEntry({ ...BASE_ENTRY, sessionId: "" })).resolves.toBe(false);
+    expect(mocks.surfaceSettingsSet).not.toHaveBeenCalled();
+  });
+
   it("returns gone for a missing session and for a changed peer session", () => {
     expect(historyEntryStatus(BASE_ENTRY, [])).toBe("gone");
     expect(historyEntryStatus(BASE_ENTRY, [session(BASE_ENTRY.sessionId, "peer-2")])).toBe("gone");
@@ -206,7 +249,9 @@ describe("design history persistence", () => {
       history: [legacyEntry],
     };
 
-    const [loaded] = await loadDesignHistory();
+    const history = await loadDesignHistory();
+    if (history === null) throw new Error("History read unexpectedly failed");
+    const [loaded] = history;
     expect(loaded).toEqual({ ...BASE_ENTRY, createdAtMs: null });
     expect(
       loaded === undefined
@@ -260,7 +305,7 @@ describe("design history settings size", () => {
       origin: "design",
     };
 
-    await expect(recordDesignHistoryEntry(newestEntry)).resolves.toBeUndefined();
+    await expect(recordDesignHistoryEntry(newestEntry)).resolves.toBe(true);
 
     expect(mocks.surfaceSettingsSet).toHaveBeenCalledTimes(1);
     expect(storedSettings).toMatchObject({

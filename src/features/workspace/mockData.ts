@@ -2,21 +2,6 @@
 // shared entity fields stay aligned, while presentation fields remain local to
 // the Workspace surface.
 
-export interface MockSurface {
-  id: "changes" | "files" | "app" | "design" | "pr";
-  name: string;
-  meta: string;
-  dotTone: "terracotta" | "silence" | "green" | "purple" | "ochre";
-}
-
-export const MOCK_SURFACES: MockSurface[] = [
-  { id: "changes", name: "Changes", meta: "+118 −64", dotTone: "terracotta" },
-  { id: "files", name: "Files", meta: "2 140", dotTone: "silence" },
-  { id: "app", name: "Interactive app", meta: "localhost", dotTone: "green" },
-  { id: "design", name: "Design", meta: "1 generation", dotTone: "purple" },
-  { id: "pr", name: "Pull request", meta: "#412", dotTone: "ochre" },
-];
-
 export const MOCK_DIFF_LINES = [
   { line: "18", text: "impl IndexWriter {", kind: "context" as const },
   { line: "−", text: "  pub fn flush(&mut self) -> Result<()> {", kind: "removed" as const },

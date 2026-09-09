@@ -76,21 +76,32 @@ function parseStoredDesignSettings(value: unknown): StoredDesignSettings | null 
   };
 }
 
-async function readStoredDesignSettings(): Promise<StoredDesignSettings | null> {
-  try {
-    return parseStoredDesignSettings(await surfaceSettingsGet(DOCTRINE_SETTINGS_SURFACE_ID));
-  } catch {
-    return null;
-  }
+async function readStoredDesignSettings(): Promise<StoredDesignSettings | null | undefined> {
+  // Internally null means "surface absent" (safe to seed defaults) and undefined
+  // means "read failed" (never write). The distinction comes from the
+  // SurfaceSettingsRead result now, not from catching an untyped rejection.
+  const read = await surfaceSettingsGet(DOCTRINE_SETTINGS_SURFACE_ID);
+  if (read.status === "absent") return null;
+  if (read.status === "unreadable") return undefined;
+  // After the two guards above the compiler has narrowed this to the value
+  // case; a fourth status added to SurfaceSettingsRead fails to compile here.
+  return parseStoredDesignSettings(read.value);
 }
 
 let settingsWriteQueue: Promise<void> = Promise.resolve();
+const SETTINGS_READ_FAILURE_MESSAGE =
+  "Design settings could not be read; refusing to overwrite them.";
 
 function queueSettingsWrite(
   mutate: (stored: StoredDesignSettings | null) => Promise<void>,
 ): Promise<void> {
   const write = settingsWriteQueue.then(async () => {
-    await mutate(await readStoredDesignSettings());
+    const stored = await readStoredDesignSettings();
+    if (stored === undefined) {
+      // A failed read cannot safely supply the document that this read-modify-write must preserve.
+      throw new Error(SETTINGS_READ_FAILURE_MESSAGE);
+    }
+    await mutate(stored);
   });
   settingsWriteQueue = write.catch(() => undefined);
   return write;
@@ -149,7 +160,7 @@ export async function loadDesignSkillSelection(
   knownSlugs: readonly string[],
 ): Promise<DesignSkillSelection> {
   const stored = await readStoredDesignSettings();
-  if (stored === null) return defaultSelection();
+  if (stored === null || stored === undefined) return defaultSelection();
 
   return {
     version: 1,
@@ -158,15 +169,20 @@ export async function loadDesignSkillSelection(
   };
 }
 
-export async function saveDesignSkillSelection(selection: DesignSkillSelection): Promise<void> {
+// The boolean is the report, not an error signal: a false return means the value was not
+// persisted and will silently revert on reload, so the caller can surface that without this
+// module ever throwing into a design generation.
+export async function saveDesignSkillSelection(selection: DesignSkillSelection): Promise<boolean> {
   try {
     await queueSettingsWrite(async (stored) => {
       const providerId = stored?.providerId ?? null;
       const workspaceId = stored?.workspaceId ?? null;
       await writeDesignSettings(selection, providerId, workspaceId, stored?.history ?? []);
     });
+    return true;
   } catch {
-    // Losing a preference must never take down a design generation.
+    // Losing a preference must never take down a design generation; report it instead.
+    return false;
   }
 }
 
@@ -174,19 +190,21 @@ export async function loadDesignProviderId(
   knownProviderIds: readonly string[],
 ): Promise<string | null> {
   const stored = await readStoredDesignSettings();
-  if (stored === null || stored.providerId === null) return null;
+  if (stored === null || stored === undefined || stored.providerId === null) return null;
   return knownProviderIds.includes(stored.providerId) ? stored.providerId : null;
 }
 
-export async function saveDesignProviderId(providerId: string | null): Promise<void> {
+export async function saveDesignProviderId(providerId: string | null): Promise<boolean> {
   try {
     await queueSettingsWrite(async (stored) => {
       const settings = stored?.selection ?? defaultSelection();
       const workspaceId = stored?.workspaceId ?? null;
       await writeDesignSettings(settings, providerId, workspaceId, stored?.history ?? []);
     });
+    return true;
   } catch {
-    // Losing a preference must never take down a design generation.
+    // Losing a preference must never take down a design generation; report it instead.
+    return false;
   }
 }
 
@@ -199,19 +217,21 @@ export async function loadDesignWorkspaceId(
 
 export async function loadStoredDesignWorkspaceId(): Promise<string | null> {
   const stored = await readStoredDesignSettings();
-  if (stored === null || stored.workspaceId === null) return null;
+  if (stored === null || stored === undefined || stored.workspaceId === null) return null;
   return stored.workspaceId;
 }
 
-export async function saveDesignWorkspaceId(workspaceId: string | null): Promise<void> {
+export async function saveDesignWorkspaceId(workspaceId: string | null): Promise<boolean> {
   try {
     await queueSettingsWrite(async (stored) => {
       const settings = stored?.selection ?? defaultSelection();
       const providerId = stored?.providerId ?? null;
       await writeDesignSettings(settings, providerId, workspaceId, stored?.history ?? []);
     });
+    return true;
   } catch {
-    // Losing a preference must never take down a design generation.
+    // Losing a preference must never take down a design generation; report it instead.
+    return false;
   }
 }
 
@@ -226,8 +246,9 @@ export function selectedSlugs(
   return orderedIntersection(selection.enabledSlugs, knownSlugs);
 }
 
-export async function loadStoredDesignHistory(): Promise<readonly unknown[]> {
+export async function loadStoredDesignHistory(): Promise<readonly unknown[] | null> {
   const stored = await readStoredDesignSettings();
+  if (stored === undefined) return null;
   return stored?.history ?? [];
 }
 

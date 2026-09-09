@@ -80,20 +80,23 @@ function parseHistoryEntries(values: readonly unknown[]): DesignHistoryEntry[] {
   });
 }
 
-export async function loadDesignHistory(): Promise<DesignHistoryEntry[]> {
+export async function loadDesignHistory(): Promise<DesignHistoryEntry[] | null> {
   try {
-    return newestFirst(parseHistoryEntries(await loadStoredDesignHistory())).slice(
-      0,
-      MAX_HISTORY_ENTRIES,
-    );
+    const storedHistory = await loadStoredDesignHistory();
+    if (storedHistory === null) return null;
+    return newestFirst(parseHistoryEntries(storedHistory)).slice(0, MAX_HISTORY_ENTRIES);
   } catch {
-    return [];
+    // A failed read is distinct from a successful empty history.
+    return null;
   }
 }
 
-export async function recordDesignHistoryEntry(entry: DesignHistoryEntry): Promise<void> {
+// The boolean reports whether the entry reached storage; a false return means the run was
+// generated but its history entry was not saved, so the caller can surface that loss.
+export async function recordDesignHistoryEntry(entry: DesignHistoryEntry): Promise<boolean> {
   const normalized = parseHistoryEntry(entry);
-  if (normalized === null) return;
+  // A malformed entry was never persisted, which is a reported outcome here, not silence.
+  if (normalized === null) return false;
 
   try {
     await updateStoredDesignHistory((stored) => {
@@ -103,8 +106,10 @@ export async function recordDesignHistoryEntry(entry: DesignHistoryEntry): Promi
       entries.push(normalized);
       return newestFirst(entries).slice(0, MAX_HISTORY_ENTRIES);
     });
+    return true;
   } catch {
     // History is a convenience index; a settings failure must not fail a generation.
+    return false;
   }
 }
 

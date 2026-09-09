@@ -8,7 +8,7 @@
 
 use std::fmt::Display;
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -81,15 +81,28 @@ fn surface_settings_get_inner(
     let path = settings_path(config_dir, surface_id);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
-        // Missing and unreadable are the same signal to callers: fall back
-        // to defaults. Only an unavailable config directory is an error.
-        Err(_) => return Ok(None),
+        // The first-run `None` is only for an absent file. Read failures must
+        // remain errors so the caller can fall back to defaults for display
+        // without overwriting evidence during its read-modify-write flow.
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(internal_error(
+                &format!("surface `{surface_id}` settings could not be read"),
+                error,
+            ));
+        }
     };
     match serde_json::from_str(&raw) {
         Ok(value) => Ok(Some(value)),
-        // Malformed JSON is reported as null, never as an error: a corrupt
-        // file must not lock the surface out of its own panel.
-        Err(_) => Ok(None),
+        // The old behavior mapped parse failures to `None` so a corrupt file
+        // would not lock the surface out of its panel. That intent is
+        // preserved at the caller, which falls back to defaults for display
+        // and refuses to write; conflating corrupt with empty is what caused
+        // data loss.
+        Err(error) => Err(internal_error(
+            &format!("stored settings for surface `{surface_id}` could not be parsed"),
+            error,
+        )),
     }
 }
 
@@ -134,9 +147,9 @@ fn surface_settings_set_inner(
     Ok(())
 }
 
-/// Returns the parsed JSON document for `surfaceId`, or `null` when the file
-/// is missing OR unreadable OR malformed JSON. Callers treat "never saved"
-/// and "corrupt" identically, so none of those is an error.
+/// Returns the parsed JSON document for `surfaceId`, or `None` when the file
+/// has not been created yet. Read and parse failures are errors so callers can
+/// fall back to defaults for display without overwriting the stored evidence.
 #[tauri::command]
 pub fn surface_settings_get(
     app: tauri::AppHandle,
@@ -197,15 +210,43 @@ mod tests {
     }
 
     #[test]
-    fn get_on_malformed_json_is_null() {
+    fn get_on_malformed_json_returns_error_and_preserves_file() {
         let temp = tempfile::tempdir().expect("tempdir");
         let config = temp.path().join("config");
         let path = settings_path(&config, "design");
         fs::create_dir_all(path.parent().expect("settings parent")).expect("settings directory");
-        fs::write(&path, "{not json at all").expect("garbage settings file");
+        let original = b"{not json at all";
+        fs::write(&path, original).expect("garbage settings file");
 
-        let loaded = surface_settings_get_inner(&config, "design").expect("get");
-        assert_eq!(loaded, None);
+        let error = surface_settings_get_inner(&config, "design").expect_err("malformed settings");
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert!(
+            error
+                .message
+                .contains("stored settings for surface `design` could not be parsed"),
+            "the error must distinguish malformed stored settings: {}",
+            error.message
+        );
+        assert_eq!(fs::read(&path).expect("settings file"), original);
+    }
+
+    #[test]
+    fn get_on_a_directory_at_the_settings_path_returns_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = temp.path().join("config");
+        let path = settings_path(&config, "design");
+        fs::create_dir_all(&path).expect("directory at settings path");
+
+        let error =
+            surface_settings_get_inner(&config, "design").expect_err("directory read failure");
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert!(
+            error
+                .message
+                .contains("surface `design` settings could not be read"),
+            "the error must name the surface and read failure: {}",
+            error.message
+        );
     }
 
     #[test]

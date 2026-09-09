@@ -157,6 +157,7 @@ import {
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JournalUsage, Project, Workspace as IpcWorkspace } from "../../types/ipc";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
+import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 
 const terminal = (
   id: string,
@@ -297,6 +298,65 @@ describe("Workspace sessions", () => {
     expect(row?.textContent).toContain("1 live session · local");
     expect(row?.textContent).not.toContain("dirty");
     expect(row?.title).toBe("C:\\devboule");
+  });
+
+  it("renders and selects an extra panel supplied through the registry", async () => {
+    const extraPanel: SidePanelEntry = {
+      id: "plugin-panel-test",
+      name: "Plugin panel",
+      meta: "test",
+      dotTone: "green",
+      render: () => <div data-testid="plugin-panel">Plugin panel content</div>,
+    };
+    const registry: SidePanelEntry[] = [...SIDE_PANEL_REGISTRY, extraPanel];
+
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace sidePanelRegistry={registry} />));
+    await act(async () => undefined);
+
+    const selector = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
+    if (selector === null) throw new Error("side panel selector did not render");
+    await act(async () => selector.click());
+    const option = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+    ).find((button) => button.textContent?.includes("Plugin panel"));
+    if (option === undefined) throw new Error("extra registry panel did not render");
+    await act(async () => option.click());
+
+    expect(container.querySelector("[data-testid=plugin-panel]")?.textContent).toBe(
+      "Plugin panel content",
+    );
+
+    await act(async () => selector.click());
+    const selectedOption = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".workspace-surface-option"),
+    ).find((button) => button.textContent?.includes("Plugin panel"));
+    expect(selectedOption?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("renders the first registry entry for an unknown active panel without selecting it", async () => {
+    const fallbackPanel: SidePanelEntry = {
+      id: "only-available-panel",
+      name: "Available panel",
+      meta: "test",
+      dotTone: "green",
+      render: () => <div data-testid="fallback-panel">Fallback content</div>,
+    };
+
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace sidePanelRegistry={[fallbackPanel]} />));
+    await act(async () => undefined);
+
+    expect(container.querySelector("[data-testid=fallback-panel]")?.textContent).toBe(
+      "Fallback content",
+    );
+    const selector = container.querySelector<HTMLButtonElement>(".workspace-surface-selector");
+    if (selector === null) throw new Error("side panel selector did not render");
+    await act(async () => selector.click());
+
+    const option = container.querySelector<HTMLButtonElement>(".workspace-surface-option");
+    if (option === null) throw new Error("fallback panel option did not render");
+    expect(option.getAttribute("aria-selected")).toBe("false");
   });
 
   it("exposes the checkout path on hover and omits it when the daemon sent none", async () => {

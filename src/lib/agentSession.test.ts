@@ -506,4 +506,21 @@ describe("ACP agent session", () => {
       { role: "assistant", text: "answer text" },
     ]);
   });
+
+  it("still notifies later listeners when an earlier listener disposes during notification", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    // Production has genuinely two subscribers (DesignSurface and agentHost.runGeneration),
+    // and a listener that disposes the session clears the listener set mid-notification.
+    // update() must iterate over a snapshot so the clear cannot skip the subscribers after it.
+    const second = vi.fn();
+    harness.session.subscribe(() => harness.session.dispose());
+    harness.session.subscribe(second);
+
+    harness.emit({ type: "agent_finished", stopReason: "end_turn" });
+
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(harness.session.getState().status).toBe("idle");
+  });
 });
