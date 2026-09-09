@@ -14,6 +14,8 @@ const READY: PluginEntry = {
   uiEntry: "ui/index.html",
   ready: true,
   reason: null,
+  maxPayloadBytes: 16 * 1024 * 1024,
+  payloadBudgetClamped: false,
 };
 
 const REFUSED: PluginEntry = {
@@ -24,6 +26,8 @@ const REFUSED: PluginEntry = {
   uiEntry: null,
   ready: false,
   reason: "ui/index.html is not the file plugin.json describes",
+  maxPayloadBytes: null,
+  payloadBudgetClamped: null,
 };
 
 describe("pluginState", () => {
@@ -81,5 +85,46 @@ describe("pluginState", () => {
     expect(describePluginState(state, POLIS_PLUGIN_ID)).toContain(
       "did not declare a UI entry path",
     );
+  });
+});
+
+describe("payload budget clamp on the readout", () => {
+  const askedForMore = /asked for more than the host grants/;
+  const granted = 64 * 1024 * 1024;
+
+  it("says the plugin asked for more than the host grants and names what it got", () => {
+    const clamped: PluginEntry = {
+      ...READY,
+      maxPayloadBytes: granted,
+      payloadBudgetClamped: true,
+    };
+    const line = describePluginState(
+      pluginState(inventory([clamped]), POLIS_PLUGIN_ID),
+      POLIS_PLUGIN_ID,
+    );
+    expect(line).toMatch(askedForMore);
+    expect(line).toContain("64 MiB");
+    expect(line).not.toContain(String(granted));
+  });
+
+  it("does not mention a clamp when the host honoured the ask", () => {
+    expect(READY.payloadBudgetClamped).toBe(false);
+    const line = describePluginState(
+      pluginState(inventory([READY]), POLIS_PLUGIN_ID),
+      POLIS_PLUGIN_ID,
+    );
+    expect(line).not.toMatch(askedForMore);
+    expect(line).not.toMatch(/clamped/i);
+  });
+
+  it("does not mention a clamp when the budget is unknown", () => {
+    expect(REFUSED.payloadBudgetClamped).toBeNull();
+    const line = describePluginState(
+      pluginState(inventory([REFUSED]), POLIS_PLUGIN_ID),
+      POLIS_PLUGIN_ID,
+    );
+    expect(line).not.toMatch(askedForMore);
+    expect(line).not.toMatch(/clamped/i);
+    expect(line).not.toMatch(/host grants/i);
   });
 });

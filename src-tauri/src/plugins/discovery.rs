@@ -22,10 +22,13 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::assets::{safe_relative_segments, MAX_ASSET_BYTES};
+use devboule_protocol::plugin_payload_budget_clamped;
+
+use super::assets::MAX_ASSET_BYTES;
 use super::manifest::{
     parse_manifest, PluginManifest, MANIFEST_FILE_NAME, MAX_MANIFEST_BYTES, MAX_PLUGIN_FILES,
 };
+use super::VerifiedPluginPath;
 
 /// A plugin whose files add up to more than this is refused before a single
 /// byte is hashed. Verification reads everything it verifies, so without a
@@ -94,6 +97,10 @@ impl Scan {
                         ui_entry: Some(manifest.ui_entry.clone()),
                         ready: true,
                         reason: None,
+                        max_payload_bytes: Some(manifest.max_payload_bytes as u64),
+                        payload_budget_clamped: Some(plugin_payload_budget_clamped(
+                            manifest.declared_payload_bytes,
+                        )),
                     },
                     Err(reason) => PluginEntry {
                         id: plugin.id.clone(),
@@ -103,6 +110,11 @@ impl Scan {
                         ui_entry: None,
                         ready: false,
                         reason: Some(reason.clone()),
+                        // Refused: no verified manifest, so no declaration to
+                        // clamp. Null, not the host default — a default here
+                        // would look like a grant for a plugin that cannot run.
+                        max_payload_bytes: None,
+                        payload_budget_clamped: None,
                     },
                 })
                 .collect(),
@@ -135,6 +147,15 @@ pub struct PluginEntry {
     pub ui_entry: Option<String>,
     pub ready: bool,
     pub reason: Option<String>,
+    /// Granted invoke budget in serialized bytes. JSON `null` with the key
+    /// present when the plugin was refused: there is no verified manifest
+    /// to read a declaration from, and inventing the host default would look
+    /// like a successful grant.
+    pub max_payload_bytes: Option<u64>,
+    /// Whether the host ceiling cut the manifest's ask. JSON `null` with the
+    /// key present when refused: a clamp is a fact about a declaration, and
+    /// we do not have one.
+    pub payload_budget_clamped: Option<bool>,
 }
 
 /// Scan the plugins root once.
@@ -306,11 +327,12 @@ pub(super) fn list_files(directory: &Path) -> Result<BTreeMap<String, u64>, Stri
             };
             // The same grammar the asset server resolves a request with: a file
             // it could never address has no business being installed.
-            let Some(relative) = safe_relative_segments(&relative) else {
+            let Some(relative) = VerifiedPluginPath::parse(&relative) else {
                 return Err(format!(
                     "{relative} cannot be addressed by the plugin server and must be renamed"
                 ));
             };
+            let relative = relative.into_string();
 
             let file_type = entry
                 .file_type()
@@ -422,6 +444,11 @@ mod tests {
         assert!(inventory.plugins[0].ready);
         assert_eq!(inventory.plugins[0].reason, None);
         assert_eq!(inventory.plugins[0].capabilities, vec!["oracle.search"]);
+        assert_eq!(
+            inventory.plugins[0].max_payload_bytes,
+            Some(devboule_protocol::DEFAULT_PLUGIN_PAYLOAD_BYTES as u64)
+        );
+        assert_eq!(inventory.plugins[0].payload_budget_clamped, Some(false));
     }
 
     #[test]
@@ -433,6 +460,17 @@ mod tests {
             json.get("uiEntry").and_then(|value| value.as_str()),
             Some("ui/index.html"),
             "the surface reads camelCase uiEntry: {json}"
+        );
+        assert_eq!(
+            json.get("maxPayloadBytes").and_then(|value| value.as_u64()),
+            Some(devboule_protocol::DEFAULT_PLUGIN_PAYLOAD_BYTES as u64),
+            "the surface reads camelCase maxPayloadBytes: {json}"
+        );
+        assert_eq!(
+            json.get("payloadBudgetClamped")
+                .and_then(|value| value.as_bool()),
+            Some(false),
+            "the surface reads camelCase payloadBudgetClamped: {json}"
         );
     }
 
@@ -446,6 +484,37 @@ mod tests {
             Some(&serde_json::Value::Null),
             "omitting the key is not the null the surface handles: {json}"
         );
+        assert_eq!(
+            json.get("maxPayloadBytes"),
+            Some(&serde_json::Value::Null),
+            "a refused plugin has no budget to show, not a silent default: {json}"
+        );
+        assert_eq!(
+            json.get("payloadBudgetClamped"),
+            Some(&serde_json::Value::Null),
+            "a refused plugin has no clamp to show: {json}"
+        );
+    }
+
+    #[test]
+    fn a_declared_payload_over_the_ceiling_is_visible_as_clamped_on_the_inventory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let directory = install(temp.path(), "polis", &[("ui/index.html", UI)]);
+        let path = directory.join(MANIFEST_FILE_NAME);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("json");
+        let asked: u64 = 4 * 1024 * 1024 * 1024;
+        manifest["maxPayloadBytes"] = serde_json::json!(asked);
+        std::fs::write(&path, serde_json::to_vec_pretty(&manifest).expect("write"))
+            .expect("rewrite");
+        let entry = &scan(temp.path()).inventory().plugins[0];
+        assert!(entry.ready);
+        assert_eq!(
+            entry.max_payload_bytes,
+            Some(devboule_protocol::PLUGIN_PAYLOAD_CEILING_BYTES as u64)
+        );
+        assert_eq!(entry.payload_budget_clamped, Some(true));
+        assert!(plugin_payload_budget_clamped(Some(asked)));
     }
 
     #[test]

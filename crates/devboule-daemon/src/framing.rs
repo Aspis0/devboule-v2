@@ -3,7 +3,8 @@
 //! Chosen over length-prefix because the first time this misbehaves a human
 //! can attach a pipe client and read a line. PTY payloads travel as escaped
 //! JSON strings, so a compact `serde_json` frame never contains a raw
-//! newline. A 1 MiB cap bounds a client that omits the delimiter.
+//! newline. The daemon default is a 1 MiB cap; callers that own a separate
+//! pipe may derive and install a different per-instance cap.
 //!
 //! Windows named-pipe handles are opened for overlapped I/O. Each operation
 //! owns an event and waits for its own completion, so one blocking read does
@@ -46,10 +47,22 @@ pub struct Framed {
     #[cfg(not(windows))]
     file: Arc<Mutex<File>>,
     buf: Arc<Mutex<Vec<u8>>>,
+    max_frame_bytes: usize,
 }
 
 impl Framed {
     pub fn new(file: File) -> Self {
+        Self::with_limit(file, MAX_FRAME_BYTES)
+    }
+
+    /// Construct a pipe with an explicit frame limit. `new` remains the
+    /// daemon-wire default; plugin pipes use this after deriving their limit
+    /// from the host's effective payload budget.
+    pub fn with_limit(file: File, max_frame_bytes: usize) -> Self {
+        assert!(
+            max_frame_bytes > 0,
+            "a framed pipe must have a positive limit"
+        );
         Self {
             #[cfg(windows)]
             file: Arc::new(file),
@@ -58,7 +71,18 @@ impl Framed {
             #[cfg(not(windows))]
             file: Arc::new(Mutex::new(file)),
             buf: Arc::new(Mutex::new(Vec::new())),
+            max_frame_bytes,
         }
+    }
+
+    /// Change the limit after the bootstrap hello has been received. The
+    /// hello itself is always read under the default cap.
+    pub fn set_max_frame_bytes(&mut self, max_frame_bytes: usize) {
+        assert!(
+            max_frame_bytes > 0,
+            "a framed pipe must have a positive limit"
+        );
+        self.max_frame_bytes = max_frame_bytes;
     }
 
     pub fn send<T: Serialize>(&self, value: &T) -> Result<(), DaemonError> {
@@ -122,12 +146,12 @@ impl Framed {
                 .write_lock
                 .lock()
                 .unwrap_or_else(|err| err.into_inner());
-            write_frame(&self.file, value, deadline, flush)
+            write_frame(&self.file, value, self.max_frame_bytes, deadline, flush)
         }
         #[cfg(not(windows))]
         {
             let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
-            write_frame(&mut file, value, flush)
+            write_frame(&mut file, value, self.max_frame_bytes, flush)
         }
     }
 
@@ -167,7 +191,7 @@ impl Framed {
         loop {
             {
                 let mut buf = self.buf.lock().unwrap_or_else(|err| err.into_inner());
-                if let Some(line) = take_line(&mut buf)? {
+                if let Some(line) = take_line(&mut buf, self.max_frame_bytes)? {
                     return Ok(line);
                 }
             }
@@ -195,18 +219,18 @@ impl Framed {
                 )));
             }
             let mut buf = self.buf.lock().unwrap_or_else(|err| err.into_inner());
-            if buf.len() + read > MAX_FRAME_BYTES {
-                return Err(DaemonError::Protocol("frame exceeds 1 MiB".to_string()));
+            if buf.len() + read > self.max_frame_bytes {
+                return Err(frame_limit_error(self.max_frame_bytes));
             }
             buf.extend_from_slice(&chunk[..read]);
         }
     }
 }
 
-fn take_line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, DaemonError> {
+fn take_line(buf: &mut Vec<u8>, max_frame_bytes: usize) -> Result<Option<Vec<u8>>, DaemonError> {
     let Some(pos) = buf.iter().position(|byte| *byte == b'\n') else {
-        if buf.len() > MAX_FRAME_BYTES {
-            return Err(DaemonError::Protocol("frame exceeds 1 MiB".to_string()));
+        if buf.len() > max_frame_bytes {
+            return Err(frame_limit_error(max_frame_bytes));
         }
         return Ok(None);
     };
@@ -221,10 +245,10 @@ fn take_line(buf: &mut Vec<u8>) -> Result<Option<Vec<u8>>, DaemonError> {
     Ok(Some(line))
 }
 
-fn frame_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, DaemonError> {
+fn frame_bytes<T: Serialize>(value: &T, max_frame_bytes: usize) -> Result<Vec<u8>, DaemonError> {
     let bytes = serde_json::to_vec(value)?;
-    if bytes.len() > MAX_FRAME_BYTES {
-        return Err(DaemonError::Protocol("frame exceeds 1 MiB".to_string()));
+    if bytes.len() > max_frame_bytes {
+        return Err(frame_limit_error(max_frame_bytes));
     }
     if bytes.contains(&b'\n') {
         return Err(DaemonError::Protocol(
@@ -234,14 +258,23 @@ fn frame_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, DaemonError> {
     Ok(bytes)
 }
 
+fn frame_limit_error(max_frame_bytes: usize) -> DaemonError {
+    if max_frame_bytes == MAX_FRAME_BYTES {
+        DaemonError::Protocol("frame exceeds 1 MiB".to_string())
+    } else {
+        DaemonError::Protocol(format!("frame exceeds {max_frame_bytes} bytes"))
+    }
+}
+
 #[cfg(windows)]
 fn write_frame<T: Serialize>(
     file: &File,
     value: &T,
+    max_frame_bytes: usize,
     deadline: Option<Instant>,
     flush: bool,
 ) -> Result<(), DaemonError> {
-    let bytes = frame_bytes(value)?;
+    let bytes = frame_bytes(value, max_frame_bytes)?;
     write_all_overlapped(file, &bytes, deadline)?;
     write_all_overlapped(file, b"\n", deadline)?;
     if flush {
@@ -254,8 +287,13 @@ fn write_frame<T: Serialize>(
 }
 
 #[cfg(not(windows))]
-fn write_frame<T: Serialize>(file: &mut File, value: &T, flush: bool) -> Result<(), DaemonError> {
-    let bytes = frame_bytes(value)?;
+fn write_frame<T: Serialize>(
+    file: &mut File,
+    value: &T,
+    max_frame_bytes: usize,
+    flush: bool,
+) -> Result<(), DaemonError> {
+    let bytes = frame_bytes(value, max_frame_bytes)?;
     file.write_all(&bytes)?;
     file.write_all(b"\n")?;
     if flush {
@@ -417,8 +455,12 @@ mod tests {
     #[test]
     fn take_line_strips_crlf_and_skips_empty() {
         let mut buf = b"\n{\"type\":\"ping\",\"id\":1}\r\nrest".to_vec();
-        assert!(take_line(&mut buf).expect("empty").is_none());
-        let line = take_line(&mut buf).expect("line").expect("frame");
+        assert!(take_line(&mut buf, MAX_FRAME_BYTES)
+            .expect("empty")
+            .is_none());
+        let line = take_line(&mut buf, MAX_FRAME_BYTES)
+            .expect("line")
+            .expect("frame");
         assert_eq!(line, br#"{"type":"ping","id":1}"#);
         assert_eq!(buf, b"rest");
     }
@@ -426,16 +468,56 @@ mod tests {
     #[test]
     fn take_line_none_until_newline() {
         let mut buf = b"{\"type\":\"ping\"".to_vec();
-        assert!(take_line(&mut buf).expect("ok").is_none());
+        assert!(take_line(&mut buf, MAX_FRAME_BYTES).expect("ok").is_none());
     }
 
     #[test]
     fn cursor_roundtrip_is_one_line() {
         let mut buf = br#"{"type":"output","data":"a\nb"}"#.to_vec();
         buf.push(b'\n');
-        let line = take_line(&mut buf).expect("ok").expect("frame");
+        let line = take_line(&mut buf, MAX_FRAME_BYTES)
+            .expect("ok")
+            .expect("frame");
         assert!(!line.contains(&b'\n'));
         assert!(line.windows(2).any(|pair| pair == br"\n"));
         let _ = Cursor::new(line);
+    }
+
+    #[test]
+    fn plugin_payload_budget_and_transport_share_the_same_boundary() {
+        use devboule_protocol::{
+            plugin_frame_limit_for_payload, plugin_payload_within_limit, ClientMessage,
+        };
+
+        let payload_limit = 4096;
+        let payload = serde_json::Value::String("x".repeat(payload_limit - 2));
+        assert_eq!(
+            serde_json::to_vec(&payload)
+                .expect("payload must serialize")
+                .len(),
+            payload_limit
+        );
+        assert!(plugin_payload_within_limit(Some(&payload), payload_limit));
+
+        let message = ClientMessage::Invoke {
+            id: u64::MAX,
+            method: "x".repeat(128),
+            payload: Some(payload),
+        };
+        let frame_limit = plugin_frame_limit_for_payload(payload_limit);
+        assert!(
+            frame_bytes(&message, frame_limit).is_ok(),
+            "a payload accepted by the host budget must fit the plugin transport envelope"
+        );
+    }
+
+    #[test]
+    fn custom_frame_limit_is_used_for_serialization() {
+        let error = frame_bytes(&"12345", 4).expect_err("custom limit must be enforced");
+        assert_eq!(
+            error.to_string(),
+            "frame exceeds 4 bytes",
+            "custom frame errors must expose the actual configured limit"
+        );
     }
 }

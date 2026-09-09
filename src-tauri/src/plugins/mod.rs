@@ -35,6 +35,40 @@ pub fn plugins_root<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
         .map(|dir| dir.join("plugins"))
 }
 
+/// The workspace asset branch owns this URL segment; installed plugin files
+/// must never be able to claim it.
+pub(super) const WORKSPACE_ASSET_SEGMENT: &str = "__workspace";
+
+/// A path that the verified plugin manifest and directory scan may represent.
+///
+/// This is deliberately separate from `assets::safe_relative_segments`: the
+/// request parser must accept `__workspace` because it is the address of the
+/// workspace branch, while this constructor makes the reserved collision
+/// impossible for installed plugin paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VerifiedPluginPath(String);
+
+impl VerifiedPluginPath {
+    pub(super) fn parse(path: &str) -> Option<Self> {
+        // Keep the manifest's literal spelling for hashing and lookup. The
+        // decode below is only a collision check: `a%20b.js` remains that
+        // literal file name, while a request addresses it as `%2520`.
+        let normalised = assets::safe_relative_segments(path)?;
+        let first = normalised.split('/').next()?;
+        let decoded_first = assets::percent_decode(first);
+        if first == WORKSPACE_ASSET_SEGMENT
+            || decoded_first.as_deref() == Some(WORKSPACE_ASSET_SEGMENT)
+        {
+            return None;
+        }
+        Some(Self(normalised))
+    }
+
+    pub(super) fn into_string(self) -> String {
+        self.0
+    }
+}
+
 /// The verified answer to "what is installed", computed once and reused.
 ///
 /// Verification hashes every installed file, so it is not something to repeat
@@ -180,6 +214,30 @@ pub async fn plugin_install(
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn verified_plugin_path_type_excludes_the_workspace_route() {
+        // This is a constructor/codomain assertion, not a list of hostile
+        // examples: scan and manifest code can only obtain their path strings
+        // through VerifiedPluginPath, whose private representation excludes
+        // the reserved first segment.
+        let ordinary = VerifiedPluginPath::parse("ui/index.html").expect("ordinary path");
+        assert_ne!(ordinary.0.split('/').next(), Some(WORKSPACE_ASSET_SEGMENT));
+        assert!(VerifiedPluginPath::parse("__workspace/data.bin").is_none());
+        assert!(VerifiedPluginPath::parse("%5F%5Fworkspace/data.bin").is_none());
+        assert_eq!(
+            VerifiedPluginPath::parse("a%20b.js")
+                .expect("literal manifest name")
+                .0,
+            "a%20b.js"
+        );
+        assert_eq!(
+            VerifiedPluginPath::parse("a%zz.js")
+                .expect("literal malformed-escape name")
+                .0,
+            "a%zz.js"
+        );
+    }
 
     fn install_one(root: &Path) {
         let directory = root.join("polis");

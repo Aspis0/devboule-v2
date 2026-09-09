@@ -12,6 +12,8 @@ export interface PluginBridgeOptions {
   pluginOrigin: string;
   capabilities: readonly string[];
   timeoutMs?: number;
+  /** Effective manifest budget for the generic plugin route. */
+  maxPayloadBytes?: number | null;
   /** Forward a granted method to `plugin_invoke`. Absent: the host cannot route yet. */
   route?: (method: string, payload: unknown) => Promise<unknown>;
   /** Host-side allowlist: manifest request is necessary but not sufficient. */
@@ -64,6 +66,8 @@ type SessionEventMessage = {
 export const HOST_SERVED_CAPABILITIES = ["sessions.watch", "oracle.search"] as const;
 const SESSION_WATCH_INTERVAL_MS = 5000;
 const MAX_PLUGIN_MESSAGE_BYTES = 1024 * 1024;
+/** Must not be lower than PLUGIN_PAYLOAD_CEILING_BYTES in the host. */
+export const MAX_PLUGIN_ROUTE_BYTES = 64 * 1024 * 1024;
 export const ORACLE_SOURCE_TIMEOUT_MS = 20_000;
 const ORACLE_INDEX_STATE_TIMEOUT_MS = 3000;
 const ORACLE_MAX_QUERY_CHARS = 4096;
@@ -263,8 +267,15 @@ function sessionWatchInitial(state: SessionWatchState): Promise<SessionFeed> {
   return initial;
 }
 
-function oversizedMessageError(subject = "plugin session feed"): Error & { code: string } {
-  return Object.assign(new Error(`${subject} is too large (maximum 1 MiB)`), {
+function oversizedMessageError(
+  subject = "plugin session feed",
+  limit = MAX_PLUGIN_MESSAGE_BYTES,
+): Error & { code: string } {
+  const label =
+    limit >= 1024 * 1024 && limit % (1024 * 1024) === 0
+      ? `${limit / (1024 * 1024)} MiB`
+      : `${limit} bytes`;
+  return Object.assign(new Error(`${subject} is too large (maximum ${label})`), {
     code: "response_too_large",
   });
 }
@@ -349,12 +360,12 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
-function messageValueWithinLimit(value: unknown): boolean {
+function messageValueWithinLimit(value: unknown, limit = MAX_PLUGIN_MESSAGE_BYTES): boolean {
   try {
     const serialized = JSON.stringify(value);
     return serialized === undefined
       ? true
-      : new TextEncoder().encode(serialized).byteLength <= MAX_PLUGIN_MESSAGE_BYTES;
+      : new TextEncoder().encode(serialized).byteLength <= limit;
   } catch {
     return false;
   }
@@ -513,6 +524,10 @@ export function resetSessionWatchesForTests(): void {
 export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
   const pluginOrigin = options.pluginOrigin.replace(/\/+$/, "");
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Undefined is the legacy/default path for callers that do not have an
+  // inventory entry. Null means there is no verified grant, not the ceiling.
+  const routePayloadLimit =
+    options.maxPayloadBytes === null ? 0 : (options.maxPayloadBytes ?? MAX_PLUGIN_ROUTE_BYTES);
   const pending = new Map<string, PendingRequest>();
   const servedCapabilities = options.servedCapabilities ?? HOST_SERVED_CAPABILITIES;
   const sessionList = options.sessionList ?? sessionsList;
@@ -739,10 +754,33 @@ export function createPluginBridge(options: PluginBridgeOptions): PluginBridge {
         return;
       }
 
+      if (!messageValueWithinLimit(message.payload, routePayloadLimit)) {
+        const error = oversizedMessageError("plugin route request", routePayloadLimit);
+        post({
+          v: 1,
+          id: message.id,
+          kind: "error",
+          code: error.code,
+          message: error.message,
+        });
+        return;
+      }
+
       const requestId = message.id;
       void options.route(message.method, message.payload).then(
         (value) => {
           if (disposed) return;
+          if (!messageValueWithinLimit(value, routePayloadLimit)) {
+            const error = oversizedMessageError("plugin route response", routePayloadLimit);
+            post({
+              v: 1,
+              id: requestId,
+              kind: "error",
+              code: error.code,
+              message: error.message,
+            });
+            return;
+          }
           post({ v: 1, id: requestId, kind: "result", value });
         },
         (error: unknown) => {

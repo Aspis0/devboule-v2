@@ -61,12 +61,16 @@ const READY: PluginEntry = {
   uiEntry: "ui/index.html",
   ready: true,
   reason: null,
+  maxPayloadBytes: 16 * 1024 * 1024,
+  payloadBudgetClamped: false,
 };
 
 const REFUSED: PluginEntry = {
   ...READY,
   ready: false,
   reason: "manifest digest mismatch for ui/index.html",
+  maxPayloadBytes: null,
+  payloadBudgetClamped: null,
 };
 
 function inventory(plugins: PluginEntry[], problem: string | null = null): PluginInventory {
@@ -128,6 +132,26 @@ describe("PolisSurface", () => {
 
     expect(container.querySelector("iframe.plugin-surface-frame")).not.toBeNull();
     expect(container.querySelectorAll(".polis-readiness")).toHaveLength(0);
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the installed-plugins readout when the host clamped a ready plugin", async () => {
+    useAppStore.setState({
+      plugins: inventory([
+        {
+          ...READY,
+          maxPayloadBytes: 64 * 1024 * 1024,
+          payloadBudgetClamped: true,
+        },
+      ]),
+    });
+    const { container, root } = await renderSurface();
+
+    const readout = container.querySelector('[aria-label="Installed plugins"]');
+    expect(readout).not.toBeNull();
+    expect(readout?.textContent).toMatch(/asked for more than the host grants/);
+    expect(readout?.textContent).toContain("64 MiB");
+    expect(readout?.textContent).not.toContain(String(64 * 1024 * 1024));
     await act(async () => root.unmount());
   });
 

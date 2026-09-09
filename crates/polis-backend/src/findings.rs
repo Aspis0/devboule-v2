@@ -16,6 +16,10 @@ use oracle_core::{collect_text_files_with_cancel_limits_report, CancelFlag, Orac
 
 use crate::city::{MAX_CITY_FILES, MAX_CITY_FILE_BYTES};
 
+pub fn get_findings(root: &Path) -> Result<serde_json::Value, FindingsError> {
+    get_findings_with_limit(root, devboule_protocol::DEFAULT_PLUGIN_PAYLOAD_BYTES)
+}
+
 #[derive(Debug)]
 pub enum FindingsError {
     UnreadableRoot {
@@ -133,11 +137,14 @@ struct SurvivedFile {
 
 /// Opening the surface is the ask. Walk the same files the city uses, run
 /// every cheap detector, persist, return the active mapped findings.
-pub fn get_findings(root: &Path) -> Result<serde_json::Value, FindingsError> {
+pub(crate) fn get_findings_with_limit(
+    root: &Path,
+    max_payload_bytes: usize,
+) -> Result<serde_json::Value, FindingsError> {
     // scanMs is the host-perceived wait: walk + survive + review + ledger.
     let started = Instant::now();
     let collected = collect_workspace_files(root)?;
-    scan_collected_files(&collected, started)
+    scan_collected_files_with_limit(&collected, started, max_payload_bytes)
 }
 
 pub(crate) fn collect_workspace_files(root: &Path) -> Result<CollectedFiles, FindingsError> {
@@ -160,9 +167,22 @@ pub(crate) fn collect_workspace_files(root: &Path) -> Result<CollectedFiles, Fin
     })
 }
 
+#[cfg(test)]
 pub(crate) fn scan_collected_files(
     collected: &CollectedFiles,
     started: Instant,
+) -> Result<serde_json::Value, FindingsError> {
+    scan_collected_files_with_limit(
+        collected,
+        started,
+        devboule_protocol::DEFAULT_PLUGIN_PAYLOAD_BYTES,
+    )
+}
+
+pub(crate) fn scan_collected_files_with_limit(
+    collected: &CollectedFiles,
+    started: Instant,
+    max_payload_bytes: usize,
 ) -> Result<serde_json::Value, FindingsError> {
     let (survived, skipped_files) = survive_city_files(&collected.root, &collected.paths);
     let index = FileIdIndex::from_survived(&survived);
@@ -185,12 +205,15 @@ pub(crate) fn scan_collected_files(
     let scan_ms = started.elapsed().as_millis() as u64;
     Ok(pack_findings_response(
         findings,
-        dropped_findings,
-        &review.completed,
-        &failed,
-        scan_ms,
-        skipped_files,
-        collected.truncated,
+        FindingsPackOptions {
+            dropped_findings,
+            completed: &review.completed,
+            failed: &failed,
+            scan_ms,
+            skipped_files,
+            walk_truncated: collected.truncated,
+            max_payload_bytes,
+        },
     ))
 }
 
@@ -328,16 +351,21 @@ fn severity_rank(severity: &str) -> u8 {
     }
 }
 
-/// Keep the wire list inside the 1 MiB−4 KiB frame. Sort inferno > fire >
-/// smoke, then fileId, then id; omit the tail and say how many were cut.
-fn pack_findings_response(
-    mut findings: Vec<serde_json::Value>,
+/// Keep the wire list inside the negotiated payload budget. Sort inferno >
+/// fire > smoke, then fileId, then id; omit the tail and say how many were cut.
+struct FindingsPackOptions<'a> {
     dropped_findings: usize,
-    completed: &[&str],
-    failed: &[&str],
+    completed: &'a [&'a str],
+    failed: &'a [&'a str],
     scan_ms: u64,
     skipped_files: usize,
     walk_truncated: bool,
+    max_payload_bytes: usize,
+}
+
+fn pack_findings_response(
+    mut findings: Vec<serde_json::Value>,
+    options: FindingsPackOptions<'_>,
 ) -> serde_json::Value {
     findings.sort_by(|left, right| {
         let left_rank = severity_rank(left["severity"].as_str().unwrap_or(""));
@@ -358,12 +386,12 @@ fn pack_findings_response(
             })
     });
     let context = FindingsBodyContext {
-        dropped_findings,
-        completed,
-        failed,
-        scan_ms,
-        skipped_files,
-        walk_truncated,
+        dropped_findings: options.dropped_findings,
+        completed: options.completed,
+        failed: options.failed,
+        scan_ms: options.scan_ms,
+        skipped_files: options.skipped_files,
+        walk_truncated: options.walk_truncated,
     };
     let original = findings.len();
     let mut lo = 0usize;
@@ -372,7 +400,7 @@ fn pack_findings_response(
     while lo <= hi {
         let mid = lo + (hi - lo) / 2;
         let body = findings_body(&findings[..mid], original - mid, &context);
-        if crate::city_response_within_frame(&body) {
+        if crate::plugin_response_within_payload_limit(&body, options.max_payload_bytes) {
             best = mid;
             if mid == original {
                 break;
@@ -690,7 +718,8 @@ mod tests {
     }
 
     #[test]
-    fn a_synthetic_flood_is_capped_and_never_blows_the_frame() {
+    fn a_synthetic_flood_is_capped_inside_the_payload_budget() {
+        let payload_limit = 256 * 1024;
         let findings: Vec<serde_json::Value> = (0..8_000)
             .map(|index| {
                 let severity = match index % 3 {
@@ -707,13 +736,23 @@ mod tests {
                 })
             })
             .collect();
-        let body = pack_findings_response(findings, 0, &["secrets", "untested"], &[], 12, 0, false);
+        let body = pack_findings_response(
+            findings,
+            FindingsPackOptions {
+                dropped_findings: 0,
+                completed: &["secrets", "untested"],
+                failed: &[],
+                scan_ms: 12,
+                skipped_files: 0,
+                walk_truncated: false,
+                max_payload_bytes: payload_limit,
+            },
+        );
+        let serialized = serde_json::to_vec(&body).expect("body must serialize");
         assert!(
-            crate::city_response_within_frame(&body),
-            "capped findings.get must fit the frame: {} bytes",
-            serde_json::to_vec(&body)
-                .map(|bytes| bytes.len())
-                .unwrap_or(0)
+            serialized.len() <= payload_limit,
+            "capped findings.get must fit the payload budget: {} bytes",
+            serialized.len()
         );
         let kept = body["findings"].as_array().expect("findings").len();
         assert!(

@@ -58,9 +58,19 @@ type DesignMessagesUpdate =
   | readonly DesignMessage[]
   | ((messages: readonly DesignMessage[]) => readonly DesignMessage[]);
 
+export interface InstalledSkill {
+  id: string;
+  name: string;
+  author: string;
+  description: string;
+}
+
 interface AppState {
   activeSurface: SurfaceKey;
   selectSurface: (surface: SurfaceKey) => void;
+
+  installedSkills: InstalledSkill[];
+  installSkill: (skill: InstalledSkill) => void;
 
   /**
    * The live Design session is shared because its surface is intentionally
@@ -147,6 +157,13 @@ export const useAppStore = create<AppState>((set) => ({
       host !== undefined && state.designSession.host !== host
         ? state
         : { designSession: emptyDesignSession() },
+    ),
+  installedSkills: [],
+  installSkill: (skill) =>
+    set((state) =>
+      state.installedSkills.some((installed) => installed.id === skill.id)
+        ? state
+        : { installedSkills: [...state.installedSkills, skill] },
     ),
 
   plugins: null,

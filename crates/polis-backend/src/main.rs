@@ -36,6 +36,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let reply = dispatch(
             backend.grants(),
             &backend.negotiation().capabilities,
+            backend.payload_limit(),
             request,
         );
         backend.send(&reply)?;

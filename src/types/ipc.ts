@@ -690,6 +690,17 @@ export interface PluginEntry {
   uiEntry: string | null;
   ready: boolean;
   reason: string | null;
+  /**
+   * Granted invoke budget in serialized bytes. Null when the plugin was
+   * refused: there is no verified manifest, and a default here would look
+   * like a grant.
+   */
+  maxPayloadBytes: number | null;
+  /**
+   * True when the host ceiling cut what the manifest asked for. Null when
+   * refused: a clamp is a fact about a declaration we do not have.
+   */
+  payloadBudgetClamped: boolean | null;
 }
 
 export interface PluginInventory {

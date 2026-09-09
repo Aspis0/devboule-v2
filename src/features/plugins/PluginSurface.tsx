@@ -10,9 +10,16 @@ export interface PluginSurfaceProps {
   entry: string | null;
   assetOrigin: string;
   capabilities: readonly string[];
+  maxPayloadBytes?: number | null;
 }
 
-export function PluginSurface({ pluginId, entry, assetOrigin, capabilities }: PluginSurfaceProps) {
+export function PluginSurface({
+  pluginId,
+  entry,
+  assetOrigin,
+  capabilities,
+  maxPayloadBytes,
+}: PluginSurfaceProps) {
   if (entry === null) {
     return (
       <PluginFailure
@@ -27,11 +34,18 @@ export function PluginSurface({ pluginId, entry, assetOrigin, capabilities }: Pl
       entry={entry}
       assetOrigin={assetOrigin}
       capabilities={capabilities}
+      maxPayloadBytes={maxPayloadBytes}
     />
   );
 }
 
-function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: PluginSurfaceProps) {
+function PluginSurfaceContent({
+  pluginId,
+  entry,
+  assetOrigin,
+  capabilities,
+  maxPayloadBytes,
+}: PluginSurfaceProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const frameTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const capabilitiesRef = useRef(capabilities);
@@ -71,6 +85,7 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
       pluginId,
       pluginOrigin: origin,
       capabilities: capabilitiesRef.current,
+      maxPayloadBytes,
       servedCapabilities: HOST_SERVED_CAPABILITIES,
       route: (method, payload) => invokePlugin(pluginId, method, payload),
     });
@@ -90,7 +105,7 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
       bridge.dispose();
       void lease.release();
     };
-  }, [capabilitiesKey, origin, pluginId, reloadToken]);
+  }, [capabilitiesKey, maxPayloadBytes, origin, pluginId, reloadToken]);
 
   function rescan() {
     setFrameState("starting");
@@ -124,8 +139,9 @@ function PluginSurfaceContent({ pluginId, entry, assetOrigin, capabilities }: Pl
         // which drops any host-side sessions.watch subscriber; a document
         // that survived that rebuild would keep a subscription the host no
         // longer knows about and never learn to resubscribe. Remounting the
-        // frame makes every bridge rebuild a document reload.
-        key={`${pluginId}:${origin}:${capabilitiesKey}:${reloadToken}`}
+        // frame makes every bridge rebuild a document reload. The budget is
+        // part of the bridge identity for the same reason.
+        key={`${pluginId}:${origin}:${capabilitiesKey}:${maxPayloadBytes}:${reloadToken}`}
         className="plugin-surface-frame"
         title={`${pluginId} plugin`}
         src={`${origin}/${pluginId}/${entry}`}

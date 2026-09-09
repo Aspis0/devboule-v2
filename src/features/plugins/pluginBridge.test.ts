@@ -141,6 +141,104 @@ describe("createPluginBridge", () => {
     );
   });
 
+  it("rejects an oversized generic route request before calling the host", () => {
+    const { iframe, pluginWindow } = testFrame();
+    const route = vi.fn();
+    createPluginBridge({
+      iframe,
+      pluginId: "polis",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["workspace.root"],
+      maxPayloadBytes: 16,
+      route,
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oversized-request",
+      kind: "invoke",
+      method: "workspace.root",
+      payload: "0123456789abcdef",
+    });
+
+    expect(route).not.toHaveBeenCalled();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      {
+        v: 1,
+        id: "oversized-request",
+        kind: "error",
+        code: "response_too_large",
+        message: "plugin route request is too large (maximum 16 bytes)",
+      },
+      PLUGIN_ORIGIN,
+    );
+  });
+
+  it("rejects an oversized generic route response before posting it", async () => {
+    const { iframe, pluginWindow } = testFrame();
+    const route = vi.fn().mockResolvedValue("0123456789abcdef");
+    createPluginBridge({
+      iframe,
+      pluginId: "polis",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["workspace.root"],
+      maxPayloadBytes: 16,
+      route,
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "oversized-response",
+      kind: "invoke",
+      method: "workspace.root",
+    });
+
+    await Promise.resolve();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      {
+        v: 1,
+        id: "oversized-response",
+        kind: "error",
+        code: "response_too_large",
+        message: "plugin route response is too large (maximum 16 bytes)",
+      },
+      PLUGIN_ORIGIN,
+    );
+  });
+
+  it("does not turn a null inventory budget into a route grant", () => {
+    const { iframe, pluginWindow } = testFrame();
+    const route = vi.fn();
+    createPluginBridge({
+      iframe,
+      pluginId: "polis",
+      pluginOrigin: PLUGIN_ORIGIN,
+      capabilities: ["workspace.root"],
+      maxPayloadBytes: null,
+      route,
+    });
+
+    send(pluginWindow, PLUGIN_ORIGIN, {
+      v: 1,
+      id: "refused-budget",
+      kind: "invoke",
+      method: "workspace.root",
+      payload: "payload",
+    });
+
+    expect(route).not.toHaveBeenCalled();
+    expect(pluginWindow.postMessage).toHaveBeenCalledWith(
+      {
+        v: 1,
+        id: "refused-budget",
+        kind: "error",
+        code: "response_too_large",
+        message: "plugin route request is too large (maximum 0 bytes)",
+      },
+      PLUGIN_ORIGIN,
+    );
+  });
+
   it("posts a route rejection as a bridge error", async () => {
     const { iframe, pluginWindow } = testFrame();
     const route = vi.fn().mockRejectedValue({
