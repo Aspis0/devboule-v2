@@ -1628,7 +1628,7 @@ fn notify_observers(stream: &StreamState) {
     }
 }
 
-/// Enqueue one applied chunk for every attached viewer and enforce the
+/// Enqueue one applied chunk for every observer and enforce the
 /// slow-viewer budget. Called with the state lock held, after the emulator
 /// boundary advanced.
 ///

@@ -138,7 +138,7 @@ pub(super) struct Attachment {
     pub(super) pending_silences: VecDeque<u64>,
 }
 
-/// One item queued for the attached viewer, in wire order.
+/// One item queued for an observer, in wire order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum PendingItem {
     /// Screen state at `as_of_seq`. Always the first item of an attachment;

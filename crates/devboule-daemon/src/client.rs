@@ -1111,12 +1111,14 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                                         handler,
                                     },
                                 );
+                            // A reattach can follow a resume that replaced the
+                            // runtime, so the old default token may no longer
+                            // belong to this session generation.
                             inner
                                 .default_subscriptions
                                 .lock()
                                 .unwrap_or_else(|err| err.into_inner())
-                                .entry(session_id)
-                                .or_insert(*subscription_id);
+                                .insert(session_id, *subscription_id);
                         }
                     }
                     let tx = inner
