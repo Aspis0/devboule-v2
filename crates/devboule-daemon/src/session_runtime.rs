@@ -9,7 +9,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, SessionEvent,
-    SessionEventEnvelope, TranscriptIntegrity, WireError,
+    SessionEventEnvelope, SessionModel, TranscriptIntegrity, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -175,19 +175,9 @@ fn merge_claude_manifest(previous: &SessionEvent, incoming: SessionEvent) -> Ses
     };
     let mut merged_models = previous_models.clone();
     for incoming_model in models {
-        let match_id = merged_models
-            .iter()
-            .position(|model| model.model_id == incoming_model.model_id)
-            .or_else(|| {
-                incoming_model
-                    .model_id
-                    .strip_suffix("[1m]")
-                    .and_then(|base| {
-                        merged_models
-                            .iter()
-                            .position(|model| model.model_id == base)
-                    })
-            });
+        let match_id = merged_models.iter().position(|model| {
+            crate::claude_catalog::model_ids_match(&model.model_id, &incoming_model.model_id)
+        });
         if let Some(index) = match_id {
             let previous_model = &merged_models[index];
             let mut merged = incoming_model;
@@ -244,11 +234,7 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
         .into_iter()
         .map(|mut model| {
             let previous_model = previous_models.iter().find(|previous| {
-                previous.model_id == model.model_id
-                    || model
-                        .model_id
-                        .strip_suffix("[1m]")
-                        .is_some_and(|base| previous.model_id == base)
+                crate::claude_catalog::model_ids_match(&previous.model_id, &model.model_id)
             });
             if let Some(previous_model) = previous_model {
                 model.current_effort = model
@@ -268,14 +254,20 @@ fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> Se
             .any(|model| model.model_id == current_model_id);
         if !present {
             if let Some(previous_model) = previous_models.iter().find(|model| {
-                model.model_id == current_model_id
-                    || current_model_id
-                        .strip_suffix("[1m]")
-                        .is_some_and(|base| model.model_id == base)
+                crate::claude_catalog::model_ids_match(&model.model_id, current_model_id)
             }) {
                 let mut current_model = previous_model.clone();
                 current_model.model_id = current_model_id.to_string();
                 merged_models.push(current_model);
+            } else {
+                merged_models.push(SessionModel {
+                    model_id: current_model_id.to_string(),
+                    name: current_model_id.to_string(),
+                    description: None,
+                    context_tokens: None,
+                    current_effort: None,
+                    efforts: None,
+                });
             }
         }
     }

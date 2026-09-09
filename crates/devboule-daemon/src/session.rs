@@ -2253,9 +2253,9 @@ impl SessionRegistry {
         model_id: Option<&str>,
         effort: Option<&str>,
     ) -> Result<(), WireError> {
-        let Some(effort) = effort else {
+        if model_id.is_none() && effort.is_none() {
             return Ok(());
-        };
+        }
         let Some(SessionEvent::SessionManifest {
             current_model_id,
             models,
@@ -2278,13 +2278,16 @@ impl SessionRegistry {
             })?;
         let model = models
             .iter()
-            .find(|model| model.model_id == model_id)
+            .find(|model| crate::claude_catalog::model_ids_match(&model.model_id, model_id))
             .ok_or_else(|| {
                 WireError::new(
                     ErrorCode::InvalidRequest,
                     format!("Claude model '{model_id}' is not in the current catalog."),
                 )
             })?;
+        let Some(effort) = effort else {
+            return Ok(());
+        };
         let valid = model
             .efforts
             .as_ref()
@@ -6704,6 +6707,22 @@ mod tests {
             .expect_err("unknown effort must be rejected locally");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert!(error.message.contains("not supported"));
+
+        let error = SessionRegistry::validate_claude_effort(
+            Some(&manifest),
+            Some("claude-bogus-999"),
+            None,
+        )
+        .expect_err("unknown model must be rejected locally");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not in the current catalog"));
+
+        SessionRegistry::validate_claude_effort(
+            Some(&manifest),
+            Some("claude-sonnet-5[1m]"),
+            Some("high"),
+        )
+        .expect("model variants must use the base model catalog");
     }
 
     fn tmp_registry_cache() -> std::path::PathBuf {

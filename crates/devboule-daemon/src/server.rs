@@ -429,20 +429,40 @@ impl ServerState {
         let Some(agent) = crate::provider_catalog::find_available("claude") else {
             return crate::claude_catalog::fallback_models();
         };
-        if agent.install_channel != crate::provider_catalog::InstallChannel::Native {
-            return crate::claude_catalog::fallback_models();
-        }
-        let version = self
-            .provider_cli_version("claude", &agent.executable)
-            .or_else(|| std::env::var_os("DEVBOULE_TEST_NO_NETWORK").map(|_| "test".to_string()));
-        let Some(version) = version else {
-            self.start_claude_version_probe(agent);
-            return crate::claude_catalog::fallback_models();
+        let (catalog_path, version, script) = match agent.install_channel {
+            crate::provider_catalog::InstallChannel::Native => {
+                let version = self
+                    .provider_cli_version("claude", &agent.executable)
+                    .or_else(|| {
+                        std::env::var_os("DEVBOULE_TEST_NO_NETWORK").map(|_| "test".to_string())
+                    });
+                let Some(version) = version else {
+                    self.start_claude_version_probe(agent);
+                    return crate::claude_catalog::fallback_models();
+                };
+                (agent.executable, version, false)
+            }
+            crate::provider_catalog::InstallChannel::Npm => {
+                let Some(script) = agent.prefix_args.first().map(std::path::PathBuf::from) else {
+                    eprintln!("Claude npm installation has no local script to scrape");
+                    return crate::claude_catalog::fallback_models();
+                };
+                let Some(version) = agent.installed_version else {
+                    eprintln!(
+                        "Claude npm installation has no package version; model catalog unavailable"
+                    );
+                    return crate::claude_catalog::fallback_models();
+                };
+                (script, version, true)
+            }
+            crate::provider_catalog::InstallChannel::NpxRegistry => {
+                return crate::claude_catalog::fallback_models();
+            }
         };
         if let Some(models) = crate::claude_catalog::cached(self.sessions.runtime_dir(), &version) {
             return models;
         }
-        self.start_claude_derivation(agent.executable, version);
+        self.start_claude_derivation(catalog_path, version, script);
         crate::claude_catalog::fallback_models()
     }
 
@@ -468,7 +488,7 @@ impl ServerState {
             .spawn(move || {
                 if let Some((version, fingerprint)) = probe_native_version(&state, &agent) {
                     state.record_provider_cli_version("claude", &version, fingerprint);
-                    state.start_claude_derivation(executable, version);
+                    state.start_claude_derivation(executable, version, false);
                 }
                 state
                     .claude_version_probes
@@ -484,10 +504,19 @@ impl ServerState {
         }
     }
 
-    fn start_claude_derivation(self: &Arc<Self>, executable: std::path::PathBuf, version: String) {
+    fn start_claude_derivation(
+        self: &Arc<Self>,
+        catalog_path: std::path::PathBuf,
+        version: String,
+        script: bool,
+    ) {
         let state = Arc::clone(self);
         let runtime_dir = self.sessions.runtime_dir().to_path_buf();
-        let source = crate::claude_catalog::source_for(&executable);
+        let source = if script {
+            crate::claude_catalog::source_for_script(&catalog_path)
+        } else {
+            crate::claude_catalog::source_for(&catalog_path)
+        };
         let _ =
             crate::claude_catalog::start_derivation(source, runtime_dir, version, move |models| {
                 state.sessions.publish_claude_catalog(models)
