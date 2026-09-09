@@ -2380,7 +2380,9 @@ mod tests {
         );
 
         journal.shutdown();
-        std::fs::remove_dir_all(dir).expect("cleanup");
+        // Best-effort, like every other test here: shutdown gives the worker a
+        // budget and moves on, so the database may still be open on Windows.
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
