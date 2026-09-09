@@ -36,6 +36,7 @@ import {
   reasonFromCause,
   sessionPermissionRespond,
 } from "../../lib/tauri";
+import { useAppStore } from "../../store/appStore";
 import "./Workspace.css";
 
 type ActiveSidePanel = MockSurface["id"];
@@ -77,6 +78,7 @@ export function formatPermissionCommand(request: PermissionRequest): string | nu
 }
 
 export function Workspace() {
+  const installedSkills = useAppStore((state) => state.installedSkills);
   const {
     visibleProjects,
     loading: projectsLoading,
@@ -579,6 +581,33 @@ export function Workspace() {
                   {projectsError === null && !projectsLoading && visibleProjects.length === 0 ? (
                     <div className="workspace-empty">No matching workspaces</div>
                   ) : null}
+                  <section
+                    className="workspace-skills-section"
+                    aria-labelledby="workspace-skills-heading"
+                  >
+                    <h2 id="workspace-skills-heading">Skills</h2>
+                    {installedSkills.length > 0 ? (
+                      <>
+                        <div className="workspace-skills-list">
+                          {installedSkills.map((skill) => (
+                            <div
+                              className="workspace-skill-row"
+                              key={skill.id}
+                              title={skill.description}
+                            >
+                              <span className="workspace-skill-name">{skill.name}</span>
+                              <span className="workspace-skill-author">{skill.author}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="workspace-skills-note">
+                          Session only — not saved to disk.
+                        </div>
+                      </>
+                    ) : (
+                      <div className="workspace-skills-empty">No skills yet.</div>
+                    )}
+                  </section>
                 </>
               )}
             </div>

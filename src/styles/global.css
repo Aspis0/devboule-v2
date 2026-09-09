@@ -423,6 +423,79 @@ button:focus-visible {
   background: transparent;
 }
 
+.crescent-page-arrow {
+  position: absolute;
+  top: 54px;
+  z-index: 1;
+  display: grid;
+  width: 24px;
+  height: 48px;
+  place-items: center;
+  padding: 0;
+  color: var(--silence);
+  background: transparent;
+  cursor: pointer;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 30px;
+  line-height: 1;
+}
+
+/* The arc ends at x=240.8 and x=699.2; these 24px boxes sit outside both
+   endpoints and clear the Marketplace label near the right-hand endpoint. */
+.crescent-page-arrow-prev {
+  left: 201px;
+}
+
+.crescent-page-arrow-next {
+  right: 141px;
+}
+
+.crescent-page-arrow:hover {
+  color: var(--terracotta-deep);
+}
+
+.crescent-install-error {
+  position: absolute;
+  /* Ten-pixel text at line-height 1.2 gives a 12px band at top:0: nav y∈[0,12]
+     versus arc stroke top ink 21.9−5.5=16.4, leaving 4.4px clearance. */
+  top: 0;
+  right: 18px;
+  bottom: auto;
+  left: 18px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--danger-deep);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crescent-install-error span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crescent-install-error button {
+  flex: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  text-decoration: underline;
+}
+
 .nav-point-circle {
   display: grid;
   width: 28px;
@@ -517,6 +590,10 @@ button:focus-visible {
   font-size: 10.5px;
   font-weight: 500;
   letter-spacing: 0.04em;
+  /* 880−141−24=715; x≈662.4 leaves 52.6px of half-label budget. */
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transform: translateX(-50%);
   white-space: nowrap;
 }

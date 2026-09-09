@@ -3,9 +3,19 @@ import { pluginInstall, pluginsList, pluginsRescan, reasonFromCause } from "../l
 import type { PluginInventory } from "../types/ipc";
 import type { SurfaceKey } from "../types/surface";
 
+export interface InstalledSkill {
+  id: string;
+  name: string;
+  author: string;
+  description: string;
+}
+
 interface AppState {
   activeSurface: SurfaceKey;
   selectSurface: (surface: SurfaceKey) => void;
+
+  installedSkills: InstalledSkill[];
+  installSkill: (skill: InstalledSkill) => void;
 
   /**
    * What discovery last reported. `null` means nobody has asked yet, which is
@@ -33,6 +43,14 @@ interface AppState {
 export const useAppStore = create<AppState>((set) => ({
   activeSurface: "workspace",
   selectSurface: (activeSurface) => set({ activeSurface }),
+
+  installedSkills: [],
+  installSkill: (skill) =>
+    set((state) =>
+      state.installedSkills.some((installed) => installed.id === skill.id)
+        ? state
+        : { installedSkills: [...state.installedSkills, skill] },
+    ),
 
   plugins: null,
   installing: null,
