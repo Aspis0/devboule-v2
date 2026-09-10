@@ -644,11 +644,11 @@ fn validate_permission_field(field: &str, value: &str) -> Result<(), PermissionR
 }
 
 fn decision_from_outcome(journal_outcome: &str) -> HostDecision {
-    // Invariant: only `allow_once` grants a spawn. Any new journal outcome
+    // Invariant: only the allow kinds grant a spawn. Any new journal outcome
     // that is not mapped here is a deny (Cancelled) — the catch-all is
     // deliberate, not a leftover default.
     match journal_outcome {
-        "allow_once" => HostDecision::Allow,
+        "allow_once" | "allow_always" => HostDecision::Allow,
         "deny" => HostDecision::Deny,
         "timeout" => HostDecision::Timeout,
         _ => HostDecision::Cancelled,
@@ -1042,6 +1042,16 @@ mod tests {
             .expect("reject-only policy"));
         assert_eq!(broker.pending_len(), 1);
         assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    #[test]
+    fn every_allow_kind_is_an_allow_decision() {
+        use super::{decision_from_outcome, HostDecision};
+        assert_eq!(decision_from_outcome("allow_once"), HostDecision::Allow);
+        assert_eq!(decision_from_outcome("allow_always"), HostDecision::Allow);
+        assert_eq!(decision_from_outcome("deny"), HostDecision::Deny);
+        assert_eq!(decision_from_outcome("timeout"), HostDecision::Timeout);
+        assert_eq!(decision_from_outcome("cancelled"), HostDecision::Cancelled);
     }
 
     #[test]
