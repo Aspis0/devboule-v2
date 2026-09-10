@@ -51,6 +51,7 @@ pub struct ServerState {
     shutdown_cvar: Arc<Condvar>,
     idempotency: Mutex<IdempotencyStore>,
     pub(crate) process_job: Arc<JobObject>,
+    pub(crate) mcp: Arc<crate::mcp_broker::McpBroker>,
     pub sessions: SessionRegistry,
     conn_ids: AtomicU64,
     journal_error: Mutex<Option<String>>,
@@ -146,6 +147,7 @@ impl ServerState {
     ) -> Result<Arc<Self>, DaemonError> {
         let _ = paths.ensure_dir();
         let process_job = Arc::new(JobObject::new()?);
+        let mcp = Arc::new(crate::mcp_broker::McpBroker::new(&paths.dir)?);
         let (journal, journal_error) = match Journal::open(&paths.journal_file()) {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
@@ -159,6 +161,7 @@ impl ServerState {
             shutdown_cvar: Arc::new(Condvar::new()),
             idempotency: Mutex::new(IdempotencyStore::default()),
             process_job,
+            mcp,
             sessions: SessionRegistry::new(paths, journal),
             conn_ids: AtomicU64::new(1),
             journal_error: Mutex::new(journal_error),
@@ -791,6 +794,7 @@ fn run_windows() -> Result<(), DaemonError> {
     lock.write_identity(pid, &instance_id, &paths.pipe_name)?;
 
     let state = ServerState::with_paths(instance_id, paths.clone())?;
+    let mcp_server = state.mcp.start(&state).map_err(DaemonError::from)?;
     let (listener, shutdown) = transport::bind(&paths, Arc::clone(&state.stop))?;
     let accept_state = Arc::clone(&state);
     let accept = std::thread::Builder::new()
@@ -809,6 +813,7 @@ fn run_windows() -> Result<(), DaemonError> {
         std::thread::sleep(JOIN_SLICE);
     }
     bounded_join(accept, JOIN_SLICE);
+    drop(mcp_server);
     drop(lock);
     Ok(())
 }

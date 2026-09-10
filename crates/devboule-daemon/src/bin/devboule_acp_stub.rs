@@ -4,7 +4,8 @@
 //! update, a tool update, and a correlated prompt response. It also exits on
 //! stdin EOF so the test covers the daemon's shutdown ownership.
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -153,6 +154,8 @@ fn main() -> io::Result<()> {
                         }
                     }),
                 )?;
+                call_mcp_tools_list_if_configured(&request)?;
+                emit_mcp_ready_if_configured(&mut stdout, &request)?;
             }
             "session/load" => {
                 for update in [
@@ -200,6 +203,8 @@ fn main() -> io::Result<()> {
                         }
                     }),
                 )?;
+                call_mcp_tools_list_if_configured(&request)?;
+                emit_mcp_ready_if_configured(&mut stdout, &request)?;
             }
             "session/set_model" => {
                 let model_id = request
@@ -435,6 +440,86 @@ fn emit(stdout: &mut impl Write, value: Value) -> io::Result<()> {
     std::thread::sleep(Duration::from_millis(1));
     stdout.write_all(b"\r\n")?;
     stdout.flush()
+}
+
+fn emit_mcp_ready_if_configured(stdout: &mut impl Write, request: &Value) -> io::Result<()> {
+    let configured = request
+        .pointer("/params/mcpServers")
+        .and_then(Value::as_array)
+        .is_some_and(|servers| {
+            servers
+                .iter()
+                .any(|server| server.get("name").and_then(Value::as_str) == Some("devboule"))
+        });
+    if configured {
+        emit(
+            stdout,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "_x.ai/mcp/server_status",
+                "params": {
+                    "sessionId": "stub-session",
+                    "name": "devboule",
+                    "source": "local",
+                    "status": "ready",
+                    "reason": "initialized",
+                    "tools": null
+                }
+            }),
+        )?;
+    }
+    Ok(())
+}
+
+fn call_mcp_tools_list_if_configured(request: &Value) -> io::Result<()> {
+    let Some(server) = request
+        .pointer("/params/mcpServers")
+        .and_then(Value::as_array)
+        .and_then(|servers| {
+            servers
+                .iter()
+                .find(|server| server.get("name").and_then(Value::as_str) == Some("devboule"))
+        })
+    else {
+        return Ok(());
+    };
+    let url = server
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "MCP URL is missing"))?;
+    let endpoint = url
+        .strip_prefix("http://")
+        .and_then(|url| url.split('/').next())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "MCP URL is invalid"))?;
+    let path = url
+        .strip_prefix("http://")
+        .and_then(|url| url.split_once('/').map(|(_, path)| format!("/{path}")))
+        .unwrap_or_else(|| "/".to_string());
+    let authorization = server
+        .pointer("/headers")
+        .and_then(Value::as_array)
+        .and_then(|headers| {
+            headers.iter().find_map(|header| {
+                (header.get("name").and_then(Value::as_str) == Some("Authorization"))
+                    .then(|| header.get("value").and_then(Value::as_str))
+                    .flatten()
+            })
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "MCP Bearer is missing"))?;
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+    let mut stream = TcpStream::connect(endpoint)?;
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nAuthorization: {authorization}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes())?;
+    stream.shutdown(Shutdown::Write)?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)?;
+    if !response.starts_with(b"HTTP/1.1 200") {
+        return Err(io::Error::other("MCP tools/list was rejected"));
+    }
+    Ok(())
 }
 
 fn write_observation_files() {

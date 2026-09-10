@@ -1,4 +1,8 @@
 //! Pi RPC stdio adapter for live agent sessions.
+//!
+//! Pi is intentionally outside the MCP broker slice: its RPC protocol has no
+//! MCP server configuration or readiness signal, so Pi sessions do not receive
+//! the daemon broker.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
