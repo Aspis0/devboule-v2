@@ -409,6 +409,9 @@ impl SessionRuntime {
                 | SessionEvent::AgentToolCall { .. }
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
+                | SessionEvent::AgentTaskStarted { .. }
+                | SessionEvent::AgentTaskNotification { .. }
+                | SessionEvent::AgentBackgroundTasksChanged { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
@@ -1395,6 +1398,9 @@ impl SessionRuntime {
                 | SessionEvent::AgentToolCall { .. }
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
+                | SessionEvent::AgentTaskStarted { .. }
+                | SessionEvent::AgentTaskNotification { .. }
+                | SessionEvent::AgentBackgroundTasksChanged { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }

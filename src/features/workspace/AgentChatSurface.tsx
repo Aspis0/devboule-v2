@@ -198,6 +198,8 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     status: "initializing",
     streaming: false,
     availableCommands: [],
+    subagents: [],
+    subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
     lastFinished: null,
     manifest: null,
     pendingSwitch: null,

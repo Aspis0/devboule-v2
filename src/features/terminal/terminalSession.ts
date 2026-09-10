@@ -403,6 +403,9 @@ export class TerminalSession {
       case "agent_tool_call":
       case "agent_tool_update":
       case "agent_finished":
+      case "agent_task_started":
+      case "agent_task_notification":
+      case "agent_background_tasks_changed":
       case "agent_error":
       case "agent_stderr":
       case "agent_reported":

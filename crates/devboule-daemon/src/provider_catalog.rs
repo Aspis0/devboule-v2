@@ -72,6 +72,7 @@ pub const CLAUDE_STREAM_JSON_ARGS: &[&str] = &[
     "stream-json",
     "--verbose",
     "--include-partial-messages",
+    "--forward-subagent-text",
     "--strict-mcp-config",
     "--setting-sources",
     "",

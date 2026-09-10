@@ -3788,6 +3788,8 @@ mod tests {
             SessionEvent::AgentMessage {
                 message_id: Some("m1".to_string()),
                 text: "back".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             },
             None,
         );

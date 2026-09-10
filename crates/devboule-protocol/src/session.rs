@@ -252,6 +252,10 @@ pub enum SessionEvent {
     AgentMessage {
         message_id: Option<String>,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spawn_depth: Option<u32>,
     },
     /// Echo of the user prompt, one ACP `user_message_chunk` at a time.
     AgentUserMessage {
@@ -262,12 +266,16 @@ pub enum SessionEvent {
     AgentThought {
         message_id: Option<String>,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spawn_depth: Option<u32>,
     },
     /// Slash commands advertised by `available_commands_update`.
     AvailableCommands {
         commands: Vec<AvailableCommandView>,
     },
-    /// An ACP tool call announced by the agent. A separate permission request
+    /// An agent tool call announced by the agent. A separate permission request
     /// event carries the user-facing authorization conversation.
     ///
     /// `kind` is the ACP `ToolKind` snake_case name (`read`, `edit`, `execute`,
@@ -281,8 +289,14 @@ pub enum SessionEvent {
         kind: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         locations: Option<Vec<ToolLocation>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spawn_depth: Option<u32>,
     },
-    /// An ACP tool-call status update. The optional text is the textual part
+    /// An agent tool-call status update. The optional text is the textual part
     /// of any content the agent supplied with the update.
     ///
     /// `locations`, when present, replace the previous list wholesale. They
@@ -296,6 +310,10 @@ pub enum SessionEvent {
         kind: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         locations: Option<Vec<ToolLocation>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spawn_depth: Option<u32>,
     },
     /// The response to one `session/prompt` request.
     AgentFinished {
@@ -304,6 +322,35 @@ pub enum SessionEvent {
         model_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<TurnUsage>,
+    },
+    /// A Claude stream-json subagent birth. The absence of status and summary
+    /// is intentional: Claude supplies those only in task_notification.
+    AgentTaskStarted {
+        task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent_type: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_backgrounded: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spawn_depth: Option<u32>,
+    },
+    /// A Claude stream-json subagent terminal notification.
+    AgentTaskNotification {
+        task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        status: AgentTaskStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+    },
+    /// The current set of background tasks. This is replacement state, not a
+    /// lifecycle event; its entries do not carry subagent type or status.
+    AgentBackgroundTasksChanged {
+        tasks: Vec<AgentBackgroundTask>,
     },
     /// A valid ACP error response or a transport/decoding error surfaced to
     /// the attached session instead of being turned into a silent hang.
@@ -606,6 +653,24 @@ pub struct ToolLocation {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+}
+
+/// The only terminal statuses Claude exposes for a task notification.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTaskStatus {
+    Completed,
+    Failed,
+    Stopped,
+}
+
+/// One entry in Claude's replacement set of background tasks.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentBackgroundTask {
+    pub task_id: String,
+    pub task_type: String,
+    pub title: String,
 }
 
 /// Token usage attached to a prompt turn, when the agent supplied it.
@@ -1296,6 +1361,9 @@ mod tests {
                 path: "src/lib.rs".to_string(),
                 line: Some(12),
             }]),
+            subagent_type: None,
+            parent_tool_use_id: None,
+            spawn_depth: None,
         };
         let encoded = serde_json::to_value(&with).expect("json");
         assert_eq!(encoded["type"], "agent_tool_call");
@@ -1312,6 +1380,9 @@ mod tests {
             status: "pending".to_string(),
             kind: None,
             locations: None,
+            subagent_type: None,
+            parent_tool_use_id: None,
+            spawn_depth: None,
         };
         let encoded = serde_json::to_value(&without).expect("json");
         assert!(encoded.get("kind").is_none());
@@ -1328,6 +1399,8 @@ mod tests {
                 path: "src/main.rs".to_string(),
                 line: None,
             }]),
+            parent_tool_use_id: None,
+            spawn_depth: None,
         };
         let encoded = serde_json::to_value(&update).expect("json");
         assert_eq!(encoded["type"], "agent_tool_update");

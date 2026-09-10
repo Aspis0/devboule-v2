@@ -1705,6 +1705,8 @@ mod tests {
             event: SessionEvent::AgentMessage {
                 message_id: None,
                 text: "shared event".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             },
         };
         client.emit("shared", event.clone());
@@ -1846,6 +1848,8 @@ mod tests {
                 event: devboule_protocol::SessionEvent::AgentMessage {
                     message_id: None,
                     text: "still live".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
             },
         );
@@ -1887,6 +1891,8 @@ mod tests {
                 event: devboule_protocol::SessionEvent::AgentMessage {
                     message_id: None,
                     text: "recovered".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
             },
         );

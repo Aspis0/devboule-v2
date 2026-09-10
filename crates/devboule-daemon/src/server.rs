@@ -1173,6 +1173,11 @@ fn send_pending_event(
             SessionEvent::AgentToolCall { .. } => " agent_tool_call".to_string(),
             SessionEvent::AgentToolUpdate { .. } => " agent_tool_update".to_string(),
             SessionEvent::AgentFinished { .. } => " agent_finished".to_string(),
+            SessionEvent::AgentTaskStarted { .. } => " agent_task_started".to_string(),
+            SessionEvent::AgentTaskNotification { .. } => " agent_task_notification".to_string(),
+            SessionEvent::AgentBackgroundTasksChanged { .. } => {
+                " agent_background_tasks_changed".to_string()
+            }
             SessionEvent::AgentError { .. } => " agent_error".to_string(),
             SessionEvent::AgentStderr { .. } => " agent_stderr".to_string(),
             SessionEvent::PermissionRequest { .. } => " permission_request".to_string(),

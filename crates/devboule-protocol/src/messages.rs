@@ -784,6 +784,8 @@ mod tests {
                 event: SessionEvent::AgentMessage {
                     message_id: None,
                     text: "hello".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
             },
         };

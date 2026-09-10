@@ -3,10 +3,41 @@ import type { PermissionRequest, SessionEvent, SessionManifest } from "../types/
 
 export type AgentChannel = Channel<SessionEvent>;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
+export type AgentSubagentStatus = "running" | "finished" | "failed" | "stopped" | "unknown";
+
+export interface AgentSubagent {
+  id: string;
+  title: string | null;
+  subagentType: string | null;
+  status: AgentSubagentStatus;
+  rawStatus: string | null;
+  summary: string | null;
+  parentToolUseId: string | null;
+  spawnDepth: number | null;
+  isBackground: boolean | null;
+}
+
+export type AgentSubagentStatusCounts = Record<AgentSubagentStatus, number>;
 
 export type AgentChatItem =
-  | { id: string; role: "user" | "assistant" | "thought"; text: string; messageId: string | null }
-  | { id: string; role: "tool"; text: string; toolCallId: string; status: string }
+  | {
+      id: string;
+      role: "user" | "assistant" | "thought";
+      text: string;
+      messageId: string | null;
+      parentToolUseId?: string;
+      spawnDepth?: number;
+    }
+  | {
+      id: string;
+      role: "tool";
+      text: string;
+      toolCallId: string;
+      status: string;
+      parentToolUseId?: string;
+      spawnDepth?: number;
+      subagentType?: string;
+    }
   | { id: string; role: "error"; text: string };
 
 export interface AgentFinished {
@@ -20,6 +51,8 @@ export interface AgentSessionState {
   status: AgentStatus;
   streaming: boolean;
   availableCommands: Array<{ name: string; description: string; hint?: string }>;
+  subagents: AgentSubagent[];
+  subagentStatusCounts: AgentSubagentStatusCounts;
   lastFinished: AgentFinished | null;
   manifest: SessionManifest | null;
   /** A model/effort switch sent to the daemon that no manifest confirmed yet. */
@@ -39,6 +72,8 @@ const INITIAL_STATE: AgentSessionState = {
   status: "initializing",
   streaming: false,
   availableCommands: [],
+  subagents: [],
+  subagentStatusCounts: { running: 0, finished: 0, failed: 0, stopped: 0, unknown: 0 },
   lastFinished: null,
   manifest: null,
   pendingSwitch: null,
@@ -58,6 +93,32 @@ function eventError(error: unknown): string {
   return "The agent session did not answer.";
 }
 
+function itemParentage(
+  parentToolUseId?: string,
+  spawnDepth?: number,
+): {
+  parentToolUseId?: string;
+  spawnDepth?: number;
+} {
+  return {
+    ...(parentToolUseId === undefined ? {} : { parentToolUseId }),
+    ...(spawnDepth === undefined ? {} : { spawnDepth }),
+  };
+}
+
+function normalizeTaskNotificationStatus(
+  status: "completed" | "failed" | "stopped",
+): AgentSubagentStatus {
+  switch (status) {
+    case "completed":
+      return "finished";
+    case "failed":
+      return "failed";
+    case "stopped":
+      return "stopped";
+  }
+}
+
 /**
  * Headless ACP session controller. The daemon owns the agent process; this
  * class only owns the attachment, prompt ordering, and derived chat view.
@@ -66,7 +127,7 @@ export class AgentSession {
   private state: AgentSessionState = INITIAL_STATE;
   private readonly listeners = new Set<() => void>();
   private readonly blocks = new Map<string, number>();
-  private readonly activeBlocks = new Map<MessageRole, string>();
+  private readonly activeBlocks = new Map<string, string>();
   private activeRole: MessageRole | null = null;
   private nextItemId = 1;
   private nextAnonymousBlock = 1;
@@ -207,11 +268,23 @@ export class AgentSession {
         return;
       case "agent_message":
         this.ensureTurn();
-        this.appendText("assistant", event.messageId, event.text);
+        this.appendText(
+          "assistant",
+          event.messageId,
+          event.text,
+          event.parentToolUseId,
+          event.spawnDepth,
+        );
         return;
       case "agent_thought":
         this.ensureTurn();
-        this.appendText("thought", event.messageId, event.text);
+        this.appendText(
+          "thought",
+          event.messageId,
+          event.text,
+          event.parentToolUseId,
+          event.spawnDepth,
+        );
         return;
       case "agent_finished":
         this.turnOpen = false;
@@ -225,6 +298,15 @@ export class AgentSession {
             ...(event.usage === undefined ? {} : { usage: event.usage }),
           },
         });
+        return;
+      case "agent_task_started":
+        this.startSubagent(event);
+        return;
+      case "agent_task_notification":
+        this.notifySubagent(event);
+        return;
+      case "agent_background_tasks_changed":
+        this.reconcileBackgroundTasks(event.tasks);
         return;
       case "agent_error":
         this.fail(event.message || "The agent reported an unknown error.");
@@ -259,13 +341,27 @@ export class AgentSession {
       }
       case "agent_tool_call":
         this.ensureTurn();
-        this.appendTool(event.toolCallId, event.title, event.status);
+        this.appendTool(
+          event.toolCallId,
+          event.title,
+          event.status,
+          event.parentToolUseId,
+          event.spawnDepth,
+          event.subagentType,
+        );
         return;
       case "agent_tool_update":
         this.ensureTurn();
-        this.updateTool(event.toolCallId, event.status, event.text);
+        this.updateTool(
+          event.toolCallId,
+          event.status,
+          event.text,
+          event.parentToolUseId,
+          event.spawnDepth,
+        );
         return;
       case "exit":
+        this.stopRunningSubagents();
         if (this.turnOpen) {
           this.fail("The agent stopped before finishing this turn.");
         } else {
@@ -273,6 +369,7 @@ export class AgentSession {
         }
         return;
       case "recovered":
+        this.stopRunningSubagents();
         this.fail("This agent session is no longer available.");
         return;
       case "output":
@@ -374,9 +471,15 @@ export class AgentSession {
     if (!this.turnOpen) this.beginTurn();
   }
 
-  private appendText(role: MessageRole, messageId: string | null, text: string): void {
+  private appendText(
+    role: MessageRole,
+    messageId: string | null,
+    text: string,
+    parentToolUseId?: string,
+    spawnDepth?: number,
+  ): void {
     this.prepareRole(role);
-    const key = this.blockKey(role, messageId);
+    const key = this.blockKey(role, messageId, parentToolUseId);
     const index = this.blocks.get(key);
     if (index === undefined) {
       const item: AgentChatItem = {
@@ -384,9 +487,10 @@ export class AgentSession {
         role,
         text,
         messageId,
+        ...itemParentage(parentToolUseId, spawnDepth),
       };
       this.blocks.set(key, this.state.items.length);
-      this.activeBlocks.set(role, key);
+      this.activeBlocks.set(this.activeBlockKey(role, parentToolUseId), key);
       this.update({ items: [...this.state.items, item] });
       return;
     }
@@ -395,11 +499,18 @@ export class AgentSession {
     const item = items[index];
     if (item.role !== role) return;
     items[index] = { ...item, text: item.text + text };
-    this.activeBlocks.set(role, key);
+    this.activeBlocks.set(this.activeBlockKey(role, parentToolUseId), key);
     this.update({ items });
   }
 
-  private appendTool(toolCallId: string, title: string, status: string): void {
+  private appendTool(
+    toolCallId: string,
+    title: string,
+    status: string,
+    parentToolUseId?: string,
+    spawnDepth?: number,
+    subagentType?: string,
+  ): void {
     // A tool-call item is a transcript boundary. Tool updates for an existing
     // item mutate it in place and must not close text that arrived afterward.
     this.closeActiveBlocks();
@@ -416,6 +527,8 @@ export class AgentSession {
             text: title,
             toolCallId,
             status,
+            ...itemParentage(parentToolUseId, spawnDepth),
+            ...(subagentType === undefined ? {} : { subagentType }),
           },
         ],
       });
@@ -429,11 +542,23 @@ export class AgentSession {
     this.update({ items });
   }
 
-  private updateTool(toolCallId: string, status: string | null, text: string | null): void {
+  private updateTool(
+    toolCallId: string,
+    status: string | null,
+    text: string | null,
+    parentToolUseId?: string,
+    spawnDepth?: number,
+  ): void {
     const key = `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
     if (index === undefined) {
-      this.appendTool(toolCallId, text ?? "Tool call", status ?? "running");
+      this.appendTool(
+        toolCallId,
+        text ?? "Tool call",
+        status ?? "running",
+        parentToolUseId,
+        spawnDepth,
+      );
       return;
     }
 
@@ -448,11 +573,106 @@ export class AgentSession {
     this.update({ items });
   }
 
-  private blockKey(role: MessageRole, messageId: string | null): string {
-    if (messageId !== null) return `${role}:${this.turn}:${messageId}`;
-    const active = this.activeBlocks.get(role);
+  private startSubagent(event: Extract<SessionEvent, { type: "agent_task_started" }>): void {
+    const current = this.state.subagents.find((subagent) => subagent.id === event.taskId);
+    this.replaceSubagent({
+      id: event.taskId,
+      title: event.title ?? current?.title ?? null,
+      subagentType: event.subagentType ?? current?.subagentType ?? null,
+      status: "running",
+      rawStatus: null,
+      summary: null,
+      parentToolUseId: event.toolUseId ?? current?.parentToolUseId ?? null,
+      spawnDepth: event.spawnDepth ?? current?.spawnDepth ?? null,
+      isBackground: event.isBackgrounded ?? current?.isBackground ?? null,
+    });
+  }
+
+  private notifySubagent(event: Extract<SessionEvent, { type: "agent_task_notification" }>): void {
+    const current = this.state.subagents.find((subagent) => subagent.id === event.taskId);
+    this.replaceSubagent({
+      id: event.taskId,
+      title: current?.title ?? null,
+      subagentType: current?.subagentType ?? null,
+      status: normalizeTaskNotificationStatus(event.status),
+      rawStatus: event.status,
+      summary: event.summary ?? null,
+      parentToolUseId: event.toolUseId ?? current?.parentToolUseId ?? null,
+      spawnDepth: current?.spawnDepth ?? null,
+      isBackground: current?.isBackground ?? null,
+    });
+  }
+
+  private reconcileBackgroundTasks(
+    tasks: Extract<SessionEvent, { type: "agent_background_tasks_changed" }>["tasks"],
+  ): void {
+    const background = new Set(tasks.map((task) => task.taskId));
+    const known = new Set(this.state.subagents.map((subagent) => subagent.id));
+    const subagents = this.state.subagents.map((subagent) => ({
+      ...subagent,
+      isBackground: background.has(subagent.id),
+    }));
+    for (const task of tasks) {
+      if (known.has(task.taskId)) continue;
+      subagents.push({
+        id: task.taskId,
+        title: task.title,
+        subagentType: null,
+        status: "unknown",
+        rawStatus: null,
+        summary: null,
+        parentToolUseId: null,
+        spawnDepth: null,
+        isBackground: true,
+      });
+    }
+    this.updateSubagents(subagents);
+  }
+
+  private replaceSubagent(next: AgentSubagent): void {
+    const current = this.state.subagents.some((subagent) => subagent.id === next.id);
+    const subagents = current
+      ? this.state.subagents.map((subagent) => (subagent.id === next.id ? next : subagent))
+      : [...this.state.subagents, next];
+    this.updateSubagents(subagents);
+  }
+
+  private stopRunningSubagents(): void {
+    // A closed parent cannot keep a child running. This also settles an
+    // unknown child created only by a background membership snapshot: it has
+    // no lifecycle bookend, but must not leave a stale indicator.
+    const subagents = this.state.subagents.map((subagent) =>
+      subagent.status === "running" || subagent.status === "unknown"
+        ? { ...subagent, status: "stopped" as const }
+        : subagent,
+    );
+    if (subagents.some((subagent, index) => subagent !== this.state.subagents[index])) {
+      this.updateSubagents(subagents);
+    }
+  }
+
+  private updateSubagents(subagents: AgentSubagent[]): void {
+    const counts: AgentSubagentStatusCounts = {
+      running: 0,
+      finished: 0,
+      failed: 0,
+      stopped: 0,
+      unknown: 0,
+    };
+    for (const subagent of subagents) counts[subagent.status] += 1;
+    this.update({ subagents, subagentStatusCounts: counts });
+  }
+
+  private blockKey(role: MessageRole, messageId: string | null, parentToolUseId?: string): string {
+    const parent = parentToolUseId ?? "";
+    if (messageId !== null) return `${role}:${this.turn}:${parent}:${messageId}`;
+    const active = this.activeBlocks.get(this.activeBlockKey(role, parentToolUseId));
     if (active !== undefined) return active;
-    return `${role}:${this.turn}:anonymous:${this.nextAnonymousBlock++}`;
+    return `${role}:${this.turn}:${parent}:anonymous:${this.nextAnonymousBlock++}`;
+  }
+
+  private activeBlockKey(role: MessageRole, parentToolUseId?: string): string {
+    return `${role}:${parentToolUseId ?? ""}`;
   }
 
   /**
