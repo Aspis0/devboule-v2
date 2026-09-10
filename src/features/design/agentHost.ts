@@ -1,4 +1,4 @@
-import { AgentSession, type AgentSessionState } from "../../lib/agentSession";
+import { AgentSession, type AgentChatItem, type AgentSessionState } from "../../lib/agentSession";
 import {
   createSessionChannel,
   oracleAsk,
@@ -22,9 +22,11 @@ import type {
   Workspace,
 } from "../../types/ipc";
 import type {
+  DesignDocument,
   DesignGenerationOptions,
   DesignGenerationResult,
   DesignHost,
+  DesignTranscriptItem,
   PendingPermission,
 } from "./designHost";
 // These helpers are shared with Workspace for now; they would eventually belong in src/lib/.
@@ -36,7 +38,7 @@ import {
   MAX_AUTOMATIC_SKILL_SECTIONS,
 } from "./builtInSkills";
 export { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
-import { createOracleHost } from "./oracleHost";
+import { createDemoHost } from "./mockData";
 import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
 import { rankSkillsForQuery } from "./skillRanking";
 
@@ -61,6 +63,13 @@ interface ActiveRun {
   sessionId: string;
   prompt: string;
   itemStart: number;
+  /**
+   * Where this run's conversation begins in the live session's items. Null
+   * until the boundary is recorded, which is after the craft-selection
+   * pre-flight — the surface streams from here, so nothing of that pre-flight
+   * can leak into what the user reads as the agent's answer.
+   */
+  transcriptStart: number | null;
   toolObservations: Map<string, ToolObservation>;
   settled: boolean;
   resolve: (result: DesignGenerationResult) => void;
@@ -307,6 +316,50 @@ export function extractArtifactHtml(state: AgentSessionState, startIndex = 0): s
   return extractArtifact(state, startIndex).html;
 }
 
+/**
+ * The agent's own conversation from `startIndex` on: prose, reasoning, and tool
+ * activity. User echoes are dropped (the surface renders the user's prompt and
+ * the echo carries the doctrine block), and so are error items, which the run's
+ * summary card reports in full. An assistant or thought item with no text is a
+ * chunk that carried nothing, and a blank row would only be noise. Tool rows
+ * are always kept: a tool with no title yet is still activity.
+ */
+export function transcriptItems(
+  items: readonly AgentChatItem[],
+  startIndex: number,
+): DesignTranscriptItem[] {
+  const rows: DesignTranscriptItem[] = [];
+  for (let index = Math.max(0, startIndex); index < items.length; index += 1) {
+    const item = items[index];
+    if (item.role === "user" || item.role === "error") continue;
+    const parentage = {
+      ...(item.parentToolUseId === undefined ? {} : { parentToolUseId: item.parentToolUseId }),
+      ...(item.spawnDepth === undefined ? {} : { spawnDepth: item.spawnDepth }),
+    };
+    if (item.role === "tool") {
+      rows.push({
+        id: item.id,
+        role: "tool",
+        text: item.text,
+        toolCallId: item.toolCallId,
+        status: item.status,
+        ...parentage,
+        ...(item.subagentType === undefined ? {} : { subagentType: item.subagentType }),
+      });
+      continue;
+    }
+    if (item.text.trim().length === 0) continue;
+    rows.push({
+      id: item.id,
+      role: item.role,
+      text: item.text,
+      messageId: item.messageId,
+      ...parentage,
+    });
+  }
+  return rows;
+}
+
 function formatGroundingHit(result: OracleResult): string {
   const range = `:${result.line_start}-${result.line_end}`;
   const symbol =
@@ -487,9 +540,20 @@ export function invokeAgentCommand<T>(
 }
 
 export function createAgentHost(): DesignHost {
-  const oracleHost = createOracleHost();
+  // Document skeleton only. Its repository layers were Oracle's single global
+  // index, which never depended on the session's workspace, so they are not
+  // loaded here; see loadDocument below.
+  const documentHost = createDemoHost();
   let disposed = false;
   let activeRun: ActiveRun | null = null;
+  /**
+   * The transcript boundary of the latest run. It outlives the run on purpose: the
+   * surface reads it to keep showing the agent's words for the instant between the run
+   * settling and the finished transcript arriving on the result. A new generation
+   * clears it before any of its own work, so a stale boundary can never leak the
+   * previous run into a card that is already being shown as working.
+   */
+  let lastRunTranscriptStart: number | null = null;
   let activeRunSettlementCheck: (() => void) | null = null;
   let runPending = false;
   let sessionHandle: AgentSessionHandle | null = null;
@@ -999,6 +1063,7 @@ export function createAgentHost(): DesignHost {
       sessionId: handle.session.id,
       prompt,
       itemStart: 0,
+      transcriptStart: null,
       toolObservations: new Map<string, ToolObservation>(),
       settled: false,
       resolve: () => undefined,
@@ -1029,7 +1094,12 @@ export function createAgentHost(): DesignHost {
     signal.addEventListener("abort", onAbort, { once: true });
 
     // Record the boundary immediately before send(); send() clears lastFinished synchronously.
-    run.itemStart = handle.controller.getState().items.length;
+    // The same index is the transcript boundary, and it is set in the same step so the two can
+    // never disagree about where this run starts.
+    const runStart = handle.controller.getState().items.length;
+    run.itemStart = runStart;
+    run.transcriptStart = runStart;
+    lastRunTranscriptStart = runStart;
     // Subscribe only after send() so a prior turn cannot settle this run.
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
     const sendPromise = handle.controller.send(
@@ -1053,6 +1123,7 @@ export function createAgentHost(): DesignHost {
         };
         const resultWithSession = {
           ...result,
+          transcript: transcriptItems(state.items, run.transcriptStart ?? state.items.length),
           sessionId: run.session.session.id,
           peerSessionId: run.session.session.peerSessionId ?? null,
           createdAtMs: run.session.session.createdAtMs ?? null,
@@ -1113,6 +1184,7 @@ export function createAgentHost(): DesignHost {
     permissionNoticeSessionId = null;
     publishSessionChange();
     runPending = true;
+    lastRunTranscriptStart = null;
     try {
       return await runGeneration(prompt, signal, options);
     } finally {
@@ -1148,9 +1220,40 @@ export function createAgentHost(): DesignHost {
   };
 
   const host: DesignHost = {
-    loadDocument: oracleHost.loadDocument,
+    // The canvas shows what the user generates. Repository layers are not the
+    // agent's working set: the index they came from is global and ignores the
+    // session's workspace, which made the surface name files the agent could
+    // not see. The generated artifact is placed by the surface with zero
+    // layers, so an empty list is the correct starting document.
+    loadDocument: async (): Promise<DesignDocument> => {
+      const document = await documentHost.loadDocument();
+      return {
+        ...document,
+        // The demo host names a fixture document and a fixture path. A real session
+        // has no document identity: the canvas holds what the user generates, and the
+        // one directory that matters is the folder the session is attached to, which
+        // the surface reads from the registry and from the session's echoed cwd.
+        name: "",
+        path: "",
+        // "Values snap to design tokens (DTCG)" claims a token format this surface does
+        // not read. Radius and elevation are surface state, not edits to the user's files.
+        tokenFooter:
+          "Corner radius and elevation belong to this surface; they are not written into your files.",
+        // "writing the node" describes the canvas this surface no longer draws: the
+        // artifact is rendered in a frame, and nothing is written to a layer.
+        workingMessage: {
+          title: "Generating…",
+          desc: "Asking the agent, then rendering the result on the canvas.",
+        },
+        layers: [],
+        selectedLayerId: "",
+        layerNotice: undefined,
+        messages: [],
+      };
+    },
     generate,
     getAgentSession: () => sessionHandle?.controller ?? null,
+    getRunTranscriptStart: () => lastRunTranscriptStart,
     getPendingPermission: pendingPermissionSnapshot,
     getPermissionNotice: () => permissionNotice,
     respondPermission: (outcome) => respondToPendingPermission(outcome),

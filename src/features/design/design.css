@@ -53,17 +53,146 @@
   cursor: pointer;
 }
 
-.design-browser-label {
+.design-folder-control {
+  position: relative;
   display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The trigger states which folder the canvas is attached to. It keeps the word
+   "Folder" and the chevron at their natural width and lets the path ellipsise,
+   so the control still reads as a control in a narrow toolbar. */
+.design-folder-button {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 300px;
   height: 29px;
+  align-items: center;
+  gap: 7px;
   padding: 0 11px;
+  color: var(--ink);
   white-space: nowrap;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
+  cursor: pointer;
+}
+
+.design-folder-button:hover,
+.design-folder-button:focus-visible,
+.design-folder-button[aria-expanded="true"] {
+  border-color: var(--terracotta);
+}
+
+.design-folder-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.design-folder-mark {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  background: var(--terracotta);
+  border-radius: 2px;
+}
+
+.design-folder-caption {
+  flex: none;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.design-folder-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.design-folder-chevron {
+  flex: none;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.design-folder-note {
+  margin: 0 0 6px;
+  color: var(--silence);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.design-folder-record {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+}
+
+.design-folder-path {
+  margin-bottom: 4px;
+  overflow: hidden;
+  color: var(--silence);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.design-folder-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.design-folder-use,
+.design-folder-attach {
+  height: 24px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.design-folder-use:hover,
+.design-folder-use:focus-visible,
+.design-folder-attach:hover,
+.design-folder-attach:focus-visible {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta);
+}
+
+.design-folder-use:disabled,
+.design-folder-attach:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.design-folder-error {
+  margin-top: 6px;
+  color: var(--danger-deep);
+  font-size: 10.5px;
+}
+
+.design-folder-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .design-grounding-toggle:hover,
@@ -71,7 +200,6 @@
   border-color: var(--terracotta);
 }
 
-.design-toolbar-dot,
 .design-save-dot,
 .design-grounding-dot,
 .design-provider-dot {
@@ -80,34 +208,6 @@
   width: 7px;
   height: 7px;
   border-radius: 999px;
-}
-
-.design-toolbar-dot {
-  background: var(--terracotta);
-}
-
-.design-browser-name {
-  font-family: "Fraunces", Georgia, serif;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.design-path {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  max-width: 260px;
-  height: 24px;
-  padding: 0 10px;
-  overflow: hidden;
-  color: var(--ink-soft);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
 }
 
 .design-save-status {
@@ -396,12 +496,29 @@
   position: absolute;
   inset: 24px;
   display: grid;
-  place-items: center;
+  align-content: center;
+  justify-items: center;
+  gap: 6px;
   padding: 24px;
   color: var(--ink-soft);
   text-align: center;
   pointer-events: none;
   z-index: 1;
+}
+
+.design-canvas-empty-title {
+  margin: 0;
+  color: var(--ink);
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.design-canvas-empty-copy {
+  max-width: 280px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .design-canvas-notice {
@@ -1052,11 +1169,17 @@
   font-size: 10.5px;
 }
 
+.design-assistant-actions {
+  display: flex;
+  margin-left: auto;
+  align-items: center;
+  gap: 9px;
+}
+
 .design-visual-check {
   display: grid;
   width: 24px;
   height: 24px;
-  margin-left: auto;
   place-items: center;
   color: var(--ink-soft);
   background: var(--surface);
@@ -1069,22 +1192,6 @@
 .design-visual-check:focus-visible {
   color: var(--terracotta-deep);
   border-color: var(--terracotta);
-}
-
-.design-assistant-workspace-wrap {
-  position: relative;
-  flex: none;
-  min-width: 0;
-}
-
-.design-assistant-header .design-provider-button {
-  width: max-content;
-  max-width: 130px;
-}
-
-.design-assistant-header .design-agent-picker {
-  top: calc(100% + 8px);
-  bottom: auto;
 }
 
 .design-assistant-scroll {
@@ -1151,6 +1258,12 @@
 }
 
 .design-message-card {
+  /* The transcript is a scrolling column flex container, so every row is a flex
+     item and defaults to flex-shrink: 1. `overflow: hidden` also zeroes the
+     card's automatic minimum size, so a shrinkable card collapses below its own
+     content instead of making the transcript scroll. Rows are sized by their
+     content, never by the container; the user row above states the same. */
+  flex: none;
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1240,10 +1353,97 @@
   border-color: var(--terracotta);
 }
 
+/* The conversation a generation produced, above the run's summary card. The group
+   is itself a flex item of the transcript column, so it states flex: none for the
+   same reason .design-message-card does: a shrinkable, overflow-hidden flex item
+   collapses below its own content instead of making the column scroll. */
+.design-message-group {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.design-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 4px;
+}
+
+/* Every row is a flex item of the same column, so no row may shrink either. */
+.design-transcript-row {
+  flex: none;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.design-transcript-assistant {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+/* Reasoning is the agent's working, not its answer: quieter, smaller, and one step
+   removed from the prose by a dashed edge and the muted ink. */
+.design-transcript-thought {
+  color: var(--ink-soft);
+  background: transparent;
+  border-style: dashed;
+  font-size: 11.5px;
+}
+
+.design-transcript-tool {
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  font-size: 11px;
+}
+
+.design-transcript-label {
+  cursor: pointer;
+}
+
+.design-transcript-tool-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.design-transcript-tool-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-family: "JetBrains Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-transcript-tool-status {
+  flex: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.design-transcript-text {
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.design-transcript-assistant .design-transcript-text {
+  margin-top: 0;
+}
+
 .design-composer-wrap {
   flex: none;
   padding: 10px 14px 12px;
   border-top: 1px solid var(--border);
+  /* The permission card is the only child that sizes text from its host, so the
+     composer states the scale once here: the card's description and controls
+     read at the chrome's size instead of the page root's 16px. */
+  --permission-card-font-size: 10.5px;
 }
 
 .design-composer-meta {
@@ -1614,6 +1814,13 @@
   border-radius: 14px;
 }
 
+/* Generate is docked at the bottom-right of the text it acts on, so the primary
+   action never takes a row of its own in a 337px column. The textarea reserves
+   the button's width as padding so a long line can never run underneath it. */
+.design-composer-input {
+  position: relative;
+}
+
 .design-composer:focus-within {
   border-color: var(--terracotta);
 }
@@ -1651,7 +1858,7 @@
 .design-composer textarea {
   display: block;
   width: 100%;
-  padding: 0;
+  padding: 0 88px 0 0;
   resize: none;
   color: var(--ink);
   background: transparent;
@@ -1668,25 +1875,32 @@
 
 .design-composer-footer {
   display: flex;
-  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
-  /* one gap value covers column and row gaps, so a wrapped second line keeps
-     the same breathing room as the horizontal gutters */
   gap: 6px;
   margin-top: 3px;
 }
 
-/* Footer controls never shrink below their content: a squeezed control gets cut
-   mid-word because text-overflow cannot render inside a flex button. Overflow
-   past the panel width is handled by wrap plus max-width, not by shrinking. */
-.design-composer-footer > .design-skill-controls,
-.design-composer-footer > .design-agent-picker-wrap {
+/* The controls that are not the primary action share the strip below the text.
+   They may still wrap on a longer model or agent label, and they never shrink:
+   a squeezed control gets cut mid-word because text-overflow cannot render
+   inside a flex button. */
+.design-composer-controls {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.design-composer-controls > .design-skill-controls,
+.design-composer-controls > .design-agent-picker-wrap {
   flex: 0 0 auto;
   max-width: 100%;
 }
 
-.design-composer-footer .design-provider-button {
+.design-composer-controls .design-provider-button {
   width: max-content;
   max-width: 100%;
 }
@@ -1747,6 +1961,21 @@
   border-radius: 10px;
   box-shadow: 0 6px 22px rgba(var(--ink-rgb), 0.13);
   font-size: 11px;
+}
+
+/* The folder menu is a toolbar menu, not a composer menu: it drops below its
+   own trigger and it scrolls, because the registry can hold many folders. It is
+   declared after .design-agent-picker, like .design-skill-picker, so the drop
+   direction is decided here and not by source order elsewhere. */
+.design-folder-picker {
+  right: auto;
+  left: 0;
+  top: calc(100% + 8px);
+  bottom: auto;
+  max-height: min(420px, calc(100vh - 24px));
+  min-width: min(260px, calc(100vw - 28px));
+  max-width: min(320px, calc(100vw - 28px));
+  overflow-y: auto;
 }
 
 .design-skill-picker {
@@ -1975,10 +2204,12 @@
 }
 
 .design-generate-button {
+  position: absolute;
+  right: 0;
+  bottom: 0;
   display: grid;
   min-width: 72px;
-  height: 26px;
-  margin-left: 0;
+  height: 24px;
   padding: 0 13px;
   place-items: center;
   color: var(--white);
@@ -1988,7 +2219,6 @@
   cursor: pointer;
   font-size: 11.5px;
   font-weight: 600;
-  justify-self: start;
 }
 
 .design-generate-button:disabled {

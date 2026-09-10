@@ -42,6 +42,19 @@ const historyOpenMocks = vi.hoisted(() => ({
   open: vi.fn(),
 }));
 
+// The folder control opens the OS directory picker and then registers the chosen
+// directory through the same two commands the Workspace surface uses.
+const folderMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+  projectAdd: vi.fn(),
+  workspaceCreate: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: folderMocks.open,
+  ask: vi.fn(),
+}));
+
 vi.mock("./designSettings", async () => {
   const actual = await vi.importActual<typeof import("./designSettings")>("./designSettings");
   return {
@@ -84,6 +97,8 @@ vi.mock("../../lib/tauri", () => ({
   providersList: providerMocks.list,
   projectsList: providerMocks.projectsList,
   workspacesList: providerMocks.workspacesList,
+  projectAdd: folderMocks.projectAdd,
+  workspaceCreate: folderMocks.workspaceCreate,
   reasonFromCause: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
   createSessionStateChannel: vi.fn(),
   sessionCreate: vi.fn(),
@@ -432,6 +447,9 @@ beforeEach(() => {
   });
   providerMocks.projectsList.mockReset();
   providerMocks.workspacesList.mockReset();
+  folderMocks.open.mockReset();
+  folderMocks.projectAdd.mockReset();
+  folderMocks.workspaceCreate.mockReset();
   providerMocks.projectsList.mockResolvedValue([PROJECT]);
   providerMocks.workspacesList.mockResolvedValue([WORKSPACE]);
 });
@@ -493,7 +511,11 @@ describe("DesignSurface host capabilities", () => {
     });
 
     await vi.waitFor(() => expect(container.querySelector(".permission-card")).not.toBeNull());
-    expect(container.textContent).toContain("Permission · Write a file");
+    // The heading is the human action, not "Permission · <tool name>".
+    expect(container.querySelector(".permission-card-action")?.textContent).toBe(
+      "Create or overwrite a file",
+    );
+    expect(container.textContent).not.toContain("Permission ·");
     const allow = container.querySelector<HTMLButtonElement>(".permission-card-primary-action");
     if (allow === null) throw new Error("Design permission allow control missing");
     await act(async () => allow.click());
@@ -518,6 +540,79 @@ describe("DesignSurface host capabilities", () => {
 
     expect(respondPermission).toHaveBeenNthCalledWith(1, "allow_once");
     expect(respondPermission).toHaveBeenNthCalledWith(2, "deny");
+    await act(async () => root.unmount());
+  });
+
+  it("names the file a permission request asks about, read back from the transcript", async () => {
+    providerMocks.daemonStatus.mockResolvedValue({
+      state: "connected",
+      pid: 42,
+      instanceId: "daemon-test",
+      protocolVersion: 1,
+      clients: 1,
+      capabilities: ["typed_permissions"],
+      message: null,
+    });
+    const listeners = new Set<() => void>();
+    let pending: PendingPermission | null = null;
+    // The Claude wire sends the tool's name in the request itself: this title is
+    // the only place the path reaches the card, and it arrives as a tool item.
+    const state = agentState(null);
+    const { session } = fakeAgentSession({
+      ...state,
+      items: [
+        {
+          id: "tool-1",
+          role: "tool",
+          text: "Read src/app/App.tsx",
+          toolCallId: "design-1",
+          status: "pending",
+        },
+      ],
+    });
+    const host = createHost({
+      generate: vi.fn(() => new Promise<DesignGenerationResult>(() => undefined)),
+      getPendingPermission: () => pending,
+      getAgentSession: () => session,
+      subscribeAgentSession: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const { container, root } = await renderDesign(host);
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    pending = {
+      sessionId: "session-design",
+      subscriptionId: 41,
+      request: {
+        type: "permission_request",
+        toolCallId: "design-1",
+        title: "Read",
+        description: "Path is outside allowed working directories",
+        options: [
+          { optionId: "allow", name: "Allow once", kind: "allow_once" },
+          { optionId: "deny", name: "Deny", kind: "reject_once" },
+        ],
+      },
+    };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+
+    await vi.waitFor(() => expect(container.querySelector(".permission-card")).not.toBeNull());
+    expect(container.querySelector(".permission-card-action")?.textContent).toBe("Read a file");
+    expect(container.querySelector(".permission-card-subject")?.textContent).toBe(
+      "src/app/App.tsx",
+    );
+    expect(container.querySelector(".permission-card-description")?.textContent).toBe(
+      "Path is outside allowed working directories",
+    );
+    // The tool's own name is not the headline any more.
+    expect(container.textContent).not.toContain("Permission ·");
     await act(async () => root.unmount());
   });
 
@@ -1168,7 +1263,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("selects a workspace and persists the workspace id", async () => {
+  it("attaches a folder and persists the workspace id", async () => {
     const setWorkspacePreference = vi.fn();
     const selectWorkspace = vi.fn();
     const { container, root } = await renderDesign(
@@ -1181,12 +1276,12 @@ describe("DesignSurface host capabilities", () => {
     await act(settle);
 
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
     if (pickerButton === null) throw new Error("Workspace picker missing");
     await act(async () => pickerButton.click());
     const workspaceOption = container.querySelector<HTMLButtonElement>(
-      `#design-workspace-picker button[data-workspace-id="${WORKSPACE.id}"]`,
+      `#design-folder-picker button[data-workspace-id="${WORKSPACE.id}"]`,
     );
     if (workspaceOption === null) throw new Error("Workspace option missing");
     await act(async () => workspaceOption.click());
@@ -1194,11 +1289,13 @@ describe("DesignSurface host capabilities", () => {
     expect(setWorkspacePreference).toHaveBeenCalledWith(WORKSPACE);
     expect(selectWorkspace).not.toHaveBeenCalled();
     expect(skillSettingsMocks.saveWorkspace).toHaveBeenCalledWith(WORKSPACE.id);
-    expect(container.textContent).toContain(WORKSPACE.title);
+    // The trigger states the directory the canvas is attached to, not the registry
+    // name of the checkout: the folder is what the agent is given.
+    expect(container.textContent).toContain(WORKSPACE.path);
     await act(async () => root.unmount());
   });
 
-  it("refreshes workspaces when the picker opens", async () => {
+  it("refreshes folders when the picker opens", async () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );
@@ -1206,7 +1303,7 @@ describe("DesignSurface host capabilities", () => {
 
     expect(providerMocks.projectsList).toHaveBeenCalledTimes(1);
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
     if (pickerButton === null) throw new Error("Workspace picker missing");
     await act(async () => pickerButton.click());
@@ -1243,12 +1340,12 @@ describe("DesignSurface host capabilities", () => {
     );
 
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
     if (pickerButton === null) throw new Error("Workspace picker missing");
     await act(async () => pickerButton.click());
     expect(container.textContent).toContain(WORKSPACE.title);
-    expect(container.textContent).toContain("Refreshing workspaces.");
+    expect(container.textContent).toContain("Refreshing folders.");
     await act(async () => pickerButton.click());
     await act(async () => pickerButton.click());
     newRequest.resolve([newProject]);
@@ -1262,7 +1359,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("clears and explains a selected workspace that disappears on refresh", async () => {
+  it("clears and explains an attached folder that disappears on refresh", async () => {
     skillSettingsMocks.loadWorkspace.mockResolvedValueOnce(WORKSPACE.id);
     const setWorkspacePreference = vi.fn();
     const selectWorkspace = vi.fn();
@@ -1277,14 +1374,14 @@ describe("DesignSurface host capabilities", () => {
     providerMocks.workspacesList.mockResolvedValue([]);
 
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
     if (pickerButton === null) throw new Error("Workspace picker missing");
     await act(async () => pickerButton.click());
     await act(settle);
 
-    expect(container.textContent).toContain("The selected workspace is no longer registered.");
-    expect(container.textContent).toContain("No workspace");
+    expect(container.textContent).toContain("The attached folder is no longer registered.");
+    expect(container.textContent).toContain("none attached");
     expect(setWorkspacePreference).toHaveBeenLastCalledWith(null);
     expect(selectWorkspace).not.toHaveBeenCalled();
     expect(skillSettingsMocks.saveWorkspace).toHaveBeenCalledWith(null);
@@ -1302,7 +1399,7 @@ describe("DesignSurface host capabilities", () => {
     await act(settle);
     expect(providerMocks.projectsList).toHaveBeenCalledTimes(1);
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
     if (pickerButton === null) throw new Error("Workspace picker missing");
     await act(async () => pickerButton.click());
@@ -1310,7 +1407,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps a stored workspace unresolved when its project fails to load", async () => {
+  it("keeps a stored folder unresolved when its record fails to load", async () => {
     skillSettingsMocks.loadStoredWorkspace.mockResolvedValueOnce("workspace-unconfirmed");
     providerMocks.workspacesList.mockRejectedValue(new Error("temporary registry failure"));
     const selectWorkspace = vi.fn();
@@ -1319,14 +1416,14 @@ describe("DesignSurface host capabilities", () => {
     );
     await act(settle);
 
-    expect(container.textContent).toContain("Workspace not confirmed");
+    expect(container.textContent).toContain("not confirmed");
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
     if (pickerButton === null) throw new Error("Workspace picker missing");
     await act(async () => pickerButton.click());
     expect(container.textContent).toContain(
-      "The selected workspace could not be confirmed because its project failed to load.",
+      "The attached folder could not be confirmed because its record failed to load.",
     );
     expect(selectWorkspace).not.toHaveBeenCalled();
     expect(container.querySelector('[data-workspace-id="workspace-unconfirmed"]')).toBeNull();
@@ -1356,9 +1453,14 @@ describe("DesignSurface host capabilities", () => {
     const end = container.querySelector<HTMLButtonElement>(".design-session-end-button");
     if (end === null) throw new Error("End session control missing");
     expect(end.disabled).toBe(false);
-    expect(container.textContent).toContain(
+    // The explanation left the layout to give the composer footer a second row
+    // back. It is still reachable on the control, both as a tooltip and as the
+    // accessible name, and the visible label itself was not replaced by either.
+    expect(end.title).toBe("Ends this session and drops the agent's context for this surface.");
+    expect(end.getAttribute("aria-label")).toContain(
       "Ends this session and drops the agent's context for this surface.",
     );
+    expect(end.textContent).toBe("End session");
     await act(async () => end.click());
     expect(closeAgentSession).toHaveBeenCalledTimes(1);
     await vi.waitFor(() =>
@@ -1502,7 +1604,7 @@ describe("DesignSurface host capabilities", () => {
     );
 
     const workspaceButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
     if (workspaceButton === null) throw new Error("Workspace picker missing");
     expect(workspaceButton.disabled).toBe(true);
@@ -1536,7 +1638,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("drops a stored workspace that is no longer present", async () => {
+  it("drops a stored folder that is no longer present", async () => {
     skillSettingsMocks.loadWorkspace.mockResolvedValueOnce("removed-workspace");
     const selectWorkspace = vi.fn();
     const { container, root } = await renderDesign(
@@ -1545,10 +1647,10 @@ describe("DesignSurface host capabilities", () => {
     await act(settle);
 
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
-    if (pickerButton === null) throw new Error("Workspace picker missing");
-    expect(pickerButton.textContent).toContain("No workspace");
+    if (pickerButton === null) throw new Error("Folder control missing");
+    expect(pickerButton.textContent).toContain("none attached");
     expect(pickerButton.textContent).not.toContain("removed-workspace");
     expect(selectWorkspace).not.toHaveBeenCalled();
     await act(async () => pickerButton.click());
@@ -1557,7 +1659,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("explains that a workspace must be created in Workspace for an empty project", async () => {
+  it("offers to attach a registered folder that holds no checkout yet", async () => {
     providerMocks.workspacesList.mockResolvedValue([]);
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
@@ -1566,17 +1668,16 @@ describe("DesignSurface host capabilities", () => {
 
     await act(async () =>
       container
-        .querySelector<HTMLButtonElement>('button[aria-label^="Choose workspace:"]')
+        .querySelector<HTMLButtonElement>('button[data-design-folder-trigger="true"]')
         ?.click(),
     );
-    expect(container.textContent).toContain("A workspace has to be created in Workspace first.");
-    expect(
-      container.querySelector("#design-workspace-picker button[data-workspace-id]"),
-    ).toBeNull();
+    expect(container.textContent).toContain("No checkout in this folder yet.");
+    expect(container.textContent).toContain("Attach a folder…");
+    expect(container.querySelector("#design-folder-picker button[data-workspace-id]")).toBeNull();
     await act(async () => root.unmount());
   });
 
-  it("keeps workspace selection available once a session exists", async () => {
+  it("keeps folder selection available once a session exists", async () => {
     const { session } = fakeAgentSession(agentState(null));
     const { container, root } = await renderDesign(
       createHost({
@@ -1586,11 +1687,11 @@ describe("DesignSurface host capabilities", () => {
     );
 
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
-    if (pickerButton === null) throw new Error("Workspace picker missing");
+    if (pickerButton === null) throw new Error("Folder control missing");
     expect(pickerButton.disabled).toBe(false);
-    expect(pickerButton.getAttribute("title")).toBeNull();
+    expect(pickerButton.getAttribute("title")).toBe("No folder is attached to this canvas.");
     expect(pickerButton.getAttribute("aria-expanded")).toBe("false");
     expect(pickerButton.textContent).toContain("▾");
     await act(async () => root.unmount());
@@ -1916,6 +2017,57 @@ describe("DesignSurface host capabilities", () => {
     expect(container.textContent).toContain("Generated result");
     expect(container.textContent).not.toContain("Generating…");
     expect(container.querySelector("iframe")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("streams the agent's reply while the run is working, and keeps it after the result", async () => {
+    // The host owns the run boundary, so the surface must read the live items from
+    // there and not assume every item in the session belongs to this generation.
+    const pending = deferred<DesignGenerationResult>();
+    const fake = fakeAgentSession(agentState(null));
+    const host = createHost({
+      generate: vi.fn(() => pending.promise),
+      getAgentSession: () => fake.session,
+      getRunTranscriptStart: () => 1,
+    });
+    const { container, root } = await renderDesign(host);
+    await fillDraft(container, "Make the stale count dynamic.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    await act(async () => {
+      fake.updateState({
+        ...agentState(null),
+        items: [
+          {
+            id: "user-1",
+            role: "user",
+            text: "User request: Make the stale count dynamic.",
+            messageId: null,
+          },
+          { id: "assistant-1", role: "assistant", text: "Reading the header.", messageId: "m-1" },
+        ],
+        status: "running",
+      });
+    });
+    expect(
+      container.querySelector(".design-transcript-assistant .design-transcript-text")?.textContent,
+    ).toBe("Reading the header.");
+
+    await act(async () => {
+      pending.resolve({
+        ...GENERATION_RESULT,
+        transcript: [
+          { id: "assistant-1", role: "assistant", text: "Reading the header.", messageId: "m-1" },
+        ],
+      });
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Generated result");
+    expect(
+      container.querySelector(".design-transcript-assistant .design-transcript-text")?.textContent,
+    ).toBe("Reading the header.");
     await act(async () => root.unmount());
   });
 
@@ -3395,6 +3547,204 @@ describe("DesignSurface host capabilities", () => {
         composed.dropped.includes(entry.slug),
       );
     }
+    await act(async () => root.unmount());
+  });
+});
+
+describe("Design chrome, composer and folder attachment", () => {
+  const emptyDocument: DesignDocument = {
+    ...DOCUMENT,
+    selectedLayerId: "",
+    layers: [],
+    layerNotice: undefined,
+  };
+
+  it("shows no mock document name or path in the toolbar", async () => {
+    const { container, root } = await renderDesign(createHost());
+    const toolbar = container.querySelector(".design-toolbar");
+    if (toolbar === null) throw new Error("Toolbar missing");
+
+    expect(toolbar.textContent).not.toContain("Index browser");
+    expect(toolbar.textContent).not.toContain("~/dev/devboule/src/design");
+    expect(container.textContent).not.toContain("Index browser");
+    expect(container.textContent).not.toContain("~/dev/devboule/src/design");
+    // The slot the mock document chip occupied now holds the real attachment control.
+    expect(toolbar.querySelector('[data-design-folder-trigger="true"]')).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("tells the user what to do next on an empty canvas", async () => {
+    const { container, root } = await renderDesign(createHost({}, emptyDocument));
+    const empty = container.querySelector(".design-canvas-empty");
+    if (empty === null) throw new Error("Canvas empty state missing");
+
+    expect(empty.textContent).toContain("The canvas is empty.");
+    expect(empty.textContent).toContain("choose Generate");
+    expect(container.textContent).not.toContain("No design components found.");
+    await act(async () => root.unmount());
+  });
+
+  it("drops the empty-canvas message once an artifact exists", async () => {
+    const generate = vi.fn(async () => ARTIFACT_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }, emptyDocument));
+    await fillDraft(container, "Make the header count dynamic.");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
+    );
+
+    expect(container.querySelector(".design-canvas-artifact")).not.toBeNull();
+    expect(container.querySelector(".design-canvas-empty")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("says plainly when no folder is attached", async () => {
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-design-folder-trigger="true"]',
+    );
+    if (trigger === null) throw new Error("Folder control missing");
+    expect(trigger.getAttribute("aria-label")).toBe(
+      "Folder: none attached. Choose or attach a folder for this canvas.",
+    );
+    expect(trigger.textContent).toContain("none attached");
+    await act(async () => root.unmount());
+  });
+
+  it("names the attached folder by its directory", async () => {
+    skillSettingsMocks.loadWorkspace.mockResolvedValueOnce(WORKSPACE.id);
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-design-folder-trigger="true"]',
+    );
+    if (trigger === null) throw new Error("Folder control missing");
+    expect(trigger.getAttribute("aria-label")).toBe(
+      `Folder: ${WORKSPACE.path}. Choose or attach a folder for this canvas.`,
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("attaches a folder the registry has never seen", async () => {
+    const newProject: Project = { id: "project-new", name: "New folder", path: "C:/brand/new" };
+    const newWorkspace: Workspace = {
+      id: "workspace-new",
+      projectId: newProject.id,
+      title: "new folder checkout",
+      isolation: "local",
+      path: newProject.path,
+    };
+    // The daemon's registry only holds the checkout after it has been created.
+    let created: Workspace | null = null;
+    folderMocks.open.mockResolvedValue(newProject.path);
+    folderMocks.projectAdd.mockResolvedValue(newProject);
+    folderMocks.workspaceCreate.mockImplementation(async () => {
+      created = newWorkspace;
+      return newWorkspace;
+    });
+    providerMocks.workspacesList.mockImplementation(async (projectId: string) => {
+      if (projectId !== newProject.id) return [WORKSPACE];
+      return created === null ? [] : [created];
+    });
+
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await act(settle);
+    // Only after the mount refresh: the folder is registered by the action itself.
+    providerMocks.projectsList.mockResolvedValue([PROJECT, newProject]);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-design-folder-trigger="true"]')?.click(),
+    );
+    const attach = container.querySelector<HTMLButtonElement>(".design-folder-attach");
+    if (attach === null) throw new Error("Attach action missing");
+    await act(async () => attach.click());
+    await act(settle);
+
+    expect(folderMocks.open).toHaveBeenCalledWith({ directory: true, title: "Attach a folder" });
+    expect(folderMocks.projectAdd).toHaveBeenCalledWith(newProject.path);
+    // The dialog, the registration and the checkout creation are separate awaits;
+    // wait for the chain to settle rather than counting microtask ticks.
+    await vi.waitFor(() =>
+      expect(folderMocks.workspaceCreate).toHaveBeenCalledWith(newProject.id, "local"),
+    );
+    await vi.waitFor(() =>
+      expect(skillSettingsMocks.saveWorkspace).toHaveBeenCalledWith(newWorkspace.id),
+    );
+    expect(container.textContent).toContain(newProject.path);
+    await act(async () => root.unmount());
+  });
+
+  it("docks the primary action beside the text, not in a row of its own", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }, emptyDocument),
+    );
+    await act(settle);
+
+    const input = container.querySelector(".design-composer-input");
+    if (input === null) throw new Error("Composer input row missing");
+    expect(input.querySelector(".design-generate-button")).not.toBeNull();
+    expect(container.querySelector(".design-composer-footer .design-generate-button")).toBeNull();
+
+    const controls = container.querySelector(".design-composer-controls");
+    if (controls === null) throw new Error("Composer controls strip missing");
+    expect(controls.children).toHaveLength(3);
+    expect(controls.querySelector('[data-design-skill-mode-trigger="true"]')).not.toBeNull();
+    expect(controls.querySelectorAll(".design-agent-picker-wrap")).toHaveLength(2);
+    // An empty context row would add a blank line above the composer.
+    expect(container.querySelector(".design-composer-meta")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("creates a checkout when a registered folder has none", async () => {
+    const createdWorkspace: Workspace = { ...WORKSPACE, id: "workspace-created" };
+    let created = false;
+    folderMocks.workspaceCreate.mockImplementation(async () => {
+      created = true;
+      return createdWorkspace;
+    });
+    providerMocks.workspacesList.mockImplementation(async () =>
+      created ? [createdWorkspace] : [],
+    );
+
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await act(settle);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-design-folder-trigger="true"]')?.click(),
+    );
+    const use = container.querySelector<HTMLButtonElement>(".design-folder-use");
+    if (use === null) throw new Error("Use-this-folder action missing");
+    await act(async () => use.click());
+    await act(settle);
+
+    expect(folderMocks.workspaceCreate).toHaveBeenCalledWith(PROJECT.id, "local");
+    await vi.waitFor(() =>
+      expect(skillSettingsMocks.saveWorkspace).toHaveBeenCalledWith(createdWorkspace.id),
+    );
+    expect(container.textContent).toContain(PROJECT.path);
+    await act(async () => root.unmount());
+  });
+
+  it("moves the end-session control into the assistant header", async () => {
+    const { session } = fakeAgentSession(agentState(null));
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        getAgentSession: () => session,
+      }),
+    );
+    await act(settle);
+
+    const header = container.querySelector(".design-assistant-header");
+    if (header === null) throw new Error("Assistant header missing");
+    expect(header.querySelector(".design-session-end-button")).not.toBeNull();
+    expect(
+      container.querySelector(".design-composer-footer .design-session-end-button"),
+    ).toBeNull();
     await act(async () => root.unmount());
   });
 });

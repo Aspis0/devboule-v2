@@ -87,6 +87,7 @@ import { App } from "../../app/App";
 import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
+import { DesignSurface } from "./DesignSurface";
 import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
 import { rankSkillsForQuery } from "./skillRanking";
 import {
@@ -335,6 +336,47 @@ afterEach(async () => {
   if (host !== null) await disposeAgentHost(host);
   useAppStore.getState().clearDesignSession(host ?? undefined);
   document.body.replaceChildren();
+});
+
+describe("agent host canvas contents", () => {
+  const INDEXED_COMPONENT = {
+    path: "src/features/oracle/OraclePanel.tsx",
+    chunks: 1,
+    updated_at: "2026-09-05T00:00:00Z",
+  };
+
+  it("starts the document empty even when Oracle's index would list components", async () => {
+    mocks.oracleFiles.mockResolvedValue([INDEXED_COMPONENT]);
+    const host = createAgentHost();
+
+    const document = await host.loadDocument();
+
+    expect(document.layers).toEqual([]);
+    expect(document.selectedLayerId).toBe("");
+    expect(document.messages).toEqual([]);
+    expect(document.layerNotice).toBeUndefined();
+    // The canvas is not built from Oracle's file enumeration at all.
+    expect(mocks.oracleFiles).not.toHaveBeenCalled();
+  });
+
+  it("renders no repository layer on the surface canvas", async () => {
+    mocks.oracleFiles.mockResolvedValue([INDEXED_COMPONENT]);
+    const host = createAgentHost();
+    const { container, root } = createRootContainer();
+
+    await act(async () => root.render(<DesignSurface host={host} />));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    );
+
+    expect(container.querySelectorAll(".design-canvas-node")).toHaveLength(0);
+    expect(mocks.oracleFiles).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
 });
 
 describe("ACP design host", () => {
@@ -2554,6 +2596,197 @@ describe("ACP design host", () => {
   });
 });
 
+describe("design transcript", () => {
+  async function renderDesignAndSend(
+    host: ReturnType<typeof createAgentHost>,
+    prompt: string,
+  ): Promise<{ container: HTMLDivElement; root: Root }> {
+    const { container, root } = createRootContainer();
+    await act(async () => root.render(<DesignSurface host={host} />));
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Describe a design change"]',
+        ),
+      ).not.toBeNull(),
+    );
+    const draft = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Describe a design change"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (draft === null || send === null) throw new Error("Design composer did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    await act(async () => {
+      setValue.call(draft, prompt);
+      draft.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => send.click());
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(1));
+    return { container, root };
+  }
+
+  function transcriptText(container: HTMLDivElement): string {
+    return [...container.querySelectorAll(".design-transcript-row")]
+      .map((row) => row.textContent ?? "")
+      .join("\n");
+  }
+
+  it("shows the agent's message while the run is still working", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Update the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "Checking the header before editing it.",
+      });
+    });
+
+    expect(transcriptText(container)).toContain("Checking the header before editing it.");
+    expect(container.querySelector(".design-generate-button")?.textContent).toBe("Working…");
+    await act(async () => root.unmount());
+  });
+
+  it("renders reasoning as its own secondary row, apart from the answer", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Update the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "The header is updated.",
+      });
+      channelHarness.active?.({
+        type: "agent_thought",
+        messageId: "thought-1",
+        text: "The count has to come from the snapshot.",
+      });
+    });
+
+    const thought = container.querySelector(".design-transcript-thought .design-transcript-text");
+    expect(thought?.textContent).toBe("The count has to come from the snapshot.");
+    // The answer and the reasoning are different rows, so reasoning cannot be read as the reply.
+    const answer = container.querySelector(".design-transcript-assistant .design-transcript-text");
+    expect(answer?.textContent).toBe("The header is updated.");
+    await act(async () => root.unmount());
+  });
+
+  it("lists tool activity as a compact row beside the conversation", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Update the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "Reading the file.",
+      });
+      emitToolCall("call-1", "completed", "edit", ["src/Header.tsx"]);
+    });
+
+    const tool = container.querySelector(".design-transcript-tool");
+    expect(tool?.textContent).toContain("Tool");
+    expect(tool?.textContent).toContain("completed");
+    expect(transcriptText(container)).toContain("Reading the file.");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the run summary, but never as the only row of the transcript", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Update the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "I edited the header and left the rest alone.",
+      });
+      emitToolCall("write-1", "completed", "edit", ["src/Header.tsx"]);
+      finishRun();
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Agent wrote 1 file"));
+
+    // The honest file list is still there, with the paths it always reported.
+    const summary = container.querySelector(".design-message-card");
+    expect(summary?.querySelector(".design-message-title")?.textContent).toBe("Agent wrote 1 file");
+    expect(summary?.querySelector(".design-message-description")?.textContent).toContain(
+      "src/Header.tsx",
+    );
+    // ...and it is no longer the only thing a person sees.
+    expect(container.querySelectorAll(".design-transcript-row").length).toBeGreaterThanOrEqual(2);
+    expect(transcriptText(container)).toContain("I edited the header and left the rest alone.");
+    await act(async () => root.unmount());
+  });
+
+  it("still reports that no files were written, beside the conversation", async () => {
+    const host = createAgentHost();
+    const { container, root } = await renderDesignAndSend(host, "Review the design");
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "m-1",
+        text: "Nothing needed changing.",
+      });
+      emitToolCall("read-1", "completed", "read", ["src/Header.tsx"]);
+      finishRun();
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("Agent wrote no files"));
+
+    expect(transcriptText(container)).toContain("Nothing needed changing.");
+    await act(async () => root.unmount());
+  });
+
+  it("never shows the daemon's echo of the grounded prompt as a transcript row", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    channelHarness.active?.({
+      type: "agent_user_message",
+      messageId: null,
+      text: `User request: Update the design\n\n${DESIGN_DOCTRINE_BEGIN}`,
+    });
+    channelHarness.active?.({ type: "agent_message", messageId: "m-1", text: "Done." });
+    finishRun();
+
+    const result = await run;
+    expect((result.transcript ?? []).map((row) => row.text)).toEqual(["Done."]);
+    await disposeAgentHost(host);
+  });
+
+  it("leaves the craft pre-flight out of the run's transcript", async () => {
+    const index = builtInSkillIndex();
+    const selected = index[0];
+    if (selected === undefined) throw new Error("Built-in skills missing");
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+
+    // The pre-flight's question and answer are the host's, not the user's request, and no
+    // run exists yet to stream from.
+    expect(host.getRunTranscriptStart?.() ?? null).toBeNull();
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: `preflight selection ${selected.slug}`,
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    const boundary = host.getRunTranscriptStart?.() ?? null;
+    if (boundary === null) throw new Error("The run did not report a transcript boundary");
+    expect(boundary).toBeGreaterThan(0);
+
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "m-1",
+      text: "Here is the change.",
+    });
+    finishRun();
+
+    const result = await run;
+    const transcript = (result.transcript ?? []).map((row) => row.text).join("\n");
+    expect(transcript).toContain("Here is the change.");
+    expect(transcript).not.toContain("preflight selection");
+    await disposeAgentHost(host);
+  });
+});
+
 describe("design disclosure removal", () => {
   it("does not render the old disclosure while the host is resolving", async () => {
     let resolveStatus: ((status: OracleIndexStatus) => void) | undefined;
@@ -2583,7 +2816,7 @@ describe("design disclosure removal", () => {
       ).not.toBeNull(),
     );
     const workspaceButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Choose workspace:"]',
+      'button[data-design-folder-trigger="true"]',
     );
     if (workspaceButton === null) throw new Error("Workspace picker did not render");
     await act(async () => workspaceButton.click());

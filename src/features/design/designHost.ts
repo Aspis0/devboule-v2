@@ -1,6 +1,38 @@
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { PermissionRequest, ProviderInfo, Session, Workspace } from "../../types/ipc";
 
+/**
+ * One line of the agent's own conversation: its prose, its reasoning, and its
+ * tool activity, in arrival order. User messages are excluded on purpose. The
+ * Design surface renders the prompt the user typed itself, and the daemon also
+ * echoes that prompt back as `agent_user_message` chunks — the echo carries the
+ * full grounded prompt, doctrine block included, so rendering it would show the
+ * user a message they never wrote.
+ *
+ * The shape is stated here rather than derived from the session's own item type
+ * because that type's text arm carries `role: "user" | "assistant" | "thought"`,
+ * so a role-based narrowing would erase the prose and reasoning rows entirely.
+ */
+export type DesignTranscriptItem =
+  | {
+      id: string;
+      role: "assistant" | "thought";
+      text: string;
+      messageId: string | null;
+      parentToolUseId?: string;
+      spawnDepth?: number;
+    }
+  | {
+      id: string;
+      role: "tool";
+      text: string;
+      toolCallId: string;
+      status: string;
+      parentToolUseId?: string;
+      spawnDepth?: number;
+      subagentType?: string;
+    };
+
 export type DesignLayerKind = "TSX" | "SVG";
 export type DesignRadiusToken = "none" | "sm" | "md" | "lg";
 export type DesignMessageStatus = "working" | "done" | "error";
@@ -44,6 +76,12 @@ export interface DesignAssistantMessage {
   instruction?: string;
   artifactHtml?: string;
   artifactError?: string;
+  /**
+   * What the agent actually said and did for this generation, kept so the
+   * conversation survives the run and later sessions. Absent means the host
+   * never reported a transcript (a history entry, or a host with no agent).
+   */
+  transcript?: readonly DesignTranscriptItem[];
 }
 
 export type DesignMessage = DesignUserMessage | DesignAssistantMessage;
@@ -61,6 +99,8 @@ export interface DesignGenerationResult {
   nodeIds: readonly string[];
   artifactHtml?: string;
   artifactError?: string;
+  /** The run's conversation; see DesignAssistantMessage.transcript. */
+  transcript?: readonly DesignTranscriptItem[];
   /**
    * The skill sections requested for this generation, in composition order,
    * before composed-budget truncation. That is the list's one meaning: its
@@ -143,6 +183,17 @@ export interface DesignHost {
   ): Promise<DesignGenerationResult>;
   /** Optional live session capability supplied by the agent-backed host. */
   getAgentSession?(): DesignAgentSession | null;
+  /**
+   * Index into `getAgentSession()?.getState().items` at which the latest run's
+   * conversation begins, or null before any run has recorded its boundary (which
+   * includes the craft-selection pre-flight that precedes the first run). The host
+   * owns this boundary because that pre-flight is the host's own question: its items
+   * must not be presented as the agent's answer to the user. The surface slices the
+   * live items from here to stream the conversation while the agent works, and the
+   * boundary outlives the run so the working card does not go blank in the instant
+   * before the finished transcript arrives on the result.
+   */
+  getRunTranscriptStart?(): number | null;
   /** The first queued permission currently holding an agent turn open, if any. */
   getPendingPermission?(): PendingPermission | null;
   /** Short-lived notice for a permission resolved without a Design answer (for example timeout). */

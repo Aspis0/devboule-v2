@@ -160,7 +160,12 @@ function cloneDesignDocument(document: DesignDocument): DesignDocument {
     messages: document.messages.map((message) =>
       message.role === "user"
         ? { ...message }
-        : { ...message, sources: [...message.sources], nodeIds: [...message.nodeIds] },
+        : {
+            ...message,
+            sources: [...message.sources],
+            nodeIds: [...message.nodeIds],
+            ...(message.transcript === undefined ? {} : { transcript: [...message.transcript] }),
+          },
     ),
     workingMessage: { ...document.workingMessage },
   };

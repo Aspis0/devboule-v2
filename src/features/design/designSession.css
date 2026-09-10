@@ -1,7 +1,7 @@
 .design-session-end-control {
   display: flex;
+  flex: none;
   align-items: center;
-  gap: 6px;
   min-width: 0;
 }
 
@@ -26,11 +26,6 @@
 .design-session-end-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.design-session-end-copy {
-  color: var(--silence);
-  font-size: 10px;
 }
 
 .design-provider-unavailable {
