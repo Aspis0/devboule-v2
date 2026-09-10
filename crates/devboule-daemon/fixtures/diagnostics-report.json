@@ -39,6 +39,7 @@
     "terminal": 7,
     "acp": 57,
     "claude": 5,
+    "pi": 0,
     "resumable": 28,
     "oldestLiveAgeMs": null
   },

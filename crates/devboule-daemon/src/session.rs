@@ -107,6 +107,8 @@ mod acp_host;
 mod claude_client;
 #[path = "event_pull.rs"]
 mod event_pull;
+#[path = "pi_client.rs"]
+mod pi_client;
 #[path = "session_types.rs"]
 mod session_types;
 #[path = "shell_command.rs"]
@@ -1460,20 +1462,26 @@ impl SessionRegistry {
     ) -> (SessionKind, Option<String>, Option<ProviderProvenance>) {
         let requested = provider.filter(|id| !id.is_empty());
         let env_provider = env_provider.filter(|value| !value.is_empty());
-        let kind =
-            if kind == SessionKind::Acp && requested.is_none() && env_provider == Some("claude") {
-                SessionKind::Claude
+        let kind = if kind == SessionKind::Acp
+            && (requested.as_deref() == Some("pi")
+                || (requested.is_none() && matches!(env_provider, Some("claude" | "pi"))))
+        {
+            if requested.as_deref() == Some("pi") || env_provider == Some("pi") {
+                SessionKind::Pi
             } else {
-                kind
-            };
+                SessionKind::Claude
+            }
+        } else {
+            kind
+        };
         let (provider, provenance) = if requested.is_some() {
-            let provider = requested.filter(|id| id != "claude");
+            let provider = requested.filter(|id| id != "claude" && id != "pi");
             let provenance = provider.as_ref().map(|_| ProviderProvenance::Request);
             (provider, provenance)
         } else {
             let provider = env_provider
                 .map(str::to_string)
-                .filter(|id| id != "claude" && !id.is_empty());
+                .filter(|id| id != "claude" && id != "pi" && !id.is_empty());
             let provenance = provider.as_ref().map(|_| ProviderProvenance::Env);
             (provider, provenance)
         };
@@ -1560,6 +1568,7 @@ impl SessionRegistry {
         let mut command = match command {
             Some(command) => command,
             None if kind == SessionKind::Claude => claude_client::resolve_command(&self.paths)?,
+            None if kind == SessionKind::Pi => pi_client::resolve_command(&self.paths)?,
             None if kind == SessionKind::Acp => match provider.clone() {
                 Some(id) => {
                     Self::reject_env_npx_wrapper(&id, provenance, &self.paths)?;
@@ -1575,6 +1584,7 @@ impl SessionRegistry {
         let session_provider = match kind {
             SessionKind::Acp => provider.or_else(|| command.provider_id.clone()),
             SessionKind::Claude => Some("claude".to_string()),
+            SessionKind::Pi => Some("pi".to_string()),
             SessionKind::Terminal => None,
         };
         // One clock read: the journal row and the wire metadata must carry
@@ -1586,7 +1596,7 @@ impl SessionRegistry {
             kind.clone(),
             match kind {
                 SessionKind::Terminal => "Terminal",
-                SessionKind::Acp | SessionKind::Claude => "Agent",
+                SessionKind::Acp | SessionKind::Claude | SessionKind::Pi => "Agent",
             }
             .to_string(),
         );
@@ -1630,7 +1640,7 @@ impl SessionRegistry {
                 // accepted a session, so it measures provider health. A
                 // claude process spawn proves nothing about the provider,
                 // so claude only records failures (below).
-                if kind == SessionKind::Acp {
+                if matches!(kind, SessionKind::Acp | SessionKind::Pi) {
                     if let Some(provider_id) = &metadata.provider {
                         state.record_provider_health(provider_id, Ok(()));
                     }
@@ -2698,6 +2708,14 @@ pub fn spawn_session(
         })?;
         return start_spawned_session(state, registry, metadata, owner, None, spawned);
     }
+    if metadata.kind == SessionKind::Pi {
+        let workspace_id = metadata.workspace_id.clone();
+        let workspace_path = command.cwd.clone();
+        let spawned = pi_client::spawn_process(state, command).map_err(|error| {
+            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+        })?;
+        return start_spawned_session(state, registry, metadata, owner, None, spawned);
+    }
 
     // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
     // DSR query (`ESC[6n`) at startup and stalls its render pipeline until it
@@ -2884,6 +2902,9 @@ fn start_spawned_session(
             registry.journal.clone(),
         ))
     };
+    if metadata.kind.is_agent() {
+        runtime.set_agent_kind(metadata.kind.clone());
+    }
     if let Some(peer_session_id) = peer_session_id {
         runtime.set_peer_session_id(peer_session_id);
     }
@@ -3381,6 +3402,8 @@ fn resume_handle(
     if record.owner != owner.user {
         return Err(unauthorized());
     }
+    // Pi can resume on its own wire, but this slice deliberately keeps the
+    // persisted resume handle ACP-only until Pi resume is designed end to end.
     if record.kind != SessionKind::Acp {
         return Err(cannot_resume("only ACP sessions support this resume path"));
     }
@@ -6654,6 +6677,24 @@ mod tests {
         let (kind, provider, provenance) =
             SessionRegistry::resolve_session_provider(SessionKind::Acp, None, Some("claude"));
         assert_eq!(kind, SessionKind::Claude);
+        assert_eq!(provider, None);
+        assert_eq!(provenance, None);
+    }
+
+    #[test]
+    fn pi_provider_selection_uses_the_first_class_rpc_kind() {
+        let (kind, provider, provenance) = SessionRegistry::resolve_session_provider(
+            SessionKind::Acp,
+            Some("pi".to_string()),
+            Some("claude"),
+        );
+        assert_eq!(kind, SessionKind::Pi);
+        assert_eq!(provider, None);
+        assert_eq!(provenance, None);
+
+        let (kind, provider, provenance) =
+            SessionRegistry::resolve_session_provider(SessionKind::Acp, None, Some("pi"));
+        assert_eq!(kind, SessionKind::Pi);
         assert_eq!(provider, None);
         assert_eq!(provenance, None);
     }

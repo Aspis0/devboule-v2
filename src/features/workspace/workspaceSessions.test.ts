@@ -25,7 +25,7 @@ const liveSession = (id: string, title = id): Session => ({
 });
 
 describe("workspace session controller", () => {
-  it("maps stream-json to kind claude and acp to kind acp plus provider id", () => {
+  it("maps stream-json, ACP, and Pi RPC to their session kinds", () => {
     expect(
       sessionCreateFromProvider({
         id: "claude",
@@ -44,6 +44,15 @@ describe("workspace session controller", () => {
         protocol: "acp",
       }),
     ).toEqual({ kind: "acp", provider: "grok" });
+    expect(
+      sessionCreateFromProvider({
+        id: "pi",
+        executable: "pi",
+        acpAvailable: false,
+        authentication: "unknown",
+        protocol: "pi-rpc",
+      }),
+    ).toEqual({ kind: "pi", provider: null });
     expect(sessionCreateFromProvider(undefined)).toEqual({ kind: "acp", provider: null });
     expect(
       chatCapableProviders([
@@ -61,8 +70,15 @@ describe("workspace session controller", () => {
           authentication: "unknown",
           protocol: "acp",
         },
+        {
+          id: "pi",
+          executable: "pi",
+          acpAvailable: false,
+          authentication: "unknown",
+          protocol: "pi-rpc",
+        },
       ]).map((provider) => provider.id),
-    ).toEqual(["grok"]);
+    ).toEqual(["grok", "pi"]);
   });
 
   it("offers npx wrappers and flags them with requiresConsent", () => {
@@ -152,6 +168,7 @@ describe("workspace session controller", () => {
         authentication: "unknown" as const,
         protocol: "acp" as const,
         origin: "npx-wrapper" as const,
+        // Native Claude uses stream-json, so this ACP wrapper stays in Settings.
         pickable: false,
       },
       {
@@ -169,19 +186,33 @@ describe("workspace session controller", () => {
         authentication: "unknown" as const,
         protocol: "acp" as const,
         origin: "npx-wrapper" as const,
+        // Native pi is the pickable pi-rpc provider; pi-acp lacks native-tool
+        // permission requests, so its wrapper remains Settings-only.
+        pickable: false,
+      },
+      {
+        id: "pi",
+        executable: "pi",
+        acpAvailable: false,
+        authentication: "unknown" as const,
+        protocol: "pi-rpc" as const,
+        origin: "user-binary" as const,
       },
     ];
 
     expect(chatCapableProviders(providers).map((provider) => provider.id)).toEqual([
       "claude",
       "codex-acp",
-      "pi-acp",
+      "pi",
     ]);
     expect(
-      chatCapableProviders([{ ...providers[1], pickable: undefined }, providers[2]]).map(
-        (provider) => provider.id,
-      ),
-    ).toEqual(["claude-acp", "codex-acp"]);
+      chatCapableProviders([
+        { ...providers[1], pickable: undefined },
+        providers[2],
+        providers[3],
+        providers[4],
+      ]).map((provider) => provider.id),
+    ).toEqual(["claude-acp", "codex-acp", "pi"]);
   });
 
   it("loads terminal and ACP sessions and selects the first real session", async () => {

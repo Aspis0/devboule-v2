@@ -483,6 +483,7 @@ pub struct SessionDiagnostics {
     pub terminal: u64,
     pub acp: u64,
     pub claude: u64,
+    pub pi: u64,
     pub resumable: u64,
     pub oldest_live_age_ms: Option<u64>,
 }
@@ -544,6 +545,7 @@ impl DiagnosticsReport {
                 devboule_protocol::SessionKind::Terminal => sessions.terminal += 1,
                 devboule_protocol::SessionKind::Acp => sessions.acp += 1,
                 devboule_protocol::SessionKind::Claude => sessions.claude += 1,
+                devboule_protocol::SessionKind::Pi => sessions.pi += 1,
             }
             if !session.state.is_live()
                 && matches!(session.kind, devboule_protocol::SessionKind::Acp)
@@ -723,6 +725,7 @@ mod tests {
                 terminal: 7,
                 acp: 57,
                 claude: 5,
+                pi: 0,
                 resumable: 28,
                 oldest_live_age_ms: None,
             },

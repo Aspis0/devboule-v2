@@ -172,6 +172,7 @@ impl ConnHandle {
         let attachment_generation = self
             .next_attachment_generation
             .fetch_add(1, Ordering::Relaxed);
+        let is_pi = runtime.agent_kind() == Some(devboule_protocol::SessionKind::Pi);
         map.insert(
             subscription_id,
             PullState {
@@ -190,6 +191,7 @@ impl ConnHandle {
                     pending: VecDeque::new(),
                     replayed_seqs: std::collections::HashSet::new(),
                     claude_view: None,
+                    is_pi,
                     manifest_emitted: false,
                     catch_up_extensions: 0,
                     durable_done: false,
@@ -564,7 +566,11 @@ fn pull_live_agent_replay_events(
                 crate::journal::EventKind::AcpEnvelope => {
                     match serde_json::from_slice::<serde_json::Value>(&record.payload) {
                         Ok(value) => {
-                            if let Some(event) = crate::acp_view::view_from_envelope(&value, "") {
+                            if replay.is_pi {
+                                crate::pi_view::events_from_line(&value)
+                            } else if let Some(event) =
+                                crate::acp_view::view_from_envelope(&value, "")
+                            {
                                 vec![event]
                             } else {
                                 let view = replay.claude_view.get_or_insert_with(|| {

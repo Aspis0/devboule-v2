@@ -18,12 +18,16 @@ pub enum SessionKind {
     Terminal,
     Acp,
     Claude,
+    Pi,
 }
 
 impl SessionKind {
-    /// ACP and the Claude stream-json adapter are both live agent sessions.
+    /// ACP, Claude stream-json, and Pi RPC are live agent sessions.
     pub fn is_agent(&self) -> bool {
-        matches!(self, Self::Acp | Self::Claude)
+        match self {
+            Self::Terminal => false,
+            Self::Acp | Self::Claude | Self::Pi => true,
+        }
     }
 }
 
@@ -1270,7 +1274,15 @@ mod tests {
         assert_eq!(decoded, SessionKind::Claude);
         assert!(SessionKind::Claude.is_agent());
         assert!(SessionKind::Acp.is_agent());
+        assert!(SessionKind::Pi.is_agent());
         assert!(!SessionKind::Terminal.is_agent());
+    }
+
+    #[test]
+    fn pi_session_kind_is_the_wire_string_pi() {
+        assert_eq!(serde_json::to_value(SessionKind::Pi).expect("json"), "pi");
+        let decoded: SessionKind = serde_json::from_str("\"pi\"").expect("kind");
+        assert_eq!(decoded, SessionKind::Pi);
     }
 
     #[test]

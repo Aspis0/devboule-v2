@@ -24,10 +24,10 @@ export interface Workspace {
   path: string;
 }
 
-export type SessionKind = "terminal" | "acp" | "claude";
+export type SessionKind = "terminal" | "acp" | "claude" | "pi";
 
-export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" {
-  return kind === "acp" || kind === "claude";
+export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" {
+  return kind === "acp" || kind === "claude" || kind === "pi";
 }
 export type SendIntent = "interrupt" | "steer" | "queue";
 export type PermissionOutcome = "allow_once" | "deny";
@@ -279,6 +279,7 @@ export interface DaemonDiagnostics {
     terminal: number;
     acp: number;
     claude: number;
+    pi: number;
     resumable: number;
     oldestLiveAgeMs: number | null;
   };
@@ -501,7 +502,7 @@ export interface ProviderInfo {
    * start failed with a one-line reason.
    */
   authentication: string;
-  /** `"acp"` or `"stream-json"` when the CLI can start a chat session. */
+  /** `"acp"`, `"stream-json"`, or `"pi-rpc"` when the CLI can start a chat session. */
   protocol?: string | null;
   /** `"user-binary"` from PATH; `"npx-wrapper"` from the ACP registry. */
   origin?: "user-binary" | "npx-wrapper" | null;

@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, OptionalExtension};
 
-use devboule_protocol::SessionEvent;
+use devboule_protocol::{SessionEvent, SessionKind};
 
 use super::{
     crc32, decode_chunks, parse_kind, EventKind, EventRecord, JournalError, PersistStatus, Replay,
@@ -125,7 +125,13 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         id: row.get(0)?,
         owner: row.get(1)?,
         workspace_id: row.get(2)?,
-        kind: parse_kind(&row.get::<_, String>(3)?),
+        kind: parse_kind(&row.get::<_, String>(3)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                3,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
         title: row.get(4)?,
         created_at_ms: row.get::<_, i64>(5)? as u64,
         updated_at_ms: row.get::<_, i64>(6)? as u64,
@@ -261,7 +267,12 @@ pub(super) fn replay_session(
             }
             Some(EventKind::AcpEnvelope) => {
                 if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                    if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
+                    if record.kind == SessionKind::Pi {
+                        for view in crate::pi_view::events_from_line(&value) {
+                            events.push(view);
+                            event_seqs.push(seq);
+                        }
+                    } else if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
                         events.push(view);
                         event_seqs.push(seq);
                     } else {
@@ -318,7 +329,11 @@ pub(super) fn replay_session(
                     covered_reports.push((seq, event));
                 }
             } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
+                if record.kind == SessionKind::Pi {
+                    for view in crate::pi_view::events_from_line(&value) {
+                        covered_reports.push((seq, view));
+                    }
+                } else if let Some(view) = crate::acp_view::view_from_envelope(&value, "") {
                     covered_reports.push((seq, view));
                 } else {
                     for view in covered_claude.ingest(&value) {

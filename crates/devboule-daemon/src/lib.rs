@@ -31,6 +31,8 @@ mod login_shell_env;
 #[cfg(feature = "server")]
 mod outbound;
 mod paths;
+#[cfg(feature = "server")]
+mod pi_view;
 mod process_tree;
 pub mod provider_catalog;
 #[cfg(feature = "server")]

@@ -2263,6 +2263,7 @@ fn session_create(
             SessionKind::Terminal => "terminal",
             SessionKind::Acp => "acp",
             SessionKind::Claude => "claude",
+            SessionKind::Pi => "pi",
         },
         provider.as_deref().unwrap_or(""),
         workspace_id.as_deref().unwrap_or("")
@@ -2660,7 +2661,11 @@ mod tests {
                 assert!(provider.executable.is_empty());
                 assert!(!provider.acp_available);
                 assert_eq!(provider.protocol, None);
-                assert_eq!(provider.pickable, Some(false));
+                assert_eq!(
+                    provider.pickable,
+                    Some(false),
+                    "synthetic not-installed providers have no launchable chat protocol"
+                );
                 assert!(provider.npm_package.is_some());
             }
         }
@@ -2787,6 +2792,7 @@ mod tests {
             prefix_args: Vec::new(),
             acp_command: None,
             stream_json_command: None,
+            rpc_command: None,
             authentication: crate::provider_catalog::AuthenticationStatus::Unknown,
             origin: crate::provider_catalog::ProviderOrigin::UserBinary,
             launch_args: None,

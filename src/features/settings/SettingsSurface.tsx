@@ -411,6 +411,8 @@ function ProvidersPanel() {
                           <span className="provider-status provider-status-ready">ACP</span>
                         ) : provider.protocol === "stream-json" ? (
                           <span className="provider-status provider-status-ready">stream-json</span>
+                        ) : provider.protocol === "pi-rpc" ? (
+                          <span className="provider-status provider-status-ready">pi-rpc</span>
                         ) : null}
                         <span
                           className={`provider-status ${

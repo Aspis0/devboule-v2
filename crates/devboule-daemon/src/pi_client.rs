@@ -1,0 +1,1411 @@
+//! Pi RPC stdio adapter for live agent sessions.
+
+use std::collections::HashMap;
+use std::io::{self, Read, Write};
+use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use devboule_protocol::{
+    ErrorCode, PermissionOption, SessionEvent, SessionModel, SessionModelEffort, WireError,
+};
+use serde_json::Value;
+
+use super::permission_broker::{PermissionBroker, PermissionSender};
+use super::PtyCommand;
+use super::{
+    write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
+    SpawnedSession, StderrSource, StdioWaitableChild,
+};
+use crate::atomic::atomic_write;
+use crate::paths::RuntimePaths;
+use crate::process_tree::{JobObject, ProcessHandle};
+use crate::server::ServerState;
+
+const COMMAND_ENV: &str = "DEVBOULE_PI_COMMAND";
+const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
+const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
+const READ_ONLY_TOOLS: &[&str] = &["read", "grep", "find", "ls"];
+
+const PERMISSION_EXTENSION: &str = r#"export default function (pi) {
+  pi.on("session_start", async (_event, ctx) => {
+    ctx.ui.notify("devboule-permission-channel", "info");
+  });
+
+  pi.on("tool_call", async (event, ctx) => {
+    const readOnly = new Set(["read", "grep", "find", "ls"]);
+    if (readOnly.has(event.toolName)) return;
+    const confirmed = await ctx.ui.confirm({
+      title: "Devboule permission",
+      message: `Allow ${event.toolName}?`,
+    });
+    if (!confirmed) {
+      return { block: true, reason: "Denied by Devboule permission broker" };
+    }
+  });
+}
+"#;
+
+pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireError> {
+    let cwd = std::env::current_dir().map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not determine Pi working directory: {error}"),
+        )
+    })?;
+    let mut argv: Vec<String> = match std::env::var(COMMAND_ENV) {
+        Ok(argv) => serde_json::from_str(&argv).map_err(|error| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("{COMMAND_ENV} must be a non-empty JSON string array: {error}"),
+            )
+        })?,
+        Err(_) => {
+            let Some(agent) = crate::provider_catalog::find_available("pi") else {
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    format!(
+                        "Pi was not found on PATH. Set {COMMAND_ENV} to a non-empty JSON string array to choose a command explicitly."
+                    ),
+                ));
+            };
+            let Some(rpc) = agent.rpc_command else {
+                return Err(WireError::new(
+                    ErrorCode::Io,
+                    "Pi is installed but has no pi-rpc launch args.",
+                ));
+            };
+            rpc
+        }
+    };
+    if argv.is_empty() || argv[0].trim().is_empty() {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("{COMMAND_ENV} must contain an executable."),
+        ));
+    }
+    let program = argv.remove(0);
+    Ok(PtyCommand::new(program, argv, cwd, Vec::new()).with_provider_id("pi"))
+}
+
+pub(crate) fn write_permission_extension(path: &std::path::Path) -> io::Result<()> {
+    if !path.parent().is_some_and(std::path::Path::is_dir) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Pi permission extension parent directory does not exist",
+        ));
+    }
+    atomic_write(path, PERMISSION_EXTENSION.as_bytes())
+}
+
+fn spawn_args(command: &PtyCommand, extension_path: &std::path::Path) -> Vec<String> {
+    let mut args = command.args.clone();
+    if !args
+        .windows(2)
+        .any(|pair| pair[0] == "--mode" && pair[1] == "rpc")
+    {
+        args.extend(["--mode".to_string(), "rpc".to_string()]);
+    }
+    args.extend([
+        "--no-extensions".to_string(),
+        "-e".to_string(),
+        extension_path.to_string_lossy().into_owned(),
+    ]);
+    args
+}
+
+pub(super) fn spawn_process(
+    state: &Arc<ServerState>,
+    command: PtyCommand,
+) -> Result<SpawnedSession, WireError> {
+    let extension_path = state
+        .sessions
+        .runtime_dir()
+        .join("devboule-pi-permissions.ts");
+    write_permission_extension(&extension_path).map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not write the Pi permission extension: {error}"),
+        )
+    })?;
+
+    let args = spawn_args(&command, &extension_path);
+    let mut process = Command::new(&command.program);
+    process
+        .args(&args)
+        .current_dir(&command.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in &command.env {
+        process.env(key, value);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        process.creation_flags(0x0800_0000);
+    }
+    let mut child = process.spawn().map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not start Pi {}: {error}", command.program),
+        )
+    })?;
+
+    #[cfg(windows)]
+    let (process_job, os_handle) = {
+        use std::os::windows::io::AsRawHandle;
+        let process_job = JobObject::new().map_err(|error| {
+            terminate_process(&mut child);
+            WireError::new(
+                ErrorCode::Io,
+                format!("Could not create the Pi process job: {error}"),
+            )
+        })?;
+        let handle = child.as_raw_handle();
+        if let Err(error) = state
+            .process_job
+            .assign(handle)
+            .and_then(|()| process_job.assign(handle))
+        {
+            terminate_process(&mut child);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not contain the Pi process: {error}"),
+            ));
+        }
+        let os_handle = match ProcessHandle::duplicate(handle) {
+            Ok(duplicated) => Some(duplicated),
+            Err(error) => {
+                eprintln!("could not duplicate Pi process handle for OS liveness: {error}");
+                None
+            }
+        };
+        (process_job, os_handle)
+    };
+
+    #[cfg(not(windows))]
+    let process_job = JobObject::new().map_err(|error| {
+        terminate_process(&mut child);
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not create the Pi process job: {error}"),
+        )
+    })?;
+    #[cfg(not(windows))]
+    let os_handle = None;
+
+    let stdin = child.stdin.take().ok_or_else(|| {
+        terminate_process(&mut child);
+        WireError::new(ErrorCode::Io, "Pi did not provide stdin.")
+    })?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        terminate_process(&mut child);
+        WireError::new(ErrorCode::Io, "Pi did not provide stdout.")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        terminate_process(&mut child);
+        WireError::new(ErrorCode::Io, "Pi did not provide stderr.")
+    })?;
+    let process = Arc::new(Mutex::new(child));
+    let stdin = Arc::new(Mutex::new(Some(stdin)));
+    let next_id = Arc::new(AtomicU64::new(1));
+    let mut stdout = PiStdout::spawn(stdout).map_err(|error| {
+        WireError::new(ErrorCode::Io, format!("Could not read Pi stdout: {error}"))
+    })?;
+    let handshake = match perform_handshake(&mut stdout, &stdin, &next_id, &extension_path) {
+        Ok(handshake) => handshake,
+        Err(error) => {
+            if let Ok(mut process) = process.lock() {
+                terminate_process(&mut process);
+            }
+            drop(process_job);
+            return Err(error);
+        }
+    };
+
+    let controls = Arc::new(Mutex::new(HashMap::new()));
+    let permission_broker = PermissionBroker::with_sender(pi_permission_sender(
+        Arc::clone(&stdin),
+        Arc::clone(&controls),
+    ));
+    let control = Arc::new(PiControl::new(Arc::clone(&stdin), Arc::clone(&next_id)));
+    let writer = PiWriter {
+        stdin: Arc::clone(&stdin),
+        next_id: Arc::clone(&next_id),
+        pending: Vec::new(),
+    };
+    let killer = PiKiller {
+        process: Arc::clone(&process),
+        stdin: Arc::clone(&stdin),
+        next_id: Arc::clone(&next_id),
+        permission_broker: Arc::clone(&permission_broker),
+        cancelled: Arc::new(AtomicBool::new(false)),
+    };
+    let reader_dispatch = PiReader::new(
+        handshake.deferred,
+        handshake.manifest,
+        Arc::clone(&permission_broker),
+        Arc::clone(&controls),
+        Arc::clone(&next_id),
+        Arc::clone(&control),
+        Arc::clone(&stdin),
+    );
+    let stderr_source = PiStderr::start(stderr).map_err(|error| {
+        if let Ok(mut process) = process.lock() {
+            terminate_process(&mut process);
+        }
+        WireError::new(ErrorCode::Io, format!("Could not drain Pi stderr: {error}"))
+    })?;
+    Ok(SpawnedSession {
+        process_job,
+        master: None,
+        killer: Box::new(killer),
+        switcher: Some(Box::new(PiSwitcher {
+            control,
+            catalog: Arc::new(Mutex::new(handshake.catalog)),
+        })),
+        child: Box::new(StdioWaitableChild { process }),
+        writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
+        reader: Box::new(stdout),
+        reader_dispatch: Some(Box::new(reader_dispatch)),
+        stderr: Some(Box::new(stderr_source)),
+        permission_broker: Some(permission_broker),
+        os_handle,
+        peer_session_id: handshake.peer_session_id,
+        agent_version: None,
+    })
+}
+
+fn terminate_process(process: &mut Child) {
+    let _ = process.kill();
+    let _ = process.wait();
+}
+
+struct Handshake {
+    peer_session_id: Option<String>,
+    manifest: SessionEvent,
+    catalog: PiCatalog,
+    deferred: Vec<Value>,
+}
+
+fn perform_handshake(
+    stdout: &mut PiStdout,
+    stdin: &Mutex<Option<ChildStdin>>,
+    next_id: &AtomicU64,
+    extension_path: &std::path::Path,
+) -> Result<Handshake, WireError> {
+    let deadline = Instant::now() + handshake_timeout();
+    let mut deferred = Vec::new();
+    let mut peer_session_id = None;
+    let mut ready = false;
+    while !ready {
+        let value = next_handshake_value(stdout, deadline, extension_path)?;
+        if value.is_none() {
+            return Err(permission_channel_error(
+                "Pi exited before the permission channel became ready",
+            ));
+        }
+        let value = value.expect("checked above");
+        if let Some(session_id) = session_id_from_value(&value) {
+            peer_session_id = Some(session_id);
+        }
+        if is_ready_notify(&value) {
+            ready = true;
+        } else {
+            deferred.push(value);
+        }
+    }
+
+    let state = request_response(
+        stdout,
+        stdin,
+        next_id,
+        "get_state",
+        Value::Null,
+        deadline,
+        &mut deferred,
+    )?;
+    if let Some(session_id) = state
+        .get("data")
+        .and_then(|value| value.get("sessionId"))
+        .and_then(Value::as_str)
+    {
+        peer_session_id = Some(session_id.to_string());
+    }
+    let models = request_response(
+        stdout,
+        stdin,
+        next_id,
+        "get_available_models",
+        Value::Null,
+        deadline,
+        &mut deferred,
+    )?;
+    let levels = request_response(
+        stdout,
+        stdin,
+        next_id,
+        "get_available_thinking_levels",
+        Value::Null,
+        deadline,
+        &mut deferred,
+    )?;
+    let catalog = catalog_from_responses(&state, &models, &levels)?;
+    let manifest = manifest_from_catalog(&catalog);
+    Ok(Handshake {
+        peer_session_id,
+        manifest,
+        catalog,
+        deferred,
+    })
+}
+
+fn handshake_timeout() -> Duration {
+    std::env::var(HANDSHAKE_TIMEOUT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .filter(|value| !value.is_zero())
+        .unwrap_or(DEFAULT_HANDSHAKE_TIMEOUT)
+}
+
+fn permission_channel_error(reason: &str) -> WireError {
+    WireError::new(
+        ErrorCode::Io,
+        format!("Pi permission channel required before session creation: {reason}"),
+    )
+}
+
+fn next_handshake_value(
+    stdout: &mut PiStdout,
+    deadline: Instant,
+    extension_path: &std::path::Path,
+) -> Result<Option<Value>, WireError> {
+    let line = stdout
+        .next_line(deadline)
+        .map_err(|error| permission_channel_error(&format!("could not read stdout: {error}")))?;
+    let Some(line) = line else {
+        return Ok(None);
+    };
+    let value = serde_json::from_str::<Value>(&line).map_err(|error| {
+        permission_channel_error(&format!("malformed handshake output: {error}"))
+    })?;
+    if value.get("type").and_then(Value::as_str) == Some("extension_error") {
+        let serialized = value.to_string();
+        let extension = extension_path.to_string_lossy();
+        return Err(permission_channel_error(&format!(
+            "the permission extension failed to load ({}): {serialized}",
+            extension
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn request_response(
+    stdout: &mut PiStdout,
+    stdin: &Mutex<Option<ChildStdin>>,
+    next_id: &AtomicU64,
+    command: &str,
+    extra: Value,
+    deadline: Instant,
+    deferred: &mut Vec<Value>,
+) -> Result<Value, WireError> {
+    let id = format!("h-{}", next_id.fetch_add(1, Ordering::Relaxed));
+    let mut frame = serde_json::json!({"id": id, "type": command});
+    if let Some(object) = extra.as_object() {
+        if let Some(frame_object) = frame.as_object_mut() {
+            frame_object.extend(object.clone());
+        }
+    }
+    send_json(stdin, &frame, "Pi")?;
+    loop {
+        let Some(value) = stdout.next_line(deadline).map_err(|error| {
+            permission_channel_error(&format!("could not read response: {error}"))
+        })?
+        else {
+            return Err(permission_channel_error(&format!(
+                "Pi exited before {command} completed"
+            )));
+        };
+        let value: Value = serde_json::from_str(&value).map_err(|error| {
+            permission_channel_error(&format!("malformed {command} response: {error}"))
+        })?;
+        if value.get("id").and_then(Value::as_str) == Some(id.as_str())
+            && value.get("type").and_then(Value::as_str) == Some("response")
+        {
+            if value.get("success").and_then(Value::as_bool) != Some(true) {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "Pi {command} failed: {}",
+                        value
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown error")
+                    ),
+                ));
+            }
+            return Ok(value);
+        }
+        deferred.push(value);
+    }
+}
+
+fn send_json(
+    stdin: &Mutex<Option<ChildStdin>>,
+    value: &Value,
+    label: &'static str,
+) -> Result<(), WireError> {
+    let mut bytes = serde_json::to_vec(value).map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not encode {label} frame: {error}"),
+        )
+    })?;
+    bytes.push(b'\n');
+    write_child_stdin(stdin, &bytes, label).map_err(|error| {
+        WireError::new(
+            ErrorCode::Io,
+            format!("Could not write {label} frame: {error}"),
+        )
+    })
+}
+
+fn is_ready_notify(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("extension_ui_request")
+        && value.get("method").and_then(Value::as_str) == Some("notify")
+        && value.get("message").and_then(Value::as_str) == Some("devboule-permission-channel")
+}
+
+fn session_id_from_value(value: &Value) -> Option<String> {
+    if value.get("type").and_then(Value::as_str) == Some("session") {
+        return value.get("id").and_then(Value::as_str).map(str::to_string);
+    }
+    value
+        .get("data")
+        .and_then(|data| data.get("sessionId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+#[derive(Clone, Debug, Default)]
+struct PiCatalog {
+    models: HashMap<String, PiModel>,
+    current_model_id: Option<String>,
+    current_provider: Option<String>,
+    current_effort: Option<String>,
+    current_levels: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct PiModel {
+    name: String,
+    provider: Option<String>,
+    context_tokens: Option<u64>,
+    efforts: Option<Vec<SessionModelEffort>>,
+}
+
+fn catalog_from_responses(
+    state_response: &Value,
+    models_response: &Value,
+    levels_response: &Value,
+) -> Result<PiCatalog, WireError> {
+    let data = models_response.get("data").ok_or_else(|| {
+        WireError::new(ErrorCode::InvalidRequest, "Pi model response had no data.")
+    })?;
+    let mut catalog = PiCatalog::default();
+    let current_model = state_response
+        .get("data")
+        .and_then(|data| data.get("model"));
+    catalog.current_model_id = current_model
+        .and_then(|model| model.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    catalog.current_provider = current_model
+        .and_then(|model| model.get("provider"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    catalog.current_effort = state_response
+        .get("data")
+        .and_then(|data| data.get("thinkingLevel"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    catalog.current_levels = levels_response
+        .get("data")
+        .and_then(|data| data.get("levels"))
+        .and_then(Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let models = data
+        .get("models")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                "Pi model response had no models.",
+            )
+        })?;
+    for model in models {
+        let Some(id) = model.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let map_efforts = model
+            .get("thinkingLevelMap")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(id, _)| effort(id, false))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|efforts| !efforts.is_empty());
+        let efforts = if catalog.current_model_id.as_deref() == Some(id) {
+            Some(
+                catalog
+                    .current_levels
+                    .iter()
+                    .map(|level| effort(level, catalog.current_effort.as_deref() == Some(level)))
+                    .collect(),
+            )
+        } else {
+            map_efforts
+        };
+        catalog.models.insert(
+            id.to_string(),
+            PiModel {
+                name: model
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(id)
+                    .to_string(),
+                provider: model
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                context_tokens: model.get("contextWindow").and_then(Value::as_u64),
+                efforts,
+            },
+        );
+    }
+    if catalog.current_model_id.is_none() {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "Pi state did not declare a current model.",
+        ));
+    }
+    Ok(catalog)
+}
+
+fn effort(id: &str, default: bool) -> SessionModelEffort {
+    SessionModelEffort {
+        id: id.to_string(),
+        label: id.to_string(),
+        description: None,
+        default: Some(default),
+    }
+}
+
+fn manifest_from_catalog(catalog: &PiCatalog) -> SessionEvent {
+    let mut ids = catalog.models.keys().cloned().collect::<Vec<_>>();
+    ids.sort();
+    let models = ids
+        .into_iter()
+        .filter_map(|id| {
+            let model = catalog.models.get(&id)?;
+            Some(SessionModel {
+                model_id: id.clone(),
+                name: model.name.clone(),
+                description: None,
+                context_tokens: model.context_tokens,
+                current_effort: (catalog.current_model_id.as_deref() == Some(id.as_str()))
+                    .then(|| catalog.current_effort.clone())
+                    .flatten(),
+                efforts: model.efforts.clone(),
+            })
+        })
+        .collect();
+    SessionEvent::SessionManifest {
+        provider_id: Some("pi".to_string()),
+        current_model_id: catalog.current_model_id.clone(),
+        models,
+        modes: None,
+    }
+}
+
+fn pi_permission_sender(
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    controls: Arc<Mutex<HashMap<u64, String>>>,
+) -> Arc<PermissionSender> {
+    Arc::new(move |id, result| {
+        let request_id = controls
+            .lock()
+            .map_err(|_| io::Error::other("Pi permission map lock poisoned"))?
+            .remove(&id)
+            .ok_or_else(|| io::Error::other("Pi permission response had no matching request"))?;
+        let confirmed = result.pointer("/outcome/outcome").and_then(Value::as_str)
+            == Some("selected")
+            && result.pointer("/outcome/optionId").and_then(Value::as_str) == Some("allow");
+        let frame = serde_json::json!({
+            "id": request_id,
+            "type": "extension_ui_response",
+            "confirmed": confirmed,
+        });
+        let mut bytes = serde_json::to_vec(&frame)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        bytes.push(b'\n');
+        write_child_stdin(&stdin, &bytes, "Pi")
+    })
+}
+
+struct PiWriter {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    pending: Vec<u8>,
+}
+
+impl Write for PiWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.pending.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let text = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        let frame = serde_json::json!({
+            "id": format!("p-{}", self.next_id.fetch_add(1, Ordering::Relaxed)),
+            "type": "prompt",
+            "message": text,
+        });
+        let mut bytes = serde_json::to_vec(&frame)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        bytes.push(b'\n');
+        write_child_stdin(&self.stdin, &bytes, "Pi")
+    }
+}
+
+struct PiKiller {
+    process: Arc<Mutex<Child>>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    permission_broker: Arc<PermissionBroker>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl PiKiller {
+    fn abort(&self) {
+        let frame = serde_json::json!({
+            "id": format!("a-{}", self.next_id.fetch_add(1, Ordering::Relaxed)),
+            "type": "abort",
+        });
+        if let Ok(mut bytes) = serde_json::to_vec(&frame) {
+            bytes.push(b'\n');
+            let _ = write_child_stdin(&self.stdin, &bytes, "Pi");
+        }
+    }
+}
+
+impl SessionKiller for PiKiller {
+    fn interrupt(&mut self) {
+        self.abort();
+        self.permission_broker.cancel_all();
+    }
+
+    fn kill(&mut self) {
+        if !self.cancelled.swap(true, Ordering::AcqRel) {
+            self.abort();
+            self.permission_broker.cancel_all();
+        }
+        if let Ok(mut process) = self.process.lock() {
+            let _ = process.kill();
+        }
+        if let Ok(mut stdin) = self.stdin.lock() {
+            *stdin = None;
+        }
+    }
+
+    fn clone_killer(&self) -> Box<dyn SessionKiller> {
+        Box::new(Self {
+            process: Arc::clone(&self.process),
+            stdin: Arc::clone(&self.stdin),
+            next_id: Arc::clone(&self.next_id),
+            permission_broker: Arc::clone(&self.permission_broker),
+            cancelled: Arc::clone(&self.cancelled),
+        })
+    }
+}
+
+struct PiControl {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    next_id: Arc<AtomicU64>,
+    pending: Mutex<HashMap<String, Sender<Result<Value, String>>>>,
+}
+
+impl PiControl {
+    fn new(stdin: Arc<Mutex<Option<ChildStdin>>>, next_id: Arc<AtomicU64>) -> Self {
+        Self {
+            stdin,
+            next_id,
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn request(&self, command: &str, fields: Value) -> Result<Value, WireError> {
+        let id = format!("c-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
+        let (tx, rx) = mpsc::channel();
+        self.pending
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "Pi control map is unavailable."))?
+            .insert(id.clone(), tx);
+        let mut frame = serde_json::json!({"id": id, "type": command});
+        if let Some(object) = fields.as_object() {
+            frame
+                .as_object_mut()
+                .expect("control frame is an object")
+                .extend(object.clone());
+        }
+        if let Err(error) = send_json(&self.stdin, &frame, "Pi") {
+            let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
+            return Err(error);
+        }
+        let response = rx.recv_timeout(RESPONSE_TIMEOUT).map_err(|error| {
+            let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
+            WireError::new(
+                ErrorCode::Io,
+                format!("Pi {command} response timed out: {error}"),
+            )
+        })?;
+        let response = response.map_err(|message| WireError::new(ErrorCode::Io, message))?;
+        if response.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!(
+                    "Pi {command} failed: {}",
+                    response
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown error")
+                ),
+            ));
+        }
+        Ok(response)
+    }
+
+    fn deliver(&self, value: &Value) -> bool {
+        let Some(id) = value.get("id").and_then(Value::as_str) else {
+            return false;
+        };
+        let sender = self
+            .pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(id));
+        sender.is_some_and(|sender| sender.send(Ok(value.clone())).is_ok())
+    }
+}
+
+struct PiSwitcher {
+    control: Arc<PiControl>,
+    catalog: Arc<Mutex<PiCatalog>>,
+}
+
+impl ModelSwitcher for PiSwitcher {
+    fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError> {
+        let current = self
+            .catalog
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "Pi model catalog is unavailable."))?
+            .clone();
+        if model_id.is_none() {
+            if let Some(effort) = effort {
+                if !thinking_level_allowed(effort, &current.current_levels) {
+                    return Err(WireError::new(
+                        ErrorCode::InvalidRequest,
+                        format!(
+                            "Pi thinking level '{effort}' is not available for the current model."
+                        ),
+                    ));
+                }
+                self.control
+                    .request("set_thinking_level", serde_json::json!({"level": effort}))?;
+                if let Ok(mut catalog) = self.catalog.lock() {
+                    catalog.current_effort = Some(effort.to_string());
+                }
+            }
+            return Ok(());
+        }
+        let model_id = model_id.expect("checked above");
+        let model = current.models.get(model_id).ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Pi model '{model_id}' is not in get_available_models."),
+            )
+        })?;
+        let provider = model.provider.clone().ok_or_else(|| {
+            WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Pi model '{model_id}' has no provider."),
+            )
+        })?;
+        self.control.request(
+            "set_model",
+            serde_json::json!({"provider": provider, "modelId": model_id}),
+        )?;
+        let levels_response = self
+            .control
+            .request("get_available_thinking_levels", Value::Null)?;
+        let levels = levels_response
+            .get("data")
+            .and_then(|data| data.get("levels"))
+            .and_then(Value::as_array)
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if let Some(effort) = effort {
+            if !thinking_level_allowed(effort, &levels) {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "Pi thinking level '{effort}' is not available for model '{model_id}'."
+                    ),
+                ));
+            }
+            self.control
+                .request("set_thinking_level", serde_json::json!({"level": effort}))?;
+        }
+        if let Ok(mut catalog) = self.catalog.lock() {
+            catalog.current_model_id = Some(model_id.to_string());
+            catalog.current_provider = Some(provider);
+            catalog.current_levels = levels;
+            catalog.current_effort = effort.map(str::to_string).or(current.current_effort);
+        }
+        Ok(())
+    }
+
+    fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
+        Box::new(Self {
+            control: Arc::clone(&self.control),
+            catalog: Arc::clone(&self.catalog),
+        })
+    }
+}
+
+fn thinking_level_allowed(level: &str, available: &[String]) -> bool {
+    available.iter().any(|candidate| candidate == level)
+}
+
+struct PiReader {
+    buffer: Vec<u8>,
+    discarding_oversized_line: bool,
+    deferred: Vec<Value>,
+    manifest: Option<SessionEvent>,
+    permission_broker: Arc<PermissionBroker>,
+    controls: Arc<Mutex<HashMap<u64, String>>>,
+    next_id: Arc<AtomicU64>,
+    control: Arc<PiControl>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+}
+
+impl PiReader {
+    fn new(
+        deferred: Vec<Value>,
+        manifest: SessionEvent,
+        permission_broker: Arc<PermissionBroker>,
+        controls: Arc<Mutex<HashMap<u64, String>>>,
+        next_id: Arc<AtomicU64>,
+        control: Arc<PiControl>,
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+    ) -> Self {
+        Self {
+            buffer: Vec::new(),
+            discarding_oversized_line: false,
+            deferred,
+            manifest: Some(manifest),
+            permission_broker,
+            controls,
+            next_id,
+            control,
+            stdin,
+        }
+    }
+
+    fn publish(&self, runtime: &SessionRuntime, event: SessionEvent, seq: Option<u64>) {
+        let _ = runtime.publish_agent_event_with_seq(event, None, seq);
+    }
+
+    fn dispatch_value(&mut self, value: Value, runtime: &Arc<SessionRuntime>) {
+        let event_seq = runtime.journal_agent_envelope(&value);
+        if value.get("type").and_then(Value::as_str) == Some("response") {
+            let _ = self.control.deliver(&value);
+            return;
+        }
+        if let Some(session_id) = session_id_from_value(&value) {
+            runtime.set_peer_session_id(session_id);
+        }
+        if value.get("type").and_then(Value::as_str) == Some("extension_ui_request") {
+            self.dispatch_ui_request(&value, runtime, event_seq);
+            return;
+        }
+        let mut event_seq = event_seq;
+        for event in crate::pi_view::events_from_line(&value) {
+            self.publish(runtime, event, event_seq.take());
+        }
+    }
+
+    fn dispatch_ui_request(
+        &mut self,
+        value: &Value,
+        runtime: &Arc<SessionRuntime>,
+        event_seq: Option<u64>,
+    ) {
+        let Some(method) = value.get("method").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(request_id) = value.get("id").and_then(Value::as_str) else {
+            return;
+        };
+        if method != "confirm" {
+            if matches!(method, "select" | "input" | "editor") {
+                let _ = send_extension_response(&self.stdin, request_id, false);
+            }
+            return;
+        }
+        let (title, description) = match value.get("title") {
+            Some(Value::Object(title)) => (
+                title
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Pi permission")
+                    .to_string(),
+                title
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Allow this tool call?")
+                    .to_string(),
+            ),
+            Some(Value::String(title)) => (title.clone(), String::new()),
+            _ => (
+                "Pi permission".to_string(),
+                "Allow this tool call?".to_string(),
+            ),
+        };
+        let event = SessionEvent::PermissionRequest {
+            tool_call_id: request_id.to_string(),
+            title,
+            description: Some(description),
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            options: vec![
+                PermissionOption {
+                    option_id: "allow".to_string(),
+                    name: "Allow once".to_string(),
+                    kind: "allow_once".to_string(),
+                },
+                PermissionOption {
+                    option_id: "deny".to_string(),
+                    name: "Deny".to_string(),
+                    kind: "reject_once".to_string(),
+                },
+            ],
+        };
+        let broker_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut controls) = self.controls.lock() {
+            controls.insert(broker_id, request_id.to_string());
+        }
+        let pending = match self
+            .permission_broker
+            .register(broker_id, event.clone(), runtime)
+        {
+            Ok(pending) => pending,
+            Err(error) => {
+                if let Ok(mut controls) = self.controls.lock() {
+                    controls.remove(&broker_id);
+                }
+                let _ = send_extension_response(&self.stdin, request_id, false);
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!("Could not queue Pi permission request: {error}"),
+                    },
+                    event_seq,
+                );
+                return;
+            }
+        };
+        if runtime.permission_delivery_enabled() == Some(false) {
+            let _ = self
+                .permission_broker
+                .respond(request_id, devboule_protocol::PermissionOutcome::Deny);
+            return;
+        }
+        if let Err(error) = self.permission_broker.arm_timeout(Arc::clone(&pending)) {
+            let _ = self
+                .permission_broker
+                .respond(request_id, devboule_protocol::PermissionOutcome::Deny);
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: format!("Could not start the Pi permission deadline: {error}"),
+                },
+                event_seq,
+            );
+            return;
+        }
+        self.publish(runtime, event, event_seq);
+    }
+}
+
+fn send_extension_response(
+    stdin: &Mutex<Option<ChildStdin>>,
+    request_id: &str,
+    confirmed: bool,
+) -> io::Result<()> {
+    let frame = serde_json::json!({
+        "id": request_id,
+        "type": "extension_ui_response",
+        "confirmed": confirmed,
+    });
+    let mut bytes = serde_json::to_vec(&frame)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    bytes.push(b'\n');
+    write_child_stdin(stdin, &bytes, "Pi")
+}
+
+impl ReaderDispatch for PiReader {
+    fn feed(&mut self, bytes: &[u8], runtime: &Arc<SessionRuntime>) -> Result<(), String> {
+        if self.manifest.is_some() {
+            let manifest = self.manifest.take().expect("checked above");
+            let manifest = runtime.store_session_manifest(manifest);
+            self.publish(runtime, manifest, None);
+            for value in std::mem::take(&mut self.deferred) {
+                self.dispatch_value(value, runtime);
+            }
+        }
+        let mut bytes = bytes;
+        if self.discarding_oversized_line {
+            let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') else {
+                return Ok(());
+            };
+            self.discarding_oversized_line = false;
+            bytes = &bytes[newline + 1..];
+        }
+        self.buffer.extend_from_slice(bytes);
+        loop {
+            let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') else {
+                if self.buffer.len() > MAX_LINE_BYTES {
+                    self.buffer.clear();
+                    self.discarding_oversized_line = true;
+                    self.publish(
+                        runtime,
+                        SessionEvent::AgentError {
+                            message: format!(
+                                "Pi input line exceeded {MAX_LINE_BYTES} bytes and was discarded."
+                            ),
+                        },
+                        None,
+                    );
+                }
+                break;
+            };
+            let line: Vec<u8> = self.buffer.drain(..=newline).collect();
+            if line.len() > MAX_LINE_BYTES {
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!(
+                            "Pi input line exceeded {MAX_LINE_BYTES} bytes and was discarded."
+                        ),
+                    },
+                    None,
+                );
+                continue;
+            }
+            let line = line.strip_suffix(b"\n").unwrap_or(&line);
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let value = serde_json::from_slice::<Value>(line)
+                .map_err(|error| format!("Malformed Pi output: {error}"))?;
+            self.dispatch_value(value, runtime);
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
+        self.permission_broker.cancel_all();
+        if !self.buffer.is_empty() {
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: "Pi agent ended with an unterminated output line.".to_string(),
+                },
+                None,
+            );
+        }
+    }
+}
+
+pub(crate) fn is_read_only_tool(name: &str) -> bool {
+    READ_ONLY_TOOLS.contains(&name)
+}
+
+#[allow(dead_code)]
+pub(crate) fn permission_required(tool_name: &str) -> bool {
+    !is_read_only_tool(tool_name)
+}
+
+struct PiStdout {
+    receiver: Receiver<io::Result<Vec<u8>>>,
+    buffer: Vec<u8>,
+}
+
+impl PiStdout {
+    fn spawn(mut stdout: impl Read + Send + 'static) -> io::Result<Self> {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("session-pi-stdout".to_string())
+            .spawn(move || {
+                let mut bytes = [0u8; 16 * 1024];
+                loop {
+                    match stdout.read(&mut bytes) {
+                        Ok(0) => return,
+                        Ok(length) => {
+                            if sender.send(Ok(bytes[..length].to_vec())).is_err() {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            let _ = sender.send(Err(error));
+                            return;
+                        }
+                    }
+                }
+            })?;
+        Ok(Self {
+            receiver,
+            buffer: Vec::new(),
+        })
+    }
+
+    fn next_line(&mut self, deadline: Instant) -> io::Result<Option<String>> {
+        loop {
+            if let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
+                if newline.saturating_add(1) > MAX_LINE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Pi handshake line exceeded the 10 MiB limit",
+                    ));
+                }
+                let line: Vec<u8> = self.buffer.drain(..=newline).collect();
+                let line = line.strip_suffix(b"\n").unwrap_or(&line);
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                return Ok(Some(String::from_utf8_lossy(line).into_owned()));
+            }
+            if self.buffer.len() > MAX_LINE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Pi handshake line exceeded the 10 MiB limit",
+                ));
+            }
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            if timeout.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Pi permission channel handshake timed out",
+                ));
+            }
+            match self.receiver.recv_timeout(timeout) {
+                Ok(Ok(bytes)) => self.buffer.extend_from_slice(&bytes),
+                Ok(Err(error)) => return Err(error),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "Pi permission channel handshake timed out",
+                    ));
+                }
+                Err(RecvTimeoutError::Disconnected) => return Ok(None),
+            }
+        }
+    }
+}
+
+impl Read for PiStdout {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        while self.buffer.is_empty() {
+            match self.receiver.recv() {
+                Ok(Ok(bytes)) => self.buffer.extend_from_slice(&bytes),
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Ok(0),
+            }
+        }
+        let length = output.len().min(self.buffer.len());
+        output[..length].copy_from_slice(&self.buffer[..length]);
+        self.buffer.drain(..length);
+        Ok(length)
+    }
+}
+
+struct PiStderr {
+    stderr: Option<ChildStderr>,
+}
+
+impl PiStderr {
+    fn start(stderr: ChildStderr) -> io::Result<Self> {
+        Ok(Self {
+            stderr: Some(stderr),
+        })
+    }
+}
+
+impl StderrSource for PiStderr {
+    fn spawn(mut self: Box<Self>, runtime: Arc<SessionRuntime>) -> io::Result<JoinHandle<()>> {
+        let mut stderr = self
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("Pi stderr drain was already consumed"))?;
+        std::thread::Builder::new()
+            .name("session-pi-stderr".to_string())
+            .spawn(move || {
+                let mut buffer = [0u8; 4096];
+                loop {
+                    match stderr.read(&mut buffer) {
+                        Ok(0) => return,
+                        Ok(length) => {
+                            let data = String::from_utf8_lossy(&buffer[..length]).into_owned();
+                            let _ = runtime
+                                .publish_agent_event(SessionEvent::AgentStderr { data }, None);
+                        }
+                        Err(_) => return,
+                    }
+                }
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        is_read_only_tool, is_ready_notify, perform_handshake, permission_required, spawn_args,
+        thinking_level_allowed, write_permission_extension, PiStdout, PERMISSION_EXTENSION,
+    };
+    use crate::pi_view::events_from_line;
+    use crate::session::PtyCommand;
+    use devboule_protocol::SessionEvent;
+    use std::path::Path;
+
+    #[test]
+    fn thinking_level_validation_is_against_the_current_model_list() {
+        let levels = ["low".to_string(), "high".to_string(), "max".to_string()];
+        assert!(!thinking_level_allowed("panzeroni", &levels));
+        assert!(!thinking_level_allowed("xhigh", &levels));
+        assert!(thinking_level_allowed("high", &levels));
+    }
+
+    #[test]
+    fn unknown_tool_names_do_not_pass_the_default_deny_gate() {
+        assert!(permission_required("tool_del_futuro"));
+        assert!(!is_read_only_tool("tool_del_futuro"));
+        assert!(!is_read_only_tool("write"));
+        assert!(is_read_only_tool("read"));
+    }
+
+    #[test]
+    fn permission_extension_is_default_deny_and_has_the_ready_signal() {
+        assert!(PERMISSION_EXTENSION.contains("devboule-permission-channel"));
+        assert!(!PERMISSION_EXTENSION.contains("tool_del_futuro"));
+        assert!(PERMISSION_EXTENSION.contains("new Set([\"read\", \"grep\", \"find\", \"ls\"])"));
+        assert!(PERMISSION_EXTENSION.contains("ctx.ui.confirm({"));
+    }
+
+    #[test]
+    fn only_our_notify_is_the_permission_channel_ready_signal() {
+        let ready = serde_json::json!({
+            "type": "extension_ui_request",
+            "method": "notify",
+            "message": "devboule-permission-channel"
+        });
+        let session = serde_json::json!({"type": "session", "id": "session-1"});
+        assert!(is_ready_notify(&ready));
+        assert!(!is_ready_notify(&session));
+    }
+
+    #[test]
+    fn handshake_rejects_a_stream_without_the_ready_signal() {
+        let mut stdout = PiStdout::spawn(std::io::Cursor::new(
+            br#"{"type":"session","id":"session-1"}
+{"type":"response","command":"get_available_models","success":true}
+"#
+            .to_vec(),
+        ))
+        .expect("stdout reader");
+        let result = perform_handshake(
+            &mut stdout,
+            &std::sync::Mutex::new(None),
+            &std::sync::atomic::AtomicU64::new(1),
+            Path::new(r"C:\runtime\devboule-pi-permissions.ts"),
+        );
+        let error = match result {
+            Ok(_) => panic!("session output is not the permission-channel handshake"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("permission channel"));
+    }
+
+    #[test]
+    fn spawn_args_always_enable_rpc_and_load_our_extension() {
+        let command = PtyCommand::new(
+            "pi",
+            Vec::new(),
+            std::env::current_dir().expect("cwd"),
+            Vec::new(),
+        );
+        let path = Path::new(r"C:\runtime\devboule-pi-permissions.ts");
+        let args = spawn_args(&command, path);
+        assert!(args.windows(2).any(|pair| pair == ["--mode", "rpc"]));
+        assert!(args.contains(&"--no-extensions".to_string()));
+        assert!(args.contains(&"-e".to_string()));
+        assert!(args.contains(&path.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn write_permission_extension_requires_the_runtime_parent() {
+        let path = std::env::temp_dir()
+            .join("devboule-pi-missing-parent")
+            .join("permission.ts");
+        let error = write_permission_extension(&path).expect_err("missing parent must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn exact_recorded_text_and_turn_lines_translate_without_message_end_text() {
+        let text = serde_json::from_str::<serde_json::Value>(r#"{"type":"message_update","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"OK"}}"#).expect("recording");
+        let text_end = serde_json::from_str::<serde_json::Value>(r#"{"type":"message_update","usage":{"input":25848,"output":3,"cacheRead":0,"cacheWrite":0,"reasoning":0,"totalTokens":25851,"cost":{"input":0.0019386,"output":7.5e-7,"cacheRead":0,"cacheWrite":0,"total":0.00193935}},"assistantMessageEvent":{"type":"text_end","contentIndex":0,"content":"OK"}}"#).expect("recording");
+        assert!(
+            matches!(events_from_line(&text).as_slice(), [SessionEvent::AgentMessage { text, .. }] if text == "OK")
+        );
+        assert!(events_from_line(&text_end).is_empty());
+    }
+}

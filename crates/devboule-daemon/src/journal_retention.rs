@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use devboule_protocol::{JournalRetention, RetentionLimit, RetentionPatch, RetentionSource};
+use devboule_protocol::{
+    JournalRetention, RetentionLimit, RetentionPatch, RetentionSource, SessionKind,
+};
 
 use super::{
     now_ms, parse_kind, JournalError, JournalLimits, JournalSessionUsage, JournalUsage,
@@ -486,15 +488,18 @@ pub(super) fn journal_usage(
             reclaimable_bytes = reclaimable_bytes.saturating_add(bytes);
             reclaimable_sessions += 1;
         }
+        let kind = parse_kind(&kind_name)?;
         if cutoff.is_some_and(|value| updated_at_ms < value)
-            && (status == "live" || pins.contains(&id) || kind_name == "acp")
+            && (status == "live"
+                || pins.contains(&id)
+                || matches!(kind, SessionKind::Acp | SessionKind::Pi))
         {
             aged_out += 1;
         }
         per_session.push(JournalSessionUsage {
             id,
             title,
-            kind: parse_kind(&kind_name),
+            kind,
             bytes,
             updated_at_ms,
         });

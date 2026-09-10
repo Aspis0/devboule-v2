@@ -324,7 +324,9 @@ export function chatCapableProviders(providers: ProviderInfo[]): ProviderInfo[] 
   return providers.filter(
     (provider) =>
       provider.pickable !== false &&
-      (provider.protocol === "acp" || provider.protocol === "stream-json"),
+      (provider.protocol === "acp" ||
+        provider.protocol === "stream-json" ||
+        provider.protocol === "pi-rpc"),
   );
 }
 
@@ -339,6 +341,7 @@ export function sessionCreateFromProvider(provider: ProviderInfo | undefined): {
 } {
   if (provider === undefined) return { kind: "acp", provider: null };
   if (provider.protocol === "stream-json") return { kind: "claude", provider: null };
+  if (provider.protocol === "pi-rpc") return { kind: "pi", provider: null };
   if (provider.protocol === "acp") return { kind: "acp", provider: provider.id };
   return { kind: "acp", provider: null };
 }

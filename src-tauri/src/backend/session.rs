@@ -243,7 +243,7 @@ fn require_write_size(text: &str) -> Result<(), CommandError> {
 
 fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
     match kind {
-        SessionKind::Terminal | SessionKind::Acp | SessionKind::Claude => Ok(()),
+        SessionKind::Terminal | SessionKind::Acp | SessionKind::Claude | SessionKind::Pi => Ok(()),
     }
 }
 
@@ -271,6 +271,7 @@ mod tests {
         require_terminal_kind(&SessionKind::Terminal).expect("terminal");
         require_terminal_kind(&SessionKind::Acp).expect("acp");
         require_terminal_kind(&SessionKind::Claude).expect("claude");
+        require_terminal_kind(&SessionKind::Pi).expect("pi");
     }
 
     #[test]

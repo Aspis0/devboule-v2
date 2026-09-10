@@ -255,6 +255,7 @@ pub(super) struct AgentReplay {
     pub(super) pending: VecDeque<(u64, SessionEvent)>,
     pub(super) replayed_seqs: HashSet<u64>,
     pub(super) claude_view: Option<crate::claude_view::ClaudeView>,
+    pub(super) is_pi: bool,
     pub(super) manifest_emitted: bool,
     /// Number of times a page boundary has extended the replay watermark to
     /// catch live journal rows published during the replay.

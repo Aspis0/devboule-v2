@@ -9,7 +9,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, SessionEvent,
-    SessionEventEnvelope, SessionModel, TranscriptIntegrity, WireError,
+    SessionEventEnvelope, SessionKind, SessionModel, TranscriptIntegrity, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
@@ -119,6 +119,7 @@ pub(crate) struct SessionRuntime {
     pub(crate) published_frames: AtomicU64,
     pub(crate) published_bytes: AtomicUsize,
     pub(crate) session_manifest: Mutex<Option<SessionEvent>>,
+    pub(crate) agent_kind: Mutex<Option<SessionKind>>,
     claude_catalog_state: Mutex<crate::claude_catalog::ClaudeCatalogState>,
     /// Attention is deliberately runtime-only. It is a user's current view
     /// state, not transcript history, so it is not journaled and does not
@@ -315,6 +316,7 @@ impl SessionRuntime {
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
+            agent_kind: Mutex::new(None),
             claude_catalog_state: Mutex::new(
                 crate::claude_catalog::ClaudeCatalogState::Provisional,
             ),
@@ -1239,6 +1241,19 @@ impl SessionRuntime {
 
     pub(crate) fn session_manifest(&self) -> Option<SessionEvent> {
         self.session_manifest
+            .lock()
+            .ok()
+            .and_then(|stored| stored.clone())
+    }
+
+    pub(crate) fn set_agent_kind(&self, kind: SessionKind) {
+        if let Ok(mut stored) = self.agent_kind.lock() {
+            *stored = Some(kind);
+        }
+    }
+
+    pub(crate) fn agent_kind(&self) -> Option<SessionKind> {
+        self.agent_kind
             .lock()
             .ok()
             .and_then(|stored| stored.clone())
