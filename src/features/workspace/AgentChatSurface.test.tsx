@@ -200,7 +200,8 @@ describe("AgentChatSurface", () => {
     expect(row?.textContent).toContain("Codex declined an out-of-scope request.");
     expect(row?.textContent).not.toContain("Agent");
     expect(row?.getAttribute("role")).toBeNull();
-    expect(row?.style.opacity).toBe("0.68");
+    expect(row?.style.opacity).toBe("");
+    expect(row?.classList.contains("workspace-chat-system")).toBe(true);
   });
 
   it("attaches, sends from the composer, renders streamed events, and detaches", async () => {

@@ -261,8 +261,8 @@ impl Write for CodexWriter {
         }
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
-        let mode_id = self.state.mode_id().unwrap_or_else(|| "auto".to_string());
         let (model, effort) = self.state.model_and_effort();
+        let policy_mode = self.state.mode_override();
         send_request(
             &self.stdin,
             &self.next_id,
@@ -270,7 +270,7 @@ impl Write for CodexWriter {
             turn_start_params(
                 &self.state.thread_id(),
                 &text,
-                &mode_id,
+                policy_mode.as_deref(),
                 Some(&model),
                 effort.as_deref(),
             ),
@@ -295,14 +295,14 @@ impl SessionKiller for CodexKiller {
             return;
         }
         let _ = send_interrupt_request(&self.stdin, &self.next_id, &self.state);
-        self.permission_broker.cancel_all();
+        self.permission_broker.cancel_pending();
     }
 
     fn kill(&mut self) {
         if self.cancelled.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.permission_broker.cancel_all();
+        self.permission_broker.close();
         if let Ok(mut stdin) = self.stdin.lock() {
             *stdin = None;
         }
@@ -400,11 +400,13 @@ fn perform_handshake(
 }
 
 fn initialize_params() -> Value {
+    // Paseo's non-originating identity: Codex keeps its own CLI identity in
+    // provider usage logs instead of showing the daemon as the originator.
     serde_json::json!({
         "clientInfo": {
-            "name": "devboule",
-            "title": "Devboule",
-            "version": env!("CARGO_PKG_VERSION"),
+            "name": "codex_app_server_daemon",
+            "title": "Codex App Server Daemon",
+            "version": "0.0.0",
         },
         "capabilities": {
             "experimentalApi": true,
@@ -507,11 +509,13 @@ fn notification_frame(method: &str, params: Value) -> Value {
 fn turn_start_params(
     thread_id: &str,
     text: &str,
-    mode_id: &str,
+    policy_mode: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
 ) -> Value {
-    let mut params = mode_values(mode_id);
+    // The thread already carries the mode preset from `thread/start`; the
+    // policy fields go back only after an explicit `set_mode`.
+    let mut params = policy_mode.map(mode_values).unwrap_or_default();
     params.insert("threadId".to_string(), Value::String(thread_id.to_string()));
     params.insert(
         "input".to_string(),
@@ -781,7 +785,7 @@ impl ReaderDispatch for CodexReader {
     }
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
-        self.permission_broker.cancel_all();
+        self.permission_broker.close();
         if let Ok(mut ids) = self.response_ids.lock() {
             ids.clear();
         }
@@ -873,27 +877,12 @@ mod tests {
         permission_decision, permission_decision_frame, send_interrupt_request,
         thread_start_params, turn_id_from_response, turn_start_params, validate_mode, CodexReader,
     };
-    use crate::codex_view::{catalog_from_response, CodexState, CodexView};
+    use crate::codex_view::{catalog_from_response, fixture_frames, CodexState, CodexView};
     use devboule_protocol::SessionEvent;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
     use std::sync::{Arc, Mutex};
 
-    fn fixture_frames(source: &str) -> Vec<serde_json::Value> {
-        source
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter_map(|row| {
-                row.get("raw")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
-            .filter_map(|raw| {
-                let start = raw.find('{')?;
-                serde_json::from_str(&raw[start..]).ok()
-            })
-            .collect()
-    }
     fn method_frame(source: &str, method: &str) -> serde_json::Value {
         fixture_frames(source)
             .into_iter()
@@ -964,7 +953,7 @@ mod tests {
             turn_start_params(
                 params["threadId"].as_str().expect("thread id"),
                 params["input"][0]["text"].as_str().expect("prompt"),
-                "full-access",
+                Some("full-access"),
                 None,
                 None,
             )
@@ -1006,6 +995,55 @@ mod tests {
     }
 
     #[test]
+    fn turn_start_carries_the_policy_only_after_a_mode_change() {
+        let catalog = catalog_from_response(&serde_json::json!({
+            "data": [{ "id": "model", "isDefault": true }]
+        }))
+        .expect("catalog");
+        let state = CodexState::new("thread".to_string(), catalog, "auto");
+        assert_eq!(state.mode_override(), None);
+
+        let first = turn_start_params(
+            &state.thread_id(),
+            "first",
+            state.mode_override().as_deref(),
+            None,
+            None,
+        );
+        assert!(first.get("approvalPolicy").is_none());
+        assert!(first.get("sandboxPolicy").is_none());
+
+        state.set_mode("read-only").expect("set mode");
+        let changed = turn_start_params(
+            &state.thread_id(),
+            "changed",
+            state.mode_override().as_deref(),
+            None,
+            None,
+        );
+        assert_eq!(changed["approvalPolicy"], "on-request");
+        assert_eq!(changed["sandboxPolicy"]["type"], "readOnly");
+
+        // Paseo keeps `hasWorkflowModeOverride` set, so every later turn
+        // re-sends the policy too.
+        let later = turn_start_params(
+            &state.thread_id(),
+            "later",
+            state.mode_override().as_deref(),
+            None,
+            None,
+        );
+        assert_eq!(later["sandboxPolicy"]["type"], "readOnly");
+    }
+
+    #[test]
+    fn read_only_thread_start_sends_the_read_only_sandbox() {
+        let params = thread_start_params(Path::new("C:\\work"), "read-only");
+        assert_eq!(params["approvalPolicy"], "on-request");
+        assert_eq!(params["sandbox"], "read-only");
+    }
+
+    #[test]
     fn initialize_request_includes_paseo_capabilities_on_the_wire() {
         let frame = super::request_frame("d-1", "initialize", initialize_params());
         let mut bytes = serde_json::to_vec(&frame).expect("initialize request");
@@ -1013,6 +1051,14 @@ mod tests {
         let wire = std::str::from_utf8(&bytes).expect("initialize bytes");
         assert!(wire.contains(r#""experimentalApi":true"#));
         assert!(wire.contains(r#""mcpServerOpenaiFormElicitation":true"#));
+        assert_eq!(
+            frame["params"]["clientInfo"],
+            serde_json::json!({
+                "name": "codex_app_server_daemon",
+                "title": "Codex App Server Daemon",
+                "version": "0.0.0"
+            })
+        );
     }
 
     #[test]

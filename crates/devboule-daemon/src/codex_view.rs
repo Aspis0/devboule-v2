@@ -139,6 +139,11 @@ impl CodexCatalog {
 pub(crate) struct CodexState {
     thread_id: String,
     mode_id: Mutex<String>,
+    /// The mode a `set_mode` applied after `thread/start`, if any. Paseo
+    /// (`hasWorkflowModeOverride`) keeps this set for every later turn; the
+    /// thread already carries the preset, so only an explicit change re-sends
+    /// the policy on `turn/start`.
+    mode_override: Mutex<Option<String>>,
     catalog: Mutex<CodexCatalog>,
     turn_id: Mutex<Option<String>>,
 }
@@ -148,6 +153,7 @@ impl CodexState {
         Self {
             thread_id,
             mode_id: Mutex::new(mode_id.to_string()),
+            mode_override: Mutex::new(None),
             catalog: Mutex::new(catalog),
             turn_id: Mutex::new(None),
         }
@@ -155,6 +161,10 @@ impl CodexState {
 
     pub(crate) fn thread_id(&self) -> String {
         self.thread_id.clone()
+    }
+
+    pub(crate) fn mode_override(&self) -> Option<String> {
+        self.mode_override.lock().ok().and_then(|mode| mode.clone())
     }
 
     pub(crate) fn current_turn(&self) -> Option<String> {
@@ -254,6 +264,11 @@ impl CodexState {
             .lock()
             .map_err(|_| WireError::new(ErrorCode::Io, "Codex mode state is unavailable."))? =
             mode_id.to_string();
+        *self
+            .mode_override
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "Codex mode state is unavailable."))? =
+            Some(mode_id.to_string());
         Ok(())
     }
 }
@@ -351,6 +366,14 @@ fn manifest_from_catalog(catalog: &CodexCatalog, mode_id: &str) -> SessionEvent 
             current_mode_id: mode_id.to_string(),
             available_modes: vec![
                 SessionModeView {
+                    id: "read-only".to_string(),
+                    name: "Read Only".to_string(),
+                    description: Some(
+                        "Read files and run read-only commands; Codex cannot edit files or access the network."
+                            .to_string(),
+                    ),
+                },
+                SessionModeView {
                     id: "auto".to_string(),
                     name: "Default Permissions".to_string(),
                     description: Some(
@@ -374,7 +397,10 @@ fn manifest_from_catalog(catalog: &CodexCatalog, mode_id: &str) -> SessionEvent 
 }
 
 pub(crate) fn validate_mode(mode_id: &str) -> Result<(), WireError> {
-    if matches!(mode_id, "auto" | "auto-review" | "full-access") {
+    if matches!(
+        mode_id,
+        "read-only" | "auto" | "auto-review" | "full-access"
+    ) {
         Ok(())
     } else {
         Err(WireError::new(
@@ -387,6 +413,16 @@ pub(crate) fn validate_mode(mode_id: &str) -> Result<(), WireError> {
 pub(crate) fn mode_values(mode_id: &str) -> serde_json::Map<String, Value> {
     let mut values = serde_json::Map::new();
     match mode_id {
+        "read-only" => {
+            values.insert(
+                "approvalPolicy".to_string(),
+                Value::String("on-request".to_string()),
+            );
+            values.insert(
+                "sandboxPolicy".to_string(),
+                serde_json::json!({ "type": "readOnly" }),
+            );
+        }
         "full-access" => {
             values.insert(
                 "approvalPolicy".to_string(),
@@ -436,6 +472,16 @@ pub(crate) fn mode_values(mode_id: &str) -> serde_json::Map<String, Value> {
 pub(crate) fn thread_mode_values(mode_id: &str) -> serde_json::Map<String, Value> {
     let mut values = serde_json::Map::new();
     match mode_id {
+        "read-only" => {
+            values.insert(
+                "approvalPolicy".to_string(),
+                Value::String("on-request".to_string()),
+            );
+            values.insert(
+                "sandbox".to_string(),
+                Value::String("read-only".to_string()),
+            );
+        }
         "full-access" => {
             values.insert(
                 "approvalPolicy".to_string(),
@@ -611,6 +657,20 @@ impl CodexView {
 #[cfg(test)]
 pub(crate) fn events_from_envelope(value: &Value) -> Vec<SessionEvent> {
     CodexView::new(None).ingest(value)
+}
+
+/// Shared by the codex view and client tests to replay a measured wire file.
+#[cfg(test)]
+pub(crate) fn fixture_frames(source: &str) -> Vec<Value> {
+    source
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|row| row.get("raw").and_then(Value::as_str).map(str::to_string))
+        .filter_map(|raw| {
+            let start = raw.find('{')?;
+            serde_json::from_str(&raw[start..]).ok()
+        })
+        .collect()
 }
 
 fn delta_event<F>(
@@ -801,26 +861,10 @@ fn turn_completed(params: &Value, usage: Option<TurnUsage>) -> Vec<SessionEvent>
 #[cfg(test)]
 mod tests {
     use super::{
-        catalog_from_response, events_from_envelope, permission_request_event, CodexState,
-        CodexView,
+        catalog_from_response, events_from_envelope, fixture_frames, permission_request_event,
+        CodexState, CodexView,
     };
     use devboule_protocol::SessionEvent;
-
-    fn fixture_frames(source: &str) -> Vec<serde_json::Value> {
-        source
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter_map(|row| {
-                row.get("raw")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
-            .filter_map(|raw| {
-                let start = raw.find('{')?;
-                serde_json::from_str(&raw[start..]).ok()
-            })
-            .collect()
-    }
 
     fn response_frame(source: &str, id: u64) -> serde_json::Value {
         fixture_frames(source)
@@ -866,8 +910,33 @@ mod tests {
                 .iter()
                 .map(|mode| mode.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["auto", "auto-review", "full-access"]
+            vec!["read-only", "auto", "auto-review", "full-access"]
         );
+    }
+
+    #[test]
+    fn read_only_mode_uses_the_measured_read_only_presets() {
+        assert_eq!(
+            super::mode_values("read-only"),
+            serde_json::json!({
+                "approvalPolicy": "on-request",
+                "sandboxPolicy": { "type": "readOnly" }
+            })
+            .as_object()
+            .expect("object")
+            .clone()
+        );
+        assert_eq!(
+            super::thread_mode_values("read-only"),
+            serde_json::json!({
+                "approvalPolicy": "on-request",
+                "sandbox": "read-only"
+            })
+            .as_object()
+            .expect("object")
+            .clone()
+        );
+        assert!(super::validate_mode("read-only").is_ok());
     }
 
     #[test]

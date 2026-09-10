@@ -873,13 +873,13 @@ impl PiKiller {
 impl SessionKiller for PiKiller {
     fn interrupt(&mut self) {
         self.abort();
-        self.permission_broker.cancel_all();
+        self.permission_broker.cancel_pending();
     }
 
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             self.abort();
-            self.permission_broker.cancel_all();
+            self.permission_broker.close();
         }
         if let Ok(mut process) = self.process.lock() {
             let _ = process.kill();
@@ -1485,7 +1485,7 @@ impl ReaderDispatch for PiReader {
     }
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
-        self.permission_broker.cancel_all();
+        self.permission_broker.close();
         if !self.buffer.is_empty() {
             self.publish(
                 runtime,

@@ -964,6 +964,11 @@
   margin-top: 4px;
 }
 
+.workspace-chat-system {
+  color: var(--silence);
+  opacity: 0.68;
+}
+
 .workspace-chat-tool {
   max-width: 90%;
   color: var(--purple-deep);

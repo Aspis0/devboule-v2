@@ -309,7 +309,19 @@ impl PermissionBroker {
         .is_ok()
     }
 
-    pub(super) fn cancel_all(&self) {
+    /// Soft interrupt: complete every pending request as cancelled but leave
+    /// the broker open, so later turns can register new permissions.
+    pub(super) fn cancel_pending(&self) {
+        let pending = self
+            .pending
+            .lock()
+            .map(|mut table| table.entries.drain().map(|(_, pending)| pending).collect())
+            .unwrap_or_else(|_| Vec::new());
+        self.complete_cancelled(pending);
+    }
+
+    /// Tear the session down: no later request may register.
+    pub(super) fn close(&self) {
         let pending = self
             .pending
             .lock()
@@ -318,6 +330,10 @@ impl PermissionBroker {
                 table.entries.drain().map(|(_, pending)| pending).collect()
             })
             .unwrap_or_else(|_| Vec::new());
+        self.complete_cancelled(pending);
+    }
+
+    fn complete_cancelled(&self, pending: Vec<Arc<PendingPermission>>) {
         for pending in pending {
             let _ = self.complete(
                 &pending,
@@ -1403,13 +1419,51 @@ mod tests {
         let runtime = Arc::new(SessionRuntime::new());
         old.register(31, permission("dead"), &runtime)
             .expect("register");
-        old.cancel_all();
+        old.close();
         assert_eq!(
             sent.lock().expect("sent lock")[0].1["outcome"]["outcome"],
             "cancelled"
         );
         assert_eq!(old.pending_len(), 0);
         drop(old);
+    }
+
+    #[test]
+    fn cancel_pending_completes_but_leaves_the_broker_open() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(51, permission("soft-stop"), &runtime)
+            .expect("register");
+        broker.cancel_pending();
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["outcome"],
+            "cancelled"
+        );
+        assert_eq!(broker.pending_len(), 0);
+        broker
+            .register(52, permission("after-stop"), &runtime)
+            .expect("a soft interrupt must not close the broker");
+    }
+
+    #[test]
+    fn close_completes_and_rejects_later_requests() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(61, permission("closing"), &runtime)
+            .expect("register");
+        broker.close();
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["outcome"],
+            "cancelled"
+        );
+        assert_eq!(broker.pending_len(), 0);
+        let error = match broker.register(62, permission("too-late"), &runtime) {
+            Ok(_) => panic!("a closed broker must reject new requests"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("closed"), "{error}");
     }
 
     #[test]

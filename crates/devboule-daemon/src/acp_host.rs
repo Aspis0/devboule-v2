@@ -1756,7 +1756,7 @@ mod tests {
         let test = host();
         let (broker, runtime) = bind_gate(&test.host);
         let wake = Arc::clone(&broker);
-        runtime.set_on_os_death(Arc::new(move || wake.cancel_all()));
+        runtime.set_on_os_death(Arc::new(move || wake.close()));
         let mut child = spawn_innocuous();
         let handle =
             ProcessHandle::duplicate(AsRawHandle::as_raw_handle(&child)).expect("duplicate");
@@ -1829,7 +1829,7 @@ mod tests {
             !thread.is_finished(),
             "pending create must wait for the user"
         );
-        broker.cancel_all();
+        broker.cancel_pending();
         let error = thread
             .join()
             .expect("create thread")
@@ -1846,17 +1846,17 @@ mod tests {
     }
 
     #[test]
-    fn cancel_all_unblocks_a_pending_terminal_create_with_deny() {
+    fn cancel_pending_unblocks_a_pending_terminal_create_with_deny() {
         let test = host();
         let (broker, _runtime) = bind_gate(&test.host);
         let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
         let _id = wait_for_pending(&broker, Duration::from_secs(2));
         let started = Instant::now();
-        broker.cancel_all();
+        broker.cancel_pending();
         let error = thread
             .join()
             .expect("create thread")
-            .expect_err("cancel_all must deny the gate");
+            .expect_err("cancel_pending must deny the gate");
         let elapsed = started.elapsed();
         test.host.shutdown();
         let spawned = test.host.spawned_count();
@@ -1865,7 +1865,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&test.runtime);
         assert!(
             elapsed < Duration::from_secs(2),
-            "cancel_all left the create thread blocked for {elapsed:?}"
+            "cancel_pending left the create thread blocked for {elapsed:?}"
         );
         assert_eq!(error.code, -32001);
         assert_eq!(error.message, "the user denied this command");
@@ -1924,7 +1924,7 @@ mod tests {
 
         let cancel_thread = spawn_create(Arc::clone(&test.host), create_params(&test));
         let _ = wait_for_pending(&broker, Duration::from_secs(2));
-        broker.cancel_all();
+        broker.cancel_pending();
         let _ = cancel_thread.join();
 
         journal.flush().expect("flush");
@@ -2170,7 +2170,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_all_rejects_later_terminal_create_without_registering() {
+    fn close_rejects_later_terminal_create_without_registering() {
         let test = host();
         let (broker, runtime) = bind_gate(&test.host);
         let conn = ConnHandle::new(1);
@@ -2185,7 +2185,7 @@ mod tests {
             outcome.generation,
             outcome.live_agent_replay,
         );
-        broker.cancel_all();
+        broker.close();
         let started = Instant::now();
         let error = test
             .host

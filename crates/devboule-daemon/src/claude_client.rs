@@ -699,14 +699,14 @@ impl SessionKiller for ClaudeKiller {
         }
         let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         send_interrupt_frame(Arc::clone(&self.stdin), request_id);
-        self.permission_broker.cancel_all();
+        self.permission_broker.cancel_pending();
     }
 
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
             send_interrupt_frame(Arc::clone(&self.stdin), request_id);
-            self.permission_broker.cancel_all();
+            self.permission_broker.close();
         }
         if let Ok(mut process) = self.process.lock() {
             let _ = process.kill();
@@ -1245,7 +1245,7 @@ impl ReaderDispatch for ClaudeReader {
                 "Claude exited before confirming the permission mode; queued prompt(s) were not delivered because Claude never confirmed the permission mode.",
             );
         }
-        self.permission_broker.cancel_all();
+        self.permission_broker.close();
         if !self.buffer.is_empty() {
             self.publish(
                 runtime,
@@ -2356,6 +2356,95 @@ mod tests {
         broker
             .respond("claude-bypass-tool", PermissionOutcome::Deny)
             .expect("deny default request");
+    }
+
+    #[test]
+    fn soft_interrupt_cancels_the_pending_permission_and_keeps_the_broker_open() {
+        let mut command = Command::new("ping");
+        command
+            .args(["-t", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let child = command.spawn().expect("ping");
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_for_sender = Arc::clone(&sent);
+        let sender: Arc<PermissionSender> = Arc::new(move |_, result| {
+            sent_for_sender.lock().expect("sent").push(result);
+            Ok(())
+        });
+        let broker = PermissionBroker::for_test(sender);
+        let mut reader = test_reader(Arc::clone(&broker), Arc::new(Mutex::new(HashMap::new())));
+        let (runtime, conn) = attached(&broker);
+        let first = serde_json::json!({
+            "type": "control_request",
+            "request_id": "req-before-stop",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": {"command": "echo one"},
+                "tool_use_id": "tool-before-stop"
+            }
+        });
+        reader
+            .feed(format!("{first}\n").as_bytes(), &runtime)
+            .expect("feed pending request");
+        assert!(drain(&conn).iter().any(|event| matches!(
+            event,
+            SessionEvent::PermissionRequest { tool_call_id, .. }
+                if tool_call_id == "tool-before-stop"
+        )));
+
+        let mut killer = ClaudeKiller {
+            process: Arc::new(Mutex::new(child)),
+            stdin: Arc::new(Mutex::new(None)),
+            next_id: Arc::new(AtomicU64::new(1)),
+            permission_broker: Arc::clone(&broker),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        killer.interrupt();
+        let stopped = drain(&conn);
+        assert!(stopped.iter().any(|event| matches!(
+            event,
+            SessionEvent::PermissionResolved {
+                tool_call_id,
+                selected_option_id: None,
+                ..
+            } if tool_call_id == "tool-before-stop"
+        )));
+        assert_eq!(broker.pending_len(), 0);
+
+        let second = serde_json::json!({
+            "type": "control_request",
+            "request_id": "req-after-stop",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": {"command": "echo two"},
+                "tool_use_id": "tool-after-stop"
+            }
+        });
+        reader
+            .feed(format!("{second}\n").as_bytes(), &runtime)
+            .expect("feed request after the soft stop");
+        let after = drain(&conn);
+        assert!(after.iter().any(|event| matches!(
+            event,
+            SessionEvent::PermissionRequest { tool_call_id, .. }
+                if tool_call_id == "tool-after-stop"
+        )));
+        assert!(!after.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentError { message } if message.contains("closed")
+        )));
+        assert_eq!(broker.pending_len(), 1);
     }
 
     #[test]

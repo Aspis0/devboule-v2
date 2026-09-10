@@ -1331,7 +1331,7 @@ impl SessionKiller for AcpKiller {
             return;
         }
         self.transport.cancel();
-        self.permission_broker.cancel_all();
+        self.permission_broker.cancel_pending();
     }
 
     fn kill(&mut self) {
@@ -1346,7 +1346,7 @@ impl SessionKiller for AcpKiller {
                     }
                 });
             let started = Instant::now();
-            self.permission_broker.cancel_all();
+            self.permission_broker.close();
             self.transport.turn.shutdown();
             self.transport.cancel();
             let remaining = Duration::from_millis(25).saturating_sub(started.elapsed());
@@ -1591,7 +1591,7 @@ impl ReaderDispatch for AcpReader {
     }
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
-        self.permission_broker.cancel_all();
+        self.permission_broker.close();
         self.turn.shutdown();
         self.host.shutdown();
         self.transport = None;
@@ -2818,7 +2818,7 @@ mod tests {
         transport
             .permission_broker
             .register(1, permission("stuck-kill"), &runtime)
-            .expect("pending permission so cancel_all must write stdin");
+            .expect("pending permission so close must write stdin");
         let filler = {
             let transport = Arc::clone(&transport);
             thread::spawn(move || {

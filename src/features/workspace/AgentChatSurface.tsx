@@ -490,12 +490,7 @@ function renderItem(item: AgentChatItem) {
 
   if (item.role === "system") {
     return (
-      <div
-        className={className}
-        key={item.id}
-        data-severity={item.severity}
-        style={{ ...style, opacity: 0.68 }}
-      >
+      <div className={className} key={item.id} data-severity={item.severity} style={style}>
         <div className="workspace-chat-label">System</div>
         <div className="workspace-chat-copy">{item.text}</div>
       </div>
