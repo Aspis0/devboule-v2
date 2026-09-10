@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import {
   createSessionChannel,
   sessionAttach,
@@ -15,7 +15,14 @@ import type {
   SessionModel,
   SessionState,
 } from "../../types/ipc";
-import { AgentSession, type AgentChatItem, type AgentSessionState } from "../../lib/agentSession";
+import {
+  AgentSession,
+  type AgentChatItem,
+  type AgentSessionState,
+  type AgentSubagent,
+  type AgentSubagentStatusCounts,
+  type AgentSubagentStatus,
+} from "../../lib/agentSession";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
@@ -102,12 +109,142 @@ function toolbarStatus(
   return { copy: "Connecting…", tone: "border" };
 }
 
+const MAX_VISIBLE_SUBAGENT_DEPTH = 4;
+const SUBAGENT_INDENT_PX = 16;
+
+function hasParentToolUseId(item: AgentChatItem): boolean {
+  return (
+    "parentToolUseId" in item &&
+    typeof item.parentToolUseId === "string" &&
+    item.parentToolUseId.length > 0
+  );
+}
+
+function hasMeasuredSpawnDepth(item: AgentChatItem): boolean {
+  return "spawnDepth" in item && typeof item.spawnDepth === "number";
+}
+
+function subagentDepthCopy(item: AgentChatItem): string {
+  return hasParentToolUseId(item) && !hasMeasuredSpawnDepth(item) ? " · depth unavailable" : "";
+}
+
 function itemLabel(item: AgentChatItem): string {
+  const subagentLabel = hasParentToolUseId(item);
+  const depthCopy = subagentDepthCopy(item);
   if (item.role === "user") return "You";
-  if (item.role === "assistant") return "Agent";
-  if (item.role === "thought") return "Thought";
-  if (item.role === "tool") return `Tool · ${item.status}`;
+  if (item.role === "assistant") return subagentLabel ? `Subagent${depthCopy}` : "Agent";
+  if (item.role === "thought") {
+    return subagentLabel ? `Subagent thought${depthCopy}` : "Thought";
+  }
+  if (item.role === "tool") {
+    const type = item.subagentType ? ` · ${item.subagentType}` : "";
+    return `${subagentLabel ? "Subagent tool" : "Tool"}${type} · ${item.status}${depthCopy}`;
+  }
   return "Error";
+}
+
+const SUBAGENT_STATUSES: AgentSubagentStatus[] = [
+  "running",
+  "finished",
+  "failed",
+  "stopped",
+  "unknown",
+];
+
+function shortSubagentId(id: string): string {
+  return id.length > 16 ? `${id.slice(0, 12)}…` : id;
+}
+
+function subagentTitle(title: string | null, id: string): string {
+  return title?.trim() ? title : shortSubagentId(id);
+}
+
+function subagentType(type: string | null): string {
+  return type?.trim() ? type : "Type unavailable";
+}
+
+function subagentDotClass(status: AgentSubagentStatus): string {
+  return `workspace-subagent-status-${status}`;
+}
+
+interface SubagentMenuProps {
+  subagents: AgentSubagent[];
+  statusCounts: AgentSubagentStatusCounts;
+}
+
+function SubagentMenu({ subagents, statusCounts }: SubagentMenuProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node) || !menuRef.current?.contains(target)) setOpen(false);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("click", closeOnOutsideClick);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("click", closeOnOutsideClick);
+    };
+  }, [open]);
+
+  if (subagents.length === 0) return null;
+
+  return (
+    <div ref={menuRef} className="workspace-subagent-menu">
+      <button
+        type="button"
+        className="workspace-subagent-pill"
+        data-testid="subagent-pill"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="workspace-subagent-pill-label">Subagents</span>
+        {SUBAGENT_STATUSES.map((status) => {
+          const count = statusCounts[status];
+          if (count === 0) return null;
+          return (
+            <span className="workspace-subagent-pill-group" key={status}>
+              <span
+                className={`workspace-status-dot workspace-subagent-status-dot ${subagentDotClass(status)}`}
+                aria-hidden="true"
+              />
+              <span>
+                {count} {status}
+              </span>
+            </span>
+          );
+        })}
+      </button>
+      {open ? (
+        <div className="workspace-subagent-list" id={listId} role="list">
+          {subagents.map((subagent) => (
+            <div className="workspace-subagent-row" key={subagent.id} role="listitem">
+              <span
+                className={`workspace-status-dot workspace-subagent-status-dot ${subagentDotClass(subagent.status)}`}
+                aria-hidden="true"
+              />
+              <span className="workspace-subagent-row-status">{subagent.status}</span>
+              <span className="workspace-subagent-type">{subagentType(subagent.subagentType)}</span>
+              <span
+                className="workspace-subagent-title"
+                title={subagentTitle(subagent.title, subagent.id)}
+              >
+                {subagentTitle(subagent.title, subagent.id)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function usageCopy(state: AgentSessionState): string | null {
@@ -163,10 +300,23 @@ function pendingTargetCopy(
 }
 
 function renderItem(item: AgentChatItem) {
-  const className = `workspace-chat-entry workspace-chat-${item.role}`;
+  const isSubagent = hasParentToolUseId(item);
+  const measuredDepth =
+    "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
+  const visibleDepth =
+    measuredDepth === null
+      ? null
+      : Math.min(MAX_VISIBLE_SUBAGENT_DEPTH, Math.max(0, measuredDepth));
+  const className = `workspace-chat-entry workspace-chat-${item.role}${
+    isSubagent ? " workspace-chat-subagent" : ""
+  }${isSubagent && measuredDepth === null ? " workspace-chat-subagent-depth-unknown" : ""}`;
+  const style =
+    isSubagent && visibleDepth !== null
+      ? { marginInlineStart: `${visibleDepth * SUBAGENT_INDENT_PX}px` }
+      : undefined;
   if (item.role === "thought") {
     return (
-      <details className={className} key={item.id} open>
+      <details className={className} key={item.id} open style={style}>
         <summary>{itemLabel(item)}</summary>
         <div className="workspace-chat-copy">{item.text}</div>
       </details>
@@ -174,7 +324,12 @@ function renderItem(item: AgentChatItem) {
   }
 
   return (
-    <div className={className} key={item.id} role={item.role === "error" ? "alert" : undefined}>
+    <div
+      className={className}
+      key={item.id}
+      role={item.role === "error" ? "alert" : undefined}
+      style={style}
+    >
       <div className="workspace-chat-label">{itemLabel(item)}</div>
       <div className="workspace-chat-copy">{item.text}</div>
     </div>
@@ -270,12 +425,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     state.status === "initializing" && !osGone
       ? "Connecting to the agent…"
       : "This session is no longer available.";
-
   return (
     <div id={id} className="workspace-agent-shell" role="tabpanel" aria-label="Agent chat">
       <div className="workspace-agent-toolbar">
         <span className={`workspace-status-dot workspace-dot-${statusDot}`} />
         <span className="workspace-agent-title">{title || "Agent"}</span>
+        {state.subagents.length > 0 ? (
+          <SubagentMenu subagents={state.subagents} statusCounts={state.subagentStatusCounts} />
+        ) : null}
         <span className="workspace-agent-status" role="status">
           {statusLabel}
         </span>
