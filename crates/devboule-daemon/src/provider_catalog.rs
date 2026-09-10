@@ -112,6 +112,8 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         aliases: &["pi"],
         acp_args: None,
         stream_json_args: None,
+        // The Pi adapter validates this mode and adds its permission
+        // extension after the caller's arguments.
         rpc_args: Some(&["--mode", "rpc"]),
         npm_package: None,
     },

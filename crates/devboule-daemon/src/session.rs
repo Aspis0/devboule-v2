@@ -185,6 +185,9 @@ pub(super) trait SessionKiller: Send + Sync {
 
 pub(super) trait ModelSwitcher: Send + Sync {
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError>;
+    fn manifest(&self) -> Option<SessionEvent> {
+        None
+    }
     fn clone_switcher(&self) -> Box<dyn ModelSwitcher>;
 }
 
@@ -2260,7 +2263,14 @@ impl SessionRegistry {
                 effort,
             )?;
         }
-        switcher.set_model(model_id, effort)
+        let result = switcher.set_model(model_id, effort);
+        if result.is_ok() {
+            if let Some(manifest) = switcher.manifest() {
+                let manifest = runtime.store_session_manifest(manifest);
+                let _ = runtime.publish_agent_event(manifest, None);
+            }
+        }
+        result
     }
 
     fn validate_claude_effort(

@@ -488,7 +488,11 @@ pub(super) fn journal_usage(
             reclaimable_bytes = reclaimable_bytes.saturating_add(bytes);
             reclaimable_sessions += 1;
         }
-        let kind = parse_kind(&kind_name)?;
+        // Usage can still report aggregate bytes for a future provider kind;
+        // typed replay remains strict because it cannot materialize that kind.
+        let Ok(kind) = parse_kind(&kind_name) else {
+            continue;
+        };
         if cutoff.is_some_and(|value| updated_at_ms < value)
             && (status == "live"
                 || pins.contains(&id)
@@ -1578,6 +1582,33 @@ mod tests {
             super::journal_usage(&conn, &HashSet::new(), JournalLimits::default()).expect("usage");
         assert_eq!(usage.deleted_by_user, 2);
         assert_eq!(usage.deleted_by_retention, 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_usage_counts_unknown_session_kinds_without_failing() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        let mut known = sample_session("s.known");
+        known.payload_bytes = 11;
+        journal.upsert_blocking(known).expect("known row");
+        let mut unknown = sample_session("s.unknown");
+        unknown.payload_bytes = 13;
+        journal.upsert_blocking(unknown).expect("unknown row");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("inspect");
+        conn.execute(
+            "UPDATE sessions SET kind = 'future-kind' WHERE id = 's.unknown'",
+            [],
+        )
+        .expect("unknown kind");
+        let usage = super::journal_usage(&conn, &HashSet::new(), JournalLimits::default())
+            .expect("unknown kinds are counted and skipped");
+        assert_eq!(usage.session_count, 2);
+        assert_eq!(usage.total_bytes, 24);
+        assert_eq!(usage.per_session.len(), 1);
+        assert_eq!(usage.per_session[0].id, "s.known");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

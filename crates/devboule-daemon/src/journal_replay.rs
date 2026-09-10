@@ -125,6 +125,8 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         id: row.get(0)?,
         owner: row.get(1)?,
         workspace_id: row.get(2)?,
+        // journal_usage can aggregate an unknown future kind, but replay must
+        // materialize a typed session and therefore fails closed here.
         kind: parse_kind(&row.get::<_, String>(3)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
                 3,

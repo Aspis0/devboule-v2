@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -30,19 +31,66 @@ const HANDSHAKE_TIMEOUT_ENV: &str = "DEVBOULE_PI_HANDSHAKE_TIMEOUT_MS";
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
-const READ_ONLY_TOOLS: &[&str] = &["read", "grep", "find", "ls"];
 
-const PERMISSION_EXTENSION: &str = r#"export default function (pi) {
+#[derive(Clone, Copy)]
+struct PiToolPolicy {
+    name: &'static str,
+    requires_confirmation: bool,
+}
+
+const PI_TOOL_POLICIES: &[PiToolPolicy] = &[
+    PiToolPolicy {
+        name: "read",
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: "grep",
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: "find",
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: "ls",
+        requires_confirmation: false,
+    },
+    PiToolPolicy {
+        name: "write",
+        requires_confirmation: true,
+    },
+    PiToolPolicy {
+        name: "bash",
+        requires_confirmation: true,
+    },
+];
+static PERMISSION_EXTENSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+const PERMISSION_EXTENSION_TEMPLATE: &str = r#"export default function (pi) {
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify("devboule-permission-channel", "info");
   });
 
+  // This mediates tool calls handled by this Pi session. It does not mediate
+  // subagent tools or processes launched by bash, including a nested pi -p.
+  // User extensions remain enabled and may also register a tool_call hook.
   pi.on("tool_call", async (event, ctx) => {
-    const readOnly = new Set(["read", "grep", "find", "ls"]);
+    const readOnly = new Set(__READ_ONLY_TOOLS__);
     if (readOnly.has(event.toolName)) return;
+    const input = event.input ?? {};
+    const args = Object.entries(input).map(([key, value]) =>
+      `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`
+    );
+    // Pi 0.85.1 serializes confirm(title, message, opts) positionally and
+    // does not spread opts. Keep this object as the first argument: moving
+    // command, args, or cwd into opts removes them from the wire and breaks
+    // the permission gate.
     const confirmed = await ctx.ui.confirm({
       title: "Devboule permission",
       message: `Allow ${event.toolName}?`,
+      command: event.toolName,
+      args,
+      cwd: ctx.cwd,
     });
     if (!confirmed) {
       return { block: true, reason: "Denied by Devboule permission broker" };
@@ -50,6 +98,16 @@ const PERMISSION_EXTENSION: &str = r#"export default function (pi) {
   });
 }
 "#;
+
+fn permission_extension() -> String {
+    let read_only = PI_TOOL_POLICIES
+        .iter()
+        .filter(|tool| is_read_only_tool(tool.name))
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    let read_only = serde_json::to_string(&read_only).expect("Pi tool policy is serializable");
+    PERMISSION_EXTENSION_TEMPLATE.replace("__READ_ONLY_TOOLS__", &read_only)
+}
 
 pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireError> {
     let cwd = std::env::current_dir().map_err(|error| {
@@ -89,6 +147,7 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
             format!("{COMMAND_ENV} must contain an executable."),
         ));
     }
+    validate_pi_args(&argv[1..])?;
     let program = argv.remove(0);
     Ok(PtyCommand::new(program, argv, cwd, Vec::new()).with_provider_id("pi"))
 }
@@ -100,41 +159,101 @@ pub(crate) fn write_permission_extension(path: &std::path::Path) -> io::Result<(
             "Pi permission extension parent directory does not exist",
         ));
     }
-    atomic_write(path, PERMISSION_EXTENSION.as_bytes())
+    let extension = permission_extension();
+    atomic_write(path, extension.as_bytes())
 }
 
-fn spawn_args(command: &PtyCommand, extension_path: &std::path::Path) -> Vec<String> {
-    let mut args = command.args.clone();
-    if !args
-        .windows(2)
-        .any(|pair| pair[0] == "--mode" && pair[1] == "rpc")
-    {
-        args.extend(["--mode".to_string(), "rpc".to_string()]);
+fn validate_pi_args(args: &[String]) -> Result<(), WireError> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            break;
+        }
+        if arg == "--mode" {
+            let value = args.get(index + 1).map(String::as_str);
+            if value != Some("rpc") {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Pi command must use '--mode rpc', not '{value:?}'."),
+                ));
+            }
+            index += 2;
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--mode=") {
+            if value != "rpc" {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Pi command must use '--mode rpc', not '{arg}'."),
+                ));
+            }
+        }
+        index += 1;
     }
-    args.extend([
-        "--no-extensions".to_string(),
-        "-e".to_string(),
-        extension_path.to_string_lossy().into_owned(),
-    ]);
-    args
+    Ok(())
+}
+
+fn spawn_args(command: &PtyCommand, extension_path: &Path) -> Result<Vec<String>, WireError> {
+    validate_pi_args(&command.args)?;
+    let mut args = command.args.clone();
+    let option_end = |args: &[String]| {
+        args.iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(args.len())
+    };
+    let has_rpc_mode = args[..option_end(&args)]
+        .iter()
+        .enumerate()
+        .any(|(index, arg)| {
+            arg == "--mode=rpc"
+                || (arg == "--mode" && args.get(index + 1).is_some_and(|value| value == "rpc"))
+        });
+    if !has_rpc_mode {
+        let index = option_end(&args);
+        args.splice(index..index, ["--mode".to_string(), "rpc".to_string()]);
+    }
+    let index = option_end(&args);
+    args.splice(
+        index..index,
+        [
+            "-e".to_string(),
+            extension_path.to_string_lossy().into_owned(),
+        ],
+    );
+    Ok(args)
+}
+
+fn permission_extension_path(runtime_dir: &Path) -> PathBuf {
+    let serial = PERMISSION_EXTENSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    runtime_dir.join(format!("devboule-pi-permissions-{serial}.ts"))
+}
+
+fn remove_permission_extension(path: &Path) {
+    if let Err(error) = std::fs::remove_file(path) {
+        if error.kind() != io::ErrorKind::NotFound {
+            eprintln!(
+                "could not remove Pi permission extension {}: {error}",
+                path.display()
+            );
+        }
+    }
 }
 
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
 ) -> Result<SpawnedSession, WireError> {
-    let extension_path = state
-        .sessions
-        .runtime_dir()
-        .join("devboule-pi-permissions.ts");
-    write_permission_extension(&extension_path).map_err(|error| {
-        WireError::new(
+    let extension_path = permission_extension_path(state.sessions.runtime_dir());
+    let args = spawn_args(&command, &extension_path)?;
+    if let Err(error) = write_permission_extension(&extension_path) {
+        remove_permission_extension(&extension_path);
+        return Err(WireError::new(
             ErrorCode::Io,
             format!("Could not write the Pi permission extension: {error}"),
-        )
-    })?;
+        ));
+    }
 
-    let args = spawn_args(&command, &extension_path);
     let mut process = Command::new(&command.program);
     process
         .args(&args)
@@ -150,18 +269,23 @@ pub(super) fn spawn_process(
         use std::os::windows::process::CommandExt;
         process.creation_flags(0x0800_0000);
     }
-    let mut child = process.spawn().map_err(|error| {
-        WireError::new(
-            ErrorCode::Io,
-            format!("Could not start Pi {}: {error}", command.program),
-        )
-    })?;
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            remove_permission_extension(&extension_path);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not start Pi {}: {error}", command.program),
+            ));
+        }
+    };
 
     #[cfg(windows)]
     let (process_job, os_handle) = {
         use std::os::windows::io::AsRawHandle;
         let process_job = JobObject::new().map_err(|error| {
             terminate_process(&mut child);
+            remove_permission_extension(&extension_path);
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not create the Pi process job: {error}"),
@@ -174,6 +298,7 @@ pub(super) fn spawn_process(
             .and_then(|()| process_job.assign(handle))
         {
             terminate_process(&mut child);
+            remove_permission_extension(&extension_path);
             return Err(WireError::new(
                 ErrorCode::Io,
                 format!("Could not contain the Pi process: {error}"),
@@ -192,6 +317,7 @@ pub(super) fn spawn_process(
     #[cfg(not(windows))]
     let process_job = JobObject::new().map_err(|error| {
         terminate_process(&mut child);
+        remove_permission_extension(&extension_path);
         WireError::new(
             ErrorCode::Io,
             format!("Could not create the Pi process job: {error}"),
@@ -202,28 +328,39 @@ pub(super) fn spawn_process(
 
     let stdin = child.stdin.take().ok_or_else(|| {
         terminate_process(&mut child);
+        remove_permission_extension(&extension_path);
         WireError::new(ErrorCode::Io, "Pi did not provide stdin.")
     })?;
     let stdout = child.stdout.take().ok_or_else(|| {
         terminate_process(&mut child);
+        remove_permission_extension(&extension_path);
         WireError::new(ErrorCode::Io, "Pi did not provide stdout.")
     })?;
     let stderr = child.stderr.take().ok_or_else(|| {
         terminate_process(&mut child);
+        remove_permission_extension(&extension_path);
         WireError::new(ErrorCode::Io, "Pi did not provide stderr.")
     })?;
     let process = Arc::new(Mutex::new(child));
     let stdin = Arc::new(Mutex::new(Some(stdin)));
     let next_id = Arc::new(AtomicU64::new(1));
-    let mut stdout = PiStdout::spawn(stdout).map_err(|error| {
-        WireError::new(ErrorCode::Io, format!("Could not read Pi stdout: {error}"))
-    })?;
+    let mut stdout = match PiStdout::spawn(stdout) {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            terminate_shared_process(&process);
+            remove_permission_extension(&extension_path);
+            drop(process_job);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not read Pi stdout: {error}"),
+            ));
+        }
+    };
     let handshake = match perform_handshake(&mut stdout, &stdin, &next_id, &extension_path) {
         Ok(handshake) => handshake,
         Err(error) => {
-            if let Ok(mut process) = process.lock() {
-                terminate_process(&mut process);
-            }
+            terminate_shared_process(&process);
+            remove_permission_extension(&extension_path);
             drop(process_job);
             return Err(error);
         }
@@ -246,6 +383,7 @@ pub(super) fn spawn_process(
         next_id: Arc::clone(&next_id),
         permission_broker: Arc::clone(&permission_broker),
         cancelled: Arc::new(AtomicBool::new(false)),
+        extension_path: extension_path.clone(),
     };
     let reader_dispatch = PiReader::new(
         handshake.deferred,
@@ -255,11 +393,11 @@ pub(super) fn spawn_process(
         Arc::clone(&next_id),
         Arc::clone(&control),
         Arc::clone(&stdin),
-    );
+    )
+    .with_extension_path(extension_path.clone());
     let stderr_source = PiStderr::start(stderr).map_err(|error| {
-        if let Ok(mut process) = process.lock() {
-            terminate_process(&mut process);
-        }
+        terminate_shared_process(&process);
+        remove_permission_extension(&extension_path);
         WireError::new(ErrorCode::Io, format!("Could not drain Pi stderr: {error}"))
     })?;
     Ok(SpawnedSession {
@@ -285,6 +423,14 @@ pub(super) fn spawn_process(
 fn terminate_process(process: &mut Child) {
     let _ = process.kill();
     let _ = process.wait();
+}
+
+fn terminate_shared_process(process: &Arc<Mutex<Child>>) {
+    let mut process = match process.lock() {
+        Ok(process) => process,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    terminate_process(&mut process);
 }
 
 struct Handshake {
@@ -705,6 +851,7 @@ struct PiKiller {
     next_id: Arc<AtomicU64>,
     permission_broker: Arc<PermissionBroker>,
     cancelled: Arc<AtomicBool>,
+    extension_path: PathBuf,
 }
 
 impl PiKiller {
@@ -737,6 +884,7 @@ impl SessionKiller for PiKiller {
         if let Ok(mut stdin) = self.stdin.lock() {
             *stdin = None;
         }
+        remove_permission_extension(&self.extension_path);
     }
 
     fn clone_killer(&self) -> Box<dyn SessionKiller> {
@@ -746,6 +894,7 @@ impl SessionKiller for PiKiller {
             next_id: Arc::clone(&self.next_id),
             permission_broker: Arc::clone(&self.permission_broker),
             cancelled: Arc::clone(&self.cancelled),
+            extension_path: self.extension_path.clone(),
         })
     }
 }
@@ -843,9 +992,10 @@ impl ModelSwitcher for PiSwitcher {
                 }
                 self.control
                     .request("set_thinking_level", serde_json::json!({"level": effort}))?;
-                if let Ok(mut catalog) = self.catalog.lock() {
-                    catalog.current_effort = Some(effort.to_string());
-                }
+                self.catalog
+                    .lock()
+                    .map_err(|_| WireError::new(ErrorCode::Io, "Pi model catalog is unavailable."))?
+                    .current_effort = Some(effort.to_string());
             }
             return Ok(());
         }
@@ -862,13 +1012,36 @@ impl ModelSwitcher for PiSwitcher {
                 format!("Pi model '{model_id}' has no provider."),
             )
         })?;
-        self.control.request(
+        if let Some(effort) = effort {
+            if let Some(efforts) = &model.efforts {
+                let available = efforts
+                    .iter()
+                    .map(|effort| effort.id.clone())
+                    .collect::<Vec<_>>();
+                if !thinking_level_allowed(effort, &available) {
+                    return Err(WireError::new(
+                        ErrorCode::InvalidRequest,
+                        format!(
+                            "Pi thinking level '{effort}' is not available for model '{model_id}'."
+                        ),
+                    ));
+                }
+            }
+        }
+        let model_request = self.control.request(
             "set_model",
             serde_json::json!({"provider": provider, "modelId": model_id}),
-        )?;
-        let levels_response = self
+        );
+        if let Err(error) = model_request {
+            return Err(self.rollback_error(&current, error));
+        }
+        let levels_response = match self
             .control
-            .request("get_available_thinking_levels", Value::Null)?;
+            .request("get_available_thinking_levels", Value::Null)
+        {
+            Ok(response) => response,
+            Err(error) => return Err(self.rollback_error(&current, error)),
+        };
         let levels = levels_response
             .get("data")
             .and_then(|data| data.get("levels"))
@@ -883,23 +1056,46 @@ impl ModelSwitcher for PiSwitcher {
             .unwrap_or_default();
         if let Some(effort) = effort {
             if !thinking_level_allowed(effort, &levels) {
-                return Err(WireError::new(
+                let error = WireError::new(
                     ErrorCode::InvalidRequest,
                     format!(
                         "Pi thinking level '{effort}' is not available for model '{model_id}'."
                     ),
-                ));
+                );
+                return Err(self.rollback_error(&current, error));
             }
-            self.control
-                .request("set_thinking_level", serde_json::json!({"level": effort}))?;
+            if let Err(error) = self
+                .control
+                .request("set_thinking_level", serde_json::json!({"level": effort}))
+            {
+                return Err(self.rollback_error(&current, error));
+            }
         }
-        if let Ok(mut catalog) = self.catalog.lock() {
-            catalog.current_model_id = Some(model_id.to_string());
-            catalog.current_provider = Some(provider);
-            catalog.current_levels = levels;
-            catalog.current_effort = effort.map(str::to_string).or(current.current_effort);
-        }
+        let current_effort = effort.map(str::to_string).or_else(|| {
+            current
+                .current_effort
+                .clone()
+                .filter(|effort| thinking_level_allowed(effort, &levels))
+        });
+        let mut catalog = match self.catalog.lock() {
+            Ok(catalog) => catalog,
+            Err(_) => {
+                let error = WireError::new(ErrorCode::Io, "Pi model catalog is unavailable.");
+                return Err(self.rollback_error(&current, error));
+            }
+        };
+        catalog.current_model_id = Some(model_id.to_string());
+        catalog.current_provider = Some(provider);
+        catalog.current_levels = levels;
+        catalog.current_effort = current_effort;
         Ok(())
+    }
+
+    fn manifest(&self) -> Option<SessionEvent> {
+        self.catalog
+            .lock()
+            .ok()
+            .map(|catalog| manifest_from_catalog(&catalog))
     }
 
     fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
@@ -907,6 +1103,45 @@ impl ModelSwitcher for PiSwitcher {
             control: Arc::clone(&self.control),
             catalog: Arc::clone(&self.catalog),
         })
+    }
+}
+
+impl PiSwitcher {
+    fn rollback_error(&self, current: &PiCatalog, error: WireError) -> WireError {
+        match self.restore_model(current) {
+            Ok(()) => error,
+            Err(rollback) => WireError::new(
+                ErrorCode::Io,
+                format!(
+                    "{}; Pi model rollback failed: {}",
+                    error.message, rollback.message
+                ),
+            ),
+        }
+    }
+
+    fn restore_model(&self, current: &PiCatalog) -> Result<(), WireError> {
+        let provider = current.current_provider.clone().ok_or_else(|| {
+            WireError::new(
+                ErrorCode::Io,
+                "Pi cannot roll back a model without the previous provider.",
+            )
+        })?;
+        let model_id = current.current_model_id.clone().ok_or_else(|| {
+            WireError::new(
+                ErrorCode::Io,
+                "Pi cannot roll back a model without the previous model.",
+            )
+        })?;
+        self.control.request(
+            "set_model",
+            serde_json::json!({"provider": provider, "modelId": model_id}),
+        )?;
+        if let Some(effort) = &current.current_effort {
+            self.control
+                .request("set_thinking_level", serde_json::json!({"level": effort}))?;
+        }
+        Ok(())
     }
 }
 
@@ -924,6 +1159,7 @@ struct PiReader {
     next_id: Arc<AtomicU64>,
     control: Arc<PiControl>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
+    extension_path: PathBuf,
 }
 
 impl PiReader {
@@ -946,30 +1182,52 @@ impl PiReader {
             next_id,
             control,
             stdin,
+            extension_path: PathBuf::new(),
         }
+    }
+
+    fn with_extension_path(mut self, extension_path: PathBuf) -> Self {
+        self.extension_path = extension_path;
+        self
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent, seq: Option<u64>) {
         let _ = runtime.publish_agent_event_with_seq(event, None, seq);
     }
 
-    fn dispatch_value(&mut self, value: Value, runtime: &Arc<SessionRuntime>) {
+    fn dispatch_value(
+        &mut self,
+        value: Value,
+        runtime: &Arc<SessionRuntime>,
+    ) -> Result<(), String> {
         let event_seq = runtime.journal_agent_envelope(&value);
         if value.get("type").and_then(Value::as_str) == Some("response") {
             let _ = self.control.deliver(&value);
-            return;
+            return Ok(());
         }
         if let Some(session_id) = session_id_from_value(&value) {
             runtime.set_peer_session_id(session_id);
         }
+        if value.get("type").and_then(Value::as_str) == Some("extension_error") {
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: format!("Pi permission extension error: {value}"),
+                },
+                event_seq,
+            );
+            return Ok(());
+        }
         if value.get("type").and_then(Value::as_str) == Some("extension_ui_request") {
-            self.dispatch_ui_request(&value, runtime, event_seq);
-            return;
+            return self
+                .dispatch_ui_request(&value, runtime, event_seq)
+                .map_err(|error| format!("Pi UI request failed: {error}"));
         }
         let mut event_seq = event_seq;
         for event in crate::pi_view::events_from_line(&value) {
             self.publish(runtime, event, event_seq.take());
         }
+        Ok(())
     }
 
     fn dispatch_ui_request(
@@ -977,73 +1235,36 @@ impl PiReader {
         value: &Value,
         runtime: &Arc<SessionRuntime>,
         event_seq: Option<u64>,
-    ) {
-        let Some(method) = value.get("method").and_then(Value::as_str) else {
-            return;
-        };
-        let Some(request_id) = value.get("id").and_then(Value::as_str) else {
-            return;
-        };
-        if method != "confirm" {
-            if matches!(method, "select" | "input" | "editor") {
-                let _ = send_extension_response(&self.stdin, request_id, false);
-            }
-            return;
+    ) -> Result<(), String> {
+        let method = value
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let request_id = value.get("id").and_then(Value::as_str);
+        if method != "confirm" || request_id.is_none() {
+            send_extension_response(&self.stdin, request_id, false)
+                .map_err(|error| format!("Could not deny Pi UI request: {error}"))?;
+            return Ok(());
         }
-        let (title, description) = match value.get("title") {
-            Some(Value::Object(title)) => (
-                title
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Pi permission")
-                    .to_string(),
-                title
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Allow this tool call?")
-                    .to_string(),
-            ),
-            Some(Value::String(title)) => (title.clone(), String::new()),
-            _ => (
-                "Pi permission".to_string(),
-                "Allow this tool call?".to_string(),
-            ),
-        };
-        let event = SessionEvent::PermissionRequest {
-            tool_call_id: request_id.to_string(),
-            title,
-            description: Some(description),
-            command: None,
-            args: None,
-            cwd: None,
-            env: None,
-            options: vec![
-                PermissionOption {
-                    option_id: "allow".to_string(),
-                    name: "Allow once".to_string(),
-                    kind: "allow_once".to_string(),
-                },
-                PermissionOption {
-                    option_id: "deny".to_string(),
-                    name: "Deny".to_string(),
-                    kind: "reject_once".to_string(),
-                },
-            ],
-        };
+        let request_id = request_id.expect("checked above");
+        let event = permission_request_from_ui(value, request_id);
         let broker_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut controls) = self.controls.lock() {
-            controls.insert(broker_id, request_id.to_string());
-        }
+        self.controls
+            .lock()
+            .map_err(|_| "Pi permission map is unavailable.".to_string())?
+            .insert(broker_id, request_id.to_string());
         let pending = match self
             .permission_broker
             .register(broker_id, event.clone(), runtime)
         {
             Ok(pending) => pending,
             Err(error) => {
-                if let Ok(mut controls) = self.controls.lock() {
-                    controls.remove(&broker_id);
-                }
-                let _ = send_extension_response(&self.stdin, request_id, false);
+                self.controls
+                    .lock()
+                    .map_err(|_| "Pi permission map is unavailable.".to_string())?
+                    .remove(&broker_id);
+                send_extension_response(&self.stdin, Some(request_id), false)
+                    .map_err(|send_error| format!("Could not deny Pi UI request: {send_error}"))?;
                 self.publish(
                     runtime,
                     SessionEvent::AgentError {
@@ -1051,19 +1272,21 @@ impl PiReader {
                     },
                     event_seq,
                 );
-                return;
+                return Ok(());
             }
         };
         if runtime.permission_delivery_enabled() == Some(false) {
-            let _ = self
-                .permission_broker
-                .respond(request_id, devboule_protocol::PermissionOutcome::Deny);
-            return;
+            self.permission_broker
+                .respond(request_id, devboule_protocol::PermissionOutcome::Deny)
+                .map_err(|error| format!("Could not deny Pi permission request: {error}"))?;
+            return Ok(());
         }
         if let Err(error) = self.permission_broker.arm_timeout(Arc::clone(&pending)) {
-            let _ = self
-                .permission_broker
-                .respond(request_id, devboule_protocol::PermissionOutcome::Deny);
+            self.permission_broker
+                .respond(request_id, devboule_protocol::PermissionOutcome::Deny)
+                .map_err(|response_error| {
+                    format!("Could not deny Pi permission request: {response_error}")
+                })?;
             self.publish(
                 runtime,
                 SessionEvent::AgentError {
@@ -1071,15 +1294,79 @@ impl PiReader {
                 },
                 event_seq,
             );
-            return;
+            return Ok(());
         }
         self.publish(runtime, event, event_seq);
+        Ok(())
+    }
+}
+
+fn permission_request_from_ui(value: &Value, request_id: &str) -> SessionEvent {
+    let (title, description) = match value.get("title") {
+        Some(Value::Object(title)) => (
+            title
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Pi permission")
+                .to_string(),
+            title
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Allow this tool call?")
+                .to_string(),
+        ),
+        Some(Value::String(title)) => (title.clone(), String::new()),
+        _ => (
+            "Pi permission".to_string(),
+            "Allow this tool call?".to_string(),
+        ),
+    };
+    let title_object = value.get("title").and_then(Value::as_object);
+    let metadata_value = |name: &str| {
+        title_object
+            .and_then(|title| title.get(name))
+            .or_else(|| value.get(name))
+    };
+    let command = metadata_value("command")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let args = metadata_value("args")
+        .and_then(Value::as_array)
+        .map(|args| {
+            args.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
+    let cwd = metadata_value("cwd")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    SessionEvent::PermissionRequest {
+        tool_call_id: request_id.to_string(),
+        title,
+        description: Some(description),
+        command,
+        args,
+        cwd,
+        env: None,
+        options: vec![
+            PermissionOption {
+                option_id: "allow".to_string(),
+                name: "Allow once".to_string(),
+                kind: "allow_once".to_string(),
+            },
+            PermissionOption {
+                option_id: "deny".to_string(),
+                name: "Deny".to_string(),
+                kind: "reject_once".to_string(),
+            },
+        ],
     }
 }
 
 fn send_extension_response(
     stdin: &Mutex<Option<ChildStdin>>,
-    request_id: &str,
+    request_id: Option<&str>,
     confirmed: bool,
 ) -> io::Result<()> {
     let frame = serde_json::json!({
@@ -1100,7 +1387,7 @@ impl ReaderDispatch for PiReader {
             let manifest = runtime.store_session_manifest(manifest);
             self.publish(runtime, manifest, None);
             for value in std::mem::take(&mut self.deferred) {
-                self.dispatch_value(value, runtime);
+                self.dispatch_value(value, runtime)?;
             }
         }
         let mut bytes = bytes;
@@ -1144,9 +1431,20 @@ impl ReaderDispatch for PiReader {
             }
             let line = line.strip_suffix(b"\n").unwrap_or(&line);
             let line = line.strip_suffix(b"\r").unwrap_or(line);
-            let value = serde_json::from_slice::<Value>(line)
-                .map_err(|error| format!("Malformed Pi output: {error}"))?;
-            self.dispatch_value(value, runtime);
+            let value = match serde_json::from_slice::<Value>(line) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.publish(
+                        runtime,
+                        SessionEvent::AgentError {
+                            message: format!("Malformed Pi output was discarded: {error}"),
+                        },
+                        None,
+                    );
+                    continue;
+                }
+            };
+            self.dispatch_value(value, runtime)?;
         }
         Ok(())
     }
@@ -1162,16 +1460,14 @@ impl ReaderDispatch for PiReader {
                 None,
             );
         }
+        remove_permission_extension(&self.extension_path);
     }
 }
 
-pub(crate) fn is_read_only_tool(name: &str) -> bool {
-    READ_ONLY_TOOLS.contains(&name)
-}
-
-#[allow(dead_code)]
-pub(crate) fn permission_required(tool_name: &str) -> bool {
-    !is_read_only_tool(tool_name)
+fn is_read_only_tool(name: &str) -> bool {
+    PI_TOOL_POLICIES
+        .iter()
+        .any(|tool| tool.name == name && !tool.requires_confirmation)
 }
 
 struct PiStdout {
@@ -1308,8 +1604,8 @@ impl StderrSource for PiStderr {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_read_only_tool, is_ready_notify, perform_handshake, permission_required, spawn_args,
-        thinking_level_allowed, write_permission_extension, PiStdout, PERMISSION_EXTENSION,
+        is_ready_notify, perform_handshake, permission_extension_path, permission_request_from_ui,
+        spawn_args, thinking_level_allowed, write_permission_extension, PiStdout,
     };
     use crate::pi_view::events_from_line;
     use crate::session::PtyCommand;
@@ -1322,22 +1618,6 @@ mod tests {
         assert!(!thinking_level_allowed("panzeroni", &levels));
         assert!(!thinking_level_allowed("xhigh", &levels));
         assert!(thinking_level_allowed("high", &levels));
-    }
-
-    #[test]
-    fn unknown_tool_names_do_not_pass_the_default_deny_gate() {
-        assert!(permission_required("tool_del_futuro"));
-        assert!(!is_read_only_tool("tool_del_futuro"));
-        assert!(!is_read_only_tool("write"));
-        assert!(is_read_only_tool("read"));
-    }
-
-    #[test]
-    fn permission_extension_is_default_deny_and_has_the_ready_signal() {
-        assert!(PERMISSION_EXTENSION.contains("devboule-permission-channel"));
-        assert!(!PERMISSION_EXTENSION.contains("tool_del_futuro"));
-        assert!(PERMISSION_EXTENSION.contains("new Set([\"read\", \"grep\", \"find\", \"ls\"])"));
-        assert!(PERMISSION_EXTENSION.contains("ctx.ui.confirm({"));
     }
 
     #[test]
@@ -1375,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_args_always_enable_rpc_and_load_our_extension() {
+    fn spawn_args_keep_rpc_and_add_our_extension() {
         let command = PtyCommand::new(
             "pi",
             Vec::new(),
@@ -1383,11 +1663,185 @@ mod tests {
             Vec::new(),
         );
         let path = Path::new(r"C:\runtime\devboule-pi-permissions.ts");
-        let args = spawn_args(&command, path);
-        assert!(args.windows(2).any(|pair| pair == ["--mode", "rpc"]));
-        assert!(args.contains(&"--no-extensions".to_string()));
-        assert!(args.contains(&"-e".to_string()));
-        assert!(args.contains(&path.to_string_lossy().into_owned()));
+        let args = spawn_args(&command, path).expect("Pi args");
+        let mode = args.iter().position(|arg| arg == "--mode").expect("mode");
+        let extension = args.iter().position(|arg| arg == "-e").expect("extension");
+        assert!(mode < extension);
+        assert_eq!(args[mode + 1], "rpc");
+        assert_eq!(args[extension + 1], path.to_string_lossy());
+        assert!(!args.iter().any(|arg| arg == "--no-extensions"));
+        assert!(!args.iter().any(|arg| arg == "--tools"));
+    }
+
+    #[test]
+    fn caller_extensions_are_preserved_alongside_ours() {
+        let command = PtyCommand::new(
+            "pi",
+            vec![
+                "--extension".to_string(),
+                "first.ts".to_string(),
+                "--extension=second.ts".to_string(),
+            ],
+            std::env::current_dir().expect("cwd"),
+            Vec::new(),
+        );
+        let path = Path::new("permission.ts");
+        let args = spawn_args(&command, path).expect("caller extensions are valid");
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--extension".to_string(), "first.ts".to_string()]));
+        assert!(args.iter().any(|arg| arg == "--extension=second.ts"));
+        assert_eq!(args.iter().filter(|arg| *arg == "-e").count(), 1);
+        let path = path.to_string_lossy().into_owned();
+        assert!(args.iter().any(|arg| arg == &path));
+    }
+
+    #[test]
+    fn only_non_rpc_pi_modes_are_rejected() {
+        for supplied in [
+            vec!["--mode"],
+            vec!["--mode", "interactive"],
+            vec!["--mode=interactive"],
+        ] {
+            let command = PtyCommand::new(
+                "pi",
+                supplied.iter().map(|arg| (*arg).to_string()).collect(),
+                std::env::current_dir().expect("cwd"),
+                Vec::new(),
+            );
+            spawn_args(&command, Path::new("permission.ts"))
+                .expect_err("non-rpc mode must be rejected");
+        }
+        for supplied in [
+            vec!["--mode", "rpc"],
+            vec!["--mode=rpc"],
+            vec!["--extension", "evil.ts"],
+            vec!["-e=evil.ts"],
+        ] {
+            let command = PtyCommand::new(
+                "pi",
+                supplied.iter().map(|arg| (*arg).to_string()).collect(),
+                std::env::current_dir().expect("cwd"),
+                Vec::new(),
+            );
+            spawn_args(&command, Path::new("permission.ts"))
+                .expect("rpc mode and caller extensions are valid");
+        }
+    }
+
+    #[test]
+    fn wire_shaped_pi_confirm_keeps_permission_command_metadata() {
+        let request = permission_request_from_ui(
+            &serde_json::json!({
+                "type": "extension_ui_request",
+                "method": "confirm",
+                "id": "ui-1",
+                "title": {
+                    "title": "Devboule permission",
+                    "message": "Allow bash?",
+                    "command": "bash",
+                    "args": ["command=pi", "-p", "touch outside.txt"],
+                    "cwd": "C:/workspace"
+                }
+            }),
+            "ui-1",
+        );
+        assert!(matches!(
+            request,
+            SessionEvent::PermissionRequest {
+                command: Some(command),
+                args: Some(args),
+                cwd: Some(cwd),
+                ..
+            } if command == "bash"
+                && args
+                    == vec![
+                        "command=pi".to_string(),
+                        "-p".to_string(),
+                        "touch outside.txt".to_string(),
+                    ]
+                && cwd == "C:/workspace"
+        ));
+    }
+
+    #[test]
+    fn permission_extension_paths_are_unique_per_session() {
+        let runtime = Path::new(r"C:\runtime");
+        assert_ne!(
+            permission_extension_path(runtime),
+            permission_extension_path(runtime)
+        );
+    }
+
+    #[test]
+    fn permission_extension_prompts_unknown_tools_and_allows_confirmed_tools() {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-pi-permission-test-{}.mjs",
+            std::process::id()
+        ));
+        write_permission_extension(&path).expect("permission extension");
+        let script = r#"
+(async () => {
+  const { pathToFileURL } = require("url");
+  const extension = await import(pathToFileURL(process.argv[1]).href);
+  const handlers = {};
+  extension.default({ on(name, handler) { handlers[name] = handler; } });
+  const confirmations = [];
+  const context = {
+    cwd: "C:/workspace",
+    ui: {
+      notify() {},
+      async confirm(request) {
+        const confirmed = request.command !== "tool-futuro";
+        confirmations.push({ request, confirmed });
+        return confirmed;
+      },
+    },
+  };
+  for (const toolName of ["read", "grep", "find", "ls"]) {
+    const result = await handlers.tool_call({ toolName, input: {} }, context);
+    if (result !== undefined) process.exit(4);
+  }
+  const allowed = await handlers.tool_call({
+    toolName: "write",
+    input: { command: "pi -p touch outside.txt" },
+  }, context);
+  const allowedBash = await handlers.tool_call({
+    toolName: "bash",
+    input: { command: "pi -p touch outside.txt" },
+  }, context);
+  const denied = await handlers.tool_call({
+    toolName: "tool-futuro",
+    input: {},
+  }, context);
+  if (allowed !== undefined || allowedBash !== undefined || denied?.block !== true) process.exit(1);
+  if (confirmations.length !== 3
+      || confirmations[0].request.command !== "write"
+      || confirmations[0].confirmed !== true
+      || confirmations[1].request.command !== "bash"
+      || confirmations[1].confirmed !== true
+      || confirmations[0].request.args[0] !== "command=pi -p touch outside.txt"
+      || confirmations[2].request.command !== "tool-futuro"
+      || confirmations[2].confirmed !== false) {
+    process.exit(2);
+  }
+})().catch((error) => { console.error(error); process.exit(3); });
+"#;
+        let output = std::process::Command::new("node")
+            .args(["-e", script, &path.to_string_lossy()])
+            .output()
+            .expect("node is required for the Pi gate behavior test");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            output.status.success(),
+            "Pi permission extension behavior failed (exit={}): {}{}",
+            output
+                .status
+                .code()
+                .map_or_else(|| "no exit code".to_string(), |code| code.to_string()),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

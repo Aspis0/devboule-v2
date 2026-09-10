@@ -1,4 +1,7 @@
 //! Translate Pi RPC events into the daemon's existing agent events.
+//!
+//! Pi's RPC wire has no ACP-style tool ancestry or subagent type. The adapter
+//! therefore emits those fields as `None` by protocol choice.
 
 use devboule_protocol::{SessionEvent, TurnUsage};
 use serde_json::Value;
@@ -29,6 +32,8 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
                 vec![SessionEvent::AgentMessage {
                     message_id: None,
                     text: text.to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 }]
             })
             .unwrap_or_default(),
@@ -39,6 +44,8 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
                 vec![SessionEvent::AgentThought {
                     message_id: None,
                     text: text.to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 }]
             })
             .unwrap_or_default(),
@@ -59,6 +66,9 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     locations: None,
+                    subagent_type: None,
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 }]
             })
             .unwrap_or_default(),
@@ -80,6 +90,8 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
             .and_then(Value::as_str)
             .map(str::to_string),
         locations: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
     })
 }
 
@@ -93,6 +105,8 @@ fn tool_execution_start(value: &Value) -> Option<SessionEvent> {
             .and_then(Value::as_str)
             .map(str::to_string),
         locations: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
     })
 }
 
@@ -114,6 +128,8 @@ fn tool_execution_end(value: &Value) -> Option<SessionEvent> {
             .and_then(Value::as_str)
             .map(str::to_string),
         locations: None,
+        parent_tool_use_id: None,
+        spawn_depth: None,
     })
 }
 
@@ -180,6 +196,8 @@ mod tests {
             vec![SessionEvent::AgentMessage {
                 message_id: None,
                 text: "OK".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }]
         );
         assert!(events_from_line(&text_end).is_empty());
