@@ -34,37 +34,33 @@ fn lock_tests() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn daemon_bin() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule_daemon") {
+    // Cargo names this env var after the bin verbatim (dashes included). A
+    // stale-binary fallback would silently run "the past" and report green —
+    // on this machine the app holds devboule-daemon.exe open and a test that
+    // cannot find the Cargo-provided binary must fail loudly instead.
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule-daemon") {
         return PathBuf::from(path);
     }
-    if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_daemon") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_devboule-daemon") {
         return PathBuf::from(path);
     }
-    target_bin("devboule-daemon.exe")
+    panic!(
+        "CARGO_BIN_EXE_devboule-daemon was not provided by Cargo; refusing to \
+         guess a target directory binary (a stale one would test the past)"
+    );
 }
 
 fn stub_bin() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule_acp_stub") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_devboule-acp-stub") {
         return PathBuf::from(path);
     }
-    if let Some(path) = option_env!("CARGO_BIN_EXE_devboule_acp_stub") {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_devboule-acp-stub") {
         return PathBuf::from(path);
     }
-    target_bin("devboule-acp-stub.exe")
-}
-
-fn target_bin(name: &str) -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.pop();
-    path.pop();
-    path.push("target");
-    path.push(if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    });
-    path.push(name);
-    path
+    panic!(
+        "CARGO_BIN_EXE_devboule-acp-stub was not provided by Cargo; refusing to \
+         guess a target directory binary (a stale one would test the past)"
+    );
 }
 
 fn unique_dir() -> PathBuf {
@@ -285,6 +281,19 @@ fn wait_for_file(path: &Path) -> String {
         std::thread::sleep(Duration::from_millis(20));
     }
     panic!("stub did not write {}", path.display());
+}
+
+fn wait_for_file_value(path: &Path, expected: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if let Ok(value) = std::fs::read_to_string(path) {
+            if value == expected {
+                return value;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("stub did not write {expected:?} to {}", path.display());
 }
 
 #[test]
@@ -861,7 +870,7 @@ fn acp_session_interrupt_cancels_the_turn_but_keeps_the_session_alive() {
 }
 
 #[test]
-fn acp_set_model_waits_for_manifest_confirmation() {
+fn acp_set_model_success_publishes_manifest() {
     let _test_lock = lock_tests();
     let test = AcpTest::new(&[]);
     let (session, events) = test.attached_session();
@@ -970,6 +979,476 @@ fn acp_set_model_without_provider_push_uses_reply_confirmation() {
                     current_model_id,
                     ..
                 } if current_model_id.as_deref() == Some("stub-model-no-push-again")
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_config_options_agent_switches_model_via_set_config_option() {
+    let _test_lock = lock_tests();
+    // The agent deliberately reports a DIFFERENT current model than requested:
+    // the daemon must display what the agent said ("sonnet"), not what we
+    // asked for ("haiku").
+    let test = AcpTest::new_config_options(true);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("haiku"), None)
+        .expect("set model");
+    assert_eq!(wait_for_file(&test.set_config_file()), "model=haiku");
+    assert!(
+        !test.set_model_file().exists(),
+        "configOptions agents must never receive session/set_model"
+    );
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    models,
+                    ..
+                } if current_model_id.as_deref() == Some("sonnet")
+                    && models.len() == 5
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_config_options_agent_effort_only_switch_targets_the_effort_option() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_config_options(false);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, None, Some("low"))
+        .expect("set effort");
+    assert_eq!(wait_for_file(&test.set_config_file()), "effort=low");
+    assert!(
+        !test.set_model_file().exists(),
+        "configOptions agents must never receive session/set_model"
+    );
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    models,
+                    ..
+                } if current_model_id.as_deref() == Some("opus[1m]")
+                    && models
+                        .iter()
+                        .any(|model| model.model_id == "opus[1m]"
+                            && model.current_effort.as_deref() == Some("low"))
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_config_options_agent_model_switch_with_effort_chains_the_effort_option() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_config_options(false);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("sonnet"), Some("high"))
+        .expect("set model with effort");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    models,
+                    ..
+                } if current_model_id.as_deref() == Some("sonnet")
+                    && models.iter().any(|model| model.model_id == "sonnet"
+                        && model.current_effort.as_deref() == Some("high"))
+            )
+        })
+    });
+    // Both config options were set (model first, then the chained effort);
+    // the recording file holds the final write.
+    assert_eq!(wait_for_file(&test.set_config_file()), "effort=high");
+    assert!(
+        !test.set_model_file().exists(),
+        "configOptions agents must never receive session/set_model"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_hybrid_config_error_falls_back_to_vendor_model_switch() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_hybrid_config(true, false);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("haiku"), None)
+        .expect("set model");
+    assert_eq!(wait_for_file(&test.set_config_file()), "model=haiku");
+    assert_eq!(wait_for_file(&test.set_model_file()), "haiku");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest { current_model_id, .. }
+                    if current_model_id.as_deref() == Some("haiku")
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_hybrid_fallback_membership_guard_preserves_original_error() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_hybrid_config(true, true);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("haiku"), None)
+        .expect("set model");
+    assert_eq!(wait_for_file(&test.set_config_file()), "model=haiku");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentError { message }
+                if message.contains("ACP request failed (-32602)")
+                    && message.contains("config option rejected by stub")
+                    && message.contains("haiku"))
+        })
+    });
+    assert!(
+        !test.set_model_file().exists(),
+        "the vendor fallback must not send a value it did not declare"
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_vendor_success_without_model_ack_updates_the_manifest() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_vendor_no_meta();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), None)
+        .expect("set model");
+    assert_eq!(wait_for_file(&test.set_model_file()), "stub-model-new");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id, models, ..
+                } if current_model_id.as_deref() == Some("stub-model-new")
+                    && !models.is_empty()
+                    && models.iter().any(|model| model.model_id == "stub-model-new")
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_effort_config_surface_is_used_when_model_is_vendor_only() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_hybrid_effort_only();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, None, Some("low"))
+        .expect("set effort");
+    assert_eq!(wait_for_file(&test.set_config_file()), "thought-level=low");
+    assert!(
+        !test.set_model_file().exists(),
+        "effort's declared config surface must be primary"
+    );
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest { current_model_id, models, .. }
+                    if current_model_id.as_deref() == Some("opus[1m]")
+                        && models.iter().any(|model| model.model_id == "opus[1m]"
+                            && model.current_effort.as_deref() == Some("low"))
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_config_option_categories_are_advisory_and_declared_ids_are_used() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_categoryless_options();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("m2"), Some("low"))
+        .expect("set model and effort");
+    assert_eq!(wait_for_file(&test.set_config_file()), "reasoner=low");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest { current_model_id, models, .. }
+                    if current_model_id.as_deref() == Some("m2")
+                        && models.iter().any(|model| model.current_effort.as_deref() == Some("low"))
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_config_options_switch_fails_loudly_after_a_modes_only_reattach() {
+    let _test_lock = lock_tests();
+    // Audit §1: after a daemon restart the reattach (session/load) reply
+    // carries modes only. No switch shape may be recorded, and a click must
+    // fail loudly — never fall through to session/set_model.
+    let mut test = AcpTest::new_config_options_with(false, true, false);
+    let session = {
+        let (session, events) = test.attached_session();
+        test.client
+            .session_send(&session.id, "before daemon restart")
+            .expect("prompt before restart");
+        wait_for(&events, Duration::from_secs(5), |events| {
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn"
+                )
+            })
+        });
+        session
+    };
+    test.restart();
+
+    let listed = test.client.sessions_list().expect("list sessions");
+    let recovered = listed
+        .iter()
+        .find(|listed| listed.id == session.id)
+        .expect("recovered session missing");
+    assert!(matches!(
+        recovered.state,
+        devboule_protocol::SessionState::Recovered { .. }
+    ));
+
+    // The real reattach entry: session_resume spawns the agent again with
+    // session/load (the persisted peer id), unlike a plain attach which only
+    // replays the journal.
+    let resumed = test
+        .client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume recovered ACP session");
+    assert!(matches!(resumed, ResumeResult::Resumed { .. }));
+
+    let (recovered_session, events) = test.attached_existing(&session.id);
+    // The reattach parsed to a modes-only manifest with NO switch shape.
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest { models, modes, .. }
+                    if models.is_empty() && modes.is_some()
+            )
+        })
+    });
+
+    let error = test
+        .client
+        .session_set_model(&recovered_session.id, Some("haiku"), None)
+        .expect_err("switch without a recorded shape must fail loudly");
+    let message = error.to_string();
+    assert!(
+        message.contains("no model catalog") || message.contains("switch verb is unknown"),
+        "unexpected switch error: {message}"
+    );
+    assert!(
+        !test.set_model_file().exists() && !test.set_config_file().exists(),
+        "a shapeless switch must not reach the agent"
+    );
+    test.client
+        .session_close(&recovered_session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_modes_only_reattach_vendor_push_restores_model_switch_surface() {
+    let _test_lock = lock_tests();
+    let mut test = AcpTest::new_modes_only_then_vendor_push();
+    let session = {
+        let (session, events) = test.attached_session();
+        test.client
+            .session_send(&session.id, "before daemon restart")
+            .expect("prompt before restart");
+        wait_for(&events, Duration::from_secs(5), |events| {
+            events.iter().any(|event| {
+                matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+            })
+        });
+        session
+    };
+    test.restart();
+    test.client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume recovered ACP session");
+    let (recovered_session, events) = test.attached_existing(&session.id);
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest { current_model_id, models, .. }
+                    if current_model_id.as_deref() == Some("opus[1m]")
+                        && models.iter().any(|model| model.model_id == "haiku")
+            )
+        })
+    });
+    test.client
+        .session_set_model(&recovered_session.id, Some("haiku"), None)
+        .expect("vendor switch after models push");
+    assert_eq!(wait_for_file(&test.set_model_file()), "haiku");
+    assert!(
+        !test.set_config_file().exists(),
+        "vendor push must restore the vendor surface, not guess configOptions"
+    );
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest { current_model_id, .. }
+                    if current_model_id.as_deref() == Some("haiku")
+            )
+        })
+    });
+    test.client
+        .session_close(&recovered_session.id)
+        .expect("close recovered ACP session");
+}
+
+#[test]
+fn acp_config_options_malformed_success_reply_uses_requested_value() {
+    let _test_lock = lock_tests();
+    // Audit §6: a JSON-RPC success with no parseable catalog still means the
+    // requested value was accepted. Use the requested value, as Paseo does,
+    // rather than silently leaving the old model selected.
+    let test = AcpTest::new_config_options_with(false, false, true);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("haiku"), None)
+        .expect("rpc accepted");
+    assert_eq!(wait_for_file(&test.set_config_file()), "model=haiku");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest { current_model_id, .. }
+                    if current_model_id.as_deref() == Some("haiku")
+            )
+        })
+    });
+    assert!(!events
+        .lock()
+        .expect("events lock")
+        .iter()
+        .any(|event| matches!(event, SessionEvent::AgentError { .. })));
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_hybrid_vendor_fallback_still_applies_declared_effort() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new_hybrid_config(true, false);
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("haiku"), Some("low"))
+        .expect("set model and effort");
+    assert_eq!(wait_for_file(&test.set_model_file()), "haiku");
+    assert_eq!(
+        wait_for_file(&test.set_model_effort_file()),
+        "low",
+        "vendor fallback carries the requested effort"
+    );
+    assert_eq!(
+        wait_for_file_value(&test.set_config_file(), "effort=low"),
+        "effort=low",
+        "the declared config effort follow-up must still be sent"
+    );
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest { current_model_id, models, .. }
+                    if current_model_id.as_deref() == Some("haiku")
+                        && models.iter().any(|model| {
+                            model.model_id == "haiku"
+                                && model.current_effort.as_deref() == Some("low")
+                        })
+            )
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+#[test]
+fn acp_vendor_only_agent_uses_legacy_set_model() {
+    let _test_lock = lock_tests();
+    // A vendor-only manifest still selects the legacy session/set_model verb;
+    // the config-option path must not fire when no config surface was declared.
+    let test = AcpTest::new_without_set_model_push();
+    let (session, events) = test.attached_session();
+    test.client
+        .session_set_model(&session.id, Some("stub-model-new"), None)
+        .expect("set model");
+    assert_eq!(wait_for_file(&test.set_model_file()), "stub-model-new");
+    assert!(
+        !test.set_config_file().exists(),
+        "grok-shaped agents must never receive session/set_config_option"
+    );
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(
+                event,
+                SessionEvent::SessionManifest {
+                    current_model_id,
+                    ..
+                } if current_model_id.as_deref() == Some("stub-model-new")
             )
         })
     });
@@ -1136,7 +1615,7 @@ fn acp_sessions_changed_updates_confirmed_effort() {
 }
 
 #[test]
-fn acp_set_model_error_is_an_agent_error_without_manifest_change() {
+fn acp_set_model_error_without_alternate_is_an_agent_error() {
     let _test_lock = lock_tests();
     let test = AcpTest::new_rejecting_set_model();
     let (session, events) = test.attached_session();
@@ -1885,38 +2364,164 @@ impl AcpTest {
     }
 
     fn new_without_set_model_push() -> Self {
-        Self::new_with_options(&[], false, true, false, false)
+        Self::new_with_options(&[], false, true, false, false, false, false, false, false)
+    }
+
+    /// ACP v2 `configOptions` peer (claude-agent-acp 0.76 wire shape).
+    /// `wrong_config_value` makes the agent report a DIFFERENT current model
+    /// than requested, proving the daemon displays the agent's answer.
+    fn new_config_options(wrong_config_value: bool) -> Self {
+        Self::new_config_options_with(wrong_config_value, false, false)
+    }
+
+    /// `load_modes_only`: the reattach reply (session/load) carries modes
+    /// only, so the restart records no switch shape. `malformed_config_reply`:
+    /// set_config_option answers JSON-RPC success with no parseable catalog.
+    fn new_config_options_with(
+        wrong_config_value: bool,
+        load_modes_only: bool,
+        malformed_config_reply: bool,
+    ) -> Self {
+        Self::new_with_options(
+            &[],
+            false,
+            false,
+            false,
+            false,
+            true,
+            wrong_config_value,
+            load_modes_only,
+            malformed_config_reply,
+        )
+    }
+
+    fn new_modes_only_then_vendor_push() -> Self {
+        Self::new_with_options(
+            &["--load-models-push"],
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            true,
+            false,
+        )
+    }
+
+    fn new_hybrid_config(reject_config_once: bool, vendor_mismatch: bool) -> Self {
+        let mut args = vec!["--hybrid-config-options"];
+        if reject_config_once {
+            args.push("--reject-config-once");
+        }
+        if vendor_mismatch {
+            args.push("--hybrid-vendor-mismatch");
+        }
+        Self::new_with_options(
+            &args, false, false, false, false, false, false, false, false,
+        )
+    }
+
+    fn new_hybrid_effort_only() -> Self {
+        Self::new_with_options(
+            &["--hybrid-effort-only"],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    }
+
+    fn new_categoryless_options() -> Self {
+        Self::new_with_options(
+            &["--categoryless-options"],
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+    }
+
+    fn new_vendor_no_meta() -> Self {
+        Self::new_with_options(
+            &["--set-model-no-meta"],
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
     }
 
     fn new_without_target_efforts() -> Self {
-        Self::new_with_options(&["--no-target-efforts"], false, true, false, false)
+        Self::new_with_options(
+            &["--no-target-efforts"],
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
     }
 
     fn new_with_catalog_default_push() -> Self {
-        Self::new_with_options(&[], false, false, true, false)
+        Self::new_with_options(&[], false, false, true, false, false, false, false, false)
     }
 
     fn new_with_sessions_changed() -> Self {
-        Self::new_with_options(&[], false, true, false, true)
+        Self::new_with_options(&[], false, true, false, true, false, false, false, false)
     }
 
     fn new_with_reject(extra_args: &[&str], reject_set_model: bool) -> Self {
-        Self::new_with_options(extra_args, reject_set_model, false, false, false)
+        Self::new_with_options(
+            extra_args,
+            reject_set_model,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_with_options(
         extra_args: &[&str],
         reject_set_model: bool,
         no_set_model_push: bool,
         catalog_default_push: bool,
         sessions_changed: bool,
+        config_options: bool,
+        wrong_config_value: bool,
+        load_modes_only: bool,
+        malformed_config_reply: bool,
     ) -> Self {
         let observation_dir = unique_dir();
         let pid_file = observation_dir.join("stub pid.txt");
         let console_file = observation_dir.join("stub console.txt");
         let set_model_file = observation_dir.join("stub set model.txt");
         let set_model_effort_file = observation_dir.join("stub set model effort.txt");
+        let set_config_file = observation_dir.join("stub set config.txt");
         let mut argv = vec![stub_bin().to_string_lossy().into_owned()];
+        if config_options {
+            argv.push("--config-options".to_string());
+        }
         argv.extend(extra_args.iter().map(|arg| (*arg).to_string()));
         let command = serde_json::to_string(&argv).expect("ACP argv");
         std::env::set_var("DEVBOULE_ACP_COMMAND", command);
@@ -1929,6 +2534,7 @@ impl AcpTest {
             "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
             &set_model_effort_file,
         );
+        std::env::set_var("DEVBOULE_ACP_STUB_SET_CONFIG_FILE", &set_config_file);
         let mut env_names = vec![
             "DEVBOULE_ACP_COMMAND",
             "DEVBOULE_ACP_PROVIDER_ID",
@@ -1937,6 +2543,7 @@ impl AcpTest {
             "DEVBOULE_ACP_STUB_CONSOLE_FILE",
             "DEVBOULE_ACP_STUB_SET_MODEL_FILE",
             "DEVBOULE_ACP_STUB_SET_MODEL_EFFORT_FILE",
+            "DEVBOULE_ACP_STUB_SET_CONFIG_FILE",
         ];
         if reject_set_model {
             std::env::set_var("DEVBOULE_STUB_REJECT_SET_MODEL", "1");
@@ -1953,6 +2560,30 @@ impl AcpTest {
         if sessions_changed {
             std::env::set_var("DEVBOULE_STUB_SET_MODEL_SESSIONS_CHANGED", "1");
             env_names.push("DEVBOULE_STUB_SET_MODEL_SESSIONS_CHANGED");
+        }
+        if wrong_config_value {
+            std::env::set_var("DEVBOULE_STUB_CONFIG_WRONG_VALUE", "1");
+            env_names.push("DEVBOULE_STUB_CONFIG_WRONG_VALUE");
+        }
+        if load_modes_only {
+            std::env::set_var("DEVBOULE_STUB_LOAD_MODES_ONLY", "1");
+            env_names.push("DEVBOULE_STUB_LOAD_MODES_ONLY");
+        }
+        if malformed_config_reply {
+            std::env::set_var("DEVBOULE_STUB_CONFIG_MALFORMED_REPLY", "1");
+            env_names.push("DEVBOULE_STUB_CONFIG_MALFORMED_REPLY");
+        }
+        if extra_args.contains(&"--reject-config-once") {
+            std::env::set_var("DEVBOULE_STUB_REJECT_CONFIG_ONCE", "1");
+            env_names.push("DEVBOULE_STUB_REJECT_CONFIG_ONCE");
+        }
+        if extra_args.contains(&"--hybrid-vendor-mismatch") {
+            std::env::set_var("DEVBOULE_STUB_HYBRID_VENDOR_MISMATCH", "1");
+            env_names.push("DEVBOULE_STUB_HYBRID_VENDOR_MISMATCH");
+        }
+        if extra_args.contains(&"--set-model-no-meta") {
+            std::env::set_var("DEVBOULE_STUB_SET_MODEL_NO_META", "1");
+            env_names.push("DEVBOULE_STUB_SET_MODEL_NO_META");
         }
         let env = EnvGuard { names: env_names };
         let harness = Harness::spawn();
@@ -1988,6 +2619,28 @@ impl AcpTest {
         (session, events)
     }
 
+    fn attached_existing(
+        &self,
+        session_id: &str,
+    ) -> (devboule_protocol::Session, Arc<Mutex<Vec<SessionEvent>>>) {
+        let session = self
+            .client
+            .sessions_list()
+            .expect("list sessions")
+            .into_iter()
+            .find(|listed| listed.id == session_id)
+            .unwrap_or_else(|| panic!("session {session_id} missing after restart"));
+        let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+        let received = Arc::clone(&events);
+        let handler: EventHandler = Arc::new(move |envelope| {
+            received.lock().expect("events lock").push(envelope.event);
+        });
+        self.client
+            .session_attach(&session.id, None, handler)
+            .expect("attach recovered ACP session");
+        (session, events)
+    }
+
     fn restart(&mut self) {
         self._harness.restart();
         self.client = Arc::new(self._harness.client_named("restarted"));
@@ -2007,6 +2660,10 @@ impl AcpTest {
 
     fn set_model_effort_file(&self) -> PathBuf {
         self.observation_dir.join("stub set model effort.txt")
+    }
+
+    fn set_config_file(&self) -> PathBuf {
+        self.observation_dir.join("stub set config.txt")
     }
 
     fn journal_event_count(&self, session_id: &str) -> i64 {

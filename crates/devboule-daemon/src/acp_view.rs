@@ -271,6 +271,7 @@ fn commands_from_update(update: &serde_json::Value) -> Option<Vec<AvailableComma
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn session_manifest_from_initialize(
     result: &serde_json::Value,
     provider_id: Option<String>,
@@ -281,29 +282,6 @@ pub(crate) fn session_manifest_from_initialize(
     manifest_from_vendor_models(state, provider_id, None)
 }
 
-// Parses the manifest shape grok sends in `session/new` responses (measured:
-// `models.currentModelId` + `availableModels`). Production consumes the
-// initialize/_meta and models/update paths today; `session/load` (reattach)
-// is the intended production caller.
-#[allow(dead_code)]
-pub(crate) fn session_manifest_from_new_session(
-    result: &serde_json::Value,
-    provider_id: Option<String>,
-) -> Option<SessionEvent> {
-    let models = result.get("models").and_then(|value| {
-        manifest_from_vendor_models(value, provider_id.clone(), modes_from_standard(result))
-    });
-    if models.is_some() {
-        return models;
-    }
-    modes_from_standard(result).map(|modes| SessionEvent::SessionManifest {
-        provider_id,
-        current_model_id: None,
-        models: Vec::new(),
-        modes: Some(modes),
-    })
-}
-
 pub(crate) fn session_manifest_from_models_update(
     params: &serde_json::Value,
     provider_id: Option<String>,
@@ -311,47 +289,205 @@ pub(crate) fn session_manifest_from_models_update(
     manifest_from_vendor_models(params, provider_id, None)
 }
 
+/// A switch surface declared by one ACP control. Model and effort are tracked
+/// independently because a peer may expose a vendor model catalog and a
+/// config-option effort selector at the same time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SwitchControlShape {
+    pub vendor: Option<VendorSwitchSurface>,
+    pub config: Option<ConfigOptionSurface>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VendorSwitchSurface {
+    pub values: Vec<String>,
+    /// Vendor effort choices are model-specific; the empty list for model
+    /// controls is intentional.
+    pub values_by_model: Vec<(String, Vec<String>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ConfigOptionSurface {
+    pub id: String,
+    pub values: Vec<String>,
+}
+
+/// Which surfaces the handshake parse found for each control. When both are
+/// present, the client uses `config` first and retains `vendor` as the
+/// error-driven legacy fallback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ModelSwitchShape {
+    pub model: SwitchControlShape,
+    pub effort: SwitchControlShape,
+}
+
+impl ModelSwitchShape {
+    pub(crate) fn has_any_surface(&self) -> bool {
+        self.model.vendor.is_some()
+            || self.model.config.is_some()
+            || self.effort.vendor.is_some()
+            || self.effort.config.is_some()
+    }
+}
+
+/// Adds a vendor surface discovered by a parsed models manifest without
+/// discarding an already-declared config surface (for example, a vendor model
+/// catalog paired with a config-only thought-level selector).
+pub(crate) fn add_vendor_surface(
+    mut shape: Option<ModelSwitchShape>,
+    event: &SessionEvent,
+) -> Option<ModelSwitchShape> {
+    let SessionEvent::SessionManifest { models, .. } = event else {
+        return shape;
+    };
+    let model_values = models
+        .iter()
+        .map(|model| model.model_id.clone())
+        .collect::<Vec<_>>();
+    let effort_values_by_model = models
+        .iter()
+        .filter_map(|model| {
+            let efforts = model.efforts.as_ref()?;
+            Some((
+                model.model_id.clone(),
+                efforts
+                    .iter()
+                    .map(|effort| effort.id.clone())
+                    .collect::<Vec<_>>(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    if model_values.is_empty() && effort_values_by_model.is_empty() {
+        return shape;
+    }
+    let vendor_model = VendorSwitchSurface {
+        values: model_values,
+        values_by_model: Vec::new(),
+    };
+    let vendor_effort = VendorSwitchSurface {
+        values: effort_values_by_model
+            .iter()
+            .flat_map(|(_, values)| values.iter().cloned())
+            .collect(),
+        values_by_model: effort_values_by_model,
+    };
+    let shape_ref = shape.get_or_insert(ModelSwitchShape {
+        model: SwitchControlShape {
+            vendor: None,
+            config: None,
+        },
+        effort: SwitchControlShape {
+            vendor: None,
+            config: None,
+        },
+    });
+    shape_ref.model.vendor = Some(vendor_model);
+    shape_ref.effort.vendor = Some(vendor_effort);
+    shape
+}
+
+/// What the handshake parse produced: the manifest to publish plus the shape
+/// that produced it. The shape is a BY-PRODUCT of this parse — there is no
+/// second reader of the raw bytes that could disagree with the manifest
+/// (the audit's finding that a separate sniff recorded `VendorModels` for a
+/// hybrid frame whose manifest was built from `configOptions` is closed by
+/// construction).
+#[derive(Debug, Default)]
+pub(crate) struct HandshakeManifest {
+    /// The manifest to publish, if any: a model catalog, or a modes-only
+    /// manifest when the agent declared modes but no model shape.
+    pub event: Option<SessionEvent>,
+    /// Which switch verb the shape that produced the manifest speaks. `None`
+    /// means no model shape was parsed: switching must fail with an explicit
+    /// unsupported-shape error, never fall through to a guessed verb.
+    pub shape: Option<ModelSwitchShape>,
+}
+
+/// Parses the handshake pair into the manifest to publish plus the switch
+/// shape that produced it. Used for BOTH `session/new` and `session/load`, so
+/// a reattached session derives its shape exactly like a fresh one. If the
+/// reply carries neither shape, the shape is `None`: the switch path must
+/// then fail loudly, and the next attributable manifest event (e.g. a
+/// vendor-shaped `_x.ai/models/update` push) may fill it in — re-deriving on
+/// evidence, never guessing.
 pub(crate) fn merge_handshake_manifest(
     initialize_result: &serde_json::Value,
     new_session_result: &serde_json::Value,
     provider_id: Option<String>,
-) -> Option<SessionEvent> {
+) -> HandshakeManifest {
     let modes = modes_from_standard(new_session_result);
-    let from_new_models = new_session_result
+    // Each parser returns both the view and the control surface it discovered.
+    // That keeps the shape a by-product of the parse, including hybrids; no
+    // second raw-byte sniff can disagree with the manifest-producing parse.
+    let session_vendor = new_session_result
         .get("models")
-        .and_then(|value| manifest_from_vendor_models(value, None, None));
-    let from_init = session_manifest_from_initialize(initialize_result, None);
-    match (from_new_models, from_init, modes) {
-        (
-            Some(SessionEvent::SessionManifest {
-                current_model_id,
-                models,
-                ..
+        .and_then(|value| vendor_catalog_from_models(value, provider_id.clone(), modes.clone()));
+    let config =
+        catalog_from_config_options(new_session_result, provider_id.clone(), modes.clone(), None);
+    let config_effort = config_effort_surface_from_result(
+        new_session_result,
+        None,
+        config
+            .as_ref()
+            .map(|catalog| catalog.model_option_id.as_str()),
+    );
+    let initialize_vendor = initialize_result
+        .get("_meta")
+        .and_then(|meta| meta.get("modelState"))
+        .and_then(|value| vendor_catalog_from_models(value, provider_id.clone(), modes.clone()));
+    let vendor = session_vendor.or(initialize_vendor);
+
+    let shape = ModelSwitchShape {
+        model: SwitchControlShape {
+            vendor: vendor.as_ref().map(|catalog| VendorSwitchSurface {
+                values: catalog.model_values.clone(),
+                values_by_model: Vec::new(),
             }),
-            _,
-            modes,
-        )
-        | (
-            None,
-            Some(SessionEvent::SessionManifest {
-                current_model_id,
-                models,
-                ..
+            config: config.as_ref().map(|catalog| ConfigOptionSurface {
+                id: catalog.model_option_id.clone(),
+                values: catalog.model_values.clone(),
             }),
-            modes,
-        ) => Some(SessionEvent::SessionManifest {
-            provider_id,
-            current_model_id,
-            models,
-            modes,
+        },
+        effort: SwitchControlShape {
+            vendor: vendor.as_ref().map(|catalog| VendorSwitchSurface {
+                values: catalog
+                    .effort_values_by_model
+                    .iter()
+                    .flat_map(|(_, values)| values.iter().cloned())
+                    .collect(),
+                values_by_model: catalog.effort_values_by_model.clone(),
+            }),
+            config: config
+                .as_ref()
+                .and_then(|catalog| catalog.effort_option_id.as_ref())
+                .map(|id| ConfigOptionSurface {
+                    id: id.clone(),
+                    values: config
+                        .as_ref()
+                        .map(|catalog| catalog.effort_values.clone())
+                        .unwrap_or_default(),
+                })
+                .or(config_effort),
+        },
+    };
+    let event = config
+        .as_ref()
+        .map(|catalog| catalog.manifest.clone())
+        .or_else(|| vendor.map(|catalog| catalog.manifest));
+
+    // Modes only, or nothing at all: publish the modes-only manifest (so
+    // "this agent offers no model list" stays distinct from "no agent"),
+    // but record no switch shape.
+    HandshakeManifest {
+        event: event.or_else(|| {
+            modes.map(|modes| SessionEvent::SessionManifest {
+                provider_id,
+                current_model_id: None,
+                models: Vec::new(),
+                modes: Some(modes),
+            })
         }),
-        (None, None, Some(modes)) => Some(SessionEvent::SessionManifest {
-            provider_id,
-            current_model_id: None,
-            models: Vec::new(),
-            modes: Some(modes),
-        }),
-        _ => None,
+        shape: shape.has_any_surface().then_some(shape),
     }
 }
 
@@ -360,6 +496,21 @@ fn manifest_from_vendor_models(
     provider_id: Option<String>,
     modes: Option<SessionModeStateView>,
 ) -> Option<SessionEvent> {
+    vendor_catalog_from_models(value, provider_id, modes).map(|catalog| catalog.manifest)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VendorCatalog {
+    manifest: SessionEvent,
+    model_values: Vec<String>,
+    effort_values_by_model: Vec<(String, Vec<String>)>,
+}
+
+fn vendor_catalog_from_models(
+    value: &serde_json::Value,
+    provider_id: Option<String>,
+    modes: Option<SessionModeStateView>,
+) -> Option<VendorCatalog> {
     let available = value.get("availableModels")?.as_array()?;
     let current_model_id = value
         .get("currentModelId")
@@ -372,12 +523,344 @@ fn manifest_from_vendor_models(
     if models.is_empty() && current_model_id.is_none() && modes.is_none() {
         return None;
     }
-    Some(SessionEvent::SessionManifest {
-        provider_id,
-        current_model_id,
-        models,
-        modes,
+    let model_values = models.iter().map(|model| model.model_id.clone()).collect();
+    let effort_values_by_model = models
+        .iter()
+        .filter_map(|model| {
+            let efforts = model.efforts.as_ref()?;
+            if efforts.is_empty() {
+                return None;
+            }
+            Some((
+                model.model_id.clone(),
+                efforts.iter().map(|effort| effort.id.clone()).collect(),
+            ))
+        })
+        .collect();
+    Some(VendorCatalog {
+        manifest: SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        },
+        model_values,
+        effort_values_by_model,
     })
+}
+
+/// A model catalog parsed from the ACP v2 `configOptions` surface, plus the
+/// config-option ids the agent actually declared (the switch must send
+/// those, not hard-coded constants).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConfigCatalog {
+    pub manifest: SessionEvent,
+    pub model_option_id: String,
+    pub effort_option_id: Option<String>,
+    pub model_values: Vec<String>,
+    pub effort_values: Vec<String>,
+}
+
+/// Parses the ACP v1 `configOptions` surface into the model catalog.
+///
+/// Measured on `@agentclientprotocol/claude-agent-acp@0.76.0` over raw stdio
+/// (2026-09-09): its `session/new` result carries neither `models`/`availableModels`
+/// nor `initialize` `_meta.modelState`. The model list arrives as a `select`
+/// session config option, the active model as that option's `currentValue`,
+/// and the reasoning-effort catalog as a sibling select option. The effort
+/// option is session-level; we only know the CURRENT model's live effort, so
+/// `efforts`/`current_effort` are attached to the current model only instead
+/// of being copied onto models we cannot vouch for.
+///
+/// `known_ids` carries the option ids a previous parse of the same session
+/// recorded; they are tried first so a reply from the same agent is matched
+/// by what it declared before, with discovery as the fallback. The returned
+/// ids are the ones actually used, so the switcher sends what the agent
+/// declared rather than a constant.
+pub(crate) fn catalog_from_config_options(
+    result: &serde_json::Value,
+    provider_id: Option<String>,
+    modes: Option<SessionModeStateView>,
+    known_ids: Option<(&str, Option<&str>)>,
+) -> Option<ConfigCatalog> {
+    let options = result.get("configOptions")?.as_array()?;
+    let model_option = find_select_option(
+        options,
+        known_ids.map(|(model, _)| model),
+        &["model", "model_id", "modelId"],
+        &["model", "model_config"],
+        &["thought_level"],
+        None,
+        true,
+    )?;
+    let effort_option = find_select_option(
+        options,
+        known_ids.and_then(|(_, effort)| effort),
+        &["effort", "reasoning_effort", "thinking"],
+        &["thought_level"],
+        &["model", "model_config"],
+        model_option.get("id").and_then(serde_json::Value::as_str),
+        true,
+    );
+    let model_surface = config_surface_from_option(model_option);
+    let effort_surface = effort_option.map(config_surface_from_option);
+    let current_model_id = model_option
+        .get("currentValue")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let mut models: Vec<SessionModel> = Vec::new();
+    for entry in model_option
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(model_id) = entry.get("value").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if model_id.is_empty() {
+            continue;
+        }
+        // Duplicate ids would produce duplicate React keys for a controlled
+        // select; the first declaration wins.
+        if models.iter().any(|model| model.model_id == model_id) {
+            continue;
+        }
+        models.push(SessionModel {
+            name: entry
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(model_id)
+                .to_string(),
+            model_id: model_id.to_string(),
+            description: entry
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            // Attached per-model below, from the effort config option.
+            context_tokens: None,
+            current_effort: None,
+            efforts: None,
+        });
+    }
+    if models.is_empty() {
+        return None;
+    }
+    // The current selection must be one of the offered options: a catalog
+    // whose `currentValue` is absent from the list would render a controlled
+    // select with a value its options do not contain.
+    if let Some(current) = &current_model_id {
+        if !models.iter().any(|model| &model.model_id == current) {
+            return None;
+        }
+    }
+    // The effort option describes the current model's live effort levels
+    // ("Available effort levels for this model", measured). Attach them only
+    // where we know they apply: the selected model.
+    let effort_info = effort_option.as_ref();
+    if let (Some(current_model_id), Some(effort_option)) = (current_model_id.as_ref(), effort_info)
+    {
+        let current_effort = effort_option
+            .get("currentValue")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let mut efforts: Vec<SessionModelEffort> = Vec::new();
+        for entry in effort_option
+            .get("options")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = entry.get("value").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if id.is_empty() || efforts.iter().any(|effort| effort.id == id) {
+                continue;
+            }
+            efforts.push(SessionModelEffort {
+                label: entry
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(id)
+                    .to_string(),
+                id: id.to_string(),
+                description: entry
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                default: None,
+            });
+        }
+        // An effort selection that is absent from the offered effort list is
+        // not information we can vouch for: keep the model catalog, but do
+        // not attach effort knowledge from a malformed option.
+        let effort_listed = current_effort
+            .as_ref()
+            .is_none_or(|effort| efforts.iter().any(|listed| &listed.id == effort));
+        if effort_listed && (!efforts.is_empty() || current_effort.is_some()) {
+            for model in models.iter_mut() {
+                if model.model_id == *current_model_id {
+                    model.current_effort = current_effort.clone();
+                    if !efforts.is_empty() {
+                        model.efforts = Some(efforts.clone());
+                    }
+                }
+            }
+        }
+    }
+    Some(ConfigCatalog {
+        manifest: SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        },
+        model_option_id: model_surface.id,
+        effort_option_id: effort_surface.as_ref().map(|option| option.id.clone()),
+        model_values: model_surface.values,
+        effort_values: effort_surface
+            .map(|option| option.values)
+            .unwrap_or_default(),
+    })
+}
+
+fn config_effort_surface_from_result(
+    result: &serde_json::Value,
+    known_id: Option<&str>,
+    excluded_id: Option<&str>,
+) -> Option<ConfigOptionSurface> {
+    let options = result.get("configOptions")?.as_array()?;
+    let option = find_select_option(
+        options,
+        known_id,
+        &["effort", "reasoning_effort", "thinking"],
+        &["thought_level"],
+        &["model", "model_config"],
+        excluded_id,
+        true,
+    )?;
+    Some(config_surface_from_option(option))
+}
+
+/// Finds a `select`-shaped session config option: the known id from a
+/// previous parse of the same session first, then the canonical id, then the
+/// advisory category. The ACP schema says: "This is intended to help Clients
+/// distinguish broadly common selectors (e.g. model selector vs session mode
+/// selector vs thought/reasoning level) for UX purposes ... It MUST NOT be
+/// required for correctness." If those signals are absent, a role-shaped id
+/// or a single unclaimed select is a conformant fallback. The caller always
+/// sends the option's declared id, never a hard-coded category name.
+fn find_select_option<'a>(
+    options: &'a [serde_json::Value],
+    known_id: Option<&str>,
+    canonical_ids: &[&str],
+    categories: &[&str],
+    excluded_categories: &[&str],
+    excluded_id: Option<&str>,
+    allow_single_fallback: bool,
+) -> Option<&'a serde_json::Value> {
+    let is_select = |option: &serde_json::Value| {
+        option.get("type").and_then(serde_json::Value::as_str) == Some("select")
+            && !excluded_categories.iter().any(|category| {
+                option.get("category").and_then(serde_json::Value::as_str) == Some(*category)
+            })
+            && option.get("id").and_then(serde_json::Value::as_str) != excluded_id
+    };
+    if let Some(known) = known_id {
+        if let Some(option) = options.iter().find(|option| {
+            option.get("id").and_then(serde_json::Value::as_str) == Some(known) && is_select(option)
+        }) {
+            return Some(option);
+        }
+    }
+    if let Some(option) = options.iter().find(|option| {
+        canonical_ids
+            .iter()
+            .any(|id| option.get("id").and_then(serde_json::Value::as_str) == Some(*id))
+            && is_select(option)
+    }) {
+        return Some(option);
+    }
+    if let Some(option) = options.iter().find(|option| {
+        categories.iter().any(|category| {
+            option.get("category").and_then(serde_json::Value::as_str) == Some(*category)
+        }) && is_select(option)
+    }) {
+        return Some(option);
+    }
+    let role_hint = |option: &serde_json::Value| {
+        let id = option
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if canonical_ids.first() == Some(&"model") {
+            ["model", "engine", "profile"]
+                .iter()
+                .any(|hint| id.contains(hint))
+        } else {
+            ["effort", "reason", "think", "thought"]
+                .iter()
+                .any(|hint| id.contains(hint))
+        }
+    };
+    if let Some(option) = options
+        .iter()
+        .find(|option| is_select(option) && role_hint(option))
+    {
+        return Some(option);
+    }
+    if allow_single_fallback {
+        let mut selects = options.iter().filter(|option| {
+            if !is_select(option) {
+                return false;
+            }
+            // A vendor catalog may be paired with one config-only effort
+            // selector. When its category is absent or unknown, do not
+            // mistake that selector for the model merely because it is the
+            // only select-shaped option. Category is advisory, so this
+            // conservative role hint is the fallback's only exclusion.
+            if canonical_ids.first() == Some(&"model") {
+                let id = option
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                return !["effort", "reason", "think", "thought"]
+                    .iter()
+                    .any(|hint| id.contains(hint));
+            }
+            true
+        });
+        let option = selects.next()?;
+        if selects.next().is_none() {
+            return Some(option);
+        }
+    }
+    None
+}
+
+fn config_surface_from_option(option: &serde_json::Value) -> ConfigOptionSurface {
+    let id = option
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let mut values = Vec::new();
+    for value in option
+        .get("options")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("value").and_then(serde_json::Value::as_str))
+    {
+        if !value.is_empty() && !values.iter().any(|known| known == value) {
+            values.push(value.to_string());
+        }
+    }
+    ConfigOptionSurface { id, values }
 }
 
 fn session_model_from_vendor(value: &serde_json::Value) -> Option<SessionModel> {
@@ -514,8 +997,9 @@ fn modes_from_standard(result: &serde_json::Value) -> Option<SessionModeStateVie
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_line, merge_handshake_manifest, session_manifest_from_models_update,
-        session_manifest_from_new_session, view_from_envelope, view_from_envelope_in, AcpLineKind,
+        catalog_from_config_options, classify_line, merge_handshake_manifest,
+        session_manifest_from_initialize, session_manifest_from_models_update, view_from_envelope,
+        view_from_envelope_in, AcpLineKind,
     };
     use devboule_protocol::SessionEvent;
 
@@ -853,18 +1337,31 @@ mod tests {
         ]
     }"#;
 
+    fn grok_session_new() -> serde_json::Value {
+        parse(&format!(
+            r#"{{"sessionId":"{SESSION}","models":{GROK_MODELS}}}"#
+        ))
+    }
+
+    fn merge_manifest_event(
+        initialize: &serde_json::Value,
+        new_session: &serde_json::Value,
+        provider_id: Option<&str>,
+    ) -> SessionEvent {
+        merge_handshake_manifest(initialize, new_session, provider_id.map(str::to_string))
+            .event
+            .expect("handshake must produce a manifest")
+    }
+
     #[test]
     fn grok_session_new_models_become_a_session_manifest() {
-        let result = parse(&format!(
-            r#"{{"sessionId":"{SESSION}","models":{GROK_MODELS}}}"#
-        ));
+        let result = grok_session_new();
         let SessionEvent::SessionManifest {
             provider_id,
             current_model_id,
             models,
             modes,
-        } = session_manifest_from_new_session(&result, Some("grok".to_string()))
-            .expect("vendor models must parse")
+        } = merge_manifest_event(&serde_json::Value::Null, &result, Some("grok"))
         else {
             panic!("expected SessionManifest");
         };
@@ -894,12 +1391,18 @@ mod tests {
     }
 
     #[test]
-    fn standard_acp_modes_are_parsed_from_session_new() {
+    fn modes_only_session_result_keeps_the_manifest_but_names_no_switch_shape() {
+        // The reattach scenario: a session/load reply that answers
+        // `{sessionId, modes}` only. The modes-only manifest is published
+        // (so "this agent offers no model list" stays distinct from "no
+        // agent"), but the switch shape is None: a click must fail loudly,
+        // never fall through to a guessed verb.
         let result = parse(
             r#"{"sessionId":"s1","modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Always ask","description":"Ask before every tool call."},{"id":"acceptEdits","name":"Accept edits"}]}}"#,
         );
+        let handshake = merge_handshake_manifest(&serde_json::Value::Null, &result, None);
         let SessionEvent::SessionManifest { modes, models, .. } =
-            session_manifest_from_new_session(&result, None).expect("standard modes must parse")
+            handshake.event.expect("modes-only manifest")
         else {
             panic!("expected SessionManifest");
         };
@@ -909,6 +1412,7 @@ mod tests {
         assert_eq!(modes.available_modes.len(), 2);
         assert_eq!(modes.available_modes[0].name, "Always ask");
         assert_eq!(modes.available_modes[1].id, "acceptEdits");
+        assert_eq!(handshake.shape, None);
     }
 
     #[test]
@@ -916,17 +1420,263 @@ mod tests {
         let initialize = parse(
             r#"{"_meta":{"modelState":{"currentModelId":"stale","availableModels":[{"modelId":"stale","name":"Stale"}]}}}"#,
         );
-        let new_session = parse(&format!(
-            r#"{{"sessionId":"{SESSION}","models":{GROK_MODELS}}}"#
-        ));
+        let new_session = grok_session_new();
         let SessionEvent::SessionManifest {
             current_model_id, ..
-        } = merge_handshake_manifest(&initialize, &new_session, Some("grok".to_string()))
-            .expect("handshake merge")
+        } = merge_manifest_event(&initialize, &new_session, Some("grok"))
         else {
             panic!("expected SessionManifest");
         };
         assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
+    }
+
+    // Verbatim raw-stdio capture of `@agentclientprotocol/claude-agent-acp@0.76.0`
+    // (2026-09-09, probe kept out-of-band under %TEMP%/acp-probe). The initialize
+    // request used Devboule's own advertised params (fs read/write + terminal,
+    // clientInfo "devboule"); no prompt was ever sent. The agent's `session/new`
+    // result carries the model catalog as a `configOptions` select entry — not
+    // as `models`/`availableModels` — which is why the manifest used to come
+    // out with an empty model list.
+    const CLAUDE_ACP_076_INITIALIZE: &str =
+        include_str!("../fixtures/acp-claude-076-initialize.json");
+    const CLAUDE_ACP_076_SESSION_NEW: &str =
+        include_str!("../fixtures/acp-claude-076-session-new.json");
+
+    fn claude_acp_076_frames() -> (serde_json::Value, serde_json::Value) {
+        let initialize: serde_json::Value =
+            serde_json::from_str(CLAUDE_ACP_076_INITIALIZE).expect("verbatim initialize frame");
+        let new_session: serde_json::Value =
+            serde_json::from_str(CLAUDE_ACP_076_SESSION_NEW).expect("verbatim session/new frame");
+        (initialize, new_session)
+    }
+
+    #[test]
+    fn claude_acp_config_options_become_a_model_catalog() {
+        let (initialize, new_session) = claude_acp_076_frames();
+
+        // Nothing model-shaped hides in the initialize result: the catalog must
+        // come from session/new alone.
+        assert!(session_manifest_from_initialize(&initialize["result"], None).is_none());
+
+        let handshake = merge_handshake_manifest(
+            &initialize["result"],
+            &new_session["result"],
+            Some("claude-acp".to_string()),
+        );
+        // The shape is a by-product of the parse that produced the manifest:
+        // the declared option ids ride along, so the switch sends what the
+        // agent declared instead of a hard-coded "model"/"effort".
+        let shape = handshake.shape.as_ref().expect("switch shape");
+        assert_eq!(
+            shape.model.config.as_ref().map(|option| option.id.as_str()),
+            Some("model")
+        );
+        assert_eq!(
+            shape
+                .effort
+                .config
+                .as_ref()
+                .map(|option| option.id.as_str()),
+            Some("effort")
+        );
+        let (provider_id, current_model_id, models, modes) = match handshake
+            .event
+            .expect("configOptions must become a manifest")
+        {
+            SessionEvent::SessionManifest {
+                provider_id,
+                current_model_id,
+                models,
+                modes,
+            } => (provider_id, current_model_id, models, modes),
+            other => panic!("expected SessionManifest, got {other:?}"),
+        };
+        assert_eq!(provider_id.as_deref(), Some("claude-acp"));
+        assert_eq!(current_model_id.as_deref(), Some("opus[1m]"));
+        let ids: Vec<&str> = models.iter().map(|model| model.model_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "default",
+                "opus[1m]",
+                "claude-fable-5-1[1m]",
+                "sonnet",
+                "haiku"
+            ]
+        );
+        let current = models
+            .iter()
+            .find(|model| model.model_id == "opus[1m]")
+            .expect("current model in catalog");
+        assert_eq!(current.name, "Opus 5");
+        assert_eq!(current.current_effort.as_deref(), Some("xhigh"));
+        let efforts = current.efforts.as_ref().expect("effort catalog");
+        let effort_ids: Vec<&str> = efforts.iter().map(|effort| effort.id.as_str()).collect();
+        assert_eq!(
+            effort_ids,
+            vec!["default", "low", "medium", "high", "xhigh", "max"]
+        );
+        // The effort option is session-level knowledge scoped to the selected
+        // model: other entries must not inherit it.
+        let other = models
+            .iter()
+            .find(|model| model.model_id == "sonnet")
+            .expect("sonnet in catalog");
+        assert!(other.current_effort.is_none() && other.efforts.is_none());
+        // Standard modes ride along in the same result and must survive.
+        let modes = modes.expect("measured modes");
+        assert_eq!(modes.current_mode_id, "default");
+        let mode_ids: Vec<&str> = modes
+            .available_modes
+            .iter()
+            .map(|mode| mode.id.as_str())
+            .collect();
+        assert_eq!(
+            mode_ids,
+            vec![
+                "default",
+                "acceptEdits",
+                "plan",
+                "auto",
+                "bypassPermissions"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reattach_reply_with_the_full_config_surface_yields_the_config_shape() {
+        // A session/load reply carrying the full config surface derives the
+        // same shape as session/new. (The integration test drives the real
+        // reattach through a daemon restart; this pins the parse.)
+        let (_, new_session) = claude_acp_076_frames();
+        let handshake =
+            merge_handshake_manifest(&serde_json::Value::Null, &new_session["result"], None);
+        let shape = handshake.shape.as_ref().expect("switch shape");
+        assert_eq!(
+            shape.model.config.as_ref().map(|option| option.id.as_str()),
+            Some("model")
+        );
+        assert_eq!(
+            shape
+                .effort
+                .config
+                .as_ref()
+                .map(|option| option.id.as_str()),
+            Some("effort")
+        );
+        let SessionEvent::SessionManifest {
+            current_model_id,
+            models,
+            ..
+        } = handshake.event.expect("configOptions manifest")
+        else {
+            panic!("expected SessionManifest");
+        };
+        assert_eq!(current_model_id.as_deref(), Some("opus[1m]"));
+        assert_eq!(models.len(), 5);
+        assert_eq!(models[4].model_id, "haiku");
+        assert_eq!(models[4].name, "Haiku 4.5");
+    }
+
+    #[test]
+    fn config_options_without_a_model_option_still_stay_absent() {
+        // A configOptions surface with no model entry must not fabricate an
+        // empty-model manifest on its own; the modes-only fallback owns that.
+        let result = parse(
+            r#"{"configOptions":[{"id":"effort","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"high","name":"High"}]}]}"#,
+        );
+        assert!(catalog_from_config_options(&result, None, None, None).is_none());
+    }
+
+    #[test]
+    fn the_shape_comes_from_the_parse_that_produced_the_manifest() {
+        // grok declares the legacy vendor surface.
+        let grok = merge_handshake_manifest(
+            &serde_json::Value::Null,
+            &grok_session_new(),
+            Some("grok".to_string()),
+        );
+        let grok_shape = grok.shape.as_ref().expect("grok switch shape");
+        assert!(grok_shape.model.vendor.is_some());
+        assert!(grok_shape.model.config.is_none());
+        // Neither shape: modes only, no switch shape.
+        let neither = parse(
+            r#"{"sessionId":"s","modes":{"currentModeId":"ask","availableModes":[{"id":"ask","name":"Always ask"}]}}"#,
+        );
+        let handshake = merge_handshake_manifest(&serde_json::Value::Null, &neither, None);
+        assert_eq!(handshake.shape, None);
+        // Both shapes, both populated: configOptions is primary but the
+        // vendor surface remains available as the error-driven fallback.
+        let both = parse(&format!(
+            r#"{{"sessionId":"{SESSION}","models":{{"availableModels":[{{"modelId":"m"}}]}},"configOptions":[{{"id":"model","type":"select","currentValue":"m","options":[{{"value":"m"}}]}}]}}"#
+        ));
+        let handshake = merge_handshake_manifest(&serde_json::Value::Null, &both, None);
+        let shape = handshake.shape.as_ref().expect("hybrid switch shape");
+        assert!(shape.model.config.is_some());
+        assert!(shape.model.vendor.is_some());
+        // The audit's hybrid case: an EMPTY vendor array plus a populated
+        // configOptions model select. The vendor parse returns None on an
+        // empty catalog, so the config parse produces the manifest — and the
+        // shape MUST say ConfigOptions, not VendorModels.
+        let hybrid = parse(
+            r#"{"sessionId":"s","models":{"availableModels":[]},"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"m","options":[{"value":"m","name":"M"}]}]}"#,
+        );
+        let handshake = merge_handshake_manifest(&serde_json::Value::Null, &hybrid, None);
+        let shape = handshake.shape.as_ref().expect("config switch shape");
+        assert_eq!(
+            shape.model.config.as_ref().map(|option| option.id.as_str()),
+            Some("model")
+        );
+        assert!(shape.model.vendor.is_none());
+    }
+
+    #[test]
+    fn the_switch_sends_the_option_id_the_agent_declared_not_a_constant() {
+        // Detection must also work when one option omits category and the
+        // other uses an unknown category; category is advisory. The
+        // discovered ids must be carried through so the switch names options
+        // the agent actually offered.
+        let result = parse(
+            r#"{"configOptions":[{"id":"engine","type":"select","currentValue":"v2","options":[{"value":"v2","name":"Engine v2"},{"value":"v1","name":"Engine v1"}]},{"id":"thinking","category":"future_reasoning_selector","type":"select","currentValue":"deep","options":[{"value":"deep","name":"Deep"}]}]}"#,
+        );
+        let catalog = catalog_from_config_options(&result, None, None, None)
+            .expect("categoryless and unknown-category options parse");
+        assert_eq!(catalog.model_option_id, "engine");
+        assert_eq!(catalog.effort_option_id.as_deref(), Some("thinking"));
+        let SessionEvent::SessionManifest {
+            current_model_id, ..
+        } = &catalog.manifest
+        else {
+            panic!("expected SessionManifest");
+        };
+        assert_eq!(current_model_id.as_deref(), Some("v2"));
+        // A reply re-parsed with the recorded ids matches by them first.
+        let reparsed =
+            catalog_from_config_options(&result, None, None, Some(("engine", Some("thinking"))))
+                .expect("known ids re-parse");
+        assert_eq!(reparsed.model_option_id, "engine");
+    }
+
+    #[test]
+    fn a_current_value_absent_from_the_offered_options_is_rejected_and_duplicates_fold() {
+        // A current selection the options list does not contain would render
+        // a controlled select whose value is absent from its options.
+        let ghost = parse(
+            r#"{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"ghost","options":[{"value":"real","name":"Real"}]}]}"#,
+        );
+        assert!(catalog_from_config_options(&ghost, None, None, None).is_none());
+        // Duplicate model ids survive as one entry (the first declaration
+        // wins) instead of producing duplicate React keys.
+        let dupes = parse(
+            r#"{"configOptions":[{"id":"model","category":"model","type":"select","currentValue":"a","options":[{"value":"a","name":"A"},{"value":"a","name":"A again"},{"value":"b","name":"B"}]}]}"#,
+        );
+        let catalog =
+            catalog_from_config_options(&dupes, None, None, None).expect("duplicate ids fold");
+        let SessionEvent::SessionManifest { models, .. } = catalog.manifest else {
+            panic!("expected SessionManifest");
+        };
+        let ids: Vec<&str> = models.iter().map(|model| model.model_id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b"]);
     }
 
     // Wire shape measured from a live journal:
