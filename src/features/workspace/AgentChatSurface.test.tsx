@@ -373,6 +373,232 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector("[data-testid=session-modes]")).toBeNull();
   });
 
+  it("does not render the subagent pill when there are no children", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    expect(container.querySelector('[data-testid="subagent-pill"]')).toBeNull();
+    expect(container.textContent).not.toContain("Subagents");
+  });
+
+  it("shows only non-empty subagent states and keeps stopped distinct", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="subagents-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_task_started",
+        taskId: "task-running",
+        title: "Inspect the workspace",
+        subagentType: "explorer",
+        toolUseId: "toolu-running",
+        spawnDepth: 1,
+      });
+      channelHarness.active?.({
+        type: "agent_task_started",
+        taskId: "task-stopped",
+        title: "Stop this task",
+        subagentType: "worker",
+        toolUseId: "toolu-stopped",
+        spawnDepth: 1,
+      });
+      channelHarness.active?.({
+        type: "agent_task_notification",
+        taskId: "task-stopped",
+        status: "stopped",
+        summary: "Stopped by the parent",
+      });
+      channelHarness.active?.({
+        type: "agent_background_tasks_changed",
+        tasks: [{ taskId: "task-background", taskType: "worker", title: "Background task" }],
+      });
+    });
+
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    if (pill === null) throw new Error("subagent pill did not render");
+    expect(pill.textContent).toContain("1 running");
+    expect(pill.textContent).toContain("1 stopped");
+    expect(pill.textContent).toContain("1 unknown");
+    expect(pill.textContent).not.toContain("finished");
+    expect(pill.textContent).not.toContain("failed");
+
+    await act(async () => pill.click());
+    expect(pill.getAttribute("aria-expanded")).toBe("true");
+    expect(pill.getAttribute("aria-controls")).not.toBeNull();
+    const rows = container.querySelectorAll(".workspace-subagent-row");
+    expect(rows).toHaveLength(3);
+    const list = container.querySelector(".workspace-subagent-list");
+    expect(list?.textContent).toContain("stopped");
+    expect(list?.textContent).toContain("unknown");
+    expect(list?.textContent).not.toContain("finished");
+    expect(list?.textContent).not.toContain("failed");
+    for (const status of ["running", "stopped", "unknown"]) {
+      expect(
+        [...(list?.querySelectorAll(".workspace-subagent-row-status") ?? [])].filter(
+          (row) => row.textContent === status,
+        ),
+      ).toHaveLength(1);
+    }
+
+    await act(async () => pill.click());
+    expect(pill.getAttribute("aria-expanded")).toBe("false");
+    expect(pill.getAttribute("aria-controls")).toBeNull();
+    expect(container.querySelector(".workspace-subagent-list")).toBeNull();
+  });
+
+  it("renders finished and failed children when those states are present", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="terminal-subagents" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_task_started",
+        taskId: "task-finished",
+        title: "Finished task",
+        subagentType: "verifier",
+      });
+      channelHarness.active?.({
+        type: "agent_task_notification",
+        taskId: "task-finished",
+        status: "completed",
+      });
+      channelHarness.active?.({
+        type: "agent_task_started",
+        taskId: "task-failed",
+        title: "Failed task",
+        subagentType: "debugger",
+      });
+      channelHarness.active?.({
+        type: "agent_task_notification",
+        taskId: "task-failed",
+        status: "failed",
+      });
+    });
+
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    if (pill === null) throw new Error("subagent pill did not render");
+    expect(pill.textContent).toContain("1 finished");
+    expect(pill.textContent).toContain("1 failed");
+
+    await act(async () => pill.click());
+    const list = container.querySelector(".workspace-subagent-list");
+    expect(list?.textContent).toContain("finished");
+    expect(list?.textContent).toContain("failed");
+    expect(list?.textContent).toContain("verifier");
+    expect(list?.textContent).toContain("debugger");
+  });
+
+  it("renders child transcript items with their type, depth, and id fallback", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="child-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_task_started",
+        taskId: "task-no-title",
+        title: "   ",
+        subagentType: "worker",
+        toolUseId: "toolu-child",
+      });
+      channelHarness.active?.({
+        type: "agent_task_notification",
+        taskId: "task-no-title",
+        status: "stopped",
+      });
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "parent-message",
+        text: "Parent output",
+      });
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "null-parent-message",
+        text: "Parent output with null parent id",
+        parentToolUseId: null,
+      } as unknown as SessionEvent);
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "child-message",
+        text: "Child output",
+        parentToolUseId: "toolu-child",
+        spawnDepth: 999,
+      });
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "child-without-depth",
+        text: "Child without measured depth",
+        parentToolUseId: "toolu-child",
+      });
+    });
+
+    const chatItems = container.querySelectorAll(".workspace-chat-entry");
+    expect(chatItems[0]?.classList.contains("workspace-chat-subagent")).toBe(false);
+    expect(chatItems[0]?.textContent).toContain("Parent output");
+    expect(chatItems[1]?.classList.contains("workspace-chat-subagent")).toBe(false);
+    expect(chatItems[1]?.textContent).toContain("null parent id");
+    const childItems = container.querySelectorAll(".workspace-chat-subagent");
+    expect(childItems).toHaveLength(2);
+    expect(childItems[0]?.textContent).toContain("Subagent");
+    expect(childItems[0]?.textContent).toContain("Child output");
+    expect((childItems[0] as HTMLElement).style.marginInlineStart).toBe("64px");
+    expect(childItems[1]?.textContent).toContain("depth unavailable");
+    expect((childItems[1] as HTMLElement).style.marginInlineStart).toBe("");
+
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    if (pill === null) throw new Error("subagent pill did not render");
+    await act(async () => pill.click());
+    const list = container.querySelector(".workspace-subagent-list");
+    expect(list?.textContent).toContain("stopped");
+    expect(list?.textContent).toContain("worker");
+    expect(list?.textContent).toContain("task-no-title");
+  });
+
+  it("closes the subagent list on Escape and an outside click", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="close-subagents" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_task_started",
+        taskId: "task-child",
+        title: "Child task",
+        subagentType: "worker",
+      });
+    });
+
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="subagent-pill"]');
+    if (pill === null) throw new Error("subagent pill did not render");
+    await act(async () => pill.click());
+    expect(container.querySelector(".workspace-subagent-list")).not.toBeNull();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector(".workspace-subagent-list")).toBeNull();
+
+    await act(async () => pill.click());
+    expect(container.querySelector(".workspace-subagent-list")).not.toBeNull();
+    await act(async () => {
+      document.body.click();
+    });
+    expect(container.querySelector(".workspace-subagent-list")).toBeNull();
+  });
+
   it("shows provider, model, and effort as selects from the session manifest", async () => {
     root = createRoot(container);
     await act(async () => {
