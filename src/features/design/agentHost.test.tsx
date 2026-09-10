@@ -103,6 +103,7 @@ import {
   extractArtifactHtml,
   extractFencedHtml,
   groundedPrompt,
+  invokeAgentCommand,
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
   composeAutomaticSkillSlugs,
@@ -314,6 +315,7 @@ beforeEach(() => {
       typeof channel === "object" && channel !== null
         ? (channelHarness.handlers.get(channel) ?? null)
         : null;
+    return 41;
   });
   mocks.sessionSend.mockResolvedValue(undefined);
   mocks.sessionSetModel.mockResolvedValue(undefined);
@@ -395,7 +397,7 @@ describe("ACP design host", () => {
     await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a"));
     await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(2));
 
-    expect(mocks.sessionDetach).toHaveBeenCalledWith("session-a");
+    expect(mocks.sessionDetach).toHaveBeenCalledWith(41);
     expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
     expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
 
@@ -530,7 +532,7 @@ describe("ACP design host", () => {
 
     const host = createAgentHost();
     const { run } = await startRun(host, { skillMode: "auto" });
-    const preflight = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    const preflight = mocks.sessionSend.mock.calls[0]?.[2] as string;
     expect(preflight).toContain("Update the design");
     expect(preflight).toContain(`Already included automatically (not a choice): ${baseline.slug}`);
     expect(preflight).not.toContain(`- ${baseline.slug}: ${baseline.title}`);
@@ -554,7 +556,7 @@ describe("ACP design host", () => {
     finishRun();
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
 
-    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[2] as string;
     expect(generationPrompt).toContain(`## ${selected.title}`);
     expect(generationPrompt).not.toContain(`## ${omitted.title}`);
     finishRun();
@@ -674,7 +676,7 @@ describe("ACP design host", () => {
     finishRun();
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
 
-    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[2] as string;
     expectPriorityHead(generationPrompt);
     finishRun();
 
@@ -691,7 +693,7 @@ describe("ACP design host", () => {
     const { run } = await startRun(host, { skillMode: "auto" });
 
     await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
-    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[2] as string;
     expectPriorityHead(generationPrompt);
     finishRun();
 
@@ -773,8 +775,8 @@ describe("ACP design host", () => {
 
       await vi.advanceTimersByTimeAsync(AUTO_SKILL_PREFLIGHT_TIMEOUT_MS);
       await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
-      expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1");
-      const generationPrompt = mocks.sessionSend.mock.calls[1]?.[1] as string;
+      expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
+      const generationPrompt = mocks.sessionSend.mock.calls[1]?.[2] as string;
       expectPriorityHead(generationPrompt);
       finishRun();
 
@@ -796,7 +798,7 @@ describe("ACP design host", () => {
     controller.abort();
 
     await expect(run).rejects.toMatchObject({ name: "AbortError" });
-    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1");
+    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
     expect(mocks.sessionSend).toHaveBeenCalledTimes(1);
     await disposeAgentHost(host);
   });
@@ -834,7 +836,7 @@ describe("ACP design host", () => {
     finishRun();
     const result = await run;
 
-    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
     expect(sentText).toContain(`## ${selected.title}`);
     const selectedSource = builtInSkillSources().find((source) =>
       source.path.endsWith(`${selected.slug}.md`),
@@ -858,7 +860,7 @@ describe("ACP design host", () => {
     finishRun();
     const result = await run;
 
-    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
     expect(sentText).not.toContain(DESIGN_DOCTRINE_BEGIN);
     expect(sentText).not.toContain(DESIGN_DOCTRINE_END);
 
@@ -878,7 +880,7 @@ describe("ACP design host", () => {
     finishRun();
     await run;
 
-    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
     expectPriorityHead(sentText);
 
     const result = await run;
@@ -913,7 +915,7 @@ describe("ACP design host", () => {
     finishRun();
 
     const result = await run;
-    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
     for (const slug of expected) {
       const entry = index.find((candidate) => candidate.slug === slug);
       if (entry === undefined) throw new Error(`Expected built-in skill missing: ${slug}`);
@@ -951,7 +953,7 @@ describe("ACP design host", () => {
     finishRun();
 
     const result = await run;
-    const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+    const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
     // The reversed head is what fits: the first reversed sections are in, the
     // baseline — last in the reversed order — is not.
     expect(sentText).toContain(`## ${index[index.length - 1]!.title}`);
@@ -985,6 +987,19 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
+  it("forwards the camelCase fromCursor through the agent command adapter", async () => {
+    const channel = {};
+    await invokeAgentCommand("session_attach", {
+      id: "session-1",
+      fromCursor: 7,
+      ch: channel,
+    });
+
+    // The daemon's option is from_cursor, but Tauri v2 camelCases the key;
+    // a snake_case read here would silently null a real cursor.
+    expect(mocks.sessionAttach).toHaveBeenCalledWith("session-1", 7, channel);
+  });
+
   it("reports paths from a completed write tool as sources", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
@@ -1003,6 +1018,7 @@ describe("ACP design host", () => {
     expect(mocks.sessionAttach).toHaveBeenCalledWith("session-1", null, expect.anything());
     expect(mocks.sessionSend).toHaveBeenCalledWith(
       "session-1",
+      41,
       expect.stringContaining("src/app/Shell.tsx:1-4"),
     );
 
@@ -1117,6 +1133,25 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
+  it("waits for the subscription detach before closing the agent session", async () => {
+    let releaseDetach!: () => void;
+    const detachDone = new Promise<void>((resolve) => {
+      releaseDetach = resolve;
+    });
+    mocks.sessionDetach.mockImplementationOnce(() => detachDone);
+    const host = createAgentHost();
+    await startRun(host);
+
+    const disposePromise = disposeAgentHost(host);
+    await Promise.resolve();
+    expect(mocks.sessionClose).not.toHaveBeenCalled();
+
+    releaseDetach();
+    await disposePromise;
+    expect(mocks.sessionDetach).toHaveBeenCalledWith(41);
+    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1");
+  });
+
   it("rejects when AgentSession cannot attach", async () => {
     mocks.sessionAttach.mockRejectedValue(new Error("attach failed"));
     const host = createAgentHost();
@@ -1164,7 +1199,7 @@ describe("ACP design host", () => {
 
     await expect(run).rejects.toThrow("Respond in the Workspace surface");
     expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
-    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1");
+    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
 
     await disposeAgentHost(host);
   });
@@ -1178,7 +1213,7 @@ describe("ACP design host", () => {
     controller.abort();
 
     await expect(run).rejects.toMatchObject({ name: "AbortError" });
-    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1");
+    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
     await disposeAgentHost(host);
   });
 
@@ -1629,7 +1664,7 @@ describe("ACP design host", () => {
         finishRun();
         await run;
 
-        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
         expect(sentText).not.toContain("Workspace Changes");
         expect(sentText).not.toContain("Changes panel");
         expect(sentText).not.toContain("authoritative");
@@ -1643,7 +1678,7 @@ describe("ACP design host", () => {
         finishRun();
         await run;
 
-        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
         expect(sentText).toContain("src/app/Shell.tsx:1-4");
 
         await disposeAgentHost(host);
@@ -1668,7 +1703,7 @@ describe("ACP design host", () => {
         finishRun();
         await run;
 
-        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
         expect(sentText).toContain("src/lib/workspace.ts:42-58");
         expect(sentText).not.toContain("()");
 
@@ -1685,7 +1720,7 @@ describe("ACP design host", () => {
         finishRun();
         await run;
 
-        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
         expect(sentText).toContain("Oracle found no matching files.");
 
         await disposeAgentHost(host);
@@ -1702,7 +1737,7 @@ describe("ACP design host", () => {
         finishRun();
         await run;
 
-        const sentText = mocks.sessionSend.mock.calls[0]?.[1] as string;
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
         const doctrineStart = sentText.indexOf(DESIGN_DOCTRINE_BEGIN);
         const doctrineEnd = sentText.indexOf(DESIGN_DOCTRINE_END);
         const restatementPos = sentText.indexOf(DESIGN_DOCTRINE_RESTATEMENT);

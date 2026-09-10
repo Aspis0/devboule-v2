@@ -11,7 +11,7 @@ use devboule_protocol::{
     AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
     DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PermissionOutcome,
     Persistence, Project, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionStateSnapshot, WireError, Workspace,
+    SessionEventEnvelope, SessionKind, SessionStateSnapshot, SubscriptionId, WireError, Workspace,
     WorkspaceIsolation,
 };
 
@@ -33,6 +33,12 @@ pub type EventHandler = Arc<dyn Fn(SessionEventEnvelope) + Send + Sync>;
 pub type SessionStateHandler = Arc<dyn Fn(Vec<SessionStateSnapshot>) + Send + Sync>;
 
 struct PendingSubscription {
+    subscription_id: SubscriptionId,
+    session_id: String,
+    handler: EventHandler,
+}
+
+struct Subscription {
     session_id: String,
     handler: EventHandler,
 }
@@ -40,9 +46,12 @@ struct PendingSubscription {
 struct ClientInner {
     framed: Framed,
     next_id: AtomicU64,
+    next_subscription_id: AtomicU64,
     pending: Mutex<HashMap<u64, mpsc::Sender<DaemonMessage>>>,
     pending_subscriptions: Mutex<HashMap<u64, PendingSubscription>>,
-    subscriptions: Mutex<HashMap<String, EventHandler>>,
+    subscriptions: Mutex<HashMap<SubscriptionId, Subscription>>,
+    #[cfg(feature = "server")]
+    default_subscriptions: Mutex<HashMap<String, SubscriptionId>>,
     session_state_subscription: Mutex<Option<SessionStateHandler>>,
     stop: AtomicBool,
     hello: DaemonHello,
@@ -159,7 +168,23 @@ impl DaemonClient {
         session_id: &str,
         from_cursor: Option<Cursor>,
         handler: EventHandler,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<SubscriptionId, DaemonError> {
+        let subscription_id = self.alloc_subscription_id();
+        self.session_attach_with_subscription(subscription_id, session_id, from_cursor, handler)
+    }
+
+    pub fn session_attach_with_subscription(
+        &self,
+        subscription_id: SubscriptionId,
+        session_id: &str,
+        from_cursor: Option<Cursor>,
+        handler: EventHandler,
+    ) -> Result<SubscriptionId, DaemonError> {
+        if subscription_id == 0 {
+            return Err(DaemonError::Protocol(
+                "subscription id must be non-zero".to_string(),
+            ));
+        }
         let id = self.alloc_id();
         {
             let mut subscriptions = self
@@ -170,6 +195,7 @@ impl DaemonClient {
             subscriptions.insert(
                 id,
                 PendingSubscription {
+                    subscription_id,
                     session_id: session_id.to_string(),
                     handler,
                 },
@@ -178,10 +204,20 @@ impl DaemonClient {
         let result = self.roundtrip(ClientMessage::SessionAttach {
             id,
             session_id: session_id.to_string(),
+            subscription_id,
             from_cursor,
         });
         match result {
-            Ok(DaemonMessage::Ok { .. }) => Ok(()),
+            Ok(DaemonMessage::SessionAttached {
+                subscription_id: confirmed,
+                ..
+            }) if confirmed == subscription_id => Ok(confirmed),
+            Ok(DaemonMessage::SessionAttached { .. }) => {
+                self.remove_pending_subscription(id);
+                Err(DaemonError::Protocol(
+                    "daemon returned a different subscription id".to_string(),
+                ))
+            }
             Ok(DaemonMessage::Error(error)) => {
                 self.remove_pending_subscription(id);
                 Err(DaemonError::Handshake(error))
@@ -197,41 +233,53 @@ impl DaemonClient {
         }
     }
 
+    // These session-id helpers exist only for the in-process server test harnesses. Client builds
+    // use the subscription-bearing methods so two observers can never share an implicit default.
+    #[cfg(feature = "server")]
     pub fn session_detach(&self, session_id: &str) -> Result<(), DaemonError> {
+        let subscription_id = self
+            .default_subscription(session_id)
+            .ok_or_else(|| DaemonError::Protocol("session is not attached".to_string()))?;
+        self.session_detach_with_subscription(session_id, subscription_id)
+    }
+
+    pub fn session_detach_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         let result = self.roundtrip(ClientMessage::SessionDetach {
             id,
             session_id: session_id.to_string(),
+            subscription_id,
         });
-        self.unsubscribe(session_id);
-        self.remove_pending_subscriptions(session_id);
         match result? {
-            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Ok { .. } => {
+                self.unsubscribe(subscription_id);
+                self.remove_pending_subscription_for_id(subscription_id);
+                Ok(())
+            }
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
         }
     }
 
-    pub fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
-        let id = self.alloc_id();
-        let result = self.roundtrip(ClientMessage::SessionClose {
-            id,
-            session_id: session_id.to_string(),
-            idempotency_key: None,
-        });
-        self.unsubscribe(session_id);
-        match result? {
-            DaemonMessage::Ok { .. } => Ok(()),
-            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
-            other => unexpected(other),
-        }
+    #[cfg(feature = "server")]
+    pub fn session_claim(&self, session_id: &str) -> Result<(), DaemonError> {
+        self.session_claim_with_subscription(session_id, self.control_subscription_id(session_id)?)
     }
 
-    pub fn session_stop(&self, session_id: &str) -> Result<(), DaemonError> {
+    pub fn session_claim_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
-        match self.roundtrip(ClientMessage::SessionStop {
+        match self.roundtrip(ClientMessage::SessionClaim {
             id,
             session_id: session_id.to_string(),
+            subscription_id,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
@@ -239,11 +287,85 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
+    pub fn session_close(&self, session_id: &str) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        let result = self.roundtrip(ClientMessage::SessionClose {
+            id,
+            session_id: session_id.to_string(),
+            idempotency_key: None,
+        });
+        if matches!(result.as_ref(), Ok(DaemonMessage::Ok { .. })) {
+            self.unsubscribe_session(session_id);
+        }
+        match result? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    pub fn session_close_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionClose {
+            id,
+            session_id: session_id.to_string(),
+            idempotency_key: None,
+        })? {
+            DaemonMessage::Ok { .. } => {
+                self.unsubscribe(subscription_id);
+                self.remove_pending_subscription_for_id(subscription_id);
+                Ok(())
+            }
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    #[cfg(feature = "server")]
+    pub fn session_stop(&self, session_id: &str) -> Result<(), DaemonError> {
+        self.session_stop_with_subscription(session_id, self.control_subscription_id(session_id)?)
+    }
+
+    pub fn session_stop_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionStop {
+            id,
+            session_id: session_id.to_string(),
+            subscription_id,
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
+    #[cfg(feature = "server")]
     pub fn session_interrupt(&self, session_id: &str) -> Result<(), DaemonError> {
+        self.session_interrupt_with_subscription(
+            session_id,
+            self.control_subscription_id(session_id)?,
+        )
+    }
+
+    pub fn session_interrupt_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+    ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionInterrupt {
             id,
             session_id: session_id.to_string(),
+            subscription_id,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
@@ -270,11 +392,26 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
+        self.session_send_with_subscription(
+            session_id,
+            self.control_subscription_id(session_id)?,
+            text,
+        )
+    }
+
+    pub fn session_send_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
+        text: &str,
+    ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {
             id,
             session_id: session_id.to_string(),
+            subscription_id,
             text: text.to_string(),
             idempotency_key: None,
         })? {
@@ -284,9 +421,25 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_resize(
         &self,
         session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        self.session_resize_with_subscription(
+            session_id,
+            self.control_subscription_id(session_id)?,
+            cols,
+            rows,
+        )
+    }
+
+    pub fn session_resize_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
         cols: u16,
         rows: u16,
     ) -> Result<(), DaemonError> {
@@ -294,6 +447,7 @@ impl DaemonClient {
         match self.roundtrip(ClientMessage::SessionResize {
             id,
             session_id: session_id.to_string(),
+            subscription_id,
             cols,
             rows,
         })? {
@@ -335,9 +489,25 @@ impl DaemonClient {
         }
     }
 
+    #[cfg(feature = "server")]
     pub fn session_permission_respond(
         &self,
         session_id: &str,
+        request_id: &str,
+        outcome: PermissionOutcome,
+    ) -> Result<(), DaemonError> {
+        self.session_permission_respond_with_subscription(
+            session_id,
+            self.control_subscription_id(session_id)?,
+            request_id,
+            outcome,
+        )
+    }
+
+    pub fn session_permission_respond_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: SubscriptionId,
         request_id: &str,
         outcome: PermissionOutcome,
     ) -> Result<(), DaemonError> {
@@ -345,6 +515,7 @@ impl DaemonClient {
         match self.roundtrip(ClientMessage::SessionPermissionRespond {
             id,
             session_id: session_id.to_string(),
+            subscription_id,
             request_id: request_id.to_string(),
             outcome,
             idempotency_key: None,
@@ -669,12 +840,87 @@ impl DaemonClient {
         self.inner.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn unsubscribe(&self, session_id: &str) {
+    fn alloc_subscription_id(&self) -> SubscriptionId {
         self.inner
+            .next_subscription_id
+            .fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "server")]
+    fn default_subscription(&self, session_id: &str) -> Option<SubscriptionId> {
+        self.inner
+            .default_subscriptions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(session_id)
+            .copied()
+    }
+
+    #[cfg(feature = "server")]
+    fn control_subscription_id(&self, session_id: &str) -> Result<SubscriptionId, DaemonError> {
+        self.default_subscription(session_id).ok_or_else(|| {
+            DaemonError::Protocol(
+                "Session is not attached; attach before sending session commands.".to_string(),
+            )
+        })
+    }
+
+    fn unsubscribe(&self, subscription_id: SubscriptionId) {
+        let removed = self
+            .inner
             .subscriptions
             .lock()
             .unwrap_or_else(|err| err.into_inner())
-            .remove(session_id);
+            .remove(&subscription_id);
+        #[cfg(not(feature = "server"))]
+        let _ = removed;
+        #[cfg(feature = "server")]
+        if let Some(removed) = removed {
+            let mut defaults = self
+                .inner
+                .default_subscriptions
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if defaults.get(&removed.session_id) == Some(&subscription_id) {
+                let replacement = self
+                    .inner
+                    .subscriptions
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .iter()
+                    .find(|(_, subscription)| subscription.session_id == removed.session_id)
+                    .map(|(id, _)| *id);
+                if let Some(replacement) = replacement {
+                    defaults.insert(removed.session_id, replacement);
+                } else {
+                    defaults.remove(&removed.session_id);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "server")]
+    fn unsubscribe_session(&self, session_id: &str) {
+        let ids = self
+            .inner
+            .subscriptions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .iter()
+            .filter(|(_, subscription)| subscription.session_id == session_id)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.unsubscribe(id);
+        }
+    }
+
+    fn remove_pending_subscription_for_id(&self, subscription_id: SubscriptionId) {
+        self.inner
+            .pending_subscriptions
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .retain(|_, pending| pending.subscription_id != subscription_id);
     }
 
     fn remove_pending_subscription(&self, request_id: u64) {
@@ -683,14 +929,6 @@ impl DaemonClient {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .remove(&request_id);
-    }
-
-    fn remove_pending_subscriptions(&self, session_id: &str) {
-        self.inner
-            .pending_subscriptions
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .retain(|_, pending| pending.session_id != session_id);
     }
 
     fn unsubscribe_sessions_watch(&self) {
@@ -796,9 +1034,12 @@ pub fn handshake(file: File, hello: ClientHello) -> Result<DaemonClient, DaemonE
             let inner = Arc::new(ClientInner {
                 framed,
                 next_id: AtomicU64::new(1),
+                next_subscription_id: AtomicU64::new(1),
                 pending: Mutex::new(HashMap::new()),
                 pending_subscriptions: Mutex::new(HashMap::new()),
                 subscriptions: Mutex::new(HashMap::new()),
+                #[cfg(feature = "server")]
+                default_subscriptions: Mutex::new(HashMap::new()),
                 session_state_subscription: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 hello: daemon_hello,
@@ -844,8 +1085,8 @@ fn client_read_loop(inner: Arc<ClientInner>) {
             .framed
             .recv_timeout::<DaemonMessage>(Duration::from_millis(100))
         {
-            Ok(DaemonMessage::Event(envelope)) => match envelope.event {
-                SessionEvent::SessionsSnapshot { sessions } => {
+            Ok(DaemonMessage::Event(envelope)) => {
+                if let SessionEvent::SessionsSnapshot { sessions } = envelope.event {
                     let handler = inner
                         .session_state_subscription
                         .lock()
@@ -855,44 +1096,76 @@ fn client_read_loop(inner: Arc<ClientInner>) {
                         handler(sessions);
                     }
                 }
-                event => {
-                    let handler = inner
-                        .subscriptions
+            }
+            Ok(DaemonMessage::SubscriptionEvent {
+                subscription_id,
+                envelope,
+            }) => {
+                let handler = inner
+                    .subscriptions
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner())
+                    .get(&subscription_id)
+                    .filter(|subscription| subscription.session_id == envelope.session_id)
+                    .map(|subscription| Arc::clone(&subscription.handler));
+                let handler = handler.or_else(|| {
+                    inner
+                        .pending_subscriptions
                         .lock()
                         .unwrap_or_else(|err| err.into_inner())
-                        .get(&envelope.session_id)
-                        .cloned();
-                    if let Some(handler) = handler {
-                        handler(SessionEventEnvelope {
-                            session_id: envelope.session_id,
-                            generation: envelope.generation,
-                            event,
-                        });
-                    }
+                        .values()
+                        .find(|pending| {
+                            pending.subscription_id == subscription_id
+                                && pending.session_id == envelope.session_id
+                        })
+                        .map(|pending| Arc::clone(&pending.handler))
+                });
+                if let Some(handler) = handler {
+                    handler(envelope);
                 }
-            },
+            }
             Ok(message) => {
                 if let Some(id) = daemon_message_id(&message) {
-                    if matches!(&message, DaemonMessage::Ok { .. }) {
-                        // The pipe is FIFO for replies and events. Keep a new
-                        // handler pending until its Ok has been consumed, so
-                        // frames before that boundary remain with the prior
-                        // attachment (or are dropped if it is gone).
+                    if let DaemonMessage::SessionAttached {
+                        subscription_id, ..
+                    } = &message
+                    {
+                        // Keep the token in the pending table until the daemon
+                        // confirms it, while subscription events can still be
+                        // routed by that same token if they arrive first.
                         let pending_subscription = inner
                             .pending_subscriptions
                             .lock()
                             .unwrap_or_else(|err| err.into_inner())
                             .remove(&id);
                         if let Some(PendingSubscription {
+                            subscription_id: _,
                             session_id,
                             handler,
                         }) = pending_subscription
+                            .filter(|pending| pending.subscription_id == *subscription_id)
                         {
                             inner
                                 .subscriptions
                                 .lock()
                                 .unwrap_or_else(|err| err.into_inner())
-                                .insert(session_id, handler);
+                                .insert(
+                                    *subscription_id,
+                                    Subscription {
+                                        session_id: session_id.clone(),
+                                        handler,
+                                    },
+                                );
+                            #[cfg(feature = "server")]
+                            {
+                                // A reattach can follow a resume that replaced the runtime, so
+                                // the old test helper token may no longer be current.
+                                inner
+                                    .default_subscriptions
+                                    .lock()
+                                    .unwrap_or_else(|err| err.into_inner())
+                                    .insert(session_id, *subscription_id);
+                            }
                         }
                     }
                     let tx = inner
@@ -921,27 +1194,46 @@ fn fail_connection(inner: &ClientInner, error: DaemonError) {
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .take();
-    let mut subscriptions: Vec<(String, EventHandler)> = inner
+    let subscriptions: Vec<(SubscriptionId, String, EventHandler)> = inner
         .subscriptions
         .lock()
         .unwrap_or_else(|err| err.into_inner())
         .drain()
+        .map(|(subscription_id, subscription)| {
+            (
+                subscription_id,
+                subscription.session_id,
+                subscription.handler,
+            )
+        })
         .collect();
-    subscriptions.extend(
-        inner
-            .pending_subscriptions
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .drain()
-            .map(|(_, pending)| (pending.session_id, pending.handler)),
-    );
-    for (session_id, handler) in subscriptions {
+    let pending_subscriptions = inner
+        .pending_subscriptions
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .drain()
+        .map(|(_, pending)| (pending.session_id, pending.handler))
+        .collect::<Vec<_>>();
+    for (_, session_id, handler) in subscriptions {
         handler(SessionEventEnvelope {
             session_id,
             generation: 0,
             event: SessionEvent::Exit { code: None },
         });
     }
+    for (session_id, handler) in pending_subscriptions {
+        handler(SessionEventEnvelope {
+            session_id,
+            generation: 0,
+            event: SessionEvent::Exit { code: None },
+        });
+    }
+    #[cfg(feature = "server")]
+    inner
+        .default_subscriptions
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clear();
     let pending: Vec<mpsc::Sender<DaemonMessage>> = inner
         .pending
         .lock()
@@ -957,7 +1249,9 @@ fn fail_connection(inner: &ClientInner, error: DaemonError) {
 
 fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
     match message {
-        DaemonMessage::Hello(_) | DaemonMessage::Event(_) => None,
+        DaemonMessage::Hello(_)
+        | DaemonMessage::Event(_)
+        | DaemonMessage::SubscriptionEvent { .. } => None,
         DaemonMessage::Error(error) => error.id,
         DaemonMessage::Pong { id, .. }
         | DaemonMessage::Status { id, .. }
@@ -969,6 +1263,7 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Project { id, .. }
         | DaemonMessage::Workspaces { id, .. }
         | DaemonMessage::Workspace { id, .. }
+        | DaemonMessage::SessionAttached { id, .. }
         | DaemonMessage::JournalUsage { id, .. }
         | DaemonMessage::JournalRetention { id, .. }
         | DaemonMessage::Providers { id, .. }
@@ -1046,7 +1341,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn attach_reply_promotes_the_pending_handler_at_the_fifo_boundary() {
+    fn subscription_events_route_by_their_subscription_id() {
         let dir = std::env::temp_dir().join(format!(
             "devboule-client-routing-{}-{}",
             std::process::id(),
@@ -1074,13 +1369,24 @@ mod tests {
             let first = framed
                 .recv::<ClientMessage>()
                 .expect("first attach request");
-            let first_id = first.request_id().expect("first attach id");
+            let ClientMessage::SessionAttach {
+                id: first_id,
+                subscription_id: first_subscription,
+                ..
+            } = first
+            else {
+                panic!("expected first attach request");
+            };
             framed
-                .send(&DaemonMessage::Ok { id: first_id })
+                .send(&DaemonMessage::SessionAttached {
+                    id: first_id,
+                    subscription_id: first_subscription,
+                })
                 .expect("first attach reply");
             framed
-                .send(&DaemonMessage::Event(
-                    devboule_protocol::SessionEventEnvelope {
+                .send(&DaemonMessage::SubscriptionEvent {
+                    subscription_id: first_subscription,
+                    envelope: devboule_protocol::SessionEventEnvelope {
                         session_id: "s.routing".to_string(),
                         generation: 1,
                         event: SessionEvent::AgentMessage {
@@ -1088,16 +1394,24 @@ mod tests {
                             text: "a-1".to_string(),
                         },
                     },
-                ))
+                })
                 .expect("first A event");
 
             let second = framed
                 .recv::<ClientMessage>()
                 .expect("second attach request");
-            let second_id = second.request_id().expect("second attach id");
+            let ClientMessage::SessionAttach {
+                id: second_id,
+                subscription_id: second_subscription,
+                ..
+            } = second
+            else {
+                panic!("expected second attach request");
+            };
             framed
-                .send(&DaemonMessage::Event(
-                    devboule_protocol::SessionEventEnvelope {
+                .send(&DaemonMessage::SubscriptionEvent {
+                    subscription_id: first_subscription,
+                    envelope: devboule_protocol::SessionEventEnvelope {
                         session_id: "s.routing".to_string(),
                         generation: 1,
                         event: SessionEvent::AgentMessage {
@@ -1105,14 +1419,18 @@ mod tests {
                             text: "a-2".to_string(),
                         },
                     },
-                ))
+                })
                 .expect("remaining A event");
             framed
-                .send(&DaemonMessage::Ok { id: second_id })
+                .send(&DaemonMessage::SessionAttached {
+                    id: second_id,
+                    subscription_id: second_subscription,
+                })
                 .expect("second attach reply");
             framed
-                .send(&DaemonMessage::Event(
-                    devboule_protocol::SessionEventEnvelope {
+                .send(&DaemonMessage::SubscriptionEvent {
+                    subscription_id: second_subscription,
+                    envelope: devboule_protocol::SessionEventEnvelope {
                         session_id: "s.routing".to_string(),
                         generation: 1,
                         event: SessionEvent::AgentMessage {
@@ -1120,7 +1438,7 @@ mod tests {
                             text: "b-1".to_string(),
                         },
                     },
-                ))
+                })
                 .expect("B event");
             let _ = release_rx.recv_timeout(Duration::from_secs(10));
         });
@@ -1164,16 +1482,18 @@ mod tests {
             )
             .expect("attach B");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mut a_events = Vec::new();
-        let mut b_events = Vec::new();
-        while std::time::Instant::now() < deadline && a_events.len() + b_events.len() < 3 {
-            a_events.extend(a_rx.try_iter().map(|envelope| envelope.event));
-            b_events.extend(b_rx.try_iter().map(|envelope| envelope.event));
-            thread::sleep(Duration::from_millis(5));
-        }
-        a_events.extend(a_rx.try_iter().map(|envelope| envelope.event));
-        b_events.extend(b_rx.try_iter().map(|envelope| envelope.event));
+        let a_events = [
+            a_rx.recv_timeout(Duration::from_secs(10))
+                .expect("first subscription event")
+                .event,
+            a_rx.recv_timeout(Duration::from_secs(10))
+                .expect("second subscription event")
+                .event,
+        ];
+        let b_events = [b_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("other subscription event")
+            .event];
         let text = |event: &SessionEvent| match event {
             SessionEvent::AgentMessage { text, .. } => text.clone(),
             other => format!("{other:?}"),
@@ -1185,7 +1505,7 @@ mod tests {
         assert_eq!(
             b_events.iter().map(text).collect::<Vec<_>>(),
             vec!["b-1"],
-            "the promoted handler must not receive A's FIFO-prefix events"
+            "the second subscription must not receive the first subscription's events"
         );
 
         let _ = release_tx.send(());
@@ -1196,7 +1516,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn session_detach_drops_a_pending_attach_handler() {
+    fn session_detach_removes_only_its_subscription() {
         let dir = std::env::temp_dir().join(format!(
             "devboule-client-detach-pending-{}-{}",
             std::process::id(),
@@ -1223,20 +1543,33 @@ mod tests {
                 .expect("hello reply");
 
             let attach = framed.recv::<ClientMessage>().expect("attach request");
-            let attach_id = attach.request_id().expect("attach id");
+            let ClientMessage::SessionAttach {
+                id: attach_id,
+                subscription_id,
+                ..
+            } = attach
+            else {
+                panic!("expected attach request");
+            };
             attach_seen_tx.send(()).expect("attach seen");
+            framed
+                .send(&DaemonMessage::SessionAttached {
+                    id: attach_id,
+                    subscription_id,
+                })
+                .expect("attach reply");
             let detach = framed.recv::<ClientMessage>().expect("detach request");
             let detach_id = detach.request_id().expect("detach id");
             framed
                 .send(&DaemonMessage::Ok { id: detach_id })
                 .expect("detach reply");
-            release_rx.recv().expect("release late attach");
+            release_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("detach completed");
             framed
-                .send(&DaemonMessage::Ok { id: attach_id })
-                .expect("late attach reply");
-            framed
-                .send(&DaemonMessage::Event(
-                    devboule_protocol::SessionEventEnvelope {
+                .send(&DaemonMessage::SubscriptionEvent {
+                    subscription_id,
+                    envelope: devboule_protocol::SessionEventEnvelope {
                         session_id: "s.detach.pending".to_string(),
                         generation: 1,
                         event: SessionEvent::AgentMessage {
@@ -1244,7 +1577,7 @@ mod tests {
                             text: "resurrected".to_string(),
                         },
                     },
-                ))
+                })
                 .expect("late event");
         });
 
@@ -1282,11 +1615,14 @@ mod tests {
         attach_seen_rx
             .recv_timeout(Duration::from_secs(10))
             .expect("attach reached server");
+        let subscription_id = attach_thread
+            .join()
+            .expect("attach joins")
+            .expect("attach succeeds");
         client
-            .session_detach("s.detach.pending")
+            .session_detach_with_subscription("s.detach.pending", subscription_id)
             .expect("detach roundtrip");
         release_tx.send(()).expect("release server");
-        assert!(attach_thread.join().expect("attach joins").is_ok());
         assert!(event_rx.recv_timeout(Duration::from_millis(100)).is_err());
 
         drop(client);

@@ -1,8 +1,8 @@
 //! Tauri session commands. These are forwarders: they validate, translate
 //! to a protocol request, send it over the daemon pipe, and translate the
 //! reply. The app owns no PTY. Output arrives as `SessionEventEnvelope`
-//! frames and is fanned into the `Channel<SessionEvent>` the frontend
-//! already consumes — that Channel contract is unchanged.
+//! frames are delivered to the `Channel<SessionEvent>` the frontend already
+//! consumes — that Channel contract is unchanged.
 
 use std::sync::Arc;
 
@@ -10,7 +10,9 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
-use devboule_protocol::{ErrorCode, PermissionOutcome, Persistence, PersistenceKind, ResumeResult};
+use devboule_protocol::{
+    ErrorCode, PermissionOutcome, Persistence, PersistenceKind, ResumeResult, SubscriptionId,
+};
 
 use crate::client::DaemonBridge;
 
@@ -52,7 +54,7 @@ pub fn session_resume(
 
 /// IMPORTANT STARTUP ORDER: the client registers the Channel as the
 /// session's event handler *before* it sends `session_attach`, so replay
-/// frames that follow the Ok cannot land on a missing subscriber. Live
+/// frames that follow the attach reply cannot land on a missing subscriber. Live
 /// reader output on the daemon waits until that attach is registered
 /// under the stream mutex; there is no subscribe/snapshot race.
 #[tauri::command]
@@ -61,7 +63,7 @@ pub fn session_attach(
     id: String,
     from_cursor: Option<u64>,
     ch: Channel<SessionEvent>,
-) -> Result<(), CommandError> {
+) -> Result<SubscriptionId, CommandError> {
     require_session_id(&id)?;
     let sink = Arc::new(move |event| {
         let _ = ch.send(event);
@@ -73,9 +75,19 @@ pub fn session_attach(
 /// or scrollback. The daemon's idle-exit condition is clients==0 &&
 /// sessions==0, so a detached-but-alive session keeps the daemon up.
 #[tauri::command]
-pub fn session_detach(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
-    require_session_id(&id)?;
-    Ok(bridge.session_detach(&id)?)
+pub fn session_detach(
+    bridge: State<'_, DaemonBridge>,
+    subscription_id: SubscriptionId,
+) -> Result<(), CommandError> {
+    Ok(bridge.session_detach(subscription_id)?)
+}
+
+#[tauri::command]
+pub fn session_claim(
+    bridge: State<'_, DaemonBridge>,
+    subscription_id: SubscriptionId,
+) -> Result<(), CommandError> {
+    Ok(bridge.session_claim(subscription_id)?)
 }
 
 #[tauri::command]
@@ -92,18 +104,20 @@ pub fn session_presence(
 pub fn session_send(
     bridge: State<'_, DaemonBridge>,
     id: String,
+    subscription_id: SubscriptionId,
     text: String,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     require_write_size(&text)?;
-    bridge.ensure_session_attached(&id)?;
-    Ok(require_client(&bridge)?.session_send(&id, &text)?)
+    bridge.ensure_subscription_attached(subscription_id)?;
+    Ok(require_client(&bridge)?.session_send_with_subscription(&id, subscription_id, &text)?)
 }
 
 #[tauri::command]
 pub fn session_permission_respond(
     bridge: State<'_, DaemonBridge>,
     id: String,
+    subscription_id: SubscriptionId,
     request_id: String,
     outcome: PermissionOutcome,
 ) -> Result<(), CommandError> {
@@ -114,27 +128,44 @@ pub fn session_permission_respond(
             "Permission request id is required.",
         ));
     }
-    bridge.ensure_session_attached(&id)?;
-    Ok(require_client(&bridge)?.session_permission_respond(&id, &request_id, outcome)?)
+    bridge.ensure_subscription_attached(subscription_id)?;
+    Ok(
+        require_client(&bridge)?.session_permission_respond_with_subscription(
+            &id,
+            subscription_id,
+            &request_id,
+            outcome,
+        )?,
+    )
 }
 
 #[tauri::command]
 pub fn session_resize(
     bridge: State<'_, DaemonBridge>,
     id: String,
+    subscription_id: SubscriptionId,
     cols: u16,
     rows: u16,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    bridge.ensure_session_attached(&id)?;
-    Ok(require_client(&bridge)?.session_resize(&id, cols, rows)?)
+    bridge.ensure_subscription_attached(subscription_id)?;
+    Ok(require_client(&bridge)?.session_resize_with_subscription(
+        &id,
+        subscription_id,
+        cols,
+        rows,
+    )?)
 }
 
 #[tauri::command]
-pub fn session_interrupt(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
+pub fn session_interrupt(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    subscription_id: SubscriptionId,
+) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    bridge.ensure_session_attached(&id)?;
-    Ok(require_client(&bridge)?.session_interrupt(&id)?)
+    bridge.ensure_subscription_attached(subscription_id)?;
+    Ok(require_client(&bridge)?.session_interrupt_with_subscription(&id, subscription_id)?)
 }
 
 #[tauri::command]
@@ -145,15 +176,19 @@ pub fn session_set_model(
     effort: Option<String>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
-    bridge.ensure_session_attached(&id)?;
     Ok(require_client(&bridge)?.session_set_model(&id, model_id.as_deref(), effort.as_deref())?)
 }
 
 #[tauri::command]
-pub fn session_close(bridge: State<'_, DaemonBridge>, id: String) -> Result<(), CommandError> {
+pub fn session_close(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    subscription_id: SubscriptionId,
+) -> Result<(), CommandError> {
     require_session_id(&id)?;
+    bridge.session_close(&id, subscription_id)?;
     bridge.forget_generation(&id);
-    Ok(bridge.session_close(&id)?)
+    Ok(())
 }
 
 #[tauri::command]

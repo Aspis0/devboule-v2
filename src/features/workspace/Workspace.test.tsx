@@ -73,7 +73,11 @@ vi.mock("./AgentChatSurface", () => ({
     onPermissionResolved,
   }: {
     sessionId: string;
-    onPermissionRequest?: (sessionId: string, request: PermissionRequest) => void;
+    onPermissionRequest?: (
+      sessionId: string,
+      subscriptionId: number,
+      request: PermissionRequest,
+    ) => void;
     onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
   }) => (
     <div data-testid="agent-chat-surface">
@@ -82,7 +86,25 @@ vi.mock("./AgentChatSurface", () => ({
         type="button"
         data-testid="emit-permission-a"
         onClick={() =>
-          onPermissionRequest?.(sessionId, {
+          onPermissionRequest?.(sessionId, 41, {
+            type: "permission_request",
+            toolCallId: "tool-a",
+            title: "Run command",
+            command: "cmd.exe",
+            args: ["/c", "echo", "alpha"],
+            cwd: "C:\\alpha",
+            options: [
+              { optionId: "allow", name: "Allow once", kind: "allow_once" },
+              { optionId: "deny", name: "Deny", kind: "reject_once" },
+            ],
+          })
+        }
+      />
+      <button
+        type="button"
+        data-testid="emit-permission-a-renewed"
+        onClick={() =>
+          onPermissionRequest?.(sessionId, 42, {
             type: "permission_request",
             toolCallId: "tool-a",
             title: "Run command",
@@ -100,7 +122,7 @@ vi.mock("./AgentChatSurface", () => ({
         type="button"
         data-testid="emit-permission-b"
         onClick={() =>
-          onPermissionRequest?.(sessionId, {
+          onPermissionRequest?.(sessionId, 41, {
             type: "permission_request",
             toolCallId: "tool-b",
             title: "Run command",
@@ -123,7 +145,7 @@ vi.mock("./AgentChatSurface", () => ({
         type="button"
         data-testid="emit-permission-shared"
         onClick={() =>
-          onPermissionRequest?.(sessionId, {
+          onPermissionRequest?.(sessionId, 41, {
             type: "permission_request",
             toolCallId: "shared-tool",
             title: "Run command",
@@ -156,7 +178,6 @@ import {
 } from "../../lib/tauri";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JournalUsage, Project, Workspace as IpcWorkspace } from "../../types/ipc";
-import { useAppStore } from "../../store/appStore";
 import { Workspace, WorkspacePermissionCard } from "./Workspace";
 import { SIDE_PANEL_REGISTRY, type SidePanelEntry } from "./sidePanelRegistry";
 
@@ -260,7 +281,6 @@ describe("Workspace sessions", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
-    useAppStore.setState({ installedSkills: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.mocked(projectsList).mockResolvedValue([project]);
@@ -563,98 +583,6 @@ describe("Workspace sessions", () => {
 
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp");
     expect(container.querySelector("[data-testid=agent-chat-surface]")).not.toBeNull();
-  });
-
-  it("shows an empty Skills section when no skills are installed", async () => {
-    root = createRoot(container);
-    await act(async () => {
-      root.render(<Workspace />);
-    });
-
-    expect(container.textContent).toContain("Skills");
-    expect(container.textContent).toContain("No skills yet.");
-    expect(container.querySelector(".workspace-skills-note")).toBeNull();
-  });
-
-  it("shows an installed skill in the Skills section", async () => {
-    useAppStore.setState({
-      installedSkills: [
-        {
-          id: "repo-rhythm",
-          name: "Repo Rhythm",
-          author: "@lena-code",
-          description: "Turn a repository snapshot into a clear working plan.",
-        },
-      ],
-    });
-    root = createRoot(container);
-    await act(async () => {
-      root.render(<Workspace />);
-    });
-
-    expect(container.textContent).toContain("Skills");
-    expect(container.textContent).toContain("Repo Rhythm");
-    expect(container.querySelector(".workspace-skills-note")?.textContent).toBe(
-      "Session only — not saved to disk.",
-    );
-  });
-
-  it("keeps the Skills section visible while projects are still loading", async () => {
-    // A project load that never settles keeps projectsLoading true for the
-    // whole test, so whatever renders during loading is what we assert on.
-    vi.mocked(projectsList).mockReturnValue(new Promise(() => {}));
-    useAppStore.setState({
-      installedSkills: [
-        {
-          id: "repo-rhythm",
-          name: "Repo Rhythm",
-          author: "@lena-code",
-          description: "Turn a repository snapshot into a clear working plan.",
-        },
-      ],
-    });
-    root = createRoot(container);
-    await act(async () => {
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    expect(container.textContent).toContain("Loading projects…");
-    expect(container.textContent).toContain("Skills");
-    expect(container.textContent).toContain("Repo Rhythm");
-  });
-
-  it("keeps the Skills section visible when the project load has failed", async () => {
-    vi.mocked(projectsList).mockRejectedValueOnce(new Error("journal is unavailable"));
-    root = createRoot(container);
-    await act(async () => {
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "journal is unavailable",
-    );
-    expect(container.textContent).toContain("Skills");
-    expect(container.querySelector(".workspace-skills-empty")?.textContent).toBe("No skills yet.");
-  });
-
-  it("hides the Skills section while the History panel is open", async () => {
-    vi.mocked(journalUsage).mockResolvedValue(historyUsage);
-    root = createRoot(container);
-    await act(async () => {
-      root.render(<Workspace />);
-    });
-    await act(async () => undefined);
-
-    expect(container.textContent).toContain("Skills");
-    const historyToggle = container.querySelector<HTMLButtonElement>(".workspace-history-button");
-    if (!historyToggle) throw new Error("History toggle did not render");
-    await act(async () => historyToggle.click());
-    await act(async () => undefined);
-
-    expect(container.querySelector("#workspace-history-panel")).not.toBeNull();
-    expect(container.textContent).not.toContain("Skills");
   });
 
   it("shows a workspace creation error without falling back or creating a session", async () => {
@@ -993,6 +921,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={permissionRequest}
           capabilities={[]}
         />,
@@ -1009,6 +938,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={permissionRequest}
           capabilities={["typed_permissions"]}
         />,
@@ -1023,7 +953,12 @@ describe("Workspace sessions", () => {
     });
 
     expect(sessionPermissionRespond).toHaveBeenCalledTimes(1);
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-1", "tool-test", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "tool-test",
+      "allow_once",
+    );
   });
 
   it("shows the command, args, and cwd that will be spawned", async () => {
@@ -1032,6 +967,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={spawnPermissionRequest}
           capabilities={["typed_permissions"]}
         />,
@@ -1079,7 +1015,39 @@ describe("Workspace sessions", () => {
     if (next === null) throw new Error("second permission card did not render");
     expect(next.textContent).toContain("ping.exe");
     expect(next.textContent).toContain("C:\\beta");
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", "tool-a", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 41, "tool-a", "allow_once");
+  });
+
+  it("adopts the fresh subscription id when the same request is re-emitted after a remount", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    const emitRenewed = container.querySelector<HTMLButtonElement>(
+      "[data-testid=emit-permission-a-renewed]",
+    );
+    if (emitA === null || emitRenewed === null)
+      throw new Error("permission emitters did not render");
+    await act(async () => emitA.click());
+    await act(async () => emitRenewed.click());
+
+    const allow = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    if (allow === null) throw new Error("permission allow control did not render");
+    await act(async () => allow.click());
+    await act(async () => undefined);
+
+    // The first emit queued subscription 41; the surface then remounted and
+    // re-attached with subscription 42. The queued card must respond with 42.
+    expect(sessionPermissionRespond).toHaveBeenCalledTimes(1);
+    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 42, "tool-a", "allow_once");
   });
 
   it("quotes args that contain spaces so they are not split visually", async () => {
@@ -1088,6 +1056,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={{
             ...spawnPermissionRequest,
             args: ["hello world"],
@@ -1142,6 +1111,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={{
             ...spawnPermissionRequest,
             command: `${"echo ".padEnd(2100, "x")}${suffix}`,
@@ -1162,6 +1132,7 @@ describe("Workspace sessions", () => {
       root.render(
         <WorkspacePermissionCard
           sessionId="session-1"
+          subscriptionId={41}
           request={{
             ...spawnPermissionRequest,
             env: [{ name: "DB_GATE", value: "SAFE & echo PWNED" }],
@@ -1249,7 +1220,12 @@ describe("Workspace sessions", () => {
     await act(async () => undefined);
 
     expect(container.querySelector(".workspace-permission-card")).toBeNull();
-    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-a", "shared-tool", "allow_once");
+    expect(sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-a",
+      41,
+      "shared-tool",
+      "allow_once",
+    );
 
     await act(async () => tabB.click());
     await act(async () => undefined);

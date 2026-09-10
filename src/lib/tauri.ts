@@ -28,6 +28,8 @@ import type {
   RetentionPatch,
 } from "../types/ipc";
 
+export type SubscriptionId = number;
+
 /**
  * The typed argument shape of every Tauri command. Exported (type-only) so
  * call sites outside this module — e.g. injected presence seams — can reference
@@ -49,13 +51,19 @@ export type CommandArgs = {
   session_create: { workspaceId: Id | null; kind: SessionKind; provider?: string | null };
   session_resume: { sessionId: Id };
   session_attach: { id: Id; fromCursor: number | null; ch: SessionChannel };
-  session_send: { id: Id; text: string };
-  session_interrupt: { id: Id };
+  session_send: { id: Id; subscriptionId: SubscriptionId; text: string };
+  session_interrupt: { id: Id; subscriptionId: SubscriptionId };
+  session_claim: { subscriptionId: SubscriptionId };
   session_set_model: { id: Id; modelId?: string; effort?: string };
-  session_permission_respond: { id: Id; requestId: Id; outcome: PermissionOutcome };
+  session_permission_respond: {
+    id: Id;
+    subscriptionId: SubscriptionId;
+    requestId: Id;
+    outcome: PermissionOutcome;
+  };
   session_presence: { focusedSessionId: Id | null; appVisible: boolean };
-  session_resize: { id: Id; cols: number; rows: number };
-  session_detach: { id: Id };
+  session_resize: { id: Id; subscriptionId: SubscriptionId; cols: number; rows: number };
+  session_detach: { subscriptionId: SubscriptionId };
   session_close: { id: Id };
   journal_usage: undefined;
   journal_retention_get: undefined;
@@ -101,9 +109,10 @@ type CommandResults = {
   workspace_create: Workspace;
   session_create: Session;
   session_resume: ResumeResult;
-  session_attach: void;
+  session_attach: SubscriptionId;
   session_send: void;
   session_interrupt: void;
+  session_claim: void;
   session_set_model: void;
   session_permission_respond: void;
   session_presence: void;
@@ -168,13 +177,14 @@ export const COMMAND_ARG_KEYS = {
   session_create: ["workspaceId", "kind", "provider"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
-  session_send: ["id", "text"],
-  session_interrupt: ["id"],
+  session_send: ["id", "subscriptionId", "text"],
+  session_interrupt: ["id", "subscriptionId"],
+  session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
-  session_permission_respond: ["id", "requestId", "outcome"],
+  session_permission_respond: ["id", "subscriptionId", "requestId", "outcome"],
   session_presence: ["focusedSessionId", "appVisible"],
-  session_resize: ["id", "cols", "rows"],
-  session_detach: ["id"],
+  session_resize: ["id", "subscriptionId", "cols", "rows"],
+  session_detach: ["subscriptionId"],
   session_close: ["id"],
   journal_usage: [],
   journal_retention_get: [],
@@ -341,8 +351,12 @@ export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChan
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key must be `fromCursor`, not `from_cursor`.
   invokeTyped("session_attach", { id, fromCursor, ch });
-export const sessionSend = (id: Id, text: string) => invokeTyped("session_send", { id, text });
-export const sessionInterrupt = (id: Id) => invokeTyped("session_interrupt", { id });
+export const sessionSend = (id: Id, subscriptionId: SubscriptionId, text: string) =>
+  invokeTyped("session_send", { id, subscriptionId, text });
+export const sessionInterrupt = (id: Id, subscriptionId: SubscriptionId) =>
+  invokeTyped("session_interrupt", { id, subscriptionId });
+export const sessionClaim = (subscriptionId: SubscriptionId) =>
+  invokeTyped("session_claim", { subscriptionId });
 export const sessionSetModel = (id: Id, modelId?: string, effort?: string) =>
   // The response is void and is not a confirmation: the runtime confirms the
   // switch through a later session_manifest event on the attach channel.
@@ -351,12 +365,17 @@ export const sessionSetModel = (id: Id, modelId?: string, effort?: string) =>
     ...(modelId === undefined ? {} : { modelId }),
     ...(effort === undefined ? {} : { effort }),
   });
-export const sessionPermissionRespond = (id: Id, requestId: Id, outcome: PermissionOutcome) =>
+export const sessionPermissionRespond = (
+  id: Id,
+  subscriptionId: SubscriptionId,
+  requestId: Id,
+  outcome: PermissionOutcome,
+) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key here must be `requestId`, not `request_id` (the command has no
   // rename_all). Sending snake_case made the daemon reject the response with
   // "invalid args `requestId`" and the permission card hung on "Waiting on you".
-  invokeTyped("session_permission_respond", { id, requestId, outcome });
+  invokeTyped("session_permission_respond", { id, subscriptionId, requestId, outcome });
 /**
  * Reports which session this window is looking at and whether the app is
  * visible at all. The daemon owns the attention-suppression policy; this only
@@ -365,9 +384,10 @@ export const sessionPermissionRespond = (id: Id, requestId: Id, outcome: Permiss
  */
 export const sessionPresence = (focusedSessionId: Id | null, appVisible: boolean) =>
   invokeTyped("session_presence", { focusedSessionId, appVisible });
-export const sessionResize = (id: Id, cols: number, rows: number) =>
-  invokeTyped("session_resize", { id, cols, rows });
-export const sessionDetach = (id: Id) => invokeTyped("session_detach", { id });
+export const sessionResize = (id: Id, subscriptionId: SubscriptionId, cols: number, rows: number) =>
+  invokeTyped("session_resize", { id, subscriptionId, cols, rows });
+export const sessionDetach = (subscriptionId: SubscriptionId) =>
+  invokeTyped("session_detach", { subscriptionId });
 export const sessionClose = (id: Id) => invokeTyped("session_close", { id });
 export const journalUsage = () => invokeTyped("journal_usage");
 export const journalRetentionGet = () => invokeTyped("journal_retention_get");

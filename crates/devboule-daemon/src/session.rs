@@ -79,9 +79,11 @@ use devboule_protocol::CursorShape;
 use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, ErrorDetails,
     JournalRetention, JournalStats, OwnerId, PermissionOutcome, Project, RetentionPatch, Session,
-    SessionEvent, SessionKind, SessionState, SessionStateSnapshot, WireError, Workspace,
-    WorkspaceIsolation,
+    SessionEvent, SessionKind, SessionModel, SessionState, SessionStateSnapshot, WireError,
+    Workspace, WorkspaceIsolation,
 };
+#[cfg(test)]
+use std::sync::Barrier;
 
 use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
 use crate::paths::RuntimePaths;
@@ -418,13 +420,6 @@ fn unauthorized() -> WireError {
     )
 }
 
-fn not_attached() -> WireError {
-    WireError::new(
-        ErrorCode::InvalidRequest,
-        "Session is not attached to this client.",
-    )
-}
-
 fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireError> {
     let mut parts = session_id.splitn(3, '.');
     if parts.next() != Some("s") {
@@ -437,13 +432,9 @@ fn owner_from_session_id(session_id: &str, user: &str) -> Result<OwnerId, WireEr
     OwnerId::new(user, client).map_err(|_| unauthorized())
 }
 
-// The client token embedded in a session id is not the live-driver authority.
-// For input and control, same-user ownership plus exclusive attachment is the
-// real invariant: try_attach rejects a second connection and detach_conn
-// releases the only driver. The token was only a proxy for "same client" and
-// changes on an app restart, while the newly attached connection is the only
-// legitimate driver left. Full-owner checks remain only for operations that
-// deliberately retain client-token ownership semantics, currently detach.
+// The client token embedded in a session id authenticates the session owner;
+// resize authority is the explicit, transferable subscription claim instead.
+#[cfg(test)]
 fn check_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireError> {
     if entry.owner() == owner {
         Ok(())
@@ -460,19 +451,20 @@ fn check_user_owner(entry: &RegistryEntry, owner: &OwnerId) -> Result<(), WireEr
     }
 }
 
-fn check_attached(runtime: &SessionRuntime, conn: &ConnHandle) -> Result<(), WireError> {
-    let attached_conn_id = runtime
-        .stream
-        .lock()
-        .map_err(|_| internal("Session state is unavailable."))?
-        .attached
-        .as_ref()
-        .map(|attached| attached.conn_id);
-    if attached_conn_id == Some(conn.id) {
-        Ok(())
-    } else {
-        Err(not_attached())
-    }
+fn check_attached(
+    runtime: &SessionRuntime,
+    conn: &ConnHandle,
+    subscription_id: u64,
+) -> Result<(), WireError> {
+    runtime.is_observer(conn.id, subscription_id)
+}
+
+fn check_resize_owner(
+    runtime: &SessionRuntime,
+    conn: &ConnHandle,
+    subscription_id: u64,
+) -> Result<(), WireError> {
+    runtime.is_resize_owner(conn.id, subscription_id)
 }
 
 type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
@@ -1671,9 +1663,30 @@ impl SessionRegistry {
         Ok(metadata)
     }
 
+    #[cfg(test)]
     pub fn attach(
         &self,
         session_id: &str,
+        from_cursor: Option<Cursor>,
+        conn: &ConnHandle,
+        owner: &OwnerId,
+        typed_permissions: bool,
+    ) -> Result<(), WireError> {
+        self.attach_with_subscription(
+            session_id,
+            conn.id,
+            from_cursor,
+            conn,
+            owner,
+            typed_permissions,
+        )?;
+        self.claim_resize_with_subscription(session_id, conn.id, owner, conn)
+    }
+
+    pub fn attach_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: u64,
         from_cursor: Option<Cursor>,
         conn: &ConnHandle,
         owner: &OwnerId,
@@ -1686,7 +1699,12 @@ impl SessionRegistry {
             }
             Err(error) => return Err(error),
         };
-        let outcome = runtime.try_attach_with_replay(from_cursor, conn, typed_permissions)?;
+        let outcome = runtime.try_attach_with_subscription(
+            subscription_id,
+            from_cursor,
+            conn,
+            typed_permissions,
+        )?;
         // A terminal attach synchronises the screen (snapshot first, live
         // after). A transcript attach replays its journal. A live headless
         // agent needs the third contract: durable replay through a locked
@@ -1698,19 +1716,33 @@ impl SessionRegistry {
         } else {
             None
         };
-        conn.track_with_agent_replay(
-            session_id,
+        if let Err(error) = conn.track_with_subscription(
+            subscription_id,
             Arc::clone(&runtime),
             transcript,
             transcript_cursor,
             outcome.generation,
             outcome.live_agent_replay,
-        );
+        ) {
+            runtime.detach_subscription(conn.id, subscription_id);
+            return Err(error);
+        }
         // The journal writer records asynchronous failures in shared state;
         // attach must import that fact before returning even when the PTY is
         // otherwise quiet and no status request or later output occurs.
         runtime.refresh_journal_degradation();
         Ok(())
+    }
+
+    pub fn claim_resize_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: u64,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        let runtime = self.runtime_for_user(session_id, owner)?;
+        runtime.claim_resize(conn.id, subscription_id)
     }
 
     pub fn resume(
@@ -1764,15 +1796,17 @@ impl SessionRegistry {
             match old_entry {
                 RegistryEntry::Live(session) => {
                     session.runtime.detach_if_conn(conn.id);
+                    session.runtime.notify_generation_replaced(conn.id);
                     teardown_session_for_resume(session);
                 }
                 RegistryEntry::Transcript(session) => {
                     session.runtime.detach_if_conn(conn.id);
+                    session.runtime.notify_generation_replaced(conn.id);
                     journal.unpin(session_id);
                 }
             }
         }
-        conn.untrack(session_id);
+        conn.untrack_session(session_id);
 
         if !had_live_slot && !state.session_started() {
             return Err(WireError::new(
@@ -1900,24 +1934,50 @@ impl SessionRegistry {
         Ok(runtime)
     }
 
+    #[cfg(test)]
     pub fn detach(
         &self,
         session_id: &str,
         conn: &ConnHandle,
         owner: &OwnerId,
     ) -> Result<(), WireError> {
-        let runtime = self.runtime_for_owner(session_id, owner)?;
-        runtime.detach_if_conn(conn.id);
-        conn.untrack(session_id);
+        self.detach_with_subscription(session_id, conn.id, conn, owner)
+    }
+
+    pub fn detach_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: u64,
+        conn: &ConnHandle,
+        owner: &OwnerId,
+    ) -> Result<(), WireError> {
+        let runtime = self.runtime_for_user(session_id, owner)?;
+        runtime.detach_subscription(conn.id, subscription_id);
+        conn.untrack_subscription(subscription_id);
         self.drop_transcript_if_idle(session_id);
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn permission_respond(
         &self,
         session_id: &str,
         request_id: &str,
         outcome: PermissionOutcome,
+        conn: &ConnHandle,
+        owner: &OwnerId,
+    ) -> Result<(), WireError> {
+        self.permission_respond_with_subscription(
+            session_id, request_id, outcome, conn.id, conn, owner,
+        )
+    }
+
+    pub fn permission_respond_with_subscription(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        outcome: PermissionOutcome,
+        subscription_id: u64,
         conn: &ConnHandle,
         owner: &OwnerId,
     ) -> Result<(), WireError> {
@@ -1930,7 +1990,7 @@ impl SessionRegistry {
             ));
         }
         let runtime = self.runtime_for_user(session_id, owner)?;
-        check_attached(&runtime, conn)?;
+        check_attached(&runtime, conn, subscription_id)?;
         let broker = runtime.permission_broker().ok_or_else(|| {
             WireError::new(
                 ErrorCode::InvalidRequest,
@@ -1953,12 +2013,74 @@ impl SessionRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let mut killer = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let session = map.get_mut(session_id).ok_or_else(not_found)?;
+            check_user_owner(session, owner)?;
+            let session = session.as_live_mut().ok_or_else(process_gone)?;
+            session.preserve_on_exit.store(true, Ordering::SeqCst);
+            session.killer.clone_killer()
+        };
+        killer.kill();
+        Ok(())
+    }
+
+    pub fn stop_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: u64,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let (mut killer, runtime) = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let session = map.get_mut(session_id).ok_or_else(not_found)?;
+            check_user_owner(session, owner)?;
+            let session = session.as_live_mut().ok_or_else(process_gone)?;
+            (session.killer.clone_killer(), Arc::clone(&session.runtime))
+        };
+        check_attached(&runtime, conn, subscription_id)?;
+        {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            if let Some(session) = map.get_mut(session_id).and_then(RegistryEntry::as_live_mut) {
+                session.preserve_on_exit.store(true, Ordering::SeqCst);
+            }
+        }
+        killer.kill();
+        Ok(())
+    }
+
     /// Drop every subscription this connection holds. The processes stay.
     pub fn detach_conn(&self, conn: &ConnHandle) {
         let ids = conn.take_attached_ids();
-        for id in ids {
-            self.detach_runtime(&id, conn.id);
-            self.drop_transcript_if_idle(&id);
+        for (subscription_id, session_id) in ids {
+            self.detach_runtime(&session_id, conn.id, subscription_id);
+            self.drop_transcript_if_idle(&session_id);
+        }
+    }
+
+    pub(crate) fn subscription_event_sent(&self, session_id: &str) {
+        self.drop_transcript_if_idle(session_id);
+    }
+
+    fn detach_runtime(&self, session_id: &str, conn_id: u64, subscription_id: u64) {
+        if let Ok(runtime) = self.runtime(session_id) {
+            runtime.detach_subscription(conn_id, subscription_id);
         }
     }
 
@@ -1972,7 +2094,7 @@ impl SessionRegistry {
                     .runtime
                     .stream
                     .lock()
-                    .map(|stream| stream.attached.is_none())
+                    .map(|stream| stream.observers.is_empty())
                     .unwrap_or(true)
             })
         });
@@ -1981,12 +2103,6 @@ impl SessionRegistry {
             if let Some(journal) = &self.journal {
                 journal.unpin(session_id);
             }
-        }
-    }
-
-    fn detach_runtime(&self, session_id: &str, conn_id: u64) {
-        if let Ok(runtime) = self.runtime(session_id) {
-            runtime.detach_if_conn(conn_id);
         }
     }
 
@@ -2048,31 +2164,19 @@ impl SessionRegistry {
         }
     }
 
-    pub fn stop(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
-        validate_session_id(session_id)
-            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let mut killer = {
-            let mut map = self
-                .inner
-                .lock()
-                .map_err(|_| internal("Session state is unavailable."))?;
-            let session = map.get_mut(session_id).ok_or_else(not_found)?;
-            check_user_owner(session, owner)?;
-            let session = session.as_live_mut().ok_or_else(process_gone)?;
-            session.preserve_on_exit.store(true, Ordering::SeqCst);
-            session.killer.clone_killer()
-        };
-        killer.kill();
-        Ok(())
-    }
-
     /// Interrupt the current turn of an agent session without killing the
     /// process. Unlike `stop`, the registry entry stays live and later
     /// turns keep working.
-    pub fn interrupt(&self, session_id: &str, owner: &OwnerId) -> Result<(), WireError> {
+    pub fn interrupt_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: u64,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let mut killer = {
+        let (mut killer, runtime) = {
             let mut map = self
                 .inner
                 .lock()
@@ -2086,8 +2190,9 @@ impl SessionRegistry {
                     "Only agent sessions support interrupting a turn.",
                 ));
             }
-            session.killer.clone_killer()
+            (session.killer.clone_killer(), Arc::clone(&session.runtime))
         };
+        check_attached(&runtime, conn, subscription_id)?;
         killer.interrupt();
         Ok(())
     }
@@ -2107,7 +2212,7 @@ impl SessionRegistry {
                 "A model or effort is required.",
             ));
         }
-        let switcher = {
+        let (switcher, kind, runtime) = {
             let mut map = self
                 .inner
                 .lock()
@@ -2121,7 +2226,7 @@ impl SessionRegistry {
                     "Only agent sessions support switching the model or effort.",
                 ));
             }
-            session
+            let switcher = session
                 .switcher
                 .as_ref()
                 .map(|switcher| switcher.clone_switcher())
@@ -2130,14 +2235,97 @@ impl SessionRegistry {
                         ErrorCode::InvalidRequest,
                         "This provider does not support switching the model or effort.",
                     )
-                })?
+                })?;
+            (
+                switcher,
+                session.metadata.kind.clone(),
+                Arc::clone(&session.runtime),
+            )
         };
+        if kind == SessionKind::Claude {
+            Self::validate_claude_effort(
+                runtime.session_manifest().as_ref(),
+                runtime.claude_catalog_state(),
+                model_id,
+                effort,
+            )?;
+        }
         switcher.set_model(model_id, effort)
     }
 
+    fn validate_claude_effort(
+        manifest: Option<&SessionEvent>,
+        catalog_state: crate::claude_catalog::ClaudeCatalogState,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<(), WireError> {
+        if model_id.is_none() && effort.is_none() {
+            return Ok(());
+        }
+        if catalog_state == crate::claude_catalog::ClaudeCatalogState::Provisional {
+            return Ok(());
+        }
+        let Some(SessionEvent::SessionManifest {
+            current_model_id,
+            models,
+            ..
+        }) = manifest
+        else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Claude has not published its model catalog yet.",
+            ));
+        };
+        let model_id = model_id
+            .filter(|model_id| !model_id.is_empty())
+            .or(current_model_id.as_deref())
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Claude has not reported a current model yet.",
+                )
+            })?;
+        let model = models
+            .iter()
+            .find(|model| crate::claude_catalog::model_ids_match(&model.model_id, model_id))
+            .ok_or_else(|| {
+                WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Claude model '{model_id}' is not in the current catalog."),
+                )
+            })?;
+        let Some(effort) = effort else {
+            return Ok(());
+        };
+        let valid = model
+            .efforts
+            .as_ref()
+            .is_some_and(|efforts| efforts.iter().any(|entry| entry.id == effort));
+        if valid {
+            Ok(())
+        } else {
+            Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("Effort '{effort}' is not supported by Claude model '{model_id}'."),
+            ))
+        }
+    }
+
+    #[cfg(test)]
     pub fn send(
         &self,
         session_id: &str,
+        text: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        self.send_with_subscription(session_id, conn.id, text, owner, conn)
+    }
+
+    pub fn send_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: u64,
         text: &str,
         owner: &OwnerId,
         conn: &ConnHandle,
@@ -2164,25 +2352,15 @@ impl SessionRegistry {
                 session.metadata.kind.is_agent(),
             )
         };
-        check_attached(&runtime, conn)?;
+        check_attached(&runtime, conn, subscription_id)?;
         let agent_runtime = is_agent.then_some(runtime);
-        if !text.is_empty() {
-            if let Some(runtime) = agent_runtime.as_ref() {
-                // Publish before writing: the provider cannot reply before it
-                // receives this prompt. If the write fails, the error event
-                // below makes the transcript honest instead of leaving a
-                // silent prompt that never reached the child.
-                // Recording is also the send precondition: a poisoned stream
-                // or closed output cannot accept the corresponding transcript
-                // event, so do not send an unrecordable prompt to the child.
-                if !runtime.publish_agent_user_message(text.to_string()) {
-                    return Err(internal("Agent input could not be recorded."));
-                }
-                if runtime.clear_attention() {
-                    self.notify_session_transition(owner, session_id);
-                }
+        if let Some(runtime) = agent_runtime.as_ref() {
+            if !text.is_empty() && !runtime.can_publish_agent_user_message() {
+                return Err(internal("Agent input could not be recorded."));
             }
         }
+        // Keep the complete write and its transcript event under this lock so
+        // the journal preserves the same order the process receives.
         let mut writer = match writer.lock() {
             Ok(writer) => writer,
             Err(_) => {
@@ -2216,6 +2394,16 @@ impl SessionRegistry {
                 runtime.publish_agent_error(error.message.clone());
             }
             return Err(error);
+        }
+        if !text.is_empty() {
+            if let Some(runtime) = agent_runtime.as_ref() {
+                if !runtime.publish_agent_user_message(text.to_string()) {
+                    return Err(internal("Agent input could not be recorded."));
+                }
+                if runtime.clear_attention() {
+                    self.notify_session_transition(owner, session_id);
+                }
+            }
         }
         drop(writer);
         Ok(())
@@ -2257,9 +2445,22 @@ impl SessionRegistry {
         runtime.accept_agent_report(report)
     }
 
+    #[cfg(test)]
     pub fn resize(
         &self,
         session_id: &str,
+        cols: u16,
+        rows: u16,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+    ) -> Result<(), WireError> {
+        self.resize_with_subscription(session_id, conn.id, cols, rows, owner, conn)
+    }
+
+    pub fn resize_with_subscription(
+        &self,
+        session_id: &str,
+        subscription_id: u64,
         cols: u16,
         rows: u16,
         owner: &OwnerId,
@@ -2277,7 +2478,7 @@ impl SessionRegistry {
             let session = entry.as_live().ok_or_else(process_gone)?;
             (Arc::clone(&session.runtime), session.master.clone())
         };
-        check_attached(&runtime, conn)?;
+        check_resize_owner(&runtime, conn, subscription_id)?;
         // Resize is serialized with emulator parsing under the SAME state
         // lock as publish_output, in one defined order: emulator dimensions
         // first, then the PTY. A snapshot therefore sees the resize as wholly
@@ -2369,6 +2570,28 @@ impl SessionRegistry {
             .unwrap_or(true)
     }
 
+    pub(crate) fn publish_claude_catalog(&self, models: Vec<SessionModel>) {
+        let runtimes = self
+            .inner
+            .lock()
+            .map(|map| {
+                map.values()
+                    .filter_map(|entry| {
+                        let session = entry.as_live()?;
+                        (session.metadata.kind == SessionKind::Claude)
+                            .then(|| Arc::clone(&session.runtime))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for runtime in runtimes {
+            let manifest = runtime.store_claude_catalog(
+                crate::claude_catalog::manifest_with_current(models.clone(), None),
+            );
+            runtime.publish_agent_event(manifest, None);
+        }
+    }
+
     fn runtime(&self, session_id: &str) -> Result<Arc<SessionRuntime>, WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
@@ -2377,22 +2600,6 @@ impl SessionRegistry {
             .lock()
             .map_err(|_| internal("Session state is unavailable."))?;
         let session = map.get(session_id).ok_or_else(not_found)?;
-        Ok(session.runtime())
-    }
-
-    fn runtime_for_owner(
-        &self,
-        session_id: &str,
-        owner: &OwnerId,
-    ) -> Result<Arc<SessionRuntime>, WireError> {
-        validate_session_id(session_id)
-            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
-        let map = self
-            .inner
-            .lock()
-            .map_err(|_| internal("Session state is unavailable."))?;
-        let session = map.get(session_id).ok_or_else(not_found)?;
-        check_owner(session, owner)?;
         Ok(session.runtime())
     }
 
@@ -2682,6 +2889,13 @@ fn start_spawned_session(
     }
     if let Some(generation) = generation {
         runtime.set_generation(generation);
+    }
+    if metadata.kind == SessionKind::Claude {
+        let catalog = state.claude_models();
+        runtime.store_claude_manifest(
+            crate::claude_catalog::initial_manifest(catalog.models),
+            catalog.state,
+        );
     }
     if let Some(handle) = os_handle {
         runtime.install_os_handle(handle);
@@ -3847,8 +4061,14 @@ mod tests {
         for _ in 0..200 {
             runtime.publish_output(&payload);
             let stream = runtime.stream.lock().expect("stream lock");
-            assert!(stream.pending_bytes <= PENDING_OUTPUT_BUDGET_BYTES);
-            assert!(stream.pending_frames <= PENDING_OUTPUT_BUDGET_FRAMES);
+            assert!(stream
+                .observers
+                .values()
+                .all(|attachment| attachment.pending_bytes <= PENDING_OUTPUT_BUDGET_BYTES));
+            assert!(stream
+                .observers
+                .values()
+                .all(|attachment| attachment.pending_frames <= PENDING_OUTPUT_BUDGET_FRAMES));
         }
     }
 
@@ -3910,20 +4130,59 @@ mod tests {
     }
 
     #[test]
-    fn attach_rejects_a_second_connection() {
-        let runtime = SessionRuntime::new();
+    fn two_observers_receive_the_same_output() {
+        let runtime = Arc::new(SessionRuntime::new());
         let first = ConnHandle::new(1);
         let second = ConnHandle::new(2);
+        let first_outcome = runtime
+            .try_attach_with_subscription(101, None, &first, false)
+            .expect("first observer");
+        first
+            .track_with_subscription(
+                101,
+                Arc::clone(&runtime),
+                false,
+                None,
+                first_outcome.generation,
+                first_outcome.live_agent_replay,
+            )
+            .expect("first subscription");
+        let second_outcome = runtime
+            .try_attach_with_subscription(202, None, &second, false)
+            .expect("second observer");
+        second
+            .track_with_subscription(
+                202,
+                Arc::clone(&runtime),
+                false,
+                None,
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
         runtime
-            .try_attach_with_replay(None, &first, false)
-            .expect("first");
-        let err = runtime
-            .try_attach_with_replay(None, &second, false)
-            .err()
-            .expect("second connection must be rejected");
-        assert_eq!(err.code, ErrorCode::InvalidRequest);
-        assert!(err.message.contains("already attached"));
-        assert_eq!(runtime.attached_conn_id(), Some(1));
+            .claim_resize(first.id, 101)
+            .expect("first observer claims resize control");
+        let _ = drain(&first);
+        let _ = drain(&second);
+
+        runtime.publish_output("shared");
+
+        assert_eq!(
+            drain(&first),
+            vec![SessionEvent::Output {
+                seq: 1,
+                data: "shared".to_string(),
+            }]
+        );
+        assert_eq!(
+            drain(&second),
+            vec![SessionEvent::Output {
+                seq: 1,
+                data: "shared".to_string(),
+            }]
+        );
+        assert_eq!(runtime.resize_owner_conn_id(), Some(1));
     }
 
     #[test]
@@ -3943,7 +4202,234 @@ mod tests {
                 false,
             )
             .expect("reattach");
-        assert_eq!(runtime.attached_conn_id(), Some(7));
+        assert_eq!(runtime.resize_owner_conn_id(), Some(7));
+    }
+
+    #[test]
+    fn detaching_one_observer_leaves_the_other_live() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let first = ConnHandle::new(3);
+        let second = ConnHandle::new(4);
+        let first_outcome = runtime
+            .try_attach_with_subscription(301, None, &first, false)
+            .expect("first observer");
+        first
+            .track_with_subscription(
+                301,
+                Arc::clone(&runtime),
+                false,
+                None,
+                first_outcome.generation,
+                first_outcome.live_agent_replay,
+            )
+            .expect("first subscription");
+        let second_outcome = runtime
+            .try_attach_with_subscription(402, None, &second, false)
+            .expect("second observer");
+        second
+            .track_with_subscription(
+                402,
+                Arc::clone(&runtime),
+                false,
+                None,
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
+        let _ = drain(&first);
+        let _ = drain(&second);
+
+        runtime.detach_subscription(first.id, 301);
+        first.untrack_subscription(301);
+        runtime.publish_output("still-live");
+
+        assert!(drain(&first).is_empty());
+        assert_eq!(
+            drain(&second),
+            vec![SessionEvent::Output {
+                seq: 1,
+                data: "still-live".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn typed_permission_request_reaches_a_late_observer() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.stream.lock().unwrap().screen = None;
+        let first = ConnHandle::new(5);
+        let first_outcome = runtime
+            .try_attach_with_subscription(501, None, &first, true)
+            .expect("first observer");
+        first
+            .track_with_subscription(
+                501,
+                Arc::clone(&runtime),
+                false,
+                None,
+                first_outcome.generation,
+                first_outcome.live_agent_replay,
+            )
+            .expect("first subscription");
+
+        runtime.publish_agent_event(permission_attention_event(), None);
+        let first_events = first.pull_events();
+        assert!(first_events.iter().any(|event| matches!(
+            event.envelope.event,
+            SessionEvent::PermissionRequest { ref tool_call_id, .. } if tool_call_id == "tool-attention"
+        )));
+        for event in &first_events {
+            first.event_sent(event);
+        }
+
+        let second = ConnHandle::new(6);
+        let second_outcome = runtime
+            .try_attach_with_subscription(602, None, &second, true)
+            .expect("late observer");
+        second
+            .track_with_subscription(
+                602,
+                Arc::clone(&runtime),
+                false,
+                None,
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
+        let second_events = second.pull_events();
+        assert!(second_events.iter().any(|event| matches!(
+            event.envelope.event,
+            SessionEvent::PermissionRequest { ref tool_call_id, .. } if tool_call_id == "tool-attention"
+        )));
+    }
+
+    #[test]
+    fn detached_permission_request_reaches_a_late_observer_once() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.stream.lock().unwrap().screen = None;
+        let first = ConnHandle::new(7);
+        runtime
+            .try_attach_with_subscription(701, None, &first, true)
+            .expect("first observer");
+
+        runtime.publish_agent_event(permission_attention_event(), None);
+        runtime.detach_subscription(first.id, 701);
+
+        let second = ConnHandle::new(8);
+        let second_outcome = runtime
+            .try_attach_with_subscription(802, None, &second, true)
+            .expect("late observer");
+        second
+            .track_with_subscription(
+                802,
+                Arc::clone(&runtime),
+                false,
+                None,
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
+        let events = second.pull_events();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event.envelope.event,
+                    SessionEvent::PermissionRequest { ref tool_call_id, .. }
+                        if tool_call_id == "tool-attention"
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn last_detach_keeps_runtime_and_allows_later_attach() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-last-detach", "process-last-detach");
+        let session_id = "s.last-detach.1";
+        insert_live(&registry, session_id, owner.clone());
+        let runtime = registry.runtime(session_id).expect("runtime");
+        let first = ConnHandle::new(5);
+        registry
+            .attach_with_subscription(session_id, 501, None, &first, &owner, false)
+            .expect("first observer");
+        let _ = drain(&first);
+
+        registry
+            .detach_with_subscription(session_id, 501, &first, &owner)
+            .expect("first observer detaches");
+        assert!(!runtime.process_exited());
+        assert!(registry.runtime(session_id).is_ok());
+        assert!(runtime.stream.lock().expect("stream").observers.is_empty());
+
+        let third = ConnHandle::new(6);
+        registry
+            .attach_with_subscription(session_id, 603, None, &third, &owner, false)
+            .expect("later observer");
+        let _ = drain(&third);
+        runtime.publish_output("after-detach");
+
+        assert_eq!(
+            drain(&third),
+            vec![SessionEvent::Output {
+                seq: 1,
+                data: "after-detach".to_string(),
+            }]
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn last_transcript_detach_removes_idle_registry_entry() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-transcript-idle", "process-transcript-idle");
+        let session_id = "s.transcript-idle.1";
+        journal
+            .upsert_blocking(ended_record(session_id, &owner.user))
+            .expect("journal row");
+        insert_transcript(&registry, session_id, owner.clone());
+
+        let conn = ConnHandle::new(7);
+        registry
+            .attach_with_subscription(session_id, 701, None, &conn, &owner, false)
+            .expect("transcript observer attaches");
+        registry
+            .detach_with_subscription(session_id, 701, &conn, &owner)
+            .expect("transcript observer detaches");
+
+        assert!(registry.runtime(session_id).is_err());
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn delivered_transcript_exit_removes_the_idle_registry_entry() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-transcript-exit", "process-transcript-exit");
+        let session_id = "s.transcript-exit.1";
+        journal
+            .upsert_blocking(ended_record(session_id, &owner.user))
+            .expect("journal row");
+        insert_transcript(&registry, session_id, owner.clone());
+
+        let conn = ConnHandle::new(8);
+        registry
+            .attach_with_subscription(session_id, 801, None, &conn, &owner, false)
+            .expect("transcript observer attaches");
+        let events = conn.pull_events();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.envelope.event, SessionEvent::Exit { .. })));
+        for event in &events {
+            conn.event_sent(event);
+        }
+        registry.subscription_event_sent(session_id);
+
+        assert!(registry.runtime(session_id).is_err());
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -3973,7 +4459,7 @@ mod tests {
             .try_attach_with_replay(None, &conn, false)
             .expect("attach");
         runtime.detach_if_conn(3);
-        assert_eq!(runtime.attached_conn_id(), None);
+        assert_eq!(runtime.resize_owner_conn_id(), None);
     }
 
     #[test]
@@ -4777,10 +5263,17 @@ mod tests {
             peer_session_id: None,
             created_at_ms: 1,
         };
-        let runtime = Arc::new(SessionRuntime::with_journal(
+        let runtime = SessionRuntime::from_replay(
             id.to_string(),
             registry.journal.clone(),
-        ));
+            crate::journal::Replay {
+                generation: 1,
+                last_seq: 0,
+                integrity: TranscriptIntegrity::Complete,
+                event_seqs: Vec::new(),
+                events: Vec::new(),
+            },
+        );
         registry.inner.lock().expect("registry").insert(
             id.to_string(),
             RegistryEntry::Transcript(TranscriptSession {
@@ -4797,6 +5290,23 @@ mod tests {
         fn kill(&mut self) {}
         fn clone_killer(&self) -> Box<dyn SessionKiller> {
             Box::new(NoopKiller)
+        }
+    }
+
+    struct RecordingSwitcher(Arc<AtomicU64>);
+
+    impl ModelSwitcher for RecordingSwitcher {
+        fn set_model(
+            &self,
+            _model_id: Option<&str>,
+            _effort: Option<&str>,
+        ) -> Result<(), WireError> {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        }
+
+        fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
+            Box::new(Self(Arc::clone(&self.0)))
         }
     }
 
@@ -4824,6 +5334,32 @@ mod tests {
                 .expect("recording writer lock")
                 .extend_from_slice(bytes);
             Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct BytewiseRecordingWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        first_write: Arc<Barrier>,
+        first_write_seen: AtomicBool,
+    }
+
+    impl Write for BytewiseRecordingWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let Some(byte) = bytes.first() else {
+                return Ok(0);
+            };
+            self.bytes
+                .lock()
+                .expect("recording writer lock")
+                .push(*byte);
+            if !self.first_write_seen.swap(true, Ordering::AcqRel) {
+                self.first_write.wait();
+            }
+            Ok(1)
         }
 
         fn flush(&mut self) -> std::io::Result<()> {
@@ -4909,6 +5445,120 @@ mod tests {
         conn
     }
 
+    #[test]
+    fn multiple_observers_can_send_complete_inputs_concurrently() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-multi-writer", "process-multi-writer");
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let session_id = "s.multi-writer.1";
+        let first_text = "first observer input\n".repeat(32);
+        let second_text = "second observer input\n".repeat(32);
+        let start = Arc::new(Barrier::new(3));
+        let first_write = Arc::new(Barrier::new(2));
+        insert_live_agent_with_writer(
+            &registry,
+            session_id,
+            owner.clone(),
+            Box::new(BytewiseRecordingWriter {
+                bytes: Arc::clone(&written),
+                first_write: Arc::clone(&first_write),
+                first_write_seen: AtomicBool::new(false),
+            }),
+        );
+        let first = ConnHandle::new(1);
+        let second = ConnHandle::new(2);
+        registry
+            .attach_with_subscription(session_id, 101, None, &first, &owner, true)
+            .expect("first observer attaches");
+        registry
+            .attach_with_subscription(session_id, 202, None, &second, &owner, true)
+            .expect("second observer attaches");
+
+        let first_registry = registry.clone();
+        let first_start = Arc::clone(&start);
+        let first_owner = owner.clone();
+        let first_session_id = session_id.to_string();
+        let first_handle = std::thread::spawn(move || {
+            first_start.wait();
+            first_registry
+                .send_with_subscription(&first_session_id, 101, &first_text, &first_owner, &first)
+                .expect("first input");
+            first_text
+        });
+        let second_registry = registry.clone();
+        let second_start = Arc::clone(&start);
+        let second_owner = owner.clone();
+        let second_session_id = session_id.to_string();
+        let second_handle = std::thread::spawn(move || {
+            second_start.wait();
+            second_registry
+                .send_with_subscription(
+                    &second_session_id,
+                    202,
+                    &second_text,
+                    &second_owner,
+                    &second,
+                )
+                .expect("second input");
+            second_text
+        });
+        start.wait();
+        first_write.wait();
+        let first_text = first_handle.join().expect("first sender joins");
+        let second_text = second_handle.join().expect("second sender joins");
+        let received = written.lock().expect("writer").clone();
+        let first_then_second = [first_text.as_bytes(), second_text.as_bytes()].concat();
+        let second_then_first = [second_text.as_bytes(), first_text.as_bytes()].concat();
+        assert!(
+            received == first_then_second || received == second_then_first,
+            "concurrent inputs were interleaved"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_resize_owner_can_resize_terminal() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-resize-owner", "process-resize-owner");
+        let session_id = "s.resize-owner.1";
+        insert_live(&registry, session_id, owner.clone());
+        let first = ConnHandle::new(1);
+        let second = ConnHandle::new(2);
+        registry
+            .attach_with_subscription(session_id, 101, None, &first, &owner, false)
+            .expect("first observer attaches");
+        registry
+            .attach_with_subscription(session_id, 202, None, &second, &owner, false)
+            .expect("second observer attaches");
+        registry
+            .claim_resize_with_subscription(session_id, 101, &owner, &first)
+            .expect("first observer claims resize control");
+
+        let error = registry
+            .resize_with_subscription(session_id, 202, 100, 30, &owner, &second)
+            .expect_err("non-owner resize must be rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("resize control"));
+        registry
+            .resize_with_subscription(session_id, 101, 100, 30, &owner, &first)
+            .expect("resize owner can resize");
+        let runtime = registry.runtime(session_id).expect("runtime");
+        assert_eq!(
+            runtime
+                .stream
+                .lock()
+                .expect("stream")
+                .screen
+                .as_ref()
+                .expect("screen")
+                .dimensions(),
+            (100, 30)
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn insert_live(registry: &SessionRegistry, id: &str, owner: OwnerId) {
         let metadata = Session {
             id: id.to_string(),
@@ -4968,8 +5618,9 @@ mod tests {
             .stream
             .lock()
             .expect("stream")
-            .pending
-            .iter()
+            .observers
+            .values()
+            .flat_map(|attachment| attachment.pending.iter())
             .any(|item| matches!(
                 item,
                 PendingItem::Agent {
@@ -5204,7 +5855,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_agent_send_replays_prompt_then_error() {
+    fn failed_agent_send_replays_error_without_prompt() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-agent", "process-agent");
         let runtime = insert_live_agent(&registry, "agent-send-failure", owner.clone());
@@ -5246,19 +5897,19 @@ mod tests {
             .into_iter()
             .map(|event| event.envelope.event)
             .collect::<Vec<_>>();
-        let user_index = live
-            .iter()
-            .position(|event| {
-                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
-            })
-            .expect("failed send prompt must reach the live client");
+        assert!(!live.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
+        }));
         let error_index = live
             .iter()
             .position(|event| {
                 matches!(event, SessionEvent::AgentError { message } if message.contains("forced writer failure"))
             })
             .expect("failed send error must reach the live client");
-        assert!(user_index < error_index, "live failed send order: {live:?}");
+        assert!(
+            error_index < live.len(),
+            "live failed send events: {live:?}"
+        );
 
         runtime.detach_if_conn(conn.id);
         conn.untrack("agent-send-failure");
@@ -5279,12 +5930,9 @@ mod tests {
             .into_iter()
             .map(|event| event.envelope.event)
             .collect::<Vec<_>>();
-        let user_index = replayed
-            .iter()
-            .position(|event| {
-                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
-            })
-            .expect("failed send prompt must replay");
+        assert!(!replayed.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt that cannot be sent")
+        }));
         let error_index = replayed
             .iter()
             .position(|event| {
@@ -5292,15 +5940,15 @@ mod tests {
             })
             .expect("failed send error must replay");
         assert!(
-            user_index < error_index,
-            "replayed failed send order: {replayed:?}"
+            error_index < replayed.len(),
+            "replayed failed send events: {replayed:?}"
         );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn poisoned_agent_writer_publishes_prompt_then_error() {
+    fn poisoned_agent_writer_publishes_error_without_prompt() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-poisoned-writer", "process-agent");
         let runtime = insert_live_agent(&registry, "agent-poisoned-writer", owner.clone());
@@ -5344,12 +5992,9 @@ mod tests {
             .into_iter()
             .map(|event| event.envelope.event)
             .collect::<Vec<_>>();
-        let user_index = live
-            .iter()
-            .position(|event| {
-                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
-            })
-            .expect("poisoned writer prompt must reach the client");
+        assert!(!live.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
+        }));
         let error_index = live
             .iter()
             .position(|event| {
@@ -5357,20 +6002,17 @@ mod tests {
             })
             .expect("poisoned writer error must reach the client");
         assert!(
-            user_index < error_index,
-            "live poisoned writer order: {live:?}"
+            error_index < live.len(),
+            "live poisoned writer events: {live:?}"
         );
 
         let replay = journal
             .replay("agent-poisoned-writer", 0)
             .expect("replay poisoned writer");
         let replayed = replay.events;
-        let user_index = replayed
-            .iter()
-            .position(|event| {
-                matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
-            })
-            .expect("poisoned writer prompt must replay");
+        assert!(!replayed.iter().any(|event| {
+            matches!(event, SessionEvent::AgentUserMessage { text, .. } if text == "prompt with poisoned writer")
+        }));
         let error_index = replayed
             .iter()
             .position(|event| {
@@ -5378,8 +6020,8 @@ mod tests {
             })
             .expect("poisoned writer error must replay");
         assert!(
-            user_index < error_index,
-            "replayed poisoned writer order: {replayed:?}"
+            error_index < replayed.len(),
+            "replayed poisoned writer: {replayed:?}"
         );
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
@@ -6058,6 +6700,105 @@ mod tests {
             Some(crate::provider_catalog::ProviderOrigin::NpxWrapper),
         )
         .expect("explicit npx is the consent path");
+    }
+
+    #[test]
+    fn invalid_claude_effort_is_rejected_before_switcher() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-set-model", "process-set-model");
+        let session_id = "claude-set-model";
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            registry.journal.clone(),
+        ));
+        runtime.store_claude_manifest(
+            crate::claude_catalog::initial_manifest(crate::claude_catalog::fallback_models()),
+            crate::claude_catalog::ClaudeCatalogState::Provisional,
+        );
+        let calls = Arc::new(AtomicU64::new(0));
+        let metadata = Session {
+            id: session_id.to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Claude,
+            title: "Claude".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            provider: Some("claude".to_string()),
+            peer_session_id: None,
+            created_at_ms: 1,
+        };
+        let session = PtySession {
+            metadata,
+            owner: owner.clone(),
+            process_job: Arc::new(JobObject::new().expect("job")),
+            master: None,
+            killer: Box::new(NoopKiller),
+            switcher: Some(Box::new(RecordingSwitcher(Arc::clone(&calls)))),
+            stderr_handle: None,
+            child_wait: None,
+            writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            reader_handle: None,
+            coalesce_handle: None,
+            runtime: Arc::clone(&runtime),
+            exited: Arc::new(AtomicBool::new(false)),
+            preserve_on_exit: Arc::new(AtomicBool::new(false)),
+        };
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .insert(session_id.to_string(), RegistryEntry::Live(session));
+
+        registry
+            .set_model(session_id, &owner, Some("claude-opus-5"), None)
+            .expect("a provisional catalog must not reject a model");
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        runtime.store_claude_catalog(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: Some("claude-sonnet-5".to_string()),
+            models: vec![devboule_protocol::SessionModel {
+                model_id: "claude-sonnet-5".to_string(),
+                name: "Claude Sonnet 5".to_string(),
+                description: None,
+                context_tokens: None,
+                current_effort: Some("high".to_string()),
+                efforts: Some(vec![devboule_protocol::SessionModelEffort {
+                    id: "high".to_string(),
+                    label: "High".to_string(),
+                    description: None,
+                    default: Some(true),
+                }]),
+            }],
+            modes: None,
+        });
+
+        let error = registry
+            .set_model(session_id, &owner, Some("claude-bogus-999"), None)
+            .expect_err("unknown model must be rejected before the switcher");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not in the current catalog"));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        let error = registry
+            .set_model(session_id, &owner, None, Some("bogus"))
+            .expect_err("unknown effort must be rejected before the switcher");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("not supported"));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        registry
+            .set_model(
+                session_id,
+                &owner,
+                Some("claude-sonnet-5[1m]"),
+                Some("high"),
+            )
+            .expect("model variants must use the base model catalog");
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn tmp_registry_cache() -> std::path::PathBuf {

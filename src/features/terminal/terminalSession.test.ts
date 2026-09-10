@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SessionSnapshot } from "../../types/ipc";
+import type { PermissionRequest, SessionSnapshot } from "../../types/ipc";
 import type { TerminalViewHandle } from "./createTerminalView";
 import {
   TerminalSession,
@@ -29,9 +29,11 @@ interface Harness {
   emitInput: (data: string) => void;
   flushFrame: () => void;
   completeSnapshot: () => void;
+  attachStarted: Promise<void>;
   resolveAttach: () => void;
   banners: TerminalBanner[];
   ctrlCStates: boolean[];
+  permissionRequests: Array<[PermissionRequest, number]>;
   registry: TerminalSessionRegistry;
 }
 
@@ -61,8 +63,12 @@ function makeHarness(options?: {
     callback?.();
   };
   let resolveAttach!: () => void;
+  let resolveAttachStarted!: () => void;
   const attachGate = new Promise<void>((resolve) => {
     resolveAttach = resolve;
+  });
+  const attachStarted = new Promise<void>((resolve) => {
+    resolveAttachStarted = resolve;
   });
   let registeredSessionId = options?.existingSessionId ?? null;
   const registry: TerminalSessionRegistry = {
@@ -134,6 +140,7 @@ function makeHarness(options?: {
       };
     }
     if (command === "session_attach" && options?.deferAttach) {
+      resolveAttachStarted();
       await attachGate;
     }
     if (command === "session_attach") {
@@ -165,6 +172,7 @@ function makeHarness(options?: {
         bracketedPaste: false,
         lineWrap: true,
       });
+      return 17;
     }
     if (command === "session_detach" && options?.rejectDetach) {
       throw new Error("No session with that id.");
@@ -198,6 +206,8 @@ function makeHarness(options?: {
     },
     onBanner: (banner) => banners.push(banner),
     onCtrlCArmed: (armed) => ctrlCStates.push(armed),
+    onPermissionRequest: (request, subscriptionId) =>
+      permissionRequests.push([request, subscriptionId]),
     setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds) as unknown as number,
     clearTimeout: (id) => clearTimeout(id),
     scheduleFrame: (callback) => {
@@ -210,6 +220,7 @@ function makeHarness(options?: {
   };
   const banners: TerminalBanner[] = [];
   const ctrlCStates: boolean[] = [];
+  const permissionRequests: Array<[PermissionRequest, number]> = [];
 
   return {
     session: new TerminalSession(deps),
@@ -223,9 +234,11 @@ function makeHarness(options?: {
       snapshotCallback = null;
       callback?.();
     },
+    attachStarted,
     resolveAttach,
     banners,
     ctrlCStates,
+    permissionRequests,
     registry,
   };
 }
@@ -301,6 +314,7 @@ describe("TerminalSession startup and channel ordering", () => {
         ch: expect.anything(),
       }),
     );
+    expect(harness.invoke).toHaveBeenCalledWith("session_claim", { subscriptionId: 17 });
     expect(harness.registry.register).toHaveBeenCalledWith("rust-core", "session-1");
   });
 
@@ -414,6 +428,7 @@ describe("TerminalSession startup and channel ordering", () => {
     expect(harness.registry.updateCursor).toHaveBeenCalledWith("rust-core", "session-1", 2);
     expect(harness.invoke).toHaveBeenCalledWith("session_send", {
       id: "session-1",
+      subscriptionId: 17,
       text: "typed before snapshot",
     });
 
@@ -449,6 +464,7 @@ describe("TerminalSession lifecycle and errors", () => {
     });
     expect(harness.view.disposeCount).toBe(1);
     expect(harness.invoke).not.toHaveBeenCalledWith("session_close", expect.anything());
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_detach", expect.anything());
   });
 
   it("keeps the attach banner text when the backend rejects with a structured error", async () => {
@@ -505,8 +521,7 @@ describe("TerminalSession lifecycle and errors", () => {
   it("detaches without closing when disposed during an in-flight attach", async () => {
     const harness = makeHarness({ deferAttach: true });
     const startPromise = harness.session.start();
-    await Promise.resolve();
-    await Promise.resolve();
+    await harness.attachStarted;
 
     harness.session.dispose();
     harness.resolveAttach();
@@ -518,8 +533,47 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(
       harness.invoke.mock.calls.filter(([command]) => command === "session_detach"),
     ).toHaveLength(1);
-    expect(harness.invoke).toHaveBeenCalledWith("session_detach", { id: "session-1" });
+    expect(harness.invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 17 });
     expect(harness.view.disposeCount).toBe(1);
+  });
+
+  it("delivers a permission request that arrives while the attach is still pending", async () => {
+    const harness = makeHarness({ deferAttach: true });
+    const startPromise = harness.session.start();
+    await harness.attachStarted;
+
+    // The daemon already streams over the live channel before the attach
+    // invoke returns, so the subscription id is still unknown here.
+    harness.emit({
+      type: "permission_request",
+      toolCallId: "tool-1",
+      title: "Run command",
+      options: [],
+    });
+    harness.resolveAttach();
+    await startPromise;
+
+    expect(harness.permissionRequests).toEqual([
+      [expect.objectContaining({ toolCallId: "tool-1" }), 17],
+    ]);
+  });
+
+  it("does not deliver a held permission request after dispose", async () => {
+    const harness = makeHarness({ deferAttach: true });
+    const startPromise = harness.session.start();
+    await harness.attachStarted;
+
+    harness.emit({
+      type: "permission_request",
+      toolCallId: "tool-1",
+      title: "Run command",
+      options: [],
+    });
+    harness.session.dispose();
+    harness.resolveAttach();
+    await startPromise;
+
+    expect(harness.permissionRequests).toEqual([]);
   });
 
   it("marks exit once and ignores writes after exit", async () => {
@@ -652,7 +706,7 @@ describe("TerminalSession lifecycle and errors", () => {
     expect(
       harness.invoke.mock.calls.filter(([command]) => command === "session_detach"),
     ).toHaveLength(1);
-    expect(harness.invoke).toHaveBeenCalledWith("session_detach", { id: "session-1" });
+    expect(harness.invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 17 });
   });
 
   it("still disposes and removes the listener when detach is rejected", async () => {
@@ -712,6 +766,7 @@ describe("TerminalSession resize and Ctrl+C", () => {
     expect(harness.invoke).toHaveBeenCalledTimes(1);
     expect(harness.invoke).toHaveBeenCalledWith("session_resize", {
       id: "session-1",
+      subscriptionId: 17,
       cols: 80,
       rows: 24,
     });
@@ -745,7 +800,11 @@ describe("TerminalSession resize and Ctrl+C", () => {
     harness.session.requestCtrlC();
     await Promise.resolve();
     expect(harness.ctrlCStates).toEqual([true, false]);
-    expect(harness.invoke).toHaveBeenCalledWith("session_send", { id: "session-1", text: "\x03" });
+    expect(harness.invoke).toHaveBeenCalledWith("session_send", {
+      id: "session-1",
+      subscriptionId: 17,
+      text: "\x03",
+    });
   });
 
   it("auto-disarms Ctrl+C without sending after three seconds", async () => {

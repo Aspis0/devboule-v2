@@ -1,6 +1,6 @@
 //! Session stream runtime: emulator, attach, journal, permission delivery.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -9,12 +9,12 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, SessionEvent,
-    TranscriptIntegrity, WireError,
+    SessionEventEnvelope, SessionModel, TranscriptIntegrity, WireError,
 };
 
 use super::permission_broker::PermissionBroker;
 use super::session_types::{
-    Attachment, Disposition, OutputMetrics, PendingItem, Scrollback, StreamState,
+    Attachment, AttachmentKey, Disposition, OutputMetrics, PendingItem, Scrollback, StreamState,
 };
 use super::{
     internal, process_gone, ConnHandle, EXIT_DRAIN, INITIAL_COLS, INITIAL_ROWS,
@@ -45,13 +45,11 @@ fn remove_replayed_agent_items(
     queue: &mut VecDeque<PendingItem>,
     from_seq: u64,
     replayed_seqs: &HashSet<u64>,
-    drop_unsequenced_manifests: bool,
 ) {
     queue.retain(|item| match item {
         PendingItem::Agent { seq, event, .. } => {
             let replayed = seq.is_some_and(|seq| seq <= from_seq || replayed_seqs.contains(&seq));
-            let drop_manifest = matches!(event, SessionEvent::SessionManifest { .. })
-                && (drop_unsequenced_manifests || replayed);
+            let drop_manifest = matches!(event, SessionEvent::SessionManifest { .. }) && replayed;
             !replayed && !drop_manifest
         }
         PendingItem::Output { .. } | PendingItem::Snapshot { .. } => true,
@@ -99,7 +97,7 @@ pub(crate) struct SessionRuntime {
     pub(crate) terminal_dead: AtomicBool,
     /// Kept outside `stream` so a poisoned stream can still wake its viewer
     /// and deliver the degraded + exit terminal markers.
-    pub(crate) attachment_notify: Mutex<Option<Arc<ConnOut>>>,
+    pub(crate) attachment_notify: Mutex<HashMap<AttachmentKey, Arc<ConnOut>>>,
     pub(crate) journal_dropped_frames: AtomicU64,
     pub(crate) journal_dropped_bytes: AtomicU64,
     /// The last generation is also needed if the stream lock is poisoned
@@ -121,6 +119,7 @@ pub(crate) struct SessionRuntime {
     pub(crate) published_frames: AtomicU64,
     pub(crate) published_bytes: AtomicUsize,
     pub(crate) session_manifest: Mutex<Option<SessionEvent>>,
+    claude_catalog_state: Mutex<crate::claude_catalog::ClaudeCatalogState>,
     /// Attention is deliberately runtime-only. It is a user's current view
     /// state, not transcript history, so it is not journaled and does not
     /// survive a daemon restart.
@@ -156,6 +155,114 @@ pub(crate) struct AttachOutcome {
     pub(crate) live_agent_replay: Option<LiveAgentReplay>,
 }
 
+fn merge_claude_manifest(previous: &SessionEvent, incoming: SessionEvent) -> SessionEvent {
+    let SessionEvent::SessionManifest {
+        provider_id: previous_provider,
+        current_model_id: previous_current,
+        models: previous_models,
+        modes: previous_modes,
+    } = previous
+    else {
+        return incoming;
+    };
+    let (provider_id, current_model_id, models, modes) = match incoming {
+        SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        } => (provider_id, current_model_id, models, modes),
+        other => return other,
+    };
+    let mut merged_models = previous_models.clone();
+    for incoming_model in models {
+        let match_id = merged_models.iter().position(|model| {
+            crate::claude_catalog::model_ids_match(&model.model_id, &incoming_model.model_id)
+        });
+        if let Some(index) = match_id {
+            let previous_model = &merged_models[index];
+            let mut merged = incoming_model;
+            merged.name = previous_model.name.clone();
+            merged.description = merged
+                .description
+                .or_else(|| previous_model.description.clone());
+            merged.context_tokens = merged.context_tokens.or(previous_model.context_tokens);
+            merged.current_effort = merged
+                .current_effort
+                .or_else(|| previous_model.current_effort.clone());
+            merged.efforts = merged
+                .efforts
+                .filter(|efforts| !efforts.is_empty())
+                .or_else(|| previous_model.efforts.clone());
+            if previous_model.model_id != merged.model_id {
+                merged_models.push(merged);
+            } else {
+                merged_models[index] = merged;
+            }
+        } else {
+            merged_models.push(incoming_model);
+        }
+    }
+    SessionEvent::SessionManifest {
+        provider_id: provider_id.or_else(|| previous_provider.clone()),
+        current_model_id: current_model_id.or_else(|| previous_current.clone()),
+        models: merged_models,
+        modes: modes.or_else(|| previous_modes.clone()),
+    }
+}
+
+fn replace_claude_catalog(previous: &SessionEvent, incoming: SessionEvent) -> SessionEvent {
+    let SessionEvent::SessionManifest {
+        provider_id: previous_provider,
+        current_model_id: previous_current,
+        modes: previous_modes,
+        ..
+    } = previous
+    else {
+        return incoming;
+    };
+    let (provider_id, current_model_id, models, modes) = match incoming {
+        SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes,
+        } => (provider_id, current_model_id, models, modes),
+        other => return other,
+    };
+    let current_model_id = previous_current.clone().or(current_model_id);
+    let mut merged_models = models;
+    if let Some(current_model_id) = current_model_id.as_deref() {
+        let present = merged_models
+            .iter()
+            .any(|model| model.model_id == current_model_id);
+        if !present {
+            if let Some(derived_model) = merged_models.iter().find(|model| {
+                crate::claude_catalog::model_ids_match(&model.model_id, current_model_id)
+            }) {
+                let mut current_model = derived_model.clone();
+                current_model.model_id = current_model_id.to_string();
+                merged_models.push(current_model);
+            } else {
+                merged_models.push(SessionModel {
+                    model_id: current_model_id.to_string(),
+                    name: current_model_id.to_string(),
+                    description: None,
+                    context_tokens: None,
+                    current_effort: None,
+                    efforts: None,
+                });
+            }
+        }
+    }
+    SessionEvent::SessionManifest {
+        provider_id: provider_id.or_else(|| previous_provider.clone()),
+        current_model_id,
+        models: merged_models,
+        modes: modes.or_else(|| previous_modes.clone()),
+    }
+}
+
 impl SessionRuntime {
     #[cfg(test)]
     pub(crate) fn new() -> Self {
@@ -173,14 +280,11 @@ impl SessionRuntime {
                 generation: 1,
                 screen: Some(Screen::new(INITIAL_COLS, INITIAL_ROWS)),
                 transcript: false,
-                attached: None,
-                pending: VecDeque::new(),
-                pending_bytes: 0,
-                pending_frames: 0,
+                resize_owner: None,
+                observers: HashMap::new(),
                 agent_backlog: VecDeque::new(),
                 agent_backlog_bytes: 0,
                 agent_backlog_frames: 0,
-                typed_permissions: false,
                 scrollback: Scrollback::default(),
                 output_closed: false,
                 process_exited: false,
@@ -189,7 +293,6 @@ impl SessionRuntime {
                 // alive; its age starts when the runtime is created.
                 last_publish: Some(Instant::now()),
                 exit_at: None,
-                pending_silences: VecDeque::new(),
                 disposition: Disposition::Running,
                 agent_reports: crate::agent_report::AgentReportState::default(),
                 transcript_agent_reports: std::collections::BTreeMap::new(),
@@ -199,7 +302,7 @@ impl SessionRuntime {
             journal_dropped_frames: AtomicU64::new(0),
             journal_dropped_bytes: AtomicU64::new(0),
             terminal_dead: AtomicBool::new(false),
-            attachment_notify: Mutex::new(None),
+            attachment_notify: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(1),
             peak_pending_bytes: AtomicUsize::new(0),
             coalesced_bytes: AtomicU64::new(0),
@@ -212,6 +315,9 @@ impl SessionRuntime {
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
+            claude_catalog_state: Mutex::new(
+                crate::claude_catalog::ClaudeCatalogState::Provisional,
+            ),
             attention: Mutex::new(None),
             attention_hooks: Mutex::new(None),
             os_handle: Mutex::new(None),
@@ -242,7 +348,6 @@ impl SessionRuntime {
         stream.process_exited = true;
         stream.last_publish = None;
         stream.exit_at = None;
-        stream.pending_silences.clear();
         let integrity = replay.integrity;
         stream.disposition = match integrity {
             TranscriptIntegrity::Unverifiable { .. } => Disposition::Recovered { integrity },
@@ -367,9 +472,15 @@ impl SessionRuntime {
         self.notify_attachment();
     }
 
-    pub(crate) fn set_attachment_notify(&self, outbound: Option<Arc<ConnOut>>) {
+    pub(crate) fn set_attachment_notify(&self, key: AttachmentKey, outbound: Option<Arc<ConnOut>>) {
         match self.attachment_notify.lock() {
-            Ok(mut current) => *current = outbound,
+            Ok(mut current) => {
+                if let Some(outbound) = outbound {
+                    current.insert(key, outbound);
+                } else {
+                    current.remove(&key);
+                }
+            }
             Err(_) => eprintln!(
                 "session {} could not update attachment notification: lock poisoned",
                 self.session_id
@@ -380,7 +491,7 @@ impl SessionRuntime {
     pub(crate) fn notify_attachment(&self) {
         match self.attachment_notify.lock() {
             Ok(current) => {
-                if let Some(outbound) = &*current {
+                for outbound in current.values() {
                     outbound.notify();
                 }
             }
@@ -421,9 +532,7 @@ impl SessionRuntime {
             if stream.output_closed {
                 // Bytes after EOF are neither applied nor journalled; no
                 // sequence is consumed for them.
-                if let Some(attached) = &stream.attached {
-                    attached.outbound.notify();
-                }
+                notify_observers(&stream);
                 eprintln!(
                     "session {} dropped terminal output after EOF ({} bytes)",
                     self.session_id,
@@ -464,15 +573,20 @@ impl SessionRuntime {
             }
             generation = stream.generation;
             let (coalesced_bytes, coalesced_frames) = enqueue_output(&mut stream, seq, data);
-            self.peak_pending_bytes
-                .fetch_max(stream.pending_bytes, Ordering::Relaxed);
+            self.peak_pending_bytes.fetch_max(
+                stream
+                    .observers
+                    .values()
+                    .map(|attachment| attachment.pending_bytes)
+                    .max()
+                    .unwrap_or(0),
+                Ordering::Relaxed,
+            );
             self.coalesced_bytes
                 .fetch_add(coalesced_bytes, Ordering::Relaxed);
             self.coalesced_frames
                 .fetch_add(coalesced_frames, Ordering::Relaxed);
-            if let Some(attached) = &stream.attached {
-                attached.outbound.notify();
-            }
+            notify_observers(&stream);
         }
         // Terminal query replies (DSR/CPR) go straight back to the PTY:
         // ConPTY stalls its render pipeline until they are answered, so they
@@ -524,10 +638,59 @@ impl SessionRuntime {
         Some(seq)
     }
 
-    pub(crate) fn store_session_manifest(&self, event: SessionEvent) {
+    pub(crate) fn store_session_manifest(&self, event: SessionEvent) -> SessionEvent {
+        let event = if matches!(
+            &event,
+            SessionEvent::SessionManifest {
+                provider_id: Some(provider_id),
+                ..
+            } if provider_id == "claude"
+        ) {
+            let previous = self
+                .session_manifest
+                .lock()
+                .ok()
+                .and_then(|stored| stored.clone());
+            previous
+                .as_ref()
+                .map(|previous| merge_claude_manifest(previous, event.clone()))
+                .unwrap_or(event)
+        } else {
+            event
+        };
         if let Ok(mut stored) = self.session_manifest.lock() {
-            *stored = Some(event);
+            *stored = Some(event.clone());
         }
+        event
+    }
+
+    pub(crate) fn store_claude_manifest(
+        &self,
+        event: SessionEvent,
+        state: crate::claude_catalog::ClaudeCatalogState,
+    ) -> SessionEvent {
+        let event = self.store_session_manifest(event);
+        if let Ok(mut stored_state) = self.claude_catalog_state.lock() {
+            *stored_state = state;
+        }
+        event
+    }
+
+    pub(crate) fn store_claude_catalog(&self, event: SessionEvent) -> SessionEvent {
+        let event = if let Ok(mut stored) = self.session_manifest.lock() {
+            let event = stored
+                .as_ref()
+                .map(|previous| replace_claude_catalog(previous, event.clone()))
+                .unwrap_or(event);
+            *stored = Some(event.clone());
+            event
+        } else {
+            event
+        };
+        if let Ok(mut stored_state) = self.claude_catalog_state.lock() {
+            *stored_state = crate::claude_catalog::ClaudeCatalogState::Derived;
+        }
+        event
     }
 
     pub(crate) fn set_peer_session_id(&self, session_id: String) {
@@ -593,10 +756,7 @@ impl SessionRuntime {
     {
         let (event, generation, seq, was_silent) = {
             let Ok(mut stream) = self.lock_stream() else {
-                // This is the transcript commit point for agent input. A
-                // false result means the stream cannot accept the event
-                // (poisoned or already closed); callers must refuse child I/O
-                // rather than create a prompt/transcript divergence.
+                // A false result means the stream cannot accept the event.
                 return false;
             };
             if stream.output_closed {
@@ -619,9 +779,7 @@ impl SessionRuntime {
                     .unwrap_or(0),
                 Ordering::Relaxed,
             );
-            if let Some(attached) = &stream.attached {
-                attached.outbound.notify();
-            }
+            notify_observers(&stream);
             (event, generation, seq, was_silent)
         };
         if let Some(journal) = &self.journal {
@@ -682,9 +840,7 @@ impl SessionRuntime {
                     .unwrap_or(0),
                 Ordering::Relaxed,
             );
-            if let Some(attached) = &stream.attached {
-                attached.outbound.notify();
-            }
+            notify_observers(&stream);
         }
         if let (Some(journal), Some((generation, seq, text))) = (&self.journal, journal_output) {
             let accepted = journal.try_append(output_record(
@@ -733,9 +889,7 @@ impl SessionRuntime {
                 session_start_source: report.session_start_source,
             };
             enqueue_agent(&mut stream, event.clone(), Some(seq));
-            if let Some(attached) = &stream.attached {
-                attached.outbound.notify();
-            }
+            notify_observers(&stream);
             journaled = (stream.generation, seq, event);
         }
         if let Some(journal) = &self.journal {
@@ -758,13 +912,20 @@ impl SessionRuntime {
         self.permission_broker.as_ref().map(Arc::clone)
     }
 
-    /// `None` means no client is attached. A detached request is retained so
-    /// a later capable attach can display it; `Some(false)` means the current
-    /// client is attached but did not negotiate typed permissions.
-    pub(crate) fn permission_delivery_enabled(&self) -> Option<bool> {
+    pub(crate) fn can_publish_agent_user_message(&self) -> bool {
         self.lock_stream()
-            .ok()
-            .and_then(|stream| stream.attached.as_ref().map(|_| stream.typed_permissions))
+            .map(|stream| !stream.output_closed)
+            .unwrap_or(false)
+    }
+
+    /// `None` means no client is attached. A pending request is retained until
+    /// resolved so a later capable attach can display it; `Some(false)` means
+    /// observers exist but none negotiated typed permissions.
+    pub(crate) fn permission_delivery_enabled(&self) -> Option<bool> {
+        self.lock_stream().ok().and_then(|stream| {
+            (!stream.observers.is_empty())
+                .then(|| stream.observers.values().any(|a| a.typed_permissions))
+        })
     }
 
     pub(crate) fn remove_permission_request(&self, tool_call_id: &str) {
@@ -772,13 +933,14 @@ impl SessionRuntime {
             return;
         };
         {
-            let StreamState {
-                pending,
-                pending_bytes,
-                pending_frames,
-                ..
-            } = &mut *stream;
-            remove_permission_from_queue(pending, pending_bytes, pending_frames, tool_call_id);
+            for attachment in stream.observers.values_mut() {
+                remove_permission_from_queue(
+                    &mut attachment.pending,
+                    &mut attachment.pending_bytes,
+                    &mut attachment.pending_frames,
+                    tool_call_id,
+                );
+            }
         }
         {
             let StreamState {
@@ -794,9 +956,7 @@ impl SessionRuntime {
                 tool_call_id,
             );
         }
-        if let Some(attached) = &stream.attached {
-            attached.outbound.notify();
-        }
+        notify_observers(&stream);
     }
 
     pub(crate) fn record_permission_decision(
@@ -865,9 +1025,7 @@ impl SessionRuntime {
         // seq counts applied chunks, and the boundary stays an honest
         // statement about the emulator. The lost bytes are simply absent
         // from the transcript.
-        if let Some(attached) = &stream.attached {
-            attached.outbound.notify();
-        }
+        notify_observers(&stream);
     }
 
     pub(crate) fn output_metrics(&self) -> OutputMetrics {
@@ -912,7 +1070,9 @@ impl SessionRuntime {
             }
             elapsed_ms = elapsed.as_millis().try_into().unwrap_or(u64::MAX);
             stream.disposition = Disposition::Silent;
-            stream.pending_silences.push_back(elapsed_ms);
+            for attachment in stream.observers.values_mut() {
+                attachment.pending_silences.push_back(elapsed_ms);
+            }
         }
         self.notify_attachment();
         Some(elapsed_ms)
@@ -1084,6 +1244,13 @@ impl SessionRuntime {
             .and_then(|stored| stored.clone())
     }
 
+    pub(crate) fn claude_catalog_state(&self) -> crate::claude_catalog::ClaudeCatalogState {
+        self.claude_catalog_state
+            .lock()
+            .map(|state| *state)
+            .unwrap_or(crate::claude_catalog::ClaudeCatalogState::Provisional)
+    }
+
     pub(crate) fn has_journal(&self) -> bool {
         self.journal.is_some()
     }
@@ -1096,6 +1263,7 @@ impl SessionRuntime {
 
     pub(crate) fn finish_live_agent_replay(
         &self,
+        key: AttachmentKey,
         from_seq: u64,
         replayed_seqs: &HashSet<u64>,
     ) -> u64 {
@@ -1103,40 +1271,44 @@ impl SessionRuntime {
             return 0;
         };
         let current_seq = stream.next_seq.saturating_sub(1);
-        // The journal recovers agent frames evicted by the bounded live
-        // queue. Remove matching survivors from BOTH queues at the seam, so
-        // a frame that happened to survive eviction is not delivered twice.
-        // An evicted frame is intentionally not reinserted out of order: it
-        // is recovered lazily from SQLite, while the remaining pending tail
-        // stays behind the replay boundary.
-        remove_replayed_agent_items(&mut stream.agent_backlog, from_seq, replayed_seqs, true);
-        remove_replayed_agent_items(&mut stream.pending, from_seq, replayed_seqs, false);
-        let (backlog_bytes, backlog_frames) = agent_queue_extent(&stream.agent_backlog);
-        stream.agent_backlog_bytes = backlog_bytes;
-        stream.agent_backlog_frames = backlog_frames;
-        let (pending_bytes, pending_frames) = agent_queue_extent(&stream.pending);
-        stream.pending_bytes = pending_bytes;
-        stream.pending_frames = pending_frames;
-        current_seq
-    }
-
-    pub(super) fn pop_replay_backlog_item(&self) -> Option<PendingItem> {
-        let mut stream = self.lock_stream().ok()?;
-        let position = stream.agent_backlog.iter().position(|item| {
-            !matches!(
-                item,
-                PendingItem::Agent {
-                    event: SessionEvent::PermissionRequest { .. },
-                    ..
+        // The stream backlog is shared; leave it intact so each observer can
+        // apply its own replay boundary. Only this observer's queue is pruned
+        // at the replay seam.
+        let backlog = stream.agent_backlog.iter().cloned().collect::<Vec<_>>();
+        if let Some(attachment) = stream.observers.get_mut(&key) {
+            remove_replayed_agent_items(&mut attachment.pending, from_seq, replayed_seqs);
+            for item in backlog {
+                let eligible = match &item {
+                    PendingItem::Agent { seq, event, .. } => {
+                        !seq.is_some_and(|seq| seq <= from_seq || replayed_seqs.contains(&seq))
+                            && !matches!(event, SessionEvent::SessionManifest { .. })
+                            && (!matches!(event, SessionEvent::PermissionRequest { .. })
+                                || attachment.typed_permissions)
+                    }
+                    PendingItem::Output { .. } | PendingItem::Snapshot { .. } => false,
+                };
+                let already_pending = matches!(
+                    &item,
+                    PendingItem::Agent {
+                        event: SessionEvent::PermissionRequest { tool_call_id, .. },
+                        ..
+                    } if attachment.pending.iter().any(|pending| matches!(
+                        pending,
+                        PendingItem::Agent {
+                            event: SessionEvent::PermissionRequest { tool_call_id: pending_id, .. },
+                            ..
+                        } if pending_id == tool_call_id
+                    ))
+                );
+                if eligible && !already_pending {
+                    attachment.pending.push_back(item);
                 }
-            ) || stream.typed_permissions
-        })?;
-        let item = stream.agent_backlog.remove(position)?;
-        if let PendingItem::Agent { bytes, .. } = &item {
-            stream.agent_backlog_bytes = stream.agent_backlog_bytes.saturating_sub(*bytes);
-            stream.agent_backlog_frames = stream.agent_backlog_frames.saturating_sub(1);
+            }
+            let (pending_bytes, pending_frames) = agent_queue_extent(&attachment.pending);
+            attachment.pending_bytes = pending_bytes;
+            attachment.pending_frames = pending_frames;
         }
-        Some(item)
+        current_seq
     }
 
     pub(crate) fn replay_journal_agent_page(
@@ -1226,17 +1398,36 @@ impl SessionRuntime {
     /// Attach through the same wire path used by the session registry. A
     /// headless live agent captures a journal replay watermark while holding
     /// the stream lock; terminals retain their snapshot-first contract.
+    #[cfg(test)]
     pub(crate) fn try_attach_with_replay(
         &self,
         from_cursor: Option<Cursor>,
         conn: &ConnHandle,
         typed_permissions: bool,
     ) -> Result<AttachOutcome, WireError> {
-        self.try_attach_inner(from_cursor, conn, typed_permissions)
+        // The test helper keeps the old single-view setup; the wire path
+        // receives a caller-owned token and only a claim grants resize rights.
+        self.detach_subscription(conn.id, conn.id);
+        conn.untrack_subscription(conn.id);
+        let outcome =
+            self.try_attach_with_subscription(conn.id, from_cursor, conn, typed_permissions)?;
+        self.claim_resize(conn.id, conn.id)?;
+        Ok(outcome)
+    }
+
+    pub(crate) fn try_attach_with_subscription(
+        &self,
+        subscription_id: u64,
+        from_cursor: Option<Cursor>,
+        conn: &ConnHandle,
+        typed_permissions: bool,
+    ) -> Result<AttachOutcome, WireError> {
+        self.try_attach_inner(subscription_id, from_cursor, conn, typed_permissions)
     }
 
     fn try_attach_inner(
         &self,
+        subscription_id: u64,
         from_cursor: Option<Cursor>,
         conn: &ConnHandle,
         typed_permissions: bool,
@@ -1247,13 +1438,21 @@ impl SessionRuntime {
         let Ok(mut stream) = self.lock_stream() else {
             return Err(internal("Session state is unavailable."));
         };
-        if let Some(current) = &stream.attached {
-            if current.conn_id != conn.id {
-                return Err(WireError::new(
-                    ErrorCode::InvalidRequest,
-                    "session is already attached to another client",
-                ));
-            }
+        if subscription_id == 0 {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "subscription id must be non-zero",
+            ));
+        }
+        let key = AttachmentKey {
+            conn_id: conn.id,
+            subscription_id,
+        };
+        if stream.observers.contains_key(&key) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "session subscription is already attached",
+            ));
         }
         // Terminal attaches start at the current screen snapshot. Headless
         // live agents instead use the cursor as the start of a journal
@@ -1274,35 +1473,25 @@ impl SessionRuntime {
         } else {
             None
         };
-        let preserve_agent_pending = stream
-            .attached
-            .as_ref()
-            .is_some_and(|attached| attached.conn_id == conn.id)
-            && !stream.transcript
-            && stream.screen.is_none();
-        if preserve_agent_pending {
-            move_agent_pending_to_backlog(&mut stream);
-        }
-        stream.typed_permissions = typed_permissions;
         let as_of_seq = stream.last_applied_seq;
         let screen = stream.screen.as_ref().map(Screen::snapshot);
-        stream.attached = Some(Attachment {
-            conn_id: conn.id,
+        let mut attachment = Attachment {
             outbound: Arc::clone(&conn.outbound),
-        });
-        self.set_attachment_notify(Some(Arc::clone(&conn.outbound)));
-        stream.pending.clear();
-        stream.pending_bytes = 0;
-        stream.pending_frames = 0;
-        stream.pending_silences.clear();
+            typed_permissions,
+            pending: VecDeque::new(),
+            pending_bytes: 0,
+            pending_frames: 0,
+            pending_silences: VecDeque::new(),
+        };
         if let Some(screen) = screen {
-            stream
+            attachment
                 .pending
                 .push_back(PendingItem::Snapshot { as_of_seq, screen });
         } else if !stream.transcript && live_agent_replay.is_none() {
             let agent_backlog = std::mem::take(&mut stream.agent_backlog);
             stream.agent_backlog_bytes = 0;
             stream.agent_backlog_frames = 0;
+            let mut deferred = VecDeque::new();
             for item in agent_backlog {
                 let is_permission = matches!(
                     &item,
@@ -1311,18 +1500,16 @@ impl SessionRuntime {
                         ..
                     }
                 );
-                if is_permission && !typed_permissions {
-                    if let PendingItem::Agent { bytes, .. } = &item {
-                        stream.agent_backlog_bytes =
-                            stream.agent_backlog_bytes.saturating_add(*bytes);
-                        stream.agent_backlog_frames = stream.agent_backlog_frames.saturating_add(1);
+                if is_permission {
+                    if typed_permissions {
+                        attachment.pending.push_back(item.clone());
                     }
-                    stream.agent_backlog.push_back(item);
+                    deferred.push_back(item);
                 } else {
-                    stream.pending.push_back(item);
+                    attachment.pending.push_back(item);
                 }
             }
-            stream.pending_bytes = stream
+            attachment.pending_bytes = attachment
                 .pending
                 .iter()
                 .filter_map(|item| match item {
@@ -1331,32 +1518,31 @@ impl SessionRuntime {
                     PendingItem::Snapshot { .. } => None,
                 })
                 .sum();
-            stream.pending_frames = stream
+            attachment.pending_frames = attachment
                 .pending
                 .iter()
                 .filter(|item| !matches!(item, PendingItem::Snapshot { .. }))
                 .count() as u64;
+            stream.agent_backlog = deferred;
+            let (backlog_bytes, backlog_frames) = agent_queue_extent(&stream.agent_backlog);
+            stream.agent_backlog_bytes = backlog_bytes;
+            stream.agent_backlog_frames = backlog_frames;
         }
+        let has_manifest = attachment.pending.iter().any(|item| {
+            matches!(
+                item,
+                PendingItem::Agent {
+                    event: SessionEvent::SessionManifest { .. },
+                    ..
+                }
+            )
+        });
+        stream.observers.insert(key, attachment);
+        self.set_attachment_notify(key, Some(Arc::clone(&conn.outbound)));
         if live_agent_replay.is_none()
             && !stream.transcript
-            && !stream.pending.iter().any(|item| {
-                matches!(
-                    item,
-                    PendingItem::Agent {
-                        event: SessionEvent::SessionManifest { .. },
-                        ..
-                    }
-                )
-            })
-            && !stream.agent_backlog.iter().any(|item| {
-                matches!(
-                    item,
-                    PendingItem::Agent {
-                        event: SessionEvent::SessionManifest { .. },
-                        ..
-                    }
-                )
-            })
+            && !has_manifest
+            && !stream.observers.is_empty()
         {
             if let Some(event) = self
                 .session_manifest
@@ -1364,7 +1550,9 @@ impl SessionRuntime {
                 .ok()
                 .and_then(|guard| guard.clone())
             {
-                enqueue_agent(&mut stream, event, None);
+                if let Some(attachment) = stream.observers.get_mut(&key) {
+                    enqueue_agent_for_attachment(attachment, event, None);
+                }
             }
         }
         Ok(AttachOutcome {
@@ -1373,29 +1561,138 @@ impl SessionRuntime {
         })
     }
 
+    pub(crate) fn claim_resize(&self, conn_id: u64, subscription_id: u64) -> Result<(), WireError> {
+        let mut stream = self
+            .stream
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let key = AttachmentKey {
+            conn_id,
+            subscription_id,
+        };
+        if !stream.observers.contains_key(&key) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session is not attached to this subscription.",
+            ));
+        }
+        stream.resize_owner = Some(key);
+        Ok(())
+    }
+
+    pub(crate) fn detach_subscription(&self, conn_id: u64, subscription_id: u64) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        let key = AttachmentKey {
+            conn_id,
+            subscription_id,
+        };
+        if let Some(attachment) = stream.observers.remove(&key) {
+            if stream.resize_owner == Some(key) {
+                stream.resize_owner = None;
+            }
+            self.set_attachment_notify(key, None);
+            if !stream.transcript && stream.screen.is_none() {
+                move_agent_pending_to_backlog(&mut stream, attachment);
+            }
+        }
+    }
+
     pub(crate) fn detach_if_conn(&self, conn_id: u64) {
         let Ok(mut stream) = self.lock_stream() else {
             return;
         };
-        if stream
-            .attached
-            .as_ref()
-            .is_some_and(|attached| attached.conn_id == conn_id)
-        {
-            stream.attached = None;
-            stream.typed_permissions = false;
-            self.set_attachment_notify(None);
-            // The unsent queue belonged to the departing viewer. A new
-            // attach must start from a fresh snapshot, not from a stale
-            // stream assembled for a client that is gone.
-            if !stream.transcript && stream.screen.is_none() {
-                move_agent_pending_to_backlog(&mut stream);
-            } else {
-                stream.pending.clear();
-                stream.pending_bytes = 0;
-                stream.pending_frames = 0;
+        let keys = stream
+            .observers
+            .keys()
+            .copied()
+            .filter(|key| key.conn_id == conn_id)
+            .collect::<Vec<_>>();
+        for key in keys {
+            if let Some(attachment) = stream.observers.remove(&key) {
+                if stream.resize_owner == Some(key) {
+                    stream.resize_owner = None;
+                }
+                self.set_attachment_notify(key, None);
+                if !stream.transcript && stream.screen.is_none() {
+                    move_agent_pending_to_backlog(&mut stream, attachment);
+                }
             }
-            stream.pending_silences.clear();
+        }
+    }
+
+    pub(crate) fn notify_generation_replaced(&self, conn_id: u64) {
+        let Ok(mut stream) = self.lock_stream() else {
+            return;
+        };
+        let generation = stream.generation;
+        for (key, attachment) in &mut stream.observers {
+            if key.conn_id != conn_id {
+                // The old pull may already have consumed Exit; direct queueing
+                // keeps this replacement signal deliverable through that seam.
+                attachment
+                    .outbound
+                    .enqueue_reply(devboule_protocol::DaemonMessage::SubscriptionEvent {
+                    subscription_id: key.subscription_id,
+                    envelope: SessionEventEnvelope {
+                        session_id: self.session_id.clone(),
+                        generation,
+                        event: SessionEvent::AgentError {
+                            message:
+                                "Session generation was replaced; reattach to continue observing."
+                                    .to_string(),
+                        },
+                    },
+                });
+            }
+        }
+    }
+
+    pub(crate) fn is_observer(&self, conn_id: u64, subscription_id: u64) -> Result<(), WireError> {
+        let stream = self
+            .stream
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let key = AttachmentKey {
+            conn_id,
+            subscription_id,
+        };
+        if stream.observers.contains_key(&key) {
+            Ok(())
+        } else {
+            Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session is not attached to this subscription.",
+            ))
+        }
+    }
+
+    pub(crate) fn is_resize_owner(
+        &self,
+        conn_id: u64,
+        subscription_id: u64,
+    ) -> Result<(), WireError> {
+        let stream = self
+            .stream
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let key = AttachmentKey {
+            conn_id,
+            subscription_id,
+        };
+        if !stream.observers.contains_key(&key) {
+            Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session is not attached to this subscription.",
+            ))
+        } else if stream.resize_owner == Some(key) {
+            Ok(())
+        } else {
+            Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session observer does not own resize control; another subscription owns it.",
+            ))
         }
     }
 
@@ -1412,10 +1709,10 @@ impl SessionRuntime {
         stream.disposition = Disposition::Exited {
             integrity: self.terminated_integrity(),
         };
-        stream.pending_silences.clear();
-        if let Some(attached) = &stream.attached {
-            attached.outbound.notify();
+        for attachment in stream.observers.values_mut() {
+            attachment.pending_silences.clear();
         }
+        notify_observers(&stream);
         drop(stream);
         // Child::wait returns before ConPTY EOFs. Record
         // that the process was observed, but do not freeze last_seq: drain
@@ -1457,9 +1754,7 @@ impl SessionRuntime {
             return;
         };
         stream.output_closed = true;
-        if let Some(attached) = &stream.attached {
-            attached.outbound.notify();
-        }
+        notify_observers(&stream);
         drop(stream);
     }
 
@@ -1494,15 +1789,17 @@ impl SessionRuntime {
         stream.agent_backlog.clear();
         stream.agent_backlog_bytes = 0;
         stream.agent_backlog_frames = 0;
-        stream.pending.clear();
-        stream.pending_bytes = 0;
-        stream.pending_frames = 0;
+        for attachment in stream.observers.values_mut() {
+            attachment.pending.clear();
+            attachment.pending_bytes = 0;
+            attachment.pending_frames = 0;
+            attachment.pending_silences.clear();
+        }
         stream.output_closed = false;
         stream.process_exited = false;
         stream.exit_code = None;
         stream.last_publish = None;
         stream.exit_at = None;
-        stream.pending_silences.clear();
         stream.disposition = Disposition::Running;
         stream.generation
     }
@@ -1524,17 +1821,22 @@ impl SessionRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn attached_conn_id(&self) -> Option<u64> {
+    pub(crate) fn resize_owner_conn_id(&self) -> Option<u64> {
         self.stream
             .lock()
             .unwrap()
-            .attached
-            .as_ref()
-            .map(|attached| attached.conn_id)
+            .resize_owner
+            .map(|owner| owner.conn_id)
     }
 }
 
-/// Enqueue one applied chunk for the attached viewer and enforce the
+fn notify_observers(stream: &StreamState) {
+    for attachment in stream.observers.values() {
+        attachment.outbound.notify();
+    }
+}
+
+/// Enqueue one applied chunk for every observer and enforce the
 /// slow-viewer budget. Called with the state lock held, after the emulator
 /// boundary advanced.
 ///
@@ -1543,46 +1845,47 @@ impl SessionRuntime {
 /// Pipe order still delivers the newer snapshot after anything older that
 /// already reached the wire, and the snapshot subsumes everything before it.
 fn enqueue_output(stream: &mut StreamState, seq: u64, data: &str) -> (u64, u64) {
-    if stream.attached.is_none() {
-        return (0, 0);
-    }
-    stream.pending.push_back(PendingItem::Output {
-        seq,
-        data: data.to_owned(),
-    });
-    stream.pending_bytes += data.len();
-    stream.pending_frames += 1;
-    if stream.pending_bytes <= PENDING_OUTPUT_BUDGET_BYTES
-        && stream.pending_frames <= PENDING_OUTPUT_BUDGET_FRAMES
-    {
-        return (0, 0);
-    }
     let as_of_seq = stream.last_applied_seq;
     let screen = stream.screen.as_ref().map(Screen::snapshot);
-    let discarded_bytes = stream.pending_bytes as u64;
-    let discarded_frames = stream.pending_frames;
-    stream.pending.clear();
-    stream.pending_bytes = 0;
-    stream.pending_frames = 0;
-    if let Some(screen) = screen {
-        stream
-            .pending
-            .push_back(PendingItem::Snapshot { as_of_seq, screen });
+    let mut discarded_bytes: u64 = 0;
+    let mut discarded_frames: u64 = 0;
+    for attachment in stream.observers.values_mut() {
+        attachment.pending.push_back(PendingItem::Output {
+            seq,
+            data: data.to_owned(),
+        });
+        attachment.pending_bytes += data.len();
+        attachment.pending_frames += 1;
+        if attachment.pending_bytes <= PENDING_OUTPUT_BUDGET_BYTES
+            && attachment.pending_frames <= PENDING_OUTPUT_BUDGET_FRAMES
+        {
+            continue;
+        }
+        discarded_bytes = discarded_bytes.saturating_add(attachment.pending_bytes as u64);
+        discarded_frames = discarded_frames.saturating_add(attachment.pending_frames);
+        attachment.pending.clear();
+        attachment.pending_bytes = 0;
+        attachment.pending_frames = 0;
+        if let Some(screen) = screen.clone() {
+            attachment
+                .pending
+                .push_back(PendingItem::Snapshot { as_of_seq, screen });
+        }
     }
     (discarded_bytes, discarded_frames)
 }
 
 fn enqueue_agent(stream: &mut StreamState, event: SessionEvent, seq: Option<u64>) {
     let permission = matches!(&event, SessionEvent::PermissionRequest { .. });
-    if stream.attached.is_some() && (!permission || stream.typed_permissions) {
-        push_bounded_agent(
-            &mut stream.pending,
-            &mut stream.pending_bytes,
-            &mut stream.pending_frames,
-            event,
-            seq,
-        );
-    } else {
+    let mut delivered = false;
+    for attachment in stream.observers.values_mut() {
+        if permission && !attachment.typed_permissions {
+            continue;
+        }
+        enqueue_agent_for_attachment(attachment, event.clone(), seq);
+        delivered = true;
+    }
+    if permission || !delivered {
         push_bounded_agent(
             &mut stream.agent_backlog,
             &mut stream.agent_backlog_bytes,
@@ -1591,6 +1894,20 @@ fn enqueue_agent(stream: &mut StreamState, event: SessionEvent, seq: Option<u64>
             seq,
         );
     }
+}
+
+fn enqueue_agent_for_attachment(
+    attachment: &mut Attachment,
+    event: SessionEvent,
+    seq: Option<u64>,
+) {
+    push_bounded_agent(
+        &mut attachment.pending,
+        &mut attachment.pending_bytes,
+        &mut attachment.pending_frames,
+        event,
+        seq,
+    );
 }
 
 fn remove_permission_from_queue(
@@ -1627,6 +1944,23 @@ fn push_bounded_agent(
     event: SessionEvent,
     seq: Option<u64>,
 ) {
+    if let SessionEvent::PermissionRequest { tool_call_id, .. } = &event {
+        let already_queued = queue.iter().any(|item| {
+            matches!(
+                item,
+                PendingItem::Agent {
+                    event: SessionEvent::PermissionRequest {
+                        tool_call_id: queued_id,
+                        ..
+                    },
+                    ..
+                } if queued_id == tool_call_id
+            )
+        });
+        if already_queued {
+            return;
+        }
+    }
     let bytes = serde_json::to_vec(&event)
         .map(|value| value.len())
         .unwrap_or(0);
@@ -1653,29 +1987,16 @@ fn push_bounded_agent(
     }
 }
 
-fn move_agent_pending_to_backlog(stream: &mut StreamState) {
-    while let Some(item) = stream.pending.pop_front() {
-        if let PendingItem::Agent { bytes, .. } = &item {
-            stream.agent_backlog_bytes = stream.agent_backlog_bytes.saturating_add(*bytes);
-            stream.agent_backlog_frames = stream.agent_backlog_frames.saturating_add(1);
-            stream.agent_backlog.push_back(item);
-        }
-    }
-    stream.pending_bytes = 0;
-    stream.pending_frames = 0;
-    if stream.agent_backlog_bytes > PENDING_OUTPUT_BUDGET_BYTES
-        || stream.agent_backlog_frames > PENDING_OUTPUT_BUDGET_FRAMES
-    {
-        let newest = stream.agent_backlog.pop_back();
-        stream.agent_backlog.clear();
-        stream.agent_backlog_bytes = 0;
-        stream.agent_backlog_frames = 0;
-        if let Some(item) = newest {
-            if let PendingItem::Agent { bytes, .. } = &item {
-                stream.agent_backlog_bytes = *bytes;
-                stream.agent_backlog_frames = 1;
-            }
-            stream.agent_backlog.push_back(item);
+fn move_agent_pending_to_backlog(stream: &mut StreamState, mut attachment: Attachment) {
+    while let Some(item) = attachment.pending.pop_front() {
+        if let PendingItem::Agent { event, seq, .. } = item {
+            push_bounded_agent(
+                &mut stream.agent_backlog,
+                &mut stream.agent_backlog_bytes,
+                &mut stream.agent_backlog_frames,
+                event,
+                seq,
+            );
         }
     }
 }

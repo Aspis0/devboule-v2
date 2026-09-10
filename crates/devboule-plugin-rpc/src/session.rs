@@ -244,7 +244,10 @@ impl PluginSession {
                         | DaemonMessage::Ok { id }
                         | DaemonMessage::Resume { id, .. }
                         | DaemonMessage::InvokeResult { id, .. } => Some(*id),
-                        DaemonMessage::Hello(_) | DaemonMessage::Event(_) => None,
+                        DaemonMessage::Hello(_)
+                        | DaemonMessage::Event(_)
+                        | DaemonMessage::SessionAttached { .. }
+                        | DaemonMessage::SubscriptionEvent { .. } => None,
                     };
                     if message_id == Some(id) {
                         return Ok(message);

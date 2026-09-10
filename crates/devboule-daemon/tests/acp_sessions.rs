@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use devboule_daemon::{
@@ -17,7 +17,7 @@ use devboule_daemon::{
     SessionStateHandler,
 };
 use devboule_protocol::{
-    AttentionReason, ClientHello, ErrorCode, OwnerId, PermissionOutcome, Persistence,
+    AttentionReason, ClientHello, Cursor, ErrorCode, OwnerId, PermissionOutcome, Persistence,
     PersistenceKind, ResumeResult, SessionEvent, SessionKind, SessionStateSnapshot,
 };
 use rusqlite::Connection;
@@ -523,6 +523,85 @@ fn acp_resolved_permission_is_not_reopened_after_live_reattach() {
     test.client
         .session_close(&session.id)
         .expect("close resolved session");
+}
+
+// The app attaches right after picking a provider, before any prompt. With
+// the journal configured (the daemon always configures it), attach delegates
+// delivery to the live-agent replay pull; the manifest must still arrive.
+#[test]
+fn attach_delivers_the_manifest_before_any_prompt() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    test.client
+        .session_attach(&session.id, None, handler)
+        .expect("attach ACP session");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::SessionManifest { models, .. } if !models.is_empty())
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
+}
+
+// Mid-session reattach with an advanced cursor goes through the same
+// live-agent replay pull; the stored manifest must still arrive at the seam.
+#[test]
+fn attach_mid_session_with_advanced_cursor_still_delivers_the_manifest() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let (session, first) = test.attached_session();
+    test.client
+        .session_send(&session.id, "start the session")
+        .expect("prompt");
+    wait_for(&first, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::AgentFinished { stop_reason, .. } if stop_reason == "end_turn")
+        })
+    });
+    test.client.journal_usage().expect("flush journal");
+    let connection = Connection::open(test._harness.paths.journal_file()).expect("open journal");
+    let (generation, seq) = connection
+        .query_row(
+            "SELECT MAX(generation), MAX(seq) FROM events WHERE session_id = ?1",
+            [&session.id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .expect("read journal watermark");
+    test.client
+        .session_detach(&session.id)
+        .expect("detach first observer");
+
+    let events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&events);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        received.lock().expect("events lock").push(envelope.event);
+    });
+    test.client
+        .session_attach(
+            &session.id,
+            Some(Cursor {
+                generation: generation as u64,
+                seq: seq as u64,
+            }),
+            handler,
+        )
+        .expect("attach mid-session with advanced cursor");
+    wait_for(&events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::SessionManifest { models, .. } if !models.is_empty())
+        })
+    });
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
 }
 
 #[test]
@@ -1157,7 +1236,10 @@ fn acp_session_survives_daemon_restart_and_replays_agent_message() {
         .find(|listed| listed.id == session.id)
         .expect("recovered ACP session missing from sessions_list");
     assert!(
-        matches!(recovered.state, devboule_protocol::SessionState::Recovered { .. }),
+        matches!(
+            recovered.state,
+            devboule_protocol::SessionState::Recovered { .. }
+        ),
         "expected recovered ACP session, got {:?}",
         recovered.state
     );
@@ -1266,6 +1348,98 @@ fn acp_session_resume_loads_without_rejournaling_replay_and_keeps_identity() {
     test.client
         .session_close(&session.id)
         .expect("close resumed ACP session");
+}
+
+#[test]
+fn acp_session_resume_does_not_leave_other_observer_silent() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    test.client
+        .session_attach(&session.id, None, Arc::new(|_| {}))
+        .expect("resumer observer attaches");
+    let other = test._harness.client_named("other");
+    let other_events = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
+    let received = Arc::clone(&other_events);
+    let armed = Arc::new(AtomicBool::new(false));
+    let first_blocked = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(Barrier::new(2));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let handler_armed = Arc::clone(&armed);
+    let handler_release = Arc::clone(&release);
+    let handler: EventHandler = Arc::new(move |envelope| {
+        if handler_armed.load(Ordering::Acquire) && !first_blocked.swap(true, Ordering::AcqRel) {
+            let _ = entered_tx.send(());
+            handler_release.wait();
+        }
+        received
+            .lock()
+            .expect("other events lock")
+            .push(envelope.event);
+    });
+    other
+        .session_attach(&session.id, None, handler)
+        .expect("other observer attaches");
+    armed.store(true, Ordering::Release);
+
+    let pid: u32 = wait_for_file(&test.pid_file()).parse().expect("stub pid");
+    test.client
+        .session_stop(&session.id)
+        .expect("stop ACP session");
+    wait_until_gone(pid);
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("observer receives the old generation event");
+
+    test.client
+        .session_resume(
+            Persistence {
+                kind: PersistenceKind::Acp {
+                    handle: session.id.clone(),
+                },
+            },
+            None,
+        )
+        .expect("resume ACP session");
+    release.wait();
+
+    wait_for(&other_events, Duration::from_secs(5), |events| {
+        events.iter().any(|event| {
+            matches!(event, SessionEvent::Exit { .. })
+                || matches!(
+                    event,
+                    SessionEvent::AgentError { message }
+                        if message
+                            == "Session generation was replaced; reattach to continue observing."
+                )
+        })
+    });
+
+    test.client
+        .session_attach(&session.id, None, Arc::new(|_| {}))
+        .expect("reattach resumed ACP session");
+    test.client
+        .session_close(&session.id)
+        .expect("close resumed ACP session");
+}
+
+#[test]
+fn client_without_attachment_explains_how_to_send() {
+    let _test_lock = lock_tests();
+    let test = AcpTest::new(&[]);
+    let session = test.create_session();
+    let other = test._harness.client_named("unattached");
+
+    let error = other
+        .session_send(&session.id, "must be rejected locally")
+        .expect_err("unattached client must be rejected");
+    assert_eq!(
+        error.to_string(),
+        "Session is not attached; attach before sending session commands."
+    );
+    test.client
+        .session_close(&session.id)
+        .expect("close ACP session");
 }
 
 #[test]

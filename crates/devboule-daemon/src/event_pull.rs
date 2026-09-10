@@ -3,14 +3,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use devboule_protocol::{CursorShape, ScreenCursor, SessionEvent, SessionEventEnvelope};
+use devboule_protocol::{
+    CursorShape, ErrorCode, ScreenCursor, SessionEvent, SessionEventEnvelope, WireError,
+};
 
 use crate::agent_report::PeerIdentity;
 use crate::outbound::ConnOut;
 use crate::screen::{ScreenSnapshot, SnapshotCursorShape};
 
 use super::session_runtime::LiveAgentReplay;
-use super::session_types::AgentReplay;
+use super::session_types::{AgentReplay, AttachmentKey};
 use super::{Disposition, PendingEvent, PendingItem, PullState, SessionRuntime};
 
 /// A live agent may keep publishing while SQLite is being paged. Eight page
@@ -62,6 +64,7 @@ fn wire_event(
 ) -> PendingEvent {
     PendingEvent {
         session_id: session_id.to_string(),
+        subscription_id: pull.attachment_key.subscription_id,
         attachment_generation: pull.attachment_generation,
         envelope: SessionEventEnvelope {
             session_id: session_id.to_string(),
@@ -104,7 +107,7 @@ pub struct ConnHandle {
     pub id: u64,
     pub outbound: Arc<ConnOut>,
     pub peer: Option<PeerIdentity>,
-    attached: Mutex<HashMap<String, PullState>>,
+    attached: Mutex<HashMap<u64, PullState>>,
     state_events: Mutex<VecDeque<SessionEventEnvelope>>,
     next_attachment_generation: AtomicU64,
 }
@@ -126,26 +129,57 @@ impl ConnHandle {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn track_with_agent_replay(
         &self,
-        session_id: &str,
+        _session_id: &str,
         runtime: Arc<SessionRuntime>,
         transcript: bool,
         transcript_cursor: Option<u64>,
         generation: u64,
         live_agent_replay: Option<LiveAgentReplay>,
     ) {
-        let attachment_generation = self
-            .next_attachment_generation
-            .fetch_add(1, Ordering::Relaxed);
+        self.track_with_subscription(
+            self.id,
+            runtime,
+            transcript,
+            transcript_cursor,
+            generation,
+            live_agent_replay,
+        )
+        .expect("test subscription id must be unique");
+    }
+
+    pub(super) fn track_with_subscription(
+        &self,
+        subscription_id: u64,
+        runtime: Arc<SessionRuntime>,
+        transcript: bool,
+        transcript_cursor: Option<u64>,
+        generation: u64,
+        live_agent_replay: Option<LiveAgentReplay>,
+    ) -> Result<(), WireError> {
         let mut map = self
             .attached
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if map.contains_key(&subscription_id) {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "subscription id is already in use on this connection",
+            ));
+        }
+        let attachment_generation = self
+            .next_attachment_generation
+            .fetch_add(1, Ordering::Relaxed);
         map.insert(
-            session_id.to_string(),
+            subscription_id,
             PullState {
                 runtime,
+                attachment_key: AttachmentKey {
+                    conn_id: self.id,
+                    subscription_id,
+                },
                 transcript,
                 transcript_cursor,
                 agent_replay: live_agent_replay.map(|replay| AgentReplay {
@@ -162,7 +196,6 @@ impl ConnHandle {
                     journal_lagged: false,
                     force_finish: false,
                 }),
-                agent_backlog_after_replay: false,
                 exit_sent: false,
                 journal_degraded_sent: false,
                 generation,
@@ -170,19 +203,48 @@ impl ConnHandle {
             },
         );
         self.outbound.notify();
+        Ok(())
     }
 
-    pub(super) fn untrack(&self, session_id: &str) {
+    pub(super) fn untrack_subscription(&self, subscription_id: u64) {
         self.attached
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .remove(session_id);
+            .remove(&subscription_id);
     }
 
-    pub(super) fn take_attached_ids(&self) -> Vec<String> {
+    #[cfg(test)]
+    pub(super) fn untrack(&self, session_id: &str) {
+        let mut attached = self
+            .attached
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(subscription_id) = attached
+            .iter()
+            .find(|(_, pull)| pull.runtime.session_id == session_id)
+            .map(|(subscription_id, _)| *subscription_id)
+        {
+            attached.remove(&subscription_id);
+        }
+    }
+
+    pub(super) fn untrack_session(&self, session_id: &str) {
         self.attached
             .lock()
-            .map(|mut map| map.drain().map(|(id, _)| id).collect::<Vec<_>>())
+            .unwrap_or_else(|error| error.into_inner())
+            .retain(|_, pull| pull.runtime.session_id != session_id);
+    }
+
+    pub(super) fn take_attached_ids(&self) -> Vec<(u64, String)> {
+        self.attached
+            .lock()
+            .map(|mut map| {
+                map.drain()
+                    .map(|(subscription_id, pull)| {
+                        (subscription_id, pull.runtime.session_id.clone())
+                    })
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default()
     }
 
@@ -249,13 +311,21 @@ impl ConnHandle {
 
     /// Pull replay + live output + exit for every session this connection
     /// is attached to. Called from the writer thread; does not send.
-    pub(crate) fn event_is_current(&self, session_id: &str, attachment_generation: u64) -> bool {
+    pub(crate) fn event_is_current(
+        &self,
+        subscription_id: u64,
+        attachment_generation: u64,
+    ) -> bool {
         self.attached
             .lock()
-            .map(|map| map.get(session_id).map(|pull| pull.attachment_generation))
+            .map(|map| {
+                map.get(&subscription_id)
+                    .map(|pull| pull.attachment_generation)
+            })
             .unwrap_or_else(|error| {
                 let map = error.into_inner();
-                map.get(session_id).map(|pull| pull.attachment_generation)
+                map.get(&subscription_id)
+                    .map(|pull| pull.attachment_generation)
             })
             == Some(attachment_generation)
     }
@@ -264,17 +334,15 @@ impl ConnHandle {
     /// the connection. Only the transcript replay cursor advances here: live
     /// screen state is synchronised by snapshots, so an Output written to a
     /// live stream must not look like a replay position.
-    pub(crate) fn event_sent(&self, event: &PendingEvent) {
+    pub(crate) fn event_sent(&self, event: &PendingEvent) -> Option<String> {
         let mut map = self
             .attached
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let remove = {
-            let Some(pull) = map.get_mut(&event.session_id) else {
-                return;
-            };
+            let pull = map.get_mut(&event.subscription_id)?;
             if pull.attachment_generation != event.attachment_generation {
-                return;
+                return None;
             }
             match &event.envelope.event {
                 SessionEvent::Output { seq, .. } | SessionEvent::AgentReported { seq, .. } => {
@@ -309,9 +377,19 @@ impl ConnHandle {
                 }
             }
         };
-        if remove {
-            map.remove(&event.session_id);
-        }
+        let pull = remove
+            .then(|| map.remove(&event.subscription_id))
+            .flatten()?;
+        drop(map);
+        // Exit and Recovered are terminal for this pull. Remove the runtime
+        // observer at the same delivery boundary so transcript idle cleanup
+        // cannot be stranded behind an already-drained connection entry.
+        let session_id = pull.runtime.session_id.clone();
+        pull.runtime.detach_subscription(
+            pull.attachment_key.conn_id,
+            pull.attachment_key.subscription_id,
+        );
+        Some(session_id)
     }
 
     pub(crate) fn pull_events(&self) -> Vec<PendingEvent> {
@@ -320,11 +398,12 @@ impl ConnHandle {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let mut events = Vec::new();
-        for (session_id, pull) in map.iter_mut() {
+        for pull in map.values_mut() {
+            let session_id = pull.runtime.session_id.clone();
             if pull.transcript {
-                pull_transcript_events(session_id, pull, &mut events);
+                pull_transcript_events(&session_id, pull, &mut events);
             } else {
-                pull_live_events(session_id, pull, &mut events);
+                pull_live_events(&session_id, pull, &mut events);
             }
         }
         events
@@ -368,9 +447,11 @@ fn pull_live_agent_replay_events(
                 // drop their journal-derived views and append the enriched
                 // stored manifest exactly once after durable conversation
                 // replay. This preserves provider and selected effort.
-                let current_seq = pull
-                    .runtime
-                    .finish_live_agent_replay(replay.from_seq, &replay.replayed_seqs);
+                let current_seq = pull.runtime.finish_live_agent_replay(
+                    pull.attachment_key,
+                    replay.from_seq,
+                    &replay.replayed_seqs,
+                );
                 if current_seq > replay.watermark && !replay.force_finish {
                     if replay.catch_up_extensions < LIVE_AGENT_REPLAY_MAX_CATCH_UPS {
                         replay.watermark = current_seq;
@@ -381,7 +462,6 @@ fn pull_live_agent_replay_events(
                     replay.journal_lagged = true;
                     replay.force_finish = true;
                 }
-                pull.agent_backlog_after_replay = true;
                 if let Some(manifest) = pull.runtime.session_manifest() {
                     replay.pending.push_back((replay.watermark, manifest));
                 }
@@ -560,19 +640,6 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
     }
     let budget = super::PULL_BATCH.saturating_sub(events.len());
     let mut drained: Vec<PendingItem> = Vec::with_capacity(budget);
-    if pull.agent_backlog_after_replay {
-        while drained.len() < budget {
-            let Some(item) = pull.runtime.pop_replay_backlog_item() else {
-                pull.agent_backlog_after_replay = false;
-                break;
-            };
-            drained.push(item);
-        }
-        if drained.len() >= budget {
-            emit_live_items(session_id, pull, events, drained);
-            return;
-        }
-    }
     let degraded;
     let silent_event;
     let mut exit_event = None;
@@ -581,19 +648,22 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
             push_dead_events(session_id, pull, events);
             return;
         };
+        let Some(attachment) = stream.observers.get_mut(&pull.attachment_key) else {
+            return;
+        };
         while drained.len() < budget {
-            let Some(item) = stream.pending.pop_front() else {
+            let Some(item) = attachment.pending.pop_front() else {
                 break;
             };
             match &item {
                 PendingItem::Output { data, .. } => {
-                    stream.pending_bytes = stream.pending_bytes.saturating_sub(data.len());
-                    stream.pending_frames = stream.pending_frames.saturating_sub(1);
+                    attachment.pending_bytes = attachment.pending_bytes.saturating_sub(data.len());
+                    attachment.pending_frames = attachment.pending_frames.saturating_sub(1);
                 }
                 PendingItem::Snapshot { .. } => {}
                 PendingItem::Agent { bytes, .. } => {
-                    stream.pending_bytes = stream.pending_bytes.saturating_sub(*bytes);
-                    stream.pending_frames = stream.pending_frames.saturating_sub(1);
+                    attachment.pending_bytes = attachment.pending_bytes.saturating_sub(*bytes);
+                    attachment.pending_frames = attachment.pending_frames.saturating_sub(1);
                 }
             }
             drained.push(item);
@@ -602,11 +672,14 @@ fn pull_live_events(session_id: &str, pull: &mut PullState, events: &mut Vec<Pen
         if degraded {
             pull.journal_degraded_sent = true;
         }
-        silent_event = stream
+        silent_event = attachment
             .pending_silences
             .pop_front()
             .map(|elapsed_ms| SessionEvent::Silent { elapsed_ms });
-        if !pull.exit_sent && stream.pending.is_empty() && SessionRuntime::ready_for_exit(&stream) {
+        if !pull.exit_sent
+            && attachment.pending.is_empty()
+            && SessionRuntime::ready_for_exit(&stream)
+        {
             exit_event = Some(match stream.disposition {
                 Disposition::Recovered { integrity } => SessionEvent::Recovered { integrity },
                 Disposition::Running | Disposition::Silent | Disposition::Exited { .. } => {
@@ -786,6 +859,41 @@ mod tests {
             outcome.live_agent_replay,
         );
         outcome.generation
+    }
+
+    #[test]
+    fn delivered_exit_removes_the_runtime_observer() {
+        let runtime = Arc::new(SessionRuntime::new());
+        let conn = ConnHandle::new(1);
+        attach_tracked(&runtime, &conn);
+
+        runtime.finish(Some(0));
+        let events = drain(&conn);
+
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, SessionEvent::Exit { .. })));
+        assert!(runtime.stream.lock().unwrap().observers.is_empty());
+    }
+
+    #[test]
+    fn duplicate_subscription_id_does_not_replace_another_session() {
+        let conn = ConnHandle::new(1);
+        let first = Arc::new(SessionRuntime::new());
+        let second = Arc::new(SessionRuntime::new());
+
+        conn.track_with_subscription(7, Arc::clone(&first), false, None, 1, None)
+            .expect("first subscription");
+        let error = conn
+            .track_with_subscription(7, Arc::clone(&second), false, None, 1, None)
+            .expect_err("duplicate subscription id must be rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+
+        let attached = conn.attached.lock().unwrap();
+        assert!(Arc::ptr_eq(
+            &attached.get(&7).expect("subscription").runtime,
+            &first
+        ));
     }
 
     fn live_agent_replay_fixture(
@@ -1008,7 +1116,20 @@ mod tests {
             outcome.generation,
             outcome.live_agent_replay,
         );
-        assert_eq!(runtime.stream.lock().unwrap().pending.len(), 0);
+        let stream = runtime.stream.lock().unwrap();
+        assert_eq!(
+            stream
+                .observers
+                .get(&AttachmentKey {
+                    conn_id: conn.id,
+                    subscription_id: conn.id,
+                })
+                .expect("attachment")
+                .pending
+                .len(),
+            0
+        );
+        drop(stream);
 
         runtime.publish_agent_event(
             SessionEvent::AgentMessage {
@@ -1141,7 +1262,16 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(texts, vec!["first", "second"]);
-        assert!(runtime.stream.lock().unwrap().agent_backlog.is_empty());
+        let stream = runtime.stream.lock().unwrap();
+        assert_eq!(
+            stream
+                .agent_backlog
+                .iter()
+                .filter(|item| matches!(item, PendingItem::Agent { .. }))
+                .count(),
+            2
+        );
+        drop(stream);
 
         drop(runtime);
         drop(journal);
@@ -1212,17 +1342,43 @@ mod tests {
             outcome.generation,
             outcome.live_agent_replay,
         );
-        assert_eq!(runtime.stream.lock().unwrap().pending.len(), 0);
+        let stream = runtime.stream.lock().unwrap();
+        assert_eq!(
+            stream
+                .observers
+                .get(&AttachmentKey {
+                    conn_id: conn.id,
+                    subscription_id: conn.id,
+                })
+                .expect("attachment")
+                .pending
+                .len(),
+            0
+        );
+        drop(stream);
 
         let first = conn.pull_events();
         assert!(!first.is_empty());
         assert!(first.len() <= PULL_BATCH);
-        assert_eq!(runtime.stream.lock().unwrap().pending.len(), 0);
+        let stream = runtime.stream.lock().unwrap();
+        assert_eq!(
+            stream
+                .observers
+                .get(&AttachmentKey {
+                    conn_id: conn.id,
+                    subscription_id: conn.id,
+                })
+                .expect("attachment")
+                .pending
+                .len(),
+            0
+        );
+        drop(stream);
         let replay_pending = conn
             .attached
             .lock()
             .unwrap()
-            .get(session_id)
+            .get(&conn.id)
             .and_then(|pull| pull.agent_replay.as_ref())
             .map(|replay| replay.pending.len())
             .unwrap_or(0);
@@ -1718,6 +1874,231 @@ mod tests {
         );
     }
 
+    #[test]
+    fn observers_replay_from_independent_cursors() {
+        let integrity = recovered_integrity();
+        let replay = crate::journal::Replay {
+            generation: 1,
+            last_seq: 3,
+            integrity,
+            event_seqs: vec![1, 2, 3, 3],
+            events: vec![
+                SessionEvent::Output {
+                    seq: 1,
+                    data: "one".to_string(),
+                },
+                SessionEvent::Output {
+                    seq: 2,
+                    data: "two".to_string(),
+                },
+                SessionEvent::Output {
+                    seq: 3,
+                    data: "three".to_string(),
+                },
+                SessionEvent::Recovered { integrity },
+            ],
+        };
+        let runtime = Arc::new(SessionRuntime::from_replay(
+            "s.independent-cursors".to_string(),
+            None,
+            replay,
+        ));
+        let first = ConnHandle::new(11);
+        let second = ConnHandle::new(22);
+        let first_outcome = runtime
+            .try_attach_with_subscription(
+                1101,
+                Some(Cursor {
+                    generation: 1,
+                    seq: 0,
+                }),
+                &first,
+                false,
+            )
+            .expect("first replay observer");
+        first
+            .track_with_subscription(
+                1101,
+                Arc::clone(&runtime),
+                true,
+                Some(0),
+                first_outcome.generation,
+                first_outcome.live_agent_replay,
+            )
+            .expect("first subscription");
+        let second_outcome = runtime
+            .try_attach_with_subscription(
+                2202,
+                Some(Cursor {
+                    generation: 1,
+                    seq: 1,
+                }),
+                &second,
+                false,
+            )
+            .expect("second replay observer");
+        second
+            .track_with_subscription(
+                2202,
+                Arc::clone(&runtime),
+                true,
+                Some(1),
+                second_outcome.generation,
+                second_outcome.live_agent_replay,
+            )
+            .expect("second subscription");
+
+        let output_text = |events: Vec<SessionEvent>| {
+            events
+                .into_iter()
+                .filter_map(|event| match event {
+                    SessionEvent::Output { data, .. } => Some(data),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(output_text(drain(&first)), vec!["one", "two", "three"]);
+        assert_eq!(output_text(drain(&second)), vec!["two", "three"]);
+    }
+
+    #[test]
+    fn third_live_agent_observer_keeps_the_shared_backlog() {
+        let dir = std::env::temp_dir().join(format!(
+            "devboule-live-agent-delayed-observer-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let journal = Arc::new(Journal::open(&dir.join("journal.db")).unwrap());
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            "s.live.agent.delayed-observer".to_string(),
+            Some(Arc::clone(&journal)),
+        ));
+        {
+            let mut stream = runtime.stream.lock().unwrap();
+            stream.screen = None;
+            stream.transcript = false;
+            stream.next_seq = 3;
+            let event = SessionEvent::AgentMessage {
+                message_id: Some("delayed".to_string()),
+                text: "must survive".to_string(),
+            };
+            let bytes = serde_json::to_vec(&event).unwrap().len();
+            stream.agent_backlog.push_back(PendingItem::Agent {
+                seq: Some(2),
+                event,
+                bytes,
+            });
+            stream.agent_backlog_bytes = bytes;
+            stream.agent_backlog_frames = 1;
+        }
+
+        let fast = ConnHandle::new(1);
+        let fast_outcome = runtime
+            .try_attach_with_subscription(
+                101,
+                Some(Cursor {
+                    generation: 1,
+                    seq: 2,
+                }),
+                &fast,
+                true,
+            )
+            .expect("fast observer attaches");
+        fast.track_with_agent_replay(
+            "s.live.agent.delayed-observer",
+            Arc::clone(&runtime),
+            false,
+            None,
+            fast_outcome.generation,
+            fast_outcome.live_agent_replay,
+        );
+        runtime.finish_live_agent_replay(
+            AttachmentKey {
+                conn_id: fast.id,
+                subscription_id: 101,
+            },
+            2,
+            &std::collections::HashSet::new(),
+        );
+
+        let middle = ConnHandle::new(2);
+        let middle_outcome = runtime
+            .try_attach_with_subscription(
+                202,
+                Some(Cursor {
+                    generation: 1,
+                    seq: 2,
+                }),
+                &middle,
+                true,
+            )
+            .expect("middle observer attaches");
+        middle.track_with_agent_replay(
+            "s.live.agent.delayed-observer",
+            Arc::clone(&runtime),
+            false,
+            None,
+            middle_outcome.generation,
+            middle_outcome.live_agent_replay,
+        );
+
+        let delayed = ConnHandle::new(3);
+        let delayed_outcome = runtime
+            .try_attach_with_subscription(
+                303,
+                Some(Cursor {
+                    generation: 1,
+                    seq: 0,
+                }),
+                &delayed,
+                true,
+            )
+            .expect("delayed observer attaches");
+        delayed.track_with_agent_replay(
+            "s.live.agent.delayed-observer",
+            Arc::clone(&runtime),
+            false,
+            None,
+            delayed_outcome.generation,
+            delayed_outcome.live_agent_replay,
+        );
+        runtime.finish_live_agent_replay(
+            AttachmentKey {
+                conn_id: delayed.id,
+                subscription_id: 303,
+            },
+            0,
+            &std::collections::HashSet::new(),
+        );
+
+        let stream = runtime.stream.lock().unwrap();
+        assert!(stream
+            .observers
+            .get(&AttachmentKey {
+                conn_id: delayed.id,
+                subscription_id: 303,
+            })
+            .unwrap()
+            .pending
+            .iter()
+            .any(|item| matches!(
+                item,
+                PendingItem::Agent {
+                    event: SessionEvent::AgentMessage { text, .. },
+                    ..
+                } if text == "must survive"
+            )));
+
+        drop(stream);
+        drop(runtime);
+        drop(journal);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn recovered_integrity() -> TranscriptIntegrity {
         TranscriptIntegrity::Unverifiable {
             dropped_frames: 0,
@@ -1830,7 +2211,7 @@ mod tests {
             .attached
             .lock()
             .expect("attached")
-            .get("s.report.cursor")
+            .get(&conn.id)
             .and_then(|pull| pull.transcript_cursor);
         assert_eq!(
             cursor,

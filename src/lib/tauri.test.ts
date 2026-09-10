@@ -10,6 +10,12 @@ import {
   journalUsage,
   providersRefresh,
   sessionAttach,
+  sessionClaim,
+  sessionDetach,
+  sessionInterrupt,
+  sessionPermissionRespond,
+  sessionResize,
+  sessionSend,
   sessionCreate,
   sessionDelete,
   sessionPresence,
@@ -62,7 +68,7 @@ describe("invokeTyped rejected payload", () => {
     vi.mocked(invoke).mockRejectedValueOnce(payload);
 
     try {
-      await invokeTyped("session_detach", { id: "missing" });
+      await invokeTyped("session_detach", { subscriptionId: 41 });
       throw new Error("expected invokeTyped to reject");
     } catch (error) {
       expect(error).toBe(payload);
@@ -176,9 +182,9 @@ describe("create and attach command wrappers", () => {
 
   it("sends session_attach with the camelCase fromCursor expected by Tauri v2", async () => {
     vi.mocked(invoke).mockClear();
-    vi.mocked(invoke).mockResolvedValue(undefined as never);
+    vi.mocked(invoke).mockResolvedValue(41 as never);
     const ch = {} as Channel;
-    await sessionAttach("s.owner.1", null, ch);
+    await expect(sessionAttach("s.owner.1", null, ch)).resolves.toBe(41);
 
     // Same convention: the daemon's `from_cursor: Option<u64>` is `fromCursor`
     // on the JS side.
@@ -187,6 +193,42 @@ describe("create and attach command wrappers", () => {
       fromCursor: null,
       ch,
     });
+  });
+
+  it("puts the subscription id on every observer-specific command", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(undefined as never);
+
+    await sessionSend("s.owner.1", 41, "hello");
+    await sessionInterrupt("s.owner.1", 41);
+    await sessionClaim(41);
+    await sessionPermissionRespond("s.owner.1", 41, "tool-1", "allow_once");
+    await sessionResize("s.owner.1", 41, 80, 24);
+    await sessionDetach(41);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "session_send", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      text: "hello",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "session_interrupt", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "session_claim", { subscriptionId: 41 });
+    expect(invoke).toHaveBeenNthCalledWith(4, "session_permission_respond", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      requestId: "tool-1",
+      outcome: "allow_once",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(5, "session_resize", {
+      id: "s.owner.1",
+      subscriptionId: 41,
+      cols: 80,
+      rows: 24,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(6, "session_detach", { subscriptionId: 41 });
   });
 });
 

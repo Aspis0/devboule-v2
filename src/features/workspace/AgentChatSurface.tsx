@@ -6,6 +6,7 @@ import {
   sessionInterrupt,
   sessionSend,
   sessionSetModel,
+  type SubscriptionId,
   type SessionChannel,
 } from "../../lib/tauri";
 import type {
@@ -25,7 +26,11 @@ interface AgentChatSurfaceProps {
   id?: string;
   observedState?: SessionState | null;
   elapsedMs?: number | null;
-  onPermissionRequest?: (sessionId: string, request: PermissionRequest) => void;
+  onPermissionRequest?: (
+    sessionId: string,
+    subscriptionId: SubscriptionId,
+    request: PermissionRequest,
+  ) => void;
   onPermissionResolved?: (sessionId: string, toolCallId: string) => void;
 }
 
@@ -44,7 +49,11 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     ) as Promise<T>;
   }
   if (command === "session_send") {
-    return sessionSend(id, typeof args?.text === "string" ? args.text : "") as Promise<T>;
+    return sessionSend(
+      id,
+      args?.subscriptionId as SubscriptionId,
+      typeof args?.text === "string" ? args.text : "",
+    ) as Promise<T>;
   }
   if (command === "session_set_model") {
     return sessionSetModel(
@@ -53,8 +62,10 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
       typeof args?.effort === "string" ? args.effort : undefined,
     ) as Promise<T>;
   }
-  if (command === "session_interrupt") return sessionInterrupt(id) as Promise<T>;
-  if (command === "session_detach") return sessionDetach(id) as Promise<T>;
+  if (command === "session_interrupt")
+    return sessionInterrupt(id, args?.subscriptionId as SubscriptionId) as Promise<T>;
+  if (command === "session_detach")
+    return sessionDetach(args?.subscriptionId as SubscriptionId) as Promise<T>;
   return Promise.reject(new Error(`Unsupported agent command: ${command}`));
 }
 
@@ -199,15 +210,11 @@ export const AgentChatSurface = memo(function AgentChatSurface({
       invoke: invokeAgentCommand,
       createChannel: createSessionChannel,
       onPermissionRequest: onPermissionRequest
-        ? (request) => onPermissionRequest(sessionId, request)
+        ? (request, subscriptionId) => onPermissionRequest(sessionId, subscriptionId, request)
         : undefined,
       onPermissionResolved: onPermissionResolved
         ? (toolCallId) => onPermissionResolved(sessionId, toolCallId)
         : undefined,
-      isSuperseded: () => {
-        const activeSession = sessionRef.current;
-        return activeSession !== null && activeSession !== session;
-      },
     });
     sessionRef.current = session;
     appliedEffortPrefRef.current = false;

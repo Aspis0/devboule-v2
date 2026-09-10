@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
-import type { SessionEvent } from "../types/ipc";
+import type { PermissionRequest, SessionEvent } from "../types/ipc";
 import { AgentSession, type AgentChannel, type AgentSessionDeps } from "./agentSession";
 
 interface Harness {
@@ -10,8 +10,8 @@ interface Harness {
 
 function makeHarness(): Harness {
   let emit: (event: SessionEvent) => void = () => undefined;
-  const invoke = vi.fn(
-    async (_command: string, _args?: Record<string, unknown>) => undefined,
+  const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) =>
+    command === "session_attach" ? 41 : undefined,
   ) as unknown as AgentSessionDeps["invoke"];
   const deps: AgentSessionDeps = {
     sessionId: "agent-1",
@@ -271,12 +271,119 @@ describe("ACP agent session", () => {
     expect(harness.session.getState().manifest?.providerId).toBe("grok");
   });
 
+  it("delivers a permission request that arrives while the attach is still in flight", async () => {
+    const onPermissionRequest = vi.fn();
+    const request: PermissionRequest = {
+      type: "permission_request",
+      toolCallId: "tool-early",
+      title: "Read file",
+      options: [],
+    };
+    let emit: (event: SessionEvent) => void = () => undefined;
+    let releaseAttach!: () => void;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "session_attach") {
+        await new Promise<void>((resolve) => {
+          releaseAttach = resolve;
+        });
+        return 41;
+      }
+      return undefined;
+    }) as unknown as AgentSessionDeps["invoke"];
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke,
+      createChannel: (onEvent) => {
+        emit = onEvent;
+        return {} as AgentChannel;
+      },
+      onPermissionRequest,
+    });
+
+    const started = session.start();
+    // The daemon delivers over the live channel before the attach confirms.
+    emit(request);
+    releaseAttach();
+    await started;
+
+    expect(onPermissionRequest).toHaveBeenCalledTimes(1);
+    expect(onPermissionRequest).toHaveBeenCalledWith(request, 41);
+
+    // A later request goes straight through; the held one is never re-sent.
+    emit({ ...request, toolCallId: "tool-late" });
+    expect(onPermissionRequest).toHaveBeenCalledTimes(2);
+    expect(onPermissionRequest).toHaveBeenLastCalledWith(
+      expect.objectContaining({ toolCallId: "tool-late" }),
+      41,
+    );
+  });
+
+  it("does not deliver a held permission request twice or after dispose", async () => {
+    const onPermissionRequest = vi.fn();
+    const request: PermissionRequest = {
+      type: "permission_request",
+      toolCallId: "tool-early",
+      title: "Read file",
+      options: [],
+    };
+    let emit: (event: SessionEvent) => void = () => undefined;
+    let releaseAttach!: () => void;
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "session_attach") {
+        await new Promise<void>((resolve) => {
+          releaseAttach = resolve;
+        });
+        return 41;
+      }
+      return undefined;
+    }) as unknown as AgentSessionDeps["invoke"];
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke,
+      createChannel: (onEvent) => {
+        emit = onEvent;
+        return {} as AgentChannel;
+      },
+      onPermissionRequest,
+    });
+
+    const started = session.start();
+    emit(request);
+    session.dispose();
+    releaseAttach();
+    await started;
+
+    expect(onPermissionRequest).not.toHaveBeenCalled();
+  });
+
+  it("clears its channel on dispose", async () => {
+    const ref: { channel: AgentChannel | null } = { channel: null };
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke: vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"],
+      createChannel: (onEvent) => {
+        ref.channel = { onmessage: onEvent } as AgentChannel;
+        return ref.channel;
+      },
+    });
+
+    await session.start();
+    const handler = ref.channel?.onmessage;
+    session.dispose();
+
+    expect(ref.channel?.onmessage).not.toBe(handler);
+  });
+
   it("forwards permission_resolved to the host callback", async () => {
     let emit: (event: SessionEvent) => void = () => undefined;
     const onPermissionResolved = vi.fn();
     const session = new AgentSession({
       sessionId: "agent-1",
-      invoke: vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"],
+      invoke: vi.fn(async (command: string) =>
+        command === "session_attach" ? 41 : undefined,
+      ) as unknown as AgentSessionDeps["invoke"],
       createChannel: (onEvent) => {
         emit = onEvent;
         return {} as AgentChannel;
@@ -286,6 +393,81 @@ describe("ACP agent session", () => {
     await session.start();
     emit({ type: "permission_resolved", toolCallId: "tool-timeout" });
     expect(onPermissionResolved).toHaveBeenCalledWith("tool-timeout");
+  });
+  it("keeps its subscription id for commands and its own detach", async () => {
+    const harness = makeHarness();
+
+    await harness.session.start();
+    await harness.session.send("hello");
+    harness.session.dispose();
+
+    expect(harness.session.getSubscriptionId()).toBeNull();
+    expect(harness.invoke).toHaveBeenCalledWith("session_send", {
+      id: "agent-1",
+      subscriptionId: 41,
+      text: "hello",
+    });
+    expect(harness.invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 41 });
+  });
+
+  it("does not detach when attach did not return a subscription id", async () => {
+    const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
+    const session = new AgentSession({
+      sessionId: "agent-1",
+      invoke,
+      createChannel: () => ({}) as AgentChannel,
+    });
+
+    await session.start();
+    session.dispose();
+
+    expect(invoke).not.toHaveBeenCalledWith("session_detach", expect.anything());
+  });
+
+  it("keeps rapid replacement attaches separate from an in-flight detach", async () => {
+    let nextSubscriptionId = 40;
+    let releaseDetach!: () => void;
+    let detachStarted!: () => void;
+    const detachGate = new Promise<void>((resolve) => {
+      releaseDetach = resolve;
+    });
+    const detachStartedGate = new Promise<void>((resolve) => {
+      detachStarted = resolve;
+    });
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "session_attach") return ++nextSubscriptionId;
+      if (command === "session_detach") {
+        detachStarted();
+        await detachGate;
+      }
+      return undefined;
+    }) as unknown as AgentSessionDeps["invoke"];
+    const createSession = (sessionId: string) =>
+      new AgentSession({
+        sessionId,
+        invoke,
+        createChannel: () => ({}) as AgentChannel,
+      });
+
+    const first = createSession("agent-1");
+    await first.start();
+    first.dispose();
+    const firstDetach = first.detach();
+    await detachStartedGate;
+
+    const second = createSession("agent-1");
+    await second.start();
+    releaseDetach();
+    await firstDetach;
+
+    second.dispose();
+    await second.detach();
+    const third = createSession("agent-1");
+    await third.start();
+
+    expect(invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 41 });
+    expect(invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 42 });
+    expect(third.getSubscriptionId()).toBe(43);
   });
 
   it("switches the model and clears the pending switch when a manifest confirms", async () => {

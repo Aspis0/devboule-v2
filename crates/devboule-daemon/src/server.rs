@@ -72,6 +72,8 @@ pub struct ServerState {
     provider_versions: Mutex<HashMap<String, String>>,
     /// Version obtained by an explicit native `--version` refresh probe.
     provider_cli_versions: Mutex<HashMap<String, (String, CliVersionFingerprint)>>,
+    /// Executable paths whose Claude version probe is already running.
+    claude_version_probes: Mutex<HashSet<std::path::PathBuf>>,
     /// The only process-launch seam for provider updates. Tests replace this
     /// runner so no npm or network is ever started by the test suite.
     npm_install_runner: Arc<dyn NpmInstallRunner>,
@@ -164,6 +166,7 @@ impl ServerState {
             provider_health: Mutex::new(HashMap::new()),
             provider_versions: Mutex::new(HashMap::new()),
             provider_cli_versions: Mutex::new(HashMap::new()),
+            claude_version_probes: Mutex::new(HashSet::new()),
             npm_install_runner,
             #[cfg(test)]
             provider_update_catalog: Mutex::new(None),
@@ -420,6 +423,116 @@ impl ServerState {
             .unwrap_or_else(|error| error.into_inner());
         let (version, cached) = guard.get(provider_id)?;
         cli_version_cache_is_current(cached, current.as_ref()).then(|| version.clone())
+    }
+
+    pub(crate) fn claude_models(self: &Arc<Self>) -> crate::claude_catalog::ClaudeCatalogSnapshot {
+        let Some(agent) = crate::provider_catalog::find_available("claude") else {
+            return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                crate::claude_catalog::fallback_models(),
+            );
+        };
+        let (catalog_path, version, script) = match agent.install_channel {
+            crate::provider_catalog::InstallChannel::Native => {
+                let version = self
+                    .provider_cli_version("claude", &agent.executable)
+                    .or_else(|| {
+                        std::env::var_os("DEVBOULE_TEST_NO_NETWORK").map(|_| "test".to_string())
+                    });
+                let Some(version) = version else {
+                    self.start_claude_version_probe(agent);
+                    return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                        crate::claude_catalog::fallback_models(),
+                    );
+                };
+                (agent.executable, version, false)
+            }
+            crate::provider_catalog::InstallChannel::Npm => {
+                let Some(script) = agent.prefix_args.first().map(std::path::PathBuf::from) else {
+                    eprintln!("Claude npm installation has no local script to scrape");
+                    return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                        crate::claude_catalog::fallback_models(),
+                    );
+                };
+                let Some(version) = agent.installed_version else {
+                    eprintln!(
+                        "Claude npm installation has no package version; model catalog unavailable"
+                    );
+                    return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                        crate::claude_catalog::fallback_models(),
+                    );
+                };
+                (script, version, true)
+            }
+            crate::provider_catalog::InstallChannel::NpxRegistry => {
+                return crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+                    crate::claude_catalog::fallback_models(),
+                );
+            }
+        };
+        if let Some(models) = crate::claude_catalog::cached(self.sessions.runtime_dir(), &version) {
+            return crate::claude_catalog::ClaudeCatalogSnapshot::derived(models);
+        }
+        self.start_claude_derivation(catalog_path, version, script);
+        crate::claude_catalog::ClaudeCatalogSnapshot::provisional(
+            crate::claude_catalog::fallback_models(),
+        )
+    }
+
+    fn start_claude_version_probe(
+        self: &Arc<Self>,
+        agent: crate::provider_catalog::InstalledAgent,
+    ) {
+        let mut probes = self
+            .claude_version_probes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !probes.insert(agent.executable.clone()) {
+            return;
+        }
+        drop(probes);
+
+        let state = Arc::clone(self);
+        let executable = agent.executable.clone();
+        let probe_path = agent.executable.clone();
+        let cleanup_path = probe_path.clone();
+        let spawn = std::thread::Builder::new()
+            .name("claude-version-probe".to_string())
+            .spawn(move || {
+                if let Some((version, fingerprint)) = probe_native_version(&state, &agent) {
+                    state.record_provider_cli_version("claude", &version, fingerprint);
+                    state.start_claude_derivation(executable, version, false);
+                }
+                state
+                    .claude_version_probes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .remove(&cleanup_path);
+            });
+        if spawn.is_err() {
+            self.claude_version_probes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&probe_path);
+        }
+    }
+
+    fn start_claude_derivation(
+        self: &Arc<Self>,
+        catalog_path: std::path::PathBuf,
+        version: String,
+        script: bool,
+    ) {
+        let state = Arc::clone(self);
+        let runtime_dir = self.sessions.runtime_dir().to_path_buf();
+        let source = if script {
+            crate::claude_catalog::source_for_script(&catalog_path)
+        } else {
+            crate::claude_catalog::source_for(&catalog_path)
+        };
+        let _ =
+            crate::claude_catalog::start_derivation(source, runtime_dir, version, move |models| {
+                state.sessions.publish_claude_catalog(models)
+            });
     }
 
     fn invalidate_provider_update_caches(&self, provider_id: &str) {
@@ -874,7 +987,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                         refill_pending_events(&conn, &mut pending_events);
                         refill_pending_state_events(&conn, &mut pending_state_events);
                     }
-                    drain_pending_events(&framed, &conn, &mut pending_events)?;
+                    drain_pending_events(&framed, &conn, &mut pending_events, &state.sessions)?;
                     drain_pending_state_events(&framed, &mut pending_state_events)?;
                 } else {
                     // Give the event stream one turn before every ordinary
@@ -885,7 +998,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     refill_pending_events(&conn, &mut pending_events);
                     refill_pending_state_events(&conn, &mut pending_state_events);
                     if let Some(event) = pending_events.pop_front() {
-                        send_pending_event(&framed, &conn, event)?;
+                        send_pending_event(&framed, &conn, event, &state.sessions)?;
                     } else if let Some(event) = pending_state_events.pop_front() {
                         send_state_event(&framed, event)?;
                     }
@@ -916,7 +1029,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     // which can publish the teardown tail after the pre-drain.
                     refill_pending_events(&conn, &mut pending_events);
                     refill_pending_state_events(&conn, &mut pending_state_events);
-                    drain_pending_events(&framed, &conn, &mut pending_events)?;
+                    drain_pending_events(&framed, &conn, &mut pending_events, &state.sessions)?;
                     drain_pending_state_events(&framed, &mut pending_state_events)?;
                 }
                 let shutting_down = matches!(reply, DaemonMessage::Shutdown { accepted: true, .. });
@@ -957,7 +1070,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
             // In particular, no bulk output batch can hold a DSR, resize, or
             // kill request behind a sequence of flushes.
             if let Some(event) = pending_events.pop_front() {
-                send_pending_event(&framed, &conn, event)?;
+                send_pending_event(&framed, &conn, event, &state.sessions)?;
             } else {
                 let event = pending_state_events
                     .pop_front()
@@ -976,7 +1089,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     bounded_join(reader, JOIN_BUDGET);
     refill_pending_events(&conn, &mut pending_events);
     refill_pending_state_events(&conn, &mut pending_state_events);
-    if let Err(error) = drain_pending_events(&framed, &conn, &mut pending_events) {
+    if let Err(error) = drain_pending_events(&framed, &conn, &mut pending_events, &state.sessions) {
         eprintln!("daemon connection final event drain failed: {error}");
     }
     if let Err(error) = drain_pending_state_events(&framed, &mut pending_state_events) {
@@ -1006,9 +1119,10 @@ fn drain_pending_events(
     framed: &Framed,
     conn: &ConnHandle,
     pending_events: &mut VecDeque<PendingEvent>,
+    sessions: &SessionRegistry,
 ) -> Result<(), DaemonError> {
     while let Some(event) = pending_events.pop_front() {
-        send_pending_event(framed, conn, event)?;
+        send_pending_event(framed, conn, event, sessions)?;
     }
     Ok(())
 }
@@ -1040,8 +1154,9 @@ fn send_pending_event(
     framed: &Framed,
     conn: &ConnHandle,
     event: PendingEvent,
+    sessions: &SessionRegistry,
 ) -> Result<(), DaemonError> {
-    if !conn.event_is_current(&event.session_id, event.attachment_generation) {
+    if !conn.event_is_current(event.subscription_id, event.attachment_generation) {
         let sequence = match &event.envelope.event {
             SessionEvent::Output { seq, .. } => format!(" seq={seq}"),
             SessionEvent::Exit { .. } => " exit".to_string(),
@@ -1071,11 +1186,16 @@ fn send_pending_event(
         );
         return Ok(());
     }
-    framed.send_unflushed(&DaemonMessage::Event(event.envelope.clone()))?;
+    framed.send_unflushed(&DaemonMessage::SubscriptionEvent {
+        subscription_id: event.subscription_id,
+        envelope: event.envelope.clone(),
+    })?;
     // The cursor is advanced after the complete frame has been written. The
     // clone above is only for the serialized message; the original envelope
     // retains the acknowledgement metadata.
-    conn.event_sent(&event);
+    if let Some(session_id) = conn.event_sent(&event) {
+        sessions.subscription_event_sent(&session_id);
+    }
     Ok(())
 }
 
@@ -1261,6 +1381,7 @@ fn dispatch_immediate(
         ClientMessage::SessionCreate { .. }
         | ClientMessage::SessionAttach { .. }
         | ClientMessage::SessionDetach { .. }
+        | ClientMessage::SessionClaim { .. }
         | ClientMessage::SessionClose { .. }
         | ClientMessage::SessionStop { .. }
         | ClientMessage::SessionSend { .. }
@@ -1297,6 +1418,12 @@ fn dispatch_immediate(
 }
 
 fn providers_reply(state: &Arc<ServerState>, id: u64, force: bool) -> DaemonMessage {
+    // The settings list is also the normal pre-session discovery path. Make
+    // sure a Claude session can start with a non-empty model manifest even if
+    // the user has not opened the settings panel's Refresh button.
+    if !force {
+        let _ = state.claude_models();
+    }
     let discovery = if force {
         refresh_provider_catalog(state)
     } else {
@@ -1383,6 +1510,8 @@ fn refresh_provider_catalog(
             state.record_provider_cli_version(&provider_id, &version, fingerprint);
         }
     }
+
+    let _ = state.claude_models();
 
     crate::provider_catalog::discover_catalog_in_paths(
         &crate::registry::CdnRegistryFetch,
@@ -1574,6 +1703,9 @@ fn probe_native_version(
     }
     #[cfg(not(test))]
     {
+        if agent.id == "claude" && std::env::var_os("DEVBOULE_TEST_NO_NETWORK").is_some() {
+            return None;
+        }
         #[cfg(not(windows))]
         let _ = state;
         let fingerprint = executable_fingerprint(&agent.executable)?;
@@ -1867,19 +1999,45 @@ fn dispatch_session(
         ClientMessage::SessionAttach {
             id,
             session_id,
+            subscription_id,
             from_cursor,
         } => reply_result(
             id,
             state
                 .sessions
-                .attach(&session_id, from_cursor, conn, owner, typed_permissions_ok)
-                .map(|()| DaemonMessage::Ok { id }),
+                .attach_with_subscription(
+                    &session_id,
+                    subscription_id,
+                    from_cursor,
+                    conn,
+                    owner,
+                    typed_permissions_ok,
+                )
+                .map(|()| DaemonMessage::SessionAttached {
+                    id,
+                    subscription_id,
+                }),
         ),
-        ClientMessage::SessionDetach { id, session_id } => reply_result(
+        ClientMessage::SessionDetach {
+            id,
+            session_id,
+            subscription_id,
+        } => reply_result(
             id,
             state
                 .sessions
-                .detach(&session_id, conn, owner)
+                .detach_with_subscription(&session_id, subscription_id, conn, owner)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
+        ClientMessage::SessionClaim {
+            id,
+            session_id,
+            subscription_id,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .claim_resize_with_subscription(&session_id, subscription_id, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionClose {
@@ -1931,29 +2089,44 @@ fn dispatch_session(
                 .set_presence(conn.id, owner, focused_session_id, app_visible)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
-        ClientMessage::SessionStop { id, session_id } => reply_result(
+        ClientMessage::SessionStop {
+            id,
+            session_id,
+            subscription_id,
+        } => reply_result(
             id,
             state
                 .sessions
-                .stop(&session_id, owner)
+                .stop_with_subscription(&session_id, subscription_id, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionSend {
             id,
             session_id,
+            subscription_id,
             text,
             idempotency_key,
-        } => session_send(state, owner, conn, id, session_id, text, idempotency_key),
+        } => session_send(
+            state,
+            owner,
+            conn,
+            id,
+            session_id,
+            subscription_id,
+            text,
+            idempotency_key,
+        ),
         ClientMessage::SessionResize {
             id,
             session_id,
+            subscription_id,
             cols,
             rows,
         } => reply_result(
             id,
             state
                 .sessions
-                .resize(&session_id, cols, rows, owner, conn)
+                .resize_with_subscription(&session_id, subscription_id, cols, rows, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionsList { id } => match state.sessions.list(owner) {
@@ -2009,11 +2182,15 @@ fn dispatch_session(
                 }
             }
         },
-        ClientMessage::SessionInterrupt { id, session_id } => reply_result(
+        ClientMessage::SessionInterrupt {
+            id,
+            session_id,
+            subscription_id,
+        } => reply_result(
             id,
             state
                 .sessions
-                .interrupt(&session_id, owner)
+                .interrupt_with_subscription(&session_id, subscription_id, owner, conn)
                 .map(|()| DaemonMessage::Ok { id }),
         ),
         ClientMessage::SessionSetModel {
@@ -2031,6 +2208,7 @@ fn dispatch_session(
         ClientMessage::SessionPermissionRespond {
             id,
             session_id,
+            subscription_id,
             request_id,
             outcome,
             idempotency_key,
@@ -2041,10 +2219,14 @@ fn dispatch_session(
             {
                 return reply;
             }
-            match state
-                .sessions
-                .permission_respond(&session_id, &request_id, outcome, conn, owner)
-            {
+            match state.sessions.permission_respond_with_subscription(
+                &session_id,
+                &request_id,
+                outcome,
+                subscription_id,
+                conn,
+                owner,
+            ) {
                 Ok(()) => {
                     let reply = DaemonMessage::Ok { id };
                     remember(
@@ -2116,12 +2298,14 @@ fn session_create(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn session_send(
     state: &Arc<ServerState>,
     owner: &OwnerId,
     conn: &ConnHandle,
     id: u64,
     session_id: String,
+    subscription_id: u64,
     text: String,
     idempotency_key: Option<String>,
 ) -> DaemonMessage {
@@ -2130,7 +2314,10 @@ fn session_send(
     {
         return reply;
     }
-    match state.sessions.send(&session_id, &text, owner, conn) {
+    match state
+        .sessions
+        .send_with_subscription(&session_id, subscription_id, &text, owner, conn)
+    {
         Ok(()) => {
             let reply = DaemonMessage::Ok { id };
             remember(
@@ -2215,6 +2402,12 @@ fn rewrite_id(message: DaemonMessage, id: u64) -> DaemonMessage {
             DaemonMessage::Workspaces { id, workspaces }
         }
         DaemonMessage::Workspace { workspace, .. } => DaemonMessage::Workspace { id, workspace },
+        DaemonMessage::SessionAttached {
+            subscription_id, ..
+        } => DaemonMessage::SessionAttached {
+            id,
+            subscription_id,
+        },
         DaemonMessage::JournalRetention { retention, .. } => {
             DaemonMessage::JournalRetention { id, retention }
         }
@@ -2403,6 +2596,7 @@ mod tests {
             ClientMessage::SessionPermissionRespond {
                 id: 9,
                 session_id: "s.test-client.missing".to_string(),
+                subscription_id: 1,
                 request_id: "tool-1".to_string(),
                 outcome: PermissionOutcome::AllowOnce,
                 idempotency_key: None,

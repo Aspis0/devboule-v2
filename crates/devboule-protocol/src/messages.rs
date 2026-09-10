@@ -9,7 +9,7 @@ use crate::handshake::{ClientHello, DaemonHello};
 use crate::project::{Project, Workspace, WorkspaceIsolation};
 use crate::session::{
     AgentActivityState, Cursor, PermissionOutcome, Persistence, ResumeResult, Session,
-    SessionEvent, SessionKind,
+    SessionEvent, SessionKind, SubscriptionId,
 };
 
 /// Messages the client writes.
@@ -65,12 +65,20 @@ pub enum ClientMessage {
     SessionAttach {
         id: u64,
         session_id: String,
+        subscription_id: SubscriptionId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_cursor: Option<Cursor>,
     },
     SessionDetach {
         id: u64,
         session_id: String,
+        subscription_id: SubscriptionId,
+    },
+    /// Claim the session's exclusive resize right for this subscription.
+    SessionClaim {
+        id: u64,
+        session_id: String,
+        subscription_id: SubscriptionId,
     },
     SessionClose {
         id: u64,
@@ -81,10 +89,12 @@ pub enum ClientMessage {
     SessionStop {
         id: u64,
         session_id: String,
+        subscription_id: SubscriptionId,
     },
     SessionSend {
         id: u64,
         session_id: String,
+        subscription_id: SubscriptionId,
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
@@ -92,12 +102,14 @@ pub enum ClientMessage {
     SessionResize {
         id: u64,
         session_id: String,
+        subscription_id: SubscriptionId,
         cols: u16,
         rows: u16,
     },
     SessionInterrupt {
         id: u64,
         session_id: String,
+        subscription_id: SubscriptionId,
     },
     SessionSetModel {
         id: u64,
@@ -110,6 +122,7 @@ pub enum ClientMessage {
     SessionPermissionRespond {
         id: u64,
         session_id: String,
+        subscription_id: SubscriptionId,
         request_id: String,
         outcome: PermissionOutcome,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,6 +253,7 @@ impl ClientMessage {
             | Self::SessionCreate { id, .. }
             | Self::SessionAttach { id, .. }
             | Self::SessionDetach { id, .. }
+            | Self::SessionClaim { id, .. }
             | Self::SessionClose { id, .. }
             | Self::SessionStop { id, .. }
             | Self::SessionSend { id, .. }
@@ -299,6 +313,7 @@ impl ClientMessage {
             | Self::Shutdown { .. }
             | Self::SessionAttach { .. }
             | Self::SessionDetach { .. }
+            | Self::SessionClaim { .. }
             | Self::SessionStop { .. }
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
@@ -376,6 +391,10 @@ pub enum DaemonMessage {
         id: u64,
         workspace: Workspace,
     },
+    SessionAttached {
+        id: u64,
+        subscription_id: SubscriptionId,
+    },
     Ok {
         id: u64,
     },
@@ -411,6 +430,10 @@ pub enum DaemonMessage {
         log: String,
     },
     Event(SessionEventEnvelope),
+    SubscriptionEvent {
+        subscription_id: SubscriptionId,
+        envelope: SessionEventEnvelope,
+    },
 }
 
 /// One CLI agent the daemon found on PATH. Authentication is never probed:
@@ -656,6 +679,7 @@ mod tests {
         let detach = serde_json::to_value(ClientMessage::SessionDetach {
             id: 1,
             session_id: "s.a.1".to_string(),
+            subscription_id: 11,
         })
         .expect("json");
         let close = serde_json::to_value(ClientMessage::SessionClose {
@@ -667,6 +691,7 @@ mod tests {
         let stop = serde_json::to_value(ClientMessage::SessionStop {
             id: 1,
             session_id: "s.a.1".to_string(),
+            subscription_id: 11,
         })
         .expect("json");
         assert_eq!(detach["type"], "session_detach");
@@ -709,6 +734,7 @@ mod tests {
         let value = serde_json::to_value(ClientMessage::SessionAttach {
             id: 3,
             session_id: "s.a.1".to_string(),
+            subscription_id: 12,
             from_cursor: Some(Cursor {
                 generation: 2,
                 seq: 40,
@@ -717,6 +743,58 @@ mod tests {
         .expect("json");
         assert_eq!(value["fromCursor"]["generation"], 2);
         assert_eq!(value["fromCursor"]["seq"], 40);
+    }
+
+    #[test]
+    fn subscription_identity_is_explicit_in_attach_reply_claim_and_events() {
+        let attach = ClientMessage::SessionAttach {
+            id: 3,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 12,
+            from_cursor: None,
+        };
+        let attach_json = serde_json::to_value(&attach).expect("attach json");
+        assert_eq!(attach_json["type"], "session_attach");
+        assert_eq!(attach_json["subscriptionId"], 12);
+        assert_eq!(attach.request_id(), Some(3));
+
+        let claim = ClientMessage::SessionClaim {
+            id: 4,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 12,
+        };
+        let claim_json = serde_json::to_value(&claim).expect("claim json");
+        assert_eq!(claim_json["type"], "session_claim");
+        assert_eq!(claim_json["subscriptionId"], 12);
+        assert_eq!(claim.request_id(), Some(4));
+
+        let attached = DaemonMessage::SessionAttached {
+            id: 4,
+            subscription_id: 12,
+        };
+        let attached_json = serde_json::to_value(&attached).expect("attach reply json");
+        assert_eq!(attached_json["type"], "session_attached");
+        assert_eq!(attached_json["subscriptionId"], 12);
+
+        let event = DaemonMessage::SubscriptionEvent {
+            subscription_id: 12,
+            envelope: SessionEventEnvelope {
+                session_id: "s.a.1".to_string(),
+                generation: 1,
+                event: SessionEvent::AgentMessage {
+                    message_id: None,
+                    text: "hello".to_string(),
+                },
+            },
+        };
+        let event_json = serde_json::to_value(&event).expect("subscription event json");
+        assert_eq!(event_json["type"], "subscription_event");
+        assert_eq!(event_json["subscriptionId"], 12);
+        assert_eq!(event_json["envelope"]["sessionId"], "s.a.1");
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(event_json).expect("event round trip"),
+            event
+        );
     }
 
     #[test]
@@ -785,12 +863,14 @@ mod tests {
         let send = ClientMessage::SessionSend {
             id: 2,
             session_id: "s.a.1".to_string(),
+            subscription_id: 12,
             text: "x".to_string(),
             idempotency_key: Some("k2".to_string()),
         };
         let perm = ClientMessage::SessionPermissionRespond {
             id: 3,
             session_id: "s.a.1".to_string(),
+            subscription_id: 12,
             request_id: "r1".to_string(),
             outcome: PermissionOutcome::AllowOnce,
             idempotency_key: Some("k3".to_string()),

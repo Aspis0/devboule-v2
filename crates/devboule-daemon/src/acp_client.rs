@@ -1341,12 +1341,15 @@ impl AcpReader {
         } else {
             event
         };
-        if matches!(&event, SessionEvent::SessionManifest { .. }) {
+        let event = if matches!(&event, SessionEvent::SessionManifest { .. }) {
+            let event = runtime.store_session_manifest(event);
             if let Some(transport) = &self.transport {
                 transport.remember_manifest(&event);
             }
-            runtime.store_session_manifest(event.clone());
-        }
+            event
+        } else {
+            event
+        };
         let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
     }
 

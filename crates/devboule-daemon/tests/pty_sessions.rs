@@ -1035,7 +1035,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
 
 #[test]
 #[ignore = "spawns a real Windows ConPTY; run locally with --ignored"]
-fn two_clients_cannot_both_attach() {
+fn two_clients_can_both_attach() {
     let harness = Harness::spawn();
     queue_command(&harness.paths, cmd_keep());
     let a = harness.client("one");
@@ -1043,24 +1043,23 @@ fn two_clients_cannot_both_attach() {
     let session = a
         .session_create(None, SessionKind::Terminal, None)
         .expect("create");
-    a.session_attach(
-        &session.id,
-        None,
-        collect_handler(Arc::new(Mutex::new(Vec::new()))),
-    )
-    .expect("first attach");
-    let err = b
+    let first_subscription = a
         .session_attach(
             &session.id,
             None,
             collect_handler(Arc::new(Mutex::new(Vec::new()))),
         )
-        .expect_err("second attach must fail");
-    let message = err.to_string();
-    assert!(
-        message.contains("already attached"),
-        "unexpected error: {message}"
-    );
+        .expect("first attach");
+    let second_subscription = b
+        .session_attach(
+            &session.id,
+            None,
+            collect_handler(Arc::new(Mutex::new(Vec::new()))),
+        )
+        .expect("second attach");
+    assert_ne!(first_subscription, second_subscription);
+    b.session_detach_with_subscription(&session.id, second_subscription)
+        .expect("second detach");
     a.session_close(&session.id).expect("close");
 }
 
@@ -2802,8 +2801,8 @@ fn attach_during_flood_delivers_every_sequence_once() {
     let received = Arc::new(Mutex::new(Vec::<SessionEvent>::new()));
     let done = Arc::new(AtomicBool::new(false));
     // Every attach epoch gets a fresh handler that BOTH collects events and
-    // watches for the completion marker, because attach replaces the
-    // subscription for the session.
+    // watches for the completion marker, because each attach has its own
+    // subscription.
     let attach_epoch = || {
         let received_for_handler = Arc::clone(&received);
         let done_for_handler = Arc::clone(&done);

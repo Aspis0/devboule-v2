@@ -507,12 +507,15 @@ impl ClaudeReader {
             return;
         }
         for event in self.view.ingest(&value) {
-            if let SessionEvent::SessionManifest { .. } = &event {
-                runtime.store_session_manifest(event.clone());
+            let event = if matches!(&event, SessionEvent::SessionManifest { .. }) {
+                let event = runtime.store_session_manifest(event);
                 if let Some(session_id) = self.view.peer_session_id() {
                     runtime.set_peer_session_id(session_id.to_string());
                 }
-            }
+                event
+            } else {
+                event
+            };
             self.publish_with_seq(runtime, event, event_seq);
         }
     }

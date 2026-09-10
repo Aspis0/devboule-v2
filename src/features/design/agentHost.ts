@@ -419,6 +419,12 @@ function sameSessionTarget(left: SessionTarget, right: SessionTarget): boolean {
   );
 }
 
+function interruptSession(sessionId: string, controller: AgentSession): void {
+  const subscriptionId = controller.getSubscriptionId();
+  if (subscriptionId !== null)
+    void sessionInterrupt(sessionId, subscriptionId).catch(() => undefined);
+}
+
 function lastErrorText(state: AgentSessionState): string {
   for (let index = state.items.length - 1; index >= 0; index -= 1) {
     const item = state.items[index];
@@ -427,16 +433,23 @@ function lastErrorText(state: AgentSessionState): string {
   return "The agent session did not answer.";
 }
 
-function invokeAgentCommand<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+export function invokeAgentCommand<T>(
+  command: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
   switch (command) {
     case "session_attach":
       return sessionAttach(
         args.id as string,
-        (args.from_cursor as number | null | undefined) ?? null,
+        (args.fromCursor as number | null | undefined) ?? null,
         args.ch as SessionChannel,
       ) as Promise<T>;
     case "session_send":
-      return sessionSend(args.id as string, args.text as string) as Promise<T>;
+      return sessionSend(
+        args.id as string,
+        args.subscriptionId as number,
+        args.text as string,
+      ) as Promise<T>;
     case "session_set_model":
       return sessionSetModel(
         args.id as string,
@@ -444,7 +457,7 @@ function invokeAgentCommand<T>(command: string, args: Record<string, unknown> = 
         args.effort as string | undefined,
       ) as Promise<T>;
     case "session_detach":
-      return sessionDetach(args.id as string) as Promise<T>;
+      return sessionDetach(args.subscriptionId as number) as Promise<T>;
     default:
       return Promise.reject(new Error(`Unsupported agent session command: ${command}`));
   }
@@ -460,7 +473,11 @@ export function createAgentHost(): DesignHost {
   const pendingSessionPromises = new Set<Promise<AgentSessionHandle>>();
   let sessionTeardownPromise: Promise<void> | null = null;
   let disposalPromise: Promise<void> | null = null;
-  let activePreflight: { sessionId: string; reject: (error: Error) => void } | null = null;
+  let activePreflight: {
+    sessionId: string;
+    controller: AgentSession;
+    reject: (error: Error) => void;
+  } | null = null;
   let selectedProvider: ProviderInfo | undefined;
   let sessionOwner: SessionTarget | null = null;
   let providerSelectionGeneration = 0;
@@ -499,8 +516,8 @@ export function createAgentHost(): DesignHost {
     }
     const closing = (async () => {
       handle.controller.dispose();
-      // AgentSession.dispose() starts session_detach without awaiting it. The daemon's
-      // close path (server.rs:536-541) safely accepts session_close while attached.
+      // Provider changes can attach a replacement immediately; finish this id's detach first.
+      await handle.controller.detach();
       try {
         await sessionClose(handle.session.id);
       } catch {
@@ -564,7 +581,7 @@ export function createAgentHost(): DesignHost {
       onPermissionRequest: () => {
         const preflight = activePreflight;
         if (preflight?.sessionId === sessionId) {
-          void sessionInterrupt(sessionId).catch(() => undefined);
+          interruptSession(sessionId, controller);
           preflight.reject(
             new Error(
               "The agent requested permission during automatic craft selection. Respond in the Workspace surface; this design run was stopped.",
@@ -574,7 +591,7 @@ export function createAgentHost(): DesignHost {
         }
         const run = activeRun;
         if (run?.sessionId !== sessionId) return;
-        void sessionInterrupt(sessionId).catch(() => undefined);
+        interruptSession(sessionId, controller);
         settleRun(
           run,
           "reject",
@@ -688,11 +705,12 @@ export function createAgentHost(): DesignHost {
     });
     activePreflight = {
       sessionId: handle.session.id,
+      controller: handle.controller,
       reject: (error) => reject(error),
     };
     const onAbort = (): void => {
       if (settled) return;
-      void sessionInterrupt(handle.session.id).catch(() => undefined);
+      interruptSession(handle.session.id, handle.controller);
       reject(abortError());
     };
     signal.addEventListener("abort", onAbort, { once: true });
@@ -728,7 +746,7 @@ export function createAgentHost(): DesignHost {
       .catch(() => settle(fallback()));
     timer = setTimeout(() => {
       if (settled) return;
-      void sessionInterrupt(handle.session.id).catch(() => undefined);
+      interruptSession(handle.session.id, handle.controller);
       settle(fallback());
     }, AUTO_SKILL_PREFLIGHT_TIMEOUT_MS);
 
@@ -788,7 +806,7 @@ export function createAgentHost(): DesignHost {
     const onAbort = (): void => {
       if (interruptRequested || run.settled) return;
       interruptRequested = true;
-      void sessionInterrupt(run.sessionId).catch(() => undefined);
+      interruptSession(run.sessionId, run.session.controller);
       const error = abortError();
       settleRun(run, "reject", error);
       rejectAbort(error);
@@ -886,11 +904,11 @@ export function createAgentHost(): DesignHost {
       const run = activeRun;
       if (run !== null) {
         const handle = sessionHandle;
-        if (handle) void sessionInterrupt(handle.session.id).catch(() => undefined);
+        if (handle) interruptSession(handle.session.id, handle.controller);
         settleRun(run, "reject", abortError());
       }
       if (activePreflight !== null) {
-        void sessionInterrupt(activePreflight.sessionId).catch(() => undefined);
+        interruptSession(activePreflight.sessionId, activePreflight.controller);
         activePreflight.reject(abortError());
       }
       ++providerSelectionGeneration;

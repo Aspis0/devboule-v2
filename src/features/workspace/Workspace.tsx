@@ -29,7 +29,6 @@ import {
   reasonFromCause,
   sessionPermissionRespond,
 } from "../../lib/tauri";
-import { useAppStore } from "../../store/appStore";
 import "./Workspace.css";
 
 type ActiveSidePanel = SidePanelEntry["id"];
@@ -75,7 +74,6 @@ interface WorkspaceProps {
 }
 
 export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: WorkspaceProps = {}) {
-  const installedSkills = useAppStore((state) => state.installedSkills);
   const {
     visibleProjects,
     loading: projectsLoading,
@@ -110,7 +108,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   const [appBuild, setAppBuild] = useState(41);
   const [prLabel, setPrLabel] = useState("Open #412 on GitHub");
   const [permissionQueue, setPermissionQueue] = useState<
-    Array<{ sessionId: string; request: PermissionRequest }>
+    Array<{ sessionId: string; subscriptionId: number; request: PermissionRequest }>
   >([]);
   const daemon = useWorkspaceDaemon();
   const {
@@ -309,18 +307,24 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
-  const handlePermissionRequest = useCallback((sessionId: string, request: PermissionRequest) => {
-    setPermissionQueue((queue) => {
-      if (
-        queue.some(
+  const handlePermissionRequest = useCallback(
+    (sessionId: string, subscriptionId: number, request: PermissionRequest) => {
+      setPermissionQueue((queue) => {
+        const index = queue.findIndex(
           (item) => item.sessionId === sessionId && item.request.toolCallId === request.toolCallId,
-        )
-      ) {
-        return queue;
-      }
-      return [...queue, { sessionId, request }];
-    });
-  }, []);
+        );
+        if (index === -1) return [...queue, { sessionId, subscriptionId, request }];
+        // A remounted surface re-attaches with a fresh subscription id; the
+        // queued card must adopt it or its response reaches the daemon with
+        // a dead id.
+        if (queue[index].subscriptionId === subscriptionId) return queue;
+        const next = [...queue];
+        next[index] = { ...next[index], subscriptionId };
+        return next;
+      });
+    },
+    [],
+  );
   const handlePermissionResolved = useCallback((sessionId: string, toolCallId: string) => {
     setPermissionQueue((queue) =>
       queue.filter(
@@ -329,7 +333,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     );
   }, []);
   const selectedPermission =
-    permissionQueue.find((item) => item.sessionId === selectedSessionId)?.request ?? null;
+    permissionQueue.find((item) => item.sessionId === selectedSessionId) ?? null;
   const sessionStatusText = sessionsError
     ? sessionsError
     : sessionCreating
@@ -583,33 +587,6 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                   {projectsError === null && !projectsLoading && visibleProjects.length === 0 ? (
                     <div className="workspace-empty">No matching workspaces</div>
                   ) : null}
-                  <section
-                    className="workspace-skills-section"
-                    aria-labelledby="workspace-skills-heading"
-                  >
-                    <h2 id="workspace-skills-heading">Skills</h2>
-                    {installedSkills.length > 0 ? (
-                      <>
-                        <div className="workspace-skills-list">
-                          {installedSkills.map((skill) => (
-                            <div
-                              className="workspace-skill-row"
-                              key={skill.id}
-                              title={skill.description}
-                            >
-                              <span className="workspace-skill-name">{skill.name}</span>
-                              <span className="workspace-skill-author">{skill.author}</span>
-                            </div>
-                          ))}
-                        </div>
-                        <div className="workspace-skills-note">
-                          Session only — not saved to disk.
-                        </div>
-                      </>
-                    ) : (
-                      <div className="workspace-skills-empty">No skills yet.</div>
-                    )}
-                  </section>
                 </>
               )}
             </div>
@@ -718,7 +695,8 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
             isAgentKind(selectedSession.kind) ? (
               <WorkspacePermissionCard
                 sessionId={selectedSessionId}
-                request={selectedPermission}
+                subscriptionId={selectedPermission.subscriptionId}
+                request={selectedPermission.request}
                 capabilities={daemon.capabilities}
                 onResolved={handlePermissionResolved}
               />
@@ -880,6 +858,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
 
 interface WorkspacePermissionCardProps {
   sessionId: string;
+  subscriptionId: number;
   request: PermissionRequest;
   capabilities: readonly string[];
   onResolved?: (sessionId: string, toolCallId: string) => void;
@@ -888,6 +867,7 @@ interface WorkspacePermissionCardProps {
 /** A real ACP permission prompt; it is inert unless the handshake negotiated typed_permissions. */
 export function WorkspacePermissionCard({
   sessionId,
+  subscriptionId,
   request,
   capabilities,
   onResolved,
@@ -912,7 +892,7 @@ export function WorkspacePermissionCard({
     setPermission("submitting");
     setError(null);
     try {
-      await sessionPermissionRespond(sessionId, request.toolCallId, outcome);
+      await sessionPermissionRespond(sessionId, subscriptionId, request.toolCallId, outcome);
       setPermission(outcome === "allow_once" ? "allowed" : "denied");
       onResolved?.(sessionId, request.toolCallId);
     } catch (cause) {

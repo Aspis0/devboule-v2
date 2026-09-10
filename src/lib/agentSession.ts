@@ -30,9 +30,8 @@ export interface AgentSessionDeps {
   sessionId: string;
   invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
   createChannel: (onEvent: (event: SessionEvent) => void) => AgentChannel;
-  onPermissionRequest?: (request: PermissionRequest) => void;
+  onPermissionRequest?: (request: PermissionRequest, subscriptionId: number) => void;
   onPermissionResolved?: (toolCallId: string) => void;
-  isSuperseded?: () => boolean;
 }
 
 const INITIAL_STATE: AgentSessionState = {
@@ -74,6 +73,10 @@ export class AgentSession {
   private turn = 0;
   private started = false;
   private attached = false;
+  private channel: AgentChannel | null = null;
+  private readonly pendingPermissionRequests: PermissionRequest[] = [];
+  private subscriptionId: number | null = null;
+  private detachPromise: Promise<void> | null = null;
   private turnOpen = false;
   private disposed = false;
   private switchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -93,31 +96,49 @@ export class AgentSession {
     if (this.started || this.disposed) return;
     this.started = true;
     const channel = this.deps.createChannel((event) => this.handleEvent(event));
+    this.channel = channel;
 
     try {
-      await this.deps.invoke("session_attach", {
+      const subscriptionId = await this.deps.invoke<number>("session_attach", {
         id: this.deps.sessionId,
         fromCursor: null,
         ch: channel,
       });
+      if (!Number.isSafeInteger(subscriptionId) || subscriptionId <= 0) {
+        throw new Error("The daemon returned an invalid session subscription.");
+      }
+      this.subscriptionId = subscriptionId;
       this.attached = true;
-      if (!this.disposed) this.update({ status: "idle" });
+      if (!this.disposed) {
+        this.update({ status: "idle" });
+        this.deliverPendingPermissionRequests();
+      }
     } catch (error) {
       this.fail(`Could not attach the agent session: ${eventError(error)}`);
     }
 
-    if (this.disposed && this.attached && !this.deps.isSuperseded?.()) await this.detach();
+    if (this.disposed && this.subscriptionId !== null) await this.detach();
+  }
+
+  getSubscriptionId(): number | null {
+    return this.subscriptionId;
   }
 
   async send(text: string): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || this.disposed || !this.started || !this.attached) return false;
     if (this.state.status === "closed") return false;
+    const subscriptionId = this.subscriptionId;
+    if (subscriptionId === null) return false;
 
     this.beginTurn();
     this.update({ status: "running", streaming: true });
     try {
-      await this.deps.invoke("session_send", { id: this.deps.sessionId, text: trimmed });
+      await this.deps.invoke("session_send", {
+        id: this.deps.sessionId,
+        subscriptionId,
+        text: trimmed,
+      });
       return true;
     } catch (error) {
       this.fail(`Could not send the message: ${eventError(error)}`);
@@ -132,8 +153,13 @@ export class AgentSession {
    */
   async interrupt(): Promise<void> {
     if (this.disposed || !this.started || !this.attached) return;
+    const subscriptionId = this.subscriptionId;
+    if (subscriptionId === null) return;
     try {
-      await this.deps.invoke("session_interrupt", { id: this.deps.sessionId });
+      await this.deps.invoke("session_interrupt", {
+        id: this.deps.sessionId,
+        subscriptionId,
+      });
     } catch {
       // The turn keeps running; the status strip already reflects reality.
     }
@@ -207,7 +233,11 @@ export class AgentSession {
         this.update({ availableCommands: event.commands });
         return;
       case "permission_request":
-        this.deps.onPermissionRequest?.(event);
+        // The channel is live before session_attach confirms, so a request
+        // can arrive while the subscription id is still unknown; hold it and
+        // deliver it once the id exists instead of dropping it.
+        if (this.subscriptionId === null) this.pendingPermissionRequests.push(event);
+        else this.deps.onPermissionRequest?.(event, this.subscriptionId);
         return;
       case "permission_resolved":
         this.deps.onPermissionResolved?.(event.toolCallId);
@@ -260,7 +290,12 @@ export class AgentSession {
     if (this.disposed) return;
     this.disposed = true;
     this.clearSwitchTimer();
-    if (this.attached) void this.detach();
+    this.pendingPermissionRequests.length = 0;
+    if (this.channel !== null) {
+      this.channel.onmessage = () => undefined;
+      this.channel = null;
+    }
+    if (this.subscriptionId !== null) void this.detach();
     this.listeners.clear();
   }
 
@@ -291,6 +326,14 @@ export class AgentSession {
     );
   }
 
+  /** Deliver the requests held while the subscription id was still unknown, exactly once. */
+  private deliverPendingPermissionRequests(): void {
+    if (this.disposed || this.subscriptionId === null) return;
+    const requests = this.pendingPermissionRequests.splice(0);
+    const subscriptionId = this.subscriptionId;
+    for (const request of requests) this.deps.onPermissionRequest?.(request, subscriptionId);
+  }
+
   private clearSwitchTimer(): void {
     if (this.switchTimer !== null) {
       clearTimeout(this.switchTimer);
@@ -306,14 +349,18 @@ export class AgentSession {
     }, SWITCH_CONFIRM_TIMEOUT_MS);
   }
 
-  private async detach(): Promise<void> {
-    if (!this.attached) return;
+  detach(): Promise<void> {
+    if (this.detachPromise !== null) return this.detachPromise;
+    const subscriptionId = this.subscriptionId;
+    if (subscriptionId === null) return Promise.resolve();
+    // Clear before IPC so an overlapping replacement can never detach this new view.
+    this.subscriptionId = null;
     this.attached = false;
-    try {
-      await this.deps.invoke("session_detach", { id: this.deps.sessionId });
-    } catch {
-      // The view is already gone; a lost detach cannot make the chat useful.
-    }
+    this.detachPromise = this.deps
+      .invoke("session_detach", { subscriptionId })
+      .then(() => undefined)
+      .catch(() => undefined);
+    return this.detachPromise;
   }
 
   private beginTurn(): void {
