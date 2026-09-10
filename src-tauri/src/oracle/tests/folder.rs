@@ -230,7 +230,8 @@ fn querying_a_folder_without_an_index_names_the_folder_and_refuses() {
     ))
     .expect_err("a folder with no index must not be searched");
 
-    assert_actionable(error, &["no oracle index", "index this folder"]);
+    // Read the message before handing the error over: `assert_actionable` takes
+    // ownership, so naming the folder has to be checked first.
     assert!(
         error.message.contains(
             folder
@@ -242,6 +243,7 @@ fn querying_a_folder_without_an_index_names_the_folder_and_refuses() {
         "the error must name the folder: {}",
         error.message
     );
+    assert_actionable(error, &["no oracle index", "index this folder"]);
 }
 
 #[test]
