@@ -2,6 +2,8 @@ import { AgentSession, type AgentChatItem, type AgentSessionState } from "../../
 import {
   createSessionChannel,
   oracleAsk,
+  oracleAskFolder,
+  oracleFolderStatus,
   reasonFromCause,
   sessionAttach,
   sessionClose,
@@ -397,26 +399,90 @@ export function groundedPrompt(
   prompt: string,
   oracleResults: readonly OracleResult[],
   composedDoctrine = buildSkillBlock(builtInSkillSources(), builtInSkillSlugs()).text,
+  grounded = true,
 ): string {
-  const grounding =
-    oracleResults.length === 0
-      ? "Oracle found no matching files."
-      : oracleResults.map(formatGroundingHit).join("\n");
   const doctrine = embedDoctrineBlock(composedDoctrine);
   const promptParts = [
     "Work on the requested design change in the active Devboule workspace.",
     `User request: ${prompt}`,
-    "Oracle grounding (search hits, not files changed):",
-    grounding,
-    "Use the grounding as context and make only the requested change.",
+  ];
+  if (grounded) {
+    const grounding =
+      oracleResults.length === 0
+        ? "Oracle found no matching files."
+        : oracleResults.map(formatGroundingHit).join("\n");
+    promptParts.push(
+      "Oracle grounding (search hits, not files changed):",
+      grounding,
+      "Use the grounding as context and make only the requested change.",
+    );
+  } else {
+    promptParts.push(
+      "Oracle grounding is off for this request: do not search or read repository files, and do not assume any search result.",
+    );
+  }
+  promptParts.push(
     "",
     "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
     "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
     "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
     "If you produce more than one block, only the last one is used.",
-  ];
+  );
   if (doctrine.length > 0) promptParts.push(doctrine, DESIGN_DOCTRINE_RESTATEMENT);
   return promptParts.join("\n\n");
+}
+
+/**
+ * What grounding on one attached folder produced: the hits to use as context
+ * and the one quiet line for the person when the folder could not be used.
+ * A null notice means nothing to report (grounded on the folder).
+ */
+export interface FolderGrounding {
+  results: readonly OracleResult[];
+  notice: string | null;
+}
+
+/**
+ * Normalizes the caller's folder option: undefined stays undefined (a caller
+ * that predates folder-aware grounding), null stays null (explicitly no
+ * folder attached), and a blank string becomes null. A non-blank string is
+ * trimmed and used as the absolute folder path.
+ */
+export function normalizeFolderOption(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * Grounds one prompt on one attached folder's own index. The status probe is
+ * read-only and starts nothing; a folder without a ready index is not
+ * searched, and its own message is returned as the quiet line. A search that
+ * errors degrades to no grounding plus its reason, never to a throw, so the
+ * run can proceed without grounding.
+ */
+export async function resolveFolderGrounding(
+  prompt: string,
+  folderPath: string,
+): Promise<FolderGrounding> {
+  let status;
+  try {
+    status = await oracleFolderStatus(folderPath);
+  } catch (cause) {
+    return { results: [], notice: reasonFromCause(cause) };
+  }
+  if (status.state !== "ready") {
+    return {
+      results: [],
+      notice: status.message ?? `This folder has no usable Oracle index (${status.state}).`,
+    };
+  }
+  try {
+    const response = await oracleAskFolder(folderPath, prompt);
+    return { results: response.results, notice: null };
+  } catch (cause) {
+    return { results: [], notice: reasonFromCause(cause) };
+  }
 }
 
 function resultFor(
@@ -456,11 +522,14 @@ function resultFor(
     };
   }
 
-  const noun = sources.length === 1 ? "file" : "files";
   return {
     prompt,
-    title: `Agent wrote ${sources.length} ${noun}`,
-    desc: `The agent wrote ${sources.length} ${noun}: ${sources.join(", ")}. Review what the agent wrote with your own git.${shellWarning}`,
+    // "Wrote" plus the source paths says the same thing as the old count
+    // heading without repeating the count the paths already show.
+    title: "Wrote",
+    // The paths live in `sources` only; repeating them here was the third copy of
+    // the same fact in the run summary.
+    desc: `Review what the agent wrote with your own git.${shellWarning}`,
     sources,
     nodeIds: [],
   };
@@ -1042,7 +1111,37 @@ export function createAgentHost(): DesignHost {
     options?: DesignGenerationOptions,
   ): Promise<DesignGenerationResult> => {
     throwIfAborted(signal);
-    const oracleResponse = await oracleAsk(prompt);
+    const grounded = options?.grounded ?? true;
+    const folderOption = normalizeFolderOption(options?.folderPath);
+    // The attached folder decides what the search is about. A string grounds
+    // the run on that folder's own index; null (no folder) means no grounding
+    // without a notice; undefined (a caller that predates folder awareness)
+    // keeps the legacy global index. Grounding off never searches. A search
+    // that errors degrades to no grounding plus the quiet line, never to a
+    // failed generation.
+    let oracleResults: readonly OracleResult[] = [];
+    let groundingNotice: string | null = null;
+    let promptGrounded = false;
+    if (!grounded) {
+      promptGrounded = false;
+    } else if (folderOption === undefined) {
+      try {
+        const legacyResponse = await oracleAsk(prompt);
+        oracleResults = legacyResponse.results;
+        promptGrounded = true;
+      } catch (cause) {
+        oracleResults = [];
+        groundingNotice = reasonFromCause(cause);
+        promptGrounded = false;
+      }
+    } else if (folderOption === null) {
+      promptGrounded = false;
+    } else {
+      const grounding = await resolveFolderGrounding(prompt, folderOption);
+      oracleResults = grounding.results;
+      groundingNotice = grounding.notice;
+      promptGrounded = grounding.notice === null;
+    }
     throwIfAborted(signal);
     const handle = await ensureSession(selectedWorkspace);
     throwIfAborted(signal);
@@ -1103,7 +1202,7 @@ export function createAgentHost(): DesignHost {
     // Subscribe only after send() so a prior turn cannot settle this run.
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
     const sendPromise = handle.controller.send(
-      groundedPrompt(prompt, oracleResponse.results, composedDoctrine),
+      groundedPrompt(prompt, oracleResults, composedDoctrine, promptGrounded),
     );
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;
@@ -1120,6 +1219,7 @@ export function createAgentHost(): DesignHost {
           ...baseResult,
           appliedSkillSlugs: [...skillSlugs],
           skillSelectionFallback: skillChoice.fallback,
+          groundingNotice,
         };
         const resultWithSession = {
           ...result,

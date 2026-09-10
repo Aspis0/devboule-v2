@@ -1,4 +1,5 @@
 import { createElement, useEffect, useState } from "react";
+import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 
 /*
  * This is a small render-time heuristic over an untrusted artifact, not an accessibility
@@ -1184,6 +1185,10 @@ export function ArtifactRenderCritic({ html }: { html: string }) {
     const frame = document.createElement("iframe");
     frame.className = "design-artifact-measurement-frame";
     frame.title = "";
+    // Measure at the same width the page is displayed at, so an overflow verdict
+    // describes the viewport the user actually sees.
+    frame.style.width = `${ARTIFACT_PAGE_WIDTH}px`;
+    frame.style.height = `${ARTIFACT_PAGE_HEIGHT}px`;
     frame.setAttribute("aria-hidden", "true");
     frame.setAttribute("sandbox", ARTIFACT_RENDER_CRITIC_SANDBOX);
     frame.tabIndex = -1;

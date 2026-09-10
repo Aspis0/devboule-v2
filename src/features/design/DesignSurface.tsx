@@ -20,6 +20,7 @@ import type {
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic } from "./artifactRenderCritic";
+import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import {
   ARTIFACT_TOO_LARGE_MESSAGE,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
@@ -851,7 +852,11 @@ const DesignToolbar = memo(function DesignToolbar({
       <button
         className="design-grounding-toggle"
         type="button"
-        title="Oracle grounding"
+        title={
+          grounded
+            ? "Oracle grounding on: the next run searches the repository first"
+            : "Oracle grounding off: the next run does not search or read the repository"
+        }
         aria-pressed={grounded}
         onClick={onGroundingToggle}
       >
@@ -1006,8 +1011,12 @@ const ZoomControls = memo(function ZoomControls({
 
 const DESIGN_GRID_ORIGIN_X = 60;
 const DESIGN_GRID_ORIGIN_Y = 46;
-const ARTIFACT_NODE_WIDTH = 700;
-const ARTIFACT_NODE_HEIGHT = 500;
+// The generated page is a desktop page: it is authored against, and displayed
+// at, the canonical page viewport. A generated page has no intrinsic width —
+// 1280 is the width this platform chooses — and its height follows its content,
+// which cannot be measured inside the sandboxed frame (see artifactViewport).
+const ARTIFACT_NODE_WIDTH = ARTIFACT_PAGE_WIDTH;
+const ARTIFACT_NODE_HEIGHT = ARTIFACT_PAGE_HEIGHT;
 const ARTIFACT_NODE_GAP = 32;
 const ARTIFACT_NODE_ID = "generated-artifact";
 const ARTIFACT_CONTEXT_NAME = "Generated artifact";
@@ -1567,21 +1576,33 @@ const DesignMessageCard = memo(function DesignMessageCard({
         </div>
       ) : null}
       <div className="design-message-card">
-        <div className="design-message-card-heading">
-          <span
-            className={`design-message-icon design-message-icon-${message.status === "working" ? "working" : message.status === "error" ? "error" : "done"}`}
-            aria-hidden="true"
-          >
-            {message.status === "working" ? "◌" : message.status === "error" ? "!" : "✓"}
-          </span>
-          <span className="design-message-title">{message.title}</span>
-        </div>
-        <div className="design-message-description">{message.desc}</div>
-        {message.sources.length > 0 ? (
-          <div className="design-message-sources">
+        {message.status === "done" ? (
+          // A settled run states one fact once: its status and the paths it
+          // reported. The count heading, the tick, and a second copy of the
+          // paths in the description were ceremony, not information.
+          <div className="design-message-summary">
+            <span className="design-message-summary-status">{message.title}</span>
             {message.sources.map((source) => (
-              <span key={source}>{source}</span>
+              <span className="design-message-source" key={source}>
+                {source}
+              </span>
             ))}
+          </div>
+        ) : (
+          <div className="design-message-card-heading">
+            <span
+              className={`design-message-icon design-message-icon-${message.status === "working" ? "working" : "error"}`}
+              aria-hidden="true"
+            >
+              {message.status === "working" ? "◌" : "!"}
+            </span>
+            <span className="design-message-title">{message.title}</span>
+          </div>
+        )}
+        <div className="design-message-description">{message.desc}</div>
+        {message.groundingNotice ? (
+          <div className="design-grounding-notice" role="status">
+            {message.groundingNotice}
           </div>
         ) : null}
         <div className="design-message-actions">
@@ -3081,6 +3102,18 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     setViewport({ pan: fittedPan, zoom: fittedZoom });
   }, [setViewport]);
 
+  // A new artifact is a full page, not a thumbnail: fit it into view the moment
+  // it lands, so the whole generated page is visible without a manual Fit. The
+  // ref is seeded with the artifact already on screen at mount, so reopening a
+  // document keeps the saved viewport instead of snapping the camera.
+  const fittedArtifactRef = useRef<string | undefined>(artifactHtml ?? artifactError);
+  useEffect(() => {
+    const artifact = artifactHtml ?? artifactError;
+    if (artifact === undefined || fittedArtifactRef.current === artifact) return;
+    fittedArtifactRef.current = artifact;
+    fitCanvas();
+  }, [artifactError, artifactHtml, fitCanvas]);
+
   const undo = useCallback(() => {
     if (!canUndo) return;
     documentRevisionRef.current += 1;
@@ -3250,6 +3283,19 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     [busy, disposeHistoryOpen, markDocumentDirty, setMessages],
   );
 
+  /**
+   * The directory the agent is actually given, when a session has been opened.
+   * The daemon echoes it back; it is the truth about where the agent is working,
+   * so it wins over the attachment the user picked. Before the first generation
+   * there is no session and the attachment is all that is known. Defined before
+   * startGeneration so the generation options can name the folder Oracle must
+   * search: grounding is about this folder, never the global index.
+   */
+  const attachedFolder = workspaceProjects
+    .flatMap((project) => project.workspaces)
+    .find((workspace) => workspace.id === selectedWorkspaceId);
+  const attachedFolderPath = agentSessionRecord?.cwd ?? attachedFolder?.path ?? null;
+
   const startGeneration = useCallback(
     (prompt: string) => {
       if (
@@ -3299,13 +3345,15 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       // The wire mode repeats the persisted selection id: the caller knows
       // which mode is active and states it, the host never infers intention
       // from the list shape. `all` carries no list — the host ranks the
-      // corpus itself.
+      // corpus itself. folderPath names the folder Oracle must search, or
+      // null when nothing is attached (no grounding, no notice).
+      const folderPath = attachedFolderPath ?? null;
       const generationOptions =
         skillSelection.mode === "auto"
-          ? { skillMode: "auto" as const }
+          ? { skillMode: "auto" as const, grounded, folderPath }
           : skillSelection.mode === "manual"
-            ? { skillMode: "manual" as const, skills: selectedSkillSlugs }
-            : { skillMode: "all" as const };
+            ? { skillMode: "manual" as const, skills: selectedSkillSlugs, grounded, folderPath }
+            : { skillMode: "all" as const, grounded, folderPath };
       void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
           const currentGeneration = useAppStore.getState().designSession.generation;
@@ -3332,6 +3380,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                       result.transcript === undefined ? message.transcript : [...result.transcript],
                     artifactHtml: result.artifactHtml,
                     artifactError: result.artifactError,
+                    groundingNotice: result.groundingNotice ?? null,
                     instruction: prompt,
                   }
                 : message,
@@ -3427,6 +3476,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         });
     },
     [
+      attachedFolderPath,
       busy,
       composerContextLayerName,
       composerContextTarget,
@@ -3434,6 +3484,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       disposeHistoryOpen,
       document.workingMessage,
       generate,
+      grounded,
       host,
       reportPersistence,
       skillSelection.mode,
@@ -3513,17 +3564,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   );
 
   const clearComposerContext = useCallback(() => setComposerContextLayerId(null), []);
-
-  /**
-   * The directory the agent is actually given, when a session has been opened.
-   * The daemon echoes it back; it is the truth about where the agent is working,
-   * so it wins over the attachment the user picked. Before the first generation
-   * there is no session and the attachment is all that is known.
-   */
-  const attachedFolder = workspaceProjects
-    .flatMap((project) => project.workspaces)
-    .find((workspace) => workspace.id === selectedWorkspaceId);
-  const attachedFolderPath = agentSessionRecord?.cwd ?? attachedFolder?.path ?? null;
 
   return (
     <section

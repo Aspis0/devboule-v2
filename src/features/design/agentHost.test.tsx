@@ -4,6 +4,7 @@ import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  OracleFolderIndexStatus,
   OracleIndexStatus,
   OracleSearchResponse,
   ProviderInfo,
@@ -21,6 +22,8 @@ const channelHarness = vi.hoisted(() => ({
 const mocks = vi.hoisted(() => ({
   daemonStatus: vi.fn(),
   oracleAsk: vi.fn(),
+  oracleAskFolder: vi.fn(),
+  oracleFolderStatus: vi.fn(),
   oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
   reasonFromCause: vi.fn(),
@@ -53,6 +56,8 @@ vi.mock("../../lib/tauri", () => ({
     return channel;
   }),
   oracleAsk: mocks.oracleAsk,
+  oracleAskFolder: mocks.oracleAskFolder,
+  oracleFolderStatus: mocks.oracleFolderStatus,
   oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
   reasonFromCause: mocks.reasonFromCause,
@@ -107,6 +112,8 @@ import {
   extractFencedHtml,
   groundedPrompt,
   invokeAgentCommand,
+  normalizeFolderOption,
+  resolveFolderGrounding,
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
   composeAutomaticSkillSlugs,
@@ -273,6 +280,8 @@ beforeEach(() => {
   channelHarness.emit = null;
   channelHarness.active = null;
   mocks.oracleAsk.mockReset();
+  mocks.oracleAskFolder.mockReset();
+  mocks.oracleFolderStatus.mockReset();
   mocks.oracleFiles.mockReset();
   mocks.oracleStatus.mockReset();
   mocks.reasonFromCause.mockReset();
@@ -307,6 +316,29 @@ beforeEach(() => {
       },
     ],
   });
+  mocks.oracleAskFolder.mockResolvedValue({
+    query: "Update the design",
+    results: [
+      {
+        path: "src/folder/Widget.tsx",
+        line_start: 10,
+        line_end: 20,
+        snippet: "export function Widget() {}",
+        score: 0.95,
+      },
+    ],
+  });
+  mocks.oracleFolderStatus.mockResolvedValue({
+    path: "C:/design-sandbox",
+    data_dir: "C:/design-sandbox/oracle-data",
+    state: "ready",
+    indexed_files: 12,
+    total_files: 12,
+    pending_files: 0,
+    stale_files: 0,
+    indexed_chunks: 48,
+    message: null,
+  } satisfies OracleFolderIndexStatus);
   mocks.oracleFiles.mockResolvedValue([]);
   mocks.reasonFromCause.mockImplementation((cause: unknown) =>
     cause instanceof Error ? cause.message : String(cause),
@@ -1171,9 +1203,10 @@ describe("ACP design host", () => {
 
     const result = await run;
     expect(result.sources).toEqual(["src/features/design/DesignSurface.tsx"]);
-    expect(result.desc).toContain("wrote 1 file");
-    expect(result.desc).toContain("DesignSurface.tsx");
-    expect(result.title).toContain("wrote");
+    expect(result.title).toBe("Wrote");
+    // The paths travel in `sources` alone; the message card renders them there so
+    // the same path is not repeated in the prose.
+    expect(result.desc).not.toContain("DesignSurface.tsx");
     expect(result.desc).toContain("Review what the agent wrote with your own git.");
     // No selection is intentional: the daemon-directory fallback remains a valid generation.
     expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp");
@@ -2450,6 +2483,235 @@ describe("ACP design host", () => {
         await disposeAgentHost(host);
       });
 
+      it("skips the repository search entirely when grounding is off", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host, { skillMode: "all", grounded: false });
+        finishRun();
+        await run;
+
+        // The toggle is a promise about the run: off means Oracle is never asked.
+        expect(mocks.oracleAsk).not.toHaveBeenCalled();
+        expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+        expect(mocks.oracleFolderStatus).not.toHaveBeenCalled();
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+        expect(sentText).not.toContain("Oracle grounding (search hits, not files changed)");
+        expect(sentText).toContain("Oracle grounding is off for this request");
+
+        await disposeAgentHost(host);
+      });
+
+      describe("folder-aware grounding", () => {
+        const FOLDER = "C:/design-sandbox";
+
+        it("queries the attached folder's own index when it is ready", async () => {
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleFolderStatus).toHaveBeenCalledWith(FOLDER);
+          expect(mocks.oracleAskFolder).toHaveBeenCalledWith(FOLDER, "Update the design");
+          expect(mocks.oracleAsk).not.toHaveBeenCalled();
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("src/folder/Widget.tsx:10-20");
+          expect(sentText).not.toContain("src/app/Shell.tsx");
+          expect(result.groundingNotice).toBeNull();
+
+          await disposeAgentHost(host);
+        });
+
+        it("reports the folder's own message and grounds nothing when never indexed", async () => {
+          mocks.oracleFolderStatus.mockResolvedValueOnce({
+            path: FOLDER,
+            data_dir: "C:/design-sandbox/oracle-data",
+            state: "never_indexed",
+            indexed_files: 0,
+            total_files: 0,
+            pending_files: 0,
+            stale_files: 0,
+            indexed_chunks: 0,
+            message: "Oracle has no index for C:/design-sandbox yet. Index this folder.",
+          } satisfies OracleFolderIndexStatus);
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleFolderStatus).toHaveBeenCalledWith(FOLDER);
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(mocks.oracleAsk).not.toHaveBeenCalled();
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("Oracle grounding is off for this request");
+          expect(result.groundingNotice).toBe(
+            "Oracle has no index for C:/design-sandbox yet. Index this folder.",
+          );
+
+          await disposeAgentHost(host);
+        });
+
+        it("grounds nothing with a notice when the folder index is partial", async () => {
+          mocks.oracleFolderStatus.mockResolvedValueOnce({
+            path: FOLDER,
+            data_dir: "C:/design-sandbox/oracle-data",
+            state: "partial",
+            indexed_files: 4,
+            total_files: 12,
+            pending_files: 8,
+            stale_files: 0,
+            indexed_chunks: 16,
+            message: "The index of C:/design-sandbox is incomplete: 4 of 12 files indexed.",
+          } satisfies OracleFolderIndexStatus);
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(mocks.oracleAsk).not.toHaveBeenCalled();
+          expect(result.groundingNotice).toBe(
+            "The index of C:/design-sandbox is incomplete: 4 of 12 files indexed.",
+          );
+
+          await disposeAgentHost(host);
+        });
+
+        it("grounds nothing with a notice when the folder index is unreadable", async () => {
+          mocks.oracleFolderStatus.mockResolvedValueOnce({
+            path: FOLDER,
+            data_dir: "C:/design-sandbox/oracle-data",
+            state: "unreadable",
+            indexed_files: 0,
+            total_files: 0,
+            pending_files: 0,
+            stale_files: 0,
+            indexed_chunks: 0,
+            message: "Oracle cannot read the folder C:/design-sandbox.",
+          } satisfies OracleFolderIndexStatus);
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(result.groundingNotice).toBe("Oracle cannot read the folder C:/design-sandbox.");
+
+          await disposeAgentHost(host);
+        });
+
+        it("grounds nothing without a notice when no folder is attached", async () => {
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: null,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleFolderStatus).not.toHaveBeenCalled();
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(mocks.oracleAsk).not.toHaveBeenCalled();
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("Oracle grounding is off for this request");
+          expect(result.groundingNotice).toBeNull();
+
+          await disposeAgentHost(host);
+        });
+
+        it("degrades to no grounding plus the reason when the folder search fails", async () => {
+          mocks.oracleAskFolder.mockRejectedValueOnce(new Error("folder search unavailable"));
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(result.groundingNotice).toBe("folder search unavailable");
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("Oracle grounding is off for this request");
+
+          await disposeAgentHost(host);
+        });
+
+        it("degrades to no grounding plus the reason when the status probe fails", async () => {
+          mocks.oracleFolderStatus.mockRejectedValueOnce(new Error("status probe failed"));
+          const host = createAgentHost();
+          const { run } = await startRun(host, {
+            skillMode: "all",
+            grounded: true,
+            folderPath: FOLDER,
+          });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(result.groundingNotice).toBe("status probe failed");
+
+          await disposeAgentHost(host);
+        });
+
+        it("degrades the legacy global search instead of failing the run", async () => {
+          mocks.oracleAsk.mockRejectedValueOnce(new Error("global index unavailable"));
+          const host = createAgentHost();
+          const { run } = await startRun(host, { skillMode: "all", grounded: true });
+          finishRun();
+          const result = await run;
+
+          expect(result.groundingNotice).toBe("global index unavailable");
+          const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+          expect(sentText).toContain("Oracle grounding is off for this request");
+
+          await disposeAgentHost(host);
+        });
+
+        it("keeps the legacy global index when the caller predates folder awareness", async () => {
+          const host = createAgentHost();
+          const { run } = await startRun(host, { skillMode: "all", grounded: true });
+          finishRun();
+          const result = await run;
+
+          expect(mocks.oracleAsk).toHaveBeenCalledWith("Update the design");
+          expect(mocks.oracleFolderStatus).not.toHaveBeenCalled();
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+          expect(result.groundingNotice).toBeNull();
+
+          await disposeAgentHost(host);
+        });
+
+        it("normalizes a blank folder path to no folder", () => {
+          expect(normalizeFolderOption("  ")).toBeNull();
+          expect(normalizeFolderOption(null)).toBeNull();
+          expect(normalizeFolderOption(undefined)).toBeUndefined();
+          expect(normalizeFolderOption("C:/design-sandbox ")).toBe("C:/design-sandbox");
+        });
+
+        it("resolves a ready folder to its hits with no notice", async () => {
+          const grounding = await resolveFolderGrounding("Update the design", FOLDER);
+
+          expect(grounding.notice).toBeNull();
+          expect(grounding.results.map((hit) => hit.path)).toEqual(["src/folder/Widget.tsx"]);
+        });
+      });
+
       it("places output constraints before the doctrine block and the restatement after it", async () => {
         const source = builtInSkillSources()[0];
         if (source === undefined) throw new Error("No built-in doctrine source was loaded");
@@ -2691,7 +2953,7 @@ describe("design transcript", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps the run summary, but never as the only row of the transcript", async () => {
+  it("shows the run summary once, beside the conversation", async () => {
     const host = createAgentHost();
     const { container, root } = await renderDesignAndSend(host, "Update the design");
     await act(async () => {
@@ -2703,14 +2965,17 @@ describe("design transcript", () => {
       emitToolCall("write-1", "completed", "edit", ["src/Header.tsx"]);
       finishRun();
     });
-    await vi.waitFor(() => expect(container.textContent).toContain("Agent wrote 1 file"));
-
-    // The honest file list is still there, with the paths it always reported.
-    const summary = container.querySelector(".design-message-card");
-    expect(summary?.querySelector(".design-message-title")?.textContent).toBe("Agent wrote 1 file");
-    expect(summary?.querySelector(".design-message-description")?.textContent).toContain(
-      "src/Header.tsx",
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-message-source")?.textContent).toBe("src/Header.tsx"),
     );
+
+    // The honest file list is still there, exactly once, with no tick and no
+    // duplicate count heading repeating it.
+    const summary = container.querySelector(".design-message-card");
+    expect(summary?.querySelector(".design-message-summary-status")?.textContent).toBe("Wrote");
+    expect(summary?.querySelectorAll(".design-message-source")).toHaveLength(1);
+    expect(summary?.querySelector(".design-message-icon")).toBeNull();
+    expect((summary?.textContent ?? "").match(/src\/Header\.tsx/g) ?? []).toHaveLength(1);
     // ...and it is no longer the only thing a person sees.
     expect(container.querySelectorAll(".design-transcript-row").length).toBeGreaterThanOrEqual(2);
     expect(transcriptText(container)).toContain("I edited the header and left the rest alone.");

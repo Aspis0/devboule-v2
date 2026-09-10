@@ -77,6 +77,13 @@ export interface DesignAssistantMessage {
   artifactHtml?: string;
   artifactError?: string;
   /**
+   * One quiet line about Oracle grounding for this run, shown under the
+   * summary. Set only when a grounded run could not use the attached
+   * folder's index; absent or null means nothing to report (grounded on the
+   * folder, ungrounded by choice, or no folder attached).
+   */
+  groundingNotice?: string | null;
+  /**
    * What the agent actually said and did for this generation, kept so the
    * conversation survives the run and later sessions. Absent means the host
    * never reported a transcript (a history entry, or a host with no agent).
@@ -121,6 +128,13 @@ export interface DesignGenerationResult {
    * anything else.
    */
   skillSelectionFallback?: boolean;
+  /**
+   * One quiet line about Oracle grounding for this run. Set only when a
+   * grounded run could not use the attached folder's index; absent or null
+   * means nothing to report (grounded on the folder, ungrounded by choice,
+   * or no folder attached). The surface renders it under the summary.
+   */
+  groundingNotice?: string | null;
 }
 
 /**
@@ -139,11 +153,23 @@ export interface DesignGenerationResult {
  *   composed verbatim in the given order.
  * - `{ skillMode: "auto" }` — a pre-flight agent turn picks the sections;
  *   the only mode that costs an extra model turn.
+ *
+ * `grounded` says whether the run may search the repository through Oracle
+ * before composing its prompt. It is absent when a caller predates the toggle,
+ * and the host then keeps the grounded behaviour. The surface always states it
+ * explicitly, so the toolbar's grounding control is the only thing deciding it.
+ *
+ * `folderPath` is the absolute folder the canvas is attached to, or null when
+ * nothing is attached. It is absent when a caller predates folder-aware
+ * grounding, and the host then keeps the legacy global-index behaviour. The
+ * surface always states it explicitly: a string grounds the run on that
+ * folder's own index, null means no grounding without a notice.
  */
-export type DesignGenerationOptions =
+export type DesignGenerationOptions = (
   | { skillMode: "auto" }
   | { skillMode: "all" }
-  | { skillMode: "manual"; skills: readonly string[] };
+  | { skillMode: "manual"; skills: readonly string[] }
+) & { grounded?: boolean; folderPath?: string | null };
 
 export interface DesignInitialState {
   // Initial values; zoom seeds the view but is not rewritten by document saves.

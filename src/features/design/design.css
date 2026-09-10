@@ -474,6 +474,14 @@
   min-height: 0;
   overflow: hidden;
   background: var(--design-canvas);
+  /* The inspector is an overlay, not a column: it floats at right:14px over a
+     236px body. The canvas gives that width back only while a layer is
+     selected and the panel is really on screen. An artifact never selects a
+     layer, so reserving it always cost the artifact a third of the width. */
+  --design-canvas-reserved-right: 0px;
+}
+
+.design-workspace-inspector-open {
   --design-canvas-reserved-right: 264px;
 }
 
@@ -729,8 +737,8 @@
   position: fixed;
   top: 0;
   left: -100000px;
-  width: 700px;
-  height: 500px;
+  /* The width and height come from ARTIFACT_PAGE_WIDTH/HEIGHT in the critic
+     component, so the check measures the same viewport the page is shown at. */
   border: 0;
   visibility: hidden;
   pointer-events: none;
@@ -1303,11 +1311,49 @@
   font-weight: 600;
 }
 
+/* A settled run's one-line summary: the reported paths (or the statement that
+   none were reported), with no tick and no duplicate count heading. */
+.design-message-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 4px;
+}
+
+.design-message-summary-status {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.design-message-source {
+  height: 20px;
+  padding: 0 8px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  line-height: 18px;
+}
+
 .design-message-description {
   padding: 0 12px 10px;
   color: var(--ink-soft);
   font-size: 11.5px;
   line-height: 1.6;
+}
+
+/* One quiet line when a grounded run could not use the attached folder's
+   index. Muted and small by design: the run proceeded without grounding,
+   and this only says why. */
+.design-grounding-notice {
+  padding: 0 12px 10px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.85;
 }
 
 .design-message-sources,

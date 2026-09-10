@@ -114,6 +114,7 @@ import {
   viewportTransform,
   zoomViewport,
 } from "./designViewport";
+import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationResult, PendingPermission } from "./designHost";
 import { AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
@@ -1892,6 +1893,30 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => reloaded.root.unmount());
   });
 
+  it("sends the grounding toggle state with the generation request", async () => {
+    const generate = vi
+      .fn<NonNullable<DesignHost["generate"]>>()
+      .mockResolvedValue(GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    const grounding = container.querySelector<HTMLButtonElement>(".design-grounding-toggle");
+    if (grounding === null) throw new Error("Grounding control missing");
+
+    await act(async () => grounding.click());
+    expect(grounding.getAttribute("aria-pressed")).toBe("false");
+
+    await fillDraft(container, "Skip the repository search for this one.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(generate.mock.calls[0]?.[2]).toEqual({
+      skillMode: "all",
+      grounded: false,
+      folderPath: null,
+    });
+    await act(async () => root.unmount());
+  });
+
   it("normalizes a working message found in a loaded document", async () => {
     const assistantMessage = DOCUMENT.messages[1];
     if (assistantMessage?.role !== "assistant") throw new Error("Assistant fixture missing");
@@ -2326,7 +2351,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Make the header quieter.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all" },
+      { skillMode: "all", grounded: true, folderPath: null },
     );
     await act(async () => root.unmount());
   });
@@ -2344,6 +2369,8 @@ describe("DesignSurface host capabilities", () => {
 
     expect(generate).toHaveBeenCalledWith("Make the header quieter.", expect.any(AbortSignal), {
       skillMode: "all",
+      grounded: true,
+      folderPath: null,
     });
     await act(async () => root.unmount());
   });
@@ -2372,7 +2399,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       expect.stringContaining("source file: src/components/Header.tsx"),
       expect.any(AbortSignal),
-      { skillMode: "all" },
+      { skillMode: "all", grounded: true, folderPath: null },
     );
     await act(async () => root.unmount());
   });
@@ -2543,7 +2570,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenLastCalledWith(
       "Refine this artifact.\n\nScope: Editing Generated artifact; the user is refining the artifact the agent just produced.",
       expect.any(AbortSignal),
-      { skillMode: "all" },
+      { skillMode: "all", grounded: true, folderPath: null },
     );
 
     await act(async () => {
@@ -2573,6 +2600,92 @@ describe("DesignSurface host capabilities", () => {
     expect(srcDoc.startsWith(`${ARTIFACT_CSP_META}\n`)).toBe(true);
     expect(srcDoc.indexOf('content="default-src *"')).toBeGreaterThan(ARTIFACT_CSP_META.length);
     expect(srcDoc).toBe(`${ARTIFACT_CSP_META}\n${artifactHtml}`);
+    await act(async () => root.unmount());
+  });
+
+  it("shows a settled run's written path once, without a tick or a count heading", async () => {
+    const path = "C:\\design\\settings.html";
+    const generate = vi.fn(async () => ({
+      ...GENERATION_RESULT,
+      title: "Wrote",
+      desc: "Review what the agent wrote with your own git.",
+      sources: [path],
+    }));
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Build the settings page.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const cards = container.querySelectorAll<HTMLElement>(".design-message-card");
+    const card = cards[cards.length - 1];
+    if (card === undefined) throw new Error("Run summary missing");
+    // The path appears in the summary line only: not in the description, not twice.
+    expect((card.textContent ?? "").split(path)).toHaveLength(2);
+    expect(card.querySelector(".design-message-summary-status")?.textContent).toBe("Wrote");
+    expect(card.querySelector(".design-message-source")?.textContent).toBe(path);
+    expect(card.querySelector(".design-message-icon")).toBeNull();
+    expect(card.querySelector(".design-message-title")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("still states when a settled run wrote no files", async () => {
+    const generate = vi.fn(async () => ({
+      ...GENERATION_RESULT,
+      title: "Agent wrote no files",
+      desc: "No files were reported as written. Review what the agent wrote with your own git.",
+      sources: [],
+    }));
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Change nothing, just look.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const cards = container.querySelectorAll<HTMLElement>(".design-message-card");
+    const card = cards[cards.length - 1];
+    if (card === undefined) throw new Error("Run summary missing");
+    expect(card.querySelector(".design-message-summary-status")?.textContent).toBe(
+      "Agent wrote no files",
+    );
+    expect(card.querySelector(".design-message-icon")).toBeNull();
+    expect(card.textContent).toContain("No files were reported as written.");
+    await act(async () => root.unmount());
+  });
+
+  it("shows the grounding notice as one quiet line when the folder has no index", async () => {
+    const notice = "Oracle has no index for C:/design-sandbox yet. Index this folder.";
+    const generate = vi.fn(async () => ({ ...GENERATION_RESULT, groundingNotice: notice }));
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Style the empty canvas.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const quiet = container.querySelector<HTMLElement>(".design-grounding-notice");
+    if (quiet === null) throw new Error("Grounding notice missing");
+    expect(quiet.textContent).toBe(notice);
+    expect(quiet.getAttribute("role")).toBe("status");
+    await act(async () => root.unmount());
+  });
+
+  it("shows no grounding notice when the run grounded on the folder", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_RESULT, groundingNotice: null }));
+    const { container, root } = await renderDesign(
+      createHost({ generate }, { ...DOCUMENT, selectedLayerId: "" }),
+    );
+    await fillDraft(container, "Style the empty canvas.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    expect(container.querySelector(".design-grounding-notice")).toBeNull();
     await act(async () => root.unmount());
   });
 
@@ -2725,7 +2838,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all" },
+      { skillMode: "all", grounded: true, folderPath: null },
     );
     await act(async () => root.unmount());
   });
@@ -2758,7 +2871,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all" },
+      { skillMode: "all", grounded: true, folderPath: null },
     );
     await act(async () => root.unmount());
   });
@@ -3006,8 +3119,8 @@ describe("DesignSurface host capabilities", () => {
           id: "generated-artifact",
           x: nodesBounds(layerRects)?.x ?? 60,
           y: (nodesBounds(layerRects)?.y ?? 46) + (nodesBounds(layerRects)?.h ?? 0) + 32,
-          w: 700,
-          h: 500,
+          w: ARTIFACT_PAGE_WIDTH,
+          h: ARTIFACT_PAGE_HEIGHT,
           z: layerRects.length,
         },
       ]),
@@ -3197,6 +3310,8 @@ describe("DesignSurface host capabilities", () => {
     // list at all — the host ranks the corpus itself.
     expect(generate.mock.calls[0]?.[2]).toEqual({
       skillMode: "all",
+      grounded: true,
+      folderPath: null,
     });
     await act(async () => root.unmount());
   });
@@ -3338,7 +3453,12 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
-    expect(generate.mock.calls[0]?.[2]).toEqual({ skillMode: "manual", skills: [selected.slug] });
+    expect(generate.mock.calls[0]?.[2]).toEqual({
+      skillMode: "manual",
+      skills: [selected.slug],
+      grounded: true,
+      folderPath: null,
+    });
     await act(async () => root.unmount());
   });
 
@@ -3420,7 +3540,12 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
-    expect(generate.mock.calls[0]?.[2]).toEqual({ skillMode: "manual", skills: [] });
+    expect(generate.mock.calls[0]?.[2]).toEqual({
+      skillMode: "manual",
+      skills: [],
+      grounded: true,
+      folderPath: null,
+    });
     await act(async () => root.unmount());
   });
 
@@ -3505,7 +3630,11 @@ describe("DesignSurface host capabilities", () => {
     if (send === null) throw new Error("Generate control missing");
     await act(async () => send.click());
 
-    expect(generate.mock.calls[0]?.[2]).toEqual({ skillMode: "auto" });
+    expect(generate.mock.calls[0]?.[2]).toEqual({
+      skillMode: "auto",
+      grounded: true,
+      folderPath: null,
+    });
     await act(async () => Promise.resolve());
     expect(container.textContent).toContain(`Automatic craft: ${selected.slug}`);
     await act(async () => root.unmount());
