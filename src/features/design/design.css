@@ -1,16 +1,31 @@
 .design-surface {
+  position: relative;
   background: var(--surface-muted);
 }
 
-.design-demo-disclosure {
-  flex: none;
-  padding: 7px 14px 0;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
+/* The shared shell translates its page layer to reveal the crescent. Design
+   keeps the translated layer inside the viewport instead of losing its bottom
+   controls to the shell's clipping boundary. The displacement is one local
+   value because the shared shell is intentionally outside this surface's
+   scope. */
+.app-shell-design {
+  --design-nav-displacement: 34px;
+}
+
+.app-shell-design .page-layer {
+  transition:
+    transform 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
+    opacity 0.3s ease,
+    height 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
+}
+
+.app-shell-design:has(.crescent-nav-open) .page-layer {
+  height: calc(100% - var(--design-nav-displacement));
 }
 
 .design-toolbar {
+  position: relative;
+  z-index: 4;
   display: flex;
   flex: none;
   align-items: center;
@@ -29,6 +44,7 @@
 .design-composer-context button,
 .design-zoom-controls button,
 .design-inspector-actions button,
+.design-inspector-close,
 .design-layer-select,
 .design-layer-visibility,
 .design-radius-option,
@@ -37,17 +53,146 @@
   cursor: pointer;
 }
 
-.design-browser-label {
+.design-folder-control {
+  position: relative;
   display: flex;
-  flex: none;
-  align-items: center;
-  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The trigger states which folder the canvas is attached to. It keeps the word
+   "Folder" and the chevron at their natural width and lets the path ellipsise,
+   so the control still reads as a control in a narrow toolbar. */
+.design-folder-button {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 300px;
   height: 29px;
+  align-items: center;
+  gap: 7px;
   padding: 0 11px;
+  color: var(--ink);
   white-space: nowrap;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 9px;
+  cursor: pointer;
+}
+
+.design-folder-button:hover,
+.design-folder-button:focus-visible,
+.design-folder-button[aria-expanded="true"] {
+  border-color: var(--terracotta);
+}
+
+.design-folder-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.design-folder-mark {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  background: var(--terracotta);
+  border-radius: 2px;
+}
+
+.design-folder-caption {
+  flex: none;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.design-folder-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  text-overflow: ellipsis;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+}
+
+.design-folder-chevron {
+  flex: none;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.design-folder-note {
+  margin: 0 0 6px;
+  color: var(--silence);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.design-folder-record {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+}
+
+.design-folder-path {
+  margin-bottom: 4px;
+  overflow: hidden;
+  color: var(--silence);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.design-folder-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.design-folder-use,
+.design-folder-attach {
+  height: 24px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 10.5px;
+}
+
+.design-folder-use:hover,
+.design-folder-use:focus-visible,
+.design-folder-attach:hover,
+.design-folder-attach:focus-visible {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta);
+}
+
+.design-folder-use:disabled,
+.design-folder-attach:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.design-folder-error {
+  margin-top: 6px;
+  color: var(--danger-deep);
+  font-size: 10.5px;
+}
+
+.design-folder-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .design-grounding-toggle:hover,
@@ -55,7 +200,6 @@
   border-color: var(--terracotta);
 }
 
-.design-toolbar-dot,
 .design-save-dot,
 .design-grounding-dot,
 .design-provider-dot {
@@ -64,34 +208,6 @@
   width: 7px;
   height: 7px;
   border-radius: 999px;
-}
-
-.design-toolbar-dot {
-  background: var(--terracotta);
-}
-
-.design-browser-name {
-  font-family: "Fraunces", Georgia, serif;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.design-path {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  max-width: 260px;
-  height: 24px;
-  padding: 0 10px;
-  overflow: hidden;
-  color: var(--ink-soft);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10.5px;
 }
 
 .design-save-status {
@@ -130,7 +246,9 @@
 .design-history-button {
   display: grid;
   width: 26px;
-  height: 22px;
+  /* 24px minimum like every other pointer target we ship: the critic
+     holds generated pages to 24 × 24, and this toolbar is no exception. */
+  height: 24px;
   place-items: center;
   color: var(--ink-soft);
   background: transparent;
@@ -146,6 +264,47 @@
 .design-history-button:disabled {
   color: var(--silence);
   cursor: not-allowed;
+}
+
+.design-history-menu {
+  position: relative;
+  flex: none;
+}
+
+.design-history-menu-button {
+  height: 26px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.design-history-menu-button:hover,
+.design-history-menu-button:focus-visible,
+.design-history-menu-button[aria-expanded="true"] {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta);
+}
+
+.design-history-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 6;
+  width: min(360px, calc(100vw - 28px));
+  max-height: min(60vh, 430px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(var(--ink-rgb), 0.16);
+}
+
+.design-history-popover:focus {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
 }
 
 .design-grounding-toggle {
@@ -200,23 +359,20 @@
 
 .design-history-list {
   flex: none;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  padding: 14px;
 }
 
 .design-history-heading {
-  margin: 0 0 8px;
-  color: var(--silence);
-  font-size: 9.5px;
+  margin: 0 0 12px;
+  color: var(--ink);
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 16px;
   font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .design-history-list ul {
   display: grid;
-  gap: 6px;
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -225,22 +381,28 @@
 .design-history-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 10px;
+  gap: 4px 12px;
+  padding: 8px 0;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.design-history-row + .design-history-row {
+  border-top: 1px solid var(--line-subtle);
 }
 
 .design-history-open {
   display: grid;
   width: 100%;
+  min-width: 0;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 10px;
-  padding: 0;
+  gap: 4px 12px;
+  padding: 7px 10px 7px 8px;
   border: 0;
-  border-inline-start: 2px solid var(--selection);
+  border-inline-start: 3px solid var(--terracotta-deep);
   color: inherit;
   font: inherit;
-  padding-inline-start: 6px;
   text-align: left;
   background: transparent;
   cursor: pointer;
@@ -248,7 +410,7 @@
 
 .design-history-open:hover,
 .design-history-open:focus-visible {
-  outline: 1px solid var(--selection);
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 
@@ -257,16 +419,26 @@
   color: var(--ink);
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
 .design-history-row time,
 .design-history-gone {
-  color: var(--silence);
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
   font-size: 10px;
 }
 
 .design-history-gone {
   grid-column: 1 / -1;
+  color: var(--silence);
+}
+
+.design-history-current {
+  grid-column: 1 / -1;
+  color: var(--ink-soft);
+  font-size: 10.5px;
 }
 
 .design-history-open-status {
@@ -304,11 +476,20 @@
   min-height: 0;
   overflow: hidden;
   background: var(--design-canvas);
+  /* The inspector is an overlay, not a column: it floats at right:14px over a
+     236px body. The canvas gives that width back only while a layer is
+     selected and the panel is really on screen. An artifact never selects a
+     layer, so reserving it always cost the artifact a third of the width. */
+  --design-canvas-reserved-right: 0px;
+}
+
+.design-workspace-inspector-open {
+  --design-canvas-reserved-right: 264px;
 }
 
 .design-canvas {
   position: absolute;
-  inset: 0;
+  inset: 0 var(--design-canvas-reserved-right) 0 0;
   overflow: hidden;
   background: var(--design-canvas);
 }
@@ -325,12 +506,29 @@
   position: absolute;
   inset: 24px;
   display: grid;
-  place-items: center;
+  align-content: center;
+  justify-items: center;
+  gap: 6px;
   padding: 24px;
   color: var(--ink-soft);
   text-align: center;
   pointer-events: none;
   z-index: 1;
+}
+
+.design-canvas-empty-title {
+  margin: 0;
+  color: var(--ink);
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.design-canvas-empty-copy {
+  max-width: 280px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .design-canvas-notice {
@@ -526,8 +724,12 @@
 
 .design-canvas-artifact-render-warning summary {
   cursor: pointer;
+  /* A disclosure is still a pointer target: 24px minimum like the undo/redo
+     buttons above, so our own chrome passes the rule we check pages against. */
+  min-height: 24px;
   color: var(--ink-soft);
   font-size: 11px;
+  line-height: 24px;
 }
 
 .design-canvas-artifact-render-warning ul {
@@ -541,8 +743,8 @@
   position: fixed;
   top: 0;
   left: -100000px;
-  width: 700px;
-  height: 500px;
+  /* The width and height come from ARTIFACT_PAGE_WIDTH/HEIGHT in the critic
+     component, so the check measures the same viewport the page is shown at. */
   border: 0;
   visibility: hidden;
   pointer-events: none;
@@ -559,10 +761,20 @@
 }
 
 .design-layers-panel {
-  top: 14px;
+  bottom: 40px;
   left: 14px;
-  width: 218px;
+  width: 204px;
   border-radius: 12px;
+  /* An overlay, not a column: it must never outgrow the canvas it floats
+     over. 40px bottom offset + 14px top margin keep it on screen at any
+     canvas height, and the list scrolls inside it so no row is unreachable. */
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100% - 54px);
+}
+
+.design-layers-panel > .design-overlay-heading {
+  flex: none;
 }
 
 .design-overlay-heading,
@@ -593,9 +805,12 @@
 
 .design-layer-list {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
+  min-height: 0;
   padding: 5px;
+  overflow-y: auto;
 }
 
 .design-layer-row {
@@ -737,6 +952,11 @@
   width: 236px;
   border-radius: 12px;
   box-shadow: 0 6px 22px rgba(var(--ink-rgb), 0.13);
+  /* The workspace clips with overflow:hidden, so on a short window a content-sized
+     panel cuts the Delete row and footer with no way to reach them. Cap the panel
+     to the canvas height and scroll its own content instead. */
+  max-height: calc(100% - 28px);
+  overflow-y: auto;
 }
 
 .design-inspector-heading {
@@ -767,9 +987,23 @@
 }
 
 .design-inspector-close {
+  display: grid;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  place-items: center;
   margin-left: auto;
+  padding: 0;
   color: var(--silence);
+  background: transparent;
+  border-radius: 999px;
   font-size: 11px;
+}
+
+.design-inspector-close:hover,
+.design-inspector-close:focus-visible {
+  color: var(--ink);
+  background: var(--selection);
 }
 
 .design-inspector-section {
@@ -967,11 +1201,17 @@
   font-size: 10.5px;
 }
 
+.design-assistant-actions {
+  display: flex;
+  margin-left: auto;
+  align-items: center;
+  gap: 9px;
+}
+
 .design-visual-check {
   display: grid;
   width: 24px;
   height: 24px;
-  margin-left: auto;
   place-items: center;
   color: var(--ink-soft);
   background: var(--surface);
@@ -1050,6 +1290,12 @@
 }
 
 .design-message-card {
+  /* The transcript is a scrolling column flex container, so every row is a flex
+     item and defaults to flex-shrink: 1. `overflow: hidden` also zeroes the
+     card's automatic minimum size, so a shrinkable card collapses below its own
+     content instead of making the transcript scroll. Rows are sized by their
+     content, never by the container; the user row above states the same. */
+  flex: none;
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1089,11 +1335,52 @@
   font-weight: 600;
 }
 
+/* A settled run's one-line summary: the reported paths (or the statement that
+   none were reported), with no tick and no duplicate count heading. */
+.design-message-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 4px;
+}
+
+.design-message-summary-status {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.design-message-source {
+  min-height: 20px;
+  height: auto;
+  padding: 0 8px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  line-height: 18px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .design-message-description {
   padding: 0 12px 10px;
   color: var(--ink-soft);
   font-size: 11.5px;
   line-height: 1.6;
+}
+
+/* One quiet line when a grounded run could not use the attached folder's
+   index. Muted and small by design: the run proceeded without grounding,
+   and this only says why. */
+.design-grounding-notice {
+  padding: 0 12px 10px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.85;
 }
 
 .design-message-sources,
@@ -1105,7 +1392,8 @@
 }
 
 .design-message-sources span {
-  height: 20px;
+  min-height: 20px;
+  height: auto;
   padding: 0 8px;
   color: var(--ink-soft);
   background: var(--surface-muted);
@@ -1114,6 +1402,8 @@
   font-family: "JetBrains Mono", monospace;
   font-size: 9.5px;
   line-height: 18px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .design-message-actions {
@@ -1139,10 +1429,97 @@
   border-color: var(--terracotta);
 }
 
+/* The conversation a generation produced, above the run's summary card. The group
+   is itself a flex item of the transcript column, so it states flex: none for the
+   same reason .design-message-card does: a shrinkable, overflow-hidden flex item
+   collapses below its own content instead of making the column scroll. */
+.design-message-group {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.design-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 4px;
+}
+
+/* Every row is a flex item of the same column, so no row may shrink either. */
+.design-transcript-row {
+  flex: none;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.design-transcript-assistant {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+/* Reasoning is the agent's working, not its answer: quieter, smaller, and one step
+   removed from the prose by a dashed edge and the muted ink. */
+.design-transcript-thought {
+  color: var(--ink-soft);
+  background: transparent;
+  border-style: dashed;
+  font-size: 11.5px;
+}
+
+.design-transcript-tool {
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  font-size: 11px;
+}
+
+.design-transcript-label {
+  cursor: pointer;
+}
+
+.design-transcript-tool-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.design-transcript-tool-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  font-family: "JetBrains Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-transcript-tool-status {
+  flex: none;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.design-transcript-text {
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.design-transcript-assistant .design-transcript-text {
+  margin-top: 0;
+}
+
 .design-composer-wrap {
   flex: none;
   padding: 10px 14px 12px;
   border-top: 1px solid var(--border);
+  /* The permission card is the only child that sizes text from its host, so the
+     composer states the scale once here: the card's description and controls
+     read at the chrome's size instead of the page root's 16px. */
+  --permission-card-font-size: 10.5px;
 }
 
 .design-composer-meta {
@@ -1153,59 +1530,346 @@
 }
 
 .design-skill-controls {
-  flex: 1;
+  position: relative;
+  display: flex;
+  flex: none;
   min-width: 0;
+  align-items: center;
 }
 
-.design-skill-summary {
-  width: 100%;
-  padding: 2px 0;
-  color: var(--ink-soft);
-  text-align: left;
-  background: transparent;
+.design-skill-mode-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
   border: 0;
+}
+
+.design-skill-mode-control {
+  display: flex;
+  max-width: 100%;
+  width: max-content;
+  min-width: 0;
+  height: 24px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
   cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.design-skill-mode-control-name {
+  /* shrink-allowed: when the chip is clamped to the row width the name
+     ellipsises here instead of spilling past the pill edge */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 10.5px;
 }
 
-.design-skill-summary:hover,
-.design-skill-summary:focus-visible {
-  color: var(--terracotta-deep);
+.design-skill-mode-control-chevron {
+  flex: none;
+  font-size: 12px;
+  line-height: 1;
 }
 
-.design-skill-summary:focus-visible {
-  outline: 1px solid var(--terracotta);
+.design-skill-mode-control:hover,
+.design-skill-mode-control:focus-visible,
+.design-skill-mode-control[aria-expanded="true"] {
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border-color: var(--border-strong);
+}
+
+.design-skill-mode-control:focus-visible,
+.design-skill-mode-option:focus-visible,
+.design-skill-picker-action:focus-visible,
+.design-craft-title-button:focus-visible,
+.design-craft-close:focus-visible {
+  outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
 
 .design-skill-result {
-  margin-top: 3px;
+  margin: 4px 0 0;
   color: var(--silence);
-  font-size: 9.5px;
+  font-size: 10px;
   line-height: 1.35;
 }
 
-.design-skill-modes input:focus-visible,
-.design-skill-option input:focus-visible {
-  outline: 1px solid var(--terracotta);
-  outline-offset: 2px;
+.design-craft-overlay {
+  position: absolute;
+  top: 58px;
+  right: 14px;
+  z-index: 20;
+  width: min(748px, calc(100% - 28px));
+  pointer-events: none;
 }
 
-.design-skill-picker {
-  max-height: 230px;
-  margin-top: 6px;
-  padding: 9px 10px;
+.design-craft-sheet {
+  pointer-events: auto;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(var(--ink-rgb), 0.18);
+}
+
+.design-craft-sheet-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, auto) auto;
+  gap: 16px;
+  min-height: 60px;
+  align-items: center;
+  padding: 10px 14px 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.design-craft-sheet-heading {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.design-craft-sheet-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.design-craft-sheet-heading span {
+  color: var(--terracotta-deep);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.design-craft-budget {
+  display: grid;
+  gap: 2px;
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: right;
+}
+
+.design-craft-budget strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.design-craft-close {
+  width: 28px;
+  height: 28px;
+  color: var(--silence);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.design-craft-close:hover {
+  color: var(--terracotta-deep);
+  background: var(--selection);
+}
+
+.design-craft-sheet-content {
+  display: grid;
+  gap: 17px;
+  padding: 14px 16px 16px;
+}
+
+.design-craft-sheet-expanded .design-craft-sheet-content {
+  grid-template-columns: minmax(174px, 0.42fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.design-craft-index {
+  min-width: 0;
+}
+
+.design-craft-index-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.design-craft-count-limit {
+  color: var(--terracotta-deep);
+}
+
+.design-craft-budget-note {
+  margin: 0 0 7px;
+  color: var(--silence);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.design-craft-budget-note-limit {
+  color: var(--terracotta-deep);
+}
+
+.design-craft-title-list {
+  display: grid;
+  max-height: min(374px, calc(100vh - 176px));
+  margin: 0;
+  padding: 0;
   overflow-y: auto;
+  list-style: none;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.design-craft-title-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  min-height: 28px;
+  align-items: center;
+  border-top: 1px solid var(--line-subtle);
+}
+
+.design-craft-title-row:first-child {
+  border-top-color: var(--border);
+}
+
+.design-craft-title-row input {
+  margin: 0;
+}
+
+.design-craft-title-row input:disabled {
+  opacity: 0.55;
+}
+
+.design-craft-title-button {
+  display: flex;
+  min-width: 0;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 5px 4px 0;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.design-craft-title-button > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-craft-title-row-selected .design-craft-title-button,
+.design-craft-title-row-included .design-craft-title-button {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.design-craft-title-row-dropped .design-craft-title-button,
+.design-craft-title-row-not-selected .design-craft-title-button {
+  color: var(--silence);
+}
+
+.design-craft-title-button[aria-expanded="true"] {
+  color: var(--terracotta-deep);
+  background: var(--selection);
+}
+
+.design-craft-title-status {
+  flex: none;
+  color: var(--silence);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.design-craft-title-row-dropped .design-craft-title-status {
+  color: var(--terracotta-deep);
+}
+
+.design-craft-title-mark {
+  width: 7px;
+  height: 7px;
+  margin-left: 5px;
+  border-radius: 999px;
+  background: var(--silence);
+}
+
+.design-craft-title-mark-included {
+  background: var(--terracotta);
+}
+
+.design-craft-title-mark-dropped {
+  background: var(--terracotta-deep);
+}
+
+.design-craft-detail {
+  min-width: 0;
+  padding-left: 17px;
+  border-left: 1px solid var(--border);
+}
+
+.design-craft-detail h3 {
+  margin: 0 0 5px;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.design-craft-detail > p {
+  margin: 0 0 10px;
+  color: var(--ink-soft);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.design-craft-detail-body {
+  color: var(--ink-soft);
+  column-count: 2;
+  column-gap: 17px;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.design-craft-detail-body p {
+  margin: 0 0 10px;
+  break-inside: avoid;
+}
+
+.design-craft-detail-body strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.design-craft-detail-body code {
+  padding: 1px 3px;
+  color: var(--terracotta-deep);
   background: var(--surface-muted);
   border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.design-skill-purpose {
-  margin: 0 0 9px;
-  color: var(--ink-soft);
-  font-size: 10px;
-  line-height: 1.4;
+  border-radius: 3px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.92em;
 }
 
 .design-composer-meta .design-composer-context {
@@ -1213,150 +1877,10 @@
   margin-bottom: 0;
 }
 
-.design-skill-modes {
-  display: grid;
-  gap: 5px;
-  margin: 0 0 9px;
-  padding: 0;
-  border: 0;
-}
-
-.design-skill-modes legend {
-  margin-bottom: 5px;
-  color: var(--ink);
-  font-size: 10.5px;
-  font-weight: 600;
-}
-
-.design-skill-modes label,
-.design-skill-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  color: var(--ink-soft);
-  font-size: 10px;
-}
-
-.design-skill-modes label {
-  flex-wrap: wrap;
-}
-
-.design-skill-modes small {
-  flex-basis: 100%;
-  margin-left: 20px;
-  color: var(--silence);
-  font-size: 9px;
-}
-
-.design-skill-list {
-  display: grid;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.design-skill-option {
-  cursor: pointer;
-}
-
-.design-skill-option input {
-  flex: none;
-  margin: 2px 0 0;
-}
-
-.design-skill-option input:disabled {
-  opacity: 0.55;
-}
-
-/* In "all" and "automatic" modes every box is locked.  Dimming only the 13px checkbox
-   leaves a row that still reads as interactive and still shows a pointer, which
-   invites a click that does nothing — the exact defect this surface shipped once
-   before.  The whole row has to say it is not editable. */
-.design-skill-option.design-skill-option-locked {
-  /* Two classes deliberately: at equal specificity this would depend on source
-     order, and source order is the thing a refactor silently reorders. */
-  cursor: default;
-}
-
-.design-skill-option-locked .design-skill-option-title,
-.design-skill-option-locked .design-skill-option-description {
-  color: var(--silence);
-}
-
-.design-skill-option-locked.design-skill-option-included {
-  color: var(--ink-soft);
-}
-
-.design-skill-option-locked.design-skill-option-included .design-skill-option-title {
-  color: var(--ink);
-}
-
-.design-skill-option-locked.design-skill-option-included .design-skill-option-description {
-  color: var(--ink-soft);
-}
-
-.design-skill-option-locked.design-skill-option-dropped,
-.design-skill-option-locked.design-skill-option-not-selected {
-  color: var(--silence);
-}
-
-.design-skill-option-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.design-skill-option-status {
-  color: inherit;
-  font-size: 9px;
-  font-weight: 500;
-}
-
-.design-skill-option-title {
-  color: var(--ink);
-  font-size: 10.5px;
-  font-weight: 600;
-}
-
-.design-skill-option-description {
-  color: var(--ink-soft);
-  line-height: 1.35;
-}
-
-.design-skill-preview {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.design-skill-preview summary {
-  color: var(--ink-soft);
-  cursor: pointer;
-  font-size: 10px;
-}
-
-.design-skill-preview summary:focus-visible {
+.design-skill-mode input:focus-visible,
+.design-craft-title-row input:focus-visible {
   outline: 1px solid var(--terracotta);
   outline-offset: 2px;
-}
-
-.design-skill-preview pre {
-  max-height: 160px;
-  margin: 6px 0 0;
-  padding: 8px;
-  overflow: auto;
-  color: var(--silence);
-  background: var(--surface-muted);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-family: "JetBrains Mono", monospace;
-  /* Matches the controls around it rather than shrinking below them.  This
-     preview is how a person learns what the sections do, so it must not be the
-     least readable text in the panel. */
-  font-size: 10px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .design-composer {
@@ -1364,6 +1888,13 @@
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: 14px;
+}
+
+/* Generate is docked at the bottom-right of the text it acts on, so the primary
+   action never takes a row of its own in a 337px column. The textarea reserves
+   the button's width as padding so a long line can never run underneath it. */
+.design-composer-input {
+  position: relative;
 }
 
 .design-composer:focus-within {
@@ -1403,7 +1934,7 @@
 .design-composer textarea {
   display: block;
   width: 100%;
-  padding: 0;
+  padding: 0 88px 0 0;
   resize: none;
   color: var(--ink);
   background: transparent;
@@ -1420,15 +1951,43 @@
 
 .design-composer-footer {
   display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-top: 3px;
 }
 
-.design-provider-button {
+/* The controls that are not the primary action share the strip below the text.
+   They may still wrap on a longer model or agent label, and they never shrink:
+   a squeezed control gets cut mid-word because text-overflow cannot render
+   inside a flex button. */
+.design-composer-controls {
   display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
+}
+
+.design-composer-controls > .design-skill-controls,
+.design-composer-controls > .design-agent-picker-wrap {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.design-composer-controls .design-provider-button {
+  width: max-content;
+  max-width: 100%;
+}
+
+/* Block, not flex: text-overflow only applies to block containers, so the flex
+   version cut agent ids mid-word with no ellipsis. The dot rides inline instead
+   of being a flex sibling (spacing via its own margin). */
+.design-provider-button {
+  display: block;
+  width: 100%;
+  min-width: 0;
   height: 24px;
   padding: 0 10px;
   overflow: hidden;
@@ -1439,6 +1998,11 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 10.5px;
+  line-height: 22px;
+}
+
+.design-agent-picker-wrap {
+  min-width: 0;
 }
 
 .design-provider-button:hover,
@@ -1473,6 +2037,128 @@
   border-radius: 10px;
   box-shadow: 0 6px 22px rgba(var(--ink-rgb), 0.13);
   font-size: 11px;
+}
+
+/* The folder menu is a toolbar menu, not a composer menu: it drops below its
+   own trigger and it scrolls, because the registry can hold many folders. It is
+   declared after .design-agent-picker, like .design-skill-picker, so the drop
+   direction is decided here and not by source order elsewhere. */
+.design-folder-picker {
+  right: auto;
+  left: 0;
+  top: calc(100% + 8px);
+  bottom: auto;
+  max-height: min(420px, calc(100vh - 24px));
+  min-width: min(260px, calc(100vw - 28px));
+  max-width: min(320px, calc(100vw - 28px));
+  overflow-y: auto;
+}
+
+.design-skill-picker {
+  min-width: min(320px, calc(100vw - 28px));
+  max-width: min(320px, calc(100vw - 28px));
+  max-height: min(420px, calc(100vh - 24px));
+  overflow-y: auto;
+}
+
+.design-skill-picker-default {
+  margin: -2px 0 0;
+  color: var(--silence);
+  line-height: 1.35;
+}
+
+.design-skill-picker-default strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.design-skill-mode-options {
+  display: grid;
+  gap: 3px;
+}
+
+.design-skill-mode-option {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 7px 8px;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+
+.design-skill-mode-option:hover,
+.design-skill-mode-option:focus-visible,
+.design-skill-mode-option[aria-checked="true"] {
+  color: var(--ink);
+  background: var(--surface-muted);
+  border-color: var(--border);
+}
+
+.design-skill-mode-option-name {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.design-skill-mode-option-default {
+  border-color: var(--border-strong);
+}
+
+.design-skill-mode-option-badge {
+  margin-left: auto;
+  color: var(--silence);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.design-skill-mode-option-default .design-skill-mode-option-badge {
+  color: var(--terracotta-deep);
+}
+
+.design-skill-mode-option-auto .design-skill-mode-option-badge {
+  color: var(--terracotta-deep);
+}
+
+.design-skill-mode-option-manual .design-skill-mode-option-badge {
+  color: var(--purple-deep);
+}
+
+.design-skill-mode-option-blurb {
+  color: var(--silence);
+  line-height: 1.35;
+}
+
+.design-skill-mode-option-selected {
+  flex: none;
+  margin-left: 0;
+  color: var(--terracotta-deep);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.design-skill-picker-action {
+  padding: 5px 8px;
+  color: var(--ink-soft);
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.design-skill-picker-action:hover {
+  color: var(--terracotta-deep);
+  background: var(--surface-muted);
 }
 
 .design-agent-picker-label {
@@ -1588,28 +2274,33 @@
 .design-provider-dot {
   width: 5px;
   height: 5px;
+  margin-right: 7px;
+  vertical-align: middle;
   background: var(--purple);
 }
 
 .design-generate-button {
+  position: absolute;
+  right: 0;
+  bottom: 0;
   display: grid;
-  flex: none;
-  height: 26px;
-  margin-left: auto;
+  min-width: 72px;
+  height: 24px;
   padding: 0 13px;
   place-items: center;
   color: var(--white);
   background: var(--terracotta-deep);
+  border: 1px solid var(--terracotta-deep);
   border-radius: 9px;
   cursor: pointer;
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .design-generate-button:disabled {
-  color: var(--silence);
-  background: var(--surface-muted);
-  border-color: var(--silence);
+  color: var(--terracotta-deep);
+  background: var(--surface);
+  border-color: var(--terracotta-deep);
   cursor: not-allowed;
   opacity: 1;
 }
@@ -1618,6 +2309,83 @@
   margin-top: 7px;
   color: var(--silence);
   font-size: 10px;
+}
+
+@media (max-height: 700px) {
+  .design-craft-overlay {
+    top: 52px;
+  }
+
+  .design-craft-sheet-header {
+    min-height: 50px;
+    padding: 7px 12px 7px 14px;
+  }
+
+  .design-craft-sheet-content {
+    gap: 8px;
+    padding: 9px 12px 11px;
+  }
+
+  .design-craft-sheet-expanded .design-craft-sheet-content {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-list {
+    display: flex;
+    flex-wrap: wrap;
+    max-height: 74px;
+    gap: 1px 4px;
+    overflow-y: auto;
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-row {
+    flex: 0 0 calc(20% - 4px);
+    grid-template-columns: 13px minmax(0, 1fr);
+    gap: 4px;
+    min-height: 23px;
+    border-top: 0;
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-row input {
+    transform: scale(0.85);
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-button {
+    min-height: 23px;
+    padding: 3px 2px 3px 0;
+    font-size: 9px;
+  }
+
+  .design-craft-sheet-expanded .design-craft-title-status {
+    display: none;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail {
+    padding: 8px 0 0;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail h3 {
+    margin-bottom: 3px;
+    font-size: 13px;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail > p {
+    margin-bottom: 6px;
+    font-size: 9.5px;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail-body {
+    column-gap: 13px;
+    font-size: 9px;
+    line-height: 1.35;
+  }
+
+  .design-craft-sheet-expanded .design-craft-detail-body p {
+    margin-bottom: 6px;
+  }
 }
 
 .design-sr-only {
@@ -1629,4 +2397,183 @@
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* Measured page sections: highlight drawn by the parent over the closed iframe. */
+.design-canvas-section-highlight {
+  position: absolute;
+  pointer-events: none;
+  border: 1.5px solid var(--terracotta);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--terracotta) 12%, transparent);
+}
+
+/* Hover twin of the selection highlight: same box, dashed edge, no fill, so
+   a hovered section reads as a preview of the solid selection style. */
+.design-canvas-section-hover {
+  border-style: dashed;
+  background: transparent;
+}
+
+/*
+  Direct-on-canvas selection zones: one transparent parent-side button per
+  measured section, over the closed iframe (which keeps pointer-events:none
+  and inert). Invisible by construction — no background, no border — so the
+  page paints exactly as authored; only hover/focus draw anything, via the
+  highlight above and the focus ring below.
+*/
+.design-canvas-section-overlay {
+  position: absolute;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.design-canvas-section-overlay:focus-visible {
+  outline: 1.5px solid var(--terracotta);
+  outline-offset: 2px;
+}
+
+/* One dot per noted section, at its top-left corner. The panel list and the
+   inspector stay the accessible path; these marks are glanceable only. */
+.design-canvas-note-mark {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  translate: -5px -5px;
+  pointer-events: none;
+  border-radius: 50%;
+  background: var(--terracotta);
+  box-shadow: 0 0 0 2px var(--white);
+}
+
+.design-layer-note-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--terracotta);
+}
+
+.design-layer-orphans {
+  flex: none;
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+}
+
+.design-layer-orphans-heading {
+  color: var(--silence);
+  font-size: 10px;
+  margin-bottom: 6px;
+}
+
+.design-layer-orphans-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.design-layer-orphans-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.design-layer-orphan-badge {
+  flex: none;
+  color: var(--terracotta-deep);
+  border: 1px solid var(--terracotta);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 9px;
+}
+
+.design-layer-orphan-anchor {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.design-layer-orphan-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-section-meta {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 8px;
+}
+
+.design-section-meta > div {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.design-section-meta dt {
+  flex: none;
+  width: 64px;
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.design-section-meta dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+}
+
+.design-section-preview {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.design-section-notes {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.design-section-notes li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11.5px;
+}
+
+.design-section-note-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.design-section-note-compose {
+  display: flex;
+  gap: 6px;
+}
+
+.design-section-note-compose input {
+  flex: 1;
+  min-width: 0;
 }

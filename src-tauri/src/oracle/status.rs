@@ -13,7 +13,8 @@ use super::errors::{core_error, invalid_configuration};
 use super::runtime::OracleRuntime;
 use super::runtime::ResolvedOraclePaths;
 use super::types::{
-    OracleHealthCheck, OracleIndexStatus, OracleModelState, OracleModelStatus, OracleResourceBudget,
+    OracleFolderIndexState, OracleHealthCheck, OracleIndexStatus, OracleModelState,
+    OracleModelStatus, OracleResourceBudget,
 };
 
 pub(super) async fn read_index_snapshot(
@@ -66,6 +67,34 @@ pub(super) fn status_from_snapshot(
         model: runtime.model_status(),
         reranker: Some(runtime.reranker_status()),
         pause_reason: snapshot.pause_reason.clone(),
+    }
+}
+
+/// Fold an index snapshot into the answer for a folder that this runtime is
+/// not indexing.
+///
+/// The ordering and thresholds mirror [`status_from_snapshot`] — pending
+/// first, then stale, then "nothing indexed", then ready — but the
+/// runtime-only states (`indexing`, `error`) do not apply to a folder probed
+/// on request, so they are not produced here. The one deliberate difference:
+/// a snapshot with zero indexed files is `never_indexed` even when files are
+/// pending, because the question is "does this folder have an index", and
+/// nothing in the index is the honest answer. Chunks counted with no matching
+/// manifest entry are `partial` instead: the data is there but cannot be
+/// mapped back to files, which is not the same as an empty index.
+pub(super) fn folder_state_from_snapshot(
+    snapshot: &IndexStatusSnapshot,
+) -> OracleFolderIndexState {
+    if snapshot.indexed_files == 0 {
+        if snapshot.sqlite_chunks > 0 {
+            OracleFolderIndexState::Partial
+        } else {
+            OracleFolderIndexState::NeverIndexed
+        }
+    } else if snapshot.pending_files > 0 || snapshot.stale_files > 0 {
+        OracleFolderIndexState::Partial
+    } else {
+        OracleFolderIndexState::Ready
     }
 }
 

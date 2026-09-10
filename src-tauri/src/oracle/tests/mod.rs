@@ -2,6 +2,7 @@
 //! the environment lock, temp runtimes, fixtures — live in [`support`].
 
 mod commands;
+mod folder;
 mod indexing;
 mod model_download;
 mod real_model_e2e;

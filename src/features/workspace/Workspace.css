@@ -500,8 +500,6 @@
 .workspace-tab-meta,
 .workspace-rate,
 .workspace-session-cwd,
-.workspace-permission-context,
-.workspace-permission-command,
 .workspace-diff-header,
 .workspace-diff-lines,
 .workspace-test-meta,
@@ -1068,87 +1066,6 @@
   vertical-align: -1px;
   background: var(--terracotta);
   animation: caret 1s steps(1) infinite;
-}
-
-.workspace-permission-card {
-  flex: none;
-  overflow: hidden;
-  background: var(--surface-muted);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  animation: rise 0.24s ease both;
-}
-
-.workspace-permission-heading,
-.workspace-permission-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.workspace-permission-heading {
-  min-width: 0;
-  padding: 12px 14px 6px;
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.workspace-permission-dot {
-  width: 6px;
-  height: 6px;
-  flex: none;
-  border-radius: 999px;
-}
-
-.workspace-permission-waiting {
-  background: var(--ochre);
-}
-
-.workspace-permission-allowed {
-  background: var(--green);
-}
-
-.workspace-permission-denied {
-  background: var(--danger);
-}
-
-.workspace-permission-context {
-  min-width: 0;
-  margin-left: auto;
-  overflow: hidden;
-  color: var(--silence);
-  font-size: 10px;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-permission-command {
-  max-height: 12em;
-  overflow: auto;
-  padding: 5px 14px 13px;
-  font-size: 11.5px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.workspace-permission-env {
-  max-height: 8em;
-  overflow: auto;
-  padding: 0 14px 10px;
-  color: var(--silence);
-  font-size: 10.5px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.workspace-permission-actions {
-  padding: 10px 14px 12px;
-}
-
-.workspace-permission-label {
-  color: var(--silence);
-  font-size: 11px;
 }
 
 .workspace-row-selected .workspace-row-meta,

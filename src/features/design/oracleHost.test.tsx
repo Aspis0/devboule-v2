@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  daemonStatus: vi.fn(),
   oracleAsk: vi.fn(),
   oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/tauri", () => ({
+  daemonStatus: mocks.daemonStatus,
   oracleAsk: mocks.oracleAsk,
   oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
@@ -103,6 +105,7 @@ beforeEach(() => {
   mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
   mocks.surfaceSettingsSet.mockResolvedValue(undefined);
   mocks.oracleFiles.mockResolvedValue([]);
+  mocks.daemonStatus.mockResolvedValue({ capabilities: [] });
   mocks.pluginsList.mockResolvedValue({ root: "", plugins: [], problem: null });
   mocks.providersList.mockResolvedValue({ providers: [], unreadableDirs: 0 });
   mocks.projectsList.mockResolvedValue([]);
@@ -240,7 +243,7 @@ describe("Oracle design host", () => {
     await act(async () => root.unmount());
   });
 
-  it("discloses when App falls back to the demo host", async () => {
+  it("omits the debug disclosure when App falls back to the demo host", async () => {
     mocks.oracleStatus.mockRejectedValue(new Error("Oracle daemon unavailable"));
     const { container, root } = createRootContainer();
 
@@ -248,7 +251,7 @@ describe("Oracle design host", () => {
     await act(async () => undefined);
     await act(async () => undefined);
 
-    expect(container.textContent).toContain("Demo design — fixtures, not a live store.");
+    expect(container.querySelector(".design-demo-disclosure")).toBeNull();
     await act(async () => root.unmount());
   });
 });

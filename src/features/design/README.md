@@ -149,11 +149,17 @@ measurement, which is worse than the gap.
 `skillLoader.ts` composes craft doctrine into one block of prompt text,
 `builtInSkills.ts` discovers the sections, and `groundedPrompt` in `agentHost.ts` sends it
 with every agent generation. **Which sections go is the user's choice**, in three modes:
-priority — request every section including ones added later, then send the most important
-sections that fit and declare the rest omitted; manual — exactly the ones ticked; or automatic
-— a short pre-flight turn asks the agent which apply to this request, and those are composed on
+matched — the sections are ranked against the request text by the deterministic lexical
+ranker in `skillRanking.ts`, the never-routed baseline is prepended, and the matched head is
+sent with no model turn; when no section matches strongly the ranker reports the fallback
+and the priority order is used instead; manual — exactly the ones ticked; or automatic —
+a short pre-flight turn asks the agent which apply to this request, and those are composed on
 top of a baseline that is never routed. Any failure of that question falls back to requesting
-every section, with the same priority and ceiling behavior, never to none.
+every section, with the same priority and ceiling behavior, never to none. On the wire the
+mode is declared with the generate options (`DesignGenerationOptions`) using the same ids the
+persisted selection uses: `skillMode: "all"` ranks the corpus for the request (no list
+travels), `skillMode: "manual"` pins exactly the listed sections in the given order, and
+`skillMode: "auto"` marks the one extra agent turn.
 
 `AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS` holds that baseline, currently `anti-ai-slop` alone,
 and the pre-flight prompt does not offer it as a choice. It was measured at two selections in
@@ -274,7 +280,8 @@ agent has to say what it chose rather than invent a palette in silence.
 `DOCTRINE_SECTION_CEILING_CHARS` (2,500) forces first-party content to condense — it is
 binding rather than generous, and a section that outgrows it becomes two sections rather
 than a bigger number. `DOCTRINE_CEILING_CHARS` (12,000, roughly 3,000 tokens) bounds the
-composed block; when priority/all mode requests the whole corpus, whole sections are dropped
+composed block; when the priority order is what gets requested — a matched request that fell
+back, or the fallback of a failed pre-flight — whole sections are dropped
 from the tail of the priority order and the block declares what was omitted. They are
 deliberately different constants: one serving both jobs would let a single section pass the
 strict check and then consume the whole block, silently dropping every other section.

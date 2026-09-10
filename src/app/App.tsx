@@ -6,11 +6,7 @@ import { oracleStatus } from "../lib/tauri";
 import { useAppStore, type DesignSessionState } from "../store/appStore";
 import type { OracleIndexStatus } from "../types/ipc";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
-import type {
-  DesignDisclosureContext,
-  DesignHost,
-  DesignSurfaceProps,
-} from "../features/design/DesignSurface";
+import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
 import { createAgentHost, disposeAgentHost } from "../features/design/agentHost";
 import { createDemoHost } from "../features/design/mockData";
 import { createOracleHost } from "../features/design/oracleHost";
@@ -41,21 +37,6 @@ const LazyPolis = lazy(() =>
 
 const DEMO_DESIGN_HOST = createDemoHost();
 const ORACLE_DESIGN_HOST = createOracleHost();
-const DEMO_DESIGN_DISCLOSURE = "Demo design — fixtures, not a live store.";
-const ORACLE_DESIGN_DISCLOSURE = "Repository index — Oracle results, no design writes.";
-export const AGENT_DESIGN_DISCLOSURE = ({
-  session,
-  selectedWorkspace,
-}: DesignDisclosureContext): string => {
-  if (session !== null) {
-    return session.cwd === undefined
-      ? "ACP agent — the directory is not known for this session."
-      : `ACP agent — running in ${session.cwd}.`;
-  }
-  return selectedWorkspace === null
-    ? "ACP agent — will run in the directory the app was launched from."
-    : `ACP agent — will run in workspace ${selectedWorkspace.title}.`;
-};
 
 type DesignHostKind = "agent" | "oracle" | "demo";
 
@@ -110,8 +91,9 @@ function selectedDesignHost(kind: DesignHostKind): DesignHost {
 }
 
 function designHasWork(session: DesignSessionState): boolean {
-  // There is no discard/new-document action yet, so a message or artifact keeps
-  // this session live for the application's lifetime once it has been created.
+  // A worked Design host intentionally survives surface navigation so its transcript, artifact,
+  // and live agent context are available when the user returns. The visible Design "End session"
+  // control is the user-directed teardown; an unworked host is disposed on navigation.
   return (
     session.generation !== null || session.latestArtifact !== null || session.messages.length > 0
   );
@@ -127,10 +109,7 @@ async function releaseDesignHostIfUnused(): Promise<void> {
 }
 
 function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
-  const [selection, setSelection] = useState<{
-    host: DesignHost;
-    disclosure: DesignSurfaceProps["disclosure"];
-  } | null>(null);
+  const [selection, setSelection] = useState<DesignHost | null>(null);
 
   useEffect(() => {
     const lifecycle = ++designBoundaryLifecycle;
@@ -139,15 +118,7 @@ function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
     void resolveDesignHostKind().then((kind) => {
       if (!active) return;
       const host = selectedDesignHost(kind);
-      setSelection({
-        host,
-        disclosure:
-          kind === "agent"
-            ? AGENT_DESIGN_DISCLOSURE
-            : kind === "oracle"
-              ? ORACLE_DESIGN_DISCLOSURE
-              : DEMO_DESIGN_DISCLOSURE,
-      });
+      setSelection(host);
     });
 
     return () => {
@@ -160,7 +131,7 @@ function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
 
   if (selection === null) return <SurfaceLoading />;
 
-  return <DesignSurface host={selection.host} disclosure={selection.disclosure} />;
+  return <DesignSurface host={selection} />;
 }
 
 const LazyDesign = lazy(() =>

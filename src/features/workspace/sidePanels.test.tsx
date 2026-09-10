@@ -31,6 +31,7 @@ describe("side panel dead controls", () => {
         messages: [],
         latestArtifact: null,
         generation: null,
+        sectionNotes: [],
       },
     });
   });
@@ -165,6 +166,7 @@ describe("side panel dead controls", () => {
           messages: [],
           latestArtifact: { html: "<p>latest artifact</p>" },
           generation: null,
+          sectionNotes: [],
         },
       });
       await render(<DesignPanel />);

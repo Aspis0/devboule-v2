@@ -90,6 +90,8 @@ pub fn run() {
             oracle::oracle_watch_stop,
             oracle::oracle_files,
             oracle::oracle_ask,
+            oracle::oracle_folder_status,
+            oracle::oracle_ask_folder,
             surface_settings::surface_settings_get,
             surface_settings::surface_settings_set,
             plugins::plugins_list,

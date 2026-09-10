@@ -58,6 +58,31 @@ Rule:      where a figure comes from one design system rather than from a
            standard, the text says which. A model reading these files would
            otherwise repeat a convention as a requirement.
 
+FOURTH PROVENANCE — reference-research.md, written for the web-tools context
+Covers:    the substance of reference-research.md. The Design surface can call
+           WebSearch and WebFetch, so the section is about looking at real
+           pages of a page type before drawing it: when that search pays off,
+           what to search for, what to carry over, where reference ends and
+           copying begins, and naming the pages a decision came from. There is
+           no upstream file; the section is original to this repository.
+Sources:   one external source, read directly. Nielsen Norman Group, "10
+           Usability Heuristics for User Interface Design" (Jakob Nielsen,
+           1994; last reviewed 2024-01-30), heuristic 4, Consistency and
+           Standards, https://www.nngroup.com/articles/ten-usability-heuristics/,
+           fetched 2026-09-10. That heuristic states Jakob's Law — people spend
+           most of their time in other digital products, and those experiences
+           set their expectations — and instructs designers to follow platform
+           and industry conventions. The dedicated /articles/jakobs-law/ URL
+           returned 404; the heuristic page is the source that was read and the
+           one cited.
+Unverified: no copyright statute or case was read. The paragraph drawing the
+           line between reference and copying states itself as a working rule
+           and not legal advice, and it stays that way here: it was not checked
+           against a jurisdiction's law. The page-type list (pricing, changelog,
+           settings, onboarding, checkout, sign-in) is a composition judgement,
+           not a sourced taxonomy, and "two or three examples" is our own
+           sample-size convention, not a measured threshold.
+
 VERIFICATION
 Every claim carrying a clause number or an attribution was checked against its
 primary source before shipping. Several inherited claims did not survive: the

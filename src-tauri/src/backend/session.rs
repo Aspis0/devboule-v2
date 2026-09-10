@@ -179,11 +179,17 @@ pub fn session_set_model(
     Ok(require_client(&bridge)?.session_set_model(&id, model_id.as_deref(), effort.as_deref())?)
 }
 
+/// Destroys the session. The subscription is optional: the wire `SessionClose`
+/// frame carries only the session id, and the daemon authenticates the caller
+/// as the session owner, so a session that never produced a subscription (a
+/// startup that failed after `session_create`) can still be closed. Without
+/// this, such a session stays alive in the daemon with nothing able to close
+/// it, because every other teardown path is keyed on a subscription.
 #[tauri::command]
 pub fn session_close(
     bridge: State<'_, DaemonBridge>,
     id: String,
-    subscription_id: SubscriptionId,
+    subscription_id: Option<SubscriptionId>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     bridge.session_close(&id, subscription_id)?;

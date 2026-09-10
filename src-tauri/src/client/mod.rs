@@ -367,6 +367,36 @@ impl AttachmentRegistry {
             .map(|entry| entry.session_id.clone())
     }
 
+    /// Every subscription this bridge holds for one session, lowest id first.
+    ///
+    /// The subscription-less close path needs one of these as a token for the
+    /// client's own per-subscription bookkeeping, and forgets all of them once
+    /// the daemon confirmed the session is gone.
+    fn subscriptions_for_session(&self, session_id: &str) -> Vec<SubscriptionId> {
+        let mut ids = self
+            .state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.session_id == session_id)
+            .map(|(subscription_id, _)| *subscription_id)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Drop every local attachment for one session. Call only after the daemon
+    /// confirmed the session is gone: forgetting a live session's attachment
+    /// silently stops delivering its events to the window that owns it.
+    fn forget_session(&self, session_id: &str) {
+        self.state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .entries
+            .retain(|_, entry| entry.session_id != session_id);
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.state
@@ -831,7 +861,7 @@ impl DaemonBridge {
     pub(crate) fn session_close(
         &self,
         session_id: &str,
-        subscription_id: SubscriptionId,
+        subscription_id: Option<SubscriptionId>,
     ) -> Result<(), DaemonError> {
         self.inner.session_close(session_id, subscription_id)
     }
@@ -1081,12 +1111,51 @@ impl BridgeInner {
     pub(crate) fn session_close(
         &self,
         session_id: &str,
-        subscription_id: SubscriptionId,
+        subscription_id: Option<SubscriptionId>,
     ) -> Result<(), DaemonError> {
         let _lifecycle = self
             .client_lifecycle
             .lock()
             .unwrap_or_else(|err| err.into_inner());
+        let Some(subscription_id) = subscription_id else {
+            // No subscription: close by session id alone. The daemon needs
+            // nothing else — the wire frame carries only `session_id` and the
+            // owner — so a session the frontend created and never attached can
+            // still be destroyed.
+            //
+            // This build cannot call the client's subscription-less
+            // `DaemonClient::session_close`: it sits behind the daemon's
+            // `server` feature, which the GUI never enables. The client's own
+            // per-subscription bookkeeping therefore needs a token. Name a
+            // local attachment when one exists, and 0 otherwise: bridge ids
+            // start at 1, so 0 can never name someone else's attachment and the
+            // client's cleanup for it is a no-op.
+            let token = self
+                .attachments
+                .subscriptions_for_session(session_id)
+                .first()
+                .copied()
+                .unwrap_or(0);
+            let client = self
+                .client
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone()
+                .ok_or(DaemonError::ConnectionLost)?;
+            return match client.session_close_with_subscription(session_id, token) {
+                Ok(()) => {
+                    self.attachments.forget_session(session_id);
+                    Ok(())
+                }
+                Err(DaemonError::ConnectionLost) => {
+                    // Mirror the subscription-bearing path: a lost connection
+                    // drops the local attachment too.
+                    self.attachments.forget_session(session_id);
+                    Err(DaemonError::ConnectionLost)
+                }
+                Err(error) => Err(error),
+            };
+        };
         let attached_session = self
             .attachments
             .session_id_for(subscription_id)
@@ -1945,6 +2014,28 @@ mod tests {
         assert_eq!(registry.len(), 1);
         assert_eq!(registry.session_id_for(second).as_deref(), Some("shared"));
         assert_eq!(registry.session_id_for(first), None);
+    }
+
+    #[test]
+    fn forgetting_a_session_drops_only_that_sessions_attachments() {
+        let registry = Arc::new(AttachmentRegistry::default());
+        let first = registry.insert("shared", None, Arc::new(|_| {}));
+        let second = registry.insert("shared", None, Arc::new(|_| {}));
+        let other = registry.insert("kept", None, Arc::new(|_| {}));
+
+        assert_eq!(
+            registry.subscriptions_for_session("shared"),
+            vec![first, second]
+        );
+
+        registry.forget_session("shared");
+
+        assert_eq!(
+            registry.subscriptions_for_session("shared"),
+            Vec::<SubscriptionId>::new()
+        );
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.session_id_for(other).as_deref(), Some("kept"));
     }
 
     #[test]

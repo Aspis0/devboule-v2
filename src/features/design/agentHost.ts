@@ -1,7 +1,9 @@
-import { AgentSession, type AgentSessionState } from "../../lib/agentSession";
+import { AgentSession, type AgentChatItem, type AgentSessionState } from "../../lib/agentSession";
 import {
   createSessionChannel,
   oracleAsk,
+  oracleAskFolder,
+  oracleFolderStatus,
   reasonFromCause,
   sessionAttach,
   sessionClose,
@@ -9,21 +11,54 @@ import {
   sessionDetach,
   sessionInterrupt,
   sessionSend,
+  sessionPermissionRespond,
   sessionSetModel,
   type SessionChannel,
 } from "../../lib/tauri";
-import type { OracleResult, ProviderInfo, Session, SessionEvent, Workspace } from "../../types/ipc";
-import type { DesignGenerationOptions, DesignGenerationResult, DesignHost } from "./designHost";
+import type {
+  OracleFolderIndexStatus,
+  OracleResult,
+  PermissionRequest,
+  ProviderInfo,
+  Session,
+  SessionEvent,
+  Workspace,
+} from "../../types/ipc";
+import type {
+  DesignDocument,
+  DesignGenerationOptions,
+  DesignGenerationResult,
+  DesignHost,
+  DesignTranscriptItem,
+  PendingPermission,
+} from "./designHost";
 // These helpers are shared with Workspace for now; they would eventually belong in src/lib/.
 import { sessionCreateFromProvider } from "../workspace/workspaceSessions";
-import { builtInSkillIndex, builtInSkillSlugs, builtInSkillSources } from "./builtInSkills";
-import { createOracleHost } from "./oracleHost";
+import {
+  builtInSkillIndex,
+  builtInSkillSlugs,
+  builtInSkillSources,
+  MAX_AUTOMATIC_SKILL_SECTIONS,
+} from "./builtInSkills";
+export { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
+import { createDemoHost } from "./mockData";
 import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
+import { rankSkillsForQuery } from "./skillRanking";
 
 interface AgentSessionHandle {
   session: Session;
   controller: AgentSession;
   closed: boolean;
+  closePromise: Promise<void> | null;
+}
+
+interface SessionTarget {
+  provider: ProviderInfo | undefined;
+  workspace: Workspace | null;
+}
+
+interface SessionRequest extends SessionTarget {
+  promise: Promise<AgentSessionHandle>;
 }
 
 interface ActiveRun {
@@ -31,10 +66,24 @@ interface ActiveRun {
   sessionId: string;
   prompt: string;
   itemStart: number;
+  /**
+   * Where this run's conversation begins in the live session's items. Null
+   * until the boundary is recorded, which is after the craft-selection
+   * pre-flight — the surface streams from here, so nothing of that pre-flight
+   * can leak into what the user reads as the agent's answer.
+   */
+  transcriptStart: number | null;
   toolObservations: Map<string, ToolObservation>;
   settled: boolean;
   resolve: (result: DesignGenerationResult) => void;
   reject: (error: unknown) => void;
+}
+
+interface PendingPermissionEntry extends PendingPermission {
+  answered: boolean;
+  responsePromise: Promise<void> | null;
+  /** Bumped when a re-delivered request adopts a new subscription. */
+  generation: number;
 }
 
 type ToolObservation = {
@@ -51,15 +100,8 @@ export const MAX_ARTIFACT_BYTES = 256 * 1024;
 export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
 // This is a real ACP turn, so eight seconds bounds a missing answer without pretending it is instant.
 export const AUTO_SKILL_PREFLIGHT_TIMEOUT_MS = 8_000;
-// Four, because it is the largest cap under which everything the router can choose arrives
-// intact. Measured exhaustively over the corpus: all 220 four-section selections compose with
-// nothing dropped, while of 495 five-section selections only 8 fit and 487 overflow — so at
-// five, almost every generation would silently discard the router's own last choice. An
-// earlier version of this comment said five could never fit at all; that was true of an
-// eleven-section corpus and stopped being true when two smaller sections were added. The
-// arithmetic moves with the corpus, so the invariant test in agentHost.test.tsx is what
-// actually holds this, not the numbers written here.
-export const MAX_AUTOMATIC_SKILL_SECTIONS = 4;
+export const PERMISSION_RESOLVED_NOTICE =
+  "Permission request is no longer waiting; it was answered elsewhere or it expired.";
 // A relevance router structurally cannot select a section whose value is universal:
 // that section loses to three sections specific to the request.  This was measured
 // three times at 2/15, so automatic mode includes it as a baseline instead.  Keep
@@ -203,6 +245,43 @@ export function composeAutomaticSkillSlugs(
   return applied;
 }
 
+/**
+ * The resolved head of a skill selection, whatever mode produced it: the
+ * slugs to compose, in order, and whether the mode's own chooser had to be
+ * replaced by the default priority order.
+ */
+interface ResolvedSkillChoice {
+  slugs: readonly string[];
+  fallback: boolean;
+}
+
+/**
+ * Matched selection: the deterministic lexical ranker orders the corpus for
+ * this request, the never-routed baseline is prepended on top, and the head
+ * is capped like the automatic mode — same budget arithmetic, no model
+ * turn. When the ranker reports no strong match it hands back the priority
+ * order and the fallback mirrors the automatic one: request every section
+ * and let the composed budget keep the priority head.
+ */
+export function matchSkillChoice(prompt: string): ResolvedSkillChoice {
+  const index = builtInSkillIndex();
+  const ranking = rankSkillsForQuery(prompt, index);
+  if (ranking.fallback) {
+    return { slugs: index.map((entry) => entry.slug), fallback: true };
+  }
+  const baselineSlugs = new Set<string>(AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS);
+  const routed = ranking.slugs
+    .filter((slug) => !baselineSlugs.has(slug))
+    .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS);
+  return {
+    slugs: composeAutomaticSkillSlugs(
+      routed,
+      index.map((entry) => entry.slug),
+    ),
+    fallback: false,
+  };
+}
+
 export function extractFencedHtml(text: string): string | undefined {
   const regex = /```html\s*\n?([\s\S]*?)\n?\s*```/g;
   let match: RegExpExecArray | null;
@@ -212,6 +291,17 @@ export function extractFencedHtml(text: string): string | undefined {
     if (content.length > 0) lastContent = content;
   }
   return lastContent;
+}
+
+/**
+ * Prose left after the fenced ```html blocks are removed. The page already
+ * lives on the canvas, so the transcript keeps only the words around it.
+ * Consecutive blank lines left by a removed block collapse to one, and
+ * surrounding whitespace is trimmed; an empty result means "only a block".
+ */
+export function stripFencedHtml(text: string): string {
+  const withoutBlocks = text.replace(/```html\s*\n?([\s\S]*?)\n?\s*```/g, "");
+  return withoutBlocks.replace(/\n\s*\n\s*\n+/g, "\n\n").trim();
 }
 
 export interface ArtifactExtraction {
@@ -238,6 +328,50 @@ export function extractArtifact(state: AgentSessionState, startIndex = 0): Artif
 
 export function extractArtifactHtml(state: AgentSessionState, startIndex = 0): string | undefined {
   return extractArtifact(state, startIndex).html;
+}
+
+/**
+ * The agent's own conversation from `startIndex` on: prose, reasoning, and tool
+ * activity. User echoes are dropped (the surface renders the user's prompt and
+ * the echo carries the doctrine block), and so are error items, which the run's
+ * summary card reports in full. An assistant or thought item with no text is a
+ * chunk that carried nothing, and a blank row would only be noise. Tool rows
+ * are always kept: a tool with no title yet is still activity.
+ */
+export function transcriptItems(
+  items: readonly AgentChatItem[],
+  startIndex: number,
+): DesignTranscriptItem[] {
+  const rows: DesignTranscriptItem[] = [];
+  for (let index = Math.max(0, startIndex); index < items.length; index += 1) {
+    const item = items[index];
+    if (item.role === "user" || item.role === "error") continue;
+    const parentage = {
+      ...(item.parentToolUseId === undefined ? {} : { parentToolUseId: item.parentToolUseId }),
+      ...(item.spawnDepth === undefined ? {} : { spawnDepth: item.spawnDepth }),
+    };
+    if (item.role === "tool") {
+      rows.push({
+        id: item.id,
+        role: "tool",
+        text: item.text,
+        toolCallId: item.toolCallId,
+        status: item.status,
+        ...parentage,
+        ...(item.subagentType === undefined ? {} : { subagentType: item.subagentType }),
+      });
+      continue;
+    }
+    if (item.text.trim().length === 0) continue;
+    rows.push({
+      id: item.id,
+      role: item.role,
+      text: item.text,
+      messageId: item.messageId,
+      ...parentage,
+    });
+  }
+  return rows;
 }
 
 function formatGroundingHit(result: OracleResult): string {
@@ -277,26 +411,129 @@ export function groundedPrompt(
   prompt: string,
   oracleResults: readonly OracleResult[],
   composedDoctrine = buildSkillBlock(builtInSkillSources(), builtInSkillSlugs()).text,
+  grounded = true,
 ): string {
-  const grounding =
-    oracleResults.length === 0
-      ? "Oracle found no matching files."
-      : oracleResults.map(formatGroundingHit).join("\n");
   const doctrine = embedDoctrineBlock(composedDoctrine);
   const promptParts = [
     "Work on the requested design change in the active Devboule workspace.",
     `User request: ${prompt}`,
-    "Oracle grounding (search hits, not files changed):",
-    grounding,
-    "Use the grounding as context and make only the requested change.",
+  ];
+  if (grounded) {
+    const grounding =
+      oracleResults.length === 0
+        ? "Oracle found no matching files."
+        : oracleResults.map(formatGroundingHit).join("\n");
+    promptParts.push(
+      "Oracle grounding (search hits, not files changed):",
+      grounding,
+      "Use the grounding as context and make only the requested change.",
+    );
+  } else {
+    promptParts.push(
+      "Oracle grounding is off for this request: do not search or read repository files, and do not assume any search result.",
+    );
+  }
+  promptParts.push(
     "",
     "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
     "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
     "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
     "If you produce more than one block, only the last one is used.",
-  ];
+  );
   if (doctrine.length > 0) promptParts.push(doctrine, DESIGN_DOCTRINE_RESTATEMENT);
   return promptParts.join("\n\n");
+}
+
+/**
+ * What grounding on one attached folder produced: the hits to use as context
+ * and the one quiet line for the person when the folder could not be used.
+ * A null notice means nothing to report (grounded on the folder).
+ */
+export interface FolderGrounding {
+  results: readonly OracleResult[];
+  notice: string | null;
+}
+
+/**
+ * Normalizes the caller's folder option: undefined stays undefined (a caller
+ * that predates folder-aware grounding), null stays null (explicitly no
+ * folder attached), and a blank string becomes null. A non-blank string is
+ * trimmed and used as the absolute folder path.
+ */
+export function normalizeFolderOption(value: string | null | undefined): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * Windows canonicalizes to extended-length paths. That `\\?\` prefix is correct
+ * and unreadable; this notice is for a person, so drop it.
+ */
+// Four characters: backslash, backslash, "?", backslash. A raw template cannot
+// end in a backslash (it would escape its own closing backtick), so each
+// backslash is doubled in this quoted string.
+const EXTENDED_LENGTH_PREFIX = "\\\\?\\";
+
+function humanizeWindowsPaths(message: string): string {
+  return message.split(EXTENDED_LENGTH_PREFIX).join("");
+}
+
+const TRAILING_PATH_SEPARATORS = /[\\/]+$/;
+const PATH_SEPARATORS = /[\\/]/;
+
+function folderName(folderPath: string): string {
+  const segments = folderPath.replace(TRAILING_PATH_SEPARATORS, "").split(PATH_SEPARATORS);
+  return segments[segments.length - 1] || folderPath;
+}
+
+/**
+ * Oracle's own message names the folder twice and in extended-length form, which
+ * is three lines of noise for the case that happens most: a folder nobody has
+ * indexed. Say that one in a sentence, and keep Oracle's wording for the states
+ * where the reason is not obvious from the state alone.
+ */
+export function groundingNoticeFor(status: OracleFolderIndexStatus, folderPath: string): string {
+  if (status.state === "never_indexed") {
+    return `Not grounded: ${folderName(folderPath)} has no Oracle index yet. Index the folder to let the agent search it.`;
+  }
+  return humanizeWindowsPaths(
+    status.message ?? `This folder has no usable Oracle index (${status.state}).`,
+  );
+}
+
+/**
+ * Grounds one prompt on one attached folder's own index. The status probe is
+ * read-only and starts nothing; a folder without a ready index is not searched,
+ * and the reason is returned as the quiet line. A search that errors degrades to
+ * no grounding plus its reason, never to a throw, so the run can proceed.
+ * An aborted generation throws instead: the caller passes its signal and this
+ * checks it between the two awaits, so a cancelled run never starts a folder
+ * search it will only throw away.
+ */
+export async function resolveFolderGrounding(
+  prompt: string,
+  folderPath: string,
+  signal?: AbortSignal,
+): Promise<FolderGrounding> {
+  if (signal?.aborted) throw abortError();
+  let status;
+  try {
+    status = await oracleFolderStatus(folderPath);
+  } catch (cause) {
+    if (signal?.aborted) throw abortError();
+    return { results: [], notice: reasonFromCause(cause) };
+  }
+  if (signal?.aborted) throw abortError();
+  if (status.state !== "ready") {
+    return { results: [], notice: groundingNoticeFor(status, folderPath) };
+  }
+  try {
+    const response = await oracleAskFolder(folderPath, prompt);
+    return { results: response.results, notice: null };
+  } catch (cause) {
+    return { results: [], notice: reasonFromCause(cause) };
+  }
 }
 
 function resultFor(
@@ -336,11 +573,14 @@ function resultFor(
     };
   }
 
-  const noun = sources.length === 1 ? "file" : "files";
   return {
     prompt,
-    title: `Agent wrote ${sources.length} ${noun}`,
-    desc: `The agent wrote ${sources.length} ${noun}: ${sources.join(", ")}. Review what the agent wrote with your own git.${shellWarning}`,
+    // "Wrote" plus the source paths says the same thing as the old count
+    // heading without repeating the count the paths already show.
+    title: "Wrote",
+    // The paths live in `sources` only; repeating them here was the third copy of
+    // the same fact in the run summary.
+    desc: `Review what the agent wrote with your own git.${shellWarning}`,
     sources,
     nodeIds: [],
   };
@@ -362,6 +602,17 @@ function observeToolEvent(
 
 function sessionError(prefix: string, cause: unknown): Error {
   return new Error(`${prefix}: ${reasonFromCause(cause)}`);
+}
+
+function sameProvider(left: ProviderInfo | undefined, right: ProviderInfo | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  // The catalog id is the provider identity; the rest of the row can be
+  // refreshed while the same provider remains selected.
+  return left.id === right.id;
+}
+
+function sameSessionTarget(left: SessionTarget, right: SessionTarget): boolean {
+  return sameProvider(left.provider, right.provider) && left.workspace?.id === right.workspace?.id;
 }
 
 function interruptSession(sessionId: string, controller: AgentSession): void {
@@ -409,12 +660,26 @@ export function invokeAgentCommand<T>(
 }
 
 export function createAgentHost(): DesignHost {
-  const oracleHost = createOracleHost();
+  // Document skeleton only. Its repository layers were Oracle's single global
+  // index, which never depended on the session's workspace, so they are not
+  // loaded here; see loadDocument below.
+  const documentHost = createDemoHost();
   let disposed = false;
   let activeRun: ActiveRun | null = null;
+  /**
+   * The transcript boundary of the latest run. It outlives the run on purpose: the
+   * surface reads it to keep showing the agent's words for the instant between the run
+   * settling and the finished transcript arriving on the result. A new generation
+   * clears it before any of its own work, so a stale boundary can never leak the
+   * previous run into a card that is already being shown as working.
+   */
+  let lastRunTranscriptStart: number | null = null;
+  let activeRunSettlementCheck: (() => void) | null = null;
   let runPending = false;
   let sessionHandle: AgentSessionHandle | null = null;
-  let sessionPromise: Promise<AgentSessionHandle> | null = null;
+  let sessionRequest: SessionRequest | null = null;
+  const pendingSessionPromises = new Set<Promise<AgentSessionHandle>>();
+  let sessionTeardownPromise: Promise<void> | null = null;
   let disposalPromise: Promise<void> | null = null;
   let activePreflight: {
     sessionId: string;
@@ -422,6 +687,8 @@ export function createAgentHost(): DesignHost {
     reject: (error: Error) => void;
   } | null = null;
   let selectedProvider: ProviderInfo | undefined;
+  let sessionOwner: SessionTarget | null = null;
+  let providerSelectionGeneration = 0;
   /**
    * The explicit selection is the SINGLE resolution that both generation and the per-project
    * doctrine settings read, so they cannot disagree about which project is current; two
@@ -429,9 +696,115 @@ export function createAgentHost(): DesignHost {
    */
   let selectedWorkspace: Workspace | null = null;
   const sessionListeners = new Set<() => void>();
+  let pendingPermissions: PendingPermissionEntry[] = [];
+  let permissionNotice: string | null = null;
+  let permissionNoticeSessionId: string | null = null;
 
   const publishSessionChange = (): void => {
     for (const listener of sessionListeners) listener();
+  };
+
+  // DesignSurface already reads pending permissions through this session subscription;
+  // publishing here is enough, so a second permission subscription could not disagree
+  // with the live session subscription.
+  const pendingPermissionSnapshot = (): PendingPermission | null => {
+    const pending = pendingPermissions[0];
+    return pending === undefined
+      ? null
+      : {
+          sessionId: pending.sessionId,
+          subscriptionId: pending.subscriptionId,
+          request: pending.request,
+        };
+  };
+
+  const removePendingPermission = (entry: PendingPermissionEntry): boolean => {
+    const index = pendingPermissions.indexOf(entry);
+    if (index === -1) return false;
+    pendingPermissions.splice(index, 1);
+    return true;
+  };
+
+  const respondToPermissionEntry = (
+    entry: PendingPermissionEntry,
+    outcome: "allow_once" | "deny",
+  ): Promise<void> => {
+    if (entry.answered || entry.responsePromise !== null) return Promise.resolve();
+    entry.answered = true;
+    const generation = entry.generation;
+
+    const liveHandle = sessionHandle?.session.id === entry.sessionId ? sessionHandle : null;
+    const liveSubscriptionId = liveHandle?.controller.getSubscriptionId() ?? null;
+    if (liveSubscriptionId === null) {
+      entry.answered = false;
+      activeRunSettlementCheck?.();
+      return Promise.reject(new Error("The permission session is no longer attached."));
+    }
+
+    let response: Promise<void>;
+    try {
+      response = sessionPermissionRespond(
+        entry.sessionId,
+        liveSubscriptionId,
+        entry.request.toolCallId,
+        outcome,
+      );
+    } catch (cause) {
+      entry.answered = false;
+      activeRunSettlementCheck?.();
+      return Promise.reject(cause);
+    }
+
+    const trackedResponse = Promise.resolve(response).then(
+      () => {
+        // A newer subscription superseded this answer; it must not remove the
+        // re-delivered entry or clear the fresh in-flight promise.
+        if (entry.generation !== generation) return;
+        if (removePendingPermission(entry)) {
+          if (permissionNoticeSessionId === entry.sessionId) {
+            permissionNotice = null;
+            permissionNoticeSessionId = null;
+          }
+          publishSessionChange();
+        }
+        entry.responsePromise = null;
+        activeRunSettlementCheck?.();
+      },
+      (cause: unknown) => {
+        if (entry.generation !== generation) return;
+        // Keep the entry visible and retryable when the daemon rejects the answer.
+        entry.answered = false;
+        entry.responsePromise = null;
+        publishSessionChange();
+        activeRunSettlementCheck?.();
+        throw cause;
+      },
+    );
+    entry.responsePromise = trackedResponse;
+    return trackedResponse;
+  };
+
+  const respondToPendingPermission = (
+    outcome: "allow_once" | "deny",
+    sessionId?: string,
+  ): Promise<void> => {
+    const pending = pendingPermissions[0];
+    if (pending === undefined || (sessionId !== undefined && pending.sessionId !== sessionId)) {
+      return Promise.resolve();
+    }
+    return respondToPermissionEntry(pending, outcome);
+  };
+
+  const denyUnansweredPermissions = (sessionId?: string): Promise<void> => {
+    const responses = pendingPermissions
+      .filter(
+        (entry) =>
+          !entry.answered &&
+          entry.responsePromise === null &&
+          (sessionId === undefined || entry.sessionId === sessionId),
+      )
+      .map((entry) => respondToPermissionEntry(entry, "deny").catch(() => undefined));
+    return Promise.all(responses).then(() => undefined);
   };
 
   const settleRun = (
@@ -442,37 +815,107 @@ export function createAgentHost(): DesignHost {
     if (run.settled) return;
     run.settled = true;
     if (activeRun === run) activeRun = null;
+    if (permissionNoticeSessionId === run.sessionId) {
+      permissionNotice = null;
+      permissionNoticeSessionId = null;
+      publishSessionChange();
+    }
     if (outcome === "resolve") run.resolve(value as DesignGenerationResult);
     else run.reject(value);
   };
 
-  const closeSession = async (handle: AgentSessionHandle): Promise<void> => {
-    if (handle.closed) return;
+  const closeSession = (handle: AgentSessionHandle): Promise<void> => {
+    if (handle.closePromise !== null) return handle.closePromise;
+    if (handle.closed) return Promise.resolve();
     handle.closed = true;
+    // Capture this before dispose(): AgentSession.dispose() starts detaching immediately, but
+    // the daemon requires this still-live subscription for session_close ownership validation.
+    const subscriptionId = handle.controller.getSubscriptionId();
+    const pendingPermissionResponses = denyUnansweredPermissions(handle.session.id);
+    let shouldPublish = false;
+    const pendingCount = pendingPermissions.length;
+    pendingPermissions = pendingPermissions.filter(
+      (entry) => entry.sessionId !== handle.session.id,
+    );
+    if (pendingPermissions.length !== pendingCount) {
+      shouldPublish = true;
+    }
+    if (permissionNoticeSessionId === handle.session.id) {
+      permissionNotice = null;
+      permissionNoticeSessionId = null;
+      shouldPublish = true;
+    }
     if (sessionHandle === handle) {
       sessionHandle = null;
-      publishSessionChange();
+      sessionOwner = null;
+      shouldPublish = true;
     }
-    handle.controller.dispose();
-    // Provider changes can attach a replacement immediately; finish this id's detach first.
-    await handle.controller.detach();
+    if (shouldPublish) publishSessionChange();
+    const closing = (async () => {
+      await pendingPermissionResponses;
+      try {
+        if (subscriptionId !== null) {
+          // Close while the attachment is alive; detach is only teardown after the daemon has
+          // accepted the ownership-bearing close request.
+          await sessionClose(handle.session.id, subscriptionId);
+        } else {
+          await closeUnattachedSession(handle.session.id);
+        }
+      } catch {
+        // Continue detaching even when the daemon rejects close; no frontend cleanup can repair
+        // a daemon-side close failure, but leaving our attachment alive would make it worse.
+      }
+      handle.controller.dispose();
+      // Provider changes can attach a replacement immediately; finish this id's detach afterward.
+      await handle.controller.detach();
+    })();
+    handle.closePromise = closing;
+    sessionTeardownPromise = closing;
+    void closing.then(() => {
+      if (sessionTeardownPromise === closing) sessionTeardownPromise = null;
+    });
+    return closing;
+  };
+
+  const closeUnattachedSession = async (sessionId: string): Promise<void> => {
+    let subscriptionId: number | null = null;
     try {
-      await sessionClose(handle.session.id);
-    } catch {
-      // The surface is already gone; there is no useful UI action for cleanup failure.
+      // A stale session_create has no AgentSession owner yet. Attach a temporary channel so the
+      // daemon can validate ownership, close it while attached, then release that temporary view.
+      const channel = createSessionChannel(() => undefined);
+      subscriptionId = await sessionAttach(sessionId, null, channel);
+      await sessionClose(sessionId, subscriptionId);
+    } finally {
+      if (subscriptionId !== null) await sessionDetach(subscriptionId).catch(() => undefined);
     }
   };
 
-  const openSession = async (workspace: Workspace | null): Promise<AgentSessionHandle> => {
+  const openSession = async (
+    target: SessionTarget,
+    isCurrent: () => boolean,
+  ): Promise<AgentSessionHandle> => {
     let session: Session;
     try {
-      const args = sessionCreateFromProvider(selectedProvider);
+      const args = sessionCreateFromProvider(target.provider);
       session =
         args.provider === null
-          ? await sessionCreate(workspace?.id ?? null, args.kind)
-          : await sessionCreate(workspace?.id ?? null, args.kind, args.provider);
+          ? await sessionCreate(target.workspace?.id ?? null, args.kind)
+          : await sessionCreate(target.workspace?.id ?? null, args.kind, args.provider);
     } catch (cause) {
+      if (!isCurrent()) throw abortError();
       throw sessionError("Could not start the agent session", cause);
+    }
+
+    // session_create has no abort signal. If a newer provider won while it was
+    // in flight, close the daemon session as soon as its id exists instead of
+    // allowing the slow request to become the current session.
+    if (!isCurrent()) {
+      try {
+        await closeUnattachedSession(session.id);
+      } catch {
+        // The stale session has no UI owner; the temporary attachment was best-effort cleanup.
+      }
+      throw abortError();
     }
 
     const sessionId = session.id;
@@ -493,31 +936,70 @@ export function createAgentHost(): DesignHost {
           }
           onEvent(event);
         }),
-      onPermissionRequest: () => {
-        const preflight = activePreflight;
-        if (preflight?.sessionId === sessionId) {
-          interruptSession(sessionId, controller);
-          preflight.reject(
-            new Error(
-              "The agent requested permission during automatic craft selection. Respond in the Workspace surface; this design run was stopped.",
-            ),
-          );
-          return;
-        }
-        const run = activeRun;
-        if (run?.sessionId !== sessionId) return;
-        interruptSession(sessionId, controller);
-        settleRun(
-          run,
-          "reject",
-          new Error(
-            "The agent requested permission. Respond in the Workspace surface; this design run was stopped.",
-          ),
+      onPermissionRequest: (request: PermissionRequest, subscriptionId: number) => {
+        // Every permission request is queued for the user to answer, including one raised by
+        // our own craft-selection pre-flight and one that arrives with no active run. The host
+        // never answers on the user's behalf; it only publishes the request so a card renders.
+        // The pre-flight's own deadline still falls back to every section without this answer.
+        // AgentSession re-delivers a held request after subscription confirmation. Replace the
+        // same toolCallId's entry so a remount updates its subscription rather than duplicating it.
+        const existing = pendingPermissions.find(
+          (entry) =>
+            entry.sessionId === sessionId && entry.request.toolCallId === request.toolCallId,
         );
+        if (existing !== undefined) {
+          // A fresh subscription means any answer already in flight was sent over an
+          // attachment the daemon no longer owns. Supersede that attempt so the
+          // re-delivered request is answerable again; its late settlement is ignored
+          // through the generation captured by respondToPermissionEntry.
+          if (existing.subscriptionId !== subscriptionId) {
+            existing.generation += 1;
+            existing.answered = false;
+            existing.responsePromise = null;
+          }
+          existing.subscriptionId = subscriptionId;
+          existing.request = request;
+        } else {
+          pendingPermissions.push({
+            sessionId,
+            subscriptionId,
+            request,
+            answered: false,
+            responsePromise: null,
+            generation: 0,
+          });
+        }
+        permissionNotice = null;
+        publishSessionChange();
+      },
+      onPermissionResolved: (toolCallId: string) => {
+        const entry = pendingPermissions.find(
+          (candidate) =>
+            candidate.sessionId === sessionId && candidate.request.toolCallId === toolCallId,
+        );
+        if (entry === undefined || !removePendingPermission(entry)) return;
+        if (entry.answered) {
+          // Our response can resolve on the event stream before its IPC promise. That is a
+          // local answer, so remove it silently; the notice is only for an answer elsewhere,
+          // cancellation, or timeout whose outcome is not carried on this wire event.
+          permissionNotice = null;
+          permissionNoticeSessionId = null;
+        } else if (pendingPermissions.length === 0) {
+          permissionNotice = PERMISSION_RESOLVED_NOTICE;
+          permissionNoticeSessionId = sessionId;
+        }
+        publishSessionChange();
+        activeRunSettlementCheck?.();
       },
     });
-    const handle: AgentSessionHandle = { session, controller, closed: false };
+    const handle: AgentSessionHandle = {
+      session,
+      controller,
+      closed: false,
+      closePromise: null,
+    };
     sessionHandle = handle;
+    sessionOwner = target;
     publishSessionChange();
 
     try {
@@ -537,50 +1019,75 @@ export function createAgentHost(): DesignHost {
       await closeSession(handle);
       throw abortError();
     }
+    if (!isCurrent()) {
+      await closeSession(handle);
+      throw abortError();
+    }
     return handle;
   };
 
-  const ensureSession = async (workspace: Workspace | null): Promise<AgentSessionHandle> => {
+  const ensureSession = async (
+    workspace: Workspace | null,
+    provider = selectedProvider,
+  ): Promise<AgentSessionHandle> => {
     if (disposed) throw new Error("The design surface is no longer available.");
+    const target: SessionTarget = { provider, workspace };
     if (sessionHandle !== null && !sessionHandle.closed) {
-      if (sessionHandle.controller.getState().status !== "closed") {
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionHandle.controller.getState().status !== "closed"
+      ) {
         // An "error" is an agent-reported failure, not a dead session; keep it reusable.
         return sessionHandle;
       }
       await closeSession(sessionHandle);
     }
-    if (sessionPromise !== null) return sessionPromise;
-    const pending = openSession(workspace);
-    sessionPromise = pending;
+    if (sessionTeardownPromise !== null) await sessionTeardownPromise;
+    if (sessionRequest !== null) {
+      if (sameSessionTarget(sessionRequest, target)) return sessionRequest.promise;
+      // A provider selection superseded this request. Its openSession callback
+      // will close any session id that arrives after this point.
+      sessionRequest = null;
+    }
+    let request: SessionRequest;
+    const pending = openSession(target, () => !disposed && sessionRequest === request);
+    request = { ...target, promise: pending };
+    sessionRequest = request;
+    pendingSessionPromises.add(pending);
+    void pending.then(
+      () => pendingSessionPromises.delete(pending),
+      () => pendingSessionPromises.delete(pending),
+    );
     try {
       return await pending;
     } finally {
-      if (sessionPromise === pending) sessionPromise = null;
+      if (sessionRequest === request) sessionRequest = null;
     }
   };
-
-  interface AutomaticSkillChoice {
-    slugs: readonly string[];
-    fallback: boolean;
-  }
 
   const automaticSkillChoice = async (
     handle: AgentSessionHandle,
     prompt: string,
     signal: AbortSignal,
-  ): Promise<AutomaticSkillChoice> => {
+  ): Promise<ResolvedSkillChoice> => {
     const index = builtInSkillIndex();
     const allSlugs = index.map((entry) => entry.slug);
-    const fallback = (): AutomaticSkillChoice => ({ slugs: allSlugs, fallback: true });
+    // Every failure of the agent's own answer lands here: an empty reply, an error turn, a
+    // refused send, and the deadline. The replacement is the Matched system for the same
+    // prompt — the same relevance ranking the matched mode uses — rather than the whole
+    // corpus in fit order. The flag still marks that the agent's answer was replaced, which
+    // the ranking alone cannot say: the Matched system reports its own concede separately.
+    const fallback = (): ResolvedSkillChoice => ({ ...matchSkillChoice(prompt), fallback: true });
     throwIfAborted(signal);
 
-    let settle: (choice: AutomaticSkillChoice) => void = () => undefined;
+    let settle: (choice: ResolvedSkillChoice) => void = () => undefined;
     let reject: (error: unknown) => void = () => undefined;
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let unsubscribe = (): void => undefined;
     const itemStart = handle.controller.getState().items.length;
-    const outcome = new Promise<AutomaticSkillChoice>((resolve, rejectPromise) => {
+    const outcome = new Promise<ResolvedSkillChoice>((resolve, rejectPromise) => {
       settle = (choice) => {
         if (settled) return;
         settled = true;
@@ -655,15 +1162,49 @@ export function createAgentHost(): DesignHost {
     options?: DesignGenerationOptions,
   ): Promise<DesignGenerationResult> => {
     throwIfAborted(signal);
-    const oracleResponse = await oracleAsk(prompt);
+    const grounded = options?.grounded ?? true;
+    const folderOption = normalizeFolderOption(options?.folderPath);
+    // The attached folder decides what the search is about. A string grounds
+    // the run on that folder's own index; null (no folder) means no grounding
+    // without a notice; undefined (a caller that predates folder awareness)
+    // keeps the legacy global index. Grounding off never searches. A search
+    // that errors degrades to no grounding plus the quiet line, never to a
+    // failed generation.
+    let oracleResults: readonly OracleResult[] = [];
+    let groundingNotice: string | null = null;
+    let promptGrounded = false;
+    if (!grounded) {
+      promptGrounded = false;
+    } else if (folderOption === undefined) {
+      try {
+        const legacyResponse = await oracleAsk(prompt);
+        oracleResults = legacyResponse.results;
+        promptGrounded = true;
+      } catch (cause) {
+        oracleResults = [];
+        groundingNotice = reasonFromCause(cause);
+        promptGrounded = false;
+      }
+    } else if (folderOption === null) {
+      promptGrounded = false;
+    } else {
+      const grounding = await resolveFolderGrounding(prompt, folderOption, signal);
+      oracleResults = grounding.results;
+      groundingNotice = grounding.notice;
+      promptGrounded = grounding.notice === null;
+    }
     throwIfAborted(signal);
     const handle = await ensureSession(selectedWorkspace);
     throwIfAborted(signal);
 
-    const automatic = options?.skillMode === "auto";
-    const skillChoice = automatic
-      ? await automaticSkillChoice(handle, prompt, signal)
-      : { slugs: options?.skills ?? builtInSkillSlugs(), fallback: false };
+    const skillMode = options?.skillMode ?? "all";
+    const pinnedSkills = options?.skillMode === "manual" ? options.skills : [];
+    const skillChoice =
+      skillMode === "auto"
+        ? await automaticSkillChoice(handle, prompt, signal)
+        : skillMode === "manual"
+          ? { slugs: pinnedSkills, fallback: false }
+          : matchSkillChoice(prompt);
     throwIfAborted(signal);
     const skillSlugs = skillChoice.slugs;
 
@@ -672,6 +1213,7 @@ export function createAgentHost(): DesignHost {
       sessionId: handle.session.id,
       prompt,
       itemStart: 0,
+      transcriptStart: null,
       toolObservations: new Map<string, ToolObservation>(),
       settled: false,
       resolve: () => undefined,
@@ -691,6 +1233,9 @@ export function createAgentHost(): DesignHost {
     const onAbort = (): void => {
       if (interruptRequested || run.settled) return;
       interruptRequested = true;
+      // An allow already sent to the daemon cannot be recalled. Only unanswered entries get a
+      // deny here; session_interrupt is the recovery mechanism for an allow/interrupt race.
+      void denyUnansweredPermissions(run.sessionId);
       interruptSession(run.sessionId, run.session.controller);
       const error = abortError();
       settleRun(run, "reject", error);
@@ -699,26 +1244,37 @@ export function createAgentHost(): DesignHost {
     signal.addEventListener("abort", onAbort, { once: true });
 
     // Record the boundary immediately before send(); send() clears lastFinished synchronously.
-    run.itemStart = handle.controller.getState().items.length;
+    // The same index is the transcript boundary, and it is set in the same step so the two can
+    // never disagree about where this run starts.
+    const runStart = handle.controller.getState().items.length;
+    run.itemStart = runStart;
+    run.transcriptStart = runStart;
+    lastRunTranscriptStart = runStart;
     // Subscribe only after send() so a prior turn cannot settle this run.
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
     const sendPromise = handle.controller.send(
-      groundedPrompt(prompt, oracleResponse.results, composedDoctrine),
+      groundedPrompt(prompt, oracleResults, composedDoctrine, promptGrounded),
     );
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;
+      // A provider should not finish a turn while waiting for permission, but keep the
+      // promise alive if event ordering ever exposes agent_finished before the answer.
+      if (pendingPermissions.some((entry) => entry.sessionId === run.sessionId)) return false;
       const state = handle.controller.getState();
       if (state.lastFinished !== null) {
         const baseResult = resultFor(run.prompt, run.toolObservations);
-        const result = automatic
-          ? {
-              ...baseResult,
-              appliedSkillSlugs: [...skillSlugs],
-              skillSelectionFallback: skillChoice.fallback,
-            }
-          : baseResult;
+        // Provenance is reported for every mode: the ordered branch is where
+        // a chooser (ranker or pin) decides on the user's behalf, so it needs
+        // the report at least as much as the automatic branch does.
+        const result = {
+          ...baseResult,
+          appliedSkillSlugs: [...skillSlugs],
+          skillSelectionFallback: skillChoice.fallback,
+          groundingNotice,
+        };
         const resultWithSession = {
           ...result,
+          transcript: transcriptItems(state.items, run.transcriptStart ?? state.items.length),
           sessionId: run.session.session.id,
           peerSessionId: run.session.session.peerSessionId ?? null,
           createdAtMs: run.session.session.createdAtMs ?? null,
@@ -743,6 +1299,7 @@ export function createAgentHost(): DesignHost {
       }
       return false;
     };
+    activeRunSettlementCheck = settleFromState;
     const unsubscribe = handle.controller.subscribe(settleFromState);
     settleFromState();
     void sendPromise
@@ -759,6 +1316,7 @@ export function createAgentHost(): DesignHost {
     } finally {
       unsubscribe();
       signal.removeEventListener("abort", onAbort);
+      if (activeRunSettlementCheck === settleFromState) activeRunSettlementCheck = null;
     }
   };
 
@@ -773,7 +1331,11 @@ export function createAgentHost(): DesignHost {
     if (runPending || activeRun !== null) {
       throw new Error("A design generation is already running.");
     }
+    permissionNotice = null;
+    permissionNoticeSessionId = null;
+    publishSessionChange();
     runPending = true;
+    lastRunTranscriptStart = null;
     try {
       return await runGeneration(prompt, signal, options);
     } finally {
@@ -785,6 +1347,7 @@ export function createAgentHost(): DesignHost {
     if (disposalPromise !== null) return disposalPromise;
     disposalPromise = (async () => {
       disposed = true;
+      const pendingPermissionResponses = denyUnansweredPermissions();
       const run = activeRun;
       if (run !== null) {
         const handle = sessionHandle;
@@ -795,31 +1358,149 @@ export function createAgentHost(): DesignHost {
         interruptSession(activePreflight.sessionId, activePreflight.controller);
         activePreflight.reject(abortError());
       }
-      if (sessionPromise !== null) await sessionPromise.catch(() => undefined);
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      await Promise.all(
+        [...pendingSessionPromises].map((pending) => pending.catch(() => undefined)),
+      );
+      await pendingPermissionResponses;
+      if (sessionTeardownPromise !== null) await sessionTeardownPromise;
       if (sessionHandle !== null) await closeSession(sessionHandle);
     })();
     return disposalPromise;
   };
 
   const host: DesignHost = {
-    loadDocument: oracleHost.loadDocument,
+    // The canvas shows what the user generates. Repository layers are not the
+    // agent's working set: the index they came from is global and ignores the
+    // session's workspace, which made the surface name files the agent could
+    // not see. The generated artifact is placed by the surface with zero
+    // layers, so an empty list is the correct starting document.
+    loadDocument: async (): Promise<DesignDocument> => {
+      const document = await documentHost.loadDocument();
+      return {
+        ...document,
+        // The demo host names a fixture document and a fixture path. A real session
+        // has no document identity: the canvas holds what the user generates, and the
+        // one directory that matters is the folder the session is attached to, which
+        // the surface reads from the registry and from the session's echoed cwd.
+        name: "",
+        path: "",
+        // "Values snap to design tokens (DTCG)" claims a token format this surface does
+        // not read. Radius and elevation are surface state, not edits to the user's files.
+        tokenFooter:
+          "Corner radius and elevation belong to this surface; they are not written into your files.",
+        // "writing the node" describes the canvas this surface no longer draws: the
+        // artifact is rendered in a frame, and nothing is written to a layer.
+        workingMessage: {
+          title: "Generating…",
+          desc: "Asking the agent, then rendering the result on the canvas.",
+        },
+        layers: [],
+        selectedLayerId: "",
+        layerNotice: undefined,
+        sectionNotes: [],
+        messages: [],
+      };
+    },
     generate,
     getAgentSession: () => sessionHandle?.controller ?? null,
+    getRunTranscriptStart: () => lastRunTranscriptStart,
+    getPendingPermission: pendingPermissionSnapshot,
+    getPermissionNotice: () => permissionNotice,
+    respondPermission: (outcome) => respondToPendingPermission(outcome),
     getAgentSessionRecord: () => sessionHandle?.session ?? null,
     subscribeAgentSession: (listener) => {
       sessionListeners.add(listener);
       return () => sessionListeners.delete(listener);
     },
-    selectProvider: (provider) => {
-      // Generate clicked, session not yet created: keep the committed provider.
-      if (runPending || activeRun !== null || sessionHandle !== null || sessionPromise !== null)
+    setProviderPreference: (provider) => {
+      if (disposed || runPending || activeRun !== null) return;
+      const target: SessionTarget = { provider, workspace: selectedWorkspace };
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionHandle !== null &&
+        !sessionHandle.closed &&
+        sessionHandle.controller.getState().status !== "closed"
+      ) {
+        selectedProvider = provider;
         return;
+      }
       selectedProvider = provider;
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      const handle = sessionHandle;
+      if (handle !== null && !handle.closed) void closeSession(handle);
+    },
+    setWorkspacePreference: (workspace) => {
+      if (disposed || runPending || activeRun !== null) return;
+      const target: SessionTarget = { provider: selectedProvider, workspace };
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionHandle !== null &&
+        !sessionHandle.closed &&
+        sessionHandle.controller.getState().status !== "closed"
+      ) {
+        selectedWorkspace = workspace;
+        return;
+      }
+      selectedWorkspace = workspace;
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      const handle = sessionHandle;
+      if (handle !== null && !handle.closed) void closeSession(handle);
+    },
+    closeAgentSession: () => {
+      if (runPending || activeRun !== null) return Promise.resolve();
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      const handle = sessionHandle;
+      if (handle !== null && !handle.closed) return closeSession(handle);
+      if (pendingSessionPromises.size === 0) return sessionTeardownPromise ?? Promise.resolve();
+      return Promise.all(
+        [...pendingSessionPromises].map((pending) => pending.catch(() => undefined)),
+      ).then(() => sessionTeardownPromise ?? undefined);
+    },
+    selectProvider: (provider) => {
+      if (disposed || runPending || activeRun !== null) return;
+      selectedProvider = provider;
+      const target: SessionTarget = { provider, workspace: selectedWorkspace };
+      const generation = ++providerSelectionGeneration;
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionHandle !== null &&
+        !sessionHandle.closed &&
+        sessionHandle.controller.getState().status !== "closed"
+      ) {
+        return;
+      }
+      if (sessionRequest !== null && sameSessionTarget(sessionRequest, target)) return;
+
+      // Invalidate an older open immediately. openSession cannot cancel the
+      // underlying IPC create call, so its generation guard will close any id
+      // that eventually comes back from the daemon.
+      sessionRequest = null;
+      void (async () => {
+        if (sessionHandle !== null && !sessionHandle.closed) await closeSession(sessionHandle);
+        if (disposed || generation !== providerSelectionGeneration) return;
+        try {
+          await ensureSession(target.workspace, target.provider);
+        } catch {
+          // Keep the committed provider. A later selection of the same provider
+          // starts a fresh request after this failed one has been cleared.
+        }
+      })();
     },
     selectWorkspace: (workspace) => {
-      if (runPending || activeRun !== null || sessionHandle !== null || sessionPromise !== null)
-        return;
+      if (disposed || runPending || activeRun !== null) return;
       selectedWorkspace = workspace;
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      const handle = sessionHandle;
+      if (handle !== null && !handle.closed) void closeSession(handle);
     },
   };
   hostDisposers.set(host, dispose);

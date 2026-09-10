@@ -1,0 +1,191 @@
+/* The host decides the scale. Everything in this card without a size of its own
+   — the description, the buttons' inherited line box — reads at whatever the
+   surrounding chrome reads at, so the card is neither a banner inside a compact
+   panel nor a postage stamp on a full-size page. A host that sets nothing gets
+   the ambient size, which is what an unhosted card had before. */
+.permission-card {
+  flex: none;
+  overflow: hidden;
+  font-size: var(--permission-card-font-size, inherit);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  /* 9px matches the sibling notice box; 12px read as a page banner. */
+  border-radius: 9px;
+  animation: rise 0.24s ease both;
+}
+
+.permission-card-notice {
+  flex: none;
+  padding: 8px 12px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.permission-card-heading,
+.permission-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The heading's own words are the heading, so they may shrink; the working
+   directory beside them never pushes them out of the row. */
+.permission-card-action {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-card-heading {
+  min-width: 0;
+  padding: 8px 11px 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+/* Aligned under the heading's text, past the 6px dot and its 8px gap, so the
+   target hangs as a line of the sentence above it rather than as a new block. */
+.permission-card-subject {
+  overflow: hidden;
+  padding: 0 11px 2px 25px;
+  color: var(--ink);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-card-description {
+  padding: 0 11px 6px 25px;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
+.permission-card-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+}
+
+.permission-card-waiting {
+  background: var(--ochre);
+}
+
+.permission-card-allowed {
+  background: var(--green);
+}
+
+.permission-card-denied {
+  background: var(--danger);
+}
+
+.permission-card-context {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-card-command {
+  max-height: 12em;
+  overflow: auto;
+  padding: 4px 11px 9px 25px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.permission-card-env {
+  max-height: 8em;
+  overflow: auto;
+  padding: 0 11px 8px 25px;
+  color: var(--silence);
+  font-size: 10.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.permission-card-unavailable {
+  padding: 0 11px 8px 25px;
+  color: var(--silence);
+  font-size: 10.5px;
+}
+
+.permission-card-actions {
+  padding: 8px 11px 9px;
+}
+
+.permission-card-label {
+  /* Shrinks first: the two buttons keep their measured widths in a narrow
+     column instead of being pushed onto a second row by the status word. */
+  min-width: 0;
+  overflow: hidden;
+  color: var(--silence);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-card-secondary-action,
+.permission-card-primary-action {
+  display: grid;
+  flex: none;
+  place-items: center;
+  height: 26px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.permission-card-secondary-action {
+  padding: 0 11px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+}
+
+.permission-card-secondary-action:hover,
+.permission-card-secondary-action:focus-visible {
+  color: var(--danger-deep);
+}
+
+.permission-card-primary-action {
+  padding: 0 12px;
+  color: var(--surface);
+  background: var(--terracotta-deep);
+  border: 1px solid var(--terracotta-deep);
+  font-weight: 500;
+}
+
+.permission-card-primary-action:hover,
+.permission-card-primary-action:focus-visible {
+  background: var(--ink-soft);
+}
+
+.permission-card-secondary-action:disabled,
+.permission-card-primary-action:disabled {
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.permission-card-secondary-action:disabled {
+  color: var(--silence);
+}
+
+.permission-card-primary-action:disabled {
+  color: var(--silence);
+  background: var(--surface-muted);
+  border-color: var(--silence);
+}
