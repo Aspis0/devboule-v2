@@ -92,6 +92,42 @@ pub struct OracleIndexStats {
     pub backend: String,
 }
 
+/// Where an arbitrary folder's Oracle index stands.
+///
+/// `Unreadable` is deliberately distinct from `NeverIndexed`: a folder whose
+/// index cannot be read is not an empty index, and reporting "nothing indexed"
+/// there would invite a full re-index over a store that may be intact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OracleFolderIndexState {
+    NeverIndexed,
+    Partial,
+    Ready,
+    Unreadable,
+}
+
+/// The answer to "does this folder have an index, and how complete is it?".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct OracleFolderIndexStatus {
+    /// The folder that was probed, canonicalized when the filesystem allowed.
+    pub path: String,
+    /// The Oracle data directory derived for that folder.
+    pub data_dir: String,
+    pub state: OracleFolderIndexState,
+    pub indexed_files: usize,
+    /// Expected indexable files. Zero for a folder with no index artifacts,
+    /// which is not walked: the probe answers without a traversal when there
+    /// is nothing to measure.
+    pub total_files: usize,
+    pub pending_files: usize,
+    pub stale_files: usize,
+    pub indexed_chunks: usize,
+    /// Why the folder is not fully indexed. `None` only when `state` is
+    /// `ready`; caller errors reject instead of being described here.
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileTab {

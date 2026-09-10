@@ -1,17 +1,92 @@
-//! Construction of the query engine over Oracle's stores, and the mapping of
-//! engine contexts into the results the panel cites — line ranges, focus
-//! windows, and match types included.
+//! Construction of the query engine over Oracle's stores, the shared query
+//! execution that both the workspace and folder-scoped commands run, and the
+//! mapping of engine contexts into the results the panel cites — line ranges,
+//! focus windows, and match types included.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use oracle_core::redact_secret_tokens;
-use oracle_core::{ContextChunk, LanceStore, QueryEngine, SharedReranker, SqliteStore};
+use oracle_core::{
+    CancelFlag, ContextChunk, EmbedderPool, LanceStore, PoolQueryEmbedder, QueryEngine,
+    SharedReranker, SqliteStore, MAX_BOUNDED_LIMIT,
+};
 
 use crate::backend::error::CommandError;
 
 use super::errors::core_error;
 use super::runtime::ResolvedOraclePaths;
-use super::types::{OracleMatchType, OracleResult};
+use super::status::ensure_model_is_available;
+use super::types::{OracleMatchType, OracleModelStatus, OracleResult, OracleSearchResponse};
+
+/// One query returns at most this many results.
+const QUERY_LIMIT: usize = 10;
+
+/// The query validation both commands share. Kept in one place so a folder
+/// query cannot end up with looser bounds than a workspace query.
+pub(super) fn validate_query(query: String) -> Result<String, CommandError> {
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Err(CommandError::new(
+            devboule_protocol::ErrorCode::InvalidRequest,
+            "Oracle query cannot be empty.",
+        ));
+    }
+    if query.chars().count() > 4096 {
+        return Err(CommandError::new(
+            devboule_protocol::ErrorCode::InvalidRequest,
+            "Oracle query is too long (maximum 4096 characters).",
+        ));
+    }
+    Ok(query)
+}
+
+/// Run one query against the stores in `paths` using the runtime's embedder.
+///
+/// Shared by the active-workspace `oracle_ask` and the folder-scoped
+/// `oracle_ask_folder`, so the two can never drift in ranking, limits, or
+/// result mapping. The caller owns which root `paths` points at; nothing here
+/// reads the runtime's active workspace.
+///
+/// The model download is deliberately *not* started here: the caller decides
+/// whether a question may begin a transfer.
+pub(super) async fn search_paths(
+    paths: &ResolvedOraclePaths,
+    query: &str,
+    pool: &Arc<EmbedderPool>,
+    reranker: Option<SharedReranker>,
+    model_status: &OracleModelStatus,
+) -> Result<OracleSearchResponse, CommandError> {
+    ensure_model_is_available(pool.backend(), model_status)?;
+    let engine = open_engine(paths, reranker)?;
+    let cancel = CancelFlag::new();
+    let embedder = PoolQueryEmbedder::new(pool, &cancel)
+        .map_err(|error| core_error("initializing Oracle query embedder failed", error))?;
+    let contexts = engine
+        .context(
+            query,
+            QUERY_LIMIT.min(MAX_BOUNDED_LIMIT),
+            &embedder,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .map_err(|error| core_error("Oracle query failed", error))?;
+
+    let results = contexts
+        .iter()
+        .map(|context| result_from_context(&paths.workspace, context))
+        .collect();
+    Ok(OracleSearchResponse {
+        query: query.to_string(),
+        results,
+    })
+}
 
 pub(super) fn open_engine(
     paths: &ResolvedOraclePaths,

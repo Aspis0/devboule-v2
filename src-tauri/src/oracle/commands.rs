@@ -11,13 +11,13 @@ use devboule_protocol::ErrorCode;
 use oracle_core::{
     collect_text_files, file_needs_index, index_file_chunks, load_manifest,
     manifest_files_for_root, prune_excluded_chunks, CancelFlag, IndexerConfig, LanceStore,
-    PoolQueryEmbedder, SqliteStore, TextEmbedder, MAX_BOUNDED_LIMIT,
+    SqliteStore, TextEmbedder,
 };
 
 use crate::backend::error::CommandError;
 
 use super::errors::{core_error, unimplemented_command};
-use super::query::{open_engine, result_from_context};
+use super::query::{open_engine, search_paths, validate_query};
 use super::runtime::OracleRuntime;
 use super::runtime::ResolvedOraclePaths;
 use super::status::{
@@ -30,7 +30,6 @@ use super::types::{
 };
 
 const PAGE_SIZE: usize = 50;
-const QUERY_LIMIT: usize = 10;
 
 pub(super) fn oracle_workspace_get_inner(
     runtime: &OracleRuntime,
@@ -244,49 +243,12 @@ pub(super) async fn oracle_ask_inner(
     runtime: &OracleRuntime,
     query: String,
 ) -> Result<OracleSearchResponse, CommandError> {
-    let query = query.trim().to_string();
-    if query.is_empty() {
-        return Err(CommandError::new(
-            ErrorCode::InvalidRequest,
-            "Oracle query cannot be empty.",
-        ));
-    }
-    if query.chars().count() > 4096 {
-        return Err(CommandError::new(
-            ErrorCode::InvalidRequest,
-            "Oracle query is too long (maximum 4096 characters).",
-        ));
-    }
-
+    let query = validate_query(query)?;
     let paths = runtime.paths()?;
-    let engine = open_engine(&paths, runtime.reranker())?;
     let pool = runtime.pool()?;
     runtime.start_model_download(false)?;
-    ensure_model_is_available(pool.backend(), &runtime.model_status())?;
-    let cancel = CancelFlag::new();
-    let embedder = PoolQueryEmbedder::new(pool.as_ref(), &cancel)
-        .map_err(|error| core_error("initializing Oracle query embedder failed", error))?;
-    let contexts = engine
-        .context(
-            &query,
-            QUERY_LIMIT.min(MAX_BOUNDED_LIMIT),
-            &embedder,
-            None,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await
-        .map_err(|error| core_error("Oracle query failed", error))?;
-
-    let results = contexts
-        .iter()
-        .map(|context| result_from_context(&paths.workspace, context))
-        .collect();
-    Ok(OracleSearchResponse { query, results })
+    let model_status = runtime.model_status();
+    search_paths(&paths, &query, &pool, runtime.reranker(), &model_status).await
 }
 
 #[tauri::command]
