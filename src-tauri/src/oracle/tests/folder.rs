@@ -14,8 +14,8 @@ use oracle_core::{
 use super::support::{assert_actionable, SlowTestEmbedder, TestEnvironment, UnreadableDirectory};
 use crate::oracle::commands::oracle_workspace_get_inner;
 use crate::oracle::folder::{
-    ensure_folder_index_is_usable, oracle_ask_folder_inner, oracle_folder_status_inner, probe_folder,
-    resolve_folder_root,
+    ensure_folder_index_is_usable, oracle_ask_folder_inner, oracle_folder_status_inner,
+    probe_folder, resolve_folder_root,
 };
 use crate::oracle::runtime::OracleRuntime;
 use crate::oracle::OracleFolderIndexState;
@@ -63,10 +63,9 @@ fn a_folder_that_was_never_indexed_reports_never_indexed_without_writing() {
     fs::create_dir(&folder).expect("folder");
     fs::write(folder.join("notes.txt"), "a file nobody indexed\n").expect("file");
 
-    let status = tauri::async_runtime::block_on(oracle_folder_status_inner(
-        folder.to_str().unwrap(),
-    ))
-    .expect("a folder with no index is an answer, not an error");
+    let status =
+        tauri::async_runtime::block_on(oracle_folder_status_inner(folder.to_str().unwrap()))
+            .expect("a folder with no index is an answer, not an error");
 
     assert_eq!(status.state, OracleFolderIndexState::NeverIndexed);
     assert_eq!(status.indexed_files, 0);
@@ -124,7 +123,11 @@ fn a_folder_with_pending_files_reports_partial() {
     index_folder(&root);
 
     // A file added after the run is pending by definition.
-    fs::write(folder.join("added-later.txt"), "this file is not indexed yet\n").expect("file");
+    fs::write(
+        folder.join("added-later.txt"),
+        "this file is not indexed yet\n",
+    )
+    .expect("file");
 
     let status = tauri::async_runtime::block_on(oracle_folder_status_inner(root.to_str().unwrap()))
         .expect("status of a partial folder");
@@ -148,14 +151,14 @@ fn an_unreadable_folder_is_not_reported_as_never_indexed() {
     index_folder(&root);
 
     // Readable and complete first, so the only change is readability.
-    let before =
-        tauri::async_runtime::block_on(oracle_folder_status_inner(root.to_str().unwrap()))
-            .expect("status before the lock");
+    let before = tauri::async_runtime::block_on(oracle_folder_status_inner(root.to_str().unwrap()))
+        .expect("status before the lock");
     assert_eq!(before.state, OracleFolderIndexState::Ready);
 
     let _permissions = UnreadableDirectory::new(&folder);
-    let status = tauri::async_runtime::block_on(oracle_folder_status_inner(folder.to_str().unwrap()))
-        .expect("an unreadable folder is an answer, not an error");
+    let status =
+        tauri::async_runtime::block_on(oracle_folder_status_inner(folder.to_str().unwrap()))
+            .expect("an unreadable folder is an answer, not an error");
 
     assert_eq!(status.state, OracleFolderIndexState::Unreadable);
     assert_ne!(status.state, OracleFolderIndexState::NeverIndexed);
@@ -174,10 +177,9 @@ fn a_folder_without_index_artifacts_and_an_unreadable_one_differ() {
     fs::create_dir(&empty).expect("empty folder");
     fs::create_dir(&locked).expect("locked folder");
 
-    let empty_status = tauri::async_runtime::block_on(oracle_folder_status_inner(
-        empty.to_str().unwrap(),
-    ))
-    .expect("empty folder status");
+    let empty_status =
+        tauri::async_runtime::block_on(oracle_folder_status_inner(empty.to_str().unwrap()))
+            .expect("empty folder status");
     assert_eq!(empty_status.state, OracleFolderIndexState::NeverIndexed);
 
     let _permissions = UnreadableDirectory::new(&locked);
@@ -200,8 +202,7 @@ fn a_relative_or_missing_folder_is_rejected() {
     assert_actionable(relative, &["absolute", "relative"]);
 
     let missing = temp.path().join("does-not-exist");
-    let missing_error =
-        resolve_folder_root(missing.to_str().unwrap()).expect_err("missing folder");
+    let missing_error = resolve_folder_root(missing.to_str().unwrap()).expect_err("missing folder");
     assert_actionable(missing_error, &["does not exist", "choose"]);
 
     let file = temp.path().join("not-a-folder.txt");
@@ -268,8 +269,9 @@ fn folder_commands_leave_the_active_root_untouched() {
 
     // The status command cannot move the root: it does not receive the
     // runtime at all. Its answer for another folder is still real.
-    let status = tauri::async_runtime::block_on(oracle_folder_status_inner(other.to_str().unwrap()))
-        .expect("status of another folder");
+    let status =
+        tauri::async_runtime::block_on(oracle_folder_status_inner(other.to_str().unwrap()))
+            .expect("status of another folder");
     assert_eq!(status.state, OracleFolderIndexState::NeverIndexed);
 
     // The query command receives the runtime but must keep its root. With no
@@ -295,7 +297,11 @@ fn the_query_gate_accepts_an_indexed_folder_and_describes_the_failure_modes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let folder = temp.path().join("indexed");
     fs::create_dir(&folder).expect("folder");
-    fs::write(folder.join("notes.txt"), "indexed content for the query gate\n").expect("file");
+    fs::write(
+        folder.join("notes.txt"),
+        "indexed content for the query gate\n",
+    )
+    .expect("file");
 
     let root = canonical(&folder);
     index_folder(&root);
@@ -320,12 +326,14 @@ fn the_query_gate_accepts_an_indexed_folder_and_describes_the_failure_modes() {
     )
     .expect("metadata file");
     fs::write(
-        corrupt.join("oracle-data").join("chunk-index-manifest.json"),
+        corrupt
+            .join("oracle-data")
+            .join("chunk-index-manifest.json"),
         "{ not json",
     )
     .expect("manifest file");
     let corrupt_probe = probe_folder(&canonical(&corrupt));
-    let error = ensure_folder_index_is_usable(&corrupt_probe)
-        .expect_err("a corrupt manifest is refused");
+    let error =
+        ensure_folder_index_is_usable(&corrupt_probe).expect_err("a corrupt manifest is refused");
     assert_actionable(error, &["chunk manifest", "not valid json"]);
 }

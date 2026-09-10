@@ -219,9 +219,9 @@ fn unreadable_reason(probe: &FolderIndexProbe) -> Option<String> {
     match &probe.chunks {
         Artifact::Unreadable(error) => {
             return Some(format!(
-                "Oracle cannot read the chunk vector store {}: {error}. Check the folder permissions.",
-                probe.data.chunks.display()
-            ))
+            "Oracle cannot read the chunk vector store {}: {error}. Check the folder permissions.",
+            probe.data.chunks.display()
+        ))
         }
         // `WrongKind` is unreachable for this store: it is probed by existence
         // only, because its on-disk layout depends on configuration.
@@ -240,25 +240,36 @@ fn unreadable_reason(probe: &FolderIndexProbe) -> Option<String> {
     }
 }
 
-fn status_from_parts(
-    probe: &FolderIndexProbe,
-    state: OracleFolderIndexState,
+/// The five `usize` tallies that describe how much of a folder is indexed.
+///
+/// They travel together because they are read as a set: passed positionally,
+/// two of them can be transposed in a call that still compiles and still
+/// reports an index — just the wrong one. Naming them at the call site makes
+/// that unexpressible.
+#[derive(Default)]
+struct IndexCounts {
     indexed_files: usize,
     total_files: usize,
     pending_files: usize,
     stale_files: usize,
     indexed_chunks: usize,
+}
+
+fn status_from_parts(
+    probe: &FolderIndexProbe,
+    state: OracleFolderIndexState,
+    counts: IndexCounts,
     message: Option<String>,
 ) -> OracleFolderIndexStatus {
     OracleFolderIndexStatus {
         path: probe.root.display().to_string(),
         data_dir: probe.data.root.display().to_string(),
         state,
-        indexed_files,
-        total_files,
-        pending_files,
-        stale_files,
-        indexed_chunks,
+        indexed_files: counts.indexed_files,
+        total_files: counts.total_files,
+        pending_files: counts.pending_files,
+        stale_files: counts.stale_files,
+        indexed_chunks: counts.indexed_chunks,
         message,
     }
 }
@@ -267,11 +278,7 @@ fn unreadable_status(probe: &FolderIndexProbe, reason: String) -> OracleFolderIn
     status_from_parts(
         probe,
         OracleFolderIndexState::Unreadable,
-        0,
-        0,
-        0,
-        0,
-        0,
+        IndexCounts::default(),
         Some(reason),
     )
 }
@@ -280,11 +287,7 @@ fn never_indexed_status(probe: &FolderIndexProbe, message: String) -> OracleFold
     status_from_parts(
         probe,
         OracleFolderIndexState::NeverIndexed,
-        0,
-        0,
-        0,
-        0,
-        0,
+        IndexCounts::default(),
         Some(message),
     )
 }
@@ -400,11 +403,15 @@ pub(super) async fn oracle_folder_status_inner(
         return Ok(status_from_parts(
             &probe,
             OracleFolderIndexState::Partial,
-            0,
-            files,
-            files,
-            0,
-            0,
+            IndexCounts {
+                // Only the manifest survives, so every recorded file is
+                // still pending and no chunk could be counted.
+                indexed_files: 0,
+                total_files: files,
+                pending_files: files,
+                stale_files: 0,
+                indexed_chunks: 0,
+            },
             Some(format!(
                 "The index of {} is incomplete: {} records {files} file(s) but the metadata store {} is missing. Re-index this folder to rebuild it.",
                 probe.root.display(),
@@ -416,60 +423,48 @@ pub(super) async fn oracle_folder_status_inner(
 
     // 4. An index exists: ask the same snapshot function the panel's status
     //    command uses, so "complete" here cannot drift from "complete" there.
-    let (state, indexed_files, total_files, pending_files, stale_files, indexed_chunks, message) =
-        match read_folder_snapshot(&probe).await {
-            Ok(snapshot) => {
-                let state = folder_state_from_snapshot(&snapshot);
-                let message = match state {
-                    OracleFolderIndexState::Ready => None,
-                    OracleFolderIndexState::Partial => Some(format!(
-                        "The index of {} is incomplete: {} of {} files indexed, {} pending, {} stale. Re-index this folder to finish it.",
-                        probe.root.display(),
-                        snapshot.indexed_files,
-                        snapshot.expected_files,
-                        snapshot.pending_files,
-                        snapshot.stale_files
-                    )),
-                    // The keyed states are unreachable here: an unreadable
-                    // probe returned at step 1, and an empty snapshot is
-                    // handled by the mapping but still needs a sentence.
-                    OracleFolderIndexState::NeverIndexed => Some(format!(
-                        "The index stores of {} hold no files yet. Index this folder to make it searchable.",
-                        probe.root.display()
-                    )),
-                    OracleFolderIndexState::Unreadable => None,
-                };
-                (
-                    state,
-                    snapshot.indexed_files,
-                    snapshot.expected_files,
-                    snapshot.pending_files,
-                    snapshot.stale_files,
-                    snapshot.sqlite_chunks,
-                    message,
-                )
-            }
-            Err(reason) => {
-                return Ok(unreadable_status(
-                    &probe,
-                    format!(
-                        "Oracle cannot read the index of {}: {reason}. The index may be corrupt; re-index this folder to rebuild it.",
-                        probe.root.display()
-                    ),
-                ))
-            }
-        };
+    let snapshot = match read_folder_snapshot(&probe).await {
+        Ok(snapshot) => snapshot,
+        Err(reason) => {
+            return Ok(unreadable_status(
+                &probe,
+                format!(
+                    "Oracle cannot read the index of {}: {reason}. The index may be corrupt; re-index this folder to rebuild it.",
+                    probe.root.display()
+                ),
+            ))
+        }
+    };
 
-    Ok(status_from_parts(
-        &probe,
-        state,
-        indexed_files,
-        total_files,
-        pending_files,
-        stale_files,
-        indexed_chunks,
-        message,
-    ))
+    let state = folder_state_from_snapshot(&snapshot);
+    let message = match state {
+        OracleFolderIndexState::Ready => None,
+        OracleFolderIndexState::Partial => Some(format!(
+            "The index of {} is incomplete: {} of {} files indexed, {} pending, {} stale. Re-index this folder to finish it.",
+            probe.root.display(),
+            snapshot.indexed_files,
+            snapshot.expected_files,
+            snapshot.pending_files,
+            snapshot.stale_files
+        )),
+        // The keyed states are unreachable here: an unreadable probe returned
+        // at step 1, and an empty snapshot is handled by the mapping but still
+        // needs a sentence.
+        OracleFolderIndexState::NeverIndexed => Some(format!(
+            "The index stores of {} hold no files yet. Index this folder to make it searchable.",
+            probe.root.display()
+        )),
+        OracleFolderIndexState::Unreadable => None,
+    };
+    let counts = IndexCounts {
+        indexed_files: snapshot.indexed_files,
+        total_files: snapshot.expected_files,
+        pending_files: snapshot.pending_files,
+        stale_files: snapshot.stale_files,
+        indexed_chunks: snapshot.sqlite_chunks,
+    };
+
+    Ok(status_from_parts(&probe, state, counts, message))
 }
 
 pub(super) async fn oracle_ask_folder_inner(

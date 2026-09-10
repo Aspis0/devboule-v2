@@ -82,9 +82,7 @@ pub(super) fn status_from_snapshot(
 /// nothing in the index is the honest answer. Chunks counted with no matching
 /// manifest entry are `partial` instead: the data is there but cannot be
 /// mapped back to files, which is not the same as an empty index.
-pub(super) fn folder_state_from_snapshot(
-    snapshot: &IndexStatusSnapshot,
-) -> OracleFolderIndexState {
+pub(super) fn folder_state_from_snapshot(snapshot: &IndexStatusSnapshot) -> OracleFolderIndexState {
     if snapshot.indexed_files == 0 {
         if snapshot.sqlite_chunks > 0 {
             OracleFolderIndexState::Partial
