@@ -111,9 +111,11 @@ import {
   extractArtifactHtml,
   extractFencedHtml,
   groundedPrompt,
+  groundingNoticeFor,
   invokeAgentCommand,
   normalizeFolderOption,
   resolveFolderGrounding,
+  stripFencedHtml,
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
   composeAutomaticSkillSlugs,
@@ -2306,6 +2308,41 @@ describe("ACP design host", () => {
       });
     });
 
+    describe("stripFencedHtml", () => {
+      it("keeps the prose around one block", () => {
+        const text = "Here is the page:\n```html\n<div>Hi</div>\n```\nDone.";
+        expect(stripFencedHtml(text)).toBe("Here is the page:\n\nDone.");
+      });
+
+      it("returns empty when the text is only a block", () => {
+        expect(stripFencedHtml("```html\n<div>Hi</div>\n```")).toBe("");
+      });
+
+      it("removes two blocks and collapses the blank lines left behind", () => {
+        const text = [
+          "First:",
+          "```html",
+          "<div>One</div>",
+          "```",
+          "",
+          "",
+          "Middle.",
+          "",
+          "",
+          "```html",
+          "<div>Two</div>",
+          "```",
+          "",
+          "Last.",
+        ].join("\n");
+        expect(stripFencedHtml(text)).toBe("First:\n\nMiddle.\n\nLast.");
+      });
+
+      it("leaves text with no block intact", () => {
+        expect(stripFencedHtml("Just prose, no fence.")).toBe("Just prose, no fence.");
+      });
+    });
+
     describe("extractArtifactHtml", () => {
       it("scans assistant messages only, not thoughts", () => {
         const state: AgentSessionState = {
@@ -2550,8 +2587,10 @@ describe("ACP design host", () => {
           expect(mocks.oracleAsk).not.toHaveBeenCalled();
           const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
           expect(sentText).toContain("Oracle grounding is off for this request");
+          // never_indexed gets the one-sentence notice (folder name only), not
+          // Oracle's own longer message: see groundingNoticeFor.
           expect(result.groundingNotice).toBe(
-            "Oracle has no index for C:/design-sandbox yet. Index this folder.",
+            "Not grounded: design-sandbox has no Oracle index yet. Index the folder to let the agent search it.",
           );
 
           await disposeAgentHost(host);
@@ -2704,11 +2743,84 @@ describe("ACP design host", () => {
           expect(normalizeFolderOption("C:/design-sandbox ")).toBe("C:/design-sandbox");
         });
 
+        it("strips the Windows extended-length prefix from Oracle messages", () => {
+          // Four characters: backslash, backslash, "?", backslash.
+          const prefix = "\\\\?\\";
+          const status = {
+            path: `${prefix}C:\\design-sandbox`,
+            data_dir: "oracle-data",
+            state: "unreadable" as const,
+            indexed_files: 0,
+            total_files: 0,
+            pending_files: 0,
+            stale_files: 0,
+            indexed_chunks: 0,
+            message: `Cannot read ${prefix}C:\\design-sandbox index.`,
+          };
+          const notice = groundingNoticeFor(status, `${prefix}C:\\design-sandbox`);
+          expect(notice).toBe("Cannot read C:\\design-sandbox index.");
+        });
+
+        it("takes the folder name after the last backslash or slash", () => {
+          const base = {
+            path: "x",
+            data_dir: "oracle-data",
+            state: "never_indexed" as const,
+            indexed_files: 0,
+            total_files: 0,
+            pending_files: 0,
+            stale_files: 0,
+            indexed_chunks: 0,
+            message: null,
+          };
+          expect(groundingNoticeFor(base, "C:\\work\\design-sandbox")).toBe(
+            "Not grounded: design-sandbox has no Oracle index yet. Index the folder to let the agent search it.",
+          );
+          expect(groundingNoticeFor(base, "C:/work/design-sandbox/")).toBe(
+            "Not grounded: design-sandbox has no Oracle index yet. Index the folder to let the agent search it.",
+          );
+          expect(groundingNoticeFor(base, "C:\\work\\design-sandbox\\")).toBe(
+            "Not grounded: design-sandbox has no Oracle index yet. Index the folder to let the agent search it.",
+          );
+        });
+
         it("resolves a ready folder to its hits with no notice", async () => {
           const grounding = await resolveFolderGrounding("Update the design", FOLDER);
 
           expect(grounding.notice).toBeNull();
           expect(grounding.results.map((hit) => hit.path)).toEqual(["src/folder/Widget.tsx"]);
+        });
+
+        it("throws without searching when the signal is already aborted", async () => {
+          const controller = new AbortController();
+          controller.abort();
+          await expect(
+            resolveFolderGrounding("Update the design", FOLDER, controller.signal),
+          ).rejects.toMatchObject({ name: "AbortError" });
+          expect(mocks.oracleFolderStatus).not.toHaveBeenCalled();
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
+        });
+
+        it("skips the folder search when the run aborts between the two awaits", async () => {
+          const controller = new AbortController();
+          mocks.oracleFolderStatus.mockImplementationOnce(async () => {
+            controller.abort();
+            return {
+              path: FOLDER,
+              data_dir: "oracle-data",
+              state: "ready" as const,
+              indexed_files: 1,
+              total_files: 1,
+              pending_files: 0,
+              stale_files: 0,
+              indexed_chunks: 1,
+              message: null,
+            };
+          });
+          await expect(
+            resolveFolderGrounding("Update the design", FOLDER, controller.signal),
+          ).rejects.toMatchObject({ name: "AbortError" });
+          expect(mocks.oracleAskFolder).not.toHaveBeenCalled();
         });
       });
 

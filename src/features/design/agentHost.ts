@@ -16,6 +16,7 @@ import {
   type SessionChannel,
 } from "../../lib/tauri";
 import type {
+  OracleFolderIndexStatus,
   OracleResult,
   PermissionRequest,
   ProviderInfo,
@@ -292,6 +293,17 @@ export function extractFencedHtml(text: string): string | undefined {
   return lastContent;
 }
 
+/**
+ * Prose left after the fenced ```html blocks are removed. The page already
+ * lives on the canvas, so the transcript keeps only the words around it.
+ * Consecutive blank lines left by a removed block collapse to one, and
+ * surrounding whitespace is trimmed; an empty result means "only a block".
+ */
+export function stripFencedHtml(text: string): string {
+  const withoutBlocks = text.replace(/```html\s*\n?([\s\S]*?)\n?\s*```/g, "");
+  return withoutBlocks.replace(/\n\s*\n\s*\n+/g, "\n\n").trim();
+}
+
 export interface ArtifactExtraction {
   html?: string;
   error?: string;
@@ -455,27 +467,66 @@ export function normalizeFolderOption(value: string | null | undefined): string 
 }
 
 /**
+ * Windows canonicalizes to extended-length paths. That `\\?\` prefix is correct
+ * and unreadable; this notice is for a person, so drop it.
+ */
+// Four characters: backslash, backslash, "?", backslash. A raw template cannot
+// end in a backslash (it would escape its own closing backtick), so each
+// backslash is doubled in this quoted string.
+const EXTENDED_LENGTH_PREFIX = "\\\\?\\";
+
+function humanizeWindowsPaths(message: string): string {
+  return message.split(EXTENDED_LENGTH_PREFIX).join("");
+}
+
+const TRAILING_PATH_SEPARATORS = /[\\/]+$/;
+const PATH_SEPARATORS = /[\\/]/;
+
+function folderName(folderPath: string): string {
+  const segments = folderPath.replace(TRAILING_PATH_SEPARATORS, "").split(PATH_SEPARATORS);
+  return segments[segments.length - 1] || folderPath;
+}
+
+/**
+ * Oracle's own message names the folder twice and in extended-length form, which
+ * is three lines of noise for the case that happens most: a folder nobody has
+ * indexed. Say that one in a sentence, and keep Oracle's wording for the states
+ * where the reason is not obvious from the state alone.
+ */
+export function groundingNoticeFor(status: OracleFolderIndexStatus, folderPath: string): string {
+  if (status.state === "never_indexed") {
+    return `Not grounded: ${folderName(folderPath)} has no Oracle index yet. Index the folder to let the agent search it.`;
+  }
+  return humanizeWindowsPaths(
+    status.message ?? `This folder has no usable Oracle index (${status.state}).`,
+  );
+}
+
+/**
  * Grounds one prompt on one attached folder's own index. The status probe is
- * read-only and starts nothing; a folder without a ready index is not
- * searched, and its own message is returned as the quiet line. A search that
- * errors degrades to no grounding plus its reason, never to a throw, so the
- * run can proceed without grounding.
+ * read-only and starts nothing; a folder without a ready index is not searched,
+ * and the reason is returned as the quiet line. A search that errors degrades to
+ * no grounding plus its reason, never to a throw, so the run can proceed.
+ * An aborted generation throws instead: the caller passes its signal and this
+ * checks it between the two awaits, so a cancelled run never starts a folder
+ * search it will only throw away.
  */
 export async function resolveFolderGrounding(
   prompt: string,
   folderPath: string,
+  signal?: AbortSignal,
 ): Promise<FolderGrounding> {
+  if (signal?.aborted) throw abortError();
   let status;
   try {
     status = await oracleFolderStatus(folderPath);
   } catch (cause) {
+    if (signal?.aborted) throw abortError();
     return { results: [], notice: reasonFromCause(cause) };
   }
+  if (signal?.aborted) throw abortError();
   if (status.state !== "ready") {
-    return {
-      results: [],
-      notice: status.message ?? `This folder has no usable Oracle index (${status.state}).`,
-    };
+    return { results: [], notice: groundingNoticeFor(status, folderPath) };
   }
   try {
     const response = await oracleAskFolder(folderPath, prompt);
@@ -1137,7 +1188,7 @@ export function createAgentHost(): DesignHost {
     } else if (folderOption === null) {
       promptGrounded = false;
     } else {
-      const grounding = await resolveFolderGrounding(prompt, folderOption);
+      const grounding = await resolveFolderGrounding(prompt, folderOption, signal);
       oracleResults = grounding.results;
       groundingNotice = grounding.notice;
       promptGrounded = grounding.notice === null;

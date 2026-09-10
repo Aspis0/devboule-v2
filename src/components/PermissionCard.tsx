@@ -138,6 +138,15 @@ export function PermissionCard({
   const [permission, setPermission] = useState<PermissionState>("waiting");
   const [error, setError] = useState<string | null>(null);
   const submittingRef = useRef(false);
+  // Set false on unmount so a late answer never stamps state (or fires
+  // onResolved) after the host closed the run and removed the card.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   // A fresh subscription means the previous answer was sent over an attachment the
   // daemon no longer owns. Reset the card so the re-delivered request is answerable,
   // and bump the generation so the abandoned answer cannot overwrite this state.
@@ -167,11 +176,11 @@ export function PermissionCard({
     try {
       await (onRespond?.(outcome) ??
         sessionPermissionRespond(sessionId, subscriptionId, request.toolCallId, outcome));
-      if (generationRef.current !== generation) return;
+      if (!mountedRef.current || generationRef.current !== generation) return;
       setPermission(outcome === "allow_once" ? "allowed" : "denied");
       onResolved?.(sessionId, request.toolCallId);
     } catch (cause) {
-      if (generationRef.current !== generation) return;
+      if (!mountedRef.current || generationRef.current !== generation) return;
       submittingRef.current = false;
       setPermission("waiting");
       setError(reasonFromCause(cause));

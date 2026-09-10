@@ -2096,6 +2096,49 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("strips fenced html from the transcript and drops a block-only row", async () => {
+    const pending = deferred<DesignGenerationResult>();
+    const fake = fakeAgentSession(agentState(null));
+    const host = createHost({
+      generate: vi.fn(() => pending.promise),
+      getAgentSession: () => fake.session,
+      getRunTranscriptStart: () => 1,
+    });
+    const { container, root } = await renderDesign(host);
+    await fillDraft(container, "Make the stale count dynamic.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    await act(async () => {
+      fake.updateState({
+        ...agentState(null),
+        items: [
+          { id: "user-1", role: "user", text: "User request.", messageId: null },
+          {
+            id: "assistant-1",
+            role: "assistant",
+            text: "Here is the page:\n```html\n<div>Hi</div>\n```\nDone.",
+            messageId: "m-1",
+          },
+          {
+            id: "assistant-2",
+            role: "assistant",
+            text: "```html\n<div>Only</div>\n```",
+            messageId: "m-2",
+          },
+        ],
+        status: "running",
+      });
+    });
+    const rows = [...container.querySelectorAll(".design-transcript-assistant")];
+    // The prose+block row keeps its words without tags; the block-only row renders nothing.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.textContent).toBe("Here is the page:\n\nDone.");
+    expect(rows[0]?.textContent).not.toContain("<div>");
+    await act(async () => root.unmount());
+  });
+
   it("records only a resolved artifact under the live session and prompt", async () => {
     const generate = vi.fn(async () => ARTIFACT_RESULT);
     const host = createHost({
@@ -2416,7 +2459,9 @@ describe("DesignSurface host capabilities", () => {
     expect(container.querySelector(".design-canvas-empty")?.textContent).toBe(
       "No TSX or SVG components found in the indexed workspace.",
     );
-    expect(container.querySelector(".design-layer-count")?.textContent).toBe("0");
+    // An empty layer list hides the panel instead of showing "LAYERS 0".
+    expect(container.querySelector(".design-layers-panel")).toBeNull();
+    expect(container.querySelector(".design-layer-count")).toBeNull();
     await act(async () => root.unmount());
   });
 
@@ -3126,6 +3171,9 @@ describe("DesignSurface host capabilities", () => {
       ]),
       800,
       600,
+      // DESIGN_FIT_MARGIN in DesignSurface.tsx: the surface fits with a 24px
+      // gutter so the 1280px page keeps every pixel the canvas has room for.
+      24,
     );
     expect(stage.style.transform).toBe(viewportTransform(expected));
     await act(async () => root.unmount());

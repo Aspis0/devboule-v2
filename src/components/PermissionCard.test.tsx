@@ -356,4 +356,34 @@ describe("PermissionCard", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("does not resolve or reopen after the card unmounts mid-answer", async () => {
+    const pending = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(pending.promise);
+    const onResolved = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <PermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={request}
+          capabilities={["typed_permissions"]}
+          onResolved={onResolved}
+        />,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".permission-card-primary-action")?.click();
+    });
+    await act(async () => root.unmount());
+    await act(async () => {
+      pending.resolve();
+      await pending.promise;
+    });
+    expect(onResolved).not.toHaveBeenCalled();
+  });
 });

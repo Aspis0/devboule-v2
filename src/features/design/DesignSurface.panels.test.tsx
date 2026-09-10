@@ -281,4 +281,17 @@ describe("DesignSurface panels", () => {
     expect(container.querySelector(".design-inspector-panel")).not.toBeNull();
     await act(async () => root.unmount());
   });
+
+  it("hides the layers panel when there are no layers", async () => {
+    const emptyDocument = { ...DOCUMENT, layers: [], selectedLayerId: "" };
+    const { container, root } = await renderDesign(emptyDocument);
+    expect(container.querySelector(".design-layers-panel")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("shows the layers panel when layers exist", async () => {
+    const { container, root } = await renderDesign();
+    expect(container.querySelector(".design-layers-panel")).not.toBeNull();
+    await act(async () => root.unmount());
+  });
 });

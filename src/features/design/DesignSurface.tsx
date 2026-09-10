@@ -20,10 +20,16 @@ import type {
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic } from "./artifactRenderCritic";
-import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
+import {
+  ARTIFACT_PAGE_HEIGHT,
+  ARTIFACT_PAGE_WIDTH,
+  artifactPageHeightForCanvas,
+  shouldAdaptArtifactHeight,
+} from "./artifactViewport";
 import {
   ARTIFACT_TOO_LARGE_MESSAGE,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
+  stripFencedHtml,
   transcriptItems,
 } from "./agentHost";
 import {
@@ -170,6 +176,7 @@ interface CanvasProps {
   artifactHtml?: string;
   artifactError?: string;
   artifactMissingTokens: readonly string[];
+  artifactHeight: number;
   onSelectLayer: (layerId: string) => void;
   onViewportChange: (viewport: DesignViewport) => void;
 }
@@ -1011,19 +1018,22 @@ const ZoomControls = memo(function ZoomControls({
 
 const DESIGN_GRID_ORIGIN_X = 60;
 const DESIGN_GRID_ORIGIN_Y = 46;
-// The generated page is a desktop page: it is authored against, and displayed
-// at, the canonical page viewport. A generated page has no intrinsic width —
-// 1280 is the width this platform chooses — and its height follows its content,
-// which cannot be measured inside the sandboxed frame (see artifactViewport).
+// The generated page is a desktop page: it is authored against the canonical
+// 1280px page width (see artifactViewport). Width stays fixed so media queries
+// and columns do not move; height follows the live canvas aspect so the fitted
+// page fills the canvas instead of letterboxing below it.
 const ARTIFACT_NODE_WIDTH = ARTIFACT_PAGE_WIDTH;
-const ARTIFACT_NODE_HEIGHT = ARTIFACT_PAGE_HEIGHT;
 const ARTIFACT_NODE_GAP = 32;
 const ARTIFACT_NODE_ID = "generated-artifact";
 const ARTIFACT_CONTEXT_NAME = "Generated artifact";
 const ARTIFACT_CSP =
   "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; manifest-src 'none'";
 const ARTIFACT_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_CSP}" />`;
-const DESIGN_FIT_MARGIN = 80;
+// A gutter, not a frame. The generated page is authored at 1280px and the
+// canvas next to a 366px assistant column is under 900px, so every pixel of
+// margin is a pixel the page does not get: at 80 per side the page fitted at
+// 58% of its true size on a canvas that had room for 70%.
+const DESIGN_FIT_MARGIN = 24;
 
 function layerRectsFor(layers: readonly DesignLayer[]): NodeRect[] {
   return layers.map((layer, index) => ({
@@ -1036,14 +1046,14 @@ function layerRectsFor(layers: readonly DesignLayer[]): NodeRect[] {
   }));
 }
 
-function artifactNodeRect(layers: readonly DesignLayer[]): NodeRect {
+function artifactNodeRect(layers: readonly DesignLayer[], height: number): NodeRect {
   const bounds = nodesBounds(layerRectsFor(layers));
   return {
     id: ARTIFACT_NODE_ID,
     x: bounds?.x ?? DESIGN_GRID_ORIGIN_X,
     y: bounds === null ? DESIGN_GRID_ORIGIN_Y : bounds.y + bounds.h + ARTIFACT_NODE_GAP,
     w: ARTIFACT_NODE_WIDTH,
-    h: ARTIFACT_NODE_HEIGHT,
+    h: height,
     z: layers.length,
   };
 }
@@ -1067,6 +1077,7 @@ const DesignCanvas = memo(function DesignCanvas({
   artifactHtml,
   artifactError,
   artifactMissingTokens,
+  artifactHeight,
   onSelectLayer,
   onViewportChange,
 }: CanvasProps) {
@@ -1111,8 +1122,10 @@ const DesignCanvas = memo(function DesignCanvas({
   );
   const artifactRect = useMemo(
     () =>
-      artifactHtml !== undefined || artifactError !== undefined ? artifactNodeRect(layers) : null,
-    [artifactError, artifactHtml, layers],
+      artifactHtml !== undefined || artifactError !== undefined
+        ? artifactNodeRect(layers, artifactHeight)
+        : null,
+    [artifactError, artifactHtml, artifactHeight, layers],
   );
   const hitRects = useMemo<NodeRect[]>(
     () => (artifactRect === null ? layerRects : [...layerRects, artifactRect]),
@@ -1533,9 +1546,14 @@ const DesignTranscriptRow = memo(function DesignTranscriptRow({
     );
   }
 
+  // The page already lives on the canvas, so a fenced ```html block would print
+  // dozens of tag lines into the column. Keep only the prose around it; when
+  // nothing but a block remains, render no row instead of an empty bubble.
+  const prose = stripFencedHtml(item.text);
+  if (prose.length === 0) return null;
   return (
     <div className="design-transcript-row design-transcript-assistant">
-      <div className="design-transcript-text">{item.text}</div>
+      <div className="design-transcript-text">{prose}</div>
     </div>
   );
 });
@@ -2300,6 +2318,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     saved: document.initialState.saved,
   }));
   const [viewState, setViewState] = useState<DesignViewState>(initialViewState);
+  // Adaptive frame height for the generated page: width stays 1280, height
+  // follows the live canvas aspect (see artifactViewport). Seeded at the
+  // 800 baseline so mount and tests without a measured canvas keep the
+  // canonical sheet until a real canvas size arrives with an artifact.
+  const [artifactPageHeight, setArtifactPageHeight] = useState(ARTIFACT_PAGE_HEIGHT);
   const [composerContextLayerId, setComposerContextLayerId] = useState<string | null>(
     initialViewState.selectedLayerId,
   );
@@ -2424,6 +2447,12 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
 
   const [streamingTranscript, setStreamingTranscript] =
     useState<readonly DesignTranscriptItem[]>(EMPTY_TRANSCRIPT);
+  // Read by startGeneration's failure path and the stop/retry actions below.
+  // Those callbacks must see the rows live at the moment they run, not the
+  // rows live at the moment they were created, so they read this ref instead
+  // of taking streamingTranscript as a dependency (which would recreate them
+  // on every stream chunk).
+  const streamingTranscriptRef = useRef(streamingTranscript);
 
   useEffect(() => {
     if (agentSession === null) return;
@@ -2436,9 +2465,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       const state = agentSession.getState();
       setAgentState(state);
       const start = host.getRunTranscriptStart?.() ?? null;
-      setStreamingTranscript(
-        start === null ? EMPTY_TRANSCRIPT : transcriptItems(state.items, start),
-      );
+      const next = start === null ? EMPTY_TRANSCRIPT : transcriptItems(state.items, start);
+      streamingTranscriptRef.current = next;
+      setStreamingTranscript(next);
     };
     update();
     return agentSession.subscribe(update);
@@ -2759,8 +2788,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   );
   const artifactRect = useMemo(
     () =>
-      artifactHtml !== undefined || artifactError !== undefined ? artifactNodeRect(layers) : null,
-    [artifactError, artifactHtml, layers],
+      artifactHtml !== undefined || artifactError !== undefined
+        ? artifactNodeRect(layers, artifactPageHeight)
+        : null,
+    [artifactError, artifactHtml, artifactPageHeight, layers],
   );
 
   const fitRects = useMemo<NodeRect[]>(() => {
@@ -3073,13 +3104,25 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       return { ...current, ...nextViewport };
     });
   }, []);
+  // True once the user pans, zooms, or wheels after the last fit, so a later
+  // reframe never tears the viewport out from under their hands. fitCanvas
+  // clears it; every manual viewport path sets it.
+  const viewportTouchedRef = useRef(false);
   const setZoom = useCallback((nextZoom: number | ((currentZoom: number) => number)) => {
+    viewportTouchedRef.current = true;
     setViewState((current) => {
       const requested = typeof nextZoom === "function" ? nextZoom(current.zoom) : nextZoom;
       const next = clampViewportZoom(requested);
       return current.zoom === next ? current : { ...current, zoom: next };
     });
   }, []);
+  const handleCanvasViewportChange = useCallback(
+    (nextViewport: DesignViewport) => {
+      viewportTouchedRef.current = true;
+      setViewport(nextViewport);
+    },
+    [setViewport],
+  );
   const zoomIn = useCallback(
     () => setZoom((currentZoom) => Number((currentZoom + 0.1).toFixed(1))),
     [setZoom],
@@ -3099,20 +3142,65 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       bounds.height,
       DESIGN_FIT_MARGIN,
     );
+    viewportTouchedRef.current = false;
     setViewport({ pan: fittedPan, zoom: fittedZoom });
   }, [setViewport]);
+
+  // The artifact frame follows the live canvas aspect (width stays 1280, height
+  // adapts), but its height re-renders the iframe, so it must not chase every
+  // pixel. The ratio gate in shouldAdaptArtifactHeight and the new-artifact
+  // trigger below are the only two reframe paths.
+  const lastCanvasSizeRef = useRef<{ width: number; height: number } | null>(null);
+  useEffect(() => {
+    const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
+    if (!canvas || typeof ResizeObserver === "undefined") return;
+    const seed = canvas.getBoundingClientRect();
+    lastCanvasSizeRef.current = { width: seed.width, height: seed.height };
+    const observer = new ResizeObserver(() => {
+      const rect = canvas.getBoundingClientRect();
+      const prev = lastCanvasSizeRef.current;
+      lastCanvasSizeRef.current = { width: rect.width, height: rect.height };
+      if (prev === null) return;
+      if (!shouldAdaptArtifactHeight(prev.width, prev.height, rect.width, rect.height)) return;
+      const desired = artifactPageHeightForCanvas(rect.width, rect.height);
+      setArtifactPageHeight((current) => (current === desired ? current : desired));
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   // A new artifact is a full page, not a thumbnail: fit it into view the moment
   // it lands, so the whole generated page is visible without a manual Fit. The
   // ref is seeded with the artifact already on screen at mount, so reopening a
-  // document keeps the saved viewport instead of snapping the camera.
+  // document keeps the saved viewport instead of snapping the camera. A reframe
+  // (new artifact or adapted height) refits only while the viewport is still
+  // pristine after the last fit; a manual pan/zoom owns the camera from then on.
   const fittedArtifactRef = useRef<string | undefined>(artifactHtml ?? artifactError);
+  const fittedHeightRef = useRef(artifactPageHeight);
   useEffect(() => {
     const artifact = artifactHtml ?? artifactError;
-    if (artifact === undefined || fittedArtifactRef.current === artifact) return;
-    fittedArtifactRef.current = artifact;
-    fitCanvas();
-  }, [artifactError, artifactHtml, fitCanvas]);
+    if (artifact === undefined) return;
+    const isNewArtifact = fittedArtifactRef.current !== artifact;
+    if (isNewArtifact) {
+      fittedArtifactRef.current = artifact;
+      const canvas = designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas");
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        lastCanvasSizeRef.current = { width: rect.width, height: rect.height };
+        const desired = artifactPageHeightForCanvas(rect.width, rect.height);
+        if (desired !== artifactPageHeight) {
+          // Defer the fit until the reframed height commits, so the camera
+          // fits the sheet the user will actually see instead of the old one.
+          setArtifactPageHeight(desired);
+          return;
+        }
+      }
+    }
+    const heightChanged = fittedHeightRef.current !== artifactPageHeight;
+    if (!isNewArtifact && !heightChanged) return;
+    fittedHeightRef.current = artifactPageHeight;
+    if (!viewportTouchedRef.current) fitCanvas();
+  }, [artifactError, artifactHtml, artifactPageHeight, fitCanvas]);
 
   const undo = useCallback(() => {
     if (!canUndo) return;
@@ -3464,7 +3552,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                     status: "error",
                     title: "Generation failed",
                     desc: error instanceof Error ? error.message : "The design generation failed.",
-                    transcript: streamingTranscript,
+                    transcript: streamingTranscriptRef.current,
                   }
                 : message,
             ),
@@ -3490,7 +3578,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       skillSelection.mode,
       selectedSkillSlugs,
       setMessages,
-      streamingTranscript,
     ],
   );
 
@@ -3537,7 +3624,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                   status: "done",
                   title: "Stopped",
                   desc: "Cancelled before the host returned a result.",
-                  transcript: streamingTranscript,
+                  transcript: streamingTranscriptRef.current,
                 }
               : item,
           ),
@@ -3560,7 +3647,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       const prompt = promptForMessage(messagesRef.current, message);
       if (prompt !== null) startGeneration(prompt);
     },
-    [host, selectLayer, setMessages, startGeneration, streamingTranscript],
+    [host, selectLayer, setMessages, startGeneration],
   );
 
   const clearComposerContext = useCallback(() => setComposerContextLayerId(null), []);
@@ -3662,14 +3749,17 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             artifactHtml={artifactHtml}
             artifactError={artifactError}
             artifactMissingTokens={artifactMissingTokens}
+            artifactHeight={artifactPageHeight}
             onSelectLayer={selectLayer}
-            onViewportChange={setViewport}
+            onViewportChange={handleCanvasViewportChange}
           />
-          <LayerPanel
-            layers={layerRows}
-            onSelect={selectLayer}
-            onToggleVisibility={toggleLayerVisibility}
-          />
+          {layerRows.length > 0 ? (
+            <LayerPanel
+              layers={layerRows}
+              onSelect={selectLayer}
+              onToggleVisibility={toggleLayerVisibility}
+            />
+          ) : null}
           <ZoomControls
             zoom={zoom}
             canZoomIn={zoom < DESIGN_MAX_ZOOM}
