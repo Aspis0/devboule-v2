@@ -10,6 +10,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # lancedb pins arrow 58, so a major arrow bump does not upgrade the
+      # tree: it forks it. Cargo keeps 58.4.0 for lance and adds 59.x for us,
+      # and every RecordBatch or Schema crossing that boundary becomes a
+      # different type. Patch releases of 58.x are still welcome.
+      # Drop this entry as soon as lancedb ships against arrow 59.
+      - dependency-name: "arrow*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
