@@ -23,6 +23,7 @@ use crate::acp_view::{
     add_vendor_surface, catalog_from_config_options, classify_line, merge_handshake_manifest,
     view_from_envelope_in, AcpLineKind, ConfigOptionSurface, HandshakeManifest, ModelSwitchShape,
 };
+use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::server::ServerState;
@@ -398,22 +399,25 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
+    mcp: Option<McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, None)
+    spawn_process_with_load(state, command, None, mcp)
 }
 
 pub(super) fn spawn_process_resuming(
     state: &Arc<ServerState>,
     command: PtyCommand,
     peer_session_id: String,
+    mcp: Option<McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, Some(peer_session_id))
+    spawn_process_with_load(state, command, Some(peer_session_id), mcp)
 }
 
 fn spawn_process_with_load(
     state: &Arc<ServerState>,
     command: PtyCommand,
     load_session_id: Option<String>,
+    mcp: Option<McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
     let mut process = Command::new(&command.program);
     process
@@ -523,6 +527,7 @@ fn spawn_process_with_load(
         &command.cwd,
         command.provider_id.clone(),
         load_session_id.as_deref(),
+        mcp.as_ref(),
     ) {
         Ok(handshake) => handshake,
         Err(error) => {
@@ -542,17 +547,7 @@ fn spawn_process_with_load(
             }
             let stderr_lines = stderr_source.discard_and_join();
             drop(process_job);
-            if stderr_lines.is_empty() {
-                return Err(error);
-            }
-            return Err(WireError::new(
-                error.code,
-                format!(
-                    "{} Agent stderr: {}",
-                    error.message,
-                    stderr_lines.join(" | ")
-                ),
-            ));
+            return Err(redact_handshake_error(error, &stderr_lines, mcp.as_ref()));
         }
     };
     let session_id = transport.session_id();
@@ -1371,8 +1366,12 @@ fn handshake(
     cwd: &std::path::Path,
     provider_id: Option<String>,
     load_session_id: Option<&str>,
+    mcp: Option<&McpLaunchConfig>,
 ) -> Result<HandshakeResult, WireError> {
     let mut deferred = Vec::new();
+    let mcp_servers = mcp
+        .map(|config| vec![config.acp_server_value()])
+        .unwrap_or_default();
     let initialize_id = transport
         .request("initialize", advertised_initialize_params()?)
         .map_err(acp_io_error)?;
@@ -1405,14 +1404,14 @@ fn handshake(
             serde_json::json!({
                 "sessionId": session_id,
                 "cwd": cwd.to_string_lossy(),
-                "mcpServers": []
+                "mcpServers": mcp_servers
             }),
         ),
         None => (
             "session/new",
             serde_json::json!({
                 "cwd": cwd.to_string_lossy(),
-                "mcpServers": []
+                "mcpServers": mcp_servers
             }),
         ),
     };
@@ -1504,6 +1503,32 @@ fn acp_request_error_message(error: &serde_json::Value) -> String {
 
 fn acp_io_error(error: io::Error) -> WireError {
     WireError::new(ErrorCode::Io, format!("ACP stdio failed: {error}"))
+}
+
+fn redact_mcp_error(mut error: WireError, mcp: Option<&McpLaunchConfig>) -> WireError {
+    if let Some(mcp) = mcp {
+        error.message = mcp.redact_text(&error.message);
+    }
+    error
+}
+
+fn redact_handshake_error(
+    error: WireError,
+    stderr_lines: &[String],
+    mcp: Option<&McpLaunchConfig>,
+) -> WireError {
+    if stderr_lines.is_empty() {
+        return redact_mcp_error(error, mcp);
+    }
+    let message = format!(
+        "{} Agent stderr: {}",
+        error.message,
+        stderr_lines.join(" | ")
+    );
+    let message = mcp
+        .map(|config| config.redact_text(&message))
+        .unwrap_or(message);
+    WireError::new(error.code, message)
 }
 
 fn is_user_message_chunk(value: &serde_json::Value, session_id: &str) -> bool {
@@ -1775,6 +1800,34 @@ impl AcpReader {
     }
 }
 
+fn observe_mcp_status(value: &serde_json::Value, runtime: &SessionRuntime) {
+    if !is_mcp_status(value) {
+        return;
+    }
+    let status = value
+        .pointer("/params/status")
+        .and_then(serde_json::Value::as_str);
+    let reason = value
+        .pointer("/params/reason")
+        .and_then(serde_json::Value::as_str);
+    if status == Some("ready") && reason == Some("initialized") {
+        // This is a provider hint only. The broker marks readiness after it
+        // has authenticated and served this session's tools/list request.
+        return;
+    }
+    if matches!(status, Some("failed") | Some("error")) {
+        runtime.fail_mcp("The ACP provider reported that the MCP broker failed.");
+    }
+}
+
+fn is_mcp_status(value: &serde_json::Value) -> bool {
+    value.get("method").and_then(serde_json::Value::as_str) == Some("_x.ai/mcp/server_status")
+        && value
+            .pointer("/params/name")
+            .and_then(serde_json::Value::as_str)
+            == Some(crate::mcp_broker::MCP_SERVER_NAME)
+}
+
 impl ReaderDispatch for AcpReader {
     fn feed(&mut self, bytes: &[u8], runtime: &Arc<SessionRuntime>) -> Result<(), String> {
         self.turn.bind_runtime(runtime);
@@ -1914,18 +1967,25 @@ impl AcpReader {
     }
 
     fn dispatch_value(&self, value: &serde_json::Value, runtime: &Arc<SessionRuntime>) {
-        if matches!(classify_line(value), Some(AcpLineKind::Notification { .. }))
-            && value
-                .get("_meta")
-                .and_then(|meta| meta.get("isReplay"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
+        let value = runtime.redact_mcp_value(value);
+        if is_mcp_status(&value) {
+            observe_mcp_status(&value, runtime);
+            return;
+        }
+        if matches!(
+            classify_line(&value),
+            Some(AcpLineKind::Notification { .. })
+        ) && value
+            .get("_meta")
+            .and_then(|meta| meta.get("isReplay"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
         {
             self.replay_count.fetch_add(1, Ordering::Relaxed);
             return;
         }
         self.turn.note_activity();
-        if is_user_message_chunk(value, &self.session_id) {
+        if is_user_message_chunk(&value, &self.session_id) {
             // The daemon records the outbound prompt before writing. Never
             // allocate a sequence or journal grok's redundant
             // echo: burning a sequence without a row would look like a
@@ -1933,29 +1993,29 @@ impl AcpReader {
             // to map historical echo envelopes for backward compatibility.
             return;
         }
-        let event_seq = runtime.journal_agent_envelope(value);
-        match classify_line(value) {
+        let event_seq = runtime.journal_agent_envelope(&value);
+        match classify_line(&value) {
             Some(AcpLineKind::Request { method }) => {
                 if method == "session/request_permission" {
-                    self.dispatch_permission(value, runtime, event_seq);
+                    self.dispatch_permission(&value, runtime, event_seq);
                     return;
                 }
-                self.dispatch_client_request(&method, value, runtime);
+                self.dispatch_client_request(&method, &value, runtime);
             }
             Some(AcpLineKind::Response) => {
                 if let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) {
-                    self.dispatch_response(id, value, runtime, event_seq);
+                    self.dispatch_response(id, &value, runtime, event_seq);
                 }
             }
             Some(AcpLineKind::Notification { .. }) => {
                 if value.get("method").and_then(serde_json::Value::as_str)
                     == Some("_x.ai/sessions/changed")
                 {
-                    self.dispatch_sessions_changed(value, runtime, event_seq);
+                    self.dispatch_sessions_changed(&value, runtime, event_seq);
                     return;
                 }
                 if let Some(view) =
-                    view_from_envelope_in(value, &self.session_id, Some(self.host.cwd()))
+                    view_from_envelope_in(&value, &self.session_id, Some(self.host.cwd()))
                 {
                     let view = self.with_provider(view);
                     if value.get("method").and_then(serde_json::Value::as_str)
@@ -2677,7 +2737,7 @@ impl AcpStderr {
                                             state.pending.push_back(line.clone());
                                         } else {
                                             eprintln!(
-                                                "dropping ACP stderr while handshake is pending: {line}"
+                                                "dropping ACP stderr while handshake is pending"
                                             );
                                         }
                                         None
@@ -2746,7 +2806,12 @@ impl StderrSource for AcpStderr {
 }
 
 fn publish_stderr_line(runtime: &SessionRuntime, line: String) {
-    let _ = runtime.publish_agent_event(SessionEvent::AgentStderr { data: line }, None);
+    let _ = runtime.publish_agent_event(
+        SessionEvent::AgentStderr {
+            data: runtime.redact_mcp_text(&line),
+        },
+        None,
+    );
 }
 
 #[cfg(test)]
@@ -2755,17 +2820,108 @@ mod tests {
         permission, permission_path, test_broker, PermissionBroker, MAX_ACP_PERMISSION_FIELD_BYTES,
     };
     use super::{
-        acp_request_error_message, complete_lines, AcpReader, PendingSwitch,
-        MAX_ACP_PERMISSION_LINE_BYTES,
+        acp_request_error_message, complete_lines, is_mcp_status, observe_mcp_status,
+        redact_handshake_error, AcpReader, PendingSwitch, MAX_ACP_PERMISSION_LINE_BYTES,
     };
     use crate::journal::Journal;
     use crate::session::{ConnHandle, ReaderDispatch, SessionKiller, SessionRuntime};
-    use devboule_protocol::{PermissionOutcome, SessionEvent, SessionKind, SessionModel};
+    use devboule_protocol::{
+        ErrorCode, PermissionOutcome, SessionEvent, SessionKind, SessionModel, WireError,
+    };
     use std::collections::HashSet;
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn mcp_status_is_parsed_as_a_hint_and_failure_is_reported() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.require_mcp();
+        let ready = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "_x.ai/mcp/server_status",
+            "params": {
+                "name": "devboule",
+                "status": "ready",
+                "reason": "initialized"
+            }
+        });
+        assert!(is_mcp_status(&ready));
+        observe_mcp_status(&ready, &runtime);
+        assert!(runtime
+            .wait_for_mcp_ready(Duration::from_millis(1))
+            .is_err());
+
+        let failed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "_x.ai/mcp/server_status",
+            "params": {
+                "name": "devboule",
+                "status": "failed"
+            }
+        });
+        observe_mcp_status(&failed, &runtime);
+        let error = runtime
+            .wait_for_mcp_ready(Duration::from_secs(1))
+            .expect_err("provider failure must wake the gate");
+        assert!(error.message.contains("ACP provider reported"));
+    }
+
+    #[test]
+    fn mcp_bearer_is_redacted_from_stderr_before_delivery() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stderr-redaction", broker);
+        runtime.set_mcp_bearer("opaque-bearer".to_string());
+        runtime.set_mcp_url("http://127.0.0.1:4567/mcp".to_string());
+        super::publish_stderr_line(
+            &runtime,
+            "provider echoed Bearer opaque-bearer at http://127.0.0.1:4567/mcp".to_string(),
+        );
+        let event = conn
+            .pull_events()
+            .into_iter()
+            .find_map(|event| match event.envelope.event {
+                SessionEvent::AgentStderr { data } => Some(data),
+                _ => None,
+            })
+            .expect("stderr event");
+        assert_eq!(event, "provider echoed Bearer [redacted] at [redacted]");
+        let journal_value = runtime.redact_mcp_value(&serde_json::json!({
+            "echo": "Bearer opaque-bearer at http://127.0.0.1:4567/mcp"
+        }));
+        let journal_text = serde_json::to_string(&journal_value).expect("redacted JSON");
+        assert!(!journal_text.contains("opaque-bearer"));
+        assert!(!journal_text.contains("4567"));
+    }
+
+    #[test]
+    fn spawn_handshake_errors_redact_broker_details_with_and_without_stderr() {
+        let config = crate::mcp_broker::McpLaunchConfig::for_test(
+            "http://127.0.0.1:4567/mcp",
+            "opaque-bearer",
+        );
+        let without_stderr = redact_handshake_error(
+            WireError::new(
+                ErrorCode::Io,
+                "ACP request failed: Bearer opaque-bearer at http://127.0.0.1:4567/mcp",
+            ),
+            &[],
+            Some(&config),
+        );
+        assert!(!without_stderr.message.contains("opaque-bearer"));
+        assert!(!without_stderr.message.contains("4567"));
+
+        let with_stderr = redact_handshake_error(
+            WireError::new(ErrorCode::Io, "ACP request failed: handshake rejected"),
+            &["provider echoed Bearer opaque-bearer at http://127.0.0.1:4567/mcp".to_string()],
+            Some(&config),
+        );
+        assert!(with_stderr.message.contains("Agent stderr"));
+        assert!(!with_stderr.message.contains("opaque-bearer"));
+        assert!(!with_stderr.message.contains("4567"));
+    }
+
     #[test]
     fn request_error_without_a_message_never_serializes_the_object() {
         let error = serde_json::json!({

@@ -86,6 +86,7 @@ use devboule_protocol::{
 use std::sync::Barrier;
 
 use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
+use crate::mcp_broker::McpSessionGuard;
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 #[cfg(test)]
@@ -255,6 +256,7 @@ struct PtySession {
     reader_handle: Option<JoinHandle<()>>,
     coalesce_handle: Option<JoinHandle<()>>,
     runtime: Arc<SessionRuntime>,
+    mcp_session: Option<McpSessionGuard>,
     exited: Arc<AtomicBool>,
     /// Set by `stop`: the process dies but the session object stays. The
     /// reader must not remove the registry entry or call session_finished.
@@ -557,6 +559,11 @@ pub struct SessionRegistry {
     full_roster_builds: Arc<AtomicU64>,
     #[cfg(test)]
     journal_roster_after_list_hook: Arc<Mutex<Option<JournalRosterAfterListHook>>>,
+}
+
+pub(crate) struct LiveAgentEntry {
+    pub(crate) session: Session,
+    pub(crate) runtime: Arc<SessionRuntime>,
 }
 
 /// Whether a resolved provider id came from the session-create request
@@ -1626,6 +1633,11 @@ impl SessionRegistry {
             metadata.workspace_id.as_deref(),
             &self.paths,
         );
+        let mcp_session = if matches!(kind, SessionKind::Acp | SessionKind::Claude) {
+            state.mcp.register(&metadata.id, owner, &kind)?
+        } else {
+            None
+        };
         // Journal the row BEFORE spawn. A short-lived command (cmd /c echo)
         // can EOF and enqueue MarkEnded before this function would otherwise
         // reach try_upsert, and the journal thread would then see a missing
@@ -1637,7 +1649,14 @@ impl SessionRegistry {
         // The journal row above is the durable product boundary. A failed
         // spawn must end that row, or the next roster render resurrects a
         // phantom recovered session with zero events.
-        match spawn_session(state, self, metadata.clone(), owner.clone(), command) {
+        match spawn_session(
+            state,
+            self,
+            metadata.clone(),
+            owner.clone(),
+            command,
+            mcp_session,
+        ) {
             Ok(()) => {
                 // A completed ACP handshake proves the provider started and
                 // accepted a session, so it measures provider health. A
@@ -1810,7 +1829,7 @@ impl SessionRegistry {
                 RegistryEntry::Live(session) => {
                     session.runtime.detach_if_conn(conn.id);
                     session.runtime.notify_generation_replaced(conn.id);
-                    teardown_session_for_resume(session);
+                    teardown_session_for_resume(*session);
                 }
                 RegistryEntry::Transcript(session) => {
                     session.runtime.detach_if_conn(conn.id);
@@ -1827,7 +1846,15 @@ impl SessionRegistry {
                 "daemon is shutting down",
             ));
         }
+        let mcp_session = match state.mcp.register(session_id, owner, &SessionKind::Acp) {
+            Ok(mcp_session) => mcp_session,
+            Err(error) => {
+                state.session_finished();
+                return Err(error);
+            }
+        };
         if let Err(error) = journal.start_generation(session_id, generation) {
+            drop(mcp_session);
             state.session_finished();
             return Err(error.into());
         }
@@ -1852,8 +1879,11 @@ impl SessionRegistry {
             metadata,
             owner.clone(),
             command,
-            peer_session_id,
-            generation,
+            ResumedSessionContext {
+                peer_session_id,
+                generation,
+                mcp_session,
+            },
         ) {
             Ok(()) => state.record_provider_health(&health_provider, Ok(())),
             Err(error) => {
@@ -1937,11 +1967,11 @@ impl SessionRegistry {
             }
             map.insert(
                 session_id.to_string(),
-                RegistryEntry::Transcript(TranscriptSession {
+                RegistryEntry::Transcript(Box::new(TranscriptSession {
                     metadata,
                     owner: session_owner,
                     runtime: Arc::clone(&runtime),
-                }),
+                })),
             );
         }
         Ok(runtime)
@@ -2145,7 +2175,7 @@ impl SessionRegistry {
                     journal.unpin(session_id);
                     self.invalidate_journal_roster();
                 }
-                teardown_session(session);
+                teardown_session(*session);
                 self.notify_session_transition(owner, session_id);
                 Ok(true)
             }
@@ -2350,6 +2380,37 @@ impl SessionRegistry {
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
+        self.send_with_subscription_timeout(
+            session_id,
+            subscription_id,
+            text,
+            owner,
+            conn,
+            crate::mcp_broker::ready_timeout(),
+        )
+    }
+
+    #[cfg(test)]
+    fn send_with_mcp_timeout(
+        &self,
+        session_id: &str,
+        text: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        timeout: Duration,
+    ) -> Result<(), WireError> {
+        self.send_with_subscription_timeout(session_id, conn.id, text, owner, conn, timeout)
+    }
+
+    fn send_with_subscription_timeout(
+        &self,
+        session_id: &str,
+        subscription_id: u64,
+        text: &str,
+        owner: &OwnerId,
+        conn: &ConnHandle,
+        mcp_timeout: Duration,
+    ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         if text.len() > MAX_WRITE_BYTES {
@@ -2358,7 +2419,7 @@ impl SessionRegistry {
                 "Session input is too large.",
             ));
         }
-        let (writer, runtime, is_agent) = {
+        let (writer, runtime, is_agent, mcp_required) = {
             let map = self
                 .inner
                 .lock()
@@ -2370,11 +2431,18 @@ impl SessionRegistry {
                 Arc::clone(&session.writer),
                 Arc::clone(&session.runtime),
                 session.metadata.kind.is_agent(),
+                matches!(
+                    session.metadata.kind,
+                    SessionKind::Acp | SessionKind::Claude
+                ),
             )
         };
         check_attached(&runtime, conn, subscription_id)?;
         let agent_runtime = is_agent.then_some(runtime);
         if let Some(runtime) = agent_runtime.as_ref() {
+            if !text.is_empty() && mcp_required {
+                runtime.wait_for_mcp_ready(mcp_timeout)?;
+            }
             if !text.is_empty() && !runtime.can_publish_agent_user_message() {
                 return Err(internal("Agent input could not be recorded."));
             }
@@ -2569,6 +2637,38 @@ impl SessionRegistry {
         Ok(sessions)
     }
 
+    pub(crate) fn live_agent_entries(
+        &self,
+        owner: &OwnerId,
+    ) -> Result<Vec<LiveAgentEntry>, WireError> {
+        let map = self
+            .inner
+            .lock()
+            .map_err(|_| internal("Session state is unavailable."))?;
+        let mut sessions = map
+            .values()
+            .filter_map(|entry| {
+                let live = entry.as_live()?;
+                if live.owner.user != owner.user
+                    || !matches!(live.metadata.kind, SessionKind::Acp | SessionKind::Claude)
+                {
+                    return None;
+                }
+                let session = live_session_view(live);
+                matches!(
+                    session.state,
+                    SessionState::Live { .. } | SessionState::Silent { .. }
+                )
+                .then(|| LiveAgentEntry {
+                    session,
+                    runtime: Arc::clone(&live.runtime),
+                })
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by(|left, right| left.session.id.cmp(&right.session.id));
+        Ok(sessions)
+    }
+
     /// Pull asynchronous journal-loop failures into live runtimes so their
     /// attached event channels can report degradation even when the PTY has
     /// gone quiet since the failed write.
@@ -2701,22 +2801,43 @@ pub fn spawn_session(
     metadata: Session,
     owner: OwnerId,
     command: PtyCommand,
+    mut mcp_session: Option<McpSessionGuard>,
 ) -> Result<(), WireError> {
     if metadata.kind == SessionKind::Claude {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        let spawned = claude_client::spawn_process(state, command).map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(state, registry, metadata, owner, None, spawned);
+        let spawned =
+            claude_client::spawn_process(state, command, state.mcp.launch_config(&metadata.id))
+                .map_err(|error| {
+                    map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+                })?;
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            None,
+            spawned,
+            mcp_session.take(),
+        );
     }
     if metadata.kind == SessionKind::Acp {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        let spawned = acp_client::spawn_process(state, command).map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(state, registry, metadata, owner, None, spawned);
+        let spawned =
+            acp_client::spawn_process(state, command, state.mcp.launch_config(&metadata.id))
+                .map_err(|error| {
+                    map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+                })?;
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            None,
+            spawned,
+            mcp_session.take(),
+        );
     }
     if metadata.kind == SessionKind::Pi {
         let workspace_id = metadata.workspace_id.clone();
@@ -2724,7 +2845,15 @@ pub fn spawn_session(
         let spawned = pi_client::spawn_process(state, command).map_err(|error| {
             map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
         })?;
-        return start_spawned_session(state, registry, metadata, owner, None, spawned);
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            None,
+            spawned,
+            mcp_session.take(),
+        );
     }
 
     // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
@@ -2852,7 +2981,13 @@ pub fn spawn_session(
         peer_session_id: None,
         agent_version: None,
     };
-    start_spawned_session(state, registry, metadata, owner, None, spawned)
+    start_spawned_session(state, registry, metadata, owner, None, spawned, mcp_session)
+}
+
+pub(crate) struct ResumedSessionContext {
+    peer_session_id: String,
+    generation: u64,
+    mcp_session: Option<McpSessionGuard>,
 }
 
 pub fn spawn_resumed_session(
@@ -2861,16 +2996,17 @@ pub fn spawn_resumed_session(
     metadata: Session,
     owner: OwnerId,
     command: PtyCommand,
-    peer_session_id: String,
-    generation: u64,
+    context: ResumedSessionContext,
 ) -> Result<(), WireError> {
+    let mcp = state.mcp.launch_config(&metadata.id);
     start_spawned_session(
         state,
         registry,
         metadata,
         owner,
-        Some(generation),
-        acp_client::spawn_process_resuming(state, command, peer_session_id)?,
+        Some(context.generation),
+        acp_client::spawn_process_resuming(state, command, context.peer_session_id, mcp)?,
+        context.mcp_session,
     )
 }
 
@@ -2881,6 +3017,7 @@ fn start_spawned_session(
     owner: OwnerId,
     generation: Option<u64>,
     spawned: SpawnedSession,
+    mcp_session: Option<McpSessionGuard>,
 ) -> Result<(), WireError> {
     let SpawnedSession {
         process_job,
@@ -2915,6 +3052,15 @@ fn start_spawned_session(
     if metadata.kind.is_agent() {
         runtime.set_agent_kind(metadata.kind.clone());
     }
+    let mcp_session = if matches!(metadata.kind, SessionKind::Acp | SessionKind::Claude) {
+        runtime.require_mcp();
+        state.mcp.bind_runtime(&metadata.id, &runtime);
+        Some(mcp_session.ok_or_else(|| {
+            internal("MCP session registration was lost before provider startup.")
+        })?)
+    } else {
+        None
+    };
     if let Some(peer_session_id) = peer_session_id {
         runtime.set_peer_session_id(peer_session_id);
     }
@@ -2993,6 +3139,7 @@ fn start_spawned_session(
         coalesce_handle: None,
         stderr_handle: None,
         runtime: Arc::clone(&runtime),
+        mcp_session,
         exited: Arc::clone(&exited),
         preserve_on_exit: Arc::new(AtomicBool::new(false)),
     };
@@ -3005,7 +3152,7 @@ fn start_spawned_session(
             teardown_session(session);
             return Err(internal("Session state is unavailable."));
         };
-        map.insert(id.clone(), RegistryEntry::Live(session));
+        map.insert(id.clone(), RegistryEntry::Live(Box::new(session)));
     }
 
     let (coalesce_handle, reader_dispatch) = match reader_dispatch {
@@ -3133,6 +3280,7 @@ fn reader_loop(
     let mut buf = [0u8; READ_CHUNK];
     if let Err(error) = reader_dispatch.feed(&[], &runtime) {
         runtime.record_output_loss();
+        runtime.fail_mcp_if_pending("The agent closed its output before the MCP broker was ready.");
         eprintln!("session {id} stopped before the first child read: {error}");
         reader_dispatch.finish(&runtime);
         return;
@@ -3156,6 +3304,7 @@ fn reader_loop(
         }
     }
     reader_dispatch.finish(&runtime);
+    runtime.fail_mcp_if_pending("The agent closed its output before the MCP broker was ready.");
 
     // EOF means the child ended. `stop` keeps the session object; `close`
     // and a natural exit remove it. session_finished is only for a removal
@@ -3236,16 +3385,19 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     let preserve = session.preserve_on_exit.load(Ordering::SeqCst);
     if preserve {
         let coalesce = session.coalesce_handle.take();
+        let mcp_session = session.mcp_session.take();
         session.exited.store(true, Ordering::SeqCst);
         drop(map);
+        drop(mcp_session);
         join_coalesce(coalesce, runtime);
         journal_mark_ended(registry, runtime);
         runtime.close_output();
         return false;
     }
-    let Some(RegistryEntry::Live(mut session)) = map.remove(id) else {
+    let Some(RegistryEntry::Live(session)) = map.remove(id) else {
         return false;
     };
+    let mut session = *session;
     drop(map);
     session.reader_handle = None;
     let coalesce = session.coalesce_handle.take();
@@ -3256,10 +3408,14 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
         writer,
         killer,
         runtime: session_runtime,
+        mcp_session,
         exited,
         ..
     } = session;
     exited.store(true, Ordering::SeqCst);
+    // Revoke MCP before killing the child: an in-flight provider request may
+    // race teardown, and a closed session must not authorize new work.
+    drop(mcp_session);
     drop(killer);
     drop(writer);
     drop(master);
@@ -3316,6 +3472,9 @@ fn teardown_session_for_resume(session: PtySession) {
 
 fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
     session.exited.store(true, Ordering::SeqCst);
+    session
+        .runtime
+        .fail_mcp_if_pending("The agent session closed before the MCP broker was ready.");
     let PtySession {
         process_job,
         master,
@@ -3331,8 +3490,13 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
         owner: _,
         metadata: _,
         preserve_on_exit: _,
+        mcp_session,
     } = session;
 
+    // Revocation intentionally precedes child death. The provider may still
+    // have an in-flight request, but the closed session must already be
+    // unauthorized by the time teardown starts.
+    drop(mcp_session);
     // 1) Kill first. The killer is separate so this cannot race with wait().
     killer.kill();
     drop(killer);
@@ -3572,6 +3736,15 @@ fn os_error_description(code: u32) -> &'static str {
         267 => "directory name is invalid",
         _ => "unknown error",
     }
+}
+
+#[cfg(test)]
+pub(crate) fn insert_test_live_agent(
+    registry: &SessionRegistry,
+    id: &str,
+    owner: OwnerId,
+) -> Arc<SessionRuntime> {
+    tests::insert_live_agent(registry, id, owner)
 }
 
 #[cfg(test)]
@@ -5311,11 +5484,11 @@ mod tests {
         );
         registry.inner.lock().expect("registry").insert(
             id.to_string(),
-            RegistryEntry::Transcript(TranscriptSession {
+            RegistryEntry::Transcript(Box::new(TranscriptSession {
                 metadata,
                 owner,
                 runtime,
-            }),
+            })),
         );
     }
 
@@ -5402,15 +5575,16 @@ mod tests {
         }
     }
 
-    fn insert_live_agent(
+    pub(super) fn insert_live_agent(
         registry: &SessionRegistry,
         id: &str,
         owner: OwnerId,
     ) -> Arc<SessionRuntime> {
-        insert_live_agent_with_writer(
+        insert_live_agent_with_kind_and_writer(
             registry,
             id,
             owner,
+            SessionKind::Acp,
             Box::new(FailingWriter) as Box<dyn Write + Send>,
         )
     }
@@ -5421,11 +5595,21 @@ mod tests {
         owner: OwnerId,
         writer: Box<dyn Write + Send>,
     ) -> Arc<SessionRuntime> {
+        insert_live_agent_with_kind_and_writer(registry, id, owner, SessionKind::Acp, writer)
+    }
+
+    fn insert_live_agent_with_kind_and_writer(
+        registry: &SessionRegistry,
+        id: &str,
+        owner: OwnerId,
+        kind: SessionKind,
+        writer: Box<dyn Write + Send>,
+    ) -> Arc<SessionRuntime> {
         let metadata = Session {
             id: id.to_string(),
             workspace_id: None,
             cwd: None,
-            kind: SessionKind::Acp,
+            kind,
             title: "Agent".to_string(),
             state: SessionState::Live { generation: 1 },
             elapsed_ms: Some(0),
@@ -5449,6 +5633,7 @@ mod tests {
             reader_handle: None,
             coalesce_handle: None,
             runtime: Arc::clone(&runtime),
+            mcp_session: None,
             exited: Arc::new(AtomicBool::new(false)),
             preserve_on_exit: Arc::new(AtomicBool::new(false)),
         };
@@ -5456,7 +5641,7 @@ mod tests {
             .inner
             .lock()
             .expect("registry")
-            .insert(id.to_string(), RegistryEntry::Live(session));
+            .insert(id.to_string(), RegistryEntry::Live(Box::new(session)));
         runtime
     }
 
@@ -5478,6 +5663,60 @@ mod tests {
             outcome.live_agent_replay,
         );
         conn
+    }
+
+    #[test]
+    fn pi_first_prompt_does_not_wait_for_mcp() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-pi", "process-pi");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_kind_and_writer(
+            &registry,
+            "pi-no-mcp-wait",
+            owner.clone(),
+            SessionKind::Pi,
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "pi-no-mcp-wait", 31);
+
+        registry
+            .send("pi-no-mcp-wait", "first prompt", &owner, &conn)
+            .expect("Pi prompt should not have an MCP gate");
+        assert_eq!(&*received.lock().expect("received"), b"first prompt");
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mcp_timeout_does_not_write_the_first_prompt() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-mcp-timeout", "process-agent");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_kind_and_writer(
+            &registry,
+            "mcp-no-prompt-after-timeout",
+            owner.clone(),
+            SessionKind::Acp,
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        runtime.require_mcp();
+        let conn = attach_live_agent_for_test(&runtime, "mcp-no-prompt-after-timeout", 32);
+
+        let error = registry
+            .send_with_mcp_timeout(
+                "mcp-no-prompt-after-timeout",
+                "must not be written",
+                &owner,
+                &conn,
+                Duration::from_millis(1),
+            )
+            .expect_err("an unready MCP session must reject its first prompt");
+        assert_eq!(error.code, ErrorCode::Io);
+        assert!(received.lock().expect("received").is_empty());
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -5625,6 +5864,7 @@ mod tests {
             reader_handle: None,
             coalesce_handle: None,
             runtime,
+            mcp_session: None,
             exited: Arc::new(AtomicBool::new(false)),
             preserve_on_exit: Arc::new(AtomicBool::new(false)),
         };
@@ -5632,7 +5872,7 @@ mod tests {
             .inner
             .lock()
             .expect("registry")
-            .insert(id.to_string(), RegistryEntry::Live(session));
+            .insert(id.to_string(), RegistryEntry::Live(Box::new(session)));
     }
 
     #[test]
@@ -6794,14 +7034,14 @@ mod tests {
             reader_handle: None,
             coalesce_handle: None,
             runtime: Arc::clone(&runtime),
+            mcp_session: None,
             exited: Arc::new(AtomicBool::new(false)),
             preserve_on_exit: Arc::new(AtomicBool::new(false)),
         };
-        registry
-            .inner
-            .lock()
-            .expect("registry")
-            .insert(session_id.to_string(), RegistryEntry::Live(session));
+        registry.inner.lock().expect("registry").insert(
+            session_id.to_string(),
+            RegistryEntry::Live(Box::new(session)),
+        );
 
         registry
             .set_model(session_id, &owner, Some("claude-opus-5"), None)

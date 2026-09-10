@@ -25,6 +25,7 @@ use super::{
     SpawnedSession, StderrSource, StdioWaitableChild,
 };
 use crate::claude_view::ClaudeView;
+use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
 use crate::server::ServerState;
@@ -84,10 +85,22 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
+    mcp: Option<McpLaunchConfig>,
 ) -> Result<SpawnedSession, WireError> {
+    let mut args = command.args.clone();
+    if let Some(path) = mcp
+        .as_ref()
+        .and_then(|config| config.claude_config_path.as_ref())
+    {
+        args.push("--mcp-config".to_string());
+        args.push(path.to_string_lossy().into_owned());
+        if !args.iter().any(|arg| arg == "--strict-mcp-config") {
+            args.push("--strict-mcp-config".to_string());
+        }
+    }
     let mut process = Command::new(&command.program);
     process
-        .args(&command.args)
+        .args(&args)
         .current_dir(&command.cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -458,6 +471,36 @@ struct ClaudeReader {
     next_id: Arc<AtomicU64>,
 }
 
+fn observe_mcp_status(value: &Value, runtime: &SessionRuntime) {
+    if value.get("type").and_then(Value::as_str) != Some("system")
+        || value.get("subtype").and_then(Value::as_str) != Some("init")
+    {
+        return;
+    }
+    let Some(server) = value
+        .get("mcp_servers")
+        .and_then(Value::as_array)
+        .and_then(|servers| {
+            servers.iter().find(|server| {
+                server.get("name").and_then(Value::as_str)
+                    == Some(crate::mcp_broker::MCP_SERVER_NAME)
+            })
+        })
+    else {
+        return;
+    };
+    match server.get("status").and_then(Value::as_str) {
+        Some("connected") => {
+            // The provider frame is only a hint. The broker owns readiness
+            // once it has authenticated and served tools/list.
+        }
+        Some("failed") | Some("error") => {
+            runtime.fail_mcp("Claude reported that the MCP broker failed.");
+        }
+        _ => {}
+    }
+}
+
 impl ClaudeReader {
     fn new(
         view: ClaudeView,
@@ -501,6 +544,8 @@ impl ClaudeReader {
                 return;
             }
         };
+        let value = runtime.redact_mcp_value(&value);
+        observe_mcp_status(&value, runtime);
         let event_seq = runtime.journal_agent_envelope(&value);
         if is_can_use_tool(&value) {
             self.dispatch_permission(&value, runtime, event_seq);
@@ -762,7 +807,9 @@ impl ClaudeStderr {
                             };
                             if let Some(runtime) = runtime {
                                 let _ = runtime.publish_agent_event(
-                                    SessionEvent::AgentStderr { data: line },
+                                    SessionEvent::AgentStderr {
+                                        data: runtime.redact_mcp_text(&line),
+                                    },
                                     None,
                                 );
                             }
@@ -789,7 +836,12 @@ impl StderrSource for ClaudeStderr {
             std::mem::take(&mut state.pending)
         };
         for line in pending {
-            let _ = runtime.publish_agent_event(SessionEvent::AgentStderr { data: line }, None);
+            let _ = runtime.publish_agent_event(
+                SessionEvent::AgentStderr {
+                    data: runtime.redact_mcp_text(&line),
+                },
+                None,
+            );
         }
         self.handle
             .take()
@@ -838,6 +890,32 @@ mod tests {
             outcome.live_agent_replay,
         );
         (runtime, conn)
+    }
+
+    #[test]
+    fn mcp_status_is_parsed_as_a_hint_and_failure_is_reported() {
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.require_mcp();
+        let ready = serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "mcp_servers": [{"name": "devboule", "status": "connected"}]
+        });
+        observe_mcp_status(&ready, &runtime);
+        assert!(runtime
+            .wait_for_mcp_ready(std::time::Duration::from_millis(1))
+            .is_err());
+
+        let failed = serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "mcp_servers": [{"name": "devboule", "status": "failed"}]
+        });
+        observe_mcp_status(&failed, &runtime);
+        let error = runtime
+            .wait_for_mcp_ready(std::time::Duration::from_secs(1))
+            .expect_err("provider failure must wake the gate");
+        assert!(error.message.contains("Claude reported"));
     }
 
     #[test]

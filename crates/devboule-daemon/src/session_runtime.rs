@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use devboule_protocol::{
     cursor_replay_ok, Attention, AttentionReason, Cursor, ErrorCode, SessionEvent,
@@ -119,6 +119,10 @@ pub(crate) struct SessionRuntime {
     pub(crate) published_frames: AtomicU64,
     pub(crate) published_bytes: AtomicUsize,
     pub(crate) session_manifest: Mutex<Option<SessionEvent>>,
+    mcp_bearer: Mutex<Option<String>>,
+    mcp_url: Mutex<Option<String>>,
+    mcp_readiness: Mutex<McpReadiness>,
+    mcp_ready_cvar: Condvar,
     pub(crate) agent_kind: Mutex<Option<SessionKind>>,
     claude_catalog_state: Mutex<crate::claude_catalog::ClaudeCatalogState>,
     /// Attention is deliberately runtime-only. It is a user's current view
@@ -139,6 +143,12 @@ pub(crate) struct SessionRuntime {
     /// Provider-side session id (ACP `sessionId`, Claude `system/init`
     /// `session_id`). Stored for resume; not the Devboule session id.
     pub(crate) peer_session_id: Mutex<Option<String>>,
+}
+
+struct McpReadiness {
+    required: bool,
+    ready: bool,
+    failure: Option<String>,
 }
 
 struct AttentionHooks {
@@ -316,6 +326,14 @@ impl SessionRuntime {
             published_frames: AtomicU64::new(0),
             published_bytes: AtomicUsize::new(0),
             session_manifest: Mutex::new(None),
+            mcp_bearer: Mutex::new(None),
+            mcp_url: Mutex::new(None),
+            mcp_readiness: Mutex::new(McpReadiness {
+                required: false,
+                ready: false,
+                failure: None,
+            }),
+            mcp_ready_cvar: Condvar::new(),
             agent_kind: Mutex::new(None),
             claude_catalog_state: Mutex::new(
                 crate::claude_catalog::ClaudeCatalogState::Provisional,
@@ -328,6 +346,168 @@ impl SessionRuntime {
             roster_notify: Mutex::new(None),
             peer_session_id: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn require_mcp(&self) {
+        if let Ok(mut readiness) = self.mcp_readiness.lock() {
+            readiness.required = true;
+            self.mcp_ready_cvar.notify_all();
+        }
+    }
+
+    pub(crate) fn set_mcp_bearer(&self, bearer: String) {
+        if let Ok(mut secret) = self.mcp_bearer.lock() {
+            *secret = Some(bearer);
+        }
+    }
+
+    pub(crate) fn set_mcp_url(&self, url: String) {
+        if let Ok(mut endpoint) = self.mcp_url.lock() {
+            *endpoint = Some(url);
+        }
+    }
+
+    pub(crate) fn redact_mcp_text(&self, text: &str) -> String {
+        let bearer = self
+            .mcp_bearer
+            .lock()
+            .ok()
+            .and_then(|secret| secret.clone());
+        let url = self
+            .mcp_url
+            .lock()
+            .ok()
+            .and_then(|endpoint| endpoint.clone());
+        crate::mcp_broker::redact_broker_text(text, url.as_deref(), bearer.as_deref())
+    }
+
+    pub(crate) fn redact_mcp_value(&self, value: &serde_json::Value) -> serde_json::Value {
+        let bearer = self
+            .mcp_bearer
+            .lock()
+            .ok()
+            .and_then(|secret| secret.clone());
+        let url = self
+            .mcp_url
+            .lock()
+            .ok()
+            .and_then(|endpoint| endpoint.clone());
+        if bearer.is_none() && url.is_none() {
+            return value.clone();
+        }
+        fn redact(
+            value: &serde_json::Value,
+            url: Option<&str>,
+            bearer: Option<&str>,
+        ) -> serde_json::Value {
+            match value {
+                serde_json::Value::String(text) => serde_json::Value::String(
+                    crate::mcp_broker::redact_broker_text(text, url, bearer),
+                ),
+                serde_json::Value::Array(values) => serde_json::Value::Array(
+                    values
+                        .iter()
+                        .map(|value| redact(value, url, bearer))
+                        .collect(),
+                ),
+                serde_json::Value::Object(values) => serde_json::Value::Object(
+                    values
+                        .iter()
+                        .map(|(key, value)| {
+                            (
+                                crate::mcp_broker::redact_broker_text(key, url, bearer),
+                                redact(value, url, bearer),
+                            )
+                        })
+                        .collect(),
+                ),
+                other => other.clone(),
+            }
+        }
+        redact(value, url.as_deref(), bearer.as_deref())
+    }
+
+    pub(crate) fn mark_mcp_ready(&self) {
+        if let Ok(mut readiness) = self.mcp_readiness.lock() {
+            if readiness.required && readiness.failure.is_none() {
+                readiness.ready = true;
+                self.mcp_ready_cvar.notify_all();
+            }
+        }
+    }
+
+    pub(crate) fn fail_mcp(&self, message: impl Into<String>) {
+        if let Ok(mut readiness) = self.mcp_readiness.lock() {
+            // Provider status is useful before readiness, but it is only a
+            // hint. Once the broker has served authenticated tools/list, that
+            // local proof outranks a later provider status flap.
+            if readiness.required && !readiness.ready && readiness.failure.is_none() {
+                readiness.failure = Some(message.into());
+                self.mcp_ready_cvar.notify_all();
+            }
+        }
+    }
+
+    pub(crate) fn fail_mcp_broker(&self, message: impl Into<String>) {
+        if let Ok(mut readiness) = self.mcp_readiness.lock() {
+            if readiness.required && readiness.failure.is_none() {
+                readiness.failure = Some(message.into());
+                self.mcp_ready_cvar.notify_all();
+            }
+        }
+    }
+
+    pub(crate) fn fail_mcp_if_pending(&self, message: impl Into<String>) {
+        if let Ok(mut readiness) = self.mcp_readiness.lock() {
+            if readiness.required && !readiness.ready && readiness.failure.is_none() {
+                readiness.failure = Some(message.into());
+                self.mcp_ready_cvar.notify_all();
+            }
+        }
+    }
+
+    pub(crate) fn wait_for_mcp_ready(&self, timeout: Duration) -> Result<(), WireError> {
+        let mut readiness = self
+            .mcp_readiness
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Internal, "Session state is unavailable."))?;
+        if !readiness.required {
+            return Ok(());
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(message) = readiness.failure.clone() {
+                return Err(WireError::new(ErrorCode::Io, message));
+            }
+            if readiness.ready {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let (next, result) = self
+                .mcp_ready_cvar
+                .wait_timeout(readiness, remaining)
+                .map_err(|_| {
+                    WireError::new(ErrorCode::Internal, "Session state is unavailable.")
+                })?;
+            readiness = next;
+            if result.timed_out() {
+                break;
+            }
+        }
+        let timeout_description = if timeout.as_secs() > 0 {
+            format!("{} seconds", timeout.as_secs())
+        } else {
+            format!("{} milliseconds", timeout.as_millis())
+        };
+        Err(WireError::new(
+            ErrorCode::Io,
+            format!(
+                "The MCP broker did not receive an authenticated tools/list within {timeout_description}; the first prompt was not sent."
+            ),
+        ))
     }
 
     pub(crate) fn from_replay(
@@ -1735,6 +1915,7 @@ impl SessionRuntime {
         }
         notify_observers(&stream);
         drop(stream);
+        self.fail_mcp_if_pending("The agent process exited before the MCP broker was ready.");
         // Child::wait returns before ConPTY EOFs. Record
         // that the process was observed, but do not freeze last_seq: drain
         // frames still need seqs. Ended (exit row) is written at EOF.
