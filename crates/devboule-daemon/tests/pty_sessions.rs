@@ -270,6 +270,9 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::AgentToolCall { .. }
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
+        | SessionEvent::AgentTaskStarted { .. }
+        | SessionEvent::AgentTaskNotification { .. }
+        | SessionEvent::AgentBackgroundTasksChanged { .. }
         | SessionEvent::AgentError { .. }
         | SessionEvent::AgentStderr { .. }
         | SessionEvent::PermissionRequest { .. }
@@ -673,6 +676,9 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentTaskStarted { .. }
+            | SessionEvent::AgentTaskNotification { .. }
+            | SessionEvent::AgentBackgroundTasksChanged { .. }
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
@@ -1014,6 +1020,9 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentTaskStarted { .. }
+            | SessionEvent::AgentTaskNotification { .. }
+            | SessionEvent::AgentBackgroundTasksChanged { .. }
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
@@ -1540,6 +1549,9 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::AgentToolCall { .. }
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
+        | SessionEvent::AgentTaskStarted { .. }
+        | SessionEvent::AgentTaskNotification { .. }
+        | SessionEvent::AgentBackgroundTasksChanged { .. }
         | SessionEvent::AgentError { .. }
         | SessionEvent::AgentStderr { .. }
         | SessionEvent::PermissionRequest { .. }
@@ -1940,6 +1952,9 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::AgentToolCall { .. }
         | SessionEvent::AgentToolUpdate { .. }
         | SessionEvent::AgentFinished { .. }
+        | SessionEvent::AgentTaskStarted { .. }
+        | SessionEvent::AgentTaskNotification { .. }
+        | SessionEvent::AgentBackgroundTasksChanged { .. }
         | SessionEvent::AgentError { .. }
         | SessionEvent::AgentStderr { .. }
         | SessionEvent::PermissionRequest { .. }
@@ -2314,6 +2329,9 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentTaskStarted { .. }
+            | SessionEvent::AgentTaskNotification { .. }
+            | SessionEvent::AgentBackgroundTasksChanged { .. }
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
@@ -2584,6 +2602,9 @@ fn journal_growth_after_13mb_flood() {
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentTaskStarted { .. }
+            | SessionEvent::AgentTaskNotification { .. }
+            | SessionEvent::AgentBackgroundTasksChanged { .. }
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }
@@ -2880,6 +2901,9 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::AgentToolCall { .. }
             | SessionEvent::AgentToolUpdate { .. }
             | SessionEvent::AgentFinished { .. }
+            | SessionEvent::AgentTaskStarted { .. }
+            | SessionEvent::AgentTaskNotification { .. }
+            | SessionEvent::AgentBackgroundTasksChanged { .. }
             | SessionEvent::AgentError { .. }
             | SessionEvent::AgentStderr { .. }
             | SessionEvent::PermissionRequest { .. }

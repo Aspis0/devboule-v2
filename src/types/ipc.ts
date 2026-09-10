@@ -360,7 +360,13 @@ export interface SessionSnapshot {
 export type SessionEvent =
   | { type: "output"; seq: number; data: string }
   /** Text emitted by an ACP agent message chunk. */
-  | { type: "agent_message"; messageId: string | null; text: string }
+  | {
+      type: "agent_message";
+      messageId: string | null;
+      text: string;
+      parentToolUseId?: string;
+      spawnDepth?: number;
+    }
   /** ACP tool call announced by the agent. */
   | {
       type: "agent_tool_call";
@@ -369,6 +375,9 @@ export type SessionEvent =
       status: string;
       kind?: string;
       locations?: ToolLocation[];
+      subagentType?: string;
+      parentToolUseId?: string;
+      spawnDepth?: number;
     }
   /** ACP update for an existing tool call. */
   | {
@@ -378,6 +387,8 @@ export type SessionEvent =
       text: string | null;
       kind?: string;
       locations?: ToolLocation[];
+      parentToolUseId?: string;
+      spawnDepth?: number;
     }
   /**
    * ACP prompt completion. `modelId` and `usage` are what the agent actually
@@ -397,7 +408,36 @@ export type SessionEvent =
   /** Echo of the user prompt, one ACP `user_message_chunk` at a time. */
   | { type: "agent_user_message"; messageId: string | null; text: string }
   /** Agent reasoning, one ACP `agent_thought_chunk` at a time. */
-  | { type: "agent_thought"; messageId: string | null; text: string }
+  | {
+      type: "agent_thought";
+      messageId: string | null;
+      text: string;
+      parentToolUseId?: string;
+      spawnDepth?: number;
+    }
+  /** Claude stream-json subagent birth. */
+  | {
+      type: "agent_task_started";
+      taskId: string;
+      title?: string;
+      subagentType?: string;
+      toolUseId?: string;
+      isBackgrounded?: boolean;
+      spawnDepth?: number;
+    }
+  /** Claude stream-json subagent terminal notification. */
+  | {
+      type: "agent_task_notification";
+      taskId: string;
+      toolUseId?: string;
+      status: "completed" | "failed" | "stopped";
+      summary?: string;
+    }
+  /** Replacement set of Claude background tasks. */
+  | {
+      type: "agent_background_tasks_changed";
+      tasks: Array<{ taskId: string; taskType: string; title: string }>;
+    }
   /** Slash commands the agent advertises for this session. */
   | {
       type: "available_commands";

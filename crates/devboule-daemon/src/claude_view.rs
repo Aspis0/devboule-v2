@@ -6,17 +6,19 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use devboule_protocol::{SessionEvent, SessionModel, ToolLocation, TurnUsage};
+use devboule_protocol::{
+    AgentBackgroundTask, AgentTaskStatus, SessionEvent, SessionModel, ToolLocation, TurnUsage,
+};
 use serde_json::Value;
 
 /// Stateful mapper: stream-json emits `stream_event` deltas and then a
 /// consolidated `assistant` message. Track streamed length per content block
 /// so the consolidated text is forwarded only as the unstreamed remainder.
 pub(crate) struct ClaudeView {
-    streamed: HashMap<u64, usize>,
+    streamed: HashMap<(Option<String>, u64), usize>,
+    current_message_ids: HashMap<Option<String>, String>,
     current_model: Option<String>,
     last_manifest_model: Option<String>,
-    current_message_id: Option<String>,
     peer_session_id: Option<String>,
     cwd: Option<PathBuf>,
 }
@@ -25,9 +27,9 @@ impl ClaudeView {
     pub(crate) fn new(cwd: Option<PathBuf>) -> Self {
         Self {
             streamed: HashMap::new(),
+            current_message_ids: HashMap::new(),
             current_model: None,
             last_manifest_model: None,
-            current_message_id: None,
             peer_session_id: None,
             cwd,
         }
@@ -51,8 +53,19 @@ impl ClaudeView {
     }
 
     fn ingest_system(&mut self, envelope: &Value) -> Vec<SessionEvent> {
-        if envelope.get("subtype").and_then(Value::as_str) != Some("init") {
-            return Vec::new();
+        let subtype = envelope.get("subtype").and_then(Value::as_str);
+        if subtype != Some("init") {
+            return match subtype {
+                Some("task_started") => self.ingest_task_started(envelope),
+                Some("task_notification") => self.ingest_task_notification(envelope),
+                Some("background_tasks_changed") => self.ingest_background_tasks_changed(envelope),
+                Some("task_updated") => {
+                    // Claude sends a partial patch here; lifecycle bookends are
+                    // the only complete task state this view can reconcile.
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
         }
         if let Some(session_id) = envelope
             .get("session_id")
@@ -97,6 +110,8 @@ impl ClaudeView {
         let is_subagent = envelope
             .get("parent_tool_use_id")
             .is_some_and(|value| !value.is_null());
+        let parent_tool_use_id = parent_tool_use_id(envelope);
+        let spawn_depth = spawn_depth(envelope);
         match event.get("type").and_then(Value::as_str) {
             Some("message_start") => {
                 let message = event.get("message");
@@ -106,9 +121,11 @@ impl ClaudeView {
                 let model = message
                     .and_then(|message| message.get("model"))
                     .and_then(Value::as_str);
-                if !is_subagent {
-                    self.note_message(id, model);
-                }
+                self.note_message(
+                    parent_tool_use_id.as_deref(),
+                    id,
+                    if is_subagent { None } else { model },
+                );
                 Vec::new()
             }
             Some("content_block_delta") => {
@@ -123,10 +140,12 @@ impl ClaudeView {
                         if text.is_empty() {
                             return Vec::new();
                         }
-                        self.add_streamed(index, text.len());
+                        self.add_streamed(parent_tool_use_id.as_deref(), index, text.len());
                         vec![SessionEvent::AgentMessage {
-                            message_id: self.current_message_id.clone(),
+                            message_id: self.current_message_id(parent_tool_use_id.as_deref()),
                             text: text.to_string(),
+                            parent_tool_use_id: parent_tool_use_id.clone(),
+                            spawn_depth,
                         }]
                     }
                     Some("thinking_delta") => {
@@ -138,10 +157,12 @@ impl ClaudeView {
                         if text.is_empty() {
                             return Vec::new();
                         }
-                        self.add_streamed(index, text.len());
+                        self.add_streamed(parent_tool_use_id.as_deref(), index, text.len());
                         vec![SessionEvent::AgentThought {
-                            message_id: self.current_message_id.clone(),
+                            message_id: self.current_message_id(parent_tool_use_id.as_deref()),
                             text: text.to_string(),
+                            parent_tool_use_id: parent_tool_use_id.clone(),
+                            spawn_depth,
                         }]
                     }
                     _ => Vec::new(),
@@ -159,6 +180,8 @@ impl ClaudeView {
         let is_subagent = envelope
             .get("parent_tool_use_id")
             .is_some_and(|value| !value.is_null());
+        let parent_tool_use_id = parent_tool_use_id(envelope);
+        let spawn_depth = spawn_depth(envelope);
         let model = if is_subagent {
             None
         } else {
@@ -169,9 +192,11 @@ impl ClaudeView {
                 && self.last_manifest_model.is_some()
                 && self.last_manifest_model.as_deref() != Some(model)
         });
-        if !is_subagent {
-            self.note_message(message.get("id").and_then(Value::as_str), model);
-        }
+        self.note_message(
+            parent_tool_use_id.as_deref(),
+            message.get("id").and_then(Value::as_str),
+            if is_subagent { None } else { model },
+        );
         let mut events = Vec::new();
         if model_changed {
             self.last_manifest_model = self.current_model.clone();
@@ -199,24 +224,37 @@ impl ClaudeView {
             match block.get("type").and_then(Value::as_str) {
                 Some("text") => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
-                    if let Some(text) = self.take_remainder(index, text) {
+                    if let Some(text) =
+                        self.take_remainder(parent_tool_use_id.as_deref(), index, text)
+                    {
                         events.push(SessionEvent::AgentMessage {
-                            message_id: self.current_message_id.clone(),
+                            message_id: self.current_message_id(parent_tool_use_id.as_deref()),
                             text,
+                            parent_tool_use_id: parent_tool_use_id.clone(),
+                            spawn_depth,
                         });
                     }
                 }
                 Some("thinking") => {
                     let text = block.get("thinking").and_then(Value::as_str).unwrap_or("");
-                    if let Some(text) = self.take_remainder(index, text) {
+                    if let Some(text) =
+                        self.take_remainder(parent_tool_use_id.as_deref(), index, text)
+                    {
                         events.push(SessionEvent::AgentThought {
-                            message_id: self.current_message_id.clone(),
+                            message_id: self.current_message_id(parent_tool_use_id.as_deref()),
                             text,
+                            parent_tool_use_id: parent_tool_use_id.clone(),
+                            spawn_depth,
                         });
                     }
                 }
                 Some("tool_use") => {
-                    if let Some(event) = tool_call_from_block(block, self.cwd.as_deref()) {
+                    if let Some(event) = tool_call_from_block(
+                        block,
+                        self.cwd.as_deref(),
+                        parent_tool_use_id.clone(),
+                        spawn_depth,
+                    ) {
                         events.push(event);
                     }
                 }
@@ -227,6 +265,8 @@ impl ClaudeView {
     }
 
     fn ingest_user(&mut self, envelope: &Value) -> Vec<SessionEvent> {
+        let parent_tool_use_id = parent_tool_use_id(envelope);
+        let spawn_depth = spawn_depth(envelope);
         let Some(content) = envelope
             .get("message")
             .and_then(|message| message.get("content"))
@@ -234,10 +274,17 @@ impl ClaudeView {
         else {
             return Vec::new();
         };
-        content.iter().filter_map(tool_update_from_result).collect()
+        content
+            .iter()
+            .filter_map(|block| {
+                tool_update_from_result(block, parent_tool_use_id.clone(), spawn_depth)
+            })
+            .collect()
     }
 
     fn ingest_result(&mut self, envelope: &Value) -> Vec<SessionEvent> {
+        // Debt: stream-json has no ACP-like inactivity watchdog, so a dead
+        // CLI can leave a turn without ever producing an AgentFinished event.
         let stop_reason = envelope
             .get("stop_reason")
             .and_then(Value::as_str)
@@ -256,25 +303,113 @@ impl ClaudeView {
         }]
     }
 
-    fn note_message(&mut self, id: Option<&str>, model: Option<&str>) {
+    fn ingest_task_started(&self, envelope: &Value) -> Vec<SessionEvent> {
+        let Some(task_id) = task_id(envelope) else {
+            return Vec::new();
+        };
+        vec![SessionEvent::AgentTaskStarted {
+            task_id,
+            title: envelope
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            subagent_type: envelope
+                .get("subagent_type")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            tool_use_id: tool_use_id(envelope),
+            is_backgrounded: envelope.get("is_backgrounded").and_then(Value::as_bool),
+            spawn_depth: spawn_depth(envelope),
+        }]
+    }
+
+    fn ingest_task_notification(&mut self, envelope: &Value) -> Vec<SessionEvent> {
+        let Some(task_id) = task_id(envelope) else {
+            return Vec::new();
+        };
+        let Some(status) = envelope
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(parse_task_status)
+        else {
+            return Vec::new();
+        };
+        let tool_use_id = tool_use_id(envelope);
+        if let Some(tool_use_id) = tool_use_id.as_deref() {
+            self.streamed
+                .retain(|(parent, _), _| parent.as_deref() != Some(tool_use_id));
+            self.current_message_ids
+                .remove(&Some(tool_use_id.to_string()));
+        }
+        vec![SessionEvent::AgentTaskNotification {
+            task_id,
+            tool_use_id,
+            status,
+            summary: envelope
+                .get("summary")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }]
+    }
+
+    fn ingest_background_tasks_changed(&self, envelope: &Value) -> Vec<SessionEvent> {
+        let Some(tasks) = envelope.get("tasks").and_then(Value::as_array) else {
+            return Vec::new();
+        };
+        let tasks = tasks
+            .iter()
+            .filter_map(|task| {
+                Some(AgentBackgroundTask {
+                    task_id: task.get("task_id").and_then(Value::as_str)?.to_string(),
+                    task_type: task.get("task_type").and_then(Value::as_str)?.to_string(),
+                    title: task.get("description").and_then(Value::as_str)?.to_string(),
+                })
+            })
+            .collect();
+        vec![SessionEvent::AgentBackgroundTasksChanged { tasks }]
+    }
+
+    fn note_message(
+        &mut self,
+        parent_tool_use_id: Option<&str>,
+        id: Option<&str>,
+        model: Option<&str>,
+    ) {
         if let Some(model) = model.filter(|model| !model.is_empty()) {
             self.current_model = Some(model.to_string());
         }
         let Some(id) = id.filter(|id| !id.is_empty()) else {
             return;
         };
-        if self.current_message_id.as_deref() != Some(id) {
-            self.streamed.clear();
-            self.current_message_id = Some(id.to_string());
+        let stream = parent_tool_use_id.map(str::to_string);
+        if self.current_message_ids.get(&stream).map(String::as_str) != Some(id) {
+            self.streamed
+                .retain(|(key, _), _| key.as_deref() != parent_tool_use_id);
+            self.current_message_ids.insert(stream, id.to_string());
         }
     }
 
-    fn add_streamed(&mut self, index: u64, added: usize) {
-        *self.streamed.entry(index).or_insert(0) += added;
+    fn current_message_id(&self, parent_tool_use_id: Option<&str>) -> Option<String> {
+        self.current_message_ids
+            .get(&parent_tool_use_id.map(str::to_string))
+            .cloned()
     }
 
-    fn take_remainder(&mut self, index: u64, full: &str) -> Option<String> {
-        let streamed = self.streamed.get(&index).copied().unwrap_or(0);
+    fn add_streamed(&mut self, parent_tool_use_id: Option<&str>, index: u64, added: usize) {
+        *self
+            .streamed
+            .entry((parent_tool_use_id.map(str::to_string), index))
+            .or_insert(0) += added;
+    }
+
+    fn take_remainder(
+        &mut self,
+        parent_tool_use_id: Option<&str>,
+        index: u64,
+        full: &str,
+    ) -> Option<String> {
+        let key = (parent_tool_use_id.map(str::to_string), index);
+        let streamed = self.streamed.get(&key).copied().unwrap_or(0);
         let emit = if streamed == 0 {
             full.to_string()
         } else if full.len() >= streamed && full.is_char_boundary(streamed) {
@@ -282,7 +417,7 @@ impl ClaudeView {
         } else {
             full.to_string()
         };
-        self.streamed.insert(index, full.len().max(streamed));
+        self.streamed.insert(key, full.len().max(streamed));
         if emit.is_empty() {
             None
         } else {
@@ -298,7 +433,7 @@ fn tool_kind(name: &str) -> &'static str {
         "Bash" | "PowerShell" => "execute",
         "Glob" | "Grep" => "search",
         "WebFetch" | "WebSearch" => "fetch",
-        "Task" => "think",
+        "Agent" | "Task" => "think",
         _ => "other",
     }
 }
@@ -353,7 +488,12 @@ fn tool_locations(name: &str, input: &Value, cwd: Option<&Path>) -> Option<Vec<T
     }])
 }
 
-fn tool_call_from_block(block: &Value, cwd: Option<&Path>) -> Option<SessionEvent> {
+fn tool_call_from_block(
+    block: &Value,
+    cwd: Option<&Path>,
+    parent_tool_use_id: Option<String>,
+    spawn_depth: Option<u32>,
+) -> Option<SessionEvent> {
     let tool_call_id = block.get("id").and_then(Value::as_str)?.to_string();
     let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
     let input = block.get("input").unwrap_or(&Value::Null);
@@ -363,6 +503,14 @@ fn tool_call_from_block(block: &Value, cwd: Option<&Path>) -> Option<SessionEven
         status: "pending".to_string(),
         kind: Some(tool_kind(name).to_string()),
         locations: tool_locations(name, input, cwd),
+        subagent_type: (name == "Agent")
+            .then(|| input.get("subagent_type"))
+            .flatten()
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+        parent_tool_use_id,
+        spawn_depth,
     })
 }
 
@@ -380,7 +528,11 @@ fn tool_result_text(content: &Value) -> String {
     String::new()
 }
 
-fn tool_update_from_result(block: &Value) -> Option<SessionEvent> {
+fn tool_update_from_result(
+    block: &Value,
+    parent_tool_use_id: Option<String>,
+    spawn_depth: Option<u32>,
+) -> Option<SessionEvent> {
     if block.get("type").and_then(Value::as_str) != Some("tool_result") {
         return None;
     }
@@ -403,7 +555,49 @@ fn tool_update_from_result(block: &Value) -> Option<SessionEvent> {
         text,
         kind: None,
         locations: None,
+        parent_tool_use_id,
+        spawn_depth,
     })
+}
+
+fn parent_tool_use_id(envelope: &Value) -> Option<String> {
+    envelope
+        .get("parent_tool_use_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn task_id(envelope: &Value) -> Option<String> {
+    envelope
+        .get("task_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn tool_use_id(envelope: &Value) -> Option<String> {
+    envelope
+        .get("tool_use_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn parse_task_status(status: &str) -> Option<AgentTaskStatus> {
+    match status {
+        "completed" => Some(AgentTaskStatus::Completed),
+        "failed" => Some(AgentTaskStatus::Failed),
+        "stopped" => Some(AgentTaskStatus::Stopped),
+        _ => None,
+    }
+}
+
+fn spawn_depth(envelope: &Value) -> Option<u32> {
+    envelope
+        .get("spawn_depth")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
 }
 
 fn usage_from_claude(usage: &Value) -> Option<TurnUsage> {
@@ -506,7 +700,7 @@ mod tests {
             "subtype": "init",
             "cwd": r"C:\Users\gualt\AppData\Local\Temp\devboule-claude-perm2-allow-host-8r8qc09c",
             "session_id": "cbe439d8-8e95-42c3-b6c7-40c7e5d3b3cd",
-            "tools": ["Task", "Bash", "Read", "Edit", "Write"],
+            "tools": ["Agent", "Bash", "Read", "Edit", "Write"],
             "model": "claude-opus-5[1m]",
             "permissionMode": "default",
             "claude_code_version": "2.1.260"
@@ -628,6 +822,174 @@ mod tests {
             vec![SessionEvent::AgentMessage {
                 message_id: None,
                 text: "1".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn agent_tool_use_carries_subagent_type_and_parentage() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "model": "claude-opus-5",
+                "id": "msg_agent",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_agent",
+                    "name": "Agent",
+                    "input": {
+                        "description": "Find the relevant files",
+                        "subagent_type": "explorer",
+                        "run_in_background": true
+                    }
+                }]
+            },
+            "parent_tool_use_id": null,
+            "spawn_depth": 0
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall {
+                tool_call_id,
+                title,
+                kind,
+                subagent_type,
+                parent_tool_use_id,
+                spawn_depth,
+                ..
+            }] => {
+                assert_eq!(tool_call_id, "toolu_agent");
+                assert_eq!(title, "Agent Find the relevant files");
+                assert_eq!(kind.as_deref(), Some("think"));
+                assert_eq!(subagent_type.as_deref(), Some("explorer"));
+                assert!(parent_tool_use_id.is_none());
+                assert_eq!(*spawn_depth, Some(0));
+            }
+            other => panic!("expected Agent tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn task_lifecycle_uses_the_measured_claude_envelopes() {
+        let mut mapper = view();
+        let _ = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg_agent",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_agent",
+                    "name": "Agent",
+                    "input": {
+                        "description": "Find the relevant files",
+                        "subagent_type": "explorer",
+                        "run_in_background": false
+                    }
+                }]
+            }
+        }));
+
+        let started = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "task_started",
+            "task_id": "task-1",
+            "tool_use_id": "toolu_agent",
+            "description": "Find the relevant files",
+            "subagent_type": "explorer",
+            "is_backgrounded": false,
+            "spawn_depth": 1,
+            "owned_by_subagent": false,
+            "task_type": "local_agent",
+            "uuid": "uuid-task-1",
+            "session_id": "session-child-1"
+        }));
+        assert_eq!(
+            started,
+            vec![SessionEvent::AgentTaskStarted {
+                task_id: "task-1".to_string(),
+                title: Some("Find the relevant files".to_string()),
+                subagent_type: Some("explorer".to_string()),
+                tool_use_id: Some("toolu_agent".to_string()),
+                is_backgrounded: Some(false),
+                spawn_depth: Some(1),
+            }]
+        );
+
+        let updated = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "task_updated",
+            "task_id": "task-1",
+            "patch": {"description": "Reading candidate files"}
+        }));
+        assert!(updated.is_empty());
+
+        let notified = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task-1",
+            "tool_use_id": "toolu_agent",
+            "status": "failed",
+            "output_file": "C:\\tmp\\task-1.txt",
+            "summary": "The search failed",
+            "usage": {"total_tokens": 10, "tool_uses": 2, "duration_ms": 30}
+        }));
+        assert!(matches!(
+            notified.as_slice(),
+            [SessionEvent::AgentTaskNotification {
+                task_id,
+                tool_use_id,
+                status: AgentTaskStatus::Failed,
+                summary: Some(summary),
+            }]
+                if task_id == "task-1"
+                    && tool_use_id.as_deref() == Some("toolu_agent")
+                    && summary == "The search failed"
+        ));
+
+        let stopped = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task-2",
+            "status": "stopped",
+            "output_file": "C:\\tmp\\task-2.txt",
+            "summary": "The task was stopped"
+        }));
+        assert!(matches!(
+            stopped.as_slice(),
+            [SessionEvent::AgentTaskNotification {
+                status: AgentTaskStatus::Stopped,
+                summary: Some(summary),
+                ..
+            }] if summary == "The task was stopped"
+        ));
+    }
+
+    #[test]
+    fn background_tasks_changed_forwards_its_replacement_set() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "background_tasks_changed",
+            "tasks": [
+                {
+                    "task_id": "task-1",
+                    "task_type": "local_agent",
+                    "description": "Find the relevant files"
+                }
+            ]
+        }));
+        assert_eq!(
+            events,
+            vec![SessionEvent::AgentBackgroundTasksChanged {
+                tasks: vec![AgentBackgroundTask {
+                    task_id: "task-1".to_string(),
+                    task_type: "local_agent".to_string(),
+                    title: "Find the relevant files".to_string(),
+                }]
             }]
         );
     }
@@ -648,6 +1010,8 @@ mod tests {
             vec![SessionEvent::AgentThought {
                 message_id: None,
                 text: "Let me think.".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }]
         );
     }
@@ -682,8 +1046,201 @@ mod tests {
             vec![SessionEvent::AgentMessage {
                 message_id: Some("msg_011CeiQ5WgY6ewJ4proDpmny".to_string()),
                 text: "\n10\n11\n12\n13\n14\n15".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }]
         );
+    }
+
+    #[test]
+    fn interleaved_parent_and_child_streams_keep_text_and_remainders_separate() {
+        let mut mapper = view();
+        let _ = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "message_start", "message": {"id": "msg_parent", "model": "claude-opus-5"}},
+            "parent_tool_use_id": null
+        }));
+        let parent_first = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "parent-1"}},
+            "parent_tool_use_id": null
+        }));
+        let _ = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "message_start", "message": {"id": "msg_child", "model": "claude-opus-5"}},
+            "parent_tool_use_id": "toolu_agent",
+            "spawn_depth": 1
+        }));
+        let child = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "child"}},
+            "parent_tool_use_id": "toolu_agent",
+            "spawn_depth": 1
+        }));
+        let parent_second = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "parent-2"}},
+            "parent_tool_use_id": null
+        }));
+
+        assert!(matches!(
+            parent_first.as_slice(),
+            [SessionEvent::AgentMessage { message_id: Some(id), text, parent_tool_use_id: None, .. }]
+                if id == "msg_parent" && text == "parent-1"
+        ));
+        assert!(matches!(
+            child.as_slice(),
+            [SessionEvent::AgentMessage { message_id: Some(id), text, parent_tool_use_id: Some(parent), .. }]
+                if id == "msg_child" && text == "child" && parent == "toolu_agent"
+        ));
+        assert!(matches!(
+            parent_second.as_slice(),
+            [SessionEvent::AgentMessage { message_id: Some(id), text, parent_tool_use_id: None, .. }]
+                if id == "msg_parent" && text == "parent-2"
+        ));
+
+        let parent_remainder = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {"id": "msg_parent", "content": [{"type": "text", "text": "parent-1parent-2"}]},
+            "parent_tool_use_id": null
+        }));
+        let child_remainder = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {"id": "msg_child", "content": [{"type": "text", "text": "child"}]},
+            "parent_tool_use_id": "toolu_agent",
+            "spawn_depth": 1
+        }));
+        assert!(parent_remainder.is_empty());
+        assert!(child_remainder.is_empty());
+    }
+
+    #[test]
+    fn sibling_streams_with_same_block_index_keep_text_separate() {
+        let mut mapper = view();
+        for (message_id, parent_tool_use_id) in
+            [("msg_sibling_a", "toolu_a"), ("msg_sibling_b", "toolu_b")]
+        {
+            let _ = mapper.ingest(&json!({
+                "type": "stream_event",
+                "event": {"type": "message_start", "message": {"id": message_id}},
+                "parent_tool_use_id": parent_tool_use_id,
+                "spawn_depth": 1
+            }));
+        }
+        let first = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "sibling-a"}},
+            "parent_tool_use_id": "toolu_a",
+            "spawn_depth": 1
+        }));
+        let second = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "sibling-b"}},
+            "parent_tool_use_id": "toolu_b",
+            "spawn_depth": 1
+        }));
+
+        assert!(matches!(
+            first.as_slice(),
+            [SessionEvent::AgentMessage {
+                text,
+                parent_tool_use_id: Some(parent),
+                ..
+            }] if text == "sibling-a" && parent == "toolu_a"
+        ));
+        assert!(matches!(
+            second.as_slice(),
+            [SessionEvent::AgentMessage {
+                text,
+                parent_tool_use_id: Some(parent),
+                ..
+            }] if text == "sibling-b" && parent == "toolu_b"
+        ));
+
+        for (message_id, parent_tool_use_id, text) in [
+            ("msg_sibling_a", "toolu_a", "sibling-a"),
+            ("msg_sibling_b", "toolu_b", "sibling-b"),
+        ] {
+            let remainder = mapper.ingest(&json!({
+                "type": "assistant",
+                "message": {"id": message_id, "content": [{"type": "text", "text": text}]},
+                "parent_tool_use_id": parent_tool_use_id,
+                "spawn_depth": 1
+            }));
+            assert!(
+                remainder.is_empty(),
+                "unexpected remainder for {parent_tool_use_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_and_null_parent_tool_use_ids_share_the_root_stream() {
+        let mut mapper = view();
+        let _ = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "message_start", "message": {"id": "msg_root"}},
+            "parent_tool_use_id": null
+        }));
+        let _ = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "root-"}},
+            "parent_tool_use_id": null
+        }));
+        let empty_parent = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "text"}},
+            "parent_tool_use_id": ""
+        }));
+
+        assert!(matches!(
+            empty_parent.as_slice(),
+            [SessionEvent::AgentMessage {
+                message_id: Some(message_id),
+                parent_tool_use_id: None,
+                text,
+                ..
+            }] if message_id == "msg_root" && text == "text"
+        ));
+        let remainder = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {"id": "msg_root", "content": [{"type": "text", "text": "root-text"}]},
+            "parent_tool_use_id": null
+        }));
+        assert!(remainder.is_empty());
+    }
+
+    #[test]
+    fn terminal_task_notification_cleans_child_stream_state() {
+        let mut mapper = view();
+        let _ = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "message_start", "message": {"id": "msg_child"}},
+            "parent_tool_use_id": "toolu_child"
+        }));
+        let _ = mapper.ingest(&json!({
+            "type": "stream_event",
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "child"}},
+            "parent_tool_use_id": "toolu_child"
+        }));
+        assert_eq!(mapper.current_message_ids.len(), 1);
+        assert_eq!(mapper.streamed.len(), 1);
+
+        let events = mapper.ingest(&json!({
+            "type": "system",
+            "subtype": "task_notification",
+            "task_id": "task_child",
+            "tool_use_id": "toolu_child",
+            "status": "completed",
+            "summary": "done"
+        }));
+
+        assert!(matches!(
+            events.as_slice(),
+            [SessionEvent::AgentTaskNotification { .. }]
+        ));
+        assert!(mapper.current_message_ids.is_empty());
+        assert!(mapper.streamed.is_empty());
     }
 
     #[test]
@@ -714,6 +1271,7 @@ mod tests {
                 status,
                 kind,
                 locations,
+                ..
             }] => {
                 assert_eq!(tool_call_id, "toolu_01SPEx5ftKiRM6gUm1VBwYKz");
                 assert_eq!(title, "Bash Delete a nonexistent temp file");
@@ -786,6 +1344,8 @@ mod tests {
                 text: Some("devboule-perm-probe".to_string()),
                 kind: None,
                 locations: None,
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }]
         );
         let err = mapper.ingest(&json!({
@@ -808,6 +1368,8 @@ mod tests {
                 text: Some("The user declined this command in the probe.".to_string()),
                 kind: None,
                 locations: None,
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }]
         );
     }
@@ -835,6 +1397,7 @@ mod tests {
                 stop_reason,
                 model_id,
                 usage,
+                ..
             }] => {
                 assert_eq!(stop_reason, "end_turn");
                 assert_eq!(model_id.as_deref(), Some("claude-opus-5[1m]"));
@@ -884,6 +1447,7 @@ mod tests {
             ("WebFetch", "fetch"),
             ("WebSearch", "fetch"),
             ("Task", "think"),
+            ("Agent", "think"),
             ("Skill", "other"),
         ];
         for (name, expected) in cases {

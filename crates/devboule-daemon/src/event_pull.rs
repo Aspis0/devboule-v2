@@ -363,6 +363,9 @@ impl ConnHandle {
                 | SessionEvent::AgentToolCall { .. }
                 | SessionEvent::AgentToolUpdate { .. }
                 | SessionEvent::AgentFinished { .. }
+                | SessionEvent::AgentTaskStarted { .. }
+                | SessionEvent::AgentTaskNotification { .. }
+                | SessionEvent::AgentBackgroundTasksChanged { .. }
                 | SessionEvent::AgentError { .. }
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
@@ -1087,6 +1090,8 @@ mod tests {
             SessionEvent::AgentMessage {
                 message_id: Some("m1".to_string()),
                 text: "first".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             },
             None,
             Some(1),
@@ -1135,6 +1140,8 @@ mod tests {
             SessionEvent::AgentMessage {
                 message_id: Some("m2".to_string()),
                 text: "live".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             },
             None,
         );
@@ -1145,14 +1152,20 @@ mod tests {
                 SessionEvent::AgentMessage {
                     message_id: Some("m1".to_string()),
                     text: "first".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
                 SessionEvent::AgentThought {
                     message_id: None,
                     text: "second".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
                 SessionEvent::AgentMessage {
                     message_id: Some("m2".to_string()),
                     text: "live".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
             ]
         );
@@ -1235,6 +1248,8 @@ mod tests {
                 SessionEvent::AgentMessage {
                     message_id: Some(message_id.to_string()),
                     text: text.to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
                 None,
                 Some(seq),
@@ -1504,6 +1519,8 @@ mod tests {
                 SessionEvent::AgentMessage {
                     message_id: Some(format!("live-{seq}")),
                     text: format!("live-{seq}"),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
                 None,
                 Some(journal_seq),
@@ -1985,6 +2002,8 @@ mod tests {
             let event = SessionEvent::AgentMessage {
                 message_id: Some("delayed".to_string()),
                 text: "must survive".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             };
             let bytes = serde_json::to_vec(&event).unwrap().len();
             stream.agent_backlog.push_back(PendingItem::Agent {
@@ -2123,6 +2142,8 @@ mod tests {
                 SessionEvent::AgentThought {
                     message_id: None,
                     text: "The".to_string(),
+                    parent_tool_use_id: None,
+                    spawn_depth: None,
                 },
                 SessionEvent::Recovered { integrity },
             ],
@@ -2270,6 +2291,11 @@ mod tests {
                 SessionEvent::AgentToolCall { .. } => "agent_tool_call",
                 SessionEvent::AgentToolUpdate { .. } => "agent_tool_update",
                 SessionEvent::AgentFinished { .. } => "agent_finished",
+                SessionEvent::AgentTaskStarted { .. } => "agent_task_started",
+                SessionEvent::AgentTaskNotification { .. } => "agent_task_notification",
+                SessionEvent::AgentBackgroundTasksChanged { .. } => {
+                    "agent_background_tasks_changed"
+                }
                 SessionEvent::AgentError { .. } => "agent_error",
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
                 SessionEvent::PermissionRequest { .. } => "permission_request",
@@ -2464,6 +2490,11 @@ mod tests {
                 SessionEvent::AgentToolCall { .. } => "agent_tool_call",
                 SessionEvent::AgentToolUpdate { .. } => "agent_tool_update",
                 SessionEvent::AgentFinished { .. } => "agent_finished",
+                SessionEvent::AgentTaskStarted { .. } => "agent_task_started",
+                SessionEvent::AgentTaskNotification { .. } => "agent_task_notification",
+                SessionEvent::AgentBackgroundTasksChanged { .. } => {
+                    "agent_background_tasks_changed"
+                }
                 SessionEvent::AgentError { .. } => "agent_error",
                 SessionEvent::AgentStderr { .. } => "agent_stderr",
                 SessionEvent::PermissionRequest { .. } => "permission_request",

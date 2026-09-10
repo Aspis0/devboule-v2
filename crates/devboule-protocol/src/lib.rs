@@ -100,11 +100,12 @@ pub use messages::{
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
 pub use session::{
-    cursor_replay_ok, AgentActivityState, Attention, AttentionReason, AvailableCommandView, Cursor,
-    CursorShape, PermissionEnvVar, PermissionOption, PermissionOutcome, Persistence,
-    PersistenceKind, ResumeResult, ScreenCursor, Session, SessionEvent, SessionKind,
-    SessionModeStateView, SessionModeView, SessionModel, SessionModelEffort, SessionState,
-    SessionStateSnapshot, SubscriptionId, ToolLocation, TranscriptIntegrity, TurnUsage,
+    cursor_replay_ok, AgentActivityState, AgentBackgroundTask, AgentTaskStatus, Attention,
+    AttentionReason, AvailableCommandView, Cursor, CursorShape, PermissionEnvVar, PermissionOption,
+    PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor, Session,
+    SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
+    SessionModelEffort, SessionState, SessionStateSnapshot, SubscriptionId, ToolLocation,
+    TranscriptIntegrity, TurnUsage,
 };
 
 /// Current protocol dialect spoken by this crate.
@@ -116,6 +117,11 @@ pub use session::{
 /// The daemon always serializes the current struct regardless of the agreed
 /// version, so negotiating down does not produce an old-shaped payload;
 /// refusing the handshake is the only protection.
+/// Deliberately unchanged for the three additive Claude task event tags
+/// (`agent_task_started`, `agent_task_notification`, and
+/// `agent_background_tasks_changed`): the daemon and app are shipped together,
+/// and these output-only tags do not change existing request shapes. Revisit
+/// this if peers become independently versioned.
 pub const PROTOCOL_VERSION: u32 = 4;
 /// Oldest dialect this crate still accepts. Equal to [`PROTOCOL_VERSION`]
 /// after a required-field change: agreeing on an older version would still

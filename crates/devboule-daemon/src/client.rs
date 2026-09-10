@@ -1392,6 +1392,8 @@ mod tests {
                         event: SessionEvent::AgentMessage {
                             message_id: None,
                             text: "a-1".to_string(),
+                            parent_tool_use_id: None,
+                            spawn_depth: None,
                         },
                     },
                 })
@@ -1417,6 +1419,8 @@ mod tests {
                         event: SessionEvent::AgentMessage {
                             message_id: None,
                             text: "a-2".to_string(),
+                            parent_tool_use_id: None,
+                            spawn_depth: None,
                         },
                     },
                 })
@@ -1436,6 +1440,8 @@ mod tests {
                         event: SessionEvent::AgentMessage {
                             message_id: None,
                             text: "b-1".to_string(),
+                            parent_tool_use_id: None,
+                            spawn_depth: None,
                         },
                     },
                 })
@@ -1575,6 +1581,8 @@ mod tests {
                         event: SessionEvent::AgentMessage {
                             message_id: None,
                             text: "resurrected".to_string(),
+                            parent_tool_use_id: None,
+                            spawn_depth: None,
                         },
                     },
                 })
