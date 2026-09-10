@@ -243,9 +243,20 @@ export async function saveDesignSkillSelection(selection: DesignSkillSelection):
 export async function loadDesignProviderId(
   knownProviderIds: readonly string[],
 ): Promise<string | null> {
+  const storedProviderId = await loadStoredDesignProviderId();
+  return storedProviderId !== null && knownProviderIds.includes(storedProviderId)
+    ? storedProviderId
+    : null;
+}
+
+/**
+ * Reads the provider preference without applying the current provider catalog. The Design
+ * surface uses this only to explain why a remembered provider cannot currently be selected.
+ */
+export async function loadStoredDesignProviderId(): Promise<string | null> {
   const stored = await readStoredDesignSettings();
   if (stored === null || stored === undefined || stored.providerId === null) return null;
-  return knownProviderIds.includes(stored.providerId) ? stored.providerId : null;
+  return stored.providerId;
 }
 
 export async function saveDesignProviderId(providerId: string | null): Promise<boolean> {

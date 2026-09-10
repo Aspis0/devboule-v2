@@ -14,6 +14,7 @@ const skillSettingsMocks = vi.hoisted(() => ({
   load: vi.fn(),
   save: vi.fn(),
   loadProvider: vi.fn(),
+  loadStoredProvider: vi.fn(),
   saveProvider: vi.fn(),
   loadWorkspace: vi.fn(),
   loadStoredWorkspace: vi.fn(),
@@ -21,6 +22,7 @@ const skillSettingsMocks = vi.hoisted(() => ({
 }));
 
 const providerMocks = vi.hoisted(() => ({
+  daemonStatus: vi.fn(),
   list: vi.fn(),
   projectsList: vi.fn(),
   workspacesList: vi.fn(),
@@ -47,6 +49,7 @@ vi.mock("./designSettings", async () => {
     loadDesignSkillSelection: skillSettingsMocks.load,
     saveDesignSkillSelection: skillSettingsMocks.save,
     loadDesignProviderId: skillSettingsMocks.loadProvider,
+    loadStoredDesignProviderId: skillSettingsMocks.loadStoredProvider,
     saveDesignProviderId: skillSettingsMocks.saveProvider,
     loadDesignWorkspaceId: skillSettingsMocks.loadWorkspace,
     loadStoredDesignWorkspaceId: skillSettingsMocks.loadStoredWorkspace,
@@ -77,6 +80,7 @@ vi.mock("./designHistoryOpen", () => ({
 }));
 
 vi.mock("../../lib/tauri", () => ({
+  daemonStatus: providerMocks.daemonStatus,
   providersList: providerMocks.list,
   projectsList: providerMocks.projectsList,
   workspacesList: providerMocks.workspacesList,
@@ -96,7 +100,7 @@ import {
   zoomViewport,
 } from "./designViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
-import type { DesignGenerationResult } from "./designHost";
+import type { DesignGenerationResult, PendingPermission } from "./designHost";
 import { AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
 import {
   DESIGN_DOCTRINE_BEGIN,
@@ -112,7 +116,9 @@ import type { NodeRect } from "../../types/geometry";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type {
   Project,
+  PermissionRequest,
   ProviderInfo,
+  DaemonStatus,
   SessionManifest,
   SessionModel,
   Session,
@@ -392,6 +398,7 @@ beforeEach(() => {
   skillSettingsMocks.load.mockReset();
   skillSettingsMocks.save.mockReset();
   skillSettingsMocks.loadProvider.mockReset();
+  skillSettingsMocks.loadStoredProvider.mockReset();
   skillSettingsMocks.saveProvider.mockReset();
   skillSettingsMocks.loadWorkspace.mockReset();
   skillSettingsMocks.loadStoredWorkspace.mockReset();
@@ -407,12 +414,22 @@ beforeEach(() => {
   skillSettingsMocks.load.mockResolvedValue({ version: 1, mode: "all", enabledSlugs: [] });
   skillSettingsMocks.save.mockResolvedValue(true);
   skillSettingsMocks.loadProvider.mockResolvedValue(null);
+  skillSettingsMocks.loadStoredProvider.mockResolvedValue(null);
   skillSettingsMocks.saveProvider.mockResolvedValue(true);
   skillSettingsMocks.loadWorkspace.mockResolvedValue(null);
   skillSettingsMocks.loadStoredWorkspace.mockResolvedValue(null);
   skillSettingsMocks.saveWorkspace.mockResolvedValue(true);
   providerMocks.list.mockReset();
   providerMocks.list.mockResolvedValue({ providers: [], unreadableDirs: 0 });
+  providerMocks.daemonStatus.mockResolvedValue({
+    state: "connected",
+    pid: 42,
+    instanceId: "daemon-test",
+    protocolVersion: 1,
+    clients: 1,
+    capabilities: [],
+    message: null,
+  });
   providerMocks.projectsList.mockReset();
   providerMocks.workspacesList.mockReset();
   providerMocks.projectsList.mockResolvedValue([PROJECT]);
@@ -424,6 +441,235 @@ afterEach(() => {
 });
 
 describe("DesignSurface host capabilities", () => {
+  it("renders Design permissions and sends Allow once and Deny to the host", async () => {
+    providerMocks.daemonStatus.mockResolvedValue({
+      state: "connected",
+      pid: 42,
+      instanceId: "daemon-test",
+      protocolVersion: 1,
+      clients: 1,
+      capabilities: ["typed_permissions"],
+      message: null,
+    });
+    const listeners = new Set<() => void>();
+    let pending: PendingPermission | null = null;
+    let permissionNotice: string | null = null;
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const respondPermission = vi.fn(async (outcome: "allow_once" | "deny") => {
+      pending = null;
+      for (const listener of listeners) listener();
+      void outcome;
+    });
+    const host = createHost({
+      generate,
+      getPendingPermission: () => pending,
+      getPermissionNotice: () => permissionNotice,
+      respondPermission,
+      subscribeAgentSession: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const { container, root } = await renderDesign(host);
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    const request = (toolCallId: string): PermissionRequest => ({
+      type: "permission_request",
+      toolCallId,
+      title: "Write a file",
+      description: "The agent wants to update the generated card.",
+      command: "apply_patch",
+      options: [
+        { optionId: "allow", name: "Allow once", kind: "allow_once" },
+        { optionId: "deny", name: "Deny", kind: "reject_once" },
+      ],
+    });
+    pending = { sessionId: "session-design", subscriptionId: 41, request: request("design-1") };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+
+    await vi.waitFor(() => expect(container.querySelector(".permission-card")).not.toBeNull());
+    expect(container.textContent).toContain("Permission · Write a file");
+    const allow = container.querySelector<HTMLButtonElement>(".permission-card-primary-action");
+    if (allow === null) throw new Error("Design permission allow control missing");
+    await act(async () => allow.click());
+
+    pending = { sessionId: "session-design", subscriptionId: 41, request: request("design-2") };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    await vi.waitFor(() => expect(container.querySelector(".permission-card")).not.toBeNull());
+    const deny = container.querySelector<HTMLButtonElement>(".permission-card-deny-action");
+    if (deny === null) throw new Error("Design permission deny control missing");
+    await act(async () => deny.click());
+
+    permissionNotice =
+      "Permission request is no longer waiting; it was answered elsewhere or it expired.";
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    expect(container.querySelector(".permission-card-notice")?.textContent).toContain(
+      "Permission request is no longer waiting; it was answered elsewhere or it expired.",
+    );
+
+    expect(respondPermission).toHaveBeenNthCalledWith(1, "allow_once");
+    expect(respondPermission).toHaveBeenNthCalledWith(2, "deny");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a permission card mounted and shows a rejecting host response", async () => {
+    providerMocks.daemonStatus.mockResolvedValue({
+      state: "connected",
+      pid: 42,
+      instanceId: "daemon-test",
+      protocolVersion: 1,
+      clients: 1,
+      capabilities: ["typed_permissions"],
+      message: null,
+    });
+    const listeners = new Set<() => void>();
+    let pending: PendingPermission | null = null;
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const respondPermission = vi.fn(async () => {
+      throw new Error("permission response failed");
+    });
+    const host = createHost({
+      generate,
+      getPendingPermission: () => pending,
+      respondPermission,
+      subscribeAgentSession: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const { container, root } = await renderDesign(host);
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+
+    pending = {
+      sessionId: "session-design",
+      subscriptionId: 41,
+      request: {
+        type: "permission_request",
+        toolCallId: "design-reject",
+        title: "Write a file",
+        options: [
+          { optionId: "allow", name: "Allow once", kind: "allow_once" },
+          { optionId: "deny", name: "Deny", kind: "reject_once" },
+        ],
+      },
+    };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    await vi.waitFor(() => expect(container.querySelector(".permission-card")).not.toBeNull());
+
+    const allow = container.querySelector<HTMLButtonElement>(".permission-card-primary-action");
+    if (allow === null) throw new Error("Design permission allow control missing");
+    await act(async () => allow.click());
+    await vi.waitFor(() =>
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "permission response failed",
+      ),
+    );
+    expect(container.querySelector(".permission-card")).not.toBeNull();
+    expect(allow.disabled).toBe(false);
+    expect(respondPermission).toHaveBeenCalledWith("allow_once");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a pending permission visible and disables answers during a daemon poll loss", async () => {
+    vi.useFakeTimers();
+    let status: DaemonStatus = {
+      state: "connected",
+      pid: 42,
+      instanceId: "daemon-test",
+      protocolVersion: 1,
+      clients: 1,
+      capabilities: ["typed_permissions"],
+      message: null,
+    };
+    providerMocks.daemonStatus.mockImplementation(async () => status);
+    const listeners = new Set<() => void>();
+    let pending: PendingPermission | null = null;
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const respondPermission = vi.fn(async () => undefined);
+    const host = createHost({
+      generate,
+      getPendingPermission: () => pending,
+      respondPermission,
+      subscribeAgentSession: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    const { container, root } = await renderDesign(host);
+    await fillDraft(container, "Create the final card.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+    pending = {
+      sessionId: "session-design",
+      subscriptionId: 41,
+      request: {
+        type: "permission_request",
+        toolCallId: "design-disconnected",
+        title: "Write a file",
+        options: [
+          { optionId: "allow", name: "Allow once", kind: "allow_once" },
+          { optionId: "deny", name: "Deny", kind: "reject_once" },
+        ],
+      },
+    };
+    await act(async () => {
+      for (const listener of listeners) listener();
+    });
+    await vi.waitFor(() => expect(container.querySelector(".permission-card")).not.toBeNull());
+
+    status = {
+      state: "disconnected",
+      pid: null,
+      instanceId: null,
+      protocolVersion: null,
+      clients: null,
+      capabilities: [],
+      message: "daemon unreachable",
+    };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(container.querySelector(".permission-card")).not.toBeNull();
+    expect(container.textContent).toContain("The daemon is not reachable.");
+    expect(
+      container.querySelector<HTMLButtonElement>(".permission-card-primary-action")?.disabled,
+    ).toBe(true);
+    expect(respondPermission).not.toHaveBeenCalled();
+    status = {
+      state: "connected",
+      pid: 42,
+      instanceId: "daemon-test",
+      protocolVersion: 1,
+      clients: 1,
+      capabilities: [],
+      message: null,
+    };
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(container.querySelector(".permission-card")).not.toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>(".permission-card-primary-action")?.disabled,
+    ).toBe(false);
+    await act(async () => root.unmount());
+    vi.useRealTimers();
+  });
+
   it("opens History as a focusable popover and restores focus after Escape", async () => {
     const { container, root } = await renderDesign(createHost());
     const trigger = container.querySelector<HTMLButtonElement>(
@@ -556,7 +802,7 @@ describe("DesignSurface host capabilities", () => {
     const downloadedOnDemand = provider("downloaded-agent", "npx-wrapper");
     downloadedOnDemand.executable = "@example/design-agent";
     downloadedOnDemand.launchArgs = ["--workspace", "Design project"];
-    const selectProvider = vi.fn();
+    const setProviderPreference = vi.fn();
     providerMocks.list.mockResolvedValueOnce({
       providers: [installed, downloadedOnDemand],
       unreadableDirs: 0,
@@ -564,7 +810,7 @@ describe("DesignSurface host capabilities", () => {
     const { container, root } = await renderDesign(
       createHost({
         generate: vi.fn(async () => GENERATION_RESULT),
-        selectProvider,
+        setProviderPreference,
       }),
     );
     await act(settle);
@@ -582,7 +828,7 @@ describe("DesignSurface host capabilities", () => {
     );
     if (option === undefined) throw new Error("On-demand provider option missing");
     await act(async () => option?.click());
-    expect(selectProvider).not.toHaveBeenCalled();
+    expect(setProviderPreference).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Use Workspace");
     expect(container.querySelector(".design-agent-picker-command")?.textContent).toBe(
       'npx -y @example/design-agent --workspace "Design project"',
@@ -604,7 +850,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () =>
       container.querySelector<HTMLButtonElement>(".design-agent-picker-primary")?.click(),
     );
-    expect(selectProvider).toHaveBeenCalledWith(downloadedOnDemand);
+    expect(setProviderPreference).toHaveBeenCalledWith(downloadedOnDemand);
     expect(container.querySelector("#design-provider-picker")).toBeNull();
     await act(async () => root.unmount());
   });
@@ -615,9 +861,9 @@ describe("DesignSurface host capabilities", () => {
       providers: [downloadedOnDemand],
       unreadableDirs: 0,
     });
-    const selectProvider = vi.fn();
+    const setProviderPreference = vi.fn();
     const { container, root } = await renderDesign(
-      createHost({ generate: vi.fn(async () => GENERATION_RESULT), selectProvider }),
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT), setProviderPreference }),
     );
     await act(settle);
     await act(async () =>
@@ -630,9 +876,38 @@ describe("DesignSurface host capabilities", () => {
       container.querySelector<HTMLButtonElement>(".design-agent-picker-secondary")?.click(),
     );
 
-    expect(selectProvider).not.toHaveBeenCalled();
+    expect(setProviderPreference).not.toHaveBeenCalled();
     expect(container.querySelector('[role="option"]')).not.toBeNull();
     expect(document.activeElement).toBe(container.querySelector('[role="option"]'));
+    await act(async () => root.unmount());
+  });
+
+  it("cancels pending provider consent when a generation makes the picker busy", async () => {
+    const downloadedOnDemand = provider("downloaded-agent", "npx-wrapper");
+    providerMocks.list.mockResolvedValueOnce({
+      providers: [downloadedOnDemand],
+      unreadableDirs: 0,
+    });
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[aria-label^="Choose provider:"]')?.click(),
+    );
+    await act(async () => container.querySelector<HTMLButtonElement>('[role="option"]')?.click());
+    expect(container.textContent).toContain(
+      "Approve this command to download and run third-party code:",
+    );
+
+    await fillDraft(container, "Start while consent is pending.");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
+    );
+    await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(container.querySelector("#design-provider-picker")).toBeNull());
+    expect(container.textContent).not.toContain(
+      "Approve this command to download and run third-party code:",
+    );
     await act(async () => root.unmount());
   });
 
@@ -688,12 +963,17 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("selects an installed provider in one click", async () => {
+  it("commits an installed provider preference in one click without opening a session", async () => {
     const installed = provider("grok");
+    const setProviderPreference = vi.fn();
     const selectProvider = vi.fn();
     providerMocks.list.mockResolvedValueOnce({ providers: [installed], unreadableDirs: 0 });
     const { container, root } = await renderDesign(
-      createHost({ generate: vi.fn(async () => GENERATION_RESULT), selectProvider }),
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        setProviderPreference,
+        selectProvider,
+      }),
     );
     await act(settle);
     await act(async () =>
@@ -701,7 +981,8 @@ describe("DesignSurface host capabilities", () => {
     );
     await act(async () => container.querySelector<HTMLButtonElement>('[role="option"]')?.click());
 
-    expect(selectProvider).toHaveBeenCalledWith(installed);
+    expect(setProviderPreference).toHaveBeenCalledWith(installed);
+    expect(selectProvider).not.toHaveBeenCalled();
     expect(container.querySelector("#design-provider-picker")).toBeNull();
     await act(async () => root.unmount());
   });
@@ -844,12 +1125,13 @@ describe("DesignSurface host capabilities", () => {
       providers: [provider("grok")],
       unreadableDirs: 0,
     });
-    skillSettingsMocks.loadProvider.mockResolvedValueOnce("removed-agent");
+    skillSettingsMocks.loadProvider.mockResolvedValueOnce(null);
+    skillSettingsMocks.loadStoredProvider.mockResolvedValueOnce("removed-agent");
     const selectProvider = vi.fn();
     const { container, root } = await renderDesign(
       createHost({
         generate: vi.fn(async () => GENERATION_RESULT),
-        selectProvider,
+        setProviderPreference: selectProvider,
       }),
     );
     await act(settle);
@@ -857,15 +1139,44 @@ describe("DesignSurface host capabilities", () => {
     const pickerButton = container.querySelector<HTMLButtonElement>(
       'button[aria-label^="Choose provider:"]',
     );
-    expect(pickerButton?.textContent).toContain("Choose agent");
+    expect(pickerButton?.textContent).toContain("Unavailable: removed-agent");
+    expect(container.textContent).toContain(
+      "Remembered agent “removed-agent” is no longer available. Choose another agent.",
+    );
+    const unavailableNotice = container.querySelector(".design-provider-unavailable");
+    if (unavailableNotice === null) throw new Error("Unavailable-agent notice missing");
+    expect(unavailableNotice.getAttribute("role")).toBe("status");
+    const unavailableIcon = unavailableNotice.querySelector('[aria-hidden="true"]');
+    if (unavailableIcon === null) throw new Error("Unavailable-agent notice has no non-colour cue");
+    expect(unavailableIcon.textContent).toContain("!");
+    expect(unavailableIcon.className).toContain("design-message-icon-error");
+    expect(selectProvider).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("restores a stored provider preference without opening a session on mount", async () => {
+    const installed = provider("grok");
+    providerMocks.list.mockResolvedValueOnce({ providers: [installed], unreadableDirs: 0 });
+    skillSettingsMocks.loadProvider.mockResolvedValueOnce(installed.id);
+    const setProviderPreference = vi.fn();
+    const selectProvider = vi.fn();
+    const { root } = await renderDesign(createHost({ setProviderPreference, selectProvider }));
+    await act(settle);
+
+    expect(setProviderPreference).toHaveBeenCalledWith(installed);
     expect(selectProvider).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 
   it("selects a workspace and persists the workspace id", async () => {
+    const setWorkspacePreference = vi.fn();
     const selectWorkspace = vi.fn();
     const { container, root } = await renderDesign(
-      createHost({ generate: vi.fn(async () => GENERATION_RESULT), selectWorkspace }),
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        setWorkspacePreference,
+        selectWorkspace,
+      }),
     );
     await act(settle);
 
@@ -880,7 +1191,8 @@ describe("DesignSurface host capabilities", () => {
     if (workspaceOption === null) throw new Error("Workspace option missing");
     await act(async () => workspaceOption.click());
 
-    expect(selectWorkspace).toHaveBeenCalledWith(WORKSPACE);
+    expect(setWorkspacePreference).toHaveBeenCalledWith(WORKSPACE);
+    expect(selectWorkspace).not.toHaveBeenCalled();
     expect(skillSettingsMocks.saveWorkspace).toHaveBeenCalledWith(WORKSPACE.id);
     expect(container.textContent).toContain(WORKSPACE.title);
     await act(async () => root.unmount());
@@ -952,9 +1264,14 @@ describe("DesignSurface host capabilities", () => {
 
   it("clears and explains a selected workspace that disappears on refresh", async () => {
     skillSettingsMocks.loadWorkspace.mockResolvedValueOnce(WORKSPACE.id);
+    const setWorkspacePreference = vi.fn();
     const selectWorkspace = vi.fn();
     const { container, root } = await renderDesign(
-      createHost({ generate: vi.fn(async () => GENERATION_RESULT), selectWorkspace }),
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        setWorkspacePreference,
+        selectWorkspace,
+      }),
     );
     await act(settle);
     providerMocks.workspacesList.mockResolvedValue([]);
@@ -968,12 +1285,13 @@ describe("DesignSurface host capabilities", () => {
 
     expect(container.textContent).toContain("The selected workspace is no longer registered.");
     expect(container.textContent).toContain("No workspace");
-    expect(selectWorkspace).toHaveBeenLastCalledWith(null);
+    expect(setWorkspacePreference).toHaveBeenLastCalledWith(null);
+    expect(selectWorkspace).not.toHaveBeenCalled();
     expect(skillSettingsMocks.saveWorkspace).toHaveBeenCalledWith(null);
     await act(async () => root.unmount());
   });
 
-  it("does not refresh the workspace list while a session exists", async () => {
+  it("refreshes the workspace list while a session exists", async () => {
     const { session } = fakeAgentSession(agentState(null));
     const { container, root } = await renderDesign(
       createHost({
@@ -984,11 +1302,11 @@ describe("DesignSurface host capabilities", () => {
     await act(settle);
     expect(providerMocks.projectsList).toHaveBeenCalledTimes(1);
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Workspace for this session:"]',
+      'button[aria-label^="Choose workspace:"]',
     );
     if (pickerButton === null) throw new Error("Workspace picker missing");
     await act(async () => pickerButton.click());
-    expect(providerMocks.projectsList).toHaveBeenCalledTimes(1);
+    expect(providerMocks.projectsList).toHaveBeenCalledTimes(2);
     await act(async () => root.unmount());
   });
 
@@ -1012,6 +1330,209 @@ describe("DesignSurface host capabilities", () => {
     );
     expect(selectWorkspace).not.toHaveBeenCalled();
     expect(container.querySelector('[data-workspace-id="workspace-unconfirmed"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("shows the end-session control and releases the live session", async () => {
+    const { session } = fakeAgentSession(agentState(null));
+    let currentSession: typeof session | null = session;
+    const listeners = new Set<() => void>();
+    const closeAgentSession = vi.fn(async () => {
+      currentSession = null;
+      for (const listener of listeners) listener();
+    });
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async () => GENERATION_RESULT),
+        getAgentSession: () => currentSession,
+        closeAgentSession,
+        subscribeAgentSession: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      }),
+    );
+
+    const end = container.querySelector<HTMLButtonElement>(".design-session-end-button");
+    if (end === null) throw new Error("End session control missing");
+    expect(end.disabled).toBe(false);
+    expect(container.textContent).toContain(
+      "Ends this session and drops the agent's context for this surface.",
+    );
+    await act(async () => end.click());
+    expect(closeAgentSession).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(container.querySelector(".design-session-end-button")).toBeNull(),
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("gives each model-button session state its own explanation", async () => {
+    const noSession = await renderDesign(createHost({ generate: vi.fn() }));
+    expect(
+      noSession.container
+        .querySelector<HTMLButtonElement>('button[aria-label^="Start a generation"]')
+        ?.getAttribute("aria-label"),
+    ).toBe("Start a generation to see the models offered by this agent.");
+    await act(async () => noSession.root.unmount());
+
+    const { session: runningSession } = fakeAgentSession(agentState(null));
+    const running = await renderDesign(
+      createHost({ generate: vi.fn(), getAgentSession: () => runningSession }),
+    );
+    expect(
+      running.container
+        .querySelector<HTMLButtonElement>('button[aria-label^="The agent is running"]')
+        ?.getAttribute("aria-label"),
+    ).toBe("The agent is running; waiting for its model list.");
+    await act(async () => running.root.unmount());
+
+    const { session: emptyManifestSession } = fakeAgentSession(
+      agentState({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: undefined,
+        models: [],
+      }),
+    );
+    const emptyManifest = await renderDesign(
+      createHost({ generate: vi.fn(), getAgentSession: () => emptyManifestSession }),
+    );
+    expect(
+      emptyManifest.container
+        .querySelector<HTMLButtonElement>('button[aria-label^="This agent offered no models"]')
+        ?.getAttribute("aria-label"),
+    ).toBe("This agent offered no models.");
+    expect(
+      emptyManifest.container
+        .querySelector<HTMLButtonElement>('button[aria-label^="This agent offered no models"]')
+        ?.getAttribute("title"),
+    ).toBe("This agent offered no models.");
+    await act(async () => emptyManifest.root.unmount());
+
+    const { session: unknownCatalogSession } = fakeAgentSession(
+      agentState({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "model-x",
+        models: [],
+      }),
+    );
+    const unknownCatalog = await renderDesign(
+      createHost({ generate: vi.fn(), getAgentSession: () => unknownCatalogSession }),
+    );
+    const unknownCatalogButton = unknownCatalog.container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="The agent is running"]',
+    );
+    if (unknownCatalogButton === null) throw new Error("Unknown-catalog model button missing");
+    expect(unknownCatalogButton.getAttribute("aria-label")).toBe(
+      "The agent is running; its model list is not known yet.",
+    );
+    expect(unknownCatalogButton.getAttribute("title")).toBe(
+      "The agent is running; its model list is not known yet.",
+    );
+    expect(unknownCatalogButton.getAttribute("aria-label")?.toLowerCase()).not.toContain(
+      "offered no models",
+    );
+    expect(unknownCatalogButton.getAttribute("aria-label")).not.toBe(
+      "This agent offered no models.",
+    );
+    await act(async () => unknownCatalog.root.unmount());
+
+    const { session: closedSession } = fakeAgentSession({
+      ...agentState(null),
+      status: "closed",
+    });
+    const closed = await renderDesign(
+      createHost({ generate: vi.fn(), getAgentSession: () => closedSession }),
+    );
+    expect(
+      closed.container
+        .querySelector<HTMLButtonElement>('button[aria-label^="The agent session has closed"]')
+        ?.getAttribute("aria-label"),
+    ).toBe("The agent session has closed; start a generation to reconnect.");
+    await act(async () => closed.root.unmount());
+  });
+
+  it("tells an errored session apart from a closed session", async () => {
+    const { session: erroredSession } = fakeAgentSession({
+      ...agentState(null),
+      status: "error",
+      items: [{ id: "error-0", role: "error", text: "The switch outcome is unknown." }],
+    });
+    const errored = await renderDesign(
+      createHost({ generate: vi.fn(), getAgentSession: () => erroredSession }),
+    );
+    const errorButton = errored.container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Session error"]',
+    );
+    if (errorButton === null) throw new Error("Errored model button missing");
+    expect(errorButton.textContent).toContain("Session error");
+    expect(errorButton.textContent?.toLowerCase()).not.toContain("closed");
+    expect(errorButton.getAttribute("aria-label")).toContain("The switch outcome is unknown.");
+    expect(errorButton.getAttribute("aria-label")?.toLowerCase()).not.toContain("closed");
+    expect(errorButton.getAttribute("title")).toBe(errorButton.getAttribute("aria-label"));
+    await act(async () => errored.root.unmount());
+
+    const { session: closedSession } = fakeAgentSession({
+      ...agentState(null),
+      status: "closed",
+    });
+    const closed = await renderDesign(
+      createHost({ generate: vi.fn(), getAgentSession: () => closedSession }),
+    );
+    const closedButton = closed.container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="The agent session has closed"]',
+    );
+    if (closedButton === null) throw new Error("Closed model button missing");
+    expect(closedButton.textContent).toContain("Session closed");
+    expect(closedButton.textContent).not.toBe(errorButton.textContent);
+    expect(closedButton.getAttribute("aria-label")).not.toBe(
+      errorButton.getAttribute("aria-label"),
+    );
+    await act(async () => closed.root.unmount());
+  });
+
+  it("explains why the pickers are disabled while a generation runs", async () => {
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "Start an agent session.");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
+    );
+
+    const workspaceButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Choose workspace:"]',
+    );
+    if (workspaceButton === null) throw new Error("Workspace picker missing");
+    expect(workspaceButton.disabled).toBe(true);
+    expect(workspaceButton.getAttribute("title")).toContain("A generation is running");
+    expect(workspaceButton.getAttribute("aria-label")).toContain("A generation is running");
+
+    const providerButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Choose provider:"]',
+    );
+    if (providerButton === null) throw new Error("Provider picker missing");
+    expect(providerButton.disabled).toBe(true);
+    expect(providerButton.getAttribute("title")).toContain("A generation is running");
+    expect(providerButton.getAttribute("aria-label")).toContain("A generation is running");
+    await act(async () => root.unmount());
+  });
+
+  it("explains the session-create window while a generation is already busy", async () => {
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await fillDraft(container, "Start an agent session.");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
+    );
+
+    const modelButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label^="Starting the agent session"]',
+    );
+    expect(modelButton?.getAttribute("aria-label")).toBe(
+      "Starting the agent session; its models will appear shortly.",
+    );
     await act(async () => root.unmount());
   });
 
@@ -1055,7 +1576,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("disables workspace selection once a session exists and explains why", async () => {
+  it("keeps workspace selection available once a session exists", async () => {
     const { session } = fakeAgentSession(agentState(null));
     const { container, root } = await renderDesign(
       createHost({
@@ -1065,13 +1586,13 @@ describe("DesignSurface host capabilities", () => {
     );
 
     const pickerButton = container.querySelector<HTMLButtonElement>(
-      'button[aria-label^="Workspace for this session:"]',
+      'button[aria-label^="Choose workspace:"]',
     );
     if (pickerButton === null) throw new Error("Workspace picker missing");
-    expect(pickerButton.disabled).toBe(true);
-    expect(pickerButton.title).toContain("Choose a workspace before the first generation.");
-    expect(pickerButton.getAttribute("aria-expanded")).toBeNull();
-    expect(pickerButton.textContent).not.toContain("▾");
+    expect(pickerButton.disabled).toBe(false);
+    expect(pickerButton.getAttribute("title")).toBeNull();
+    expect(pickerButton.getAttribute("aria-expanded")).toBe("false");
+    expect(pickerButton.textContent).toContain("▾");
     await act(async () => root.unmount());
   });
 

@@ -6,10 +6,7 @@ import { oracleStatus } from "../lib/tauri";
 import { useAppStore, type DesignSessionState } from "../store/appStore";
 import type { OracleIndexStatus } from "../types/ipc";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
-import type {
-  DesignHost,
-  DesignSurfaceProps,
-} from "../features/design/DesignSurface";
+import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
 import { createAgentHost, disposeAgentHost } from "../features/design/agentHost";
 import { createDemoHost } from "../features/design/mockData";
 import { createOracleHost } from "../features/design/oracleHost";
@@ -94,8 +91,9 @@ function selectedDesignHost(kind: DesignHostKind): DesignHost {
 }
 
 function designHasWork(session: DesignSessionState): boolean {
-  // There is no discard/new-document action yet, so a message or artifact keeps
-  // this session live for the application's lifetime once it has been created.
+  // A worked Design host intentionally survives surface navigation so its transcript, artifact,
+  // and live agent context are available when the user returns. The visible Design "End session"
+  // control is the user-directed teardown; an unworked host is disposed on navigation.
   return (
     session.generation !== null || session.latestArtifact !== null || session.messages.length > 0
   );

@@ -1,0 +1,150 @@
+.permission-card {
+  flex: none;
+  overflow: hidden;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  animation: rise 0.24s ease both;
+}
+
+.permission-card-notice {
+  flex: none;
+  padding: 8px 12px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.permission-card-heading,
+.permission-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.permission-card-heading {
+  min-width: 0;
+  padding: 12px 14px 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.permission-card-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+}
+
+.permission-card-waiting {
+  background: var(--ochre);
+}
+
+.permission-card-allowed {
+  background: var(--green);
+}
+
+.permission-card-denied {
+  background: var(--danger);
+}
+
+.permission-card-context {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.permission-card-command {
+  max-height: 12em;
+  overflow: auto;
+  padding: 5px 14px 13px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.permission-card-env {
+  max-height: 8em;
+  overflow: auto;
+  padding: 0 14px 10px;
+  color: var(--silence);
+  font-size: 10.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.permission-card-unavailable {
+  padding: 0 14px 10px;
+  color: var(--silence);
+  font-size: 10.5px;
+}
+
+.permission-card-actions {
+  padding: 10px 14px 12px;
+}
+
+.permission-card-label {
+  color: var(--silence);
+  font-size: 11px;
+}
+
+.permission-card-secondary-action,
+.permission-card-primary-action {
+  display: grid;
+  flex: none;
+  place-items: center;
+  height: 26px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.permission-card-secondary-action {
+  padding: 0 11px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+}
+
+.permission-card-secondary-action:hover,
+.permission-card-secondary-action:focus-visible {
+  color: var(--danger-deep);
+}
+
+.permission-card-primary-action {
+  padding: 0 12px;
+  color: var(--surface);
+  background: var(--terracotta-deep);
+  border: 1px solid var(--terracotta-deep);
+  font-weight: 500;
+}
+
+.permission-card-primary-action:hover,
+.permission-card-primary-action:focus-visible {
+  background: var(--ink-soft);
+}
+
+.permission-card-secondary-action:disabled,
+.permission-card-primary-action:disabled {
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.permission-card-secondary-action:disabled {
+  color: var(--silence);
+}
+
+.permission-card-primary-action:disabled {
+  color: var(--silence);
+  background: var(--surface-muted);
+  border-color: var(--silence);
+}

@@ -1,5 +1,5 @@
 import type { AgentSessionState } from "../../lib/agentSession";
-import type { ProviderInfo, Session, Workspace } from "../../types/ipc";
+import type { PermissionRequest, ProviderInfo, Session, Workspace } from "../../types/ipc";
 
 export type DesignLayerKind = "TSX" | "SVG";
 export type DesignRadiusToken = "none" | "sm" | "md" | "lg";
@@ -143,11 +143,29 @@ export interface DesignHost {
   ): Promise<DesignGenerationResult>;
   /** Optional live session capability supplied by the agent-backed host. */
   getAgentSession?(): DesignAgentSession | null;
+  /** The first queued permission currently holding an agent turn open, if any. */
+  getPendingPermission?(): PendingPermission | null;
+  /** Short-lived notice for a permission resolved without a Design answer (for example timeout). */
+  getPermissionNotice?(): string | null;
+  /** Answer the Design surface's currently displayed permission request. */
+  respondPermission?(outcome: "allow_once" | "deny"): Promise<void>;
   /** The daemon record for the live session, including its echoed working directory. */
   getAgentSessionRecord?(): Session | null;
   subscribeAgentSession?(listener: () => void): () => void;
+  /** Commit a provider preference and close any current session without opening a replacement. */
+  setProviderPreference?(provider: ProviderInfo): void;
+  /** Commit a workspace preference and close any current session without opening a replacement. */
+  setWorkspacePreference?(workspace: Workspace | null): void;
+  /** End the current session and release its daemon resources, if one is live. */
+  closeAgentSession?(): Promise<void>;
   selectProvider?(provider: ProviderInfo): void;
   selectWorkspace?(workspace: Workspace | null): void;
+}
+
+export interface PendingPermission {
+  sessionId: string;
+  subscriptionId: number;
+  request: PermissionRequest;
 }
 
 export interface DesignAgentSession {

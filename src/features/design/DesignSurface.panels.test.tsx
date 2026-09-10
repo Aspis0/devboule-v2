@@ -11,6 +11,7 @@ const settingsMocks = vi.hoisted(() => ({
   load: vi.fn(),
   save: vi.fn(),
   loadProvider: vi.fn(),
+  loadStoredProvider: vi.fn(),
   saveProvider: vi.fn(),
   loadWorkspace: vi.fn(),
   loadStoredWorkspace: vi.fn(),
@@ -18,6 +19,7 @@ const settingsMocks = vi.hoisted(() => ({
 }));
 
 const providerMocks = vi.hoisted(() => ({
+  daemonStatus: vi.fn(),
   list: vi.fn(),
   projectsList: vi.fn(),
   workspacesList: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock("./designSettings", async () => {
     loadDesignSkillSelection: settingsMocks.load,
     saveDesignSkillSelection: settingsMocks.save,
     loadDesignProviderId: settingsMocks.loadProvider,
+    loadStoredDesignProviderId: settingsMocks.loadStoredProvider,
     saveDesignProviderId: settingsMocks.saveProvider,
     loadDesignWorkspaceId: settingsMocks.loadWorkspace,
     loadStoredDesignWorkspaceId: settingsMocks.loadStoredWorkspace,
@@ -50,6 +53,7 @@ vi.mock("./designHistoryOpen", () => ({
 }));
 
 vi.mock("../../lib/tauri", () => ({
+  daemonStatus: providerMocks.daemonStatus,
   providersList: providerMocks.list,
   projectsList: providerMocks.projectsList,
   workspacesList: providerMocks.workspacesList,
@@ -132,11 +136,13 @@ beforeEach(() => {
   settingsMocks.load.mockResolvedValue({ version: 1, mode: "all", enabledSlugs: [] });
   settingsMocks.save.mockResolvedValue(true);
   settingsMocks.loadProvider.mockResolvedValue(null);
+  settingsMocks.loadStoredProvider.mockResolvedValue(null);
   settingsMocks.saveProvider.mockResolvedValue(true);
   settingsMocks.loadWorkspace.mockResolvedValue(null);
   settingsMocks.loadStoredWorkspace.mockResolvedValue(null);
   settingsMocks.saveWorkspace.mockResolvedValue(true);
   providerMocks.list.mockResolvedValue({ providers: [], unreadableDirs: 0 });
+  providerMocks.daemonStatus.mockResolvedValue({ capabilities: [] });
   providerMocks.projectsList.mockResolvedValue([]);
   providerMocks.workspacesList.mockResolvedValue([]);
 });

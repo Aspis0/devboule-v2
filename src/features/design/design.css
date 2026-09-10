@@ -1287,7 +1287,9 @@
 }
 
 .design-skill-mode-control-name {
-  flex: 0 0 auto;
+  /* shrink-allowed: when the chip is clamped to the row width the name
+     ellipsises here instead of spilling past the pill edge */
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1666,16 +1668,22 @@
 
 .design-composer-footer {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
+  /* one gap value covers column and row gaps, so a wrapped second line keeps
+     the same breathing room as the horizontal gutters */
   gap: 6px;
   margin-top: 3px;
 }
 
+/* Footer controls never shrink below their content: a squeezed control gets cut
+   mid-word because text-overflow cannot render inside a flex button. Overflow
+   past the panel width is handled by wrap plus max-width, not by shrinking. */
 .design-composer-footer > .design-skill-controls,
 .design-composer-footer > .design-agent-picker-wrap {
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
+  max-width: 100%;
 }
 
 .design-composer-footer .design-provider-button {
@@ -1683,12 +1691,13 @@
   max-width: 100%;
 }
 
+/* Block, not flex: text-overflow only applies to block containers, so the flex
+   version cut agent ids mid-word with no ellipsis. The dot rides inline instead
+   of being a flex sibling (spacing via its own margin). */
 .design-provider-button {
-  display: flex;
+  display: block;
   width: 100%;
   min-width: 0;
-  align-items: center;
-  gap: 7px;
   height: 24px;
   padding: 0 10px;
   overflow: hidden;
@@ -1699,6 +1708,7 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   font-size: 10.5px;
+  line-height: 22px;
 }
 
 .design-agent-picker-wrap {
@@ -1959,6 +1969,8 @@
 .design-provider-dot {
   width: 5px;
   height: 5px;
+  margin-right: 7px;
+  vertical-align: middle;
   background: var(--purple);
 }
 

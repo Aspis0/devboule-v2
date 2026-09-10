@@ -9,11 +9,24 @@ import {
   sessionDetach,
   sessionInterrupt,
   sessionSend,
+  sessionPermissionRespond,
   sessionSetModel,
   type SessionChannel,
 } from "../../lib/tauri";
-import type { OracleResult, ProviderInfo, Session, SessionEvent, Workspace } from "../../types/ipc";
-import type { DesignGenerationOptions, DesignGenerationResult, DesignHost } from "./designHost";
+import type {
+  OracleResult,
+  PermissionRequest,
+  ProviderInfo,
+  Session,
+  SessionEvent,
+  Workspace,
+} from "../../types/ipc";
+import type {
+  DesignGenerationOptions,
+  DesignGenerationResult,
+  DesignHost,
+  PendingPermission,
+} from "./designHost";
 // These helpers are shared with Workspace for now; they would eventually belong in src/lib/.
 import { sessionCreateFromProvider } from "../workspace/workspaceSessions";
 import {
@@ -54,6 +67,13 @@ interface ActiveRun {
   reject: (error: unknown) => void;
 }
 
+interface PendingPermissionEntry extends PendingPermission {
+  answered: boolean;
+  responsePromise: Promise<void> | null;
+  /** Bumped when a re-delivered request adopts a new subscription. */
+  generation: number;
+}
+
 type ToolObservation = {
   kind?: string;
   locations?: readonly string[];
@@ -68,6 +88,8 @@ export const MAX_ARTIFACT_BYTES = 256 * 1024;
 export const ARTIFACT_TOO_LARGE_MESSAGE = "Artifact too large to display (maximum 256 KiB).";
 // This is a real ACP turn, so eight seconds bounds a missing answer without pretending it is instant.
 export const AUTO_SKILL_PREFLIGHT_TIMEOUT_MS = 8_000;
+export const PERMISSION_RESOLVED_NOTICE =
+  "Permission request is no longer waiting; it was answered elsewhere or it expired.";
 // A relevance router structurally cannot select a section whose value is universal:
 // that section loses to three sections specific to the request.  This was measured
 // three times at 2/15, so automatic mode includes it as a baseline instead.  Keep
@@ -240,7 +262,10 @@ export function matchSkillChoice(prompt: string): ResolvedSkillChoice {
     .filter((slug) => !baselineSlugs.has(slug))
     .slice(0, MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS);
   return {
-    slugs: composeAutomaticSkillSlugs(routed, index.map((entry) => entry.slug)),
+    slugs: composeAutomaticSkillSlugs(
+      routed,
+      index.map((entry) => entry.slug),
+    ),
     fallback: false,
   };
 }
@@ -414,9 +439,7 @@ function sameProvider(left: ProviderInfo | undefined, right: ProviderInfo | unde
 }
 
 function sameSessionTarget(left: SessionTarget, right: SessionTarget): boolean {
-  return (
-    sameProvider(left.provider, right.provider) && left.workspace?.id === right.workspace?.id
-  );
+  return sameProvider(left.provider, right.provider) && left.workspace?.id === right.workspace?.id;
 }
 
 function interruptSession(sessionId: string, controller: AgentSession): void {
@@ -467,6 +490,7 @@ export function createAgentHost(): DesignHost {
   const oracleHost = createOracleHost();
   let disposed = false;
   let activeRun: ActiveRun | null = null;
+  let activeRunSettlementCheck: (() => void) | null = null;
   let runPending = false;
   let sessionHandle: AgentSessionHandle | null = null;
   let sessionRequest: SessionRequest | null = null;
@@ -488,9 +512,115 @@ export function createAgentHost(): DesignHost {
    */
   let selectedWorkspace: Workspace | null = null;
   const sessionListeners = new Set<() => void>();
+  let pendingPermissions: PendingPermissionEntry[] = [];
+  let permissionNotice: string | null = null;
+  let permissionNoticeSessionId: string | null = null;
 
   const publishSessionChange = (): void => {
     for (const listener of sessionListeners) listener();
+  };
+
+  // DesignSurface already reads pending permissions through this session subscription;
+  // publishing here is enough, so a second permission subscription could not disagree
+  // with the live session subscription.
+  const pendingPermissionSnapshot = (): PendingPermission | null => {
+    const pending = pendingPermissions[0];
+    return pending === undefined
+      ? null
+      : {
+          sessionId: pending.sessionId,
+          subscriptionId: pending.subscriptionId,
+          request: pending.request,
+        };
+  };
+
+  const removePendingPermission = (entry: PendingPermissionEntry): boolean => {
+    const index = pendingPermissions.indexOf(entry);
+    if (index === -1) return false;
+    pendingPermissions.splice(index, 1);
+    return true;
+  };
+
+  const respondToPermissionEntry = (
+    entry: PendingPermissionEntry,
+    outcome: "allow_once" | "deny",
+  ): Promise<void> => {
+    if (entry.answered || entry.responsePromise !== null) return Promise.resolve();
+    entry.answered = true;
+    const generation = entry.generation;
+
+    const liveHandle = sessionHandle?.session.id === entry.sessionId ? sessionHandle : null;
+    const liveSubscriptionId = liveHandle?.controller.getSubscriptionId() ?? null;
+    if (liveSubscriptionId === null) {
+      entry.answered = false;
+      activeRunSettlementCheck?.();
+      return Promise.reject(new Error("The permission session is no longer attached."));
+    }
+
+    let response: Promise<void>;
+    try {
+      response = sessionPermissionRespond(
+        entry.sessionId,
+        liveSubscriptionId,
+        entry.request.toolCallId,
+        outcome,
+      );
+    } catch (cause) {
+      entry.answered = false;
+      activeRunSettlementCheck?.();
+      return Promise.reject(cause);
+    }
+
+    const trackedResponse = Promise.resolve(response).then(
+      () => {
+        // A newer subscription superseded this answer; it must not remove the
+        // re-delivered entry or clear the fresh in-flight promise.
+        if (entry.generation !== generation) return;
+        if (removePendingPermission(entry)) {
+          if (permissionNoticeSessionId === entry.sessionId) {
+            permissionNotice = null;
+            permissionNoticeSessionId = null;
+          }
+          publishSessionChange();
+        }
+        entry.responsePromise = null;
+        activeRunSettlementCheck?.();
+      },
+      (cause: unknown) => {
+        if (entry.generation !== generation) return;
+        // Keep the entry visible and retryable when the daemon rejects the answer.
+        entry.answered = false;
+        entry.responsePromise = null;
+        publishSessionChange();
+        activeRunSettlementCheck?.();
+        throw cause;
+      },
+    );
+    entry.responsePromise = trackedResponse;
+    return trackedResponse;
+  };
+
+  const respondToPendingPermission = (
+    outcome: "allow_once" | "deny",
+    sessionId?: string,
+  ): Promise<void> => {
+    const pending = pendingPermissions[0];
+    if (pending === undefined || (sessionId !== undefined && pending.sessionId !== sessionId)) {
+      return Promise.resolve();
+    }
+    return respondToPermissionEntry(pending, outcome);
+  };
+
+  const denyUnansweredPermissions = (sessionId?: string): Promise<void> => {
+    const responses = pendingPermissions
+      .filter(
+        (entry) =>
+          !entry.answered &&
+          entry.responsePromise === null &&
+          (sessionId === undefined || entry.sessionId === sessionId),
+      )
+      .map((entry) => respondToPermissionEntry(entry, "deny").catch(() => undefined));
+    return Promise.all(responses).then(() => undefined);
   };
 
   const settleRun = (
@@ -501,6 +631,11 @@ export function createAgentHost(): DesignHost {
     if (run.settled) return;
     run.settled = true;
     if (activeRun === run) activeRun = null;
+    if (permissionNoticeSessionId === run.sessionId) {
+      permissionNotice = null;
+      permissionNoticeSessionId = null;
+      publishSessionChange();
+    }
     if (outcome === "resolve") run.resolve(value as DesignGenerationResult);
     else run.reject(value);
   };
@@ -509,20 +644,46 @@ export function createAgentHost(): DesignHost {
     if (handle.closePromise !== null) return handle.closePromise;
     if (handle.closed) return Promise.resolve();
     handle.closed = true;
+    // Capture this before dispose(): AgentSession.dispose() starts detaching immediately, but
+    // the daemon requires this still-live subscription for session_close ownership validation.
+    const subscriptionId = handle.controller.getSubscriptionId();
+    const pendingPermissionResponses = denyUnansweredPermissions(handle.session.id);
+    let shouldPublish = false;
+    const pendingCount = pendingPermissions.length;
+    pendingPermissions = pendingPermissions.filter(
+      (entry) => entry.sessionId !== handle.session.id,
+    );
+    if (pendingPermissions.length !== pendingCount) {
+      shouldPublish = true;
+    }
+    if (permissionNoticeSessionId === handle.session.id) {
+      permissionNotice = null;
+      permissionNoticeSessionId = null;
+      shouldPublish = true;
+    }
     if (sessionHandle === handle) {
       sessionHandle = null;
       sessionOwner = null;
-      publishSessionChange();
+      shouldPublish = true;
     }
+    if (shouldPublish) publishSessionChange();
     const closing = (async () => {
-      handle.controller.dispose();
-      // Provider changes can attach a replacement immediately; finish this id's detach first.
-      await handle.controller.detach();
+      await pendingPermissionResponses;
       try {
-        await sessionClose(handle.session.id);
+        if (subscriptionId !== null) {
+          // Close while the attachment is alive; detach is only teardown after the daemon has
+          // accepted the ownership-bearing close request.
+          await sessionClose(handle.session.id, subscriptionId);
+        } else {
+          await closeUnattachedSession(handle.session.id);
+        }
       } catch {
-        // The surface is already gone; there is no useful UI action for cleanup failure.
+        // Continue detaching even when the daemon rejects close; no frontend cleanup can repair
+        // a daemon-side close failure, but leaving our attachment alive would make it worse.
       }
+      handle.controller.dispose();
+      // Provider changes can attach a replacement immediately; finish this id's detach afterward.
+      await handle.controller.detach();
     })();
     handle.closePromise = closing;
     sessionTeardownPromise = closing;
@@ -530,6 +691,19 @@ export function createAgentHost(): DesignHost {
       if (sessionTeardownPromise === closing) sessionTeardownPromise = null;
     });
     return closing;
+  };
+
+  const closeUnattachedSession = async (sessionId: string): Promise<void> => {
+    let subscriptionId: number | null = null;
+    try {
+      // A stale session_create has no AgentSession owner yet. Attach a temporary channel so the
+      // daemon can validate ownership, close it while attached, then release that temporary view.
+      const channel = createSessionChannel(() => undefined);
+      subscriptionId = await sessionAttach(sessionId, null, channel);
+      await sessionClose(sessionId, subscriptionId);
+    } finally {
+      if (subscriptionId !== null) await sessionDetach(subscriptionId).catch(() => undefined);
+    }
   };
 
   const openSession = async (
@@ -553,9 +727,9 @@ export function createAgentHost(): DesignHost {
     // allowing the slow request to become the current session.
     if (!isCurrent()) {
       try {
-        await sessionClose(session.id);
+        await closeUnattachedSession(session.id);
       } catch {
-        // The stale session has no UI owner; there is no useful recovery here.
+        // The stale session has no UI owner; the temporary attachment was best-effort cleanup.
       }
       throw abortError();
     }
@@ -578,27 +752,60 @@ export function createAgentHost(): DesignHost {
           }
           onEvent(event);
         }),
-      onPermissionRequest: () => {
-        const preflight = activePreflight;
-        if (preflight?.sessionId === sessionId) {
-          interruptSession(sessionId, controller);
-          preflight.reject(
-            new Error(
-              "The agent requested permission during automatic craft selection. Respond in the Workspace surface; this design run was stopped.",
-            ),
-          );
-          return;
-        }
-        const run = activeRun;
-        if (run?.sessionId !== sessionId) return;
-        interruptSession(sessionId, controller);
-        settleRun(
-          run,
-          "reject",
-          new Error(
-            "The agent requested permission. Respond in the Workspace surface; this design run was stopped.",
-          ),
+      onPermissionRequest: (request: PermissionRequest, subscriptionId: number) => {
+        // Every permission request is queued for the user to answer, including one raised by
+        // our own craft-selection pre-flight and one that arrives with no active run. The host
+        // never answers on the user's behalf; it only publishes the request so a card renders.
+        // The pre-flight's own deadline still falls back to every section without this answer.
+        // AgentSession re-delivers a held request after subscription confirmation. Replace the
+        // same toolCallId's entry so a remount updates its subscription rather than duplicating it.
+        const existing = pendingPermissions.find(
+          (entry) =>
+            entry.sessionId === sessionId && entry.request.toolCallId === request.toolCallId,
         );
+        if (existing !== undefined) {
+          // A fresh subscription means any answer already in flight was sent over an
+          // attachment the daemon no longer owns. Supersede that attempt so the
+          // re-delivered request is answerable again; its late settlement is ignored
+          // through the generation captured by respondToPermissionEntry.
+          if (existing.subscriptionId !== subscriptionId) {
+            existing.generation += 1;
+            existing.answered = false;
+            existing.responsePromise = null;
+          }
+          existing.subscriptionId = subscriptionId;
+          existing.request = request;
+        } else {
+          pendingPermissions.push({
+            sessionId,
+            subscriptionId,
+            request,
+            answered: false,
+            responsePromise: null,
+            generation: 0,
+          });
+        }
+        permissionNotice = null;
+        publishSessionChange();
+      },
+      onPermissionResolved: (toolCallId: string) => {
+        const entry = pendingPermissions.find(
+          (candidate) =>
+            candidate.sessionId === sessionId && candidate.request.toolCallId === toolCallId,
+        );
+        if (entry === undefined || !removePendingPermission(entry)) return;
+        if (entry.answered) {
+          // Our response can resolve on the event stream before its IPC promise. That is a
+          // local answer, so remove it silently; the notice is only for an answer elsewhere,
+          // cancellation, or timeout whose outcome is not carried on this wire event.
+          permissionNotice = null;
+          permissionNoticeSessionId = null;
+        } else if (pendingPermissions.length === 0) {
+          permissionNotice = PERMISSION_RESOLVED_NOTICE;
+          permissionNoticeSessionId = sessionId;
+        }
+        publishSessionChange();
+        activeRunSettlementCheck?.();
       },
     });
     const handle: AgentSessionHandle = {
@@ -682,7 +889,12 @@ export function createAgentHost(): DesignHost {
   ): Promise<ResolvedSkillChoice> => {
     const index = builtInSkillIndex();
     const allSlugs = index.map((entry) => entry.slug);
-    const fallback = (): ResolvedSkillChoice => ({ slugs: allSlugs, fallback: true });
+    // Every failure of the agent's own answer lands here: an empty reply, an error turn, a
+    // refused send, and the deadline. The replacement is the Matched system for the same
+    // prompt — the same relevance ranking the matched mode uses — rather than the whole
+    // corpus in fit order. The flag still marks that the agent's answer was replaced, which
+    // the ranking alone cannot say: the Matched system reports its own concede separately.
+    const fallback = (): ResolvedSkillChoice => ({ ...matchSkillChoice(prompt), fallback: true });
     throwIfAborted(signal);
 
     let settle: (choice: ResolvedSkillChoice) => void = () => undefined;
@@ -806,6 +1018,9 @@ export function createAgentHost(): DesignHost {
     const onAbort = (): void => {
       if (interruptRequested || run.settled) return;
       interruptRequested = true;
+      // An allow already sent to the daemon cannot be recalled. Only unanswered entries get a
+      // deny here; session_interrupt is the recovery mechanism for an allow/interrupt race.
+      void denyUnansweredPermissions(run.sessionId);
       interruptSession(run.sessionId, run.session.controller);
       const error = abortError();
       settleRun(run, "reject", error);
@@ -822,6 +1037,9 @@ export function createAgentHost(): DesignHost {
     );
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;
+      // A provider should not finish a turn while waiting for permission, but keep the
+      // promise alive if event ordering ever exposes agent_finished before the answer.
+      if (pendingPermissions.some((entry) => entry.sessionId === run.sessionId)) return false;
       const state = handle.controller.getState();
       if (state.lastFinished !== null) {
         const baseResult = resultFor(run.prompt, run.toolObservations);
@@ -859,6 +1077,7 @@ export function createAgentHost(): DesignHost {
       }
       return false;
     };
+    activeRunSettlementCheck = settleFromState;
     const unsubscribe = handle.controller.subscribe(settleFromState);
     settleFromState();
     void sendPromise
@@ -875,6 +1094,7 @@ export function createAgentHost(): DesignHost {
     } finally {
       unsubscribe();
       signal.removeEventListener("abort", onAbort);
+      if (activeRunSettlementCheck === settleFromState) activeRunSettlementCheck = null;
     }
   };
 
@@ -889,6 +1109,9 @@ export function createAgentHost(): DesignHost {
     if (runPending || activeRun !== null) {
       throw new Error("A design generation is already running.");
     }
+    permissionNotice = null;
+    permissionNoticeSessionId = null;
+    publishSessionChange();
     runPending = true;
     try {
       return await runGeneration(prompt, signal, options);
@@ -901,6 +1124,7 @@ export function createAgentHost(): DesignHost {
     if (disposalPromise !== null) return disposalPromise;
     disposalPromise = (async () => {
       disposed = true;
+      const pendingPermissionResponses = denyUnansweredPermissions();
       const run = activeRun;
       if (run !== null) {
         const handle = sessionHandle;
@@ -916,6 +1140,7 @@ export function createAgentHost(): DesignHost {
       await Promise.all(
         [...pendingSessionPromises].map((pending) => pending.catch(() => undefined)),
       );
+      await pendingPermissionResponses;
       if (sessionTeardownPromise !== null) await sessionTeardownPromise;
       if (sessionHandle !== null) await closeSession(sessionHandle);
     })();
@@ -926,10 +1151,62 @@ export function createAgentHost(): DesignHost {
     loadDocument: oracleHost.loadDocument,
     generate,
     getAgentSession: () => sessionHandle?.controller ?? null,
+    getPendingPermission: pendingPermissionSnapshot,
+    getPermissionNotice: () => permissionNotice,
+    respondPermission: (outcome) => respondToPendingPermission(outcome),
     getAgentSessionRecord: () => sessionHandle?.session ?? null,
     subscribeAgentSession: (listener) => {
       sessionListeners.add(listener);
       return () => sessionListeners.delete(listener);
+    },
+    setProviderPreference: (provider) => {
+      if (disposed || runPending || activeRun !== null) return;
+      const target: SessionTarget = { provider, workspace: selectedWorkspace };
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionHandle !== null &&
+        !sessionHandle.closed &&
+        sessionHandle.controller.getState().status !== "closed"
+      ) {
+        selectedProvider = provider;
+        return;
+      }
+      selectedProvider = provider;
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      const handle = sessionHandle;
+      if (handle !== null && !handle.closed) void closeSession(handle);
+    },
+    setWorkspacePreference: (workspace) => {
+      if (disposed || runPending || activeRun !== null) return;
+      const target: SessionTarget = { provider: selectedProvider, workspace };
+      if (
+        sessionOwner !== null &&
+        sameSessionTarget(sessionOwner, target) &&
+        sessionHandle !== null &&
+        !sessionHandle.closed &&
+        sessionHandle.controller.getState().status !== "closed"
+      ) {
+        selectedWorkspace = workspace;
+        return;
+      }
+      selectedWorkspace = workspace;
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      const handle = sessionHandle;
+      if (handle !== null && !handle.closed) void closeSession(handle);
+    },
+    closeAgentSession: () => {
+      if (runPending || activeRun !== null) return Promise.resolve();
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      const handle = sessionHandle;
+      if (handle !== null && !handle.closed) return closeSession(handle);
+      if (pendingSessionPromises.size === 0) return sessionTeardownPromise ?? Promise.resolve();
+      return Promise.all(
+        [...pendingSessionPromises].map((pending) => pending.catch(() => undefined)),
+      ).then(() => sessionTeardownPromise ?? undefined);
     },
     selectProvider: (provider) => {
       if (disposed || runPending || activeRun !== null) return;
@@ -963,9 +1240,12 @@ export function createAgentHost(): DesignHost {
       })();
     },
     selectWorkspace: (workspace) => {
-      if (runPending || activeRun !== null || sessionHandle !== null || sessionRequest !== null)
-        return;
+      if (disposed || runPending || activeRun !== null) return;
       selectedWorkspace = workspace;
+      ++providerSelectionGeneration;
+      sessionRequest = null;
+      const handle = sessionHandle;
+      if (handle !== null && !handle.closed) void closeSession(handle);
     },
   };
   hostDisposers.set(host, dispose);

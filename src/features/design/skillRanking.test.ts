@@ -23,7 +23,9 @@ import {
 function loadCraftCorpus(): RankableSkill[] {
   const dir = fileURLToPath(new URL("./craft", import.meta.url));
   const skills: RankableSkill[] = [];
-  for (const file of readdirSync(dir).filter((f) => f.endsWith(".md")).sort()) {
+  for (const file of readdirSync(dir)
+    .filter((f) => f.endsWith(".md"))
+    .sort()) {
     const text = readFileSync(`${dir}/${file}`, "utf8");
     const frontMatter = /^---\n([\s\S]*?)\n---\n?/.exec(text);
     if (!frontMatter) throw new Error(`no front matter in craft/${file}`);
@@ -101,7 +103,10 @@ describe("rankSkillsForQuery on the real craft corpus", () => {
     // ranks a clear second (score 2.616 against 1.436 for third place), so
     // a top-2 selection includes it; the test pins the corpus's verdict
     // rather than the intuition that microcopy must win.
-    const ranking = rankSkillsForQuery("make the empty panel say something", corpusInPriorityOrder());
+    const ranking = rankSkillsForQuery(
+      "make the empty panel say something",
+      corpusInPriorityOrder(),
+    );
     expect(ranking.fallback).toBe(false);
     expect(ranking.slugs[0]).toBe("state-coverage");
     expect(ranking.slugs[1]).toBe("microcopy");
@@ -132,7 +137,10 @@ describe("rankSkillsForQuery on the real craft corpus", () => {
   });
 
   it("ranks form-validation first for premature form errors", () => {
-    const ranking = rankSkillsForQuery("form shows an error before I finish typing", corpusInPriorityOrder());
+    const ranking = rankSkillsForQuery(
+      "form shows an error before I finish typing",
+      corpusInPriorityOrder(),
+    );
     expect(ranking.fallback).toBe(false);
     expect(ranking.slugs[0]).toBe("form-validation");
   });
@@ -171,7 +179,10 @@ describe("rankSkillsForQuery on the real craft corpus", () => {
   });
 
   it("ranks spacing first for a padding request", () => {
-    const ranking = rankSkillsForQuery("more padding between the sections", corpusInPriorityOrder());
+    const ranking = rankSkillsForQuery(
+      "more padding between the sections",
+      corpusInPriorityOrder(),
+    );
     expect(ranking.fallback).toBe(false);
     expect(ranking.slugs[0]).toBe("spacing");
   });
@@ -185,7 +196,10 @@ describe("rankSkillsForQuery on the real craft corpus", () => {
 
   it("returns the COMPLETE ranking, never a truncated head", () => {
     // Truncation to ~4 sections is the caller's job.
-    const ranking = rankSkillsForQuery("more padding between the sections", corpusInPriorityOrder());
+    const ranking = rankSkillsForQuery(
+      "more padding between the sections",
+      corpusInPriorityOrder(),
+    );
     expect(ranking.slugs).toHaveLength(ALL_SLUGS.length);
     expect([...ranking.slugs].sort()).toEqual([...ALL_SLUGS].sort());
   });
@@ -258,7 +272,11 @@ describe("rankSkillsForQuery determinism", () => {
     // maximum IDF is ln(2) ≈ 0.69, below the fallback threshold, and a
     // small-fixture test would measure the fallback, not the scoring.
     const withoutBody: RankableSkill[] = [
-      { slug: "color", title: "Color", description: "Contrast as a gate. Apply whenever a colour choice is made." },
+      {
+        slug: "color",
+        title: "Color",
+        description: "Contrast as a gate. Apply whenever a colour choice is made.",
+      },
       { slug: "typography", title: "Typography", description: "Scale and weights." },
       ...[1, 2, 3, 4, 5, 6].map((n) => ({
         slug: `filler-${n}`,

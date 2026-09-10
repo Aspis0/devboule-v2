@@ -19,6 +19,7 @@ const channelHarness = vi.hoisted(() => ({
 }));
 
 const mocks = vi.hoisted(() => ({
+  daemonStatus: vi.fn(),
   oracleAsk: vi.fn(),
   oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
@@ -44,6 +45,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/tauri", () => ({
+  daemonStatus: mocks.daemonStatus,
   createSessionChannel: vi.fn((onEvent: (event: SessionEvent) => void) => {
     const channel = {};
     channelHarness.handlers.set(channel, onEvent);
@@ -107,6 +109,7 @@ import {
   AUTO_SKILL_PREFLIGHT_TIMEOUT_MS,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
   composeAutomaticSkillSlugs,
+  matchSkillChoice,
   MAX_AUTOMATIC_SKILL_SECTIONS,
   MAX_AUTOMATIC_ROUTED_SKILL_SECTIONS,
   parseAutomaticSkillReply,
@@ -289,6 +292,7 @@ beforeEach(() => {
 
   mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
   mocks.surfaceSettingsSet.mockResolvedValue(undefined);
+  mocks.daemonStatus.mockResolvedValue({ capabilities: [] });
 
   mocks.oracleAsk.mockResolvedValue({
     query: "Update the design",
@@ -366,6 +370,21 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
+  it("keeps a provider preference lazy until the first generation", async () => {
+    const host = createAgentHost();
+    host.setProviderPreference?.(providerInfo("grok"));
+
+    await settle();
+    expect(mocks.sessionCreate).not.toHaveBeenCalled();
+    expect(host.getAgentSessionRecord?.()).toBeNull();
+
+    const { run } = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "grok");
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
   it("does not create a second session when the same provider is selected twice", async () => {
     const host = createAgentHost();
     const provider = providerInfo("grok");
@@ -394,13 +413,50 @@ describe("ACP design host", () => {
     await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
     host.selectProvider?.(second);
 
-    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a"));
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a", 41));
     await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(2));
 
     expect(mocks.sessionDetach).toHaveBeenCalledWith(41);
     expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
     expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
 
+    await disposeAgentHost(host);
+  });
+
+  it("closes a live session when a new preference is selected and opens it on the next run", async () => {
+    const host = createAgentHost();
+    mocks.sessionCreate
+      .mockResolvedValueOnce(sessionRecord("session-a"))
+      .mockResolvedValueOnce(sessionRecord("session-b"));
+    host.selectProvider?.(providerInfo("provider-a"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    host.setProviderPreference?.(providerInfo("provider-b"));
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a", 41));
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    expect(host.getAgentSessionRecord?.()).toBeNull();
+
+    const { run } = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenLastCalledWith(null, "acp", "provider-b");
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("ends a live session without clearing the selected provider", async () => {
+    const host = createAgentHost();
+    const provider = providerInfo("grok");
+    host.selectProvider?.(provider);
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    await host.closeAgentSession?.();
+
+    expect(mocks.sessionClose).toHaveBeenCalledWith(SESSION.id, 41);
+    expect(host.getAgentSessionRecord?.()).toBeNull();
+    const { run } = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenLastCalledWith(null, "acp", "grok");
+    finishRun();
+    await run;
     await disposeAgentHost(host);
   });
 
@@ -415,21 +471,44 @@ describe("ACP design host", () => {
     });
 
     host.selectProvider?.(providerInfo("provider-a"));
-    await vi.waitFor(() => expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-a"));
+    await vi.waitFor(() =>
+      expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-a"),
+    );
 
     host.selectProvider?.(providerInfo("provider-b"));
-    await vi.waitFor(() => expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-b"));
+    await vi.waitFor(() =>
+      expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-b"),
+    );
 
     secondCreate.resolve(sessionRecord("session-b"));
     await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
     expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
 
     firstCreate.resolve(sessionRecord("session-a"));
-    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a"));
-    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-a", 41));
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(2);
     expect(host.getAgentSessionRecord?.()?.id).toBe("session-b");
 
     await disposeAgentHost(host);
+  });
+
+  it("temporarily attaches a stale session before closing it after disposal", async () => {
+    const pendingCreate = deferred<Session>();
+    const host = createAgentHost();
+    mocks.sessionCreate.mockReturnValueOnce(pendingCreate.promise);
+
+    host.selectProvider?.(providerInfo("provider-a"));
+    await vi.waitFor(() =>
+      expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "acp", "provider-a"),
+    );
+
+    const disposal = disposeAgentHost(host);
+    pendingCreate.resolve(sessionRecord("stale-session"));
+    await disposal;
+
+    expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
+    expect(mocks.sessionClose).toHaveBeenCalledWith("stale-session", 41);
+    expect(mocks.sessionDetach).toHaveBeenCalledWith(41);
   });
 
   it("leaves a failed provider start empty and allows the same selection to retry", async () => {
@@ -588,15 +667,20 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("refuses a workspace change after a session exists", async () => {
+  it("closes a live session when the workspace changes and reopens it on the next run", async () => {
     const host = createAgentHost();
     host.selectWorkspace?.(WORKSPACE);
     const { run } = await startRun(host);
-    host.selectWorkspace?.(null);
-
     expect(mocks.sessionCreate).toHaveBeenCalledWith(WORKSPACE.id, "acp");
     finishRun();
     await run;
+    host.selectWorkspace?.(null);
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith(SESSION.id, 41));
+
+    const next = await startRun(host);
+    expect(mocks.sessionCreate).toHaveBeenLastCalledWith(null, "acp");
+    finishRun();
+    await next.run;
     await disposeAgentHost(host);
   });
 
@@ -789,6 +873,44 @@ describe("ACP design host", () => {
     }
   });
 
+  it("reuses the Matched selection, not the whole corpus, when the automatic fallback fires", async () => {
+    // "animate the drawer opening" is the ranker's calibrated strong-match anchor, so this
+    // pins the fallback to a relevance-ranked head instead of the priority-order corpus.
+    const prompt = "animate the drawer opening";
+    const matched = matchSkillChoice(prompt);
+    expect(matched.fallback).toBe(false);
+    expect(matched.slugs.length).toBeLessThanOrEqual(MAX_AUTOMATIC_SKILL_SECTIONS);
+    expect(matched.slugs.length).toBeLessThan(builtInSkillIndex().length);
+
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" }, prompt);
+    channelHarness.active?.({
+      type: "agent_message",
+      messageId: "preflight-message",
+      text: "No section applies.",
+    });
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+
+    const generationPrompt = mocks.sessionSend.mock.calls[1]?.[2] as string;
+    for (const slug of matched.slugs) {
+      const entry = builtInSkillIndex().find((candidate) => candidate.slug === slug);
+      if (entry === undefined) throw new Error(`Expected built-in skill missing: ${slug}`);
+      expect(generationPrompt).toContain(`## ${entry.title}`);
+    }
+    finishRun();
+
+    const result = await run;
+    const applied = result.appliedSkillSlugs;
+    if (applied === undefined) throw new Error("Expected the run to report its applied skills.");
+    expect(applied).toEqual(matched.slugs);
+    expect(applied.length).toBeLessThanOrEqual(MAX_AUTOMATIC_SKILL_SECTIONS);
+    // Still reported as a fallback: the agent's own answer was replaced, even though the
+    // ranking it was replaced with did not itself concede.
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
   it("aborts automatic selection without starting generation", async () => {
     const host = createAgentHost();
     const controller = new AbortController();
@@ -943,9 +1065,7 @@ describe("ACP design host", () => {
     // never enters by itself.
     const index = builtInSkillIndex();
     const pinned = [...index.map((entry) => entry.slug)].reverse();
-    const baseline = index.find(
-      (entry) => entry.slug === AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0],
-    );
+    const baseline = index.find((entry) => entry.slug === AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS[0]);
     if (baseline === undefined) throw new Error("Built-in skills missing");
 
     const host = createAgentHost();
@@ -1133,7 +1253,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("waits for the subscription detach before closing the agent session", async () => {
+  it("closes the agent session while attached, then detaches", async () => {
     let releaseDetach!: () => void;
     const detachDone = new Promise<void>((resolve) => {
       releaseDetach = resolve;
@@ -1143,13 +1263,15 @@ describe("ACP design host", () => {
     await startRun(host);
 
     const disposePromise = disposeAgentHost(host);
-    await Promise.resolve();
-    expect(mocks.sessionClose).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(mocks.sessionClose).toHaveBeenCalledWith("session-1", 41));
 
     releaseDetach();
     await disposePromise;
     expect(mocks.sessionDetach).toHaveBeenCalledWith(41);
-    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1");
+    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1", 41);
+    expect(mocks.sessionClose.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.sessionDetach.mock.invocationCallOrder[0],
+    );
   });
 
   it("rejects when AgentSession cannot attach", async () => {
@@ -1185,7 +1307,7 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("stops on a permission request without approving it", async () => {
+  it("keeps a real run alive when it asks for permission", async () => {
     const host = createAgentHost();
     const { run } = await startRun(host);
 
@@ -1197,9 +1319,561 @@ describe("ACP design host", () => {
       options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
     });
 
-    await expect(run).rejects.toThrow("Respond in the Workspace surface");
+    expect(host.getPendingPermission?.()).toMatchObject({
+      sessionId: "session-1",
+      subscriptionId: 41,
+      request: { toolCallId: "permission-1" },
+    });
     expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
+    expect(mocks.sessionInterrupt).not.toHaveBeenCalled();
+
+    let settled = false;
+    void run.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await settle();
+    expect(settled).toBe(false);
+
+    const disposal = disposeAgentHost(host);
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    await disposal;
+  });
+
+  it("answers a real permission request and lets the same turn finish", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-1",
+      title: "Write a file",
+      command: "apply_patch",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    await host.respondPermission?.("allow_once");
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-1",
+      "allow_once",
+    );
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(mocks.sessionInterrupt).not.toHaveBeenCalled();
+
+    finishRun();
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+
+    await disposeAgentHost(host);
+  });
+
+  it("answers with the live subscription after a re-attach", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const liveSession = host.getAgentSession?.();
+    if (liveSession === null || liveSession === undefined) throw new Error("agent session missing");
+    const getSubscriptionId = vi.spyOn(
+      liveSession as unknown as { getSubscriptionId: () => number | null },
+      "getSubscriptionId",
+    );
+    getSubscriptionId.mockReturnValue(42);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-reattach",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    await host.respondPermission?.("allow_once");
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      42,
+      "permission-reattach",
+      "allow_once",
+    );
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("lets a re-delivered request be answered after its first answer was superseded", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const liveSession = host.getAgentSession?.();
+    if (liveSession === null || liveSession === undefined) throw new Error("agent session missing");
+
+    const first = deferred<void>();
+    const second = deferred<void>();
+    mocks.sessionPermissionRespond
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    const permission = {
+      type: "permission_request" as const,
+      toolCallId: "permission-superseded",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    };
+
+    channelHarness.active?.(permission);
+    const firstAnswer = host.respondPermission?.("allow_once");
+    await settle();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-superseded" },
+      subscriptionId: 41,
+    });
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(1);
+
+    // A re-attach gives the session a new subscription id and the daemon
+    // re-delivers the same request on it. The harness cannot re-attach a live
+    // AgentSession, so the adopted id is written directly, editing the same
+    // private field `getSubscriptionId` reads.
+    (liveSession as unknown as { subscriptionId: number }).subscriptionId = 42;
+    channelHarness.active?.(permission);
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-superseded" },
+      subscriptionId: 42,
+    });
+
+    // The superseded answer must no longer block a fresh one.
+    const secondAnswer = host.respondPermission?.("allow_once");
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(2);
+    expect(mocks.sessionPermissionRespond).toHaveBeenLastCalledWith(
+      "session-1",
+      42,
+      "permission-superseded",
+      "allow_once",
+    );
+
+    // The abandoned first answer settling late must not remove the live entry.
+    first.resolve();
+    await settle();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-superseded" },
+    });
+
+    second.resolve();
+    await settle();
+    expect(host.getPendingPermission?.()).toBeNull();
+
+    await firstAnswer;
+    await secondAnswer;
+
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("queues concurrent Design permissions and advances in FIFO order", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-a",
+      title: "Write A",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-b",
+      title: "Write B",
+      options: [{ optionId: "deny", name: "Deny", kind: "reject_once" }],
+    });
+
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-a" },
+    });
+    await host.respondPermission?.("allow_once");
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-b" },
+    });
+    await host.respondPermission?.("deny");
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(mocks.sessionPermissionRespond).toHaveBeenNthCalledWith(
+      1,
+      "session-1",
+      41,
+      "permission-a",
+      "allow_once",
+    );
+    expect(mocks.sessionPermissionRespond).toHaveBeenNthCalledWith(
+      2,
+      "session-1",
+      41,
+      "permission-b",
+      "deny",
+    );
+
+    finishRun();
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await disposeAgentHost(host);
+  });
+
+  it("deduplicates redelivery and removes a resolved request from any queue position", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const permission = (toolCallId: string) => ({
+      type: "permission_request" as const,
+      toolCallId,
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    channelHarness.active?.(permission("permission-queue-a"));
+    channelHarness.active?.(permission("permission-queue-b"));
+    channelHarness.active?.(permission("permission-queue-a"));
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-queue-a" },
+    });
+
+    channelHarness.active?.({ type: "permission_resolved", toolCallId: "permission-queue-b" });
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-queue-a" },
+    });
+    channelHarness.active?.({ type: "permission_resolved", toolCallId: "permission-queue-a" });
+    expect(host.getPendingPermission?.()).toBeNull();
+
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("keeps a rejected permission answer queued and retryable", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const response = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(response.promise);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-reject",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    const answer = host.respondPermission?.("allow_once");
+    await settle();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-reject" },
+    });
+
+    response.reject(new Error("answer IPC failed"));
+    await expect(answer).rejects.toThrow("answer IPC failed");
+    expect(host.getPendingPermission?.()).toMatchObject({
+      request: { toolCallId: "permission-reject" },
+    });
+
+    const retry = host.respondPermission?.("allow_once");
+    await retry;
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledTimes(2);
+    finishRun();
+    await run;
+    await disposeAgentHost(host);
+  });
+
+  it("does not turn an in-flight Allow into Deny when Stop interrupts the run", async () => {
+    const host = createAgentHost();
+    const controller = new AbortController();
+    const run = host.generate?.("Update the design", controller.signal);
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalled());
+    const response = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(response.promise);
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-stop-race",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-stop-race-2",
+      title: "Write another file",
+      options: [{ optionId: "deny", name: "Deny", kind: "reject_once" }],
+    });
+
+    const allow = host.respondPermission?.("allow_once");
+    await settle();
+    controller.abort();
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-stop-race",
+      "allow_once",
+    );
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-stop-race",
+      "deny",
+    );
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-stop-race-2",
+      "deny",
+    );
     expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
+
+    const disposal = disposeAgentHost(host);
+    await disposal;
+    response.resolve(undefined);
+    await allow;
+  });
+
+  it("does not turn an in-flight Allow into Deny during disposal", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const response = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(response.promise);
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-dispose-race",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    const allow = host.respondPermission?.("allow_once");
+    await settle();
+    await disposeAgentHost(host);
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-dispose-race",
+      "allow_once",
+    );
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-dispose-race",
+      "deny",
+    );
+    response.resolve(undefined);
+    await allow;
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("clears and explains a permission resolved by timeout or cancellation", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-expired",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    expect(host.getPendingPermission?.()).not.toBeNull();
+
+    channelHarness.active?.({
+      type: "permission_resolved",
+      toolCallId: "permission-expired",
+    });
+
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(host.getPermissionNotice?.()).toBe(
+      "Permission request is no longer waiting; it was answered elsewhere or it expired.",
+    );
+    const rejected = expect(run).rejects.toMatchObject({ name: "AbortError" });
+    await disposeAgentHost(host);
+    await rejected;
+  });
+
+  it("does not show a notice when our answer resolves before its IPC promise", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    const response = deferred<void>();
+    mocks.sessionPermissionRespond.mockReturnValueOnce(response.promise);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-local-resolution",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    const answer = host.respondPermission?.("allow_once");
+    await settle();
+    channelHarness.active?.({
+      type: "permission_resolved",
+      toolCallId: "permission-local-resolution",
+    });
+
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(host.getPermissionNotice?.()).toBeNull();
+    response.resolve(undefined);
+    await answer;
+    finishRun();
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await disposeAgentHost(host);
+  });
+
+  it("clears the resolved-permission notice when its run settles", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-notice",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    channelHarness.active?.({ type: "permission_resolved", toolCallId: "permission-notice" });
+    expect(host.getPermissionNotice?.()).toBe(
+      "Permission request is no longer waiting; it was answered elsewhere or it expired.",
+    );
+    finishRun();
+    await run;
+    expect(host.getPermissionNotice?.()).toBeNull();
+
+    const next = await startRun(host);
+    expect(host.getPermissionNotice?.()).toBeNull();
+    finishRun();
+    await next.run;
+    await disposeAgentHost(host);
+  });
+
+  it("does not settle after a finish event until pending permission is resolved", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-finished",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    finishRun();
+    await settle();
+
+    let settled = false;
+    void run.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await settle();
+    expect(settled).toBe(false);
+
+    await host.respondPermission?.("allow_once");
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+    await disposeAgentHost(host);
+  });
+
+  it("auto-denies a pending permission when a run is aborted", async () => {
+    const host = createAgentHost();
+    const controller = new AbortController();
+    const run = host.generate?.("Update the design", controller.signal);
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalled());
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-abort",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+    controller.abort();
+
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-abort",
+      "deny",
+    );
+    expect(host.getPendingPermission?.()).toBeNull();
+    expect(mocks.sessionInterrupt).toHaveBeenCalledWith("session-1", 41);
+    await disposeAgentHost(host);
+  });
+
+  it("auto-denies a pending permission during disposal", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host);
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "permission-dispose",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    const disposal = disposeAgentHost(host);
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    await disposal;
+
+    expect(mocks.sessionPermissionRespond).toHaveBeenCalledWith(
+      "session-1",
+      41,
+      "permission-dispose",
+      "deny",
+    );
+    expect(host.getPendingPermission?.()).toBeNull();
+  });
+
+  it("queues a preflight permission instead of answering it, then falls back to every section", async () => {
+    const index = builtInSkillIndex();
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "auto" });
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "preflight-permission",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    // Our own craft-selection question is still the user's to answer: nothing is sent.
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
+    // ...and the request is published so the card can render it.
+    expect(host.getPendingPermission?.()).toMatchObject({
+      sessionId: "session-1",
+      subscriptionId: 41,
+      request: { toolCallId: "preflight-permission" },
+    });
+
+    // The daemon cancels the request when the preflight turn ends unanswered. Its 8s
+    // deadline reaches the same state through session_interrupt.
+    channelHarness.active?.({ type: "permission_resolved", toolCallId: "preflight-permission" });
+    expect(host.getPendingPermission?.()).toBeNull();
+
+    finishRun();
+    await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+    expectPriorityHead(mocks.sessionSend.mock.calls[1]?.[2] as string);
+    finishRun();
+
+    const result = await run;
+    expect(result.appliedSkillSlugs).toEqual(index.map((entry) => entry.slug));
+    expect(result.skillSelectionFallback).toBe(true);
+    await disposeAgentHost(host);
+  });
+
+  it("queues a permission that arrives with no active run instead of dropping it", async () => {
+    const host = createAgentHost();
+    host.selectProvider?.(providerInfo("grok"));
+    await vi.waitFor(() => expect(mocks.sessionAttach).toHaveBeenCalledTimes(1));
+
+    channelHarness.active?.({
+      type: "permission_request",
+      toolCallId: "idle-permission",
+      title: "Write a file",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    });
+
+    // No run claims this session, but the daemon is still waiting: ask the user.
+    expect(mocks.sessionPermissionRespond).not.toHaveBeenCalled();
+    expect(host.getPendingPermission?.()).toMatchObject({
+      sessionId: "session-1",
+      subscriptionId: 41,
+      request: { toolCallId: "idle-permission" },
+    });
 
     await disposeAgentHost(host);
   });
@@ -1270,7 +1944,7 @@ describe("ACP design host", () => {
 
     expect(mocks.sessionCreate).toHaveBeenCalledTimes(2);
     expect(mocks.sessionAttach).toHaveBeenCalledTimes(2);
-    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1");
+    expect(mocks.sessionClose).toHaveBeenCalledWith("session-1", 41);
     await disposeAgentHost(host);
   });
 

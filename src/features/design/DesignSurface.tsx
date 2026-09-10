@@ -13,6 +13,7 @@ import type {
   DesignHost,
   DesignLayer,
   DesignMessage,
+  PendingPermission,
   DesignRadiusOption,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
@@ -29,6 +30,7 @@ import {
   loadDesignProviderId,
   loadDesignSkillSelection,
   loadDesignWorkspaceId,
+  loadStoredDesignProviderId,
   loadStoredDesignWorkspaceId,
   saveDesignProviderId,
   saveDesignSkillSelection,
@@ -46,7 +48,9 @@ import {
 } from "./designHistoryOpen";
 import { buildSkillBlock } from "./skillLoader";
 import { useProviderConsent } from "../workspace/useProviderConsent";
+import { useWorkspaceDaemon } from "../workspace/workspaceDaemon";
 import { chatCapableProviders, requiresConsent } from "../workspace/workspaceSessions";
+import { PermissionCard } from "../../components/PermissionCard";
 import { projectsList, providersList, reasonFromCause, workspacesList } from "../../lib/tauri";
 import { hitTest } from "../../lib/canvas/hitTest";
 import { nodesBounds, type Pan } from "../../lib/canvas/viewportMath";
@@ -75,6 +79,7 @@ import {
   type DesignViewport,
 } from "./designViewport";
 import "./design.css";
+import "./designSession.css";
 
 export type { DesignDocument, DesignHost } from "./designHost";
 
@@ -221,6 +226,7 @@ interface AssistantProps extends DesignSkillViewProps {
   providers: readonly ProviderInfo[];
   providersLoading: boolean;
   selectedProviderId: string | null;
+  unavailableProviderId: string | null;
   workspaceProjects: readonly WorkspaceProject[];
   workspacesLoading: boolean;
   workspacesRefreshing: boolean;
@@ -230,6 +236,10 @@ interface AssistantProps extends DesignSkillViewProps {
   workspaceSelectionUnresolved: boolean;
   agentSession: DesignAgentSession | null;
   agentState: AgentSessionState | null;
+  pendingPermission: PendingPermission | null;
+  permissionNotice: string | null;
+  capabilities: readonly string[];
+  daemonConnected: boolean;
   draft: string;
   draftPlaceholder: string;
   sendLabel: string;
@@ -247,6 +257,8 @@ interface AssistantProps extends DesignSkillViewProps {
   onWorkspacePickerOpen: () => void;
   onModelSelect: (modelId: string) => void;
   onEffortSelect: (effort: string) => void;
+  onPermissionRespond: (outcome: "allow_once" | "deny") => Promise<void>;
+  onEndSession: () => void;
   skillResultNotice: string | null;
   onSkillModeChange: (mode: DesignSkillSelection["mode"]) => void;
   onCraftOpen: () => void;
@@ -1519,6 +1531,7 @@ const DesignAssistant = memo(function DesignAssistant({
   providers,
   providersLoading,
   selectedProviderId,
+  unavailableProviderId,
   workspaceProjects,
   workspacesLoading,
   workspacesRefreshing,
@@ -1528,6 +1541,10 @@ const DesignAssistant = memo(function DesignAssistant({
   workspaceSelectionUnresolved,
   agentSession,
   agentState,
+  pendingPermission,
+  permissionNotice,
+  capabilities,
+  daemonConnected,
   draft,
   draftPlaceholder,
   sendLabel,
@@ -1545,6 +1562,8 @@ const DesignAssistant = memo(function DesignAssistant({
   onWorkspacePickerOpen,
   onModelSelect,
   onEffortSelect,
+  onPermissionRespond,
+  onEndSession,
   skillSelection,
   skillResultNotice,
   onSkillModeChange,
@@ -1562,16 +1581,37 @@ const DesignAssistant = memo(function DesignAssistant({
   const consentRestoreProviderIdRef = useRef<string | null>(null);
   const manifest = agentState?.manifest ?? null;
   const currentModel = manifestModel(manifest);
-  const modelLabel =
-    currentModel?.name ??
-    manifest?.currentModelId ??
-    (agentState === null ? "No agent running" : "No model selected");
+  const sessionClosed = agentState?.status === "closed";
+  const sessionErrored = agentState?.status === "error";
+  const sessionUnavailable = sessionClosed || sessionErrored;
+  // `fail()` in agentSession.ts records the message only as an error item in the
+  // transcript; the state carries no dedicated error field, so read it back here.
+  let sessionErrorText: string | null = null;
+  if (agentState !== null) {
+    for (let index = agentState.items.length - 1; index >= 0; index -= 1) {
+      const item = agentState.items[index];
+      if (item.role === "error") {
+        sessionErrorText = item.text;
+        break;
+      }
+    }
+  }
+  const modelLabel = sessionClosed
+    ? "Session closed"
+    : sessionErrored
+      ? "Session error"
+      : (currentModel?.name ??
+        manifest?.currentModelId ??
+        (agentState === null ? "No agent running" : "No model selected"));
   const modelButtonLabel = modelLabel === "No model selected" ? "No model" : modelLabel;
   const selectedProvider = providers.find((provider) => provider.id === selectedProviderId) ?? null;
-  const providerLabel =
-    selectedProvider?.id ??
-    manifest?.providerId ??
-    (providersLoading ? "Loading agents…" : "Choose agent");
+  const providerFallback =
+    unavailableProviderId === null
+      ? providersLoading
+        ? "Loading agents…"
+        : "Choose agent"
+      : `Unavailable: ${unavailableProviderId}`;
+  const providerLabel = selectedProvider?.id ?? manifest?.providerId ?? providerFallback;
   const selectedWorkspace = workspaceProjects
     .flatMap((project) => project.workspaces)
     .find((workspace) => workspace.id === selectedWorkspaceId);
@@ -1581,18 +1621,33 @@ const DesignAssistant = memo(function DesignAssistant({
   const efforts = currentModel?.efforts ?? [];
   const pendingSwitch =
     agentState?.pendingSwitch !== null && agentState?.pendingSwitch !== undefined;
-  const providerButtonDisabled = agentSession !== null;
-  const workspaceButtonDisabled = agentSession !== null;
+  const providerButtonDisabled = busy;
+  const workspaceButtonDisabled = busy;
   const modelButtonDisabled =
-    agentSession === null || manifest === null || manifest.models.length === 0;
-  const modelUnavailableMessage =
-    agentSession === null || manifest === null
-      ? "Start a generation to see the models offered by this agent."
-      : "This agent offered no models.";
+    agentSession === null ||
+    sessionUnavailable ||
+    manifest === null ||
+    manifest.models.length === 0;
   const modelButtonUnavailableLabel =
-    agentSession === null || manifest === null
-      ? `No agent running yet. ${modelUnavailableMessage}`
-      : modelUnavailableMessage;
+    busy && agentSession === null
+      ? "Starting the agent session; its models will appear shortly."
+      : agentSession === null
+        ? "Start a generation to see the models offered by this agent."
+        : sessionClosed
+          ? "The agent session has closed; start a generation to reconnect."
+          : sessionErrored
+            ? `Session error: ${sessionErrorText ?? "The agent reported an unknown error."} The session is still open; start a generation to continue.`
+            : manifest === null
+              ? "The agent is running; waiting for its model list."
+              : // Interim reading until the wire carries the distinction (models as
+                // Option<Vec<_>>, absent vs empty): an empty list WITH a current model is
+                // self-contradictory — an agent offering no models cannot have a current
+                // one — and matches the daemon's model-switch completion fallback, which
+                // publishes a manifest naming the switched-to model with models: []. So
+                // only an empty list with NO current model counts as evidence of absence.
+                manifest.currentModelId !== undefined
+                ? "The agent is running; its model list is not known yet."
+                : "This agent offered no models.";
 
   // A picker whose button is disabled must not keep an open flag: a session can close and a
   // later one can open, and the stale flag would reopen the menu with no user action.
@@ -1621,6 +1676,10 @@ const DesignAssistant = memo(function DesignAssistant({
     inFlight: consentInFlight,
     commandLine: consentCommandLine,
   } = useProviderConsent({ onConfirmed: handleConsentConfirmed });
+
+  useEffect(() => {
+    if (!providerPickerOpen && consentProvider !== null) cancelConsent();
+  }, [cancelConsent, consentProvider, providerPickerOpen]);
 
   const dismissProviderPicker = useCallback(() => {
     if (consentProvider !== null) {
@@ -1721,12 +1780,12 @@ const DesignAssistant = memo(function DesignAssistant({
             type="button"
             aria-label={
               workspaceButtonDisabled
-                ? `Workspace for this session: ${workspaceLabel}. Choose a workspace before the first generation.`
+                ? `Choose workspace: ${workspaceLabel}. A generation is running; wait for it to finish to change the workspace.`
                 : `Choose workspace: ${workspaceLabel}`
             }
             title={
               workspaceButtonDisabled
-                ? "This session keeps the workspace it started with. Choose a workspace before the first generation."
+                ? "A generation is running; wait for it to finish to change the workspace."
                 : undefined
             }
             aria-expanded={workspaceButtonDisabled ? undefined : workspacePickerOpen}
@@ -1845,6 +1904,29 @@ const DesignAssistant = memo(function DesignAssistant({
 
       {canGenerate ? (
         <div className="design-composer-wrap">
+          {busy && pendingPermission !== null ? (
+            <PermissionCard
+              sessionId={pendingPermission.sessionId}
+              subscriptionId={pendingPermission.subscriptionId}
+              request={pendingPermission.request}
+              capabilities={capabilities}
+              daemonState={daemonConnected ? "connected" : "disconnected"}
+              onRespond={onPermissionRespond}
+            />
+          ) : permissionNotice !== null ? (
+            <div className="permission-card-notice" role="status">
+              {permissionNotice}
+            </div>
+          ) : null}
+          {unavailableProviderId !== null ? (
+            <div className="design-provider-unavailable" role="status">
+              <span className="design-message-icon design-message-icon-error" aria-hidden="true">
+                !
+              </span>
+              Remembered agent &ldquo;{unavailableProviderId}&rdquo; is no longer available. Choose
+              another agent.
+            </div>
+          ) : null}
           <div className="design-composer-meta">
             {contextLayerName ? (
               <div className="design-composer-context">
@@ -1888,19 +1970,17 @@ const DesignAssistant = memo(function DesignAssistant({
                   ref={providerButtonRef}
                   className="design-provider-button"
                   type="button"
-                  // A session keeps the agent it was opened with, so once one exists this
-                  // is not a choice any more. Say which agent, say why, and drop the
-                  // chevron: a disabled control that still promises a menu is the shape
-                  // this surface has been carrying everywhere — `saveDocument` already
-                  // sets the rule that an absent capability removes its own UI.
+                  // A session keeps the agent it was opened with. While a generation is idle,
+                  // let the user choose a new provider; that choice closes this session and a
+                  // later generation opens a fresh one for the selected agent.
                   aria-label={
                     providerButtonDisabled
-                      ? `Agent for this session: ${providerLabel}. Choose an agent before the first generation.`
+                      ? `Choose provider: ${providerLabel}. A generation is running; wait for it to finish to change the agent.`
                       : `Choose provider: ${providerLabel}`
                   }
                   title={
                     providerButtonDisabled
-                      ? "This session keeps the agent it started with. Choose an agent before the first generation."
+                      ? "A generation is running; wait for it to finish to change the agent."
                       : undefined
                   }
                   aria-expanded={providerButtonDisabled ? undefined : providerPickerOpen}
@@ -2003,6 +2083,21 @@ const DesignAssistant = memo(function DesignAssistant({
                   </div>
                 ) : null}
               </div>
+              {agentSession !== null ? (
+                <div className="design-session-end-control">
+                  <button
+                    className="design-session-end-button"
+                    type="button"
+                    disabled={busy}
+                    onClick={onEndSession}
+                  >
+                    End session
+                  </button>
+                  <span className="design-session-end-copy">
+                    Ends this session and drops the agent&apos;s context for this surface.
+                  </span>
+                </div>
+              ) : null}
               <div className="design-agent-picker-wrap">
                 <button
                   className="design-provider-button"
@@ -2165,6 +2260,24 @@ interface DesignSurfaceContentProps {
 }
 
 function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
+  const daemon = useWorkspaceDaemon();
+  const [lastKnownDaemonCapabilities, setLastKnownDaemonCapabilities] = useState<
+    readonly string[] | null
+  >(null);
+  useEffect(() => {
+    if (daemon.state === "connected" && daemon.capabilities.includes("typed_permissions")) {
+      setLastKnownDaemonCapabilities((previous) => previous ?? daemon.capabilities);
+    }
+  }, [daemon]);
+  // A failed poll reports an empty capability list, but that means "unknown", not "absent".
+  // A permission event itself proves this session negotiated typed permissions, so keep the
+  // card visible even before the first successful status poll; thereafter use the last connected
+  // capability snapshot while the daemon is reconnecting.
+  const permissionCapabilities =
+    daemon.state === "connected"
+      ? (lastKnownDaemonCapabilities ?? daemon.capabilities)
+      : (lastKnownDaemonCapabilities ?? ["typed_permissions"]);
+  const daemonConnected = daemon.state === "connected";
   const messages = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.messages : EMPTY_DESIGN_MESSAGES,
   );
@@ -2208,6 +2321,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
+  const [unavailableProviderId, setUnavailableProviderId] = useState<string | null>(null);
   const [workspaceProjects, setWorkspaceProjects] = useState<WorkspaceProject[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [workspacesRefreshing, setWorkspacesRefreshing] = useState(false);
@@ -2223,6 +2337,12 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   );
   const [agentSessionRecord, setAgentSessionRecord] = useState<Session | null>(
     () => host.getAgentSessionRecord?.() ?? null,
+  );
+  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(
+    () => host.getPendingPermission?.() ?? null,
+  );
+  const [permissionNotice, setPermissionNotice] = useState<string | null>(
+    () => host.getPermissionNotice?.() ?? null,
   );
   const [historyOpenResult, setHistoryOpenResult] = useState<DesignHistoryOpenResult | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
@@ -2298,6 +2418,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       setAgentSession(next);
       setAgentState(next?.getState() ?? null);
       setAgentSessionRecord(nextRecord);
+      setPendingPermission(host.getPendingPermission?.() ?? null);
+      setPermissionNotice(host.getPermissionNotice?.() ?? null);
     };
     const unsubscribe = host.subscribeAgentSession?.(updateAgentSession);
     updateAgentSession();
@@ -2322,16 +2444,31 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           if (!active) return;
           if (providerSelectionInteractedRef.current) return;
           setSelectedProviderId(storedId);
+          setUnavailableProviderId(null);
           if (storedId !== null) {
             const storedProvider = available.find((provider) => provider.id === storedId);
-            if (storedProvider !== undefined) host.selectProvider?.(storedProvider);
+            if (storedProvider !== undefined) {
+              // Mount restores the preference only; the first generation owns session creation.
+              (host.setProviderPreference ?? host.selectProvider)?.(storedProvider);
+            }
+            return;
           }
+          return loadStoredDesignProviderId().then((rawStoredId) => {
+            if (!active || providerSelectionInteractedRef.current) return;
+            if (
+              rawStoredId !== null &&
+              !available.some((provider) => provider.id === rawStoredId)
+            ) {
+              setUnavailableProviderId(rawStoredId);
+            }
+          });
         });
       })
       .catch(() => {
         if (active) {
           setProviders([]);
           setSelectedProviderId(null);
+          setUnavailableProviderId(null);
         }
       })
       .finally(() => {
@@ -2408,14 +2545,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         if (candidateId !== null && selectedWorkspace !== undefined) {
           updateWorkspaceSelection(candidateId, false, null);
           if (existingSession === null && (storedSelection || (!initialLoad && wasUnresolved))) {
-            host.selectWorkspace?.(selectedWorkspace);
+            (host.setWorkspacePreference ?? host.selectWorkspace)?.(selectedWorkspace);
           }
         } else if (candidateId !== null && failedProjectExists) {
           updateWorkspaceSelection(candidateId, true, WORKSPACE_UNCONFIRMED_NOTICE);
-          if (!initialLoad && !wasUnresolved) host.selectWorkspace?.(null);
+          if (!initialLoad && !wasUnresolved) {
+            (host.setWorkspacePreference ?? host.selectWorkspace)?.(null);
+          }
         } else if (!initialLoad && candidateId !== null) {
           updateWorkspaceSelection(null, false, WORKSPACE_NOT_REGISTERED_NOTICE);
-          host.selectWorkspace?.(null);
+          (host.setWorkspacePreference ?? host.selectWorkspace)?.(null);
           void saveDesignWorkspaceId(null).then((saved) => reportPersistence("workspace", saved));
         } else if (candidateId !== null || initialLoad) {
           updateWorkspaceSelection(null, false, null);
@@ -2637,31 +2776,32 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const canGenerate = generate !== undefined;
   const selectProvider = useCallback(
     (provider: ProviderInfo) => {
-      if (agentSession !== null) return;
+      if (busy) return;
       providerSelectionInteractedRef.current = true;
       setSelectedProviderId(provider.id);
-      host.selectProvider?.(provider);
+      setUnavailableProviderId(null);
+      (host.setProviderPreference ?? host.selectProvider)?.(provider);
       void saveDesignProviderId(provider.id).then((saved) => reportPersistence("provider", saved));
     },
-    [agentSession, host, reportPersistence],
+    [busy, host, reportPersistence],
   );
   const selectWorkspace = useCallback(
     (workspace: Workspace | null) => {
-      if (agentSession !== null) return;
+      if (busy) return;
       workspaceSelectionInteractedRef.current = true;
       updateWorkspaceSelection(workspace?.id ?? null, false, null);
-      host.selectWorkspace?.(workspace);
+      (host.setWorkspacePreference ?? host.selectWorkspace)?.(workspace);
       const workspaceId = workspace?.id ?? null;
       void saveDesignWorkspaceId(workspaceId).then((saved) =>
         reportPersistence("workspace", saved),
       );
     },
-    [agentSession, host, reportPersistence, updateWorkspaceSelection],
+    [busy, host, reportPersistence, updateWorkspaceSelection],
   );
   const openWorkspacePicker = useCallback(() => {
-    if (agentSession !== null) return;
+    if (busy) return;
     void refreshWorkspaceProjects(false);
-  }, [agentSession, refreshWorkspaceProjects]);
+  }, [busy, refreshWorkspaceProjects]);
   const selectModel = useCallback(
     (modelId: string) => {
       void agentSession?.setModel(modelId);
@@ -2674,6 +2814,15 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     },
     [agentSession],
   );
+  const respondPermission = useCallback(
+    (outcome: "allow_once" | "deny"): Promise<void> =>
+      host.respondPermission?.(outcome) ?? Promise.resolve(),
+    [host],
+  );
+  const endSession = useCallback(() => {
+    if (busy || agentSession === null) return;
+    void host.closeAgentSession?.();
+  }, [agentSession, busy, host]);
 
   const generationCount = useMemo(
     () =>
@@ -3085,6 +3234,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       setMessages((current) => [...current, userMessage, assistantMessage]);
       useAppStore.getState().setDesignGeneration(host, { assistantId, controller });
       setDraft("");
+      setPermissionNotice(null);
       setSkillResultNotice(null);
       setAppliedSkillSlugs(null);
       const generationSkillSelection = skillSelectionRef.current;
@@ -3423,6 +3573,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           providers={providers}
           providersLoading={providersLoading}
           selectedProviderId={selectedProviderId}
+          unavailableProviderId={unavailableProviderId}
           workspaceProjects={workspaceProjects}
           workspacesLoading={workspacesLoading}
           workspacesRefreshing={workspacesRefreshing}
@@ -3432,6 +3583,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           workspaceSelectionUnresolved={workspaceSelectionUnresolved}
           agentSession={agentSession}
           agentState={agentState}
+          pendingPermission={pendingPermission}
+          permissionNotice={permissionNotice}
+          capabilities={permissionCapabilities}
+          daemonConnected={daemonConnected}
           draft={draft}
           draftPlaceholder={
             composerContextLayerName ? document.draftPlaceholder : document.noContextPlaceholder
@@ -3451,6 +3606,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           onWorkspacePickerOpen={openWorkspacePicker}
           onModelSelect={selectModel}
           onEffortSelect={selectEffort}
+          onPermissionRespond={respondPermission}
+          onEndSession={endSession}
           skillIndex={skillIndex}
           skillSelection={skillSelection}
           selectedSkillSlugs={selectedSkillSlugs}

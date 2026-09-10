@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  daemonStatus: vi.fn(),
   oracleAsk: vi.fn(),
   oracleFiles: vi.fn(),
   oracleStatus: vi.fn(),
@@ -17,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/tauri", () => ({
+  daemonStatus: mocks.daemonStatus,
   oracleAsk: mocks.oracleAsk,
   oracleFiles: mocks.oracleFiles,
   oracleStatus: mocks.oracleStatus,
@@ -103,6 +105,7 @@ beforeEach(() => {
   mocks.surfaceSettingsGet.mockResolvedValue({ status: "absent" });
   mocks.surfaceSettingsSet.mockResolvedValue(undefined);
   mocks.oracleFiles.mockResolvedValue([]);
+  mocks.daemonStatus.mockResolvedValue({ capabilities: [] });
   mocks.pluginsList.mockResolvedValue({ root: "", plugins: [], problem: null });
   mocks.providersList.mockResolvedValue({ providers: [], unreadableDirs: 0 });
   mocks.projectsList.mockResolvedValue([]);

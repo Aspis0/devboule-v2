@@ -16,6 +16,7 @@ import {
   loadDesignProviderId,
   loadDesignSkillSelection,
   loadDesignWorkspaceId,
+  loadStoredDesignProviderId,
   loadStoredDesignWorkspaceId,
   saveDesignProviderId,
   saveDesignSkillSelection,
@@ -317,15 +318,44 @@ describe("saveDesignSkillSelection", () => {
   });
 });
 describe("design provider settings", () => {
-  it("resolves only a provider still present in the catalog", async () => {
+  it("can read a remembered provider before the current catalog is validated", async () => {
     mocks.surfaceSettingsGet.mockResolvedValueOnce({
-      version: 1,
-      mode: "all",
-      enabledSlugs: [],
-      providerId: "removed-agent",
+      status: "value",
+      value: {
+        version: 1,
+        mode: "all",
+        enabledSlugs: [],
+        providerId: "removed-agent",
+      },
     });
 
+    await expect(loadStoredDesignProviderId()).resolves.toBe("removed-agent");
+  });
+
+  it("resolves only a provider still present in the catalog", async () => {
+    // Both directions go through the real SurfaceSettingsRead wrapper on purpose: a raw
+    // document reads as "absent", which would pass this test without comparing any ids.
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "value",
+      value: {
+        version: 1,
+        mode: "all",
+        enabledSlugs: [],
+        providerId: "removed-agent",
+      },
+    });
     await expect(loadDesignProviderId(["grok"])).resolves.toBeNull();
+
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "value",
+      value: {
+        version: 1,
+        mode: "all",
+        enabledSlugs: [],
+        providerId: "grok",
+      },
+    });
+    await expect(loadDesignProviderId(["grok"])).resolves.toBe("grok");
   });
 
   it("stores the provider and reports the save as persisted", async () => {
