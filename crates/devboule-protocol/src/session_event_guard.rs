@@ -44,6 +44,8 @@ fn session_event_samples() -> Vec<SessionEvent> {
         AgentMessage => SessionEvent::AgentMessage {
             message_id: None,
             text: String::new(),
+            parent_tool_use_id: Some("toolu_parent".to_string()),
+            spawn_depth: Some(1),
         },
         AgentUserMessage => SessionEvent::AgentUserMessage {
             message_id: None,
@@ -52,6 +54,8 @@ fn session_event_samples() -> Vec<SessionEvent> {
         AgentThought => SessionEvent::AgentThought {
             message_id: None,
             text: String::new(),
+            parent_tool_use_id: Some("toolu_parent".to_string()),
+            spawn_depth: Some(1),
         },
         AvailableCommands => SessionEvent::AvailableCommands {
             commands: Vec::new(),
@@ -65,6 +69,9 @@ fn session_event_samples() -> Vec<SessionEvent> {
                 path: "src/lib.rs".to_string(),
                 line: Some(1),
             }]),
+            subagent_type: Some("explorer".to_string()),
+            parent_tool_use_id: Some("toolu_parent".to_string()),
+            spawn_depth: Some(1),
         },
         AgentToolUpdate => SessionEvent::AgentToolUpdate {
             tool_call_id: String::new(),
@@ -75,11 +82,34 @@ fn session_event_samples() -> Vec<SessionEvent> {
                 path: "src/main.rs".to_string(),
                 line: None,
             }]),
+            parent_tool_use_id: Some("toolu_parent".to_string()),
+            spawn_depth: Some(1),
         },
         AgentFinished => SessionEvent::AgentFinished {
             stop_reason: String::new(),
             model_id: None,
             usage: None,
+        },
+        AgentTaskStarted => SessionEvent::AgentTaskStarted {
+            task_id: "task-1".to_string(),
+            title: Some("Find the relevant files".to_string()),
+            subagent_type: Some("explorer".to_string()),
+            tool_use_id: Some("toolu_parent".to_string()),
+            is_backgrounded: Some(true),
+            spawn_depth: Some(1),
+        },
+        AgentTaskNotification => SessionEvent::AgentTaskNotification {
+            task_id: "task-1".to_string(),
+            tool_use_id: Some("toolu_parent".to_string()),
+            status: crate::AgentTaskStatus::Stopped,
+            summary: Some("Stopped".to_string()),
+        },
+        AgentBackgroundTasksChanged => SessionEvent::AgentBackgroundTasksChanged {
+            tasks: vec![crate::AgentBackgroundTask {
+                task_id: "task-1".to_string(),
+                task_type: "agent".to_string(),
+                title: "Find the relevant files".to_string(),
+            }],
         },
         AgentError => SessionEvent::AgentError {
             message: String::new(),

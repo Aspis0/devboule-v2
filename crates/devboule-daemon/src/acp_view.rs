@@ -95,6 +95,8 @@ fn view_from_session_update(
             Some(SessionEvent::AgentThought {
                 message_id,
                 text: text.to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             })
         }
         Some("agent_message_chunk") => {
@@ -102,6 +104,8 @@ fn view_from_session_update(
             Some(SessionEvent::AgentMessage {
                 message_id,
                 text: text.to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             })
         }
         Some("available_commands_update") => {
@@ -129,6 +133,9 @@ fn view_from_session_update(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
             locations: locations_from_value(update.get("locations"), cwd, false),
+            subagent_type: None,
+            parent_tool_use_id: None,
+            spawn_depth: None,
         }),
         Some("tool_call_update") => {
             let text = text_from_content(update.get("content")).map(str::to_string);
@@ -148,6 +155,8 @@ fn view_from_session_update(
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string),
                 locations: locations_from_value(update.get("locations"), cwd, true),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             })
         }
         _ => None,
@@ -566,6 +575,8 @@ mod tests {
             SessionEvent::AgentThought {
                 message_id: None,
                 text: "The".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }
         );
         assert_eq!(
@@ -573,6 +584,8 @@ mod tests {
             SessionEvent::AgentThought {
                 message_id: None,
                 text: " user".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }
         );
     }
@@ -592,6 +605,8 @@ mod tests {
             SessionEvent::AgentMessage {
                 message_id: None,
                 text: "P".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }
         );
         assert_eq!(
@@ -599,6 +614,8 @@ mod tests {
             SessionEvent::AgentMessage {
                 message_id: None,
                 text: "ONG".to_string(),
+                parent_tool_use_id: None,
+                spawn_depth: None,
             }
         );
     }
@@ -632,6 +649,7 @@ mod tests {
                 stop_reason,
                 model_id,
                 usage,
+                ..
             }) => {
                 assert_eq!(stop_reason, "end_turn");
                 assert_eq!(model_id.as_deref(), Some("grok-4.6"));

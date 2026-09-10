@@ -227,6 +227,290 @@ describe("ACP agent session", () => {
     ]);
   });
 
+  it("keeps subagent identity, parentage, metadata, and live status counts", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "toolu-agent-1",
+      title: "Agent Find the relevant files",
+      status: "pending",
+      subagentType: "explorer",
+    });
+    harness.emit({
+      type: "agent_task_started",
+      taskId: "task-1",
+      title: "Find the relevant files",
+      subagentType: "explorer",
+      toolUseId: "toolu-agent-1",
+      isBackgrounded: true,
+      spawnDepth: 1,
+    });
+    harness.emit({
+      type: "agent_message",
+      messageId: "child-message-1",
+      text: "I found the files.",
+      parentToolUseId: "toolu-agent-1",
+      spawnDepth: 1,
+    });
+    harness.emit({
+      type: "agent_task_notification",
+      taskId: "task-1",
+      toolUseId: "toolu-agent-1",
+      status: "completed",
+      summary: "Search complete",
+    });
+    harness.emit({
+      type: "agent_task_started",
+      taskId: "task-2",
+      title: "Run the checks",
+      subagentType: "verifier",
+      toolUseId: "toolu-agent-2",
+      isBackgrounded: false,
+      spawnDepth: 1,
+    });
+    harness.emit({
+      type: "agent_task_started",
+      taskId: "task-3",
+      title: "Inspect the failure",
+      subagentType: "debugger",
+      toolUseId: "toolu-agent-3",
+      spawnDepth: 2,
+    });
+    harness.emit({
+      type: "agent_task_notification",
+      taskId: "task-3",
+      toolUseId: "toolu-agent-3",
+      status: "failed",
+      summary: "The inspection failed",
+    });
+    harness.emit({
+      type: "agent_task_started",
+      taskId: "task-4",
+      title: "Stop the worker",
+      subagentType: "worker",
+      spawnDepth: 1,
+    });
+    harness.emit({
+      type: "agent_task_notification",
+      taskId: "task-4",
+      status: "stopped",
+      summary: "The worker was stopped",
+    });
+
+    expect(harness.session.getState().subagents).toEqual([
+      {
+        id: "task-1",
+        title: "Find the relevant files",
+        subagentType: "explorer",
+        status: "finished",
+        rawStatus: "completed",
+        summary: "Search complete",
+        parentToolUseId: "toolu-agent-1",
+        spawnDepth: 1,
+        isBackground: true,
+      },
+      {
+        id: "task-2",
+        title: "Run the checks",
+        subagentType: "verifier",
+        status: "running",
+        rawStatus: null,
+        summary: null,
+        parentToolUseId: "toolu-agent-2",
+        spawnDepth: 1,
+        isBackground: false,
+      },
+      {
+        id: "task-3",
+        title: "Inspect the failure",
+        subagentType: "debugger",
+        status: "failed",
+        rawStatus: "failed",
+        summary: "The inspection failed",
+        parentToolUseId: "toolu-agent-3",
+        spawnDepth: 2,
+        isBackground: null,
+      },
+      {
+        id: "task-4",
+        title: "Stop the worker",
+        subagentType: "worker",
+        status: "stopped",
+        rawStatus: "stopped",
+        summary: "The worker was stopped",
+        parentToolUseId: null,
+        spawnDepth: 1,
+        isBackground: null,
+      },
+    ]);
+    expect(harness.session.getState().subagentStatusCounts).toEqual({
+      running: 1,
+      finished: 1,
+      failed: 1,
+      stopped: 1,
+      unknown: 0,
+    });
+    expect(harness.session.getState().items).toContainEqual({
+      id: "assistant-2",
+      role: "assistant",
+      text: "I found the files.",
+      messageId: "child-message-1",
+      parentToolUseId: "toolu-agent-1",
+      spawnDepth: 1,
+    });
+  });
+
+  it("reconciles replacement background membership without inventing type or status", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_task_started",
+      taskId: "task-1",
+      title: "Foreground work",
+      subagentType: "worker",
+      toolUseId: "toolu-agent-1",
+      isBackgrounded: false,
+      spawnDepth: 1,
+    });
+    harness.emit({
+      type: "agent_background_tasks_changed",
+      tasks: [
+        { taskId: "task-1", taskType: "agent", title: "Foreground work" },
+        { taskId: "task-2", taskType: "agent", title: "Recovered background work" },
+      ],
+    });
+
+    expect(harness.session.getState().subagents).toEqual([
+      expect.objectContaining({
+        id: "task-1",
+        subagentType: "worker",
+        status: "running",
+        isBackground: true,
+      }),
+      {
+        id: "task-2",
+        title: "Recovered background work",
+        subagentType: null,
+        status: "unknown",
+        rawStatus: null,
+        summary: null,
+        parentToolUseId: null,
+        spawnDepth: null,
+        isBackground: true,
+      },
+    ]);
+
+    harness.emit({
+      type: "agent_background_tasks_changed",
+      tasks: [],
+    });
+    expect(
+      harness.session.getState().subagents.map(({ id, isBackground }) => ({ id, isBackground })),
+    ).toEqual([
+      { id: "task-1", isBackground: false },
+      { id: "task-2", isBackground: false },
+    ]);
+    expect(harness.session.getState().subagentStatusCounts).toEqual({
+      running: 1,
+      finished: 0,
+      failed: 0,
+      stopped: 0,
+      unknown: 1,
+    });
+  });
+
+  it("keeps sibling blocks separate when their message ids are reused", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_message",
+      messageId: "shared-message",
+      text: "sibling A",
+      parentToolUseId: "toolu-sibling-a",
+      spawnDepth: 1,
+    });
+    harness.emit({
+      type: "agent_message",
+      messageId: "shared-message",
+      text: "sibling B",
+      parentToolUseId: "toolu-sibling-b",
+      spawnDepth: 1,
+    });
+
+    expect(harness.session.getState().items).toEqual([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        text: "sibling A",
+        messageId: "shared-message",
+        parentToolUseId: "toolu-sibling-a",
+        spawnDepth: 1,
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        text: "sibling B",
+        messageId: "shared-message",
+        parentToolUseId: "toolu-sibling-b",
+        spawnDepth: 1,
+      },
+    ]);
+  });
+
+  it("settles a live child when the session closes before notification", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_task_started",
+      taskId: "task-1",
+      title: "Interrupted work",
+      subagentType: "worker",
+      spawnDepth: 1,
+    });
+    harness.emit({
+      type: "agent_background_tasks_changed",
+      tasks: [{ taskId: "task-2", taskType: "agent", title: "Snapshot-only work" }],
+    });
+    harness.emit({ type: "exit", code: 1 });
+
+    expect(harness.session.getState().subagents).toEqual([
+      {
+        id: "task-1",
+        title: "Interrupted work",
+        subagentType: "worker",
+        status: "stopped",
+        rawStatus: null,
+        summary: null,
+        parentToolUseId: null,
+        spawnDepth: 1,
+        isBackground: false,
+      },
+      {
+        id: "task-2",
+        title: "Snapshot-only work",
+        subagentType: null,
+        status: "stopped",
+        rawStatus: null,
+        summary: null,
+        parentToolUseId: null,
+        spawnDepth: null,
+        isBackground: true,
+      },
+    ]);
+    expect(harness.session.getState().subagentStatusCounts).toEqual({
+      running: 0,
+      finished: 0,
+      failed: 0,
+      stopped: 2,
+      unknown: 0,
+    });
+  });
+
   it("makes an agent error visible to the user", async () => {
     const harness = makeHarness();
     await harness.session.start();
