@@ -59,6 +59,7 @@ pub fn run() {
             backend::session::session_send,
             backend::session::session_interrupt,
             backend::session::session_set_model,
+            backend::session::session_set_mode,
             backend::session::session_permission_respond,
             backend::session::session_resize,
             backend::session::session_close,

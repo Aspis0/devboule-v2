@@ -178,6 +178,7 @@ pub(super) fn replay_session(
     let mut event_seqs: Vec<u64> = Vec::new();
     let mut covered = from_seq;
     let mut claude_view = crate::claude_view::ClaudeView::new(None);
+    let mut codex_view = crate::codex_view::CodexView::new(None);
 
     let mut snap_stmt = conn.prepare(
         "SELECT from_seq, up_to_seq, blob, checksum FROM snapshots
@@ -269,7 +270,12 @@ pub(super) fn replay_session(
             }
             Some(EventKind::AcpEnvelope) => {
                 if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                    if record.kind == SessionKind::Pi {
+                    if record.kind == SessionKind::Codex {
+                        for view in codex_view.ingest(&value) {
+                            events.push(view);
+                            event_seqs.push(seq);
+                        }
+                    } else if record.kind == SessionKind::Pi {
                         for view in crate::pi_view::events_from_line(&value) {
                             events.push(view);
                             event_seqs.push(seq);
@@ -294,6 +300,7 @@ pub(super) fn replay_session(
     // Reload those rows independently and merge by stream sequence.
     let mut covered_reports = Vec::new();
     let mut covered_claude = crate::claude_view::ClaudeView::new(None);
+    let mut covered_codex = crate::codex_view::CodexView::new(None);
     if covered > from_seq {
         let mut report_stmt = conn.prepare(
             "SELECT seq, kind, payload, checksum FROM events
@@ -331,7 +338,11 @@ pub(super) fn replay_session(
                     covered_reports.push((seq, event));
                 }
             } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&payload) {
-                if record.kind == SessionKind::Pi {
+                if record.kind == SessionKind::Codex {
+                    for view in covered_codex.ingest(&value) {
+                        covered_reports.push((seq, view));
+                    }
+                } else if record.kind == SessionKind::Pi {
                     for view in crate::pi_view::events_from_line(&value) {
                         covered_reports.push((seq, view));
                     }

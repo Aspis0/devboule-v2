@@ -101,9 +101,9 @@ pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
 pub use session::{
     cursor_replay_ok, AgentActivityState, AgentBackgroundTask, AgentTaskStatus, Attention,
-    AttentionReason, AvailableCommandView, Cursor, CursorShape, PermissionEnvVar, PermissionOption,
-    PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor, Session,
-    SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
+    AttentionReason, AvailableCommandView, Cursor, CursorShape, NoticeSeverity, PermissionEnvVar,
+    PermissionOption, PermissionOutcome, Persistence, PersistenceKind, ResumeResult, ScreenCursor,
+    Session, SessionEvent, SessionKind, SessionModeStateView, SessionModeView, SessionModel,
     SessionModelEffort, SessionState, SessionStateSnapshot, SubscriptionId, ToolLocation,
     TranscriptIntegrity, TurnUsage,
 };

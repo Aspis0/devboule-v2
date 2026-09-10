@@ -285,18 +285,19 @@ pub(crate) fn session_manifest_from_initialize(
 // `models.currentModelId` + `availableModels`). Production consumes the
 // initialize/_meta and models/update paths today; `session/load` (reattach)
 // is the intended production caller.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn session_manifest_from_new_session(
     result: &serde_json::Value,
     provider_id: Option<String>,
 ) -> Option<SessionEvent> {
-    let models = result.get("models").and_then(|value| {
-        manifest_from_vendor_models(value, provider_id.clone(), modes_from_standard(result))
-    });
+    let modes = modes_from_standard(result).or_else(|| Some(synthesized_modes()));
+    let models = result
+        .get("models")
+        .and_then(|value| manifest_from_vendor_models(value, provider_id.clone(), modes.clone()));
     if models.is_some() {
         return models;
     }
-    modes_from_standard(result).map(|modes| SessionEvent::SessionManifest {
+    modes.map(|modes| SessionEvent::SessionManifest {
         provider_id,
         current_model_id: None,
         models: Vec::new(),
@@ -316,7 +317,7 @@ pub(crate) fn merge_handshake_manifest(
     new_session_result: &serde_json::Value,
     provider_id: Option<String>,
 ) -> Option<SessionEvent> {
-    let modes = modes_from_standard(new_session_result);
+    let modes = modes_from_standard(new_session_result).or_else(|| Some(synthesized_modes()));
     let from_new_models = new_session_result
         .get("models")
         .and_then(|value| manifest_from_vendor_models(value, None, None));
@@ -511,13 +512,85 @@ fn modes_from_standard(result: &serde_json::Value) -> Option<SessionModeStateVie
     })
 }
 
+pub(crate) fn has_standard_modes(result: &serde_json::Value) -> bool {
+    modes_from_standard(result).is_some()
+}
+
+fn synthesized_modes() -> SessionModeStateView {
+    SessionModeStateView {
+        current_mode_id: "ask".to_string(),
+        available_modes: vec![
+            SessionModeView {
+                id: "ask".to_string(),
+                name: "Always ask".to_string(),
+                description: Some("Permission prompts are shown to you".to_string()),
+            },
+            SessionModeView {
+                id: "auto_accept".to_string(),
+                name: "Auto accept".to_string(),
+                description: Some("Permission prompts are approved automatically".to_string()),
+            },
+        ],
+    }
+}
+
+pub(crate) fn current_mode_id_from_update(
+    value: &serde_json::Value,
+    expected_session_id: &str,
+) -> Option<String> {
+    let params = value.get("params")?;
+    if !expected_session_id.is_empty()
+        && params.get("sessionId").and_then(serde_json::Value::as_str) != Some(expected_session_id)
+    {
+        return None;
+    }
+    let update = params.get("update")?;
+    if update
+        .get("sessionUpdate")
+        .and_then(serde_json::Value::as_str)
+        != Some("current_mode_update")
+    {
+        return None;
+    }
+    update
+        .get("modeId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|mode_id| !mode_id.is_empty())
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_line, merge_handshake_manifest, session_manifest_from_models_update,
-        session_manifest_from_new_session, view_from_envelope, view_from_envelope_in, AcpLineKind,
+        classify_line, current_mode_id_from_update, merge_handshake_manifest,
+        session_manifest_from_models_update, session_manifest_from_new_session, view_from_envelope,
+        view_from_envelope_in, AcpLineKind,
     };
     use devboule_protocol::SessionEvent;
+
+    const GROK_CAPTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../reports/foundations/wire/grok-v1.jsonl"
+    ));
+    const QWEN_CAPTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../reports/foundations/wire/qwen-v1.jsonl"
+    ));
+
+    fn measured_raw(capture: &str, needle: &str) -> serde_json::Value {
+        capture
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|entry| {
+                entry
+                    .get("raw")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .find(|raw| raw.contains(needle))
+            .map(|raw| parse(&raw))
+            .unwrap_or_else(|| panic!("missing measured line containing {needle}"))
+    }
 
     // Reconstructed from recon/probes/grok-acp-fullcaps.txt (2026-09-04).
     // The probe file truncates long lines; these objects keep the measured
@@ -870,7 +943,9 @@ mod tests {
         };
         assert_eq!(provider_id.as_deref(), Some("grok"));
         assert_eq!(current_model_id.as_deref(), Some("grok-4.6"));
-        assert!(modes.is_none());
+        let modes = modes.expect("grok synthesized modes");
+        assert_eq!(modes.current_mode_id, "ask");
+        assert_eq!(modes.available_modes[1].id, "auto_accept");
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].model_id, "grok-4.6");
         assert_eq!(models[0].context_tokens, Some(500_000));
@@ -891,6 +966,64 @@ mod tests {
             .map(|effort| effort.id.as_str())
             .collect();
         assert!(!grok45_ids.contains(&"xhigh"));
+    }
+
+    #[test]
+    fn measured_grok_session_new_without_modes_gets_permission_modes() {
+        let result = measured_raw(GROK_CAPTURE, r#""id":2,"result""#)["result"].clone();
+        let SessionEvent::SessionManifest { modes, .. } =
+            session_manifest_from_new_session(&result, Some("grok".to_string()))
+                .expect("measured grok session/new")
+        else {
+            panic!("expected SessionManifest");
+        };
+        let modes = modes.expect("synthesized grok modes");
+        assert_eq!(modes.current_mode_id, "ask");
+        assert_eq!(
+            modes.available_modes[0].description.as_deref(),
+            Some("Permission prompts are shown to you")
+        );
+        assert_eq!(modes.available_modes[1].id, "auto_accept");
+        assert_eq!(
+            modes.available_modes[1].description.as_deref(),
+            Some("Permission prompts are approved automatically")
+        );
+    }
+
+    #[test]
+    fn measured_qwen_mode_switch_and_private_notification_are_tolerated() {
+        let result = measured_raw(QWEN_CAPTURE, r#""id":2,"result""#)["result"].clone();
+        let SessionEvent::SessionManifest { modes, .. } =
+            session_manifest_from_new_session(&result, Some("qwen".to_string()))
+                .expect("measured qwen session/new")
+        else {
+            panic!("expected SessionManifest");
+        };
+        let modes = modes.expect("qwen modes");
+        assert_eq!(modes.current_mode_id, "auto");
+        assert!(modes.available_modes.iter().any(|mode| mode.id == "plan"));
+
+        let request = measured_raw(QWEN_CAPTURE, r#""method":"session/set_mode""#);
+        assert_eq!(request["params"]["sessionId"], result["sessionId"]);
+        assert_eq!(request["params"]["modeId"], "plan");
+        let response = measured_raw(QWEN_CAPTURE, r#""id":3,"result":{}"#);
+        assert_eq!(response["result"], serde_json::json!({}));
+
+        let private = measured_raw(QWEN_CAPTURE, "qwen/notify/session/mode-update");
+        assert!(view_from_envelope(&private, result["sessionId"].as_str().unwrap()).is_none());
+
+        let standard = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": result["sessionId"],
+                "update": {"sessionUpdate": "current_mode_update", "modeId": "plan"}
+            }
+        });
+        assert_eq!(
+            current_mode_id_from_update(&standard, result["sessionId"].as_str().unwrap()),
+            Some("plan".to_string())
+        );
     }
 
     #[test]

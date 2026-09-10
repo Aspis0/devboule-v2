@@ -9,9 +9,8 @@ use crate::error::{ErrorCode, ErrorDetails, WireError};
 /// connection and must be retained by the client until that observer detaches.
 pub type SubscriptionId = u64;
 
-/// M2 implements Terminal; ACP/Agent can be added as another serialized
-/// variant without changing the command signatures or the existing
-/// `terminal` wire value.
+/// M2 implements Terminal; agent transports are additive serialized variants
+/// without changing the command signatures or existing wire values.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
@@ -19,14 +18,16 @@ pub enum SessionKind {
     Acp,
     Claude,
     Pi,
+    Codex,
 }
 
 impl SessionKind {
-    /// ACP, Claude stream-json, and Pi RPC are live agent sessions.
+    /// ACP, Claude stream-json, Pi RPC, and Codex app-server are live agent
+    /// sessions.
     pub fn is_agent(&self) -> bool {
         match self {
             Self::Terminal => false,
-            Self::Acp | Self::Claude | Self::Pi => true,
+            Self::Acp | Self::Claude | Self::Pi | Self::Codex => true,
         }
     }
 }
@@ -248,6 +249,11 @@ pub enum SessionEvent {
         seq: u64,
         data: String,
     },
+    /// A daemon-originated non-fatal transcript notice.
+    SessionNotice {
+        text: String,
+        severity: NoticeSeverity,
+    },
     /// Text emitted by an ACP agent message chunk.
     AgentMessage {
         message_id: Option<String>,
@@ -388,6 +394,12 @@ pub enum SessionEvent {
     /// cancel). `tool_call_id` matches the request the UI is displaying.
     PermissionResolved {
         tool_call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected_option_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected_option_kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        selected_option_name: Option<String>,
     },
     /// Models, thinking, and modes the live ACP session has declared.
     ///
@@ -739,6 +751,13 @@ pub fn cursor_replay_ok(current_generation: u64, cursor: Cursor) -> Result<(), W
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeSeverity {
+    Info,
+    Warning,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -976,6 +995,25 @@ mod tests {
     }
 
     #[test]
+    fn session_notice_round_trips_with_severity() {
+        let event = SessionEvent::SessionNotice {
+            text: "Codex declined an out-of-scope request.".to_string(),
+            severity: NoticeSeverity::Warning,
+        };
+        let encoded = serde_json::to_value(&event).expect("event json");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "type": "session_notice",
+                "text": "Codex declined an out-of-scope request.",
+                "severity": "warning"
+            })
+        );
+        let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
     fn permission_request_round_trips_with_tool_call_correlation() {
         let event = SessionEvent::PermissionRequest {
             tool_call_id: "call-17".to_string(),
@@ -1002,6 +1040,7 @@ mod tests {
         assert_eq!(encoded["env"][0]["name"], "DB_GATE");
         assert_eq!(encoded["env"][0]["value"], "SAFE");
         assert_eq!(encoded["options"][0]["optionId"], "allow");
+        assert_eq!(encoded["options"][0]["name"], "Allow once");
         assert_eq!(encoded["options"][0]["kind"], "allow_once");
         let decoded: SessionEvent = serde_json::from_value(encoded).expect("event");
         assert_eq!(decoded, event);
@@ -1340,6 +1379,7 @@ mod tests {
         assert!(SessionKind::Claude.is_agent());
         assert!(SessionKind::Acp.is_agent());
         assert!(SessionKind::Pi.is_agent());
+        assert!(SessionKind::Codex.is_agent());
         assert!(!SessionKind::Terminal.is_agent());
     }
 
@@ -1348,6 +1388,16 @@ mod tests {
         assert_eq!(serde_json::to_value(SessionKind::Pi).expect("json"), "pi");
         let decoded: SessionKind = serde_json::from_str("\"pi\"").expect("kind");
         assert_eq!(decoded, SessionKind::Pi);
+    }
+
+    #[test]
+    fn codex_session_kind_is_the_wire_string_codex() {
+        assert_eq!(
+            serde_json::to_value(SessionKind::Codex).expect("json"),
+            "codex"
+        );
+        let decoded: SessionKind = serde_json::from_str("\"codex\"").expect("kind");
+        assert_eq!(decoded, SessionKind::Codex);
     }
 
     #[test]

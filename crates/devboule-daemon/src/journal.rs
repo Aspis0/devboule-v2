@@ -2020,6 +2020,7 @@ fn kind_str(kind: &SessionKind) -> &'static str {
         SessionKind::Acp => "acp",
         SessionKind::Claude => "claude",
         SessionKind::Pi => "pi",
+        SessionKind::Codex => "codex",
     }
 }
 
@@ -2029,6 +2030,7 @@ pub(super) fn parse_kind(value: &str) -> Result<SessionKind, JournalError> {
         "acp" => Ok(SessionKind::Acp),
         "claude" => Ok(SessionKind::Claude),
         "pi" => Ok(SessionKind::Pi),
+        "codex" => Ok(SessionKind::Codex),
         other => Err(JournalError::Corrupt(format!(
             "unknown session kind '{other}'"
         ))),

@@ -1,10 +1,19 @@
-import { memo, useEffect, useId, useRef, useState } from "react";
+import {
+  memo,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   createSessionChannel,
   sessionAttach,
   sessionDetach,
   sessionInterrupt,
   sessionSend,
+  sessionSetMode,
   sessionSetModel,
   type SubscriptionId,
   type SessionChannel,
@@ -31,6 +40,7 @@ interface AgentChatSurfaceProps {
   title: string;
   cwd?: string;
   id?: string;
+  auxiliary?: ReactNode;
   observedState?: SessionState | null;
   elapsedMs?: number | null;
   onPermissionRequest?: (
@@ -68,6 +78,9 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
       typeof args?.modelId === "string" ? args.modelId : undefined,
       typeof args?.effort === "string" ? args.effort : undefined,
     ) as Promise<T>;
+  }
+  if (command === "session_set_mode") {
+    return sessionSetMode(id, typeof args?.modeId === "string" ? args.modeId : "") as Promise<T>;
   }
   if (command === "session_interrupt")
     return sessionInterrupt(id, args?.subscriptionId as SubscriptionId) as Promise<T>;
@@ -247,6 +260,158 @@ function SubagentMenu({ subagents, statusCounts }: SubagentMenuProps) {
   );
 }
 
+type ModeTier = "planning" | "safe" | "moderate" | "dangerous" | "neutral";
+
+const MODE_TIERS: Record<string, ModeTier> = {
+  plan: "planning",
+  default: "safe",
+  ask: "safe",
+  acceptEdits: "moderate",
+  auto: "moderate",
+  "auto-edit": "moderate",
+  auto_accept: "moderate",
+  "auto-review": "moderate",
+  bypassPermissions: "dangerous",
+  bypass: "dangerous",
+  yolo: "dangerous",
+  "full-access": "dangerous",
+};
+
+function modeTier(modeId: string): ModeTier {
+  return MODE_TIERS[modeId] ?? "neutral";
+}
+
+function modeDotClass(modeId: string): string {
+  return `workspace-mode-dot workspace-mode-${modeTier(modeId)}`;
+}
+
+interface PickerOption {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+interface PickerChipProps {
+  label: string;
+  options: PickerOption[];
+  currentId: string | null;
+  onSelect: (id: string) => void;
+  chipTestId: string;
+  optionTestId: (id: string) => string;
+  dotFor?: (id: string) => string;
+}
+
+/** One chip + listbox picker shared by the mode, model, and effort controls. */
+function PickerChip({
+  label,
+  options,
+  currentId,
+  onSelect,
+  chipTestId,
+  optionTestId,
+  dotFor,
+}: PickerChipProps) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node) || !menuRef.current?.contains(target)) setOpen(false);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("click", closeOnOutsideClick);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("click", closeOnOutsideClick);
+    };
+  }, [open]);
+
+  if (options.length === 0) return null;
+
+  const current = options.find((option) => option.id === currentId) ?? null;
+
+  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    const optionButtons = [
+      ...(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role='option']") ?? []),
+    ];
+    const index = optionButtons.indexOf(document.activeElement as HTMLButtonElement);
+    const next =
+      event.key === "ArrowDown"
+        ? (optionButtons[Math.min(index + 1, optionButtons.length - 1)] ?? optionButtons[0])
+        : (optionButtons[Math.max(index - 1, 0)] ?? optionButtons[0]);
+    next?.focus();
+  };
+
+  return (
+    <div ref={menuRef} className="workspace-mode-chip">
+      <button
+        type="button"
+        className="workspace-mode-chip-trigger"
+        data-testid={chipTestId}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {current !== null && dotFor !== undefined ? (
+          <span className={dotFor(current.id)} aria-hidden="true" />
+        ) : null}
+        <span>{current?.name ?? currentId ?? label}</span>
+        <span className="workspace-mode-caret" aria-hidden="true">
+          ▾
+        </span>
+      </button>
+      {open ? (
+        <div
+          className="workspace-mode-menu"
+          id={listId}
+          role="listbox"
+          aria-label={label}
+          onKeyDown={handleMenuKeyDown}
+        >
+          {options.map((option) => (
+            <button
+              type="button"
+              role="option"
+              className="workspace-mode-option"
+              key={option.id}
+              aria-selected={option.id === currentId}
+              data-testid={optionTestId(option.id)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onSelect(option.id);
+                setOpen(false);
+              }}
+            >
+              <span className="workspace-mode-name">{option.name}</span>
+              {option.description ? (
+                <span className="workspace-mode-description">{option.description}</span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Description line for a model option: catalog copy plus the context size. */
+function modelOptionDescription(model: SessionModel): string | undefined {
+  const parts = [
+    model.description ?? null,
+    model.contextTokens === undefined ? null : `${model.contextTokens.toLocaleString()} tokens`,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
 function usageCopy(state: AgentSessionState): string | null {
   const finished = state.lastFinished;
   if (finished === null) return null;
@@ -323,6 +488,20 @@ function renderItem(item: AgentChatItem) {
     );
   }
 
+  if (item.role === "system") {
+    return (
+      <div
+        className={className}
+        key={item.id}
+        data-severity={item.severity}
+        style={{ ...style, opacity: 0.68 }}
+      >
+        <div className="workspace-chat-label">System</div>
+        <div className="workspace-chat-copy">{item.text}</div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={className}
@@ -341,6 +520,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   title,
   cwd,
   id,
+  auxiliary,
   observedState = null,
   elapsedMs = null,
   onPermissionRequest,
@@ -358,6 +538,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     lastFinished: null,
     manifest: null,
     pendingSwitch: null,
+    pendingModeId: null,
   });
   const conversationRef = useRef<HTMLDivElement>(null);
 
@@ -409,12 +590,14 @@ export const AgentChatSurface = memo(function AgentChatSurface({
     const conversation = conversationRef.current;
     if (conversation === null) return;
     conversation.scrollTop = conversation.scrollHeight;
-  }, [state.items, state.streaming]);
+  }, [state.items, state.streaming, auxiliary]);
 
   const finishCopy = usageCopy(state);
   const manifest = state.manifest;
   const stripModel = manifest === null ? null : manifestModel(manifest);
   const efforts = stripModel?.efforts ?? [];
+  const modes = manifest?.modes;
+  const currentModeId = state.pendingModeId ?? modes?.currentModeId ?? null;
   const pendingSwitch = state.pendingSwitch !== null;
   const pendingCopy = manifest === null ? null : pendingTargetCopy(manifest, state.pendingSwitch);
   const osGone =
@@ -437,16 +620,6 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           {statusLabel}
         </span>
         {cwd ? <span className="workspace-session-cwd">{cwd}</span> : null}
-        {state.status === "running" ? (
-          <button
-            type="button"
-            className="workspace-agent-stop"
-            aria-label="Stop the current turn"
-            onClick={() => void sessionRef.current?.interrupt()}
-          >
-            Stop
-          </button>
-        ) : null}
       </div>
       {manifest !== null && (manifest.providerId !== undefined || manifest.models.length > 0) ? (
         <div
@@ -455,64 +628,9 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           aria-busy={pendingSwitch}
         >
           {manifest.providerId !== undefined ? <span>{manifest.providerId}</span> : null}
-          {manifest.models.length > 1 ? (
-            <select
-              data-testid="session-model-select"
-              aria-label="Model"
-              value={manifest.currentModelId ?? ""}
-              onChange={(event) => void sessionRef.current?.setModel(event.target.value)}
-            >
-              {manifest.models.map((model) => (
-                <option key={model.modelId} value={model.modelId}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-          ) : stripModel !== null ? (
-            <span>{stripModel.name}</span>
-          ) : null}
-          {efforts.length > 0 ? (
-            <select
-              data-testid="session-effort-select"
-              aria-label="Thinking effort"
-              value={confirmedEffort(stripModel) ?? ""}
-              onChange={(event) => {
-                const effort = event.target.value;
-                if (manifest.providerId !== undefined && manifest.currentModelId !== undefined) {
-                  setPreferredEffort(manifest.providerId, manifest.currentModelId, effort);
-                }
-                void sessionRef.current?.setModel(undefined, effort);
-              }}
-            >
-              {efforts.map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.label}
-                </option>
-              ))}
-            </select>
-          ) : null}
           {pendingCopy !== null ? (
             <span data-testid="session-pending-label">{pendingCopy}</span>
           ) : null}
-        </div>
-      ) : null}
-      {state.manifest?.modes && state.manifest.modes.availableModes.length > 0 ? (
-        <div
-          className="workspace-agent-modes"
-          role="radiogroup"
-          aria-label="Session mode"
-          data-testid="session-modes"
-        >
-          {state.manifest.modes.availableModes.map((mode) => (
-            <span
-              key={mode.id}
-              role="radio"
-              aria-checked={mode.id === state.manifest?.modes?.currentModeId}
-              title={mode.description}
-            >
-              {mode.name}
-            </span>
-          ))}
         </div>
       ) : null}
       <div ref={conversationRef} className="workspace-conversation workspace-scroll">
@@ -527,6 +645,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
           </div>
         ) : null}
         {finishCopy !== null ? <div className="workspace-chat-finish">{finishCopy}</div> : null}
+        {auxiliary}
       </div>
       <WorkspaceComposer
         streaming={state.streaming && !osGone}
@@ -534,6 +653,61 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         disabledReason={disabledReason}
         availableCommands={state.availableCommands}
         onSend={(text) => void sessionRef.current?.send(text)}
+        onStop={() => void sessionRef.current?.interrupt()}
+        controls={
+          <>
+            {modes !== undefined ? (
+              <PickerChip
+                label="Session mode"
+                options={modes.availableModes.map((mode) => ({
+                  id: mode.id,
+                  name: mode.name,
+                  description: mode.description,
+                }))}
+                currentId={currentModeId}
+                onSelect={(modeId) => void sessionRef.current?.setMode(modeId)}
+                chipTestId="mode-chip"
+                optionTestId={(id) => `mode-option-${id}`}
+                dotFor={modeDotClass}
+              />
+            ) : null}
+            {manifest !== null && manifest.models.length > 1 ? (
+              <PickerChip
+                label="Model"
+                options={manifest.models.map((model) => ({
+                  id: model.modelId,
+                  name: model.name,
+                  description: modelOptionDescription(model),
+                }))}
+                currentId={manifest.currentModelId ?? null}
+                onSelect={(modelId) => void sessionRef.current?.setModel(modelId)}
+                chipTestId="model-chip"
+                optionTestId={(id) => `model-option-${id}`}
+              />
+            ) : stripModel !== null ? (
+              <span className="workspace-picker-static">{stripModel.name}</span>
+            ) : null}
+            {manifest !== null && efforts.length > 0 ? (
+              <PickerChip
+                label="Thinking effort"
+                options={efforts.map((entry) => ({
+                  id: entry.id,
+                  name: entry.label,
+                  description: entry.description,
+                }))}
+                currentId={confirmedEffort(stripModel)}
+                onSelect={(effort) => {
+                  if (manifest.providerId !== undefined && manifest.currentModelId !== undefined) {
+                    setPreferredEffort(manifest.providerId, manifest.currentModelId, effort);
+                  }
+                  void sessionRef.current?.setModel(undefined, effort);
+                }}
+                chipTestId="effort-chip"
+                optionTestId={(id) => `effort-option-${id}`}
+              />
+            ) : null}
+          </>
+        }
       />
     </div>
   );

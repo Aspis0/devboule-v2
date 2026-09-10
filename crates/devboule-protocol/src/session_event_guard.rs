@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::{AgentActivityState, CursorShape, ScreenCursor, SessionEvent, TranscriptIntegrity};
+use crate::{
+    AgentActivityState, CursorShape, NoticeSeverity, ScreenCursor, SessionEvent,
+    TranscriptIntegrity,
+};
 
 /// One dummy of every [`SessionEvent`] variant.
 ///
@@ -40,6 +43,10 @@ fn session_event_samples() -> Vec<SessionEvent> {
         Output => SessionEvent::Output {
             seq: 0,
             data: String::new(),
+        },
+        SessionNotice => SessionEvent::SessionNotice {
+            text: String::new(),
+            severity: NoticeSeverity::Info,
         },
         AgentMessage => SessionEvent::AgentMessage {
             message_id: None,
@@ -129,6 +136,9 @@ fn session_event_samples() -> Vec<SessionEvent> {
         },
         PermissionResolved => SessionEvent::PermissionResolved {
             tool_call_id: String::new(),
+            selected_option_id: None,
+            selected_option_kind: None,
+            selected_option_name: None,
         },
         SessionManifest => SessionEvent::SessionManifest {
             provider_id: None,

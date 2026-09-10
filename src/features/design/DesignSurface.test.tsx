@@ -324,6 +324,7 @@ function agentState(manifest: AgentSessionState["manifest"]): AgentSessionState 
     lastFinished: null,
     manifest,
     pendingSwitch: null,
+    pendingModeId: null,
   };
 }
 
@@ -755,6 +756,7 @@ describe("DesignSurface host capabilities", () => {
         ...session.getState(),
         manifest: confirmedManifest,
         pendingSwitch: null,
+        pendingModeId: null,
       });
     });
 

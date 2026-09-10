@@ -25,7 +25,7 @@ const liveSession = (id: string, title = id): Session => ({
 });
 
 describe("workspace session controller", () => {
-  it("maps stream-json, ACP, and Pi RPC to their session kinds", () => {
+  it("maps stream-json, ACP, Pi RPC, and Codex app-server to their session kinds", () => {
     expect(
       sessionCreateFromProvider({
         id: "claude",
@@ -53,6 +53,15 @@ describe("workspace session controller", () => {
         protocol: "pi-rpc",
       }),
     ).toEqual({ kind: "pi", provider: null });
+    expect(
+      sessionCreateFromProvider({
+        id: "codex",
+        executable: "codex.exe",
+        acpAvailable: false,
+        authentication: "unknown",
+        protocol: "codex-app-server",
+      }),
+    ).toEqual({ kind: "codex", provider: null });
     expect(sessionCreateFromProvider(undefined)).toEqual({ kind: "acp", provider: null });
     expect(
       chatCapableProviders([
@@ -61,7 +70,7 @@ describe("workspace session controller", () => {
           executable: "codex.exe",
           acpAvailable: false,
           authentication: "unknown",
-          protocol: null,
+          protocol: "codex-app-server",
         },
         {
           id: "grok",
@@ -78,7 +87,7 @@ describe("workspace session controller", () => {
           protocol: "pi-rpc",
         },
       ]).map((provider) => provider.id),
-    ).toEqual(["grok", "pi"]);
+    ).toEqual(["codex", "grok", "pi"]);
   });
 
   it("offers npx wrappers and flags them with requiresConsent", () => {
@@ -90,6 +99,7 @@ describe("workspace session controller", () => {
         authentication: "unknown" as const,
         protocol: "acp" as const,
         origin: "npx-wrapper" as const,
+        pickable: false,
       },
       {
         id: "grok",
@@ -108,7 +118,7 @@ describe("workspace session controller", () => {
       },
     ];
     const capable = chatCapableProviders(providers);
-    expect(capable.map((p) => p.id)).toEqual(["codex-acp", "grok", "bare"]);
+    expect(capable.map((p) => p.id)).toEqual(["grok", "bare"]);
     expect(requiresConsent(providers[0])).toBe(true);
     expect(requiresConsent(providers[1])).toBe(false);
     expect(requiresConsent(providers[2])).toBe(false);
@@ -178,6 +188,8 @@ describe("workspace session controller", () => {
         authentication: "unknown" as const,
         protocol: "acp" as const,
         origin: "npx-wrapper" as const,
+        // Native Codex uses app-server, so this ACP wrapper stays in Settings.
+        pickable: false,
       },
       {
         id: "pi-acp",
@@ -202,7 +214,6 @@ describe("workspace session controller", () => {
 
     expect(chatCapableProviders(providers).map((provider) => provider.id)).toEqual([
       "claude",
-      "codex-acp",
       "pi",
     ]);
     expect(
@@ -212,7 +223,7 @@ describe("workspace session controller", () => {
         providers[3],
         providers[4],
       ]).map((provider) => provider.id),
-    ).toEqual(["claude-acp", "codex-acp", "pi"]);
+    ).toEqual(["claude-acp", "pi"]);
   });
 
   it("loads terminal and ACP sessions and selects the first real session", async () => {
@@ -399,16 +410,41 @@ describe("workspace session controller", () => {
       },
     ]);
 
-    expect(controller.getState().sessions).toEqual([
-      {
-        ...liveSession("terminal-1", "old title"),
-        workspaceId: "workspace-1",
-        title: "killed shell",
-        state: { type: "ended", generation: 1, code: 137, integrity: { kind: "complete" } },
-        elapsedMs: 42,
-      },
-    ]);
+    // The process is gone, so the tab leaves the strip; nothing stays selected
+    // behind a tab that no longer renders.
+    expect(controller.getState().sessions).toEqual([]);
+    expect(controller.getState().selectedSessionId).toBeNull();
     release();
+  });
+
+  it("keeps a session the user opened explicitly even without a running process", async () => {
+    const recovered = {
+      ...liveSession("old-1", "restored agent"),
+      kind: "acp" as const,
+      state: {
+        type: "recovered" as const,
+        generation: 2,
+        integrity: {
+          kind: "unverifiable" as const,
+          droppedFrames: 0,
+          droppedBytes: 0,
+          trimmedBytes: 0,
+        },
+      },
+    };
+    const controller = createWorkspaceSessionController({
+      list: vi.fn(async () => [liveSession("live-1")]),
+      create: vi.fn(async () => liveSession("terminal-2")),
+    });
+    await controller.refresh();
+
+    controller.open(recovered);
+
+    expect(controller.getState().sessions.map((session) => session.id)).toEqual([
+      "live-1",
+      "old-1",
+    ]);
+    expect(controller.getState().selectedSessionId).toBe("old-1");
   });
 
   it("keeps a pushed attention state when an older list response resolves afterward", async () => {

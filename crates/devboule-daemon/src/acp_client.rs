@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -20,7 +21,8 @@ use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, WireError};
 
 use super::acp_host::{AcpHost, RpcError, RpcRespond};
 use crate::acp_view::{
-    classify_line, merge_handshake_manifest, view_from_envelope_in, AcpLineKind,
+    classify_line, current_mode_id_from_update, has_standard_modes, merge_handshake_manifest,
+    view_from_envelope_in, AcpLineKind,
 };
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
@@ -46,6 +48,9 @@ const COMMAND_PROVIDER_ENV: &str = "DEVBOULE_ACP_PROVIDER_ID";
 pub const ACP_TURN_SILENCE: Duration = Duration::from_secs(60);
 const TURN_TIMEOUT_ENV: &str = "DEVBOULE_ACP_TURN_TIMEOUT_MS";
 const MAX_ACP_PERMISSION_LINE_BYTES: usize = 256 * 1024;
+const ACP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+
+type AcpModeResponses = Arc<Mutex<HashMap<u64, Sender<Result<(), String>>>>>;
 
 fn turn_silence() -> Duration {
     std::env::var(TURN_TIMEOUT_ENV)
@@ -397,8 +402,9 @@ pub(super) fn resolve_named(id: &str, paths: &RuntimePaths) -> Result<PtyCommand
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
+    requested_mode: Option<String>,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, None)
+    spawn_process_with_load(state, command, None, requested_mode)
 }
 
 pub(super) fn spawn_process_resuming(
@@ -406,13 +412,14 @@ pub(super) fn spawn_process_resuming(
     command: PtyCommand,
     peer_session_id: String,
 ) -> Result<SpawnedSession, WireError> {
-    spawn_process_with_load(state, command, Some(peer_session_id))
+    spawn_process_with_load(state, command, Some(peer_session_id), None)
 }
 
 fn spawn_process_with_load(
     state: &Arc<ServerState>,
     command: PtyCommand,
     load_session_id: Option<String>,
+    requested_mode: Option<String>,
 ) -> Result<SpawnedSession, WireError> {
     let mut process = Command::new(&command.program);
     process
@@ -522,6 +529,7 @@ fn spawn_process_with_load(
         &command.cwd,
         command.provider_id.clone(),
         load_session_id.as_deref(),
+        requested_mode.as_deref(),
     ) {
         Ok(handshake) => handshake,
         Err(error) => {
@@ -569,6 +577,7 @@ fn spawn_process_with_load(
     let reader_dispatch = AcpReader::new(
         transport.pending_ids(),
         transport.model_switch_ids(),
+        transport.mode_switch_ids(),
         session_id,
         Arc::clone(&transport.permission_broker),
         Arc::clone(&transport.host),
@@ -610,6 +619,8 @@ struct AcpTransport {
     next_id: AtomicU64,
     pending: Arc<Mutex<HashSet<u64>>>,
     model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
+    mode_switches: AcpModeResponses,
+    remote_modes: AtomicBool,
     session_id: Mutex<Option<String>>,
     current_model_id: Mutex<Option<String>>,
     current_effort: Mutex<Option<String>>,
@@ -627,6 +638,8 @@ impl AcpTransport {
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashSet::new())),
             model_switches: Arc::new(Mutex::new(HashMap::new())),
+            mode_switches: Arc::new(Mutex::new(HashMap::new())),
+            remote_modes: AtomicBool::new(false),
             session_id: Mutex::new(None),
             current_model_id: Mutex::new(None),
             current_effort: Mutex::new(None),
@@ -708,6 +721,10 @@ impl AcpTransport {
         Arc::clone(&self.model_switches)
     }
 
+    fn mode_switch_ids(&self) -> AcpModeResponses {
+        Arc::clone(&self.mode_switches)
+    }
+
     fn set_session_id(&self, session_id: String) {
         if let Ok(mut current) = self.session_id.lock() {
             *current = Some(session_id);
@@ -720,6 +737,14 @@ impl AcpTransport {
             .ok()
             .and_then(|value| value.clone())
             .unwrap_or_default()
+    }
+
+    fn set_remote_modes(&self, supported: bool) {
+        self.remote_modes.store(supported, Ordering::Release);
+    }
+
+    fn has_remote_modes(&self) -> bool {
+        self.remote_modes.load(Ordering::Acquire)
     }
 
     fn current_model_id(&self) -> Option<String> {
@@ -802,6 +827,25 @@ impl AcpTransport {
                 *last_manifest = Some(event.clone());
             }
         }
+    }
+
+    fn remember_mode(&self, mode_id: &str) {
+        let Some(SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes: Some(mut modes),
+        }) = self.last_manifest()
+        else {
+            return;
+        };
+        modes.current_mode_id = mode_id.to_string();
+        self.remember_manifest(&SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes: Some(modes),
+        });
     }
 
     fn override_manifest_effort(&self, event: SessionEvent) -> SessionEvent {
@@ -887,6 +931,43 @@ impl AcpTransport {
         Ok(id)
     }
 
+    fn request_set_mode(&self, mode_id: &str) -> Result<(), WireError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (sender, receiver) = mpsc::channel();
+        self.pending
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "ACP pending-id lock poisoned"))?
+            .insert(id);
+        self.mode_switches
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "ACP mode-switch lock poisoned"))?
+            .insert(id, sender);
+        if let Err(error) = self.send_line(&session_set_mode_frame(id, &self.session_id(), mode_id))
+        {
+            let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
+            let _ = self
+                .mode_switches
+                .lock()
+                .map(|mut switches| switches.remove(&id));
+            return Err(acp_io_error(error));
+        }
+        match receiver.recv_timeout(ACP_RESPONSE_TIMEOUT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(WireError::new(ErrorCode::InvalidRequest, message)),
+            Err(error) => {
+                let _ = self.pending.lock().map(|mut pending| pending.remove(&id));
+                let _ = self
+                    .mode_switches
+                    .lock()
+                    .map(|mut switches| switches.remove(&id));
+                Err(WireError::new(
+                    ErrorCode::Io,
+                    format!("ACP session/set_mode response timed out: {error}"),
+                ))
+            }
+        }
+    }
+
     fn cancel(&self) {
         let session_id = self.session_id();
         if session_id.is_empty() {
@@ -907,6 +988,18 @@ impl AcpTransport {
         }));
         self.turn.bind_broker(&self.permission_broker);
     }
+}
+
+fn session_set_mode_frame(id: u64, session_id: &str, mode_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/set_mode",
+        "params": {
+            "sessionId": session_id,
+            "modeId": mode_id,
+        },
+    })
 }
 
 struct AcpSwitcher {
@@ -950,6 +1043,18 @@ impl ModelSwitcher for AcpSwitcher {
         Ok(())
     }
 
+    fn set_mode(&self, mode_id: &str) -> Result<(), WireError> {
+        let result = if self.transport.has_remote_modes() {
+            self.transport.request_set_mode(mode_id)
+        } else {
+            Ok(())
+        };
+        if result.is_ok() {
+            self.transport.remember_mode(mode_id);
+        }
+        result
+    }
+
     fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
         Box::new(Self {
             transport: Arc::clone(&self.transport),
@@ -978,6 +1083,7 @@ fn handshake(
     cwd: &std::path::Path,
     provider_id: Option<String>,
     load_session_id: Option<&str>,
+    requested_mode: Option<&str>,
 ) -> Result<HandshakeResult, WireError> {
     let mut deferred = Vec::new();
     let initialize_id = transport
@@ -1039,11 +1145,58 @@ fn handshake(
     };
     transport.set_session_id(session_id.to_string());
     transport.host.set_session_id(session_id.to_string());
-    let manifest = merge_handshake_manifest(
+    let mut manifest = merge_handshake_manifest(
         initialize.get("result").unwrap_or(&serde_json::Value::Null),
         session.get("result").unwrap_or(&serde_json::Value::Null),
         provider_id,
     );
+    let remote_modes = session
+        .get("result")
+        .map(has_standard_modes)
+        .unwrap_or(false);
+    transport.set_remote_modes(remote_modes);
+    if let Some(requested_mode) = requested_mode {
+        let current_mode = manifest.as_ref().and_then(|event| match event {
+            SessionEvent::SessionManifest { modes, .. } => modes.as_ref(),
+            _ => None,
+        });
+        let available = current_mode
+            .map(|modes| {
+                modes
+                    .available_modes
+                    .iter()
+                    .any(|mode| mode.id == requested_mode)
+            })
+            .unwrap_or(false);
+        if !available {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                format!("ACP session mode '{requested_mode}' is not available."),
+            ));
+        }
+        let needs_remote_switch = remote_modes
+            && current_mode
+                .map(|modes| modes.current_mode_id != requested_mode)
+                .unwrap_or(false);
+        if needs_remote_switch {
+            let request_id = transport
+                .request(
+                    "session/set_mode",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "modeId": requested_mode,
+                    }),
+                )
+                .map_err(acp_io_error)?;
+            let _ = read_response(transport, reader, request_id, &mut deferred)?;
+        }
+        if let Some(SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        }) = &mut manifest
+        {
+            modes.current_mode_id = requested_mode.to_string();
+        }
+    }
     Ok((deferred, manifest, session_id.to_string(), agent_version))
 }
 
@@ -1223,6 +1376,7 @@ struct AcpReader {
     discarding_oversized_line: bool,
     pending: Arc<Mutex<HashSet<u64>>>,
     model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
+    mode_switches: AcpModeResponses,
     session_id: String,
     permission_broker: Arc<PermissionBroker>,
     host: Arc<AcpHost>,
@@ -1239,6 +1393,7 @@ impl AcpReader {
     fn new(
         pending: Arc<Mutex<HashSet<u64>>>,
         model_switches: Arc<Mutex<HashMap<u64, Option<String>>>>,
+        mode_switches: AcpModeResponses,
         session_id: String,
         permission_broker: Arc<PermissionBroker>,
         host: Arc<AcpHost>,
@@ -1253,6 +1408,7 @@ impl AcpReader {
             discarding_oversized_line: false,
             pending,
             model_switches,
+            mode_switches,
             session_id,
             permission_broker,
             host,
@@ -1293,6 +1449,7 @@ impl AcpReader {
         Self::new(
             pending,
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
             session_id,
             permission_broker,
             host,
@@ -1315,6 +1472,7 @@ impl AcpReader {
         Self::new(
             pending,
             transport.model_switch_ids(),
+            transport.mode_switch_ids(),
             session_id,
             permission_broker,
             host,
@@ -1544,6 +1702,10 @@ impl AcpReader {
                 }
             }
             Some(AcpLineKind::Notification { .. }) => {
+                if let Some(mode_id) = current_mode_id_from_update(value, &self.session_id) {
+                    self.dispatch_current_mode_update(&mode_id, runtime, event_seq);
+                    return;
+                }
                 if value.get("method").and_then(serde_json::Value::as_str)
                     == Some("_x.ai/sessions/changed")
                 {
@@ -1559,6 +1721,39 @@ impl AcpReader {
             }
             None => {}
         }
+    }
+
+    fn dispatch_current_mode_update(
+        &self,
+        mode_id: &str,
+        runtime: &SessionRuntime,
+        event_seq: Option<u64>,
+    ) {
+        let Some(transport) = &self.transport else {
+            return;
+        };
+        let Some(SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes: Some(mut modes),
+        }) = transport
+            .last_manifest()
+            .or_else(|| runtime.session_manifest())
+        else {
+            return;
+        };
+        modes.current_mode_id = mode_id.to_string();
+        self.publish_at_seq(
+            runtime,
+            self.with_provider(SessionEvent::SessionManifest {
+                provider_id,
+                current_model_id,
+                models,
+                modes: Some(modes),
+            }),
+            event_seq,
+        );
     }
 
     fn dispatch_sessions_changed(
@@ -1663,6 +1858,18 @@ impl AcpReader {
             .unwrap_or(false);
         if !response_was_pending {
             eprintln!("skipping ACP response with unknown id {id}");
+            return;
+        }
+        let mode_sender = self
+            .mode_switches
+            .lock()
+            .map(|mut switches| switches.remove(&id))
+            .unwrap_or(None);
+        if let Some(sender) = mode_sender {
+            let result = value
+                .get("error")
+                .map_or_else(|| Ok(()), |error| Err(acp_request_error_message(error)));
+            let _ = sender.send(result);
             return;
         }
         let requested_effort = self
@@ -1910,32 +2117,26 @@ impl AcpReader {
                 .cancel(&tool_call_id, &pending, "cancelled");
             return;
         }
+        match self.permission_broker.auto_answer(&tool_call_id, runtime) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!("Could not auto-answer ACP permission request: {error}"),
+                    },
+                );
+                return;
+            }
+        }
         if delivery == Some(false) {
             let _ =
                 self.permission_broker
                     .cancel(&tool_call_id, &pending, "capability_not_supported");
             return;
         }
-        let timeout_started = match self.permission_broker.arm_timeout(Arc::clone(&pending)) {
-            Ok(()) => true,
-            Err(error) => {
-                let _ =
-                    self.permission_broker
-                        .cancel(&tool_call_id, &pending, "timeout_spawn_failed");
-                self.publish(
-                    runtime,
-                    SessionEvent::AgentError {
-                        message: format!(
-                            "Could not start the ACP permission deadline; the request was cancelled: {error}"
-                        ),
-                    },
-                );
-                false
-            }
-        };
-        if timeout_started {
-            let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
-        }
+        let _ = runtime.publish_agent_event_with_seq(event, None, event_seq);
     }
 }
 
@@ -2309,38 +2510,6 @@ mod tests {
     }
 
     #[test]
-    fn timeout_spawn_failure_cancels_and_removes_the_request() {
-        let (broker, sent) = test_broker();
-        broker.fail_next_timeout_spawn();
-        let reader = AcpReader::for_test(
-            Arc::new(Mutex::new(HashSet::new())),
-            "stub-session".to_string(),
-            Arc::clone(&broker),
-        );
-        let runtime = Arc::new(SessionRuntime::new());
-        reader.dispatch_permission(
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 61,
-                "method": "session/request_permission",
-                "params": {
-                    "sessionId": "stub-session",
-                    "title": "Run command",
-                    "toolCall": {"toolCallId": "spawn-failure"},
-                    "options": [{"optionId": "allow", "name": "Allow once", "kind": "allow_once"}]
-                }
-            }),
-            &runtime,
-            None,
-        );
-        let sent = sent.lock().expect("sent lock");
-        assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].0, 61);
-        assert_eq!(sent[0].1["outcome"]["outcome"], "cancelled");
-        assert_eq!(broker.pending_len(), 0);
-    }
-
-    #[test]
     fn oversized_permission_field_is_cancelled_before_storage() {
         let (broker, sent) = test_broker();
         let reader = AcpReader::for_test(
@@ -2436,7 +2605,7 @@ mod tests {
         assert!(
             after_expiry.iter().any(|event| matches!(
                 event.envelope.event,
-                SessionEvent::PermissionResolved { ref tool_call_id } if tool_call_id == "queued"
+                SessionEvent::PermissionResolved { ref tool_call_id, .. } if tool_call_id == "queued"
             )),
             "expiry must tell the attached client the card is gone: {after_expiry:?}"
         );

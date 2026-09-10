@@ -33,6 +33,12 @@ import "./Workspace.css";
 
 type ActiveSidePanel = SidePanelEntry["id"];
 type PermissionState = "waiting" | "submitting" | "allowed" | "denied";
+/**
+ * Where the provider choice UI is anchored: a project's "New workspace" row
+ * or the tab strip's session "+" button. It only decides placement; the
+ * menu itself never reads which button opened it.
+ */
+type ProviderAnchor = { kind: "project"; projectId: string } | { kind: "strip" };
 const WORKSPACE_TERMINAL_PANEL_ID = "workspace-panel-terminal";
 
 function daemonDotTone(state: DaemonStatus["state"]): string {
@@ -118,6 +124,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     creating: sessionCreating,
     error: sessionsError,
     refresh: refreshSessions,
+    reconnect: reconnectSessions,
     create: createSession,
     select: selectSession,
     open: openSession,
@@ -145,6 +152,22 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   useEffect(() => {
     daemonRecovery.onStatus(daemon);
   }, [daemon, daemonRecovery]);
+  // Until the daemon first answers "connected" the IPC pipe is not open, so a
+  // startup load would race it and latch errors. Projects load exactly once
+  // per connected transition; the session controller refreshes on mount and
+  // is reloaded on the same transitions — first connect and every reconnect
+  // after a daemon restart. A successful load clears its own error.
+  const wasConnectedRef = useRef(false);
+  useEffect(() => {
+    if (daemon.state !== "connected") {
+      wasConnectedRef.current = false;
+      return;
+    }
+    if (wasConnectedRef.current) return;
+    wasConnectedRef.current = true;
+    void retryProjects();
+    void reconnectSessions();
+  }, [daemon.state, reconnectSessions, retryProjects]);
   // Presence reporter lives outside React state: it holds no render output.
   // Selection changes arrive through the second effect below.
   const presenceReporterRef = useRef<PresenceReporter | null>(null);
@@ -169,15 +192,15 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
   );
   const handleAppReload = useCallback(() => setAppBuild((build) => build + 1), []);
   const handleOpenPullRequest = useCallback(() => setPrLabel("Opened #412 on GitHub"), []);
-  const [providerPicker, setProviderPicker] = useState<{
-    projectId: string;
-    providers: ProviderInfo[];
-  } | null>(null);
-  const newWorkspaceInFlightRef = useRef(false);
+  const [providerPicker, setProviderPicker] = useState<ProviderInfo[] | null>(null);
+  const [providerAnchor, setProviderAnchor] = useState<ProviderAnchor | null>(null);
+  const providerChoiceInFlightRef = useRef(false);
+  const afterProviderChoiceRef = useRef<((provider: ProviderInfo | undefined) => void) | null>(
+    null,
+  );
   const providerPickerRef = useRef<HTMLDivElement>(null);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
   const consentRestoreRef = useRef<HTMLButtonElement | null>(null);
-  const [consentProjectId, setConsentProjectId] = useState<string | null>(null);
   const [providerError, setProviderError] = useState<string | null>(null);
   const loadChatProviders = useCallback(async (): Promise<ProviderInfo[]> => {
     const catalog = await providersList();
@@ -190,27 +213,28 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     },
     [createSession],
   );
-  const dismissProviderPicker = useCallback(() => {
-    setProviderPicker(null);
-    newWorkspaceInFlightRef.current = false;
-  }, []);
   const createWorkspaceAndAgent = useCallback(
     async (projectId: string, provider: ProviderInfo | undefined) => {
       const workspace = await addWorkspace(projectId);
       if (workspace !== null) startAgentSession(provider, workspace.id);
-      newWorkspaceInFlightRef.current = false;
+      providerChoiceInFlightRef.current = false;
     },
     [addWorkspace, startAgentSession],
   );
-  const handleConsentConfirmed = useCallback(
-    (provider: ProviderInfo) => {
-      setProviderPicker(null);
-      setConsentProjectId(null);
-      const projectId = consentProjectId;
-      if (projectId !== null) void createWorkspaceAndAgent(projectId, provider);
+  const addSessionToWorkspace = useCallback(
+    (provider: ProviderInfo | undefined) => {
+      startAgentSession(provider, selectedWorkspace);
+      providerChoiceInFlightRef.current = false;
     },
-    [consentProjectId, createWorkspaceAndAgent],
+    [selectedWorkspace, startAgentSession],
   );
+  const handleConsentConfirmed = useCallback((provider: ProviderInfo) => {
+    setProviderPicker(null);
+    setProviderAnchor(null);
+    const afterChoice = afterProviderChoiceRef.current;
+    afterProviderChoiceRef.current = null;
+    afterChoice?.(provider);
+  }, []);
   const {
     pending: consentProvider,
     request: requestConsent,
@@ -219,40 +243,73 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     inFlight: consentInFlight,
     commandLine: consentCommandLine,
   } = useProviderConsent({ onConfirmed: handleConsentConfirmed });
-  const handleNewWorkspace = useCallback(
-    async (projectId: string) => {
-      if (newWorkspaceInFlightRef.current) return;
-      newWorkspaceInFlightRef.current = true;
+  /**
+   * One provider-choice flow for every button that starts an agent: 0 capable
+   * providers fall straight through, one needs consent when it is an npx
+   * wrapper, two or more open the picker. What happens after the choice is
+   * the caller's `afterChoice`; the picker and consent card never read it.
+   */
+  const chooseProvider = useCallback(
+    async (
+      anchor: ProviderAnchor,
+      afterChoice: (provider: ProviderInfo | undefined) => void,
+      trigger?: HTMLButtonElement,
+    ) => {
+      if (providerChoiceInFlightRef.current) return;
+      providerChoiceInFlightRef.current = true;
       setProviderError(null);
       let capable: ProviderInfo[];
       try {
         capable = await loadChatProviders();
       } catch (cause: unknown) {
-        newWorkspaceInFlightRef.current = false;
+        providerChoiceInFlightRef.current = false;
         setProviderError(reasonFromCause(cause));
         return;
       }
       if (capable.length === 0) {
-        await createWorkspaceAndAgent(projectId, undefined);
+        providerChoiceInFlightRef.current = false;
+        afterChoice(undefined);
         return;
       }
+      if (capable.length === 1 && !requiresConsent(capable[0])) {
+        providerChoiceInFlightRef.current = false;
+        afterChoice(capable[0]);
+        return;
+      }
+      afterProviderChoiceRef.current = afterChoice;
+      setProviderAnchor(anchor);
       if (capable.length === 1) {
-        const provider = capable[0];
-        if (requiresConsent(provider)) {
-          setConsentProjectId(projectId);
-          requestConsent(provider);
-        } else {
-          await createWorkspaceAndAgent(projectId, provider);
-        }
+        // With a single npx provider no picker opens, so this triggering
+        // button is the only focus anchor; the consent effect restores it on
+        // cancel (and the picker path sets its own anchor in pickProvider).
+        consentRestoreRef.current = trigger ?? null;
+        requestConsent(capable[0]);
         return;
       }
-      setProviderPicker({ projectId, providers: capable });
+      setProviderPicker(capable);
     },
-    [createWorkspaceAndAgent, loadChatProviders, requestConsent],
+    [loadChatProviders, requestConsent],
+  );
+  const handleNewWorkspace = useCallback(
+    (trigger: HTMLButtonElement, projectId: string) => {
+      void chooseProvider(
+        { kind: "project", projectId },
+        (provider) => void createWorkspaceAndAgent(projectId, provider),
+        trigger,
+      );
+    },
+    [chooseProvider, createWorkspaceAndAgent],
+  );
+  const handleNewSession = useCallback(
+    (trigger: HTMLButtonElement) => {
+      void chooseProvider({ kind: "strip" }, addSessionToWorkspace, trigger);
+    },
+    [addSessionToWorkspace, chooseProvider],
   );
   const consentCancel = useCallback(() => {
-    setConsentProjectId(null);
-    newWorkspaceInFlightRef.current = false;
+    // The picker stays anchored behind the consent card; cancelling only
+    // removes the card and returns to the option list.
+    providerChoiceInFlightRef.current = false;
     cancelProviderConsent();
   }, [cancelProviderConsent]);
   useEffect(() => {
@@ -264,20 +321,28 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
     }
   }, [consentProvider]);
   const pickProvider = useCallback(
-    (provider: ProviderInfo, projectId: string, trigger: HTMLButtonElement) => {
+    (provider: ProviderInfo, trigger: HTMLButtonElement) => {
       if (requiresConsent(provider)) {
         consentRestoreRef.current = trigger;
-        setConsentProjectId(projectId);
         requestConsent(provider);
         return;
       }
       setProviderPicker(null);
-      void createWorkspaceAndAgent(projectId, provider);
+      setProviderAnchor(null);
+      const afterChoice = afterProviderChoiceRef.current;
+      afterProviderChoiceRef.current = null;
+      afterChoice?.(provider);
     },
-    [createWorkspaceAndAgent, requestConsent],
+    [requestConsent],
   );
+  const dismissProviderPicker = useCallback(() => {
+    afterProviderChoiceRef.current = null;
+    providerChoiceInFlightRef.current = false;
+    setProviderPicker(null);
+    setProviderAnchor(null);
+  }, []);
   useEffect(() => {
-    if (providerPicker === null && consentProvider === null) return;
+    if (providerAnchor === null && consentProvider === null) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (consentProvider !== null) {
@@ -303,7 +368,7 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("mousedown", onPointer);
     };
-  }, [consentCancel, consentProvider, dismissProviderPicker, providerPicker]);
+  }, [consentCancel, consentProvider, dismissProviderPicker, providerAnchor]);
   const handleSessionClosed = useCallback(() => {
     void refreshSessions();
   }, [refreshSessions]);
@@ -341,6 +406,92 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
       : sessionsLoading && sessions.length === 0
         ? "Loading sessions…"
         : `${sessions.length} session${sessions.length === 1 ? "" : "s"}`;
+
+  // One instance of the provider choice UI, anchored where the flow was
+  // opened. It renders only the choice and consent; what happens afterwards
+  // was fixed when the flow started.
+  const providerMenu =
+    providerAnchor === null || (providerPicker === null && consentProvider === null) ? null : (
+      <div
+        className="workspace-surface-menu"
+        role={consentProvider !== null ? "group" : "listbox"}
+        aria-label={consentProvider !== null ? "Confirm agent" : "Choose agent"}
+      >
+        {consentProvider !== null ? (
+          <>
+            <div className="workspace-menu-label">This agent downloads third-party code</div>
+            <div className="workspace-surface-options">
+              <div className="workspace-consent-provider">
+                <span className="workspace-surface-name">{consentProvider.id}</span>
+                <span className="workspace-consent-spec" id="workspace-consent-command">
+                  {consentCommandLine}
+                </span>
+              </div>
+              <p className="workspace-consent-notice" id="workspace-consent-warning">
+                npx will download and run third-party code on first use.
+              </p>
+            </div>
+            <div className="workspace-consent-actions">
+              <button type="button" className="workspace-secondary-action" onClick={consentCancel}>
+                Cancel
+              </button>
+              {/*
+                Focus moves here when the card opens, so this button's accessible
+                description is the whole of what a screen-reader user hears before
+                approving. Without it they hear "Confirm" and nothing about the
+                command or the download — which is not consent. The command comes
+                first because it is the specific thing being approved.
+              */}
+              <button
+                ref={consentConfirmRef}
+                type="button"
+                className="workspace-primary-action"
+                onClick={consentConfirm}
+                disabled={consentInFlight}
+                aria-describedby="workspace-consent-command workspace-consent-warning"
+              >
+                Confirm
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="workspace-menu-label">Choose agent</div>
+            {[
+              {
+                label: "Installed",
+                providers: providerPicker!.filter((provider) => !requiresConsent(provider)),
+              },
+              {
+                label: "Available to install",
+                providers: providerPicker!.filter((provider) => requiresConsent(provider)),
+              },
+            ]
+              .filter((group) => group.providers.length > 0)
+              .map((group) => (
+                <div className="workspace-provider-group" key={group.label}>
+                  <div className="workspace-menu-label">{group.label}</div>
+                  <div className="workspace-surface-options">
+                    {group.providers.map((provider) => (
+                      <button
+                        type="button"
+                        role="option"
+                        className="workspace-surface-option"
+                        key={provider.id}
+                        onClick={(event) => {
+                          pickProvider(provider, event.currentTarget);
+                        }}
+                      >
+                        <span className="workspace-surface-name">{provider.id}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+          </>
+        )}
+      </div>
+    );
 
   return (
     <section className="workspace-screen" data-screen-label="Workspace">
@@ -434,7 +585,9 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                         <button
                           type="button"
                           className="workspace-project-add"
-                          onClick={() => void handleNewWorkspace(project.id)}
+                          onClick={(event) =>
+                            void handleNewWorkspace(event.currentTarget, project.id)
+                          }
                           title="New workspace in this project"
                           aria-label={`New workspace in ${project.name}`}
                         >
@@ -476,8 +629,8 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                         <div
                           className="workspace-new-row-wrap"
                           ref={
-                            providerPicker?.projectId === project.id ||
-                            consentProjectId === project.id
+                            providerAnchor?.kind === "project" &&
+                            providerAnchor.projectId === project.id
                               ? providerPickerRef
                               : undefined
                           }
@@ -485,101 +638,16 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                           <button
                             type="button"
                             className="workspace-new-row"
-                            onClick={() => void handleNewWorkspace(project.id)}
+                            onClick={(event) =>
+                              void handleNewWorkspace(event.currentTarget, project.id)
+                            }
                           >
                             <span aria-hidden="true">+</span>New workspace
                           </button>
-                          {providerPicker?.projectId === project.id ||
-                          consentProjectId === project.id ? (
-                            <div
-                              className="workspace-surface-menu"
-                              role={consentProvider !== null ? "group" : "listbox"}
-                              aria-label={
-                                consentProvider !== null ? "Confirm agent" : "Choose agent"
-                              }
-                            >
-                              {consentProvider !== null ? (
-                                <>
-                                  <div className="workspace-menu-label">
-                                    This agent downloads third-party code
-                                  </div>
-                                  <div className="workspace-surface-options">
-                                    <div className="workspace-consent-provider">
-                                      <span className="workspace-surface-name">
-                                        {consentProvider.id}
-                                      </span>
-                                      <span
-                                        className="workspace-consent-spec"
-                                        id="workspace-consent-command"
-                                      >
-                                        {consentCommandLine}
-                                      </span>
-                                    </div>
-                                    <p
-                                      className="workspace-consent-notice"
-                                      id="workspace-consent-warning"
-                                    >
-                                      npx will download and run third-party code on first use.
-                                    </p>
-                                  </div>
-                                  <div className="workspace-consent-actions">
-                                    <button
-                                      type="button"
-                                      className="workspace-secondary-action"
-                                      onClick={consentCancel}
-                                    >
-                                      Cancel
-                                    </button>
-                                    {/*
-                                      Focus moves here when the card opens, so
-                                      this button's accessible description is
-                                      the whole of what a screen-reader user
-                                      hears before approving. Without it they
-                                      hear "Confirm" and nothing about the
-                                      command or the download — which is not
-                                      consent. The command comes first because
-                                      it is the specific thing being approved.
-                                    */}
-                                    <button
-                                      ref={consentConfirmRef}
-                                      type="button"
-                                      className="workspace-primary-action"
-                                      onClick={consentConfirm}
-                                      disabled={consentInFlight}
-                                      aria-describedby="workspace-consent-command workspace-consent-warning"
-                                    >
-                                      Confirm
-                                    </button>
-                                  </div>
-                                </>
-                              ) : (
-                                <>
-                                  <div className="workspace-menu-label">Choose agent</div>
-                                  <div className="workspace-surface-options">
-                                    {providerPicker!.providers.map((provider) => (
-                                      <button
-                                        type="button"
-                                        role="option"
-                                        className="workspace-surface-option"
-                                        key={provider.id}
-                                        onClick={(event) => {
-                                          pickProvider(
-                                            provider,
-                                            providerPicker!.projectId,
-                                            event.currentTarget,
-                                          );
-                                        }}
-                                      >
-                                        <span className="workspace-surface-name">
-                                          {provider.id}
-                                        </span>
-                                      </button>
-                                    ))}
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          ) : null}
+                          {providerAnchor?.kind === "project" &&
+                          providerAnchor.projectId === project.id
+                            ? providerMenu
+                            : null}
                         </div>
                       </div>
                     </div>
@@ -659,16 +727,22 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
               ) : null}
             </button>
           ))}
-          <button
-            type="button"
-            className="workspace-session-add"
-            onClick={() => void createSession()}
-            title="New agent session"
-            aria-label="New agent session"
-            disabled={sessionCreating}
+          <div
+            className="workspace-session-add-wrap"
+            ref={providerAnchor?.kind === "strip" ? providerPickerRef : undefined}
           >
-            +
-          </button>
+            <button
+              type="button"
+              className="workspace-session-add"
+              onClick={(event) => handleNewSession(event.currentTarget)}
+              title="New agent session"
+              aria-label="New agent session"
+              disabled={sessionCreating}
+            >
+              +
+            </button>
+            {providerAnchor?.kind === "strip" ? providerMenu : null}
+          </div>
           <span className="workspace-tabs-spacer" />
           <span className="workspace-rate">{sessionStatusText}</span>
         </div>
@@ -690,17 +764,6 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
 
         {selectedSessionId !== null ? (
           <>
-            {selectedPermission !== null &&
-            selectedSession != null &&
-            isAgentKind(selectedSession.kind) ? (
-              <WorkspacePermissionCard
-                sessionId={selectedSessionId}
-                subscriptionId={selectedPermission.subscriptionId}
-                request={selectedPermission.request}
-                capabilities={daemon.capabilities}
-                onResolved={handlePermissionResolved}
-              />
-            ) : null}
             {selectedSession != null && isAgentKind(selectedSession.kind) ? (
               <AgentChatSurface
                 key={selectedSessionId}
@@ -710,6 +773,18 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                 cwd={selectedSession.cwd}
                 observedState={selectedSession.state}
                 elapsedMs={selectedSession.elapsedMs}
+                auxiliary={
+                  selectedPermission !== null ? (
+                    <WorkspacePermissionCard
+                      key={selectedPermission.request.toolCallId}
+                      sessionId={selectedSessionId}
+                      subscriptionId={selectedPermission.subscriptionId}
+                      request={selectedPermission.request}
+                      capabilities={daemon.capabilities}
+                      onResolved={handlePermissionResolved}
+                    />
+                  ) : undefined
+                }
                 onPermissionRequest={handlePermissionRequest}
                 onPermissionResolved={handlePermissionResolved}
               />
@@ -876,23 +951,23 @@ export function WorkspacePermissionCard({
   const [error, setError] = useState<string | null>(null);
   const submittingRef = useRef(false);
 
-  useEffect(() => {
-    submittingRef.current = false;
-    setPermission("waiting");
-    setError(null);
-  }, [request.toolCallId]);
-
   if (!capabilities.includes("typed_permissions")) return null;
 
   const commandLine = formatPermissionCommand(request);
 
-  const respond = async (outcome: "allow_once" | "deny") => {
+  const respond = async (outcome: "allow_once" | "deny", optionId: string) => {
     if (submittingRef.current || permission !== "waiting") return;
     submittingRef.current = true;
     setPermission("submitting");
     setError(null);
     try {
-      await sessionPermissionRespond(sessionId, subscriptionId, request.toolCallId, outcome);
+      await sessionPermissionRespond(
+        sessionId,
+        subscriptionId,
+        request.toolCallId,
+        outcome,
+        optionId,
+      );
       setPermission(outcome === "allow_once" ? "allowed" : "denied");
       onResolved?.(sessionId, request.toolCallId);
     } catch (cause) {
@@ -906,7 +981,7 @@ export function WorkspacePermissionCard({
     <div className="workspace-permission-card" aria-live="polite">
       <div className="workspace-permission-heading">
         <span className={`workspace-permission-dot workspace-permission-${permission}`} />
-        <span>Permission · {request.title}</span>
+        <span className="workspace-permission-title">Permission · {request.title}</span>
         {request.cwd ? <span className="workspace-permission-context">{request.cwd}</span> : null}
       </div>
       {request.description ? (
@@ -920,22 +995,49 @@ export function WorkspacePermissionCard({
       ) : null}
       <div className="workspace-permission-actions">
         <span className="workspace-permission-label">{PERMISSION_LABELS[permission]}</span>
-        <button
-          type="button"
-          className="workspace-secondary-action workspace-deny-action"
-          onClick={() => void respond("deny")}
-          disabled={permission !== "waiting"}
-        >
-          Deny
-        </button>
-        <button
-          type="button"
-          className="workspace-primary-action"
-          onClick={() => void respond("allow_once")}
-          disabled={permission !== "waiting"}
-        >
-          Allow once
-        </button>
+        {request.options.length > 0 ? (
+          request.options.map((option, index) => {
+            if (option.kind.startsWith("allow")) {
+              return (
+                <button
+                  key={`${option.optionId}-${index}`}
+                  type="button"
+                  className="workspace-primary-action"
+                  onClick={() => void respond("allow_once", option.optionId)}
+                  disabled={permission !== "waiting"}
+                >
+                  {option.name}
+                </button>
+              );
+            }
+            if (option.kind.startsWith("reject")) {
+              return (
+                <button
+                  key={`${option.optionId}-${index}`}
+                  type="button"
+                  className="workspace-secondary-action workspace-deny-action"
+                  onClick={() => void respond("deny", option.optionId)}
+                  disabled={permission !== "waiting"}
+                >
+                  {option.name}
+                </button>
+              );
+            }
+            return (
+              <button
+                key={`${option.optionId}-${index}`}
+                type="button"
+                className="workspace-secondary-action"
+                disabled
+                title={`Unsupported option kind: ${option.kind}`}
+              >
+                {option.name}
+              </button>
+            );
+          })
+        ) : (
+          <span className="workspace-permission-empty">The agent offered no options.</span>
+        )}
       </div>
       {error ? <div role="alert">{error}</div> : null}
     </div>

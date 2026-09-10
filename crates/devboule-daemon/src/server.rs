@@ -1183,6 +1183,7 @@ fn send_pending_event(
             SessionEvent::PermissionRequest { .. } => " permission_request".to_string(),
             SessionEvent::PermissionResolved { .. } => " permission_resolved".to_string(),
             SessionEvent::SessionManifest { .. } => " session_manifest".to_string(),
+            SessionEvent::SessionNotice { .. } => " session_notice".to_string(),
             SessionEvent::AgentReported { .. } => " agent_reported".to_string(),
         };
         eprintln!(
@@ -1393,6 +1394,7 @@ fn dispatch_immediate(
         | ClientMessage::SessionResize { .. }
         | ClientMessage::SessionInterrupt { .. }
         | ClientMessage::SessionSetModel { .. }
+        | ClientMessage::SessionSetMode { .. }
         | ClientMessage::SessionPermissionRespond { .. }
         | ClientMessage::SessionsList { .. }
         | ClientMessage::SessionsWatch { .. }
@@ -1991,6 +1993,7 @@ fn dispatch_session(
             workspace_id,
             kind,
             provider,
+            mode,
             idempotency_key,
         } => session_create(
             state,
@@ -1999,6 +2002,7 @@ fn dispatch_session(
             workspace_id,
             kind,
             provider,
+            mode,
             idempotency_key,
         ),
         ClientMessage::SessionAttach {
@@ -2210,24 +2214,42 @@ fn dispatch_session(
                 .set_model(&session_id, owner, model_id.as_deref(), effort.as_deref())
                 .map(|()| DaemonMessage::Ok { id }),
         ),
+        ClientMessage::SessionSetMode {
+            id,
+            session_id,
+            mode_id,
+        } => reply_result(
+            id,
+            state
+                .sessions
+                .set_mode(&session_id, owner, &mode_id)
+                .map(|()| DaemonMessage::Ok { id }),
+        ),
         ClientMessage::SessionPermissionRespond {
             id,
             session_id,
             subscription_id,
             request_id,
             outcome,
+            option_id,
             idempotency_key,
         } => {
-            let fingerprint = format!("permission:{session_id}:{request_id}:{outcome:?}");
+            let fingerprint = format!(
+                "permission:{session_id}:{request_id}:{outcome:?}:{}",
+                option_id.as_deref().unwrap_or("")
+            );
             if let Some(reply) =
                 idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
             {
                 return reply;
             }
             match state.sessions.permission_respond_with_subscription(
-                &session_id,
-                &request_id,
-                outcome,
+                crate::session::PermissionResponse {
+                    session_id: &session_id,
+                    request_id: &request_id,
+                    outcome,
+                    option_id: option_id.as_deref(),
+                },
                 subscription_id,
                 conn,
                 owner,
@@ -2253,6 +2275,7 @@ fn dispatch_session(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn session_create(
     state: &Arc<ServerState>,
     owner: &OwnerId,
@@ -2260,18 +2283,21 @@ fn session_create(
     workspace_id: Option<String>,
     kind: SessionKind,
     provider: Option<String>,
+    mode: Option<String>,
     idempotency_key: Option<String>,
 ) -> DaemonMessage {
     let fingerprint = format!(
-        "create:{}:{}:{}",
+        "create:{}:{}:{}:{}",
         match kind {
             SessionKind::Terminal => "terminal",
             SessionKind::Acp => "acp",
             SessionKind::Claude => "claude",
             SessionKind::Pi => "pi",
+            SessionKind::Codex => "codex",
         },
         provider.as_deref().unwrap_or(""),
-        workspace_id.as_deref().unwrap_or("")
+        workspace_id.as_deref().unwrap_or(""),
+        mode.as_deref().unwrap_or("")
     );
     if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
     {
@@ -2284,7 +2310,7 @@ fn session_create(
     }
     match state
         .sessions
-        .create(state, owner, workspace_id, kind, provider, None)
+        .create(state, owner, workspace_id, kind, provider, mode, None)
     {
         Ok(session) => {
             let reply = DaemonMessage::Session { id, session };
@@ -2605,6 +2631,7 @@ mod tests {
                 subscription_id: 1,
                 request_id: "tool-1".to_string(),
                 outcome: PermissionOutcome::AllowOnce,
+                option_id: None,
                 idempotency_key: None,
             },
             &conn,
@@ -2798,6 +2825,7 @@ mod tests {
             acp_command: None,
             stream_json_command: None,
             rpc_command: None,
+            app_server_command: None,
             authentication: crate::provider_catalog::AuthenticationStatus::Unknown,
             origin: crate::provider_catalog::ProviderOrigin::UserBinary,
             launch_args: None,

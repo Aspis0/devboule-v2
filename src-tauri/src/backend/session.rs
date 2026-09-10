@@ -33,9 +33,10 @@ pub fn session_create(
     workspace_id: Option<String>,
     kind: SessionKind,
     provider: Option<String>,
+    mode: Option<String>,
 ) -> Result<Session, CommandError> {
     require_terminal_kind(&kind)?;
-    Ok(require_client(&bridge)?.session_create_with(workspace_id, kind, provider, None)?)
+    Ok(require_client(&bridge)?.session_create_with(workspace_id, kind, provider, mode, None)?)
 }
 
 #[tauri::command]
@@ -120,6 +121,7 @@ pub fn session_permission_respond(
     subscription_id: SubscriptionId,
     request_id: String,
     outcome: PermissionOutcome,
+    option_id: Option<String>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     if request_id.is_empty() {
@@ -135,6 +137,7 @@ pub fn session_permission_respond(
             subscription_id,
             &request_id,
             outcome,
+            option_id.as_deref(),
         )?,
     )
 }
@@ -177,6 +180,16 @@ pub fn session_set_model(
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     Ok(require_client(&bridge)?.session_set_model(&id, model_id.as_deref(), effort.as_deref())?)
+}
+
+#[tauri::command]
+pub fn session_set_mode(
+    bridge: State<'_, DaemonBridge>,
+    id: String,
+    mode_id: String,
+) -> Result<(), CommandError> {
+    require_session_id(&id)?;
+    Ok(require_client(&bridge)?.session_set_mode(&id, &mode_id)?)
 }
 
 #[tauri::command]
@@ -243,7 +256,11 @@ fn require_write_size(text: &str) -> Result<(), CommandError> {
 
 fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
     match kind {
-        SessionKind::Terminal | SessionKind::Acp | SessionKind::Claude | SessionKind::Pi => Ok(()),
+        SessionKind::Terminal
+        | SessionKind::Acp
+        | SessionKind::Claude
+        | SessionKind::Pi
+        | SessionKind::Codex => Ok(()),
     }
 }
 
@@ -272,6 +289,7 @@ mod tests {
         require_terminal_kind(&SessionKind::Acp).expect("acp");
         require_terminal_kind(&SessionKind::Claude).expect("claude");
         require_terminal_kind(&SessionKind::Pi).expect("pi");
+        require_terminal_kind(&SessionKind::Codex).expect("codex");
     }
 
     #[test]

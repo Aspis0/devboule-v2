@@ -316,6 +316,24 @@ describe("ACP design host", () => {
     await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
   });
 
+  it("creates native Codex through the app-server session kind mapping", async () => {
+    const selectedProvider: ProviderInfo = {
+      id: "codex",
+      executable: "codex",
+      acpAvailable: false,
+      authentication: "unknown",
+      protocol: "codex-app-server",
+      origin: "user-binary",
+    };
+    const host = createAgentHost();
+    host.selectProvider?.(selectedProvider);
+    const { run } = await startRun(host);
+
+    expect(mocks.sessionCreate).toHaveBeenCalledWith(null, "codex");
+    channelHarness.active?.({ type: "agent_finished", stopReason: "end_turn" });
+    await expect(run).resolves.toMatchObject({ title: "Agent did not report written files" });
+  });
+
   it("keeps the selected provider when Generate is ahead of session creation", async () => {
     const providerA: ProviderInfo = {
       id: "provider-a",
@@ -1323,6 +1341,7 @@ describe("ACP design host", () => {
           lastFinished: null,
           manifest: null,
           pendingSwitch: null,
+          pendingModeId: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Final</div>");
       });
@@ -1345,6 +1364,7 @@ describe("ACP design host", () => {
           lastFinished: null,
           manifest: null,
           pendingSwitch: null,
+          pendingModeId: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
       });
@@ -1373,6 +1393,7 @@ describe("ACP design host", () => {
           lastFinished: null,
           manifest: null,
           pendingSwitch: null,
+          pendingModeId: null,
         };
         expect(extractArtifactHtml(state)).toBeUndefined();
       });
@@ -1401,6 +1422,7 @@ describe("ACP design host", () => {
           lastFinished: null,
           manifest: null,
           pendingSwitch: null,
+          pendingModeId: null,
         };
         expect(extractArtifactHtml(state)).toBe("<div>Second</div>");
       });

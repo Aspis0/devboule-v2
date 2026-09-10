@@ -139,7 +139,7 @@ impl DaemonClient {
         kind: SessionKind,
         idempotency_key: Option<String>,
     ) -> Result<Session, DaemonError> {
-        self.session_create_with(workspace_id, kind, None, idempotency_key)
+        self.session_create_with(workspace_id, kind, None, None, idempotency_key)
     }
 
     pub fn session_create_with(
@@ -147,6 +147,7 @@ impl DaemonClient {
         workspace_id: Option<String>,
         kind: SessionKind,
         provider: Option<String>,
+        mode: Option<String>,
         idempotency_key: Option<String>,
     ) -> Result<Session, DaemonError> {
         let id = self.alloc_id();
@@ -155,6 +156,7 @@ impl DaemonClient {
             workspace_id,
             kind,
             provider,
+            mode,
             idempotency_key,
         })? {
             DaemonMessage::Session { session, .. } => Ok(session),
@@ -392,6 +394,19 @@ impl DaemonClient {
         }
     }
 
+    pub fn session_set_mode(&self, session_id: &str, mode_id: &str) -> Result<(), DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::SessionSetMode {
+            id,
+            session_id: session_id.to_string(),
+            mode_id: mode_id.to_string(),
+        })? {
+            DaemonMessage::Ok { .. } => Ok(()),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            other => unexpected(other),
+        }
+    }
+
     #[cfg(feature = "server")]
     pub fn session_send(&self, session_id: &str, text: &str) -> Result<(), DaemonError> {
         self.session_send_with_subscription(
@@ -501,6 +516,7 @@ impl DaemonClient {
             self.control_subscription_id(session_id)?,
             request_id,
             outcome,
+            None,
         )
     }
 
@@ -510,6 +526,7 @@ impl DaemonClient {
         subscription_id: SubscriptionId,
         request_id: &str,
         outcome: PermissionOutcome,
+        option_id: Option<&str>,
     ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionPermissionRespond {
@@ -518,6 +535,7 @@ impl DaemonClient {
             subscription_id,
             request_id: request_id.to_string(),
             outcome,
+            option_id: option_id.map(str::to_string),
             idempotency_key: None,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),

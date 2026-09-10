@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use devboule_protocol::{
-    AgentBackgroundTask, AgentTaskStatus, SessionEvent, SessionModel, ToolLocation, TurnUsage,
+    AgentBackgroundTask, AgentTaskStatus, SessionEvent, SessionModeStateView, SessionModeView,
+    SessionModel, ToolLocation, TurnUsage,
 };
 use serde_json::Value;
 
@@ -19,6 +20,7 @@ pub(crate) struct ClaudeView {
     current_message_ids: HashMap<Option<String>, String>,
     current_model: Option<String>,
     last_manifest_model: Option<String>,
+    current_mode: Option<String>,
     peer_session_id: Option<String>,
     cwd: Option<PathBuf>,
 }
@@ -30,6 +32,7 @@ impl ClaudeView {
             current_message_ids: HashMap::new(),
             current_model: None,
             last_manifest_model: None,
+            current_mode: None,
             peer_session_id: None,
             cwd,
         }
@@ -37,6 +40,10 @@ impl ClaudeView {
 
     pub(crate) fn peer_session_id(&self) -> Option<&str> {
         self.peer_session_id.as_deref()
+    }
+
+    pub(crate) fn set_mode(&mut self, mode_id: &str) {
+        self.current_mode = Some(mode_id.to_string());
     }
 
     /// Map one parsed envelope to zero or more view events. Unknown or
@@ -79,6 +86,12 @@ impl ClaudeView {
             .and_then(Value::as_str)
             .filter(|model| !model.is_empty())
             .map(str::to_string);
+        self.current_mode = envelope
+            .get("permissionMode")
+            .and_then(Value::as_str)
+            .filter(|mode| !mode.is_empty())
+            .map(str::to_string)
+            .or_else(|| Some("default".to_string()));
         if let Some(model) = model.clone() {
             self.current_model = Some(model);
         }
@@ -98,8 +111,14 @@ impl ClaudeView {
             provider_id: Some("claude".to_string()),
             current_model_id: model,
             models,
-            modes: None,
+            modes: self.mode_state(),
         }]
+    }
+
+    fn mode_state(&self) -> Option<SessionModeStateView> {
+        Some(mode_state(
+            self.current_mode.as_deref().unwrap_or("default"),
+        ))
     }
 
     fn ingest_stream_event(&mut self, envelope: &Value) -> Vec<SessionEvent> {
@@ -212,7 +231,7 @@ impl ClaudeView {
                         current_effort: None,
                         efforts: None,
                     }],
-                    modes: None,
+                    modes: self.mode_state(),
                 });
             }
         }
@@ -681,6 +700,48 @@ fn windows_components_eq_ignore_case(
     }
 }
 
+pub(crate) fn mode_state(current_mode_id: &str) -> SessionModeStateView {
+    SessionModeStateView {
+        current_mode_id: current_mode_id.to_string(),
+        available_modes: vec![
+            SessionModeView {
+                id: "plan".to_string(),
+                name: "Plan Mode".to_string(),
+                description: Some(
+                    "Analyze the codebase without executing tools or edits".to_string(),
+                ),
+            },
+            SessionModeView {
+                id: "default".to_string(),
+                name: "Always Ask".to_string(),
+                description: Some(
+                    "Prompts for permission the first time a tool is used".to_string(),
+                ),
+            },
+            SessionModeView {
+                id: "acceptEdits".to_string(),
+                name: "Accept File Edits".to_string(),
+                description: Some(
+                    "Automatically approves edit-focused tools without prompting".to_string(),
+                ),
+            },
+            SessionModeView {
+                id: "auto".to_string(),
+                name: "Auto mode".to_string(),
+                description: Some(
+                    "Uses a model classifier to review permission prompts automatically"
+                        .to_string(),
+                ),
+            },
+            SessionModeView {
+                id: "bypassPermissions".to_string(),
+                name: "Bypass".to_string(),
+                description: Some("Skip all permission prompts (use with caution)".to_string()),
+            },
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,7 +789,47 @@ mod tests {
                 assert_eq!(models.len(), 1);
                 assert_eq!(models[0].model_id, "claude-opus-5[1m]");
                 assert_eq!(models[0].name, "claude-opus-5[1m]");
-                assert!(modes.is_none());
+                let modes = modes.as_ref().expect("Claude modes");
+                assert_eq!(modes.current_mode_id, "default");
+                assert_eq!(
+                    modes
+                        .available_modes
+                        .iter()
+                        .map(|mode| mode.id.as_str())
+                        .collect::<Vec<_>>(),
+                    [
+                        "plan",
+                        "default",
+                        "acceptEdits",
+                        "auto",
+                        "bypassPermissions"
+                    ]
+                );
+                assert_eq!(modes.available_modes[0].name, "Plan Mode");
+                assert_eq!(
+                    modes.available_modes[0].description.as_deref(),
+                    Some("Analyze the codebase without executing tools or edits")
+                );
+                assert_eq!(modes.available_modes[1].name, "Always Ask");
+                assert_eq!(
+                    modes.available_modes[1].description.as_deref(),
+                    Some("Prompts for permission the first time a tool is used")
+                );
+                assert_eq!(modes.available_modes[2].name, "Accept File Edits");
+                assert_eq!(
+                    modes.available_modes[2].description.as_deref(),
+                    Some("Automatically approves edit-focused tools without prompting")
+                );
+                assert_eq!(modes.available_modes[3].name, "Auto mode");
+                assert_eq!(
+                    modes.available_modes[3].description.as_deref(),
+                    Some("Uses a model classifier to review permission prompts automatically")
+                );
+                assert_eq!(modes.available_modes[4].name, "Bypass");
+                assert_eq!(
+                    modes.available_modes[4].description.as_deref(),
+                    Some("Skip all permission prompts (use with caution)")
+                );
             }
             other => panic!("expected SessionManifest, got {other:?}"),
         }

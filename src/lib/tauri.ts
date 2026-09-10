@@ -48,18 +48,25 @@ export type CommandArgs = {
     isolation: Workspace["isolation"];
     branch?: string | null;
   };
-  session_create: { workspaceId: Id | null; kind: SessionKind; provider?: string | null };
+  session_create: {
+    workspaceId: Id | null;
+    kind: SessionKind;
+    provider?: string | null;
+    mode?: string | null;
+  };
   session_resume: { sessionId: Id };
   session_attach: { id: Id; fromCursor: number | null; ch: SessionChannel };
   session_send: { id: Id; subscriptionId: SubscriptionId; text: string };
   session_interrupt: { id: Id; subscriptionId: SubscriptionId };
   session_claim: { subscriptionId: SubscriptionId };
   session_set_model: { id: Id; modelId?: string; effort?: string };
+  session_set_mode: { id: Id; modeId: string };
   session_permission_respond: {
     id: Id;
     subscriptionId: SubscriptionId;
     requestId: Id;
     outcome: PermissionOutcome;
+    optionId?: string | null;
   };
   session_presence: { focusedSessionId: Id | null; appVisible: boolean };
   session_resize: { id: Id; subscriptionId: SubscriptionId; cols: number; rows: number };
@@ -114,6 +121,7 @@ type CommandResults = {
   session_interrupt: void;
   session_claim: void;
   session_set_model: void;
+  session_set_mode: void;
   session_permission_respond: void;
   session_presence: void;
   session_resize: void;
@@ -174,14 +182,15 @@ export const COMMAND_ARG_KEYS = {
   project_add: ["path"],
   workspaces_list: ["projectId"],
   workspace_create: ["projectId", "isolation", "branch"],
-  session_create: ["workspaceId", "kind", "provider"],
+  session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
   session_send: ["id", "subscriptionId", "text"],
   session_interrupt: ["id", "subscriptionId"],
   session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
-  session_permission_respond: ["id", "subscriptionId", "requestId", "outcome"],
+  session_set_mode: ["id", "modeId"],
+  session_permission_respond: ["id", "subscriptionId", "requestId", "outcome", "optionId"],
   session_presence: ["focusedSessionId", "appVisible"],
   session_resize: ["id", "subscriptionId", "cols", "rows"],
   session_detach: ["subscriptionId"],
@@ -334,6 +343,7 @@ export const sessionCreate = (
   workspaceId: Id | null,
   kind: SessionKind = "terminal",
   provider?: string | null,
+  mode?: string | null,
 ) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key must be `workspaceId`, not `workspace_id`. The snake_case spelling
@@ -342,6 +352,7 @@ export const sessionCreate = (
     workspaceId,
     kind,
     provider: provider ?? null,
+    ...(mode === undefined ? {} : { mode }),
   });
 export const sessionResume = (sessionId: Id) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side.
@@ -365,17 +376,26 @@ export const sessionSetModel = (id: Id, modelId?: string, effort?: string) =>
     ...(modelId === undefined ? {} : { modelId }),
     ...(effort === undefined ? {} : { effort }),
   });
+export const sessionSetMode = (id: Id, modeId: string) =>
+  invokeTyped("session_set_mode", { id, modeId });
 export const sessionPermissionRespond = (
   id: Id,
   subscriptionId: SubscriptionId,
   requestId: Id,
   outcome: PermissionOutcome,
+  optionId?: string | null,
 ) =>
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key here must be `requestId`, not `request_id` (the command has no
   // rename_all). Sending snake_case made the daemon reject the response with
   // "invalid args `requestId`" and the permission card hung on "Waiting on you".
-  invokeTyped("session_permission_respond", { id, subscriptionId, requestId, outcome });
+  invokeTyped("session_permission_respond", {
+    id,
+    subscriptionId,
+    requestId,
+    outcome,
+    ...(optionId === undefined ? {} : { optionId }),
+  });
 /**
  * Reports which session this window is looking at and whether the app is
  * visible at all. The daemon owns the attention-suppression policy; this only

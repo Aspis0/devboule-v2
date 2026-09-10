@@ -105,6 +105,8 @@ mod acp_client;
 mod acp_host;
 #[path = "claude_client.rs"]
 mod claude_client;
+#[path = "codex_client.rs"]
+mod codex_client;
 #[path = "event_pull.rs"]
 mod event_pull;
 #[path = "pi_client.rs"]
@@ -185,6 +187,12 @@ pub(super) trait SessionKiller: Send + Sync {
 
 pub(super) trait ModelSwitcher: Send + Sync {
     fn set_model(&self, model_id: Option<&str>, effort: Option<&str>) -> Result<(), WireError>;
+    fn set_mode(&self, _mode_id: &str) -> Result<(), WireError> {
+        Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "This provider does not support switching the session mode.",
+        ))
+    }
     fn manifest(&self) -> Option<SessionEvent> {
         None
     }
@@ -474,6 +482,14 @@ fn check_resize_owner(
 
 type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
 type JournalRosterCache = Arc<Mutex<Option<(u64, Vec<SessionRecord>)>>>;
+
+/// One client answer to a pending permission request.
+pub struct PermissionResponse<'a> {
+    pub session_id: &'a str,
+    pub request_id: &'a str,
+    pub outcome: PermissionOutcome,
+    pub option_id: Option<&'a str>,
+}
 
 const WORKSPACE_PATH_CACHE_CAP: usize = 1024;
 
@@ -1467,10 +1483,13 @@ impl SessionRegistry {
         let env_provider = env_provider.filter(|value| !value.is_empty());
         let kind = if kind == SessionKind::Acp
             && (requested.as_deref() == Some("pi")
-                || (requested.is_none() && matches!(env_provider, Some("claude" | "pi"))))
+                || requested.as_deref() == Some("codex")
+                || (requested.is_none() && matches!(env_provider, Some("claude" | "pi" | "codex"))))
         {
             if requested.as_deref() == Some("pi") || env_provider == Some("pi") {
                 SessionKind::Pi
+            } else if requested.as_deref() == Some("codex") || env_provider == Some("codex") {
+                SessionKind::Codex
             } else {
                 SessionKind::Claude
             }
@@ -1525,6 +1544,7 @@ impl SessionRegistry {
         Self::env_override_cannot_launch_npx(id, provenance, origin)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
         state: &Arc<ServerState>,
@@ -1532,6 +1552,7 @@ impl SessionRegistry {
         workspace_id: Option<String>,
         kind: SessionKind,
         provider: Option<String>,
+        mode: Option<String>,
         command: Option<PtyCommand>,
     ) -> Result<Session, WireError> {
         let env_provider = std::env::var("DEVBOULE_AGENT_PROVIDER").ok();
@@ -1541,6 +1562,7 @@ impl SessionRegistry {
             workspace_id,
             kind,
             provider,
+            mode,
             command,
             env_provider.as_deref(),
         )
@@ -1556,6 +1578,7 @@ impl SessionRegistry {
         workspace_id: Option<String>,
         kind: SessionKind,
         provider: Option<String>,
+        mode: Option<String>,
         command: Option<PtyCommand>,
         env_provider: Option<&str>,
     ) -> Result<Session, WireError> {
@@ -1572,6 +1595,7 @@ impl SessionRegistry {
             Some(command) => command,
             None if kind == SessionKind::Claude => claude_client::resolve_command(&self.paths)?,
             None if kind == SessionKind::Pi => pi_client::resolve_command(&self.paths)?,
+            None if kind == SessionKind::Codex => codex_client::resolve_command(&self.paths)?,
             None if kind == SessionKind::Acp => match provider.clone() {
                 Some(id) => {
                     Self::reject_env_npx_wrapper(&id, provenance, &self.paths)?;
@@ -1588,6 +1612,7 @@ impl SessionRegistry {
             SessionKind::Acp => provider.or_else(|| command.provider_id.clone()),
             SessionKind::Claude => Some("claude".to_string()),
             SessionKind::Pi => Some("pi".to_string()),
+            SessionKind::Codex => Some("codex".to_string()),
             SessionKind::Terminal => None,
         };
         // One clock read: the journal row and the wire metadata must carry
@@ -1599,7 +1624,9 @@ impl SessionRegistry {
             kind.clone(),
             match kind {
                 SessionKind::Terminal => "Terminal",
-                SessionKind::Acp | SessionKind::Claude | SessionKind::Pi => "Agent",
+                SessionKind::Acp | SessionKind::Claude | SessionKind::Pi | SessionKind::Codex => {
+                    "Agent"
+                }
             }
             .to_string(),
         );
@@ -1637,13 +1664,16 @@ impl SessionRegistry {
         // The journal row above is the durable product boundary. A failed
         // spawn must end that row, or the next roster render resurrects a
         // phantom recovered session with zero events.
-        match spawn_session(state, self, metadata.clone(), owner.clone(), command) {
+        match spawn_session(state, self, metadata.clone(), owner.clone(), command, mode) {
             Ok(()) => {
                 // A completed ACP handshake proves the provider started and
                 // accepted a session, so it measures provider health. A
                 // claude process spawn proves nothing about the provider,
                 // so claude only records failures (below).
-                if matches!(kind, SessionKind::Acp | SessionKind::Pi) {
+                if matches!(
+                    kind,
+                    SessionKind::Acp | SessionKind::Pi | SessionKind::Codex
+                ) {
                     if let Some(provider_id) = &metadata.provider {
                         state.record_provider_health(provider_id, Ok(()));
                     }
@@ -1981,19 +2011,31 @@ impl SessionRegistry {
         owner: &OwnerId,
     ) -> Result<(), WireError> {
         self.permission_respond_with_subscription(
-            session_id, request_id, outcome, conn.id, conn, owner,
+            PermissionResponse {
+                session_id,
+                request_id,
+                outcome,
+                option_id: None,
+            },
+            conn.id,
+            conn,
+            owner,
         )
     }
 
     pub fn permission_respond_with_subscription(
         &self,
-        session_id: &str,
-        request_id: &str,
-        outcome: PermissionOutcome,
+        response: PermissionResponse<'_>,
         subscription_id: u64,
         conn: &ConnHandle,
         owner: &OwnerId,
     ) -> Result<(), WireError> {
+        let PermissionResponse {
+            session_id,
+            request_id,
+            outcome,
+            option_id,
+        } = response;
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         if request_id.is_empty() {
@@ -2010,16 +2052,20 @@ impl SessionRegistry {
                 "Session has no live ACP permission broker.",
             )
         })?;
-        broker.respond(request_id, outcome).map_err(|error| {
-            let code = match error {
-                permission_broker::PermissionResponseError::NotFound => ErrorCode::InvalidRequest,
-                permission_broker::PermissionResponseError::InvalidRequest(_) => {
-                    ErrorCode::InvalidRequest
-                }
-                permission_broker::PermissionResponseError::Io(_) => ErrorCode::Io,
-            };
-            WireError::new(code, error.to_string())
-        })?;
+        broker
+            .respond_with_option(request_id, outcome, option_id.map(str::to_string))
+            .map_err(|error| {
+                let code = match error {
+                    permission_broker::PermissionResponseError::NotFound => {
+                        ErrorCode::InvalidRequest
+                    }
+                    permission_broker::PermissionResponseError::InvalidRequest(_) => {
+                        ErrorCode::InvalidRequest
+                    }
+                    permission_broker::PermissionResponseError::Io(_) => ErrorCode::Io,
+                };
+                WireError::new(code, error.to_string())
+            })?;
         if runtime.clear_attention() {
             self.notify_session_transition(owner, session_id);
         }
@@ -2271,6 +2317,88 @@ impl SessionRegistry {
             }
         }
         result
+    }
+
+    pub fn set_mode(
+        &self,
+        session_id: &str,
+        owner: &OwnerId,
+        mode_id: &str,
+    ) -> Result<(), WireError> {
+        validate_session_id(session_id)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        if mode_id.is_empty() {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "A mode is required.",
+            ));
+        }
+        let (switcher, runtime) = {
+            let mut map = self
+                .inner
+                .lock()
+                .map_err(|_| internal("Session state is unavailable."))?;
+            let entry = map.get_mut(session_id).ok_or_else(not_found)?;
+            check_user_owner(entry, owner)?;
+            let session = entry.as_live_mut().ok_or_else(process_gone)?;
+            if !session.metadata.kind.is_agent() {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    "Only agent sessions support switching the session mode.",
+                ));
+            }
+            let manifest = session.runtime.session_manifest();
+            let modes = match manifest.as_ref() {
+                Some(SessionEvent::SessionManifest {
+                    modes: Some(modes), ..
+                }) => modes,
+                _ => {
+                    return Err(WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "This provider has not advertised any session modes.",
+                    ));
+                }
+            };
+            if !modes.available_modes.iter().any(|mode| mode.id == mode_id) {
+                return Err(WireError::new(
+                    ErrorCode::InvalidRequest,
+                    format!("Session mode '{mode_id}' is not available."),
+                ));
+            }
+            let switcher = session
+                .switcher
+                .as_ref()
+                .map(|switcher| switcher.clone_switcher())
+                .ok_or_else(|| {
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "This provider does not support switching the session mode.",
+                    )
+                })?;
+            (switcher, Arc::clone(&session.runtime))
+        };
+        switcher.set_mode(mode_id)?;
+        let Some(SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes: Some(mut modes),
+        }) = runtime.session_manifest()
+        else {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "Session mode state disappeared while switching.",
+            ));
+        };
+        modes.current_mode_id = mode_id.to_string();
+        let manifest = runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id,
+            current_model_id,
+            models,
+            modes: Some(modes),
+        });
+        let _ = runtime.publish_agent_event(manifest, None);
+        Ok(())
     }
 
     fn validate_claude_effort(
@@ -2701,30 +2829,74 @@ pub fn spawn_session(
     metadata: Session,
     owner: OwnerId,
     command: PtyCommand,
+    requested_mode: Option<String>,
 ) -> Result<(), WireError> {
     if metadata.kind == SessionKind::Claude {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        let spawned = claude_client::spawn_process(state, command).map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(state, registry, metadata, owner, None, spawned);
+        let spawned = claude_client::spawn_process(state, command, requested_mode.clone())
+            .map_err(|error| {
+                map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+            })?;
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            None,
+            requested_mode,
+            spawned,
+        );
     }
     if metadata.kind == SessionKind::Acp {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        let spawned = acp_client::spawn_process(state, command).map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(state, registry, metadata, owner, None, spawned);
+        let spawned =
+            acp_client::spawn_process(state, command, requested_mode.clone()).map_err(|error| {
+                map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+            })?;
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            None,
+            requested_mode,
+            spawned,
+        );
     }
     if metadata.kind == SessionKind::Pi {
         let workspace_id = metadata.workspace_id.clone();
         let workspace_path = command.cwd.clone();
-        let spawned = pi_client::spawn_process(state, command).map_err(|error| {
-            map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
-        })?;
-        return start_spawned_session(state, registry, metadata, owner, None, spawned);
+        let spawned =
+            pi_client::spawn_process(state, command, requested_mode.clone()).map_err(|error| {
+                map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error)
+            })?;
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            None,
+            requested_mode,
+            spawned,
+        );
+    }
+    if metadata.kind == SessionKind::Codex {
+        let workspace_id = metadata.workspace_id.clone();
+        let workspace_path = command.cwd.clone();
+        let spawned = codex_client::spawn_process(state, command, requested_mode.clone()).map_err(
+            |error| map_workspace_spawn_wire_error(workspace_id.as_deref(), &workspace_path, error),
+        )?;
+        return start_spawned_session(
+            state,
+            registry,
+            metadata,
+            owner,
+            None,
+            requested_mode,
+            spawned,
+        );
     }
 
     // On Windows portable-pty selects ConPTY internally. ConPTY may issue a
@@ -2852,7 +3024,7 @@ pub fn spawn_session(
         peer_session_id: None,
         agent_version: None,
     };
-    start_spawned_session(state, registry, metadata, owner, None, spawned)
+    start_spawned_session(state, registry, metadata, owner, None, None, spawned)
 }
 
 pub fn spawn_resumed_session(
@@ -2870,6 +3042,7 @@ pub fn spawn_resumed_session(
         metadata,
         owner,
         Some(generation),
+        None,
         acp_client::spawn_process_resuming(state, command, peer_session_id)?,
     )
 }
@@ -2880,6 +3053,7 @@ fn start_spawned_session(
     metadata: Session,
     owner: OwnerId,
     generation: Option<u64>,
+    requested_mode: Option<String>,
     spawned: SpawnedSession,
 ) -> Result<(), WireError> {
     let SpawnedSession {
@@ -2924,7 +3098,10 @@ fn start_spawned_session(
     if metadata.kind == SessionKind::Claude {
         let catalog = state.claude_models();
         runtime.store_claude_manifest(
-            crate::claude_catalog::initial_manifest(catalog.models),
+            crate::claude_catalog::initial_manifest_with_mode(
+                catalog.models,
+                requested_mode.as_deref().unwrap_or("default"),
+            ),
             catalog.state,
         );
     }
@@ -3411,6 +3588,11 @@ fn resume_handle(
 ) -> Result<(String, String), WireError> {
     if record.owner != owner.user {
         return Err(unauthorized());
+    }
+    if record.kind == SessionKind::Codex {
+        return Err(cannot_resume(
+            "Codex app-server sessions do not support resume",
+        ));
     }
     // Pi can resume on its own wire, but this slice deliberately keeps the
     // persisted resume handle ACP-only until Pi resume is designed end to end.
@@ -6854,6 +7036,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn invalid_session_mode_is_rejected_without_changing_the_manifest() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-set-mode", "process-set-mode");
+        let session_id = "acp-set-mode";
+        let runtime = Arc::new(SessionRuntime::with_journal(
+            session_id.to_string(),
+            registry.journal.clone(),
+        ));
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("test-agent".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "ask".to_string(),
+                available_modes: vec![devboule_protocol::SessionModeView {
+                    id: "ask".to_string(),
+                    name: "Always ask".to_string(),
+                    description: None,
+                }],
+            }),
+        });
+        let calls = Arc::new(AtomicU64::new(0));
+        let metadata = Session {
+            id: session_id.to_string(),
+            workspace_id: None,
+            cwd: None,
+            kind: SessionKind::Acp,
+            title: "Agent".to_string(),
+            state: SessionState::Live { generation: 1 },
+            elapsed_ms: Some(0),
+            provider: Some("test-agent".to_string()),
+            peer_session_id: None,
+            created_at_ms: 1,
+        };
+        let session = PtySession {
+            metadata,
+            owner: owner.clone(),
+            process_job: Arc::new(JobObject::new().expect("job")),
+            master: None,
+            killer: Box::new(NoopKiller),
+            switcher: Some(Box::new(RecordingSwitcher(Arc::clone(&calls)))),
+            stderr_handle: None,
+            child_wait: None,
+            writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            reader_handle: None,
+            coalesce_handle: None,
+            runtime: Arc::clone(&runtime),
+            exited: Arc::new(AtomicBool::new(false)),
+            preserve_on_exit: Arc::new(AtomicBool::new(false)),
+        };
+        registry
+            .inner
+            .lock()
+            .expect("registry")
+            .insert(session_id.to_string(), RegistryEntry::Live(session));
+
+        let before = runtime.session_manifest();
+        let error = registry
+            .set_mode(session_id, &owner, "missing")
+            .expect_err("unknown mode must be rejected before the switcher");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(runtime.session_manifest(), before);
+        assert_eq!(calls.load(Ordering::Acquire), 0);
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn tmp_registry_cache() -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let process_id = std::process::id();
@@ -6885,6 +7135,7 @@ mod tests {
                 &owner,
                 None,
                 SessionKind::Acp,
+                None,
                 None,
                 None,
                 Some("codex-acp"),

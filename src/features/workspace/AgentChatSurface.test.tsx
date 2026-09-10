@@ -114,6 +114,7 @@ vi.mock("../../lib/tauri", () => ({
   sessionSend: vi.fn(async () => undefined),
   sessionInterrupt: vi.fn(async () => undefined),
   sessionSetModel: vi.fn(async () => undefined),
+  sessionSetMode: vi.fn(async () => undefined),
 }));
 
 import {
@@ -121,6 +122,7 @@ import {
   sessionDetach,
   sessionInterrupt,
   sessionSend,
+  sessionSetMode,
   sessionSetModel,
 } from "../../lib/tauri";
 import { setPreferredEffort } from "../../lib/modelPrefs";
@@ -128,9 +130,38 @@ import { AgentChatSurface } from "./AgentChatSurface";
 
 const LIVE_OBSERVED: SessionState = { type: "live", generation: 1 };
 
+const MODES_MANIFEST: Extract<SessionEvent, { type: "session_manifest" }> = {
+  type: "session_manifest",
+  providerId: "claude",
+  models: [],
+  modes: {
+    currentModeId: "default",
+    availableModes: [
+      { id: "default", name: "Ask before edits" },
+      { id: "plan", name: "Plan", description: "Plan without touching files" },
+      { id: "acceptEdits", name: "Accept edits", description: "Apply file edits without asking" },
+    ],
+  },
+};
+
 describe("AgentChatSurface", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
+
+  async function pickFromChip(prefix: string, optionId: string) {
+    const chip = container.querySelector<HTMLButtonElement>(`[data-testid="${prefix}-chip"]`);
+    if (chip === null) throw new Error(`${prefix} chip did not render`);
+    await act(async () => chip.click());
+    const option = container.querySelector<HTMLButtonElement>(
+      `[data-testid="${prefix}-option-${optionId}"]`,
+    );
+    if (option === null) throw new Error(`${prefix} option ${optionId} did not render`);
+    await act(async () => option.click());
+  }
+
+  function chipLabel(prefix: string): string | undefined {
+    return container.querySelector(`[data-testid="${prefix}-chip"]`)?.textContent;
+  }
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -147,6 +178,29 @@ describe("AgentChatSurface", () => {
     channelHarness.activeSubscriptionId = null;
     channelHarness.active = null;
     vi.clearAllMocks();
+  });
+
+  it("renders session notices as muted system rows with their severity", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "session_notice",
+        text: "Codex declined an out-of-scope request.",
+        severity: "warning",
+      });
+    });
+
+    const row = container.querySelector<HTMLElement>(".workspace-chat-system");
+    expect(row?.getAttribute("data-severity")).toBe("warning");
+    expect(row?.textContent).toContain("Codex declined an out-of-scope request.");
+    expect(row?.textContent).not.toContain("Agent");
+    expect(row?.getAttribute("role")).toBeNull();
+    expect(row?.style.opacity).toBe("0.68");
   });
 
   it("attaches, sends from the composer, renders streamed events, and detaches", async () => {
@@ -370,7 +424,7 @@ describe("AgentChatSurface", () => {
 
     expect(container.querySelector("[data-testid=session-manifest]")).toBeNull();
     expect(container.textContent).not.toContain("Medium");
-    expect(container.querySelector("[data-testid=session-modes]")).toBeNull();
+    expect(container.querySelector("[data-testid=mode-chip]")).toBeNull();
   });
 
   it("does not render the subagent pill when there are no children", async () => {
@@ -599,7 +653,7 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector(".workspace-subagent-list")).toBeNull();
   });
 
-  it("shows provider, model, and effort as selects from the session manifest", async () => {
+  it("shows provider, model, and effort as chips from the session manifest", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
@@ -628,22 +682,27 @@ describe("AgentChatSurface", () => {
 
     const strip = container.querySelector("[data-testid=session-manifest]");
     expect(strip?.textContent).toContain("grok");
-    const modelSelect = container.querySelector<HTMLSelectElement>(
-      "[data-testid=session-model-select]",
-    );
-    expect(modelSelect).not.toBeNull();
-    expect(modelSelect?.value).toBe("grok-4.6");
-    expect(modelSelect?.options).toHaveLength(2);
-    expect(modelSelect?.options[0].textContent).toBe("Grok 4.6");
-    const effortSelect = container.querySelector<HTMLSelectElement>(
-      "[data-testid=session-effort-select]",
-    );
-    expect(effortSelect?.value).toBe("xhigh");
-    expect(effortSelect?.options).toHaveLength(2);
-    expect(container.querySelector("[data-testid=session-modes]")).toBeNull();
+    expect(chipLabel("model")).toContain("Grok 4.6");
+    const modelChip = container.querySelector<HTMLButtonElement>('[data-testid="model-chip"]');
+    if (modelChip === null) throw new Error("model chip did not render");
+    await act(async () => modelChip.click());
+    const modelMenu = container.querySelector('[aria-label="Model"]');
+    expect(modelMenu?.getAttribute("role")).toBe("listbox");
+    const modelOptions = modelMenu?.querySelectorAll("[role='option']") ?? [];
+    expect(modelOptions).toHaveLength(2);
+    expect(modelOptions[0].textContent).toContain("Grok 4.6");
+    expect(modelOptions[0].getAttribute("aria-selected")).toBe("true");
+    expect(modelOptions[1].textContent).toContain("Grok 4.7");
+    expect(chipLabel("effort")).toContain("Extra High Effort");
+    const effortChip = container.querySelector<HTMLButtonElement>('[data-testid="effort-chip"]');
+    if (effortChip === null) throw new Error("effort chip did not render");
+    await act(async () => effortChip.click());
+    const effortMenu = container.querySelector('[aria-label="Thinking effort"]');
+    expect(effortMenu?.querySelectorAll("[role='option']")).toHaveLength(2);
+    expect(container.querySelector('[data-testid="mode-chip"]')).toBeNull();
   });
 
-  it("shows no selects for the claude shape: one model and no efforts", async () => {
+  it("shows no chips for the claude shape: one model and no efforts", async () => {
     root = createRoot(container);
     await act(async () => {
       root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
@@ -661,8 +720,226 @@ describe("AgentChatSurface", () => {
 
     const strip = container.querySelector("[data-testid=session-manifest]");
     expect(strip?.textContent).toContain("claude");
-    expect(container.querySelector("[data-testid=session-model-select]")).toBeNull();
-    expect(container.querySelector("[data-testid=session-effort-select]")).toBeNull();
+    expect(container.querySelector('[data-testid="model-chip"]')).toBeNull();
+    expect(container.querySelector('[data-testid="effort-chip"]')).toBeNull();
+    expect(container.querySelector(".workspace-composer")?.textContent).toContain("Claude Opus");
+  });
+
+  it("keeps the mode chip hidden when the manifest carries no modes", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [{ modelId: "grok-4.6", name: "Grok 4.6" }],
+      });
+    });
+
+    expect(container.querySelector('[data-testid="mode-chip"]')).toBeNull();
+  });
+
+  it("shows the current mode on the chip and lists every mode with its description", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="mode-chip"]');
+    if (chip === null) throw new Error("mode chip did not render");
+    expect(chip.textContent).toContain("Ask before edits");
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+
+    await act(async () => chip.click());
+    const menu = container.querySelector('[aria-label="Session mode"]');
+    expect(menu?.getAttribute("role")).toBe("listbox");
+    const options = menu?.querySelectorAll("[role='option']") ?? [];
+    expect(options).toHaveLength(3);
+    expect(options[0].getAttribute("aria-selected")).toBe("true");
+    expect(options[1].getAttribute("aria-selected")).toBe("false");
+    expect(menu?.textContent).toContain("Plan without touching files");
+    expect(menu?.textContent).toContain("Apply file edits without asking");
+  });
+
+  it("selects a mode optimistically and calls sessionSetMode before the manifest lands", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="mode-chip"]');
+    if (chip === null) throw new Error("mode chip did not render");
+    await act(async () => chip.click());
+    const plan = container.querySelector<HTMLButtonElement>('[data-testid="mode-option-plan"]');
+    if (plan === null) throw new Error("plan option did not render");
+    await act(async () => plan.click());
+
+    expect(sessionSetMode).toHaveBeenCalledWith("agent-1", "plan");
+    expect(chip.textContent).toContain("Plan");
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('[aria-label="Session mode"]')).toBeNull();
+
+    await act(async () => {
+      channelHarness.emit?.({
+        ...MODES_MANIFEST,
+        modes: {
+          currentModeId: "plan",
+          availableModes: MODES_MANIFEST.modes?.availableModes ?? [],
+        },
+      });
+    });
+    expect(
+      container.querySelector<HTMLButtonElement>('[data-testid="mode-chip"]')?.textContent,
+    ).toContain("Plan");
+  });
+
+  it("reverts the chip to the manifest mode when sessionSetMode rejects", async () => {
+    (sessionSetMode as unknown as Mock).mockRejectedValueOnce(new Error("mode refused"));
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="mode-chip"]');
+    if (chip === null) throw new Error("mode chip did not render");
+    await act(async () => chip.click());
+    const plan = container.querySelector<HTMLButtonElement>('[data-testid="mode-option-plan"]');
+    if (plan === null) throw new Error("plan option did not render");
+    await act(async () => plan.click());
+
+    expect(chip.textContent).toContain("Ask before edits");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Could not switch the mode: mode refused",
+    );
+  });
+
+  it("moves focus with the arrow keys and closes the mode menu on Escape and an outside click", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({ ...MODES_MANIFEST });
+    });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="mode-chip"]');
+    if (chip === null) throw new Error("mode chip did not render");
+    await act(async () => chip.click());
+    const menu = container.querySelector('[aria-label="Session mode"]');
+    if (menu === null) throw new Error("mode menu did not render");
+
+    await act(async () => {
+      menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    const options = [...menu.querySelectorAll<HTMLButtonElement>("[role='option']")];
+    expect(document.activeElement).toBe(options[0]);
+    await act(async () => {
+      menu.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(document.activeElement).toBe(options[1]);
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector('[aria-label="Session mode"]')).toBeNull();
+
+    await act(async () => chip.click());
+    expect(container.querySelector('[aria-label="Session mode"]')).not.toBeNull();
+    await act(async () => document.body.click());
+    expect(container.querySelector('[aria-label="Session mode"]')).toBeNull();
+  });
+
+  it("renders the model and effort pickers inside the composer control bar", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.emit?.({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            currentEffort: "high",
+            efforts: [
+              { id: "high", label: "High" },
+              { id: "xhigh", label: "Extra High Effort" },
+            ],
+          },
+          { modelId: "grok-4.7", name: "Grok 4.7", currentEffort: "high", efforts: [] },
+        ],
+      });
+    });
+
+    const composer = container.querySelector(".workspace-composer");
+    expect(composer?.querySelector('[data-testid="model-chip"]')).not.toBeNull();
+    expect(composer?.querySelector('[data-testid="effort-chip"]')).not.toBeNull();
+    expect(chipLabel("model")).toContain("Grok 4.6");
+    expect(composer?.querySelector(".workspace-send-action")?.getAttribute("title")).toBe(
+      "Send · Enter (Shift+Enter for a new line)",
+    );
+
+    await pickFromChip("model", "grok-4.7");
+    expect(sessionSetModel).toHaveBeenCalledWith("agent-1", "grok-4.7", undefined);
+  });
+
+  it("grows the composer textarea with content and caps it at eight lines", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="agent-1" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    if (textarea === null) throw new Error("composer textarea did not render");
+    expect(textarea.getAttribute("rows")).toBe("1");
+
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 20 });
+    await act(async () => {
+      setValue.call(textarea, "one line");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(textarea.style.height).toBe("20px");
+    expect(textarea.style.overflowY).toBe("hidden");
+
+    Object.defineProperty(textarea, "scrollHeight", { configurable: true, value: 400 });
+    await act(async () => {
+      setValue.call(textarea, "line\nline\nline\nline\nline\nline\nline\nline\nline\nline");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(textarea.style.height).toBe("160px");
+    expect(textarea.style.overflowY).toBe("auto");
   });
 
   it("calls session_set_model on model change and keeps the confirmed value until the manifest lands", async () => {
@@ -694,21 +971,12 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const modelSelect = container.querySelector<HTMLSelectElement>(
-      "[data-testid=session-model-select]",
-    );
-    if (modelSelect === null) throw new Error("model select did not render");
-    await act(async () => {
-      modelSelect.value = "grok-4.7";
-      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickFromChip("model", "grok-4.7");
 
     expect(sessionSetModel).toHaveBeenCalledWith("agent-1", "grok-4.7", undefined);
     const pendingStrip = container.querySelector("[data-testid=session-manifest]");
     expect(pendingStrip?.getAttribute("aria-busy")).toBe("true");
-    expect(
-      container.querySelector<HTMLSelectElement>("[data-testid=session-model-select]")?.value,
-    ).toBe("grok-4.6");
+    expect(chipLabel("model")).toContain("Grok 4.6");
 
     await act(async () => {
       channelHarness.emit?.({
@@ -732,9 +1000,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    expect(
-      container.querySelector<HTMLSelectElement>("[data-testid=session-model-select]")?.value,
-    ).toBe("grok-4.7");
+    expect(chipLabel("model")).toContain("Grok 4.7");
     expect(
       container.querySelector("[data-testid=session-manifest]")?.getAttribute("aria-busy"),
     ).toBe("false");
@@ -766,14 +1032,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const effortSelect = container.querySelector<HTMLSelectElement>(
-      "[data-testid=session-effort-select]",
-    );
-    if (effortSelect === null) throw new Error("effort select did not render");
-    await act(async () => {
-      effortSelect.value = "xhigh";
-      effortSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickFromChip("effort", "xhigh");
 
     expect(sessionSetModel).toHaveBeenCalledWith("pref-agent-1", undefined, "xhigh");
     expect(localStorage.getItem("devboule.modelEffortPrefs")).toBe(
@@ -901,14 +1160,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const modelSelect = container.querySelector<HTMLSelectElement>(
-      "[data-testid=session-model-select]",
-    );
-    if (modelSelect === null) throw new Error("model select did not render");
-    await act(async () => {
-      modelSelect.value = "grok-4.7";
-      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickFromChip("model", "grok-4.7");
 
     const label = container.querySelector("[data-testid=session-pending-label]");
     expect(label?.textContent).toBe("switching to Grok 4.7…");
@@ -942,14 +1194,7 @@ describe("AgentChatSurface", () => {
     });
     expect(container.querySelector("[data-testid=session-pending-label]")).toBeNull();
 
-    const effortSelect = container.querySelector<HTMLSelectElement>(
-      "[data-testid=session-effort-select]",
-    );
-    if (effortSelect === null) throw new Error("effort select did not render");
-    await act(async () => {
-      effortSelect.value = "xhigh";
-      effortSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickFromChip("effort", "xhigh");
     expect(container.querySelector("[data-testid=session-pending-label]")?.textContent).toBe(
       "switching to Extra High Effort…",
     );
@@ -975,14 +1220,7 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const modelSelect = container.querySelector<HTMLSelectElement>(
-      "[data-testid=session-model-select]",
-    );
-    if (modelSelect === null) throw new Error("model select did not render");
-    await act(async () => {
-      modelSelect.value = "grok-4.7";
-      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await pickFromChip("model", "grok-4.7");
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Could not switch the model: provider refused",
@@ -1015,13 +1253,18 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const strip = container.querySelector("[data-testid=session-manifest]");
-    expect(strip?.textContent).toContain("Grok 4.6");
-    const effortSelect = container.querySelector<HTMLSelectElement>(
-      "[data-testid=session-effort-select]",
-    );
-    expect(effortSelect).not.toBeNull();
-    expect(effortSelect?.value).not.toBe("turbo");
+    const composer = container.querySelector(".workspace-composer");
+    expect(composer?.textContent).toContain("Grok 4.6");
+    // The undeclared "turbo" effort must not be presented as current; the chip
+    // falls back to its label instead of any offered option's name.
+    expect(chipLabel("effort")).toBe("Thinking effort▾");
+    const effortChip = container.querySelector<HTMLButtonElement>('[data-testid="effort-chip"]');
+    if (effortChip === null) throw new Error("effort chip did not render");
+    await act(async () => effortChip.click());
+    const selected = [
+      ...container.querySelectorAll('[aria-label="Thinking effort"] [role="option"]'),
+    ].filter((option) => option.getAttribute("aria-selected") === "true");
+    expect(selected).toHaveLength(0);
   });
 
   it("shows Finished from an ended sessions_watch snapshot, not Ready", async () => {
@@ -1107,6 +1350,58 @@ describe("AgentChatSurface", () => {
       channelHarness.active?.({ type: "agent_finished", stopReason: "cancelled" });
     });
     expect(container.querySelector('button[aria-label="Stop the current turn"]')).toBeNull();
+  });
+
+  it("renders auxiliary last in the conversation, before the composer", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          sessionId="aux-agent"
+          title="Agent"
+          auxiliary={<div data-testid="aux-node">Permission card</div>}
+        />,
+      );
+    });
+    await act(async () => undefined);
+    await act(async () => {
+      channelHarness.active?.({ type: "agent_message", messageId: "m-1", text: "hello" });
+    });
+
+    const conversation = container.querySelector(".workspace-conversation");
+    const aux = container.querySelector('[data-testid="aux-node"]');
+    if (conversation === null || aux === null) throw new Error("auxiliary did not render");
+    expect(conversation.textContent).toContain("hello");
+    expect(aux.parentElement).toBe(conversation);
+    expect(conversation.lastElementChild).toBe(aux);
+    const composer = container.querySelector(".workspace-composer-wrap");
+    if (composer === null) throw new Error("composer did not render");
+    expect(conversation.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("scrolls to the bottom when auxiliary arrives without a new transcript item", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="scroll-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    const conversation = container.querySelector(".workspace-conversation");
+    if (conversation === null) throw new Error("conversation did not render");
+    Object.defineProperty(conversation, "scrollHeight", { value: 420, configurable: true });
+    conversation.scrollTop = 0;
+
+    await act(async () => {
+      root.render(
+        <AgentChatSurface
+          sessionId="scroll-agent"
+          title="Agent"
+          auxiliary={<div data-testid="aux-node">Permission card</div>}
+        />,
+      );
+    });
+
+    expect(conversation.scrollTop).toBe(420);
   });
 
   it("does not infer Ready from attach alone without observed OS state", async () => {

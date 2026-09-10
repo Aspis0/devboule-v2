@@ -3,20 +3,11 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use devboule_protocol::{PermissionOption, PermissionOutcome, SessionEvent};
 
 use super::SessionRuntime;
-
-/// Two minutes gives a person enough time to inspect a command while still
-/// bounding an ACP agent that is waiting on a viewer who has gone away. ACP
-/// has no permission deadline of its own, so expiry sends `Cancelled`: no
-/// operation was granted and the agent already understands that state.
-pub const ACP_PERMISSION_TIMEOUT: Duration = Duration::from_secs(120);
 
 const MAX_PENDING_ACP_PERMISSIONS: usize = 32;
 pub(super) const MAX_ACP_PERMISSION_FIELD_BYTES: usize = 8 * 1024;
@@ -57,6 +48,13 @@ pub(super) struct PendingPermission {
     done: Arc<(Mutex<PermissionCompletion>, std::sync::Condvar)>,
 }
 
+/// An allow option chosen for an unattended-mode request, with the pending
+/// entry it decides.
+struct AutoAnswer {
+    pending: Arc<PendingPermission>,
+    option: PermissionOption,
+}
+
 struct PermissionTable {
     entries: HashMap<String, Arc<PendingPermission>>,
     closed: bool,
@@ -67,11 +65,7 @@ pub(crate) struct PermissionBroker {
     pending: Mutex<PermissionTable>,
     require_journal: bool,
     #[cfg(test)]
-    timeout: Mutex<Duration>,
-    #[cfg(test)]
     after_take_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    #[cfg(test)]
-    fail_next_timeout_spawn: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -105,11 +99,7 @@ impl PermissionBroker {
             }),
             require_journal: false,
             #[cfg(test)]
-            timeout: Mutex::new(ACP_PERMISSION_TIMEOUT),
-            #[cfg(test)]
             after_take_hook: Mutex::new(None),
-            #[cfg(test)]
-            fail_next_timeout_spawn: AtomicBool::new(false),
         })
     }
 
@@ -126,11 +116,7 @@ impl PermissionBroker {
             }),
             require_journal: true,
             #[cfg(test)]
-            timeout: Mutex::new(ACP_PERMISSION_TIMEOUT),
-            #[cfg(test)]
             after_take_hook: Mutex::new(None),
-            #[cfg(test)]
-            fail_next_timeout_spawn: AtomicBool::new(false),
         })
     }
 
@@ -213,33 +199,55 @@ impl PermissionBroker {
         tool_call_id: &str,
         outcome: PermissionOutcome,
     ) -> Result<(), PermissionResponseError> {
+        self.respond_with_option(tool_call_id, outcome, None)
+    }
+
+    pub(super) fn respond_with_option(
+        &self,
+        tool_call_id: &str,
+        outcome: PermissionOutcome,
+        option_id: Option<String>,
+    ) -> Result<(), PermissionResponseError> {
+        let options = {
+            let table = self
+                .pending
+                .lock()
+                .map_err(|_| io_error("permission broker lock poisoned"))?;
+            let pending = table
+                .entries
+                .get(tool_call_id)
+                .ok_or(PermissionResponseError::NotFound)?;
+            match &pending.request {
+                SessionEvent::PermissionRequest { options, .. } => options.clone(),
+                _ => Vec::new(),
+            }
+        };
+        let option = select_option(&options, outcome, option_id.as_deref())
+            .map_err(PermissionResponseError::InvalidRequest)?;
         let pending = self.take(tool_call_id, None)?;
         #[cfg(test)]
         self.run_after_take_hook();
-        let option = match &pending.request {
-            SessionEvent::PermissionRequest { options, .. } => select_option(options, outcome),
-            _ => None,
-        };
         let Some(option) = option else {
-            let reason = unsupported_outcome_reason(&pending, outcome);
+            let reason = unsupported_outcome_reason(&options, outcome);
             return match self.complete(
                 &pending,
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                None,
                 "cancelled",
             ) {
                 Ok(()) => Err(PermissionResponseError::InvalidRequest(reason)),
                 Err(error) => Err(error),
             };
         };
-        // Only the exact one-shot ACP option is selectable. A durable option
-        // is never substituted for the label the user saw; if it is the only
-        // option, the request is cancelled and the UI receives the reason.
+        // Only the exact one-shot kind is resolved implicitly; a durable
+        // option stays pending until the client names it.
         let result = serde_json::json!({
             "outcome": { "outcome": "selected", "optionId": option.option_id }
         });
         self.complete(
             &pending,
             result,
+            Some(&option),
             match outcome {
                 PermissionOutcome::AllowOnce => "allow_once",
                 PermissionOutcome::Deny => "deny",
@@ -247,6 +255,38 @@ impl PermissionBroker {
         )
     }
 
+    /// Auto-answer unattended modes only when the agent offers one allow
+    /// choice; chooser requests stay with the client. Paseo's chooser rule:
+    /// the same allow kind twice (two `allow_once` with different names) is a
+    /// question, the standard `allow_once`/`allow_always`/`reject_once` batch
+    /// is not. Prefer allow_once, then allow_always; a request with no allow
+    /// option stays pending for the user. The journal records the kind that
+    /// was really granted, never a one-shot constant.
+    pub(super) fn auto_answer(
+        &self,
+        tool_call_id: &str,
+        runtime: &Arc<SessionRuntime>,
+    ) -> Result<bool, PermissionResponseError> {
+        let Some(mode_id) = runtime.current_mode_id() else {
+            return Ok(false);
+        };
+        if !matches!(
+            mode_id.as_str(),
+            "bypass" | "auto_accept" | "bypassPermissions"
+        ) {
+            return Ok(false);
+        }
+        let Some(AutoAnswer { pending, option }) = self.take_auto_answerable(tool_call_id)? else {
+            return Ok(false);
+        };
+        let result = serde_json::json!({
+            "outcome": { "outcome": "selected", "optionId": option.option_id }
+        });
+        self.complete(&pending, result, Some(&option), &option.kind)?;
+        Ok(true)
+    }
+
+    #[cfg(test)]
     pub(super) fn expire(&self, tool_call_id: &str, expected: &Arc<PendingPermission>) -> bool {
         self.cancel(tool_call_id, expected, "timeout")
     }
@@ -263,6 +303,7 @@ impl PermissionBroker {
         self.complete(
             &pending,
             serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+            None,
             journal_outcome,
         )
         .is_ok()
@@ -281,6 +322,7 @@ impl PermissionBroker {
             let _ = self.complete(
                 &pending,
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+                None,
                 "cancelled",
             );
         }
@@ -309,10 +351,42 @@ impl PermissionBroker {
             .ok_or(PermissionResponseError::NotFound)
     }
 
+    /// Decide the auto-answer and remove the entry in the same lock. The
+    /// entry is removed only once an allow option has been selected, so a
+    /// chooser or an allow-less request stays pending for the client.
+    fn take_auto_answerable(
+        &self,
+        tool_call_id: &str,
+    ) -> Result<Option<AutoAnswer>, PermissionResponseError> {
+        let mut table = self
+            .pending
+            .lock()
+            .map_err(|_| io_error("permission broker lock poisoned"))?;
+        let Some(current) = table.entries.get(tool_call_id) else {
+            return Err(PermissionResponseError::NotFound);
+        };
+        let options = match &current.request {
+            SessionEvent::PermissionRequest { options, .. } => options.clone(),
+            _ => return Ok(None),
+        };
+        if is_allow_chooser(&options) {
+            return Ok(None);
+        }
+        let Some(option) = select_allow_option(&options).cloned() else {
+            return Ok(None);
+        };
+        table
+            .entries
+            .remove(tool_call_id)
+            .map(|pending| Some(AutoAnswer { pending, option }))
+            .ok_or(PermissionResponseError::NotFound)
+    }
+
     fn complete(
         &self,
         pending: &Arc<PendingPermission>,
         result: serde_json::Value,
+        selected_option: Option<&PermissionOption>,
         journal_outcome: &str,
     ) -> Result<(), PermissionResponseError> {
         let runtime = pending.runtime.upgrade();
@@ -332,18 +406,13 @@ impl PermissionBroker {
             HostDecision::Cancelled
         };
         if !recorded {
-            let send_result = self.dispatch_responder(
+            let send_result = self.dispatch_with_fallback(
                 pending,
                 serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
             );
             if let Some(runtime) = runtime {
                 runtime.remove_permission_request(&pending.tool_call_id);
-                let _ = runtime.publish_agent_event(
-                    SessionEvent::PermissionResolved {
-                        tool_call_id: pending.tool_call_id.clone(),
-                    },
-                    None,
-                );
+                let _ = runtime.publish_agent_event(permission_resolved_event(pending, None), None);
             }
             self.mark_done(pending, decision);
             return match send_result {
@@ -353,15 +422,11 @@ impl PermissionBroker {
                 Err(error) => Err(PermissionResponseError::Io(error)),
             };
         }
-        let send_result = self.dispatch_responder(pending, result);
+        let send_result = self.dispatch_with_fallback(pending, result);
         if let Some(runtime) = runtime {
             runtime.remove_permission_request(&pending.tool_call_id);
-            let _ = runtime.publish_agent_event(
-                SessionEvent::PermissionResolved {
-                    tool_call_id: pending.tool_call_id.clone(),
-                },
-                None,
-            );
+            let _ = runtime
+                .publish_agent_event(permission_resolved_event(pending, selected_option), None);
         }
         self.mark_done(pending, decision);
         send_result.map_err(PermissionResponseError::Io)
@@ -375,6 +440,23 @@ impl PermissionBroker {
         match pending.responder {
             PermissionResponder::Agent { acp_id } => (self.sender)(acp_id, result),
             PermissionResponder::Host => Ok(()),
+        }
+    }
+
+    fn dispatch_with_fallback(
+        &self,
+        pending: &PendingPermission,
+        result: serde_json::Value,
+    ) -> io::Result<()> {
+        match self.dispatch_responder(pending, result) {
+            Ok(()) => Ok(()),
+            Err(error) => match self.dispatch_responder(
+                pending,
+                serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+            ) {
+                Ok(()) => Ok(()),
+                Err(_) => Err(error),
+            },
         }
     }
 
@@ -398,7 +480,7 @@ impl PermissionBroker {
     }
 
     /// Register a host-initiated permission, publish it, and block until the
-    /// user (or timeout / cancel) decides. The ACP agent is not written to.
+    /// user or cancellation decides. The ACP agent is not written to.
     pub(super) fn request_host_permission(
         self: &Arc<Self>,
         request: SessionEvent,
@@ -412,96 +494,22 @@ impl PermissionBroker {
             let _ = self.cancel(&pending.tool_call_id, &pending, "capability_not_supported");
             return HostDecision::Cancelled;
         }
-        if self.arm_timeout(Arc::clone(&pending)).is_err() {
-            let _ = self.cancel(&pending.tool_call_id, &pending, "timeout_spawn_failed");
-            return HostDecision::Cancelled;
-        }
         let _ = runtime.publish_agent_event(request, None);
         self.wait_for_decision(&pending)
     }
 
-    pub(super) fn arm_timeout(self: &Arc<Self>, pending: Arc<PendingPermission>) -> io::Result<()> {
-        #[cfg(test)]
-        if self.take_timeout_spawn_failure() {
-            return Err(io::Error::other("test timeout spawn failure"));
-        }
-        let timeout = self.permission_timeout();
-        let broker = Arc::clone(self);
-        let tool_call_id = pending.tool_call_id.clone();
-        std::thread::Builder::new()
-            .name("acp-permission-timeout".to_string())
-            .spawn(move || {
-                let (done, wake) = &*pending.done;
-                let deadline = Instant::now() + timeout;
-                let Ok(mut completed) = done.lock() else {
-                    return;
-                };
-                while !completed.done {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        break;
-                    }
-                    let Ok((next, timed_out)) = wake.wait_timeout(completed, remaining) else {
-                        return;
-                    };
-                    completed = next;
-                    if timed_out.timed_out() {
-                        break;
-                    }
-                }
-                if !completed.done {
-                    drop(completed);
-                    let _ = broker.expire(&tool_call_id, &pending);
-                }
-            })
-            .map(|_| ())
-    }
-
     fn wait_for_decision(&self, pending: &PendingPermission) -> HostDecision {
-        let cap = self.permission_timeout() + Duration::from_secs(30);
-        let deadline = Instant::now() + cap;
         let (done, wake) = &*pending.done;
         let Ok(mut completed) = done.lock() else {
             return HostDecision::Cancelled;
         };
         while !completed.done {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return HostDecision::Cancelled;
-            }
-            let Ok((next, timed_out)) = wake.wait_timeout(completed, remaining) else {
+            let Ok(next) = wake.wait(completed) else {
                 return HostDecision::Cancelled;
             };
             completed = next;
-            if timed_out.timed_out() && !completed.done {
-                return HostDecision::Cancelled;
-            }
         }
         completed.decision.unwrap_or(HostDecision::Cancelled)
-    }
-
-    // The cfg-split makes the block unable to be a tail expression in both
-    // configurations; the `return` is load-bearing.
-    #[allow(clippy::needless_return)]
-    fn permission_timeout(&self) -> Duration {
-        #[cfg(test)]
-        {
-            return self
-                .timeout
-                .lock()
-                .ok()
-                .map(|guard| *guard)
-                .unwrap_or(ACP_PERMISSION_TIMEOUT);
-        }
-        #[cfg(not(test))]
-        ACP_PERMISSION_TIMEOUT
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_timeout(&self, timeout: Duration) {
-        if let Ok(mut stored) = self.timeout.lock() {
-            *stored = timeout;
-        }
     }
 
     #[cfg(test)]
@@ -530,17 +538,20 @@ impl PermissionBroker {
             hook();
         }
     }
+}
 
-    #[cfg(test)]
-    pub(super) fn fail_next_timeout_spawn(&self) {
-        self.fail_next_timeout_spawn.store(true, Ordering::Release);
-    }
-
-    #[cfg(test)]
-    fn take_timeout_spawn_failure(&self) -> bool {
-        self.fail_next_timeout_spawn.swap(false, Ordering::AcqRel)
+fn permission_resolved_event(
+    pending: &PendingPermission,
+    selected_option: Option<&PermissionOption>,
+) -> SessionEvent {
+    SessionEvent::PermissionResolved {
+        tool_call_id: pending.tool_call_id.clone(),
+        selected_option_id: selected_option.map(|option| option.option_id.clone()),
+        selected_option_kind: selected_option.map(|option| option.kind.clone()),
+        selected_option_name: selected_option.map(|option| option.name.clone()),
     }
 }
+
 fn validate_permission_request(
     tool_call_id: &str,
     request: &SessionEvent,
@@ -647,29 +658,85 @@ fn decision_from_outcome(journal_outcome: &str) -> HostDecision {
 fn select_option(
     options: &[PermissionOption],
     outcome: PermissionOutcome,
-) -> Option<&PermissionOption> {
-    let kind = match outcome {
-        PermissionOutcome::AllowOnce => "allow_once",
-        PermissionOutcome::Deny => "reject_once",
+    option_id: Option<&str>,
+) -> Result<Option<PermissionOption>, String> {
+    if let Some(option_id) = option_id {
+        let Some(option) = options.iter().find(|option| option.option_id == option_id) else {
+            return Err(format!("Unknown permission option '{option_id}'."));
+        };
+        let valid = match outcome {
+            PermissionOutcome::AllowOnce => option.kind.starts_with("allow"),
+            PermissionOutcome::Deny => option.kind.starts_with("reject"),
+        };
+        if !valid {
+            return Err(format!(
+                "Permission option '{option_id}' cannot be used for {outcome:?}."
+            ));
+        }
+        return Ok(Some(option.clone()));
+    }
+    let (once_kind, intent) = match outcome {
+        PermissionOutcome::AllowOnce => ("allow_once", "allow"),
+        PermissionOutcome::Deny => ("reject_once", "reject"),
     };
-    options.iter().find(|option| option.kind == kind)
+    if let Some(option) = options.iter().find(|option| option.kind == once_kind) {
+        return Ok(Some(option.clone()));
+    }
+    // A durable option of the same intent is never answered implicitly: the
+    // client has to name it, and the request stays pending until then.
+    if options.iter().any(|option| option.kind.starts_with(intent)) {
+        return Err(format!(
+            "Permission request offers no '{once_kind}' option (offered: {}); the request stays pending",
+            offered_kinds(options)
+        ));
+    }
+    Ok(None)
 }
 
-fn unsupported_outcome_reason(pending: &PendingPermission, outcome: PermissionOutcome) -> String {
-    let (label, required_kind) = match outcome {
-        PermissionOutcome::AllowOnce => ("Allow once", "allow_once"),
-        PermissionOutcome::Deny => ("Deny", "reject_once"),
+/// Paseo's chooser rule: the same allow kind offered twice means the agent is
+/// asking which one to use, so the request must reach the user.
+fn is_allow_chooser(options: &[PermissionOption]) -> bool {
+    let mut seen: Vec<&str> = Vec::new();
+    for option in options
+        .iter()
+        .filter(|option| option.kind.starts_with("allow"))
+    {
+        if seen.contains(&option.kind.as_str()) {
+            return true;
+        }
+        seen.push(&option.kind);
+    }
+    false
+}
+
+/// The auto-accept order Paseo uses: one-shot first, then durable.
+fn select_allow_option(options: &[PermissionOption]) -> Option<&PermissionOption> {
+    options
+        .iter()
+        .find(|option| option.kind == "allow_once")
+        .or_else(|| options.iter().find(|option| option.kind == "allow_always"))
+}
+
+fn offered_kinds(options: &[PermissionOption]) -> String {
+    options
+        .iter()
+        .map(|option| option.kind.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn unsupported_outcome_reason(options: &[PermissionOption], outcome: PermissionOutcome) -> String {
+    let label = match outcome {
+        PermissionOutcome::AllowOnce => "Allow once",
+        PermissionOutcome::Deny => "Deny",
     };
-    let offered = match &pending.request {
-        SessionEvent::PermissionRequest { options, .. } => options
-            .iter()
-            .map(|option| option.kind.as_str())
-            .collect::<Vec<_>>()
-            .join(", "),
-        _ => String::new(),
+    let intent = match outcome {
+        PermissionOutcome::AllowOnce => "allow",
+        PermissionOutcome::Deny => "reject",
     };
     format!(
-        "Could not honor {label}: ACP did not offer the exact one-shot option '{required_kind}' (offered: {offered}); request was cancelled"
+        "Could not honor {label}: ACP did not offer any {intent} option (offered: {}); request was cancelled",
+        offered_kinds(options)
     )
 }
 
@@ -744,8 +811,7 @@ mod tests {
     use super::SessionRuntime;
     use super::{
         permission, permission_path, permission_with_kinds, test_broker, PermissionBroker,
-        PermissionSender, ACP_PERMISSION_TIMEOUT, MAX_ACP_PERMISSION_ARGS,
-        MAX_PENDING_ACP_PERMISSIONS,
+        PermissionSender, MAX_ACP_PERMISSION_ARGS, MAX_PENDING_ACP_PERMISSIONS,
     };
     use crate::journal::Journal;
     use devboule_protocol::{PermissionOutcome, SessionEvent};
@@ -755,7 +821,7 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn durable_only_permission_is_cancelled_and_reports_why() {
+    fn legacy_allow_without_a_one_shot_option_stays_pending() {
         let (broker, sent) = test_broker();
         let runtime = Arc::new(SessionRuntime::new());
         broker
@@ -768,13 +834,378 @@ mod tests {
 
         let error = broker
             .respond("durable-only", PermissionOutcome::AllowOnce)
-            .expect_err("a durable option must not satisfy allow once");
+            .expect_err("a durable allow is never chosen implicitly");
         assert!(error.to_string().contains("allow_once"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+
+        broker
+            .respond_with_option(
+                "durable-only",
+                PermissionOutcome::AllowOnce,
+                Some("always".to_string()),
+            )
+            .expect("explicit durable option");
         let sent = sent.lock().expect("sent lock");
         assert_eq!(sent.len(), 1);
-        assert_eq!(sent[0].0, 51);
-        assert_eq!(sent[0].1["outcome"]["outcome"], "cancelled");
+        assert_eq!(sent[0].1["outcome"]["optionId"], "always");
         assert_eq!(broker.pending_len(), 0);
+    }
+
+    #[test]
+    fn explicit_option_id_is_honoured_and_reported() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                59,
+                permission_with_kinds(
+                    "explicit",
+                    &[("allow-once", "allow_once"), ("always", "allow_always")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        broker
+            .respond_with_option(
+                "explicit",
+                PermissionOutcome::AllowOnce,
+                Some("allow-once".to_string()),
+            )
+            .expect("explicit option");
+        let sent = sent.lock().expect("sent lock");
+        assert_eq!(sent[0].1["outcome"]["optionId"], "allow-once");
+    }
+
+    #[test]
+    fn explicit_option_with_wrong_intent_stays_pending() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                60,
+                permission_with_kinds("wrong-intent", &[("deny", "reject_once")]),
+                &runtime,
+            )
+            .expect("register");
+
+        let error = broker
+            .respond_with_option(
+                "wrong-intent",
+                PermissionOutcome::AllowOnce,
+                Some("deny".to_string()),
+            )
+            .expect_err("wrong intent");
+        assert!(error.to_string().contains("cannot be used"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    #[test]
+    fn legacy_response_without_an_intent_cancels_with_a_reason() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                62,
+                permission_with_kinds("no-allow", &[("deny", "reject_once")]),
+                &runtime,
+            )
+            .expect("register");
+
+        let error = broker
+            .respond("no-allow", PermissionOutcome::AllowOnce)
+            .expect_err("missing intent");
+        assert!(error.to_string().contains("did not offer any allow option"));
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["outcome"],
+            "cancelled"
+        );
+        assert_eq!(broker.pending_len(), 0);
+    }
+
+    #[test]
+    fn bypass_mode_auto_answers_without_a_client_permission_request() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "bypass".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(53, permission("pi-bypass"), &runtime)
+            .expect("register");
+
+        assert!(broker.auto_answer("pi-bypass", &runtime).expect("answer"));
+        assert_eq!(broker.pending_len(), 0);
+        let sent = sent.lock().expect("sent lock");
+        assert_eq!(sent[0].0, 53);
+        assert_eq!(sent[0].1["outcome"]["optionId"], "allow");
+    }
+
+    #[test]
+    fn bypass_mode_leaves_a_duplicate_allow_chooser_for_the_client() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "bypass".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(
+                56,
+                permission_with_kinds(
+                    "pi-chooser",
+                    &[("once", "allow_once"), ("once-again", "allow_once")],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        assert!(!broker
+            .auto_answer("pi-chooser", &runtime)
+            .expect("chooser policy"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    #[test]
+    fn bypass_mode_auto_answers_the_standard_option_triple() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "bypass".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(
+                63,
+                permission_with_kinds(
+                    "pi-standard",
+                    &[
+                        ("once", "allow_once"),
+                        ("always", "allow_always"),
+                        ("deny", "reject_once"),
+                    ],
+                ),
+                &runtime,
+            )
+            .expect("register");
+
+        assert!(broker.auto_answer("pi-standard", &runtime).expect("answer"));
+        assert_eq!(broker.pending_len(), 0);
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["optionId"],
+            "once"
+        );
+    }
+
+    #[test]
+    fn bypass_mode_leaves_a_request_without_an_allow_option_for_the_client() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "bypass".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(
+                64,
+                permission_with_kinds("pi-reject-only", &[("deny", "reject_once")]),
+                &runtime,
+            )
+            .expect("register");
+
+        assert!(!broker
+            .auto_answer("pi-reject-only", &runtime)
+            .expect("reject-only policy"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    #[test]
+    fn bypass_mode_journals_the_durable_allow_it_granted() {
+        let path = permission_path("auto-answer");
+        let journal = Arc::new(Journal::open(&path).expect("journal"));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_for_sender = Arc::clone(&sent);
+        let sender: Arc<PermissionSender> = Arc::new(move |id, result| {
+            sent_for_sender
+                .lock()
+                .expect("sent lock")
+                .push((id, result));
+            Ok(())
+        });
+        let broker = PermissionBroker::with_sender(sender);
+        let runtime = SessionRuntime::for_acp(
+            "s.permission.auto".to_string(),
+            Some(Arc::clone(&journal)),
+            Arc::clone(&broker),
+        );
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("grok".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "auto_accept".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(
+                65,
+                permission_with_kinds("durable-auto", &[("always", "allow_always")]),
+                &runtime,
+            )
+            .expect("register");
+
+        assert!(broker
+            .auto_answer("durable-auto", &runtime)
+            .expect("answer"));
+        assert_eq!(
+            sent.lock().expect("sent lock")[0].1["outcome"]["optionId"],
+            "always"
+        );
+        journal.flush().expect("journal flush");
+        let conn = Connection::open(&path).expect("inspect journal");
+        let outcome: String = conn
+            .query_row(
+                "SELECT outcome FROM permissions WHERE session_id = ?1 AND request_id = ?2",
+                ["s.permission.auto", "durable-auto"],
+                |row| row.get(0),
+            )
+            .expect("permission row");
+        assert_eq!(outcome, "allow_always");
+        drop(conn);
+        journal.shutdown();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn legacy_deny_without_a_one_shot_option_stays_pending() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        broker
+            .register(
+                57,
+                permission_with_kinds("reject-always", &[("always", "reject_always")]),
+                &runtime,
+            )
+            .expect("register");
+
+        let error = broker
+            .respond("reject-always", PermissionOutcome::Deny)
+            .expect_err("a durable reject is never chosen implicitly");
+        assert!(error.to_string().contains("reject_once"));
+        assert_eq!(broker.pending_len(), 1);
+        assert!(sent.lock().expect("sent lock").is_empty());
+    }
+
+    #[test]
+    fn auto_answer_falls_back_to_a_definite_cancel_after_send_failure() {
+        let first_attempt = Arc::new(AtomicBool::new(true));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let first_attempt_for_sender = Arc::clone(&first_attempt);
+        let sent_for_sender = Arc::clone(&sent);
+        let sender: Arc<PermissionSender> = Arc::new(move |id, result| {
+            if first_attempt_for_sender.swap(false, Ordering::SeqCst) {
+                return Err(std::io::Error::other("synthetic Pi write failure"));
+            }
+            sent_for_sender
+                .lock()
+                .expect("sent lock")
+                .push((id, result));
+            Ok(())
+        });
+        let broker = PermissionBroker::for_test(sender);
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("pi".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "bypass".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(58, permission("send-failure"), &runtime)
+            .expect("register");
+
+        assert!(broker
+            .auto_answer("send-failure", &runtime)
+            .expect("fallback cancellation"));
+        assert_eq!(broker.pending_len(), 0);
+        let sent = sent.lock().expect("sent lock");
+        assert_eq!(sent[0].1["outcome"]["outcome"], "cancelled");
+    }
+
+    #[test]
+    fn ask_mode_leaves_permission_request_for_the_broker() {
+        let (broker, _) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("grok".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "ask".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(54, permission("ask"), &runtime)
+            .expect("register");
+
+        assert!(!broker.auto_answer("ask", &runtime).expect("ask policy"));
+        assert_eq!(broker.pending_len(), 1);
+    }
+
+    #[test]
+    fn auto_accept_prefers_allow_once_then_allow_always() {
+        let (broker, sent) = test_broker();
+        let runtime = Arc::new(SessionRuntime::new());
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("grok".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "auto_accept".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        broker
+            .register(
+                55,
+                permission_with_kinds("auto-accept", &[("always", "allow_always")]),
+                &runtime,
+            )
+            .expect("register");
+
+        assert!(broker.auto_answer("auto-accept", &runtime).expect("answer"));
+        let sent = sent.lock().expect("sent lock");
+        assert_eq!(sent[0].1["outcome"]["optionId"], "always");
     }
 
     #[test]
@@ -801,7 +1232,9 @@ mod tests {
         let error = broker
             .respond("reused", PermissionOutcome::Deny)
             .expect_err("old request has no one-shot deny option");
-        assert!(error.to_string().contains("reject_once"));
+        assert!(error
+            .to_string()
+            .contains("did not offer any reject option"));
         broker
             .respond("reused", PermissionOutcome::AllowOnce)
             .expect("new registration remains answerable");
@@ -987,6 +1420,5 @@ mod tests {
             broker.respond("once", PermissionOutcome::Deny),
             Err(super::PermissionResponseError::NotFound)
         ));
-        assert_eq!(ACP_PERMISSION_TIMEOUT.as_secs(), 120);
     }
 }

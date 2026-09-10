@@ -544,6 +544,21 @@
   line-height: 1;
 }
 
+/* The provider choice menu opened from the tab strip floats below the +
+   button; the strip itself keeps its fixed height. */
+.workspace-session-add-wrap {
+  position: relative;
+  display: flex;
+}
+
+.workspace-session-add-wrap .workspace-surface-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 220px;
+}
+
 .workspace-session-add:hover,
 .workspace-session-add:focus-visible {
   color: var(--terracotta-deep);
@@ -714,8 +729,7 @@
   height: 6px;
 }
 
-.workspace-agent-manifest,
-.workspace-agent-modes {
+.workspace-agent-manifest {
   display: flex;
   flex: none;
   flex-wrap: wrap;
@@ -725,12 +739,6 @@
   color: var(--silence);
   font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;
-}
-
-.workspace-agent-modes [role="radio"] {
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
 }
 .workspace-agent-manifest select {
   padding: 1px 4px;
@@ -750,11 +758,6 @@
 /* A switch is in flight: the strip still shows the last confirmed values. */
 .workspace-agent-manifest-pending {
   opacity: 0.55;
-}
-
-.workspace-agent-modes [role="radio"][aria-checked="true"] {
-  color: var(--ink);
-  border-color: var(--border-strong);
 }
 
 .workspace-agent-title {
@@ -895,26 +898,6 @@
   white-space: nowrap;
 }
 
-.workspace-agent-stop {
-  flex: none;
-  margin-left: auto;
-  padding: 2px 10px;
-  color: var(--ink-soft);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.workspace-agent-stop:hover,
-.workspace-agent-stop:focus-visible {
-  color: var(--terracotta-deep);
-  border-color: var(--border-strong);
-}
-
 .workspace-chat-entry {
   flex: none;
   max-width: 86%;
@@ -1044,11 +1027,6 @@
   padding-top: 10px;
 }
 
-.workspace-composer-footer {
-  flex-direction: row;
-  align-items: center;
-}
-
 .workspace-composer-hint {
   min-width: 0;
   overflow: hidden;
@@ -1088,9 +1066,12 @@
 
 .workspace-permission-heading {
   min-width: 0;
-  padding: 12px 14px 6px;
+  overflow: hidden;
+  padding: 8px 12px 4px;
   font-size: 11.5px;
   font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace-permission-dot {
@@ -1112,6 +1093,23 @@
   background: var(--danger);
 }
 
+.workspace-permission-submitting {
+  background: var(--ochre);
+}
+
+.workspace-permission-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-permission-description {
+  padding: 0 12px 6px;
+  color: var(--silence);
+  font-size: 12px;
+}
+
 .workspace-permission-context {
   min-width: 0;
   margin-left: auto;
@@ -1124,26 +1122,40 @@
 }
 
 .workspace-permission-command {
-  max-height: 12em;
+  max-height: 120px;
   overflow: auto;
-  padding: 5px 14px 13px;
-  font-size: 11.5px;
+  padding: 2px 12px 6px;
+  font-size: 11px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .workspace-permission-env {
-  max-height: 8em;
+  max-height: 120px;
   overflow: auto;
-  padding: 0 14px 10px;
+  padding: 0 12px 6px;
   color: var(--silence);
-  font-size: 10.5px;
+  font-size: 11px;
+  font-family: "JetBrains Mono", monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .workspace-permission-actions {
-  padding: 10px 14px 12px;
+  justify-content: flex-end;
+  padding: 6px 12px 8px;
+  flex-wrap: wrap;
+}
+
+.workspace-permission-actions button {
+  height: auto;
+  padding: 4px 10px;
+  font-size: 11.5px;
+}
+
+.workspace-permission-empty {
+  color: var(--silence);
+  font-size: 11.5px;
 }
 
 .workspace-permission-label {
@@ -1294,12 +1306,14 @@
 
 .workspace-composer textarea {
   width: 100%;
+  max-height: 160px;
   padding: 0;
   color: var(--ink);
   background: transparent;
   border: 0;
   outline: 0;
   resize: none;
+  overflow-y: hidden;
   font-size: 12.5px;
   line-height: 1.6;
 }
@@ -1309,19 +1323,151 @@
   opacity: 1;
 }
 
-.workspace-composer-footer {
+/* Control bar below the textarea: pickers on the left, send/stop on the
+   right, with room before the actions for a context ring. */
+.workspace-composer-bar {
   display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-top: 7px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
 }
 
-.workspace-send-action {
+.workspace-composer-controls {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  min-width: 0;
+}
+
+.workspace-composer .workspace-send-action {
+  flex: none;
   height: 27px;
-  margin-left: auto;
   padding: 0 14px;
   border-radius: 9px;
   font-size: 11.5px;
+}
+
+.workspace-picker-static {
+  overflow: hidden;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-mode-chip {
+  position: relative;
+  flex: none;
+}
+
+.workspace-mode-chip-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+.workspace-mode-chip-trigger:hover,
+.workspace-mode-chip-trigger:focus-visible {
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+
+.workspace-mode-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.workspace-mode-planning {
+  background: var(--purple);
+}
+
+.workspace-mode-safe {
+  background: var(--green);
+}
+
+.workspace-mode-moderate {
+  background: var(--ochre);
+}
+
+.workspace-mode-dangerous {
+  background: var(--danger);
+}
+
+.workspace-mode-neutral {
+  background: var(--silence);
+}
+
+.workspace-mode-caret {
+  color: var(--silence);
+  font-size: 9px;
+}
+
+.workspace-mode-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 3;
+  display: flex;
+  min-width: 220px;
+  max-width: 320px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  box-shadow: 0 12px 30px rgba(var(--ink-rgb), 0.16);
+}
+
+.workspace-mode-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 9px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-mode-option:hover,
+.workspace-mode-option:focus-visible {
+  background: var(--surface-muted);
+}
+
+.workspace-mode-option[aria-selected="true"] {
+  color: var(--ink);
+}
+
+.workspace-mode-option[aria-selected="true"] .workspace-mode-name {
+  font-weight: 600;
+}
+
+.workspace-mode-name {
+  font-size: 11px;
+}
+
+.workspace-mode-description {
+  color: var(--silence);
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .workspace-send-action:disabled {
@@ -1410,6 +1556,15 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.workspace-provider-group {
+  min-width: 0;
+  padding-top: 3px;
+}
+
+.workspace-provider-group + .workspace-provider-group {
+  margin-top: 6px;
 }
 
 .workspace-surface-option {

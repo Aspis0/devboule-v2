@@ -42,6 +42,48 @@ describe("ACP agent session", () => {
     expect(assistantMessages[0].text).toBe("Hello");
   });
 
+  it("reduces a session notice to a system item without changing status", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    expect(harness.session.getState().status).toBe("idle");
+
+    harness.emit({
+      type: "session_notice",
+      text: "Codex declined an out-of-scope request.",
+      severity: "info",
+    });
+
+    expect(harness.session.getState().status).toBe("idle");
+    expect(harness.session.getState().items).toEqual([
+      {
+        id: "system-1",
+        role: "system",
+        text: "Codex declined an out-of-scope request.",
+        severity: "info",
+      },
+    ]);
+  });
+
+  it("splits an in-progress assistant message around a session notice", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({ type: "agent_message", messageId: null, text: "Hel" });
+    harness.emit({
+      type: "session_notice",
+      text: "Codex declined an out-of-scope request.",
+      severity: "info",
+    });
+    harness.emit({ type: "agent_message", messageId: null, text: "lo" });
+
+    expect(harness.session.getState().status).toBe("idle");
+    expect(harness.session.getState().items.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: "assistant", text: "Hel" },
+      { role: "system", text: "Codex declined an out-of-scope request." },
+      { role: "assistant", text: "lo" },
+    ]);
+  });
+
   it("starts a new id-less assistant bubble after each replayed user message", async () => {
     const harness = makeHarness();
     await harness.session.start();
@@ -819,6 +861,141 @@ describe("ACP agent session", () => {
       text: "Could not switch the model: model not found",
     });
     expect(harness.session.getState().pendingSwitch).toBeNull();
+  });
+
+  it("keeps the chosen mode optimistically until a manifest confirms it", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    const manifestWith = (currentModeId: string): SessionEvent => ({
+      type: "session_manifest",
+      providerId: "claude",
+      models: [],
+      modes: {
+        currentModeId,
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+        ],
+      },
+    });
+    harness.emit(manifestWith("default"));
+
+    await harness.session.setMode("plan");
+
+    expect(harness.invoke).toHaveBeenCalledWith("session_set_mode", {
+      id: "agent-1",
+      modeId: "plan",
+    });
+    expect(harness.session.getState().pendingModeId).toBe("plan");
+
+    // A spontaneous push still reporting the old mode is not the confirmation.
+    harness.emit(manifestWith("default"));
+    expect(harness.session.getState().pendingModeId).toBe("plan");
+
+    harness.emit(manifestWith("plan"));
+    expect(harness.session.getState().pendingModeId).toBeNull();
+  });
+
+  it("reverts the mode and reports the error when session_set_mode rejects", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "session_manifest",
+      providerId: "claude",
+      models: [],
+      modes: {
+        currentModeId: "default",
+        availableModes: [{ id: "plan", name: "Plan" }],
+      },
+    });
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_set_mode") throw new Error("mode refused");
+      return undefined;
+    });
+
+    await harness.session.setMode("plan");
+
+    expect(harness.session.getState().items.at(-1)).toMatchObject({
+      role: "error",
+      text: "Could not switch the mode: mode refused",
+    });
+    expect(harness.session.getState().pendingModeId).toBeNull();
+  });
+
+  it("does not let a stale mode rejection revert a newer selection", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    let releaseStale: () => void = () => undefined;
+    const staleGate = new Promise<void>((resolve) => {
+      releaseStale = resolve;
+    });
+    (harness.invoke as unknown as Mock).mockImplementationOnce(async (command: string) => {
+      if (command === "session_set_mode") {
+        await staleGate;
+        throw new Error("stale request refused");
+      }
+      return undefined;
+    });
+
+    const first = harness.session.setMode("plan");
+    const second = harness.session.setMode("acceptEdits");
+    await second;
+    releaseStale();
+    await first;
+
+    expect(harness.session.getState().pendingModeId).toBe("acceptEdits");
+    expect(harness.session.getState().items.some((item) => item.role === "error")).toBe(false);
+  });
+
+  it("skips the invoke when the requested mode is already current", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+    harness.emit({
+      type: "session_manifest",
+      providerId: "claude",
+      models: [],
+      modes: {
+        currentModeId: "default",
+        availableModes: [{ id: "default", name: "Default" }],
+      },
+    });
+
+    await harness.session.setMode("default");
+
+    expect(harness.invoke).not.toHaveBeenCalledWith("session_set_mode", expect.anything());
+    expect(harness.session.getState().pendingModeId).toBeNull();
+  });
+
+  it("times out each pending independently", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = makeHarness();
+      await harness.session.start();
+      harness.emit({
+        type: "session_manifest",
+        providerId: "grok",
+        currentModelId: "grok-4.6",
+        models: [
+          { modelId: "grok-4.6", name: "Grok 4.6" },
+          { modelId: "grok-4.7", name: "Grok 4.7" },
+        ],
+      });
+
+      await harness.session.setModel("grok-4.7");
+      vi.advanceTimersByTime(5_000);
+      await harness.session.setMode("plan");
+      expect(harness.session.getState().pendingSwitch).not.toBeNull();
+      expect(harness.session.getState().pendingModeId).toBe("plan");
+
+      vi.advanceTimersByTime(10_000);
+      expect(harness.session.getState().pendingSwitch).toBeNull();
+      expect(harness.session.getState().pendingModeId).toBe("plan");
+
+      vi.advanceTimersByTime(5_000);
+      expect(harness.session.getState().pendingModeId).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("confirms an effort-only switch from the manifest's reported current effort", async () => {

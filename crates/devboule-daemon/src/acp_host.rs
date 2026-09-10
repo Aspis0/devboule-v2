@@ -1755,7 +1755,6 @@ mod tests {
         use std::os::windows::io::AsRawHandle;
         let test = host();
         let (broker, runtime) = bind_gate(&test.host);
-        broker.set_timeout(Duration::from_secs(2));
         let wake = Arc::clone(&broker);
         runtime.set_on_os_death(Arc::new(move || wake.cancel_all()));
         let mut child = spawn_innocuous();
@@ -1820,26 +1819,26 @@ mod tests {
     }
 
     #[test]
-    fn terminal_create_timeout_denies_without_spawning() {
+    fn terminal_create_waits_for_user_decision() {
         let test = host();
         let (broker, _runtime) = bind_gate(&test.host);
-        broker.set_timeout(Duration::from_millis(50));
-        let started = Instant::now();
         let thread = spawn_create(Arc::clone(&test.host), create_params(&test));
+        let _id = wait_for_pending(&broker, Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            !thread.is_finished(),
+            "pending create must wait for the user"
+        );
+        broker.cancel_all();
         let error = thread
             .join()
             .expect("create thread")
-            .expect_err("timeout must deny");
-        let elapsed = started.elapsed();
+            .expect_err("cancel must deny");
         test.host.shutdown();
         let spawned = test.host.spawned_count();
         let live = test.host.live_terminal_count();
         let _ = std::fs::remove_dir_all(&test.cwd);
         let _ = std::fs::remove_dir_all(&test.runtime);
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "timeout waited {elapsed:?} instead of the short test deadline"
-        );
         assert_eq!(error.code, -32001);
         assert_eq!(error.message, "the user denied this command");
         assert_eq!(spawned, 0);
@@ -1923,11 +1922,6 @@ mod tests {
             .expect("deny");
         let _ = deny_thread.join();
 
-        broker.set_timeout(Duration::from_millis(50));
-        let timeout_thread = spawn_create(Arc::clone(&test.host), create_params(&test));
-        let _ = timeout_thread.join();
-        broker.set_timeout(Duration::from_secs(120));
-
         let cancel_thread = spawn_create(Arc::clone(&test.host), create_params(&test));
         let _ = wait_for_pending(&broker, Duration::from_secs(2));
         broker.cancel_all();
@@ -1945,10 +1939,6 @@ mod tests {
             .map(|(_, outcome, _)| outcome.as_str())
             .collect();
         assert!(outcomes.contains(&"deny"), "missing deny row: {outcomes:?}");
-        assert!(
-            outcomes.contains(&"timeout"),
-            "missing timeout row: {outcomes:?}"
-        );
         assert!(
             outcomes.contains(&"cancelled"),
             "missing cancelled row: {outcomes:?}"

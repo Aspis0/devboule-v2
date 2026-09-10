@@ -16,6 +16,8 @@ mod claude_catalog;
 #[cfg(feature = "server")]
 mod claude_view;
 mod client;
+#[cfg(feature = "server")]
+mod codex_view;
 mod diagnostics;
 mod error;
 mod framing;

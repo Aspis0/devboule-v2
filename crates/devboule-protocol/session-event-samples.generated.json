@@ -137,6 +137,11 @@
     "type": "session_manifest"
   },
   {
+    "severity": "info",
+    "text": "",
+    "type": "session_notice"
+  },
+  {
     "sessions": [],
     "type": "sessions_snapshot"
   },
