@@ -29,6 +29,7 @@ const BUILT_IN_SKILL_PRIORITY = [
   "rtl",
   "form-validation",
   "cognition",
+  "reference-research",
 ] as const;
 
 const BUILT_IN_SKILL_PRIORITY_INDEX: ReadonlyMap<string, number> = new Map(

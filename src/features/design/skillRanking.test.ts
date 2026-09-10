@@ -2,7 +2,7 @@
 //
 // Expectations are pinned against the REAL craft corpus (the .md files in
 // ./craft), not synthetic fixtures: the point of the ranker is to order
-// those 13 sections, so the tests load them and assert the orderings the
+// those 14 sections, so the tests load them and assert the orderings the
 // corpus actually produces. Where an intuitively "obvious" expectation does
 // not hold against the real text, the test records what the corpus says
 // instead of what intuition said — see "make the empty panel say
@@ -54,6 +54,7 @@ const ALL_SLUGS = [
   "layout",
   "microcopy",
   "motion",
+  "reference-research",
   "rtl",
   "spacing",
   "state-coverage",
@@ -80,6 +81,7 @@ const PRIORITY_ORDER = [
   "rtl",
   "form-validation",
   "cognition",
+  "reference-research",
 ] as const;
 
 function corpusInPriorityOrder(): RankableSkill[] {
@@ -268,7 +270,7 @@ describe("rankSkillsForQuery determinism", () => {
   });
 
   it("scores a section with no body from title and description alone", () => {
-    // Eight fillers give N=13-like IDF headroom: with only two documents the
+    // Eight fillers give N=14-like IDF headroom: with only two documents the
     // maximum IDF is ln(2) ≈ 0.69, below the fallback threshold, and a
     // small-fixture test would measure the fallback, not the scoring.
     const withoutBody: RankableSkill[] = [

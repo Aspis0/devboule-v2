@@ -31,6 +31,7 @@ function session(overrides: Partial<DesignSessionState> = {}): {
       messages: [],
       latestArtifact: null,
       generation: null,
+      sectionNotes: [],
       ...overrides,
     },
   };
@@ -68,6 +69,7 @@ describe("DesignPreviewPanel", () => {
         messages: [],
         latestArtifact: null,
         generation: null,
+        sectionNotes: [],
       },
     });
 

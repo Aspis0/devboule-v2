@@ -1714,7 +1714,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => save.click());
 
     expect(saveDocument).toHaveBeenCalledTimes(1);
-    expect(saveDocument).toHaveBeenCalledWith(DOCUMENT);
+    expect(saveDocument).toHaveBeenCalledWith({ ...DOCUMENT, sectionNotes: [] });
     await act(async () => root.unmount());
   });
 
@@ -3597,7 +3597,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps the rest state to the control and opens 13 titles outside Assistant", async () => {
+  it("keeps the rest state to the control and opens 14 titles outside Assistant", async () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
     );

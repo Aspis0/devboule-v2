@@ -33,7 +33,7 @@ export type DesignTranscriptItem =
       subagentType?: string;
     };
 
-export type DesignLayerKind = "TSX" | "SVG";
+export type DesignLayerKind = "TSX" | "SVG" | "SECTION";
 export type DesignRadiusToken = "none" | "sm" | "md" | "lg";
 export type DesignMessageStatus = "working" | "done" | "error";
 
@@ -51,11 +51,31 @@ export interface DesignLayer {
   kind: DesignLayerKind;
   transform: DesignTransform;
   source?: { path: string };
+  /**
+   * Present only on SECTION layers: a measured landmark or heading of the
+   * generated page. The transform is the artifact origin plus the measured
+   * page rect (canvas world coordinates); `tag`/`anchor` identify the element
+   * inside the page. No source file, no corners, no elevation: duplicating or
+   * deleting a measured section is meaningless, so those actions stay hidden.
+   */
+  section?: { tag: string; anchor: string };
 }
 
 export interface DesignRadiusOption {
   token: DesignRadiusToken;
   value: number;
+}
+
+/**
+ * One anchored note for the agent, attached to a page section by its stable
+ * anchor (the element id, or the computed tag path when the element has
+ * none). Notes travel with the document exactly like messages do: the host
+ * persists them on save, and the live session mirrors them in the store so
+ * they survive surface navigation.
+ */
+export interface SectionNote {
+  anchor: string;
+  text: string;
 }
 
 export interface DesignUserMessage {
@@ -194,6 +214,8 @@ export interface DesignDocument {
   grounded: boolean;
   layers: readonly DesignLayer[];
   layerNotice?: string;
+  /** Anchored agent notes, in creation order. Absent means none were ever added. */
+  sectionNotes?: readonly SectionNote[];
   radiusOptions: readonly DesignRadiusOption[];
   messages: readonly DesignMessage[];
   workingMessage: Pick<DesignAssistantMessage, "title" | "desc">;

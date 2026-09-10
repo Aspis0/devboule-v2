@@ -167,6 +167,10 @@ function cloneDesignDocument(document: DesignDocument): DesignDocument {
             ...(message.transcript === undefined ? {} : { transcript: [...message.transcript] }),
           },
     ),
+    // Anchored notes ride the document like messages do; share no array identity.
+    ...(document.sectionNotes === undefined
+      ? {}
+      : { sectionNotes: document.sectionNotes.map((note) => ({ ...note })) }),
     workingMessage: { ...document.workingMessage },
   };
 }

@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import { pluginInstall, pluginsList, pluginsRescan, reasonFromCause } from "../lib/tauri";
-import type { DesignDocument, DesignHost, DesignMessage } from "../features/design/designHost";
+import type {
+  DesignDocument,
+  DesignHost,
+  DesignMessage,
+  SectionNote,
+} from "../features/design/designHost";
 import type { PluginInventory } from "../types/ipc";
 import type { SurfaceKey } from "../types/surface";
 
@@ -22,6 +27,12 @@ export interface DesignSessionState {
   messages: DesignMessage[];
   latestArtifact: DesignArtifact | null;
   generation: DesignGenerationState | null;
+  /**
+   * Live mirror of the document's anchored notes. Messages already work this
+   * way (document field + store mirror); notes follow the same road so they
+   * survive surface navigation even for hosts without document persistence.
+   */
+  sectionNotes: SectionNote[];
 }
 
 function emptyDesignSession(host: DesignHost | null = null): DesignSessionState {
@@ -31,6 +42,7 @@ function emptyDesignSession(host: DesignHost | null = null): DesignSessionState 
     messages: [],
     latestArtifact: null,
     generation: null,
+    sectionNotes: [],
   };
 }
 
@@ -57,6 +69,10 @@ function latestArtifact(messages: readonly DesignMessage[]): DesignArtifact | nu
 type DesignMessagesUpdate =
   | readonly DesignMessage[]
   | ((messages: readonly DesignMessage[]) => readonly DesignMessage[]);
+
+type SectionNotesUpdate =
+  | readonly SectionNote[]
+  | ((notes: readonly SectionNote[]) => readonly SectionNote[]);
 
 export interface InstalledSkill {
   id: string;
@@ -85,6 +101,7 @@ interface AppState {
   ) => void;
   setDesignMessages: (host: DesignHost, update: DesignMessagesUpdate) => void;
   setDesignGeneration: (host: DesignHost, generation: DesignGenerationState | null) => void;
+  setSectionNotes: (host: DesignHost, update: SectionNotesUpdate) => void;
   clearDesignSession: (host?: DesignHost) => void;
 
   /**
@@ -129,6 +146,7 @@ export const useAppStore = create<AppState>((set) => ({
           document,
           messages: nextMessages,
           latestArtifact: latestArtifact(nextMessages),
+          sectionNotes: [...(document.sectionNotes ?? [])],
         },
       };
     }),
@@ -152,6 +170,16 @@ export const useAppStore = create<AppState>((set) => ({
         ? state
         : { designSession: { ...state.designSession, generation } },
     ),
+  setSectionNotes: (host, update) =>
+    set((state) => {
+      if (state.designSession.host !== host) return state;
+      const nextNotes = [
+        ...(typeof update === "function" ? update(state.designSession.sectionNotes) : update),
+      ];
+      return {
+        designSession: { ...state.designSession, sectionNotes: nextNotes },
+      };
+    }),
   clearDesignSession: (host) =>
     set((state) =>
       host !== undefined && state.designSession.host !== host

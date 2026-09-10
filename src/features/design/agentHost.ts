@@ -1399,6 +1399,7 @@ export function createAgentHost(): DesignHost {
         layers: [],
         selectedLayerId: "",
         layerNotice: undefined,
+        sectionNotes: [],
         messages: [],
       };
     },

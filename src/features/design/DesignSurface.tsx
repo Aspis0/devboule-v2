@@ -17,9 +17,23 @@ import type {
   DesignTranscriptItem,
   PendingPermission,
   DesignRadiusOption,
+  SectionNote,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
-import { ArtifactRenderCritic } from "./artifactRenderCritic";
+import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
+import {
+  getCachedArtifactSections,
+  sectionsToLayers,
+  setCachedArtifactSections,
+  type ArtifactSection,
+} from "./artifactStructure";
+import {
+  formatSectionNotesScope,
+  MAX_SECTION_NOTE_CHARS,
+  MAX_SECTION_NOTES,
+  resolveSectionNotes,
+  type ResolvedSectionNote,
+} from "./sectionNotes";
 import {
   ARTIFACT_PAGE_HEIGHT,
   ARTIFACT_PAGE_WIDTH,
@@ -86,7 +100,7 @@ import type {
   SessionModel,
   Workspace,
 } from "../../types/ipc";
-import type { NodeRect } from "../../types/geometry";
+import type { NodeRect, Point } from "../../types/geometry";
 import {
   clampViewportZoom,
   createViewport,
@@ -131,6 +145,8 @@ interface DesignHistory {
 interface LayerViewModel extends DesignLayer {
   selected: boolean;
   hidden: boolean;
+  /** A section layer carries at least one agent note. Canvas nodes never do. */
+  hasNote: boolean;
 }
 
 interface RadiusViewModel extends DesignRadiusOption {
@@ -164,10 +180,15 @@ interface LayerPanelProps {
   layers: readonly LayerViewModel[];
   onSelect: (layerId: string) => void;
   onToggleVisibility: (layerId: string) => void;
+  /** Notes whose anchor is gone from the current page; shown, not dropped. */
+  orphanNotes: readonly ResolvedSectionNote[];
+  onDeleteNote: (index: number) => void;
 }
 
 interface CanvasProps {
   layers: readonly DesignLayer[];
+  /** Measured page sections living inside the artifact frame. */
+  sectionLayers: readonly DesignLayer[];
   hiddenLayerIds: readonly string[];
   pan: Pan;
   selectedLayerId: string;
@@ -177,8 +198,13 @@ interface CanvasProps {
   artifactError?: string;
   artifactMissingTokens: readonly string[];
   artifactHeight: number;
+  /** World-space highlight for the selected page section, if it is one. */
+  sectionHighlight: NodeRect | null;
+  /** World-space marks for sections carrying an agent note. */
+  noteMarks: readonly NodeRect[];
   onSelectLayer: (layerId: string) => void;
   onViewportChange: (viewport: DesignViewport) => void;
+  onArtifactMeasured: (html: string, result: ArtifactRenderCriticResult) => void;
 }
 
 interface CanvasNodeProps {
@@ -209,6 +235,10 @@ interface InspectorProps {
   onClose: () => void;
   canDuplicate: boolean;
   canDelete: boolean;
+  /** Notes on the inspected section; empty for canvas layers. */
+  sectionNotes: readonly ResolvedSectionNote[];
+  onAddNote: (text: string) => void;
+  onDeleteNote: (index: number) => void;
 }
 
 interface WorkspaceProject extends Project {
@@ -652,6 +682,9 @@ type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
 
 const EMPTY_DESIGN_MESSAGES: readonly DesignMessage[] = [];
 const EMPTY_TRANSCRIPT: readonly DesignTranscriptItem[] = [];
+const EMPTY_SECTIONS: readonly ArtifactSection[] = [];
+const EMPTY_SECTION_NOTES: readonly SectionNote[] = [];
+const EMPTY_RESOLVED_NOTES: readonly ResolvedSectionNote[] = [];
 const HISTORY_OPEN_MESSAGE_PREFIX = "design-history-open-";
 
 function isHistoryOpenMessage(message: DesignMessage): boolean {
@@ -888,6 +921,8 @@ const LayerPanel = memo(function LayerPanel({
   layers,
   onSelect,
   onToggleVisibility,
+  orphanNotes,
+  onDeleteNote,
 }: LayerPanelProps) {
   return (
     <section className="design-layers-panel" aria-labelledby="design-layers-title">
@@ -908,12 +943,19 @@ const LayerPanel = memo(function LayerPanel({
               aria-label={`Select ${layer.name}`}
               onClick={() => onSelect(layer.id)}
             >
-              <span className="design-layer-kind">{layer.kind}</span>
+              <span className="design-layer-kind">{layer.section?.tag ?? layer.kind}</span>
               <span
                 className={`design-layer-name${layer.hidden ? " design-layer-name-hidden" : ""}`}
               >
                 {layer.name}
               </span>
+              {layer.hasNote ? (
+                <span
+                  className="design-layer-note-dot"
+                  title="Has an agent note"
+                  aria-label="Has an agent note"
+                />
+              ) : null}
             </button>
             <button
               className="design-layer-visibility"
@@ -928,6 +970,27 @@ const LayerPanel = memo(function LayerPanel({
           </div>
         ))}
       </div>
+      {orphanNotes.length > 0 ? (
+        <div className="design-layer-orphans">
+          <div className="design-layer-orphans-heading">Detached notes ({orphanNotes.length})</div>
+          <ul className="design-layer-orphans-list">
+            {orphanNotes.map((entry) => (
+              <li key={`${entry.note.anchor}:${entry.index}`}>
+                <span className="design-layer-orphan-badge">orphan</span>
+                <span className="design-layer-orphan-anchor">{entry.note.anchor}</span>
+                <span className="design-layer-orphan-text">{entry.note.text}</span>
+                <button
+                  type="button"
+                  aria-label={`Delete detached note on ${entry.note.anchor}`}
+                  onClick={() => onDeleteNote(entry.index)}
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 });
@@ -1046,15 +1109,20 @@ function layerRectsFor(layers: readonly DesignLayer[]): NodeRect[] {
   }));
 }
 
-function artifactNodeRect(layers: readonly DesignLayer[], height: number): NodeRect {
-  const bounds = nodesBounds(layerRectsFor(layers));
+export function artifactNodeRect(layers: readonly DesignLayer[], height: number): NodeRect {
+  // The artifact owns its origin: only canvas layers (TSX/SVG) push it down.
+  // Section layers live INSIDE its frame, so they are excluded here — feeding
+  // them back in would make the frame depend on the sections that depend on
+  // the frame. With no canvas layers the artifact sits at the grid origin.
+  const bounds = nodesBounds(layerRectsFor(layers.filter((layer) => layer.kind !== "SECTION")));
   return {
     id: ARTIFACT_NODE_ID,
     x: bounds?.x ?? DESIGN_GRID_ORIGIN_X,
     y: bounds === null ? DESIGN_GRID_ORIGIN_Y : bounds.y + bounds.h + ARTIFACT_NODE_GAP,
     w: ARTIFACT_NODE_WIDTH,
     h: height,
-    z: layers.length,
+    // Canvas nodes only: sections are measured inside the frame, not placed on it.
+    z: layers.filter((layer) => layer.kind !== "SECTION").length,
   };
 }
 
@@ -1063,12 +1131,50 @@ function sourceDirectory(path: string): string {
   return separator > 0 ? path.slice(0, separator) : ".";
 }
 
+/**
+ * Direct-on-canvas section pick. Page sections nest (a `nav` inside a
+ * `header` inside the body), so several rects contain the pointer at once.
+ * Rule: the SMALLEST area containing the point wins — the deepest element is
+ * the one the pointer is on. The overlay buttons below are painted
+ * largest-first so the smallest is on top, and the canvas click path checks
+ * sections with this same helper first: both paths pick the same id, and both
+ * call the shared `onSelectLayer`, so canvas selection and panel selection
+ * are one state, not two.
+ */
+export function smallestSectionAt(
+  sections: readonly DesignLayer[],
+  hiddenLayerIds: readonly string[],
+  point: Point,
+): DesignLayer | null {
+  let best: DesignLayer | null = null;
+  let bestArea = Number.POSITIVE_INFINITY;
+  for (const section of sections) {
+    if (hiddenLayerIds.includes(section.id)) continue;
+    const box = section.transform;
+    if (
+      point.x < box.x ||
+      point.x > box.x + box.width ||
+      point.y < box.y ||
+      point.y > box.y + box.height
+    ) {
+      continue;
+    }
+    const area = box.width * box.height;
+    if (area < bestArea) {
+      best = section;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
 function artifactSrcDoc(html: string): string {
   return `${ARTIFACT_CSP_META}\n${html}`;
 }
 
 const DesignCanvas = memo(function DesignCanvas({
   layers,
+  sectionLayers,
   hiddenLayerIds,
   pan,
   selectedLayerId,
@@ -1078,8 +1184,11 @@ const DesignCanvas = memo(function DesignCanvas({
   artifactError,
   artifactMissingTokens,
   artifactHeight,
+  sectionHighlight,
+  noteMarks,
   onSelectLayer,
   onViewportChange,
+  onArtifactMeasured,
 }: CanvasProps) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -1127,10 +1236,25 @@ const DesignCanvas = memo(function DesignCanvas({
         : null,
     [artifactError, artifactHtml, artifactHeight, layers],
   );
-  const hitRects = useMemo<NodeRect[]>(
-    () => (artifactRect === null ? layerRects : [...layerRects, artifactRect]),
-    [artifactRect, layerRects],
-  );
+  const hitRects = useMemo<NodeRect[]>(() => {
+    const rects = artifactRect === null ? [...layerRects] : [...layerRects, artifactRect];
+    // Sections sit above the artifact sheet so a click inside the frame
+    // selects the section, not the whole page. Same z for all: last in
+    // document order wins, which is the deepest element under the pointer.
+    const sectionBase = artifactRect === null ? layerRects.length : artifactRect.z + 1;
+    for (const section of sectionLayers) {
+      if (hiddenLayerIds.includes(section.id)) continue;
+      rects.push({
+        id: section.id,
+        x: section.transform.x,
+        y: section.transform.y,
+        w: section.transform.width,
+        h: section.transform.height,
+        z: sectionBase,
+      });
+    }
+    return rects;
+  }, [artifactRect, layerRects, sectionLayers, hiddenLayerIds]);
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1147,6 +1271,14 @@ const DesignCanvas = memo(function DesignCanvas({
         { left: bounds.left, top: bounds.top },
         viewportRef.current,
       );
+      // Sections first, smallest-wins (see smallestSectionAt): the overlay
+      // buttons below already resolved the same way, so a click agrees with
+      // a hover whatever path it arrived on.
+      const sectionHit = smallestSectionAt(sectionLayers, hiddenLayerIds, point);
+      if (sectionHit !== null) {
+        onSelectLayer(sectionHit.id);
+        return;
+      }
       let target = hitTest(point, hitRects);
       if (!target && event.target instanceof Element) {
         const clickedNode = event.target.closest<HTMLElement>("[data-canvas-layer-id]");
@@ -1160,7 +1292,36 @@ const DesignCanvas = memo(function DesignCanvas({
       }
       onSelectLayer(target?.id ?? "");
     },
-    [hitRects, onSelectLayer],
+    [hitRects, hiddenLayerIds, onSelectLayer, sectionLayers],
+  );
+
+  // Direct-on-canvas hover: one id, cleared on leave. The highlight below
+  // mirrors the selected-section highlight so hover and selection read as
+  // the same affordance; the selected section keeps the solid style.
+  const [hoveredSectionId, setHoveredSectionId] = useState<string | null>(null);
+  const hoveredHighlight = useMemo(() => {
+    if (hoveredSectionId === null || hoveredSectionId === selectedLayerId) return null;
+    const hovered = sectionLayers.find((section) => section.id === hoveredSectionId);
+    if (hovered === undefined || hiddenLayerIds.includes(hovered.id)) return null;
+    return {
+      x: hovered.transform.x,
+      y: hovered.transform.y,
+      w: hovered.transform.width,
+      h: hovered.transform.height,
+    };
+  }, [hoveredSectionId, sectionLayers, selectedLayerId, hiddenLayerIds]);
+  // Largest-first paint order: the smallest (deepest) overlay is on top and
+  // receives the pointer, matching smallestSectionAt above.
+  const sectionOverlays = useMemo(
+    () =>
+      [...sectionLayers]
+        .filter((section) => !hiddenLayerIds.includes(section.id))
+        .sort(
+          (left, right) =>
+            right.transform.width * right.transform.height -
+            left.transform.width * left.transform.height,
+        ),
+    [hiddenLayerIds, sectionLayers],
   );
 
   const handleWheel = useCallback(
@@ -1371,11 +1532,94 @@ const DesignCanvas = memo(function DesignCanvas({
                     {artifactMissingTokens.join(", ")}.
                   </div>
                 ) : null}
-                {artifactHtml !== undefined ? <ArtifactRenderCritic html={artifactHtml} /> : null}
+                {artifactHtml !== undefined ? (
+                  <ArtifactRenderCritic html={artifactHtml} onResult={onArtifactMeasured} />
+                ) : null}
               </div>
             ) : null}
           </div>
         ) : null}
+        {/*
+          The section highlight is drawn by the parent OVER the closed iframe
+          (like CanvasNode), never inside it: page rect + artifact origin, in
+          world coordinates. The artifact box clips its own content but not
+          this sibling, so a section below the fold still highlights at its
+          true composed position under the sheet — declared, not hidden.
+        */}
+        {sectionHighlight !== null ? (
+          <div
+            className="design-canvas-section-highlight"
+            style={{
+              left: sectionHighlight.x,
+              top: sectionHighlight.y,
+              width: sectionHighlight.w,
+              height: sectionHighlight.h,
+            }}
+            aria-hidden="true"
+          />
+        ) : null}
+        {hoveredHighlight !== null ? (
+          <div
+            className="design-canvas-section-highlight design-canvas-section-hover"
+            style={{
+              left: hoveredHighlight.x,
+              top: hoveredHighlight.y,
+              width: hoveredHighlight.w,
+              height: hoveredHighlight.h,
+            }}
+            aria-hidden="true"
+          />
+        ) : null}
+        {/*
+          Direct-on-canvas selection zones: one transparent parent-side button
+          per measured section, painted largest-first (see sectionOverlays) so
+          the smallest — the deepest — is on top and receives the pointer.
+          The display iframe keeps pointer-events:none and inert and is never
+          touched: these siblings over it are what the pointer hits. Hover
+          highlights, click selects through the shared onSelectLayer, so the
+          canvas and the Layers panel are one state, not two.
+        */}
+        {sectionOverlays.map((section) => (
+          <button
+            key={section.id}
+            type="button"
+            className="design-canvas-section-overlay"
+            style={{
+              left: section.transform.x,
+              top: section.transform.y,
+              width: section.transform.width,
+              height: section.transform.height,
+            }}
+            aria-label={`Select ${section.name}`}
+            aria-pressed={selectedLayerId === section.id}
+            onClick={(event) => {
+              // The canvas click handler below would hit-test the same point
+              // and pick the same id, but stopping here keeps one path.
+              event.stopPropagation();
+              onSelectLayer(section.id);
+            }}
+            onMouseEnter={() => setHoveredSectionId(section.id)}
+            onMouseLeave={() =>
+              setHoveredSectionId((current) => (current === section.id ? null : current))
+            }
+            onFocus={() => setHoveredSectionId(section.id)}
+            onBlur={() =>
+              setHoveredSectionId((current) => (current === section.id ? null : current))
+            }
+          />
+        ))}
+        {noteMarks.map((mark) => {
+          const marked = sectionLayers.find((section) => section.id === mark.id);
+          return (
+            <span
+              key={mark.id}
+              className="design-canvas-note-mark"
+              style={{ left: mark.x, top: mark.y }}
+              title={marked ? `Note on ${marked.name}` : "Section note"}
+              aria-hidden="true"
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -1393,7 +1637,102 @@ const InspectorPanel = memo(function InspectorPanel({
   onClose,
   canDuplicate,
   canDelete,
+  sectionNotes,
+  onAddNote,
+  onDeleteNote,
 }: InspectorProps) {
+  const [noteDraft, setNoteDraft] = useState("");
+  // A measured page section is not a canvas node: no transform editing, no
+  // corners, no elevation, no duplicate/delete. Tag, anchor, measured size,
+  // text preview, and the agent notes are what exist for it.
+  if (layer.kind === "SECTION" && layer.section !== undefined) {
+    const submitNote = () => {
+      const text = noteDraft.trim();
+      if (text.length === 0) return;
+      onAddNote(text);
+      setNoteDraft("");
+    };
+    return (
+      <section className="design-inspector-panel" aria-labelledby="design-inspector-title">
+        <div className="design-inspector-heading">
+          <span id="design-inspector-title" className="design-inspector-name">
+            {layer.name}
+          </span>
+          <span className="design-inspector-kind">{layer.kind}</span>
+          <button
+            className="design-inspector-close"
+            type="button"
+            aria-label="Close inspector"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="design-inspector-section">
+          <div className="design-inspector-label">Page section</div>
+          <dl className="design-section-meta">
+            <div>
+              <dt>Tag</dt>
+              <dd className="design-mono-value">&lt;{layer.section.tag}&gt;</dd>
+            </div>
+            <div>
+              <dt>Anchor</dt>
+              <dd className="design-mono-value">{layer.section.anchor}</dd>
+            </div>
+            <div>
+              <dt>Measured</dt>
+              <dd className="design-mono-value">
+                {layer.transform.width} × {layer.transform.height} px
+              </dd>
+            </div>
+          </dl>
+          <p className="design-section-preview">{layer.name}</p>
+        </div>
+
+        <div className="design-inspector-section">
+          <div className="design-inspector-label">Agent notes ({sectionNotes.length})</div>
+          {sectionNotes.length > 0 ? (
+            <ul className="design-section-notes">
+              {sectionNotes.map((entry) => (
+                <li key={entry.index}>
+                  <span className="design-section-note-text">{entry.note.text}</span>
+                  <button
+                    type="button"
+                    aria-label="Delete note"
+                    onClick={() => onDeleteNote(entry.index)}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="design-section-note-compose">
+            <input
+              type="text"
+              value={noteDraft}
+              maxLength={2000}
+              placeholder="Note for the agent on this section…"
+              aria-label="Note for the agent on this section"
+              onChange={(event) => setNoteDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitNote();
+                }
+              }}
+            />
+            <button type="button" onClick={submitNote} disabled={noteDraft.trim().length === 0}>
+              Add
+            </button>
+          </div>
+        </div>
+        <div className="design-inspector-footer">{tokenFooter}</div>
+      </section>
+    );
+  }
+
   const transformFields = [
     ["X", layer.transform.x],
     ["Y", layer.transform.y],
@@ -2295,6 +2634,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const messages = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.messages : EMPTY_DESIGN_MESSAGES,
   );
+  // Anchored agent notes: document field mirrored in the store, like messages.
+  const sectionNotes = useAppStore((state) =>
+    state.designSession.host === host ? state.designSession.sectionNotes : EMPTY_SECTION_NOTES,
+  );
   const generation = useAppStore((state) =>
     state.designSession.host === host ? state.designSession.generation : null,
   );
@@ -2667,9 +3010,65 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     skillSelectionRef.current = skillSelection;
   }, [skillSelection]);
 
+  const artifact = useAppStore((state) =>
+    state.designSession.host === host ? state.designSession.latestArtifact : null,
+  );
+  const artifactHtml = artifact?.html;
+  const artifactError = artifact?.error;
+  const artifactMissingTokens = useMemo(
+    () =>
+      artifactHtml !== undefined && artifactError === undefined
+        ? findUndefinedCustomProperties(artifactHtml)
+        : [],
+    [artifactError, artifactHtml],
+  );
+  const artifactRect = useMemo(
+    () =>
+      artifactHtml !== undefined || artifactError !== undefined
+        ? artifactNodeRect(layers, artifactPageHeight)
+        : null,
+    [artifactError, artifactHtml, artifactPageHeight, layers],
+  );
+
+  // Measured page structure for the current artifact. The critic feeds the
+  // module cache once per new artifact (same pass, no second measurement);
+  // this state only re-renders the surface when that result lands. A remount
+  // reads straight from the cache, so navigating back keeps the layers.
+  const [measuredArtifact, setMeasuredArtifact] = useState<{
+    html: string;
+    sections: readonly ArtifactSection[];
+  } | null>(null);
+  const handleArtifactMeasured = useCallback((html: string, result: ArtifactRenderCriticResult) => {
+    const sections = result.structure ?? EMPTY_SECTIONS;
+    setCachedArtifactSections(html, sections);
+    setMeasuredArtifact({ html, sections });
+  }, []);
+  const artifactSections: readonly ArtifactSection[] = useMemo(() => {
+    if (artifactHtml === undefined) return EMPTY_SECTIONS;
+    if (measuredArtifact !== null && measuredArtifact.html === artifactHtml) {
+      return measuredArtifact.sections;
+    }
+    return getCachedArtifactSections(artifactHtml) ?? EMPTY_SECTIONS;
+  }, [artifactHtml, measuredArtifact]);
+  const sectionAnchors = useMemo(
+    () => new Set(artifactSections.map((section) => section.anchor)),
+    [artifactSections],
+  );
+  const sectionLayers = useMemo(
+    () =>
+      artifactRect === null
+        ? []
+        : sectionsToLayers(artifactSections, { x: artifactRect.x, y: artifactRect.y }),
+    [artifactSections, artifactRect],
+  );
+  // Displayed layers: canvas nodes first, measured page sections after.
+  // Undo snapshots, saves, and fit math keep using `layers` (canvas nodes
+  // only); sections are derived from the artifact and never enter history.
+  const displayLayers = useMemo(() => [...layers, ...sectionLayers], [layers, sectionLayers]);
+
   const selectedLayer = useMemo(
-    () => layers.find((layer) => layer.id === selectedLayerId) ?? null,
-    [layers, selectedLayerId],
+    () => displayLayers.find((layer) => layer.id === selectedLayerId) ?? null,
+    [displayLayers, selectedLayerId],
   );
 
   // The same resolved list drives both the composer summary and each generation.
@@ -2766,32 +3165,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
 
   const layerRows = useMemo(
     () =>
-      layers.map((layer) => ({
+      displayLayers.map((layer) => ({
         ...layer,
         selected: layer.id === selectedLayerId,
         hidden: isHidden(snapshot.hiddenLayerIds, layer.id),
+        hasNote:
+          layer.kind === "SECTION" && layer.section !== undefined
+            ? sectionNotes.some((note) => note.anchor === layer.section?.anchor)
+            : false,
       })),
-    [layers, selectedLayerId, snapshot.hiddenLayerIds],
-  );
-
-  const artifact = useAppStore((state) =>
-    state.designSession.host === host ? state.designSession.latestArtifact : null,
-  );
-  const artifactHtml = artifact?.html;
-  const artifactError = artifact?.error;
-  const artifactMissingTokens = useMemo(
-    () =>
-      artifactHtml !== undefined && artifactError === undefined
-        ? findUndefinedCustomProperties(artifactHtml)
-        : [],
-    [artifactError, artifactHtml],
-  );
-  const artifactRect = useMemo(
-    () =>
-      artifactHtml !== undefined || artifactError !== undefined
-        ? artifactNodeRect(layers, artifactPageHeight)
-        : null,
-    [artifactError, artifactHtml, artifactPageHeight, layers],
+    [displayLayers, selectedLayerId, snapshot.hiddenLayerIds, sectionNotes],
   );
 
   const fitRects = useMemo<NodeRect[]>(() => {
@@ -2947,24 +3330,44 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
 
   const generationLabel = `${generationCount} ${generationCount === 1 ? "generation" : "generations"}`;
   const composerContextTarget = useMemo(() => {
-    if (
-      composerContextLayerId === ARTIFACT_NODE_ID &&
-      (artifactHtml !== undefined || artifactError !== undefined)
-    ) {
+    const artifactPresent = artifactHtml !== undefined || artifactError !== undefined;
+    if (composerContextLayerId === ARTIFACT_NODE_ID && artifactPresent) {
+      const orphanBlock = formatSectionNotesScope(null, sectionNotes, sectionAnchors, true);
       return {
         label: ARTIFACT_CONTEXT_NAME,
-        scope: `${document.contextPrefix} ${ARTIFACT_CONTEXT_NAME}; the user is refining the artifact the agent just produced.`,
+        scope:
+          `${document.contextPrefix} ${ARTIFACT_CONTEXT_NAME}; the user is refining the artifact the agent just produced.` +
+          (orphanBlock.length > 0 ? `\n${orphanBlock}` : ""),
       };
     }
 
-    const layer = layers.find((candidate) => candidate.id === composerContextLayerId);
+    const layer = displayLayers.find((candidate) => candidate.id === composerContextLayerId);
     if (!layer) return null;
+    if (layer.kind === "SECTION" && layer.section !== undefined) {
+      const anchor = layer.section.anchor;
+      const base =
+        `${document.contextPrefix} ${layer.name} (page section <${layer.section.tag}>); ` +
+        `anchor: "${anchor}"; the user is pointing at the section named "${layer.name}".`;
+      const notesBlock = formatSectionNotesScope(anchor, sectionNotes, sectionAnchors, true);
+      return {
+        label: layer.name,
+        scope: notesBlock.length > 0 ? `${base}\n${notesBlock}` : base,
+      };
+    }
     const sourcePath = layer.source ? `; source file: ${layer.source.path}` : "";
     return {
       label: layer.name,
       scope: `${document.contextPrefix} ${layer.name} (${layer.kind})${sourcePath}; the user is pointing at the layer named "${layer.name}".`,
     };
-  }, [artifactError, artifactHtml, composerContextLayerId, document.contextPrefix, layers]);
+  }, [
+    artifactError,
+    artifactHtml,
+    composerContextLayerId,
+    displayLayers,
+    document.contextPrefix,
+    sectionAnchors,
+    sectionNotes,
+  ]);
   const composerContextLayerName = composerContextTarget?.label ?? null;
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
@@ -3034,7 +3437,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
 
   const duplicateLayer = useCallback(() => {
     const source = layers.find((layer) => layer.id === selectedLayerId);
-    if (!source) return;
+    // Measured page sections cannot be duplicated: they describe the generated
+    // page, they are not editable nodes.
+    if (!source || source.kind === "SECTION") return;
 
     layerCopyCounterRef.current += 1;
     const copy: DesignLayer = {
@@ -3052,7 +3457,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   }, [commitSnapshot, layers, selectedLayerId, selectLayer]);
 
   const deleteLayer = useCallback(() => {
-    if (layers.length <= 1 || selectedLayer === null) return;
+    // Measured page sections cannot be deleted, for the same reason.
+    if (layers.length <= 1 || selectedLayer === null || selectedLayer.kind === "SECTION") return;
 
     const selectedIndex = layers.findIndex((layer) => layer.id === selectedLayerId);
     const nextLayer = layers[selectedIndex + 1] ?? layers[selectedIndex - 1];
@@ -3065,6 +3471,77 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       hiddenLayerIds: current.hiddenLayerIds.filter((id) => id !== selectedLayerId),
     }));
   }, [commitSnapshot, layers, selectedLayer, selectedLayerId, selectLayer]);
+
+  const addSectionNote = useCallback(
+    (anchor: string, text: string) => {
+      const trimmed = text.trim().slice(0, MAX_SECTION_NOTE_CHARS);
+      if (trimmed.length === 0) return;
+      markDocumentDirty();
+      useAppStore
+        .getState()
+        .setSectionNotes(host, (current) =>
+          current.length >= MAX_SECTION_NOTES ? current : [...current, { anchor, text: trimmed }],
+        );
+    },
+    [host, markDocumentDirty],
+  );
+  const deleteSectionNote = useCallback(
+    (index: number) => {
+      markDocumentDirty();
+      useAppStore
+        .getState()
+        .setSectionNotes(host, (current) => current.filter((_, noteIndex) => noteIndex !== index));
+    },
+    [host, markDocumentDirty],
+  );
+
+  const selectedSectionAnchor =
+    selectedLayer !== null && selectedLayer.kind === "SECTION"
+      ? (selectedLayer.section?.anchor ?? null)
+      : null;
+  const selectedSectionNotes = useMemo(() => {
+    if (selectedSectionAnchor === null) return EMPTY_RESOLVED_NOTES;
+    const entries: ResolvedSectionNote[] = [];
+    sectionNotes.forEach((note, index) => {
+      if (note.anchor === selectedSectionAnchor) entries.push({ note, index });
+    });
+    return entries;
+  }, [sectionNotes, selectedSectionAnchor]);
+  const orphanNotes = useMemo(
+    () => resolveSectionNotes(sectionNotes, sectionAnchors, artifactHtml !== undefined).orphans,
+    [sectionNotes, sectionAnchors, artifactHtml],
+  );
+  const sectionHighlight = useMemo<NodeRect | null>(() => {
+    if (selectedLayer === null || selectedLayer.kind !== "SECTION") return null;
+    return {
+      id: selectedLayer.id,
+      x: selectedLayer.transform.x,
+      y: selectedLayer.transform.y,
+      w: selectedLayer.transform.width,
+      h: selectedLayer.transform.height,
+      z: 0,
+    };
+  }, [selectedLayer]);
+  const noteMarks = useMemo<NodeRect[]>(() => {
+    const marks: NodeRect[] = [];
+    const seen = new Set<string>();
+    for (const section of sectionLayers) {
+      const anchor = section.section?.anchor;
+      if (anchor === undefined || seen.has(anchor)) continue;
+      if (snapshot.hiddenLayerIds.includes(section.id)) continue;
+      if (!sectionNotes.some((note) => note.anchor === anchor)) continue;
+      seen.add(anchor);
+      marks.push({
+        id: section.id,
+        x: section.transform.x,
+        y: section.transform.y,
+        w: 0,
+        h: 0,
+        z: 0,
+      });
+    }
+    return marks;
+  }, [sectionLayers, sectionNotes, snapshot.hiddenLayerIds]);
 
   const toggleLayerVisibility = useCallback(
     (layerId: string) => {
@@ -3285,6 +3762,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       selectedLayerId,
       grounded,
       layers: cloneLayerList(layers),
+      sectionNotes: sectionNotes.map((note) => ({ ...note })),
       messages: terminalMessagesForSave(messages),
     };
 
@@ -3308,7 +3786,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       savingRef.current = false;
       if (mountedRef.current) setSaving(false);
     }
-  }, [document, grounded, history.present, layers, messages, saveDocument, selectedLayerId]);
+  }, [
+    document,
+    grounded,
+    history.present,
+    layers,
+    messages,
+    saveDocument,
+    sectionNotes,
+    selectedLayerId,
+  ]);
   const toggleGrounding = useCallback(() => {
     markDocumentDirty();
     setGrounded((value) => !value);
@@ -3741,6 +4228,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         >
           <DesignCanvas
             layers={layers}
+            sectionLayers={sectionLayers}
             hiddenLayerIds={snapshot.hiddenLayerIds}
             pan={pan}
             selectedLayerId={selectedLayerId}
@@ -3750,14 +4238,19 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             artifactError={artifactError}
             artifactMissingTokens={artifactMissingTokens}
             artifactHeight={artifactPageHeight}
+            sectionHighlight={sectionHighlight}
+            noteMarks={noteMarks}
             onSelectLayer={selectLayer}
             onViewportChange={handleCanvasViewportChange}
+            onArtifactMeasured={handleArtifactMeasured}
           />
-          {layerRows.length > 0 ? (
+          {layerRows.length > 0 || orphanNotes.length > 0 ? (
             <LayerPanel
               layers={layerRows}
               onSelect={selectLayer}
               onToggleVisibility={toggleLayerVisibility}
+              orphanNotes={orphanNotes}
+              onDeleteNote={deleteSectionNote}
             />
           ) : null}
           <ZoomControls
@@ -3780,8 +4273,13 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
               onDuplicate={duplicateLayer}
               onDelete={deleteLayer}
               onClose={closeInspector}
-              canDuplicate={selectedLayer.source === undefined}
-              canDelete={layers.length > 1}
+              canDuplicate={selectedLayer.source === undefined && selectedLayer.kind !== "SECTION"}
+              canDelete={layers.length > 1 && selectedLayer.kind !== "SECTION"}
+              sectionNotes={selectedSectionNotes}
+              onAddNote={(text) => {
+                if (selectedSectionAnchor !== null) addSectionNote(selectedSectionAnchor, text);
+              }}
+              onDeleteNote={deleteSectionNote}
             />
           ) : null}
         </div>

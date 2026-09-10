@@ -1,5 +1,10 @@
 import { createElement, useEffect, useState } from "react";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
+import {
+  collectArtifactStructure,
+  readArtifactStructure,
+  type ArtifactSection,
+} from "./artifactStructure";
 
 /*
  * This is a small render-time heuristic over an untrusted artifact, not an accessibility
@@ -382,6 +387,13 @@ export interface ArtifactRenderCriticResult {
   readonly kind: typeof ARTIFACT_RENDER_CRITIC_MESSAGE_KIND;
   readonly source: typeof ARTIFACT_RENDER_CRITIC_SOURCE;
   readonly version: typeof ARTIFACT_RENDER_CRITIC_VERSION;
+  /**
+   * Measured structural index (landmarks + headings) from the same frame pass.
+   * Absent on messages that predate the index; an empty array means the page
+   * exposed no measurable landmark or heading. An invalid list is dropped to
+   * empty here so a structural problem can never hide the render findings.
+   */
+  readonly structure?: readonly ArtifactSection[];
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -498,11 +510,18 @@ export function readArtifactRenderCriticResult(value: unknown): ArtifactRenderCr
     findings.push(finding as ArtifactRenderFinding);
   }
 
+  // The structural index is the frame's second payload on the same message.
+  // Undefined predates the index (old senders); invalid degrades to empty so
+  // the findings above still reach the card.
+  const structure =
+    message.structure === undefined ? [] : (readArtifactStructure(message.structure) ?? []);
+
   return {
     findings,
     kind: ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
     source: ARTIFACT_RENDER_CRITIC_SOURCE,
     version: ARTIFACT_RENDER_CRITIC_VERSION,
+    structure,
   };
 }
 
@@ -571,6 +590,7 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
   ${linearChannel.toString()}
   ${relativeLuminance.toString()}
   ${contrastRatio.toString()}
+  ${collectArtifactStructure.toString()}
 
   function label(element) {
     const tag = element.tagName.toLowerCase();
@@ -1069,7 +1089,16 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
 
   function report() {
     try {
-      window.parent.postMessage({ kind: KIND, source: SOURCE, version: 1, findings: run() }, '*');
+      // Structure rides the same pass as the findings: one frame, one cost.
+      // A collector failure must not take the findings down with it, so it
+      // degrades to an empty index and the parent revalidates regardless.
+      let structure = [];
+      try {
+        structure = collectArtifactStructure();
+      } catch {
+        structure = [];
+      }
+      window.parent.postMessage({ kind: KIND, source: SOURCE, version: 1, findings: run(), structure }, '*');
     } catch {
       // A missing result is safer than turning an evaluator failure into a finding.
     }
@@ -1082,8 +1111,30 @@ const MEASUREMENT_SCRIPT = String.raw`(() => {
   }
 })();`;
 
-function totalFindingCount(result: ArtifactRenderCriticResult): number {
-  return result.findings.reduce((total, finding) => total + finding.count, 0);
+/**
+ * One headline fragment per finding kind: the strip names each measured
+ * group ("30 low-contrast texts, 7 small targets") instead of adding
+ * different kinds into one alarming total. Measurement is untouched; only
+ * the wording of the sum changes.
+ */
+export function findingHeadline(finding: ArtifactRenderFinding): string {
+  const count = finding.count;
+  if (finding.kind === "contrast") {
+    return count === 1 ? "1 low-contrast text" : `${count} low-contrast texts`;
+  }
+  if (finding.kind === "pointer-target") {
+    return count === 1 ? "1 small target" : `${count} small targets`;
+  }
+  if (finding.kind === "focus-indicator") {
+    const reason =
+      finding.reason === "low-contrast"
+        ? "low-contrast focus indicator"
+        : finding.reason === "removed"
+          ? "removed focus indicator"
+          : "always-on focus indicator";
+    return count === 1 ? `1 ${reason}` : `${count} ${reason}s`;
+  }
+  return count === 1 ? "1 overflowing element" : `${count} overflowing elements`;
 }
 
 function numberText(value: number): string {
@@ -1140,15 +1191,11 @@ function findingText(finding: ArtifactRenderFinding): string {
 }
 
 function RenderCriticCard({ result }: { result: ArtifactRenderCriticResult }) {
-  const total = totalFindingCount(result);
+  const headline = `Render checks found ${result.findings.map(findingHeadline).join(", ")}.`;
   return createElement(
     "div",
     { className: "design-canvas-artifact-render-warning", role: "status" },
-    createElement(
-      "div",
-      null,
-      `Render checks found ${total} ${total === 1 ? "finding" : "findings"}.`,
-    ),
+    createElement("div", null, headline),
     createElement(
       "details",
       null,
@@ -1173,7 +1220,18 @@ function RenderCriticCard({ result }: { result: ArtifactRenderCriticResult }) {
   );
 }
 
-export function ArtifactRenderCritic({ html }: { html: string }) {
+export function ArtifactRenderCritic({
+  html,
+  onResult,
+}: {
+  html: string;
+  /**
+   * Fired once per measured artifact with the validated result, so the
+   * surface can cache the structural index without running a second pass.
+   * Not fired on timeout: without a result there is nothing to cache.
+   */
+  onResult?: (html: string, result: ArtifactRenderCriticResult) => void;
+}) {
   const [measurement, setMeasurement] = useState<
     { html: string; result: ArtifactRenderCriticResult } | { html: string; timedOut: true } | null
   >(null);
@@ -1206,6 +1264,7 @@ export function ArtifactRenderCritic({ html }: { html: string }) {
       settled = true;
       cleanup();
       setMeasurement({ html, result });
+      onResult?.(html, result);
     };
     const handleMessage = (event: MessageEvent<unknown>) => {
       const result = readArtifactRenderCriticMessage(event, frame.contentWindow);
@@ -1228,7 +1287,7 @@ export function ArtifactRenderCritic({ html }: { html: string }) {
       settled = true;
       cleanup();
     };
-  }, [html]);
+  }, [html, onResult]);
 
   const currentMeasurement = measurement?.html === html ? measurement : null;
   if (currentMeasurement === null) return null;
