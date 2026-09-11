@@ -20,6 +20,14 @@ export interface DesignArtifact {
    * that is not `page`. See `DesignAssistantMessage.outputMode`.
    */
   outputMode?: DesignOutputMode;
+  /**
+   * How many non-empty ```html blocks the reply that produced this artifact
+   * carried; carried off the message rather than recomputed here, because the
+   * transcript is the only record of the reply. Absent means the producing run
+   * recorded none, and that is not one block. See
+   * `DesignAssistantMessage.fencedHtmlBlockCount`.
+   */
+  fencedHtmlBlockCount?: number;
 }
 
 export interface DesignGenerationState {
@@ -72,6 +80,7 @@ function latestArtifact(messages: readonly DesignMessage[]): DesignArtifact | nu
         html: message.artifactHtml,
         error: message.artifactError,
         outputMode: message.outputMode,
+        fencedHtmlBlockCount: message.fencedHtmlBlockCount,
       };
     }
   }

@@ -55,6 +55,7 @@ import {
 import {
   ARTIFACT_TOO_LARGE_MESSAGE,
   AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS,
+  fencedBlockNotice,
   stripFencedHtml,
   transcriptItems,
 } from "./agentHost";
@@ -270,6 +271,14 @@ interface CanvasProps {
    * still renders, exports and copies whatever it says.
    */
   artifactSlideShapeNotice: string;
+  /**
+   * The report for an artifact whose reply carried more than one ```html block,
+   * or `""` when there is nothing to say: the reply carried one block, or the
+   * producing run recorded no count. The canvas shows the last block, so this
+   * states how many were dropped rather than leaving them unaccounted for. A
+   * notice, never a gate — the artifact renders, exports and copies regardless.
+   */
+  artifactFencedBlockNotice: string;
   artifactHeight: number;
   /**
    * Measured full page height in page CSS px, or undefined when the artifact
@@ -1710,6 +1719,7 @@ const DesignCanvas = memo(function DesignCanvas({
   artifactError,
   artifactMissingTokens,
   artifactSlideShapeNotice,
+  artifactFencedBlockNotice,
   artifactHeight,
   artifactContentHeight,
   sectionHighlight,
@@ -2206,6 +2216,11 @@ const DesignCanvas = memo(function DesignCanvas({
                 {artifactSlideShapeNotice !== "" ? (
                   <div className="design-canvas-artifact-slide-notice" role="status">
                     {artifactSlideShapeNotice}
+                  </div>
+                ) : null}
+                {artifactFencedBlockNotice !== "" ? (
+                  <div className="design-canvas-artifact-fenced-block-notice" role="status">
+                    {artifactFencedBlockNotice}
                   </div>
                 ) : null}
                 {artifactHtml !== undefined ? (
@@ -3814,6 +3829,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const artifactHtml = artifact?.html;
   const artifactError = artifact?.error;
   const artifactOutputMode = artifact?.outputMode;
+  const artifactFencedBlockCount = artifact?.fencedHtmlBlockCount;
   const artifactMissingTokens = useMemo(
     () =>
       artifactHtml !== undefined && artifactError === undefined
@@ -3838,6 +3854,12 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         : "",
     [artifactHtml, artifactOutputMode],
   );
+  // How many fenced blocks the reply carried is a fact the producing run
+  // recorded on the artifact, like the mode above, not something re-derived
+  // from the markup: the reply itself is already gone from here, and re-parsing
+  // it would silently mean "one" for an artifact that records no count.
+  // `fencedBlockNotice` returns "" for one block, which is the ordinary case.
+  const artifactFencedBlockNotice = fencedBlockNotice(artifactFencedBlockCount);
   // The export title is the title of the run that produced the artifact on
   // screen, matched by markup identity so a stale message cannot lend its
   // name. Absent when the run is unknown; the exporter then falls back.
@@ -4706,9 +4728,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                 sources: [],
                 nodeIds: [],
                 instruction: entry.title,
-                // No outputMode: the history entry does not record the shape the run
-                // asked for, so a reopened artifact has no contract to read back and
-                // stays silent rather than being accused of one.
+                // No outputMode or fencedHtmlBlockCount: the history entry records
+                // neither the shape the run asked for nor how many blocks its reply
+                // carried, so a reopened artifact has no contract to read back and
+                // no dropped selection to report.
                 ...(result.status === "artifact"
                   ? { artifactHtml: result.html }
                   : { artifactError: result.message }),
@@ -4836,6 +4859,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                     // The run's own mode travels with its artifact, so a later
                     // flip of the output switch cannot re-label this result.
                     outputMode: result.outputMode,
+                    // The number of blocks the reply carried travels with its
+                    // artifact, so the notice states what that run actually sent
+                    // and not what a later reply happened to contain.
+                    fencedHtmlBlockCount: result.fencedHtmlBlockCount,
                     groundingNotice: result.groundingNotice ?? null,
                     instruction: prompt,
                   }
@@ -5163,6 +5190,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             artifactError={artifactError}
             artifactMissingTokens={artifactMissingTokens}
             artifactSlideShapeNotice={artifactSlideShapeNotice}
+            artifactFencedBlockNotice={artifactFencedBlockNotice}
             artifactHeight={artifactPageHeight}
             artifactContentHeight={artifactContentHeight}
             sectionHighlight={sectionHighlight}

@@ -112,6 +112,19 @@ export interface DesignAssistantMessage {
    */
   outputMode?: DesignOutputMode;
   /**
+   * How many non-empty ```html blocks the reply that produced this artifact
+   * carried, recorded by the producing run. Last-wins is deliberate — a
+   * correcting agent emits a second, better block — but a reply that carried
+   * six blocks and put one on the canvas must not be silent about the other
+   * five. The canvas reports it when it is more than one.
+   *
+   * Absent is a third state, not one block: a message restored from a document
+   * saved before this field existed, or reopened from a history entry, which
+   * records no count, has no fact to report and stays silent rather than
+   * asserting a reply carried exactly one block.
+   */
+  fencedHtmlBlockCount?: number;
+  /**
    * One quiet line about Oracle grounding for this run, shown under the
    * summary. Set only when a grounded run could not use the attached
    * folder's index; absent or null means nothing to report (grounded on the
@@ -151,6 +164,14 @@ export interface DesignGenerationResult {
    * caller declared.
    */
   outputMode?: DesignOutputMode;
+  /**
+   * How many non-empty ```html blocks the reply carried, taken from the reply
+   * the artifact was extracted from so the surface can report a selection that
+   * dropped earlier blocks. Absent when the run produced no artifact, or when
+   * the host did not report one; see
+   * `DesignAssistantMessage.fencedHtmlBlockCount` for why absent is not one.
+   */
+  fencedHtmlBlockCount?: number;
   /** The run's conversation; see DesignAssistantMessage.transcript. */
   transcript?: readonly DesignTranscriptItem[];
   /**

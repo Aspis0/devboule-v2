@@ -4199,6 +4199,76 @@ describe("artifact slides shape notice", () => {
   });
 });
 
+describe("artifact fence block notice", () => {
+  function fenceNotice(container: HTMLDivElement): HTMLElement | null {
+    return container.querySelector<HTMLElement>(
+      '[role="status"].design-canvas-artifact-fenced-block-notice',
+    );
+  }
+
+  async function generateArtifact(container: HTMLDivElement, prompt: string): Promise<void> {
+    await fillDraft(container, prompt);
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+  }
+
+  it("reports a reply that carried more than one fenced block", async () => {
+    // What the run records: the last of the three blocks its reply carried is the
+    // one on the canvas, and the count says the other two existed.
+    const generate = vi.fn(async () => ({
+      ...ARTIFACT_RESULT,
+      artifactHtml: '<section id="slide-3">Three</section>',
+      fencedHtmlBlockCount: 3,
+    }));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+
+    await generateArtifact(container, "Turn the outline into a deck.");
+
+    const notice = fenceNotice(container);
+    if (notice === null) throw new Error("Fenced block notice missing");
+    expect(notice.textContent).toBe(
+      "The reply carried 3 HTML blocks; the canvas shows only the last one.",
+    );
+    // A notice, not a gate: the artifact is still on the canvas and still exports.
+    expect(container.querySelector(".design-canvas-artifact")).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Save HTML"]')).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("says nothing when the reply carried exactly one block", async () => {
+    // One block is the ordinary case: nothing was passed over, so there is no
+    // dropped selection to report and no status line to grow.
+    const generate = vi.fn(async () => ({ ...ARTIFACT_RESULT, fencedHtmlBlockCount: 1 }));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+
+    await generateArtifact(container, "Fix the header count.");
+
+    expect(fenceNotice(container)).toBeNull();
+    expect(container.textContent).not.toContain("HTML blocks");
+    await act(async () => root.unmount());
+  });
+
+  it("says nothing when the producing run recorded no count", async () => {
+    // A result with no `fencedHtmlBlockCount`: a message restored from a document
+    // saved before the field existed, or reopened from a history entry, which
+    // records no count either. Absent is not one block, and it is not a guess.
+    const generate = vi.fn(async () => ARTIFACT_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+
+    await generateArtifact(container, "Fix the header count.");
+
+    expect(fenceNotice(container)).toBeNull();
+    expect(container.textContent).not.toContain("HTML blocks");
+    expect(container.querySelector(".design-canvas-artifact")).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+});
+
 describe("artifact export copy", () => {
   const clipboardWrites: string[] = [];
   const realClipboard = navigator.clipboard;

@@ -109,6 +109,7 @@ import {
 } from "./skillLoader";
 import {
   automaticSkillPrompt,
+  countFencedHtmlBlocks,
   DESIGN_DOCTRINE_BEGIN,
   DESIGN_DOCTRINE_END,
   DESIGN_DOCTRINE_RESTATEMENT,
@@ -2470,6 +2471,44 @@ describe("ACP design host", () => {
       it("accepts a single-line block with both fences on the same line as content", () => {
         const text = "prefix\n```html\n<p>Hello</p>\n```\nsuffix";
         expect(extractFencedHtml(text)).toBe("<p>Hello</p>");
+      });
+    });
+
+    // The count is what lets the canvas say a reply carried more than one block
+    // instead of quietly keeping the last. It is kept separate from the extracted
+    // HTML so last-wins stays exactly as it was.
+    describe("countFencedHtmlBlocks", () => {
+      it("counts a single non-empty block as one", () => {
+        expect(countFencedHtmlBlocks("```html\n<div>Only</div>\n```")).toBe(1);
+      });
+
+      it("counts two non-empty blocks as two", () => {
+        const text = [
+          "```html",
+          "<div>First</div>",
+          "```",
+          "Between them.",
+          "```html",
+          "<div>Second</div>",
+          "```",
+        ].join("\n");
+        expect(countFencedHtmlBlocks(text)).toBe(2);
+      });
+
+      it("does not count an empty or whitespace-only block", () => {
+        const text = "```html\n<div>One</div>\n```\n```html\n   \n```\n```html\n\n```";
+        expect(countFencedHtmlBlocks(text)).toBe(1);
+      });
+
+      it("does not count a fence in another language", () => {
+        const text = ["```svg", "<svg></svg>", "```", "```markdown", "# Heading", "```"].join("\n");
+        expect(countFencedHtmlBlocks(text)).toBe(0);
+      });
+
+      it("counts every block while the extractor still returns the last", () => {
+        const text = "```html\n<div>First</div>\n```\n\n```html\n<div>Second</div>\n```";
+        expect(countFencedHtmlBlocks(text)).toBe(2);
+        expect(extractFencedHtml(text)).toBe("<div>Second</div>");
       });
     });
 

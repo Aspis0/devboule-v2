@@ -295,15 +295,58 @@ export function matchSkillChoice(
   };
 }
 
-export function extractFencedHtml(text: string): string | undefined {
+/**
+ * The non-empty ```html block bodies a reply carried, in the order they
+ * appeared. This is the one place the fence pattern is matched, so the block
+ * the extractor returns and the number of blocks reported to the user can
+ * never disagree about what the reply contained.
+ */
+function fencedHtmlBlocks(text: string): string[] {
   const regex = /```html\s*\n?([\s\S]*?)\n?\s*```/g;
+  const blocks: string[] = [];
   let match: RegExpExecArray | null;
-  let lastContent: string | undefined;
   while ((match = regex.exec(text)) !== null) {
     const content = match[1].trim();
-    if (content.length > 0) lastContent = content;
+    if (content.length > 0) blocks.push(content);
   }
-  return lastContent;
+  return blocks;
+}
+
+/**
+ * Last-wins, deliberately: an agent that corrects itself emits a second, better
+ * block, and gluing the two together would produce a broken document. The
+ * earlier blocks are not merged and not rendered — which is why the count below
+ * exists, so the surface can say the reply carried more than one.
+ */
+export function extractFencedHtml(text: string): string | undefined {
+  const blocks = fencedHtmlBlocks(text);
+  return blocks.length === 0 ? undefined : blocks[blocks.length - 1];
+}
+
+/**
+ * How many non-empty ```html blocks the reply carried. A separate function
+ * rather than a widened `extractFencedHtml` return type: only this count is
+ * new, and every existing caller still wants the string it always got. The
+ * count comes from the same scan as the extraction, so the number the notice
+ * states is the number of blocks that competed for the canvas.
+ */
+export function countFencedHtmlBlocks(text: string): number {
+  return fencedHtmlBlocks(text).length;
+}
+
+/**
+ * The notice for a reply that carried more than one ```html block: how many it
+ * carried, and that the canvas kept the last. Empty when there is nothing to
+ * report, the convention the other notice builders in this feature follow
+ * (`artifactSlideNotice`, `svgSanitizerNotice`).
+ *
+ * `count` absent is a third state, not one block: a message restored from a
+ * document saved before this field existed, or reopened from a history entry,
+ * records no count, and a fact nobody recorded is nothing to state.
+ */
+export function fencedBlockNotice(count: number | undefined): string {
+  if (count === undefined || count <= 1) return "";
+  return `The reply carried ${count} HTML blocks; the canvas shows only the last one.`;
 }
 
 /**
@@ -320,6 +363,12 @@ export function stripFencedHtml(text: string): string {
 export interface ArtifactExtraction {
   html?: string;
   error?: string;
+  /**
+   * How many non-empty ```html blocks the reply that produced this artifact
+   * carried. Present only alongside `html`: an oversized artifact reports the
+   * error and puts nothing on the canvas, so there is no selection to explain.
+   */
+  fencedBlockCount?: number;
 }
 
 // Reopen needs the size error as well as the optional HTML; collapsing this to undefined would
@@ -332,7 +381,9 @@ export function extractArtifact(state: AgentSessionState, startIndex = 0): Artif
       const html = extractFencedHtml(item.text);
       if (html !== undefined) {
         const byteLength = new TextEncoder().encode(html).byteLength;
-        return byteLength > MAX_ARTIFACT_BYTES ? { error: ARTIFACT_TOO_LARGE_MESSAGE } : { html };
+        return byteLength > MAX_ARTIFACT_BYTES
+          ? { error: ARTIFACT_TOO_LARGE_MESSAGE }
+          : { html, fencedBlockCount: countFencedHtmlBlocks(item.text) };
       }
     }
   }
@@ -1364,7 +1415,13 @@ export function createAgentHost(): DesignHost {
           run,
           "resolve",
           artifact.html !== undefined
-            ? { ...resultWithSession, artifactHtml: artifact.html }
+            ? {
+                ...resultWithSession,
+                artifactHtml: artifact.html,
+                // From the reply the HTML was extracted from, so the count describes
+                // the artifact on the canvas and not some other turn's fences.
+                fencedHtmlBlockCount: artifact.fencedBlockCount,
+              }
             : artifact.error !== undefined
               ? { ...resultWithSession, artifactError: artifact.error }
               : resultWithSession,
