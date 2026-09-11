@@ -271,7 +271,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | base64 | 0.13.1 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | base64 | 0.21.7 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | base64 | 0.22.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
-| base64 | 0.23.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
+| base64 | 0.23.1 | Rust direct runtime optional | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | bigdecimal | 0.4.10 | Rust transitive (lockfile) | MIT/Apache-2.0 |
 | bit-set | 0.8.0 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
@@ -905,7 +905,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | servo_arc | 0.4.3 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | sha1_smol | 1.0.1 | Rust transitive (lockfile) | BSD-3-Clause |
 | sha2 | 0.10.9 | Rust direct runtime optional | MIT OR Apache-2.0 |
-| sha2 | 0.11.0 | Rust direct runtime | MIT OR Apache-2.0 |
+| sha2 | 0.11.0 | Rust direct runtime optional | MIT OR Apache-2.0 |
 | sharded-slab | 0.1.7 | Rust transitive (lockfile) | MIT |
 | shared_library | 0.1.9 | Rust transitive (lockfile) | Apache-2.0/MIT |
 | shell-words | 1.1.1 | Rust transitive (lockfile) | MIT/Apache-2.0 |

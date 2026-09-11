@@ -69,10 +69,17 @@ uuid = { version = "=1.25.0", features = ["v4"], optional = true }
 # their content. Both are optional behind `server` for the same reason as
 # rusqlite — a client-only build never writes an attachment to disk.
 #
-# base64 is pinned to the version `alacritty_terminal` already resolves in this
-# workspace, so this adds no new package to the lockfile. sha2 is the same major
-# the app already uses (`src-tauri`), so the workspace has one sha2 ABI.
-base64 = { version = "=0.22.1", optional = true }
+# Both are the latest stable major, which `check:dependency-majors` enforces and
+# which an earlier pin to base64 0.22 failed. Both versions are also already in
+# the lockfile through other crates, so neither adds a package — but that is the
+# happy coincidence, not the rule: "already resolved" is a tie-breaker between
+# versions the rule allows, never a reason to stay behind one it does not.
+#
+# The workspace still carries older sha2 and base64 majors for other crates
+# (devboule-augur, devboule-plugin-rpc and oracle-core are on sha2 0.10). Nothing
+# here crosses that boundary: sha256_hex returns a String, so no sha2 type is
+# ever passed between crates and the two majors coexist.
+base64 = { version = "=0.23.1", optional = true }
 sha2 = { version = "=0.11.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
