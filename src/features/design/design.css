@@ -45,7 +45,9 @@
 .design-zoom-controls button,
 .design-layer-details-close,
 .design-layer-select,
-.design-layer-visibility {
+.design-layer-visibility,
+.design-section-note-compose button,
+.design-section-notes li button {
   border: 0;
   cursor: pointer;
 }
@@ -2371,12 +2373,85 @@
   min-width: 0;
 }
 
+/* The compose wraps: the field owns the full first row for writing, and the
+   action docks right on the row below, like the composer footer below its
+   text. Same field language as the composer (surface box, strong border,
+   terracotta on focus, silence placeholder), same action language as the
+   primary buttons (terracotta-deep, 9px radius, color-mix hover). */
 .design-section-note-compose {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
 .design-section-note-compose input {
-  flex: 1;
+  flex: 1 1 100%;
   min-width: 0;
+  padding: 5px 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  outline: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.design-section-note-compose input::placeholder {
+  color: var(--silence);
+  opacity: 1;
+}
+
+.design-section-note-compose input:focus-visible {
+  border-color: var(--terracotta);
+}
+
+.design-section-note-compose button {
+  display: grid;
+  flex: none;
+  height: 24px;
+  margin-left: auto;
+  padding: 0 10px;
+  place-items: center;
+  color: var(--white);
+  background: var(--terracotta-deep);
+  border: 1px solid var(--terracotta-deep);
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.design-section-note-compose button:hover:not(:disabled),
+.design-section-note-compose button:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--terracotta-deep) 84%, var(--ink));
+}
+
+.design-section-note-compose button:disabled {
+  color: var(--terracotta-deep);
+  background: var(--surface);
+  border-color: var(--terracotta-deep);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+/* The note delete control copies the discrete square button next to it
+   (details-close): transparent grid, terracotta-free, selection on hover. */
+.design-section-notes li button {
+  display: grid;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0;
+  color: var(--silence);
+  background: transparent;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.design-section-notes li button:hover,
+.design-section-notes li button:focus-visible {
+  color: var(--ink);
+  background: var(--selection);
 }
