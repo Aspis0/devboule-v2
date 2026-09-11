@@ -15,23 +15,6 @@ function blockFor(selector: string): string {
   return css.slice(open + 1, close);
 }
 
-/** All blocks for a selector that appears in a shared rule and its own rule. */
-function blocksFor(selector: string): string[] {
-  const blocks: string[] = [];
-  let from = 0;
-  for (;;) {
-    const start = css.indexOf(selector, from);
-    if (start < 0) break;
-    const open = css.indexOf("{", start);
-    const close = open < 0 ? -1 : css.indexOf("}", open);
-    if (open < 0 || close < 0) break;
-    blocks.push(css.slice(open + 1, close));
-    from = close + 1;
-  }
-  if (blocks.length === 0) throw new Error(`Selector missing: ${selector}`);
-  return blocks;
-}
-
 describe("design message source pills", () => {
   it("lets a long path wrap inside its pill instead of overflowing", () => {
     const block = blockFor(".design-message-source");
@@ -53,14 +36,23 @@ describe("design message source pills", () => {
   });
 });
 
-describe("design inspector panel", () => {
-  it("caps its height to the canvas and scrolls instead of clipping", () => {
-    // .design-inspector-panel shares one rule with .design-layers-panel and
-    // owns a second rule with its top/right/width; the cap lives in the own rule.
-    const own = blocksFor(".design-inspector-panel").find((block) => block.includes("top: 14px"));
-    if (own === undefined) throw new Error("Inspector own rule missing");
-    expect(own).toContain("max-height:");
-    expect(own).toContain("100%");
-    expect(own).toMatch(/overflow-y:\s*auto/);
+describe("design layers panel", () => {
+  it("scrolls its list inside the canvas instead of outgrowing it", () => {
+    const block = blockFor(".design-layer-list");
+    expect(block).toMatch(/overflow-y:\s*auto/);
+  });
+
+  it("never compresses rows: an expanded row pushes the list into scrolling", () => {
+    // A column flex container shrinks the default `flex: 0 1 auto` item to
+    // fit, so an expanded row's details overflow onto the next row instead
+    // of scrolling. flex:none keeps every row at its natural height.
+    const block = blockFor(".design-layer-row");
+    expect(block).toMatch(/flex:\s*none/);
+  });
+
+  it("caps the panel well below full canvas height", () => {
+    // About half a 704px canvas, and never more than the bottom offset +
+    // top margin allow. The scrolling list inside absorbs the rest.
+    expect(css).toContain("max-height: min(352px, calc(100% - 54px))");
   });
 });

@@ -16,7 +16,6 @@ import type {
   DesignMessage,
   DesignTranscriptItem,
   PendingPermission,
-  DesignRadiusOption,
   SectionNote,
 } from "./designHost";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
@@ -124,8 +123,6 @@ type MessageAction = "stop" | "retry" | "select" | "regenerate";
 interface DesignSnapshot {
   hiddenLayerIds: readonly string[];
   layers: readonly DesignLayer[];
-  radius: number;
-  flat: boolean;
 }
 
 interface DesignViewState {
@@ -147,10 +144,6 @@ interface LayerViewModel extends DesignLayer {
   hidden: boolean;
   /** A section layer carries at least one agent note. Canvas nodes never do. */
   hasNote: boolean;
-}
-
-interface RadiusViewModel extends DesignRadiusOption {
-  selected: boolean;
 }
 
 interface DesignToolbarProps {
@@ -179,10 +172,22 @@ interface DesignToolbarProps {
 interface LayerPanelProps {
   layers: readonly LayerViewModel[];
   onSelect: (layerId: string) => void;
+  onDeselect: () => void;
   onToggleVisibility: (layerId: string) => void;
   /** Notes whose anchor is gone from the current page; shown, not dropped. */
   orphanNotes: readonly ResolvedSectionNote[];
   onDeleteNote: (index: number) => void;
+  /** Notes on the selected section; empty unless a section is selected. */
+  selectedSectionNotes: readonly ResolvedSectionNote[];
+  onAddNote: (text: string) => void;
+}
+
+interface SectionDetailsProps {
+  layer: LayerViewModel;
+  notes: readonly ResolvedSectionNote[];
+  onAddNote: (text: string) => void;
+  onDeleteNote: (index: number) => void;
+  onDeselect: () => void;
 }
 
 interface CanvasProps {
@@ -221,24 +226,6 @@ interface ZoomControlsProps {
   onZoomOut: () => void;
   onZoomReset: () => void;
   onFit: () => void;
-}
-
-interface InspectorProps {
-  layer: DesignLayer;
-  tokenFooter: string;
-  radiusOptions: readonly RadiusViewModel[];
-  flat: boolean;
-  onRadiusChange: (radius: number) => void;
-  onElevationChange: (flat: boolean) => void;
-  onDuplicate: () => void;
-  onDelete: () => void;
-  onClose: () => void;
-  canDuplicate: boolean;
-  canDelete: boolean;
-  /** Notes on the inspected section; empty for canvas layers. */
-  sectionNotes: readonly ResolvedSectionNote[];
-  onAddNote: (text: string) => void;
-  onDeleteNote: (index: number) => void;
 }
 
 interface WorkspaceProject extends Project {
@@ -917,12 +904,94 @@ const DesignToolbar = memo(function DesignToolbar({
   );
 });
 
+const SectionDetails = memo(function SectionDetails({
+  layer,
+  notes,
+  onAddNote,
+  onDeleteNote,
+  onDeselect,
+}: SectionDetailsProps) {
+  const [noteDraft, setNoteDraft] = useState("");
+  const section = layer.section;
+  if (section === undefined) return null;
+  const submitNote = () => {
+    const text = noteDraft.trim();
+    if (text.length === 0) return;
+    onAddNote(text);
+    setNoteDraft("");
+  };
+  return (
+    <div className="design-layer-details">
+      <div className="design-layer-diagnostics">
+        <span className="design-mono-value design-layer-measured">
+          {Math.round(layer.transform.width)} × {Math.round(layer.transform.height)} px
+        </span>
+        <button
+          className="design-layer-details-close"
+          type="button"
+          aria-label="Deselect section"
+          onClick={onDeselect}
+        >
+          ×
+        </button>
+        <span className="design-mono-value design-layer-anchor">{section.anchor}</span>
+      </div>
+      {notes.length > 0 ? (
+        <ul className="design-section-notes">
+          {notes.map((entry) => (
+            <li key={entry.index}>
+              <span className="design-section-note-text">{entry.note.text}</span>
+              <button
+                type="button"
+                aria-label="Delete note"
+                onClick={() => onDeleteNote(entry.index)}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="design-section-note-compose">
+        <input
+          type="text"
+          value={noteDraft}
+          maxLength={2000}
+          placeholder="Note for the agent on this section…"
+          aria-label="Note for the agent on this section"
+          onChange={(event) => setNoteDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              submitNote();
+            } else if (event.key === "Escape" && noteDraft.length > 0) {
+              // The note field owns the first Escape: clear the draft instead
+              // of deselecting the section. stopPropagation keeps the surface's
+              // global Escape (deselect) off this keypress; an empty field lets
+              // it through, so deselecting from here still works.
+              event.preventDefault();
+              event.stopPropagation();
+              setNoteDraft("");
+            }
+          }}
+        />
+        <button type="button" onClick={submitNote} disabled={noteDraft.trim().length === 0}>
+          Add
+        </button>
+      </div>
+    </div>
+  );
+});
+
 const LayerPanel = memo(function LayerPanel({
   layers,
   onSelect,
+  onDeselect,
   onToggleVisibility,
   orphanNotes,
   onDeleteNote,
+  selectedSectionNotes,
+  onAddNote,
 }: LayerPanelProps) {
   return (
     <section className="design-layers-panel" aria-labelledby="design-layers-title">
@@ -967,6 +1036,15 @@ const LayerPanel = memo(function LayerPanel({
             >
               {layer.hidden ? "◌" : "◉"}
             </button>
+            {layer.selected && layer.section !== undefined ? (
+              <SectionDetails
+                layer={layer}
+                notes={selectedSectionNotes}
+                onAddNote={onAddNote}
+                onDeleteNote={onDeleteNote}
+                onDeselect={onDeselect}
+              />
+            ) : null}
           </div>
         ))}
       </div>
@@ -1622,227 +1700,6 @@ const DesignCanvas = memo(function DesignCanvas({
         })}
       </div>
     </div>
-  );
-});
-
-const InspectorPanel = memo(function InspectorPanel({
-  layer,
-  tokenFooter,
-  radiusOptions,
-  flat,
-  onRadiusChange,
-  onElevationChange,
-  onDuplicate,
-  onDelete,
-  onClose,
-  canDuplicate,
-  canDelete,
-  sectionNotes,
-  onAddNote,
-  onDeleteNote,
-}: InspectorProps) {
-  const [noteDraft, setNoteDraft] = useState("");
-  // A measured page section is not a canvas node: no transform editing, no
-  // corners, no elevation, no duplicate/delete. Tag, anchor, measured size,
-  // text preview, and the agent notes are what exist for it.
-  if (layer.kind === "SECTION" && layer.section !== undefined) {
-    const submitNote = () => {
-      const text = noteDraft.trim();
-      if (text.length === 0) return;
-      onAddNote(text);
-      setNoteDraft("");
-    };
-    return (
-      <section className="design-inspector-panel" aria-labelledby="design-inspector-title">
-        <div className="design-inspector-heading">
-          <span id="design-inspector-title" className="design-inspector-name">
-            {layer.name}
-          </span>
-          <span className="design-inspector-kind">{layer.kind}</span>
-          <button
-            className="design-inspector-close"
-            type="button"
-            aria-label="Close inspector"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </div>
-
-        <div className="design-inspector-section">
-          <div className="design-inspector-label">Page section</div>
-          <dl className="design-section-meta">
-            <div>
-              <dt>Tag</dt>
-              <dd className="design-mono-value">&lt;{layer.section.tag}&gt;</dd>
-            </div>
-            <div>
-              <dt>Anchor</dt>
-              <dd className="design-mono-value">{layer.section.anchor}</dd>
-            </div>
-            <div>
-              <dt>Measured</dt>
-              <dd className="design-mono-value">
-                {layer.transform.width} × {layer.transform.height} px
-              </dd>
-            </div>
-          </dl>
-          <p className="design-section-preview">{layer.name}</p>
-        </div>
-
-        <div className="design-inspector-section">
-          <div className="design-inspector-label">Agent notes ({sectionNotes.length})</div>
-          {sectionNotes.length > 0 ? (
-            <ul className="design-section-notes">
-              {sectionNotes.map((entry) => (
-                <li key={entry.index}>
-                  <span className="design-section-note-text">{entry.note.text}</span>
-                  <button
-                    type="button"
-                    aria-label="Delete note"
-                    onClick={() => onDeleteNote(entry.index)}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          <div className="design-section-note-compose">
-            <input
-              type="text"
-              value={noteDraft}
-              maxLength={2000}
-              placeholder="Note for the agent on this section…"
-              aria-label="Note for the agent on this section"
-              onChange={(event) => setNoteDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  submitNote();
-                }
-              }}
-            />
-            <button type="button" onClick={submitNote} disabled={noteDraft.trim().length === 0}>
-              Add
-            </button>
-          </div>
-        </div>
-        <div className="design-inspector-footer">{tokenFooter}</div>
-      </section>
-    );
-  }
-
-  const transformFields = [
-    ["X", layer.transform.x],
-    ["Y", layer.transform.y],
-    ["W", layer.transform.width],
-    ["H", layer.transform.height],
-  ] as const;
-
-  return (
-    <section className="design-inspector-panel" aria-labelledby="design-inspector-title">
-      <div className="design-inspector-heading">
-        <span id="design-inspector-title" className="design-inspector-name">
-          {layer.name}
-        </span>
-        <span className="design-inspector-kind">{layer.kind}</span>
-        <button
-          className="design-inspector-close"
-          type="button"
-          aria-label="Close inspector"
-          onClick={onClose}
-        >
-          ×
-        </button>
-      </div>
-
-      <div className="design-inspector-section">
-        <div className="design-inspector-label">Transform</div>
-        <div className="design-transform-grid">
-          {transformFields.map(([label, value]) => (
-            <span className="design-transform-field" key={label}>
-              <span className="design-field-label">{label}</span>
-              <span className="design-mono-value">{value}</span>
-              {label === "H" && layer.transform.hug ? (
-                <span className="design-hug-label">HUG</span>
-              ) : null}
-            </span>
-          ))}
-        </div>
-      </div>
-
-      <div className="design-inspector-section">
-        <div className="design-inspector-label-row">
-          <span className="design-inspector-label">Corners</span>
-          <span className="design-token-value">
-            radius.{radiusOptions.find((option) => option.selected)?.token ?? "custom"}
-          </span>
-        </div>
-        <div className="design-radius-picker">
-          {radiusOptions.map((option) => (
-            <button
-              className={`design-radius-option${option.selected ? " design-radius-option-selected" : ""}`}
-              type="button"
-              key={option.token}
-              title={`radius.${option.token} · ${option.value}px`}
-              aria-label={`Set radius.${option.token}, ${option.value} pixels`}
-              aria-pressed={option.selected}
-              onClick={() => onRadiusChange(option.value)}
-            >
-              <span
-                className="design-radius-glyph"
-                style={{ borderTopLeftRadius: `${Math.min(option.value, 12)}px` }}
-                aria-hidden="true"
-              />
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="design-inspector-section">
-        <div className="design-inspector-label-row">
-          <span className="design-inspector-label">Elevation</span>
-          <span className="design-token-value">{flat ? "shadow.none" : "shadow.soft"}</span>
-        </div>
-        <div className="design-segmented-control">
-          <button
-            type="button"
-            aria-pressed={!flat}
-            className={!flat ? "design-segment-selected" : ""}
-            onClick={() => onElevationChange(false)}
-          >
-            Soft
-          </button>
-          <button
-            type="button"
-            aria-pressed={flat}
-            className={flat ? "design-segment-selected" : ""}
-            onClick={() => onElevationChange(true)}
-          >
-            Flat
-          </button>
-        </div>
-      </div>
-
-      <div className="design-inspector-actions">
-        {canDuplicate ? (
-          <button type="button" onClick={onDuplicate}>
-            Duplicate
-          </button>
-        ) : null}
-        <button
-          type="button"
-          className="design-delete-action"
-          aria-label="Delete layer"
-          onClick={onDelete}
-          disabled={!canDelete}
-        >
-          Delete
-        </button>
-      </div>
-      <div className="design-inspector-footer">{tokenFooter}</div>
-    </section>
   );
 });
 
@@ -2646,8 +2503,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const initialSnapshot: DesignSnapshot = {
     hiddenLayerIds: document.initialState.hiddenLayerIds,
     layers: cloneLayers(document),
-    radius: document.initialState.radius,
-    flat: document.initialState.flat,
   };
   const initialViewState: DesignViewState = {
     pan: { x: 0, y: 0 },
@@ -2713,7 +2568,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const mountedRef = useRef(true);
   const messagesRef = useRef(messages);
   const documentRevisionRef = useRef(0);
-  const layerCopyCounterRef = useRef(0);
   const skillSelectionInteractedRef = useRef(false);
   const skillSelectionRef = useRef(skillSelection);
   const providerSelectionInteractedRef = useRef(false);
@@ -3188,15 +3042,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     fitRectsRef.current = fitRects;
   }, [fitRects]);
 
-  const radiusOptions = useMemo(
-    () =>
-      document.radiusOptions.map((option) => ({
-        ...option,
-        selected: option.value === snapshot.radius,
-      })),
-    [document.radiusOptions, snapshot.radius],
-  );
-
   const saveDocument = host.saveDocument;
   const generate = host.generate;
   const canSave = saveDocument !== undefined;
@@ -3403,7 +3248,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     },
     [composerContextLayerId, markDocumentDirty, selectedLayerId],
   );
-  const closeInspector = useCallback(() => {
+  // The one deselect path: the expanded row's close control, the row's Escape
+  // handler below, and an empty-canvas click all land here, and the canvas
+  // takes focus back so keyboard users stay oriented.
+  const deselectLayer = useCallback(() => {
     selectLayer("");
     queueMicrotask(() => {
       designSurfaceRef.current?.querySelector<HTMLElement>(".design-canvas")?.focus();
@@ -3429,48 +3277,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       );
       if (escapeOwner) return;
       event.preventDefault();
-      closeInspector();
+      deselectLayer();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeInspector, selectedLayer]);
-
-  const duplicateLayer = useCallback(() => {
-    const source = layers.find((layer) => layer.id === selectedLayerId);
-    // Measured page sections cannot be duplicated: they describe the generated
-    // page, they are not editable nodes.
-    if (!source || source.kind === "SECTION") return;
-
-    layerCopyCounterRef.current += 1;
-    const copy: DesignLayer = {
-      ...source,
-      id: `${source.id}-copy-${layerCopyCounterRef.current}`,
-      name: `${source.name} copy`,
-      transform: {
-        ...source.transform,
-        x: source.transform.x + 16,
-        y: source.transform.y + 16,
-      },
-    };
-    commitSnapshot((current) => ({ ...current, layers: [...current.layers, copy] }));
-    selectLayer(copy.id);
-  }, [commitSnapshot, layers, selectedLayerId, selectLayer]);
-
-  const deleteLayer = useCallback(() => {
-    // Measured page sections cannot be deleted, for the same reason.
-    if (layers.length <= 1 || selectedLayer === null || selectedLayer.kind === "SECTION") return;
-
-    const selectedIndex = layers.findIndex((layer) => layer.id === selectedLayerId);
-    const nextLayer = layers[selectedIndex + 1] ?? layers[selectedIndex - 1];
-    if (!nextLayer) return;
-
-    selectLayer(nextLayer.id);
-    commitSnapshot((current) => ({
-      ...current,
-      layers: current.layers.filter((layer) => layer.id !== selectedLayerId),
-      hiddenLayerIds: current.hiddenLayerIds.filter((id) => id !== selectedLayerId),
-    }));
-  }, [commitSnapshot, layers, selectedLayer, selectedLayerId, selectLayer]);
+  }, [deselectLayer, selectedLayer]);
 
   const addSectionNote = useCallback(
     (anchor: string, text: string) => {
@@ -3507,6 +3318,15 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     });
     return entries;
   }, [sectionNotes, selectedSectionAnchor]);
+  // Stable like the other LayerPanel callbacks below: an inline arrow here
+  // would hand memo(LayerPanel) a new prop on every parent render and
+  // re-render every row for nothing.
+  const handleAddSectionNote = useCallback(
+    (text: string) => {
+      if (selectedSectionAnchor !== null) addSectionNote(selectedSectionAnchor, text);
+    },
+    [addSectionNote, selectedSectionAnchor],
+  );
   const orphanNotes = useMemo(
     () => resolveSectionNotes(sectionNotes, sectionAnchors, artifactHtml !== undefined).orphans,
     [sectionNotes, sectionAnchors, artifactHtml],
@@ -3551,20 +3371,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           ? current.hiddenLayerIds.filter((id) => id !== layerId)
           : [...current.hiddenLayerIds, layerId],
       }));
-    },
-    [commitSnapshot],
-  );
-
-  const setRadius = useCallback(
-    (radius: number) => {
-      commitSnapshot((current) => (current.radius === radius ? null : { ...current, radius }));
-    },
-    [commitSnapshot],
-  );
-
-  const setElevation = useCallback(
-    (flat: boolean) => {
-      commitSnapshot((current) => (current.flat === flat ? null : { ...current, flat }));
     },
     [commitSnapshot],
   );
@@ -3756,8 +3562,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       initialState: {
         ...document.initialState,
         hiddenLayerIds: [...history.present.hiddenLayerIds],
-        radius: history.present.radius,
-        flat: history.present.flat,
       },
       selectedLayerId,
       grounded,
@@ -4223,9 +4027,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       ) : null}
 
       <div className="design-main">
-        <div
-          className={`design-workspace${selectedLayer ? " design-workspace-inspector-open" : ""}`}
-        >
+        <div className="design-workspace">
           <DesignCanvas
             layers={layers}
             sectionLayers={sectionLayers}
@@ -4248,9 +4050,12 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             <LayerPanel
               layers={layerRows}
               onSelect={selectLayer}
+              onDeselect={deselectLayer}
               onToggleVisibility={toggleLayerVisibility}
               orphanNotes={orphanNotes}
               onDeleteNote={deleteSectionNote}
+              selectedSectionNotes={selectedSectionNotes}
+              onAddNote={handleAddSectionNote}
             />
           ) : null}
           <ZoomControls
@@ -4262,26 +4067,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             onZoomReset={zoomReset}
             onFit={fitCanvas}
           />
-          {selectedLayer ? (
-            <InspectorPanel
-              layer={selectedLayer}
-              tokenFooter={document.tokenFooter}
-              radiusOptions={radiusOptions}
-              flat={snapshot.flat}
-              onRadiusChange={setRadius}
-              onElevationChange={setElevation}
-              onDuplicate={duplicateLayer}
-              onDelete={deleteLayer}
-              onClose={closeInspector}
-              canDuplicate={selectedLayer.source === undefined && selectedLayer.kind !== "SECTION"}
-              canDelete={layers.length > 1 && selectedLayer.kind !== "SECTION"}
-              sectionNotes={selectedSectionNotes}
-              onAddNote={(text) => {
-                if (selectedSectionAnchor !== null) addSectionNote(selectedSectionAnchor, text);
-              }}
-              onDeleteNote={deleteSectionNote}
-            />
-          ) : null}
         </div>
 
         <DesignAssistant
@@ -4302,9 +4087,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           daemonConnected={daemonConnected}
           draft={draft}
           draftPlaceholder={
-            // The mock document's placeholder names a fixture layer. The context that
+            // The document default's placeholder names a fixture layer. The context that
             // can actually be selected is the generated artifact, so the placeholder
-            // is derived from what is selected instead of from the demo host.
+            // is derived from what is selected instead of from the defaults.
             composerContextLayerName
               ? `Describe a change to ${composerContextLayerName}…`
               : document.noContextPlaceholder

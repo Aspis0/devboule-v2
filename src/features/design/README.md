@@ -12,16 +12,13 @@ its own UI** — a host with no `saveDocument` has no Save control at all, not a
 one. Honesty is a property of the type rather than of copy somebody has to remember to
 keep accurate.
 
-`App.tsx` picks a host at mount by asking what actually exists:
+`App.tsx` always mounts the agent host. Generation grounds on the attached
+folder's own Oracle index, or runs ungrounded when no folder is attached, so
+the global Oracle index state never decides which host the user gets.
 
-| Host              | Chosen when                                  | Capabilities                            |
-| ----------------- | -------------------------------------------- | --------------------------------------- |
-| `agentHost`       | Oracle can answer **and** a workspace exists | load, generate (ACP; no save)           |
-| `oracleHost`      | Oracle can answer, no workspace              | load, generate (Oracle search; no save) |
-| demo (`mockData`) | otherwise                                    | load, generate, save (fixtures)         |
-
-Each announces itself with a disclosure line, so the surface never implies more than the
-host behind it can do.
+| Host        | Chosen when | Capabilities                  |
+| ----------- | ----------- | ----------------------------- |
+| `agentHost` | always      | load, generate (ACP; no save) |
 
 ## What a generation does
 

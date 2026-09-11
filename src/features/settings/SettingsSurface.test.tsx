@@ -1288,3 +1288,98 @@ describe("Settings projects", () => {
     expect(container.textContent).toContain("D:\\canonical-project");
   });
 });
+
+describe("Settings removed placeholder rows", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    vi.mocked(journalUsage).mockResolvedValue({
+      totalBytes: 0,
+      sessionCount: 0,
+      deletedByUser: 0,
+      deletedByRetention: 0,
+      unreclaimable: { bytesOver: 0, sessionsOver: 0, agedOut: 0 },
+      limits: {
+        snapshotEveryBytes: 65_536,
+        sessionMaxBytes: 1,
+        maxBytes: 1,
+        maxSessions: 1,
+        maxAgeMs: 0,
+      },
+      perSession: [],
+    });
+    vi.mocked(journalRetentionGet).mockResolvedValue({
+      sessionMaxBytes: { value: 1, source: "default" },
+      maxBytes: { value: 1, source: "default" },
+      maxSessions: { value: 1, source: "default" },
+      maxAgeMs: { value: 0, source: "default" },
+    });
+    vi.mocked(projectsList).mockResolvedValue([
+      { id: "project-live", name: "live-project", path: "D:\\live-project" },
+    ]);
+    vi.mocked(workspacesList).mockResolvedValue([]);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("has six tabs and no Labs tab", async () => {
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    await act(async () => undefined);
+
+    const tabs = Array.from(container.querySelectorAll("[role='tab']")).map(
+      (tab) => tab.textContent,
+    );
+    expect(tabs).toEqual([
+      "General",
+      "Projects",
+      "Oracle",
+      "Providers & models",
+      "Devices",
+      "Diagnostics",
+    ]);
+    expect(container.querySelector("#settings-panel-labs")).toBeNull();
+  });
+
+  it("shows only the retention panel in General, no placeholder rows", async () => {
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    const general = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-general']",
+    );
+    if (!general) throw new Error("General tab did not render");
+    await act(async () => general.click());
+    await act(async () => undefined);
+
+    expect(container.textContent).not.toContain("Crescent reveal zone");
+    expect(container.textContent).not.toContain("Default send");
+    expect(container.textContent).not.toContain("Daemon shuts down with the app");
+    expect(container.textContent).not.toContain("Telemetry");
+    expect(container.textContent).toContain("Retention limits");
+  });
+
+  it("shows live projects with no Worktree defaults block", async () => {
+    root = createRoot(container);
+    await act(async () => root.render(<SettingsSurface />));
+    const projectsTab = container.querySelector<HTMLButtonElement>(
+      "[aria-controls='settings-panel-projects']",
+    );
+    if (!projectsTab) throw new Error("Projects tab did not render");
+    await act(async () => projectsTab.click());
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("live-project");
+    expect(container.textContent).toContain("Add project");
+    expect(container.textContent).not.toContain("Worktree defaults");
+    expect(container.textContent).not.toContain("Base branch");
+    expect(container.textContent).not.toContain("Setup script");
+    expect(container.textContent).not.toContain("Remove worktree when archived");
+  });
+});

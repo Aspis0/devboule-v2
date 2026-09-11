@@ -41,7 +41,7 @@ import {
   MAX_AUTOMATIC_SKILL_SECTIONS,
 } from "./builtInSkills";
 export { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
-import { createDemoHost } from "./mockData";
+import { createDesignDocumentDefaults } from "./designDocumentDefaults";
 import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
 import { rankSkillsForQuery } from "./skillRanking";
 
@@ -660,10 +660,12 @@ export function invokeAgentCommand<T>(
 }
 
 export function createAgentHost(): DesignHost {
-  // Document skeleton only. Its repository layers were Oracle's single global
-  // index, which never depended on the session's workspace, so they are not
-  // loaded here; see loadDocument below.
-  const documentHost = createDemoHost();
+  // Document skeleton only: the application defaults, with no layers, no
+  // transcript, and no document identity. Repository layers are not loaded
+  // here; see loadDocument below.
+  const documentHost = {
+    loadDocument: async () => createDesignDocumentDefaults(),
+  };
   let disposed = false;
   let activeRun: ActiveRun | null = null;
   /**
@@ -1380,16 +1382,12 @@ export function createAgentHost(): DesignHost {
       const document = await documentHost.loadDocument();
       return {
         ...document,
-        // The demo host names a fixture document and a fixture path. A real session
-        // has no document identity: the canvas holds what the user generates, and the
+        // The defaults carry no document identity, and neither does a real session:
+        // the canvas holds what the user generates, and the
         // one directory that matters is the folder the session is attached to, which
         // the surface reads from the registry and from the session's echoed cwd.
         name: "",
         path: "",
-        // "Values snap to design tokens (DTCG)" claims a token format this surface does
-        // not read. Radius and elevation are surface state, not edits to the user's files.
-        tokenFooter:
-          "Corner radius and elevation belong to this surface; they are not written into your files.",
         // "writing the node" describes the canvas this surface no longer draws: the
         // artifact is rendered in a frame, and nothing is written to a layer.
         workingMessage: {

@@ -2,14 +2,10 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import type { ComponentType } from "react";
 import { Shell } from "./Shell";
 import { SurfacePlaceholder } from "./SurfacePlaceholder";
-import { oracleStatus } from "../lib/tauri";
 import { useAppStore, type DesignSessionState } from "../store/appStore";
-import type { OracleIndexStatus } from "../types/ipc";
 import { SURFACES, type SurfaceDefinition, type SurfaceKey } from "../types/surface";
 import type { DesignHost, DesignSurfaceProps } from "../features/design/DesignSurface";
 import { createAgentHost, disposeAgentHost } from "../features/design/agentHost";
-import { createDemoHost } from "../features/design/mockData";
-import { createOracleHost } from "../features/design/oracleHost";
 
 interface SurfaceRendererProps {
   surface: SurfaceDefinition;
@@ -35,57 +31,20 @@ const LazyPolis = lazy(() =>
   })),
 );
 
-const DEMO_DESIGN_HOST = createDemoHost();
-const ORACLE_DESIGN_HOST = createOracleHost();
-
-type DesignHostKind = "agent" | "oracle" | "demo";
-
-let resolvedDesignHostKind: DesignHostKind | null = null;
-let designHostResolution: Promise<DesignHostKind> | null = null;
 let designBoundaryLifecycle = 0;
-
-function oracleCanAnswer(status: OracleIndexStatus): boolean {
-  return (
-    status.state !== "error" &&
-    status.state !== "indexing" &&
-    status.indexed_files > 0 &&
-    status.model.state === "ready" &&
-    status.reranker?.state !== "downloading" &&
-    status.reranker?.state !== "missing"
-  );
-}
 
 interface DesignHostBoundaryProps {
   DesignSurface: ComponentType<DesignSurfaceProps>;
 }
 
-function resolveDesignHostKind(): Promise<DesignHostKind> {
-  if (resolvedDesignHostKind !== null) return Promise.resolve(resolvedDesignHostKind);
-  if (designHostResolution !== null) return designHostResolution;
-
-  const pending = Promise.allSettled([oracleStatus()]).then(([oracleResult]) => {
-    const kind: DesignHostKind =
-      oracleResult.status === "fulfilled" && oracleCanAnswer(oracleResult.value) ? "agent" : "demo";
-    resolvedDesignHostKind = kind;
-    return kind;
-  });
-  designHostResolution = pending;
-  void pending.finally(() => {
-    if (designHostResolution === pending) designHostResolution = null;
-  });
-  return pending;
-}
-
-function selectedDesignHost(kind: DesignHostKind): DesignHost {
+// The Design surface always runs on the agent host. Generation grounds on
+// the attached folder's own index (or runs ungrounded with no folder), so
+// the global Oracle index state never decides which host the user gets.
+function selectedDesignHost(): DesignHost {
   const currentHost = useAppStore.getState().designSession.host;
   if (currentHost !== null) return currentHost;
 
-  const host =
-    kind === "agent"
-      ? createAgentHost()
-      : kind === "oracle"
-        ? ORACLE_DESIGN_HOST
-        : DEMO_DESIGN_HOST;
+  const host = createAgentHost();
   useAppStore.getState().setDesignHost(host);
   return host;
 }
@@ -113,16 +72,9 @@ function DesignHostBoundary({ DesignSurface }: DesignHostBoundaryProps) {
 
   useEffect(() => {
     const lifecycle = ++designBoundaryLifecycle;
-    let active = true;
-
-    void resolveDesignHostKind().then((kind) => {
-      if (!active) return;
-      const host = selectedDesignHost(kind);
-      setSelection(host);
-    });
+    setSelection(selectedDesignHost());
 
     return () => {
-      active = false;
       queueMicrotask(() => {
         if (designBoundaryLifecycle === lifecycle) void releaseDesignHostIfUnused();
       });

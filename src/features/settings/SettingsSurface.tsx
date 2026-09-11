@@ -13,14 +13,7 @@ import type { Project, ProviderCatalog, ProviderInfo, Workspace } from "../../ty
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { NewProjectDialog } from "../workspace/NewProjectDialog";
-import {
-  MOCK_DEVICES,
-  MOCK_GENERAL_SETTINGS,
-  MOCK_LABS,
-  MOCK_SETTINGS_TABS,
-  MOCK_WORKTREE_DEFAULTS,
-  type SettingsTab,
-} from "./mockData";
+import { MOCK_DEVICES, MOCK_SETTINGS_TABS, type SettingsTab } from "./mockData";
 import "./settings.css";
 
 export function SettingsSurface() {
@@ -66,8 +59,6 @@ export function SettingsSurface() {
         return <DevicesPanel />;
       case "general":
         return <GeneralPanel />;
-      case "labs":
-        return <LabsPanel />;
       case "diagnostics":
         return <DiagnosticsPanel />;
     }
@@ -653,18 +644,6 @@ function ProjectsPanel() {
       </div>
 
       <NewProjectDialog open={dialogOpen} onClose={closeDialog} onCreate={handleProjectAdded} />
-
-      <div className="settings-subheading">Worktree defaults</div>
-      <div className="settings-stack settings-stack-tight">
-        {MOCK_WORKTREE_DEFAULTS.map((setting) => (
-          <SettingValue
-            key={setting.label}
-            label={setting.label}
-            value={setting.value}
-            tone={setting.tone}
-          />
-        ))}
-      </div>
     </div>
   );
 }
@@ -693,61 +672,6 @@ function GeneralPanel() {
   return (
     <div id="settings-panel-general" role="tabpanel" aria-label="General">
       <JournalRetentionPanel />
-      <div className="settings-stack settings-stack-tight settings-general-list">
-        {MOCK_GENERAL_SETTINGS.map((setting) => (
-          <SettingValue
-            key={setting.label}
-            label={setting.label}
-            value={setting.value}
-            tone={setting.tone}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function LabsPanel() {
-  return (
-    <div id="settings-panel-labs" role="tabpanel" aria-label="Labs">
-      <SettingsHeading
-        title="Labs"
-        description="Unfinished surfaces. Turning one on adds its globe to the crescent."
-      />
-      <div className="settings-stack settings-stack-tight">
-        {MOCK_LABS.map((lab) => (
-          <LabRow key={lab.title} title={lab.title} description={lab.description} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function SettingValue({
-  label,
-  value,
-  tone = "default",
-}: {
-  label: string;
-  value: string;
-  tone?: "default" | "green" | "danger" | "muted";
-}) {
-  return (
-    <div className="settings-card settings-value-row">
-      <span>{label}</span>
-      <span className={`settings-card-value settings-value-${tone}`}>{value}</span>
-    </div>
-  );
-}
-
-function LabRow({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="settings-card settings-lab-row">
-      <span className="settings-card-copy">
-        <span className="settings-card-title">{title}</span>
-        <span className="settings-card-meta settings-lab-description">{description}</span>
-      </span>
-      <span className="settings-card-value settings-value-green">on</span>
     </div>
   );
 }
