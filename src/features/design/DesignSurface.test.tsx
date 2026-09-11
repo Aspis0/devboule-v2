@@ -3565,6 +3565,28 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the deck section selectable in the manual picker", async () => {
+    // The output-mode narrowing applies to the reasoner only. The manual
+    // picker names its sections explicitly, so it keeps the whole catalogue
+    // including the section that owns the slides output mode.
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await openSkillCraft(container);
+    await chooseSkillMode(container, "manual");
+
+    const slides = builtInSkillIndex().find((entry) => entry.slug === "slides");
+    if (slides === undefined) throw new Error("Expected the slides section in the catalogue");
+    const titles = [...container.querySelectorAll<HTMLElement>(".design-craft-title-row")].map(
+      (row) => row.textContent ?? "",
+    );
+    expect(titles.some((title) => title.includes(slides.title))).toBe(true);
+    expect(
+      container.querySelectorAll('.design-craft-title-row input[type="checkbox"]'),
+    ).toHaveLength(builtInSkillIndex().length);
+    await act(async () => root.unmount());
+  });
+
   it("manual mode with no checked sections sends an empty skill list", async () => {
     const generate = vi
       .fn<NonNullable<DesignHost["generate"]>>()

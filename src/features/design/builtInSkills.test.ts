@@ -6,7 +6,12 @@ import {
   TRUNCATION_NOTICE,
   validateSections,
 } from "./skillLoader";
-import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
+import {
+  builtInSkillIndex,
+  builtInSkillIndexForOutputMode,
+  builtInSkillSources,
+  OUTPUT_MODE_SCOPED_SKILL_SLUGS,
+} from "./builtInSkills";
 
 const EXPECTED_PRIORITY_ORDER = [
   "anti-ai-slop",
@@ -91,5 +96,49 @@ describe("built-in design skills", () => {
 
     expect(result.text).toContain(`## ${color.title}`);
     expect(result.text).not.toContain(`## ${antiAiSlop.title}`);
+  });
+});
+
+describe("output-mode scoped skills", () => {
+  const fullSlugs = (): readonly string[] => builtInSkillIndex().map((entry) => entry.slug);
+  const pageSlugs = (): readonly string[] =>
+    builtInSkillIndexForOutputMode("page").map((entry) => entry.slug);
+
+  it("records the deck section as scoped to the slides mode", () => {
+    expect([...OUTPUT_MODE_SCOPED_SKILL_SLUGS.keys()]).toContain("slides");
+    expect(OUTPUT_MODE_SCOPED_SKILL_SLUGS.get("slides")).toBe("slides");
+  });
+
+  it("keeps the manual catalogue whole while narrowing the routed index", () => {
+    // The settings picker names a section explicitly, so it must keep showing
+    // every section. Only the corpus a chooser may route over is narrowed.
+    expect(fullSlugs()).toEqual([...EXPECTED_PRIORITY_ORDER]);
+    expect(fullSlugs()).toHaveLength(15);
+    expect(fullSlugs()).toContain("slides");
+
+    const scoped = [...OUTPUT_MODE_SCOPED_SKILL_SLUGS.keys()];
+    expect(pageSlugs()).not.toContain("slides");
+    expect(pageSlugs()).toEqual(fullSlugs().filter((slug) => !scoped.includes(slug)));
+    // Subsequence, not a re-sort: the priority order the truncation fallback
+    // depends on survives the narrowing.
+    const source = fullSlugs();
+    let cursor = 0;
+    for (const slug of pageSlugs()) {
+      cursor = source.indexOf(slug, cursor) + 1;
+      expect(cursor).toBeGreaterThan(0);
+    }
+
+    // Slides mode is unrestricted: the deck section competes like any other.
+    expect(builtInSkillIndexForOutputMode("slides").map((entry) => entry.slug)).toEqual(
+      fullSlugs(),
+    );
+  });
+
+  it("treats an unscoped section as available in every mode", () => {
+    for (const slug of fullSlugs().filter(
+      (candidate) => !OUTPUT_MODE_SCOPED_SKILL_SLUGS.has(candidate),
+    )) {
+      expect(pageSlugs()).toContain(slug);
+    }
   });
 });

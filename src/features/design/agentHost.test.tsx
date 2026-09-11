@@ -93,7 +93,12 @@ import { useAppStore } from "../../store/appStore";
 import type { AgentSessionState } from "../../lib/agentSession";
 import type { DesignGenerationOptions, DesignGenerationResult } from "./designHost";
 import { DesignSurface } from "./DesignSurface";
-import { builtInSkillIndex, builtInSkillSources } from "./builtInSkills";
+import {
+  builtInSkillIndex,
+  builtInSkillIndexForOutputMode,
+  builtInSkillSources,
+  isSkillAvailableForOutputMode,
+} from "./builtInSkills";
 import { rankSkillsForQuery } from "./skillRanking";
 import {
   buildSkillBlock,
@@ -842,8 +847,10 @@ describe("ACP design host", () => {
     expect(result.text).not.toContain(TRUNCATION_NOTICE);
   });
 
-  it("falls back to requesting every section when automatic selection names none", async () => {
-    const index = builtInSkillIndex();
+  it("falls back to requesting every page-mode section when automatic selection names none", async () => {
+    // Automatic selection runs over the corpus the declared output mode allows,
+    // so its fallback is that same corpus, not the whole catalogue.
+    const index = builtInSkillIndexForOutputMode("page");
     const host = createAgentHost();
     const { run } = await startRun(host, { skillMode: "auto" });
     channelHarness.active?.({
@@ -864,8 +871,8 @@ describe("ACP design host", () => {
     await disposeAgentHost(host);
   });
 
-  it("falls back to requesting every section when the automatic question errors", async () => {
-    const index = builtInSkillIndex();
+  it("falls back to requesting every page-mode section when the automatic question errors", async () => {
+    const index = builtInSkillIndexForOutputMode("page");
     mocks.sessionSend.mockRejectedValueOnce(new Error("preflight unavailable"));
     const host = createAgentHost();
     const { run } = await startRun(host, { skillMode: "auto" });
@@ -944,10 +951,10 @@ describe("ACP design host", () => {
     ]);
   });
 
-  it("falls back to requesting every section after the automatic preflight timeout", async () => {
+  it("falls back to requesting every page-mode section after the automatic preflight timeout", async () => {
     vi.useFakeTimers();
     try {
-      const index = builtInSkillIndex();
+      const index = builtInSkillIndexForOutputMode("page");
       const host = createAgentHost();
       const { run } = await startRun(host, { skillMode: "auto" });
 
@@ -971,7 +978,7 @@ describe("ACP design host", () => {
     // "animate the drawer opening" is the ranker's calibrated strong-match anchor, so this
     // pins the fallback to a relevance-ranked head instead of the priority-order corpus.
     const prompt = "animate the drawer opening";
-    const matched = matchSkillChoice(prompt);
+    const matched = matchSkillChoice(prompt, "page");
     expect(matched.fallback).toBe(false);
     expect(matched.slugs.length).toBeLessThanOrEqual(MAX_AUTOMATIC_SKILL_SECTIONS);
     expect(matched.slugs.length).toBeLessThan(builtInSkillIndex().length);
@@ -1003,6 +1010,96 @@ describe("ACP design host", () => {
     // ranking it was replaced with did not itself concede.
     expect(result.skillSelectionFallback).toBe(true);
     await disposeAgentHost(host);
+  });
+
+  describe("output-mode scoped skill selection", () => {
+    // Each page request below is one where the deck section used to win the
+    // third routed slot on shared vocabulary ("readable", "type", "contrast").
+    // The expectation is the property — no section scoped to another mode is
+    // ever routed, and the page section the deck was crowding out is back —
+    // with the concrete query carried as the case.
+    const PAGE_REQUESTS = [
+      { query: "make it readable with good contrast", contested: "cognition" },
+      { query: "improve readability and type", contested: "typography" },
+      { query: "improve the readability of the page", contested: "state-coverage" },
+      { query: "make it more readable", contested: "spacing" },
+    ] as const;
+
+    it("never routes a slides-scoped section to a page request", () => {
+      for (const { query, contested } of PAGE_REQUESTS) {
+        const choice = matchSkillChoice(query, "page");
+        expect(choice.slugs).not.toContain("slides");
+        expect(choice.slugs).toContain(contested);
+        for (const slug of choice.slugs) {
+          expect(isSkillAvailableForOutputMode(slug, "page")).toBe(true);
+        }
+      }
+    });
+
+    it("narrows the fallback branch so slides cannot re-enter a page request", () => {
+      // With the deck section out of the corpus this page request scores below
+      // the ranker's threshold, so the Matched chooser concedes. The fallback
+      // must hand back the narrowed corpus, not the whole catalogue.
+      const choice = matchSkillChoice("a slide deck about our roadmap", "page");
+      expect(choice.fallback).toBe(true);
+      expect(choice.slugs).toEqual(
+        builtInSkillIndexForOutputMode("page").map((entry) => entry.slug),
+      );
+      expect(choice.slugs).not.toContain("slides");
+    });
+
+    it("still ranks slides for a deck request when the mode declares slides", () => {
+      const choice = matchSkillChoice("a slide deck about our roadmap", "slides");
+      expect(choice.fallback).toBe(false);
+      expect(choice.slugs).toContain("slides");
+      // Baseline first, then the ranked head: the deck section leads the routed run.
+      expect(choice.slugs[1]).toBe("slides");
+    });
+
+    it("does not offer the slides section to the automatic chooser in page mode", async () => {
+      const host = createAgentHost();
+      const { run } = await startRun(host, { skillMode: "auto" });
+      const routingPrompt = mocks.sessionSend.mock.calls[0]?.[2] as string;
+      expect(routingPrompt).not.toContain("- slides:");
+
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "preflight-message",
+        text: "Choose slides, then color.",
+      });
+      finishRun();
+      await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+      finishRun();
+
+      const result = await run;
+      const applied = result.appliedSkillSlugs;
+      if (applied === undefined) throw new Error("Expected the run to report its applied skills.");
+      expect(applied).not.toContain("slides");
+      expect(applied).toContain("color");
+      await disposeAgentHost(host);
+    });
+
+    it("offers and applies the slides section when the mode declares slides", async () => {
+      const host = createAgentHost();
+      const { run } = await startRun(host, { skillMode: "auto", outputMode: "slides" });
+      const routingPrompt = mocks.sessionSend.mock.calls[0]?.[2] as string;
+      expect(routingPrompt).toContain("- slides:");
+
+      channelHarness.active?.({
+        type: "agent_message",
+        messageId: "preflight-message",
+        text: "Choose slides, then color.",
+      });
+      finishRun();
+      await vi.waitFor(() => expect(mocks.sessionSend).toHaveBeenCalledTimes(2));
+      finishRun();
+
+      const result = await run;
+      const applied = result.appliedSkillSlugs;
+      if (applied === undefined) throw new Error("Expected the run to report its applied skills.");
+      expect(applied).toContain("slides");
+      await disposeAgentHost(host);
+    });
   });
 
   it("aborts automatic selection without starting generation", async () => {
@@ -1088,7 +1185,7 @@ describe("ACP design host", () => {
   });
 
   it("falls back to the priority head when matched mode finds nothing strong", async () => {
-    const index = builtInSkillIndex();
+    const index = builtInSkillIndexForOutputMode("page");
     const host = createAgentHost();
     // "make it prettier" is the fallback side of the ranker's own calibration
     // test, so this pins the fallback contract to the same anchor.
@@ -1913,8 +2010,8 @@ describe("ACP design host", () => {
     expect(host.getPendingPermission?.()).toBeNull();
   });
 
-  it("queues a preflight permission instead of answering it, then falls back to every section", async () => {
-    const index = builtInSkillIndex();
+  it("queues a preflight permission instead of answering it, then falls back to every page-mode section", async () => {
+    const index = builtInSkillIndexForOutputMode("page");
     const host = createAgentHost();
     const { run } = await startRun(host, { skillMode: "auto" });
 
