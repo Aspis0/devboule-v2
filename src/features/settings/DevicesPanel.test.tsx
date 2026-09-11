@@ -39,6 +39,7 @@ import {
   DevicesPanel,
   formatDuration,
   groupFingerprint,
+  parsePeerAddress,
   relativeTime,
   remoteLabel,
   sanitizePairingCode,
@@ -177,6 +178,37 @@ describe("devices panel", () => {
       setValue.call(field, text);
       field.dispatchEvent(new Event("input", { bubbles: true }));
     });
+  }
+
+  function addressInput(): HTMLInputElement {
+    const field = container.querySelector<HTMLInputElement>('input[placeholder^="100.64"]');
+    if (field === null) throw new Error("address field did not render");
+    return field;
+  }
+
+  async function openEnterForm(): Promise<void> {
+    await act(async () => {
+      buttonByText("Enter a code").click();
+      await Promise.resolve();
+    });
+  }
+
+  async function fillEnterForm(address: string, code: string): Promise<void> {
+    await typeInto(addressInput(), address);
+    await typeInto(codeInput(), code);
+  }
+
+  async function submitForm(): Promise<void> {
+    await act(async () => {
+      const form = container.querySelector("form");
+      if (form === null) throw new Error("pairing form did not render");
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+  }
+
+  function headingText(): string {
+    return (document.activeElement?.textContent ?? "").trim();
   }
 
   async function renderPanel(): Promise<void> {
@@ -466,36 +498,20 @@ describe("devices panel", () => {
     vi.mocked(pairingComplete).mockResolvedValue({ type: "pairing_pending", peer: PENDING });
     await renderPanel();
 
-    await act(async () => {
-      buttonByText("Enter a code").click();
-      await Promise.resolve();
-    });
-    await typeInto(codeInput(), "ABCD2345");
-    await act(async () => {
-      const form = container.querySelector("form");
-      if (form === null) throw new Error("pairing form did not render");
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-      await Promise.resolve();
-    });
+    await openEnterForm();
+    await fillEnterForm("100.74.116.126:47831", "ABCD2345");
+    await submitForm();
 
-    expect(pairingComplete).toHaveBeenCalledWith("", "ABCD2345", "client");
+    expect(pairingComplete).toHaveBeenCalledWith("100.74.116.126:47831", "ABCD2345", "client");
     expect(container.textContent).toContain("Waiting for Marco's MacBook Pro to confirm");
   });
 
   it("shows the paired row when the far side accepted", async () => {
     await renderPanel();
 
-    await act(async () => {
-      buttonByText("Enter a code").click();
-      await Promise.resolve();
-    });
-    await typeInto(codeInput(), "ABCD2345");
-    await act(async () => {
-      const form = container.querySelector("form");
-      if (form === null) throw new Error("pairing form did not render");
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-      await Promise.resolve();
-    });
+    await openEnterForm();
+    await fillEnterForm("100.74.116.126:47831", "ABCD2345");
+    await submitForm();
 
     expect(container.textContent).toContain("Paired with Xiaomi 14 (client).");
     // The panel re-polls immediately instead of waiting for the next tick.
@@ -733,6 +749,316 @@ describe("devices panel", () => {
     expect(alert.textContent).toContain("daemon connection was lost");
     expect(buttonByText("Retry")).toBeTruthy();
   });
+
+  it("gives every device card the class its column layout depends on", async () => {
+    // The peer, pending and revoked cards declare flex properties; only
+    // `settings-card` supplies `display: flex`, so the class list is the
+    // contract that keeps that layout from silently going inert.
+    vi.mocked(devicesList).mockResolvedValue(
+      replyWith({ peers: [CLIENT_PEER, REVOKED_PEER], pending: [PENDING] }),
+    );
+    await renderPanel();
+
+    for (const selector of [".device-peer", ".device-pending", ".device-revoked-row"]) {
+      const cards = Array.from(container.querySelectorAll(selector));
+      expect(cards.length, `${selector} did not render`).toBeGreaterThan(0);
+      for (const card of cards) {
+        expect(card.classList.contains("settings-card"), selector).toBe(true);
+        expect(card.classList.contains("settings-device-card"), selector).toBe(true);
+      }
+    }
+  });
+
+  it("ignores a poll reply that would undo a confirmed capability change", async () => {
+    // The real race from the audit: the poll left before the toggle, the toggle
+    // was confirmed by the daemon, and the poll then lands. Without the data
+    // epoch the checkbox would flip back for a poll cycle — and the user would
+    // read that as "my toggle did not take".
+    vi.useFakeTimers();
+    let resolveStale: ((reply: DevicesReply) => void) | undefined;
+    vi.mocked(devicesList)
+      .mockImplementationOnce(() => Promise.resolve(replyWith({ peers: [CLIENT_PEER] })))
+      .mockImplementationOnce(
+        () =>
+          new Promise<DevicesReply>((resolve) => {
+            resolveStale = resolve;
+          }),
+      );
+    await renderPanel();
+
+    // The second poll is now in flight, carrying the pre-toggle caps.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(devicesList).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      checkboxByLabel("send").click();
+      await Promise.resolve();
+    });
+    expect(peerSetCaps).toHaveBeenCalledWith(CLIENT_PEER.deviceId, ["view", "send"]);
+    expect(checkboxByLabel("send").checked).toBe(true);
+
+    await act(async () => {
+      resolveStale?.(replyWith({ peers: [CLIENT_PEER] }));
+      await Promise.resolve();
+    });
+
+    // The stale reply was dropped: the toggle the daemon confirmed stays on.
+    expect(checkboxByLabel("send").checked).toBe(true);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("keeps the newest reply when two overlapping polls resolve out of order", async () => {
+    vi.useFakeTimers();
+    let resolveOlder: ((reply: DevicesReply) => void) | undefined;
+    vi.mocked(devicesList)
+      .mockImplementationOnce(() => Promise.resolve(replyWith({ peers: [CLIENT_PEER] })))
+      .mockImplementationOnce(
+        () =>
+          new Promise<DevicesReply>((resolve) => {
+            resolveOlder = resolve;
+          }),
+      );
+    await renderPanel();
+
+    // Poll two is in flight and stays that way.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(devicesList).toHaveBeenCalledTimes(2);
+
+    // A user action restarts the loop, which issues a newer request that lands
+    // first with the newer list.
+    vi.mocked(devicesList).mockResolvedValue(
+      replyWith({ peers: [{ ...CLIENT_PEER, displayName: "iPad Pro" }] }),
+    );
+    await act(async () => {
+      buttonByText("Show a code").click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("iPad Pro");
+
+    // The older request answers last; its list is not the truth any more.
+    await act(async () => {
+      resolveOlder?.(replyWith({ peers: [CLIENT_PEER] }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("iPad Pro");
+    expect(container.textContent).not.toContain("Xiaomi 14");
+  });
+
+  it("clears the waiting card once the far side's row arrives", async () => {
+    vi.useFakeTimers();
+    vi.mocked(pairingComplete).mockResolvedValue({ type: "pairing_pending", peer: PENDING });
+    await renderPanel();
+
+    await openEnterForm();
+    await fillEnterForm("100.74.116.126:47831", "ABCD2345");
+    await submitForm();
+    expect(container.textContent).toContain("Waiting for Marco's MacBook Pro to confirm");
+
+    // The far side confirms; the next poll carries the row the daemon wrote.
+    vi.mocked(devicesList).mockResolvedValue(
+      replyWith({
+        peers: [
+          {
+            ...CLIENT_PEER,
+            deviceId: PENDING.deviceId,
+            displayName: PENDING.displayName,
+            role: "daemon",
+          },
+        ],
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(container.textContent).not.toContain("Waiting for");
+    expect(container.textContent).toContain("Paired with Marco's MacBook Pro (daemon).");
+    expect(container.textContent).toContain("Paired devices (1)");
+  });
+
+  it("says the pairing expired instead of dropping the waiting card", async () => {
+    vi.useFakeTimers();
+    vi.mocked(pairingComplete).mockResolvedValue({
+      type: "pairing_pending",
+      peer: { ...PENDING, expiresAt: Date.now() + 3_000 },
+    });
+    await renderPanel();
+
+    await openEnterForm();
+    await fillEnterForm("100.74.116.126:47831", "ABCD2345");
+    await submitForm();
+    expect(container.textContent).toContain("Waiting for Marco's MacBook Pro to confirm");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(container.textContent).toContain("Pairing expired");
+    expect(container.textContent).not.toContain("Expires in");
+    expect(container.textContent).not.toContain("Waiting for");
+    // The card stays until the user dismisses it, and the form underneath is
+    // usable again.
+    expect(buttonByText("Enter a code").disabled).toBe(false);
+    await act(async () => {
+      buttonByText("Dismiss").click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("Pairing expired");
+  });
+
+  it("moves focus off a vanished pair of buttons instead of dropping it on the body", async () => {
+    vi.mocked(devicesList).mockImplementation(hangingAfterFirstReply([PENDING]));
+    vi.mocked(pairingConfirm).mockResolvedValue(null);
+    await renderPanel();
+
+    const decline = buttonByText("Decline");
+    decline.focus();
+    expect(document.activeElement).toBe(decline);
+    await act(async () => {
+      decline.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The pending card (and its whole section) is gone; focus is on a heading,
+    // not on `<body>` with the tab order reset.
+    expect(document.activeElement).not.toBe(document.body);
+    expect(headingText()).toBe("Pair a device");
+  });
+
+  it("moves focus off a revoked row", async () => {
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ peers: [CLIENT_PEER] }));
+    vi.mocked(peerRevoke).mockResolvedValue({ ...CLIENT_PEER, revokedAt: NOW });
+    await renderPanel();
+
+    await act(async () => {
+      buttonByText("Revoke").click();
+      await Promise.resolve();
+    });
+    const confirm = buttonByText("Revoke now");
+    confirm.focus();
+    await act(async () => {
+      confirm.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(peerRevoke).toHaveBeenCalledWith(CLIENT_PEER.deviceId);
+    expect(document.activeElement).not.toBe(document.body);
+    expect(headingText()).toContain("Paired devices");
+  });
+
+  it("refuses an address the daemon cannot be asked about, without a round trip", async () => {
+    await renderPanel();
+
+    await openEnterForm();
+    await fillEnterForm("fd7a::1:47831", "ABCD2345");
+    await submitForm();
+
+    expect(pairingComplete).not.toHaveBeenCalled();
+    const alert = container.querySelector('[role="alert"]');
+    if (alert === null) throw new Error("address error did not render");
+    expect(alert.textContent).toContain("host:port");
+
+    // A missing port is refused the same way.
+    await fillEnterForm("100.64.0.1", "ABCD2345");
+    await submitForm();
+    expect(pairingComplete).not.toHaveBeenCalled();
+  });
+
+  it("sends a bracketed IPv6 address verbatim", async () => {
+    await renderPanel();
+
+    await openEnterForm();
+    await fillEnterForm("[fd7a:115c:a1e0::1]:47831", "ABCD2345");
+    await submitForm();
+
+    expect(pairingComplete).toHaveBeenCalledWith("[fd7a:115c:a1e0::1]:47831", "ABCD2345", "client");
+  });
+
+  it("hints the code field for a phone keyboard", async () => {
+    await renderPanel();
+    await openEnterForm();
+
+    expect(codeInput().getAttribute("maxlength")).toBe("8");
+    expect(codeInput().getAttribute("autocapitalize")).toBe("characters");
+  });
+
+  it("does not claim a copy when the clipboard is missing", async () => {
+    const realClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    try {
+      await renderPanel();
+      await act(async () => {
+        buttonByText("Copy").click();
+        await Promise.resolve();
+      });
+
+      // `await undefined` succeeds, so without an existence check the button
+      // would say "Copied." with nothing on the clipboard.
+      expect(container.textContent).toContain("Copy failed");
+      expect(container.textContent).not.toContain("Copied.");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: realClipboard });
+    }
+  });
+
+  it("does not claim a copy the clipboard refused", async () => {
+    const realClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new Error("denied")) },
+    });
+    try {
+      await renderPanel();
+      await act(async () => {
+        buttonByText("Copy").click();
+        await Promise.resolve();
+      });
+
+      expect(container.textContent).toContain("Copy failed");
+      expect(container.textContent).not.toContain("Copied.");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: realClipboard });
+    }
+  });
+
+  it("copies the grouped fingerprint and says so", async () => {
+    const realClipboard = navigator.clipboard;
+    const writes: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: (text: string) => {
+          writes.push(text);
+          return Promise.resolve();
+        },
+      },
+    });
+    try {
+      await renderPanel();
+      await act(async () => {
+        buttonByText("Copy").click();
+        await Promise.resolve();
+      });
+
+      // What is copied is what is on screen: the grouped form people compare
+      // by eye.
+      expect(writes).toEqual([groupFingerprint(FINGERPRINT)]);
+      expect(container.textContent).toContain("Copied.");
+    } finally {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: realClipboard });
+    }
+  });
 });
 
 describe("device helpers", () => {
@@ -745,7 +1071,9 @@ describe("device helpers", () => {
   });
 
   it("keeps only the unambiguous characters, uppercase, at most eight", () => {
-    expect(sanitizePairingCode("ab01io")).toBe("ab".toUpperCase());
+    // Literals, not something derived from the function: an expectation written
+    // as `"ab".toUpperCase()` moves with a regression and proves nothing.
+    expect(sanitizePairingCode("ab01io")).toBe("AB");
     expect(sanitizePairingCode("ABCD2345XY")).toBe("ABCD2345");
     expect(sanitizePairingCode("a b-c_d")).toBe("ABCD");
   });
@@ -773,6 +1101,33 @@ describe("device helpers", () => {
     expect(remoteLabel({ state: "key_missing", reason: "gone" })).toBe(
       "Key missing · re-pair required",
     );
+    // An empty reason is no reason: a bare separator reads as a render bug.
+    expect(remoteLabel({ state: "disabled", reason: "" })).toBe("Remote off");
+    expect(remoteLabel({ state: "disabled", reason: "   " })).toBe("Remote off");
+  });
+
+  it("parses the two address shapes the daemon accepts", () => {
+    expect(parsePeerAddress("100.64.0.1:47831")).toEqual({ host: "100.64.0.1", port: 47831 });
+    expect(parsePeerAddress("[fd7a:115c:a1e0::1]:47831")).toEqual({
+      host: "fd7a:115c:a1e0::1",
+      port: 47831,
+    });
+    // A name is a host too, and surrounding space is not part of it.
+    expect(parsePeerAddress("  my-laptop:47831  ")).toEqual({ host: "my-laptop", port: 47831 });
+  });
+
+  it("refuses an ambiguous IPv6, a missing port and an empty address", () => {
+    // Two readings, and nothing in the text says which one was meant.
+    expect(parsePeerAddress("fd7a::1:47831")).toBeNull();
+    expect(parsePeerAddress("100.64.0.1")).toBeNull();
+    expect(parsePeerAddress("")).toBeNull();
+    expect(parsePeerAddress("   ")).toBeNull();
+    expect(parsePeerAddress("100.64.0.1:")).toBeNull();
+    expect(parsePeerAddress("100.64.0.1:0")).toBeNull();
+    expect(parsePeerAddress("100.64.0.1:99999")).toBeNull();
+    expect(parsePeerAddress("[fd7a::1]")).toBeNull();
+    expect(parsePeerAddress("[]:47831")).toBeNull();
+    expect(parsePeerAddress("[not-an-ip]:47831")).toBeNull();
   });
 });
 

@@ -571,11 +571,6 @@
   background: var(--border-strong);
 }
 
-.settings-device-name {
-  font-size: 12.5px;
-  font-weight: 500;
-}
-
 .settings-devices-list {
   margin-top: 18px;
 }
@@ -831,6 +826,11 @@
   font-size: 11.5px;
 }
 
+.device-field-hint {
+  color: var(--silence);
+  font-size: 10px;
+}
+
 .device-role-choice {
   display: grid;
   gap: 5px;
@@ -873,6 +873,10 @@
   font-size: 11px;
 }
 
+/* The peer, pending and revoked cards carry `settings-card` in the JSX as well
+   as their own class: `display: flex` comes from there, and these rules only
+   override how the column lays out. Removing that class silently turns every
+   declaration below inert. */
 .device-peer,
 .device-pending {
   flex-direction: column;
@@ -934,4 +938,5 @@
 
 .device-revoked-row {
   gap: 9px;
+  padding: 5px 0;
 }

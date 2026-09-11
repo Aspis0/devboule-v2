@@ -46,6 +46,10 @@ const CODE_LENGTH = 8;
 /** Default port the panel hints at; the daemon can be told another one. */
 const DEFAULT_PEER_PORT = 47831;
 
+/** Shown when the typed address is not a shape the daemon can be asked about. */
+const ADDRESS_ERROR =
+  "Enter the address as host:port, for example 100.64.0.1:47831 or [fd7a:115c:a1e0::1]:47831.";
+
 const ROLE_OPTIONS: readonly { value: PeerRole; label: string; hint: string }[] = [
   {
     value: "client",
@@ -71,11 +75,53 @@ const CAP_LABELS: Record<Cap, string> = {
 const DEVICES_DESCRIPTION =
   "Paired clients that may drive this daemon. Pairing is per-device and revocable.";
 
+/** What the Copy button says: the copy either happened or it did not. */
+type CopyState = "idle" | "copied" | "failed";
+
 /** Groups a hex string in fours, which is how a person reads one aloud. */
 export function groupFingerprint(value: string): string {
   return value.match(/.{1,4}/g)?.join(" ") ?? "";
 }
 
+/**
+ * Splits a pairing address into the host and port the daemon will be asked to
+ * reach, without pretending to be an IP validator.
+ *
+ * Tailscale nodes answer on both a dotted-quad IPv4 and one or more IPv6
+ * addresses, so `host:port` and `[ipv6]:port` are accepted. An unbracketed IPv6
+ * is refused rather than guessed at: `fd7a::1:47831` has two readings (`fd7a::1`
+ * with port 47831, or the address `fd7a::1:47831` with no port) and nothing in
+ * the text says which one the person meant. A missing port is refused for the
+ * same reason — the daemon's default is not this panel's to assume.
+ */
+export function parsePeerAddress(input: string): { host: string; port: number } | null {
+  const value = input.trim();
+  if (value === "") return null;
+  let host: string;
+  let portText: string;
+  if (value.startsWith("[")) {
+    const close = value.indexOf("]");
+    if (close === -1) return null;
+    host = value.slice(1, close);
+    if (value[close + 1] !== ":") return null;
+    portText = value.slice(close + 2);
+    // Shape check only: a colon and nothing but hex, colons and dots. Whether
+    // the literal is routable is the daemon's and the OS's answer, not ours.
+    if (!host.includes(":") || !/^[0-9a-fA-F:.]+$/.test(host)) return null;
+  } else {
+    const colon = value.lastIndexOf(":");
+    if (colon === -1) return null;
+    host = value.slice(0, colon);
+    portText = value.slice(colon + 1);
+    if (host.includes(":")) return null;
+    if (!/^[0-9A-Za-z.-]+$/.test(host)) return null;
+  }
+  if (host === "") return null;
+  if (!/^\d{1,5}$/.test(portText)) return null;
+  const port = Number(portText);
+  if (port < 1 || port > 65535) return null;
+  return { host, port };
+}
 /** Splits an 8-character code in half so it can be read off a screen. */
 export function groupCode(value: string): string {
   return groupFingerprint(value);
@@ -114,8 +160,12 @@ export function remoteLabel(remote: RemoteState): string {
   switch (remote.state) {
     case "enabled":
       return "Reachable on the tailnet";
-    case "disabled":
-      return remote.reason === null ? "Remote off" : `Remote off · ${remote.reason}`;
+    case "disabled": {
+      // An empty reason is treated as no reason: `Remote off · ` with a
+      // dangling separator reads as a rendering bug, not as information.
+      const reason = remote.reason?.trim() ?? "";
+      return reason === "" ? "Remote off" : `Remote off · ${reason}`;
+    }
     case "key_missing":
       return "Key missing · re-pair required";
   }
@@ -168,7 +218,7 @@ function PeerCard({ row, caps, now, busy, error, onToggleCap, onRevoke }: PeerCa
   // half-answered revoke on one device is not shown as armed on another.
   const [armed, setArmed] = useState<"revoke" | "lost" | null>(null);
   return (
-    <div className="settings-device-card device-peer">
+    <div className="settings-card settings-device-card device-peer">
       <div className="device-peer-head">
         <span
           className={`device-dot device-dot-${row.online ? "ready" : "idle"}`}
@@ -282,35 +332,91 @@ export function DevicesPanel() {
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [rowError, setRowError] = useState<{ deviceId: string; message: string } | null>(null);
 
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<CopyState>("idle");
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Where focus goes when the card the user just acted on is removed: a heading
+  // with `tabIndex={-1}` is reachable by script and is a deliberate landing
+  // spot, unlike the `<body>` fallback a removed card leaves behind.
+  const pairHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const pendingHeadingRef = useRef<HTMLHeadingElement | null>(null);
+  const pairedHeadingRef = useRef<HTMLHeadingElement | null>(null);
+
+  // False after the panel unmounts, so an action that answers late cannot write
+  // state. The poll keeps its own `cancelled` flag on top of this because it
+  // also has a timer to stop.
+  const mountedRef = useRef(true);
+
+  // Mirror of `waiting` for the poll callback, which is created once per effect
+  // run and would otherwise close over a stale value.
+  const waitingRef = useRef<PendingPairing | null>(null);
+
+  // Where the post-commit effect should move focus, if anywhere.
+  const focusTargetRef = useRef<"pending" | "paired" | null>(null);
+
+  // Data epoch. Every poll request and every local write takes the next number,
+  // and a poll reply is applied only while its number is still the newest one.
+  // A reply that left the daemon before a change this panel already made is
+  // stale by definition: it would put the pre-change row back on screen for a
+  // poll cycle, which is exactly the flash a user reads as "my toggle did not
+  // take".
+  const epochRef = useRef(0);
+
+  function nextEpoch(): number {
+    epochRef.current += 1;
+    return epochRef.current;
+  }
+
   const pendingCount = reply?.pending.length ?? 0;
-  // A code (or a parked pairing) that reached its deadline is dead, and the
-  // protocol has no cancel message: deriving the live one from the clock is what
-  // drops it, with no state write and no effect to keep in sync.
+  // A code that reached its deadline is dead, and the protocol has no cancel
+  // message: deriving the live one from the clock is what drops it, with no
+  // state write and no effect to keep in sync.
   const liveCode = code !== null && code.expiresAt > now ? code : null;
-  const liveWaiting = waiting !== null && waiting.expiresAt > now ? waiting : null;
-  const pollingActive = liveCode !== null || liveWaiting !== null || pendingCount > 0;
+  // The waiting card does NOT vanish on expiry. It keeps saying what happened —
+  // a parked pairing that silently disappears reads as a bug on both devices —
+  // and stops blocking the pairing form underneath it.
+  const waitingExpired = waiting !== null && waiting.expiresAt <= now;
+  const waitingActive = waiting !== null && !waitingExpired;
+  const pollingActive = liveCode !== null || waiting !== null || pendingCount > 0;
 
   // Poll. A recursive timeout, not an interval: the next request is scheduled
   // only after the previous one settled, so a slow daemon cannot pile requests
-  // up. The cleanup clears the pending timer and gates every state write, which
-  // is what keeps an unmounted panel from writing anything at all.
+  // up. Two guards protect what is on screen: `cancelled` stops a replaced loop
+  // (and its timer), and the epoch drops a reply that a newer request or a local
+  // write has already passed. Together they are also what keeps an unmounted
+  // panel from writing anything at all.
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const intervalMs = pollingActive ? POLL_ACTIVE_MS : POLL_IDLE_MS;
     const tick = () => {
+      const epoch = nextEpoch();
       void devicesList()
         .then((fresh) => {
-          if (cancelled) return;
+          // Two ways a reply can be past its time: this loop was replaced by a
+          // newer one (`cancelled`), or a newer request or local write exists
+          // (`epoch`). Either way what is on screen is the newer truth, and
+          // this reply must not overwrite it.
+          if (cancelled || epoch !== epochRef.current) return;
+          const awaited = waitingRef.current;
+          const confirmed =
+            awaited === null
+              ? undefined
+              : fresh.peers.find(
+                  (peer) => peer.deviceId === awaited.deviceId && peer.revokedAt === null,
+                );
+          if (confirmed !== undefined) {
+            // The far side accepted. The waiting card has done its job, and the
+            // row the daemon wrote is what the user should be looking at.
+            setWaiting(null);
+            setPairedNotice(confirmed);
+          }
           setReply(fresh);
           setListError(null);
           setNow(Date.now());
         })
         .catch((cause: unknown) => {
-          if (cancelled) return;
+          if (cancelled || epoch !== epochRef.current) return;
           // The last good reply stays on screen: a single missed poll is not
           // evidence that every device disappeared.
           setListError(reasonFromCause(cause));
@@ -327,7 +433,7 @@ export function DevicesPanel() {
     };
   }, [pollingActive, refreshSeq]);
 
-  const needsClock = liveCode !== null || liveWaiting !== null || pendingCount > 0;
+  const needsClock = liveCode !== null || waiting !== null || pendingCount > 0;
   useEffect(() => {
     if (!needsClock) return;
     const id = setInterval(() => setNow(Date.now()), 1_000);
@@ -341,19 +447,73 @@ export function DevicesPanel() {
     [],
   );
 
+  useEffect(() => {
+    // Set on every mount, not only the first: StrictMode's throwaway mount runs
+    // this cleanup and would otherwise leave the flag false for the real one.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    waitingRef.current = waiting;
+  }, [waiting]);
+
+  // No dependency array: this has to run after every commit, because the whole
+  // point is to observe the DOM the commit produced.
+  useEffect(() => {
+    const target = focusTargetRef.current;
+    if (target === null) return;
+    focusTargetRef.current = null;
+    const candidates =
+      target === "pending"
+        ? [pendingHeadingRef.current, pairHeadingRef.current]
+        : [pairedHeadingRef.current];
+    for (const candidate of candidates) {
+      if (candidate !== null) {
+        candidate.focus();
+        return;
+      }
+    }
+  });
+
   const refresh = useCallback(() => setRefreshSeq((seq) => seq + 1), []);
+
+  /**
+   * Asks for focus to be moved once the card the user acted on is gone. The
+   * handler only records where it should land; the effect above runs after the
+   * commit that removed the card, so a heading that went with its section is
+   * already gone and the fallback is the one that gets focused. Focusing from
+   * the handler or a microtask instead aims at an element React is about to
+   * delete, and the browser then drops focus on `<body>`.
+   */
+  function requestFocus(target: "pending" | "paired") {
+    focusTargetRef.current = target;
+  }
 
   async function copyFingerprint(fingerprint: string) {
     const text = groupFingerprint(fingerprint);
-    try {
-      await navigator.clipboard?.writeText(text);
-    } catch {
-      // A denied clipboard is not worth an error card: the text is on screen.
-      return;
+    // `navigator.clipboard` is typed as always present but is not: a non-secure
+    // context leaves it undefined. The widened annotation is the honest type of
+    // the runtime value, and without this check `await undefined` would succeed
+    // and the button would claim a copy that never happened.
+    const clipboard: Clipboard | undefined = navigator.clipboard;
+    let copiedText = false;
+    if (clipboard !== undefined) {
+      try {
+        await clipboard.writeText(text);
+        copiedText = true;
+      } catch {
+        copiedText = false;
+      }
     }
-    setCopied(true);
+    if (!mountedRef.current) return;
+    setCopyState(copiedText ? "copied" : "failed");
     if (copyTimerRef.current !== null) clearTimeout(copyTimerRef.current);
-    copyTimerRef.current = setTimeout(() => setCopied(false), 1_500);
+    copyTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) setCopyState("idle");
+    }, 1_500);
   }
 
   async function showCode() {
@@ -362,12 +522,14 @@ export function DevicesPanel() {
     setCodeError(null);
     try {
       const fresh = await pairingStart(showRole);
+      if (!mountedRef.current) return;
       setCode(fresh);
       setNow(Date.now());
     } catch (cause) {
+      if (!mountedRef.current) return;
       setCodeError(reasonFromCause(cause));
     } finally {
-      setStarting(false);
+      if (mountedRef.current) setStarting(false);
     }
   }
 
@@ -379,10 +541,19 @@ export function DevicesPanel() {
   async function submitEnter(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (enterBusy) return;
+    // A shape the daemon cannot act on is refused here, so the user gets the
+    // sentence about the field they are looking at instead of a round trip that
+    // comes back with the same complaint.
+    if (parsePeerAddress(enterAddress) === null) {
+      setEnterError(ADDRESS_ERROR);
+      return;
+    }
     setEnterBusy(true);
     setEnterError(null);
+    setPairedNotice(null);
     try {
       const outcome = await pairingComplete(enterAddress.trim(), enterCode, enterRole);
+      if (!mountedRef.current) return;
       if (outcome.type === "pairing_pending") {
         setWaiting(outcome.peer);
         setNow(Date.now());
@@ -395,9 +566,10 @@ export function DevicesPanel() {
     } catch (cause) {
       // The daemon's pairing errors are already sentences meant for a person
       // (a wrong code says so), so they are shown as they arrive.
+      if (!mountedRef.current) return;
       setEnterError(reasonFromCause(cause));
     } finally {
-      setEnterBusy(false);
+      if (mountedRef.current) setEnterBusy(false);
     }
   }
 
@@ -407,20 +579,26 @@ export function DevicesPanel() {
     setConfirmError(null);
     try {
       const confirmed = await pairingConfirm(deviceId, accept);
+      if (!mountedRef.current) return;
       // `null` is a decline, and a decline succeeded: the parked pairing is
       // gone. Dropping the card is the whole outcome — an error card here would
       // tell the user the decline failed when it did not.
       if (confirmed === null) dropPending(deviceId);
+      // The card goes either way (accepted, the pending list loses it on the
+      // refresh), so focus moves off it before the commit removes it.
+      requestFocus("pending");
       refresh();
     } catch (cause) {
+      if (!mountedRef.current) return;
       setConfirmError({ deviceId, message: reasonFromCause(cause) });
     } finally {
-      setConfirmBusy(null);
+      if (mountedRef.current) setConfirmBusy(null);
     }
   }
 
   // Drops one card from the pending list without waiting for the next poll.
   function dropPending(deviceId: string) {
+    nextEpoch();
     setReply((prev) =>
       prev === null
         ? prev
@@ -429,6 +607,7 @@ export function DevicesPanel() {
   }
 
   function replacePeer(updated: PeerRow) {
+    nextEpoch();
     setReply((prev) =>
       prev === null
         ? prev
@@ -440,6 +619,7 @@ export function DevicesPanel() {
   }
 
   function clearCapOverride(deviceId: string) {
+    nextEpoch();
     setCapOverrides((prev) => {
       const next = { ...prev };
       delete next[deviceId];
@@ -454,18 +634,21 @@ export function DevicesPanel() {
       ? CAP_ORDER.filter((candidate) => candidate === cap || current.includes(candidate))
       : CAP_ORDER.filter((candidate) => candidate !== cap && current.includes(candidate));
     // Optimistic: the checkbox flips now, and the daemon's answer is what stays.
+    nextEpoch();
     setCapOverrides((prev) => ({ ...prev, [row.deviceId]: [...wanted] }));
     setRowBusy(row.deviceId);
     setRowError(null);
     try {
       const updated = await peerSetCaps(row.deviceId, wanted);
+      if (!mountedRef.current) return;
       replacePeer(updated);
       clearCapOverride(row.deviceId);
     } catch (cause) {
+      if (!mountedRef.current) return;
       clearCapOverride(row.deviceId);
       setRowError({ deviceId: row.deviceId, message: reasonFromCause(cause) });
     } finally {
-      setRowBusy(null);
+      if (mountedRef.current) setRowBusy(null);
     }
   }
 
@@ -475,12 +658,17 @@ export function DevicesPanel() {
     setRowError(null);
     try {
       const updated = await peerRevoke(row.deviceId);
+      if (!mountedRef.current) return;
       replacePeer(updated);
+      // A revoked row leaves the paired list for the collapsed section, taking
+      // the focused button with it.
+      if (updated.revokedAt !== null) requestFocus("paired");
       refresh();
     } catch (cause) {
+      if (!mountedRef.current) return;
       setRowError({ deviceId: row.deviceId, message: reasonFromCause(cause) });
     } finally {
-      setRowBusy(null);
+      if (mountedRef.current) setRowBusy(null);
     }
   }
 
@@ -508,7 +696,7 @@ export function DevicesPanel() {
     (peer): peer is PeerRow & { revokedAt: number } => peer.revokedAt !== null,
   );
   const showBusy = starting || liveCode !== null;
-  const enterBusyFlow = enterBusy || liveWaiting !== null;
+  const enterBusyFlow = enterBusy || waitingActive;
 
   return (
     <div id="settings-panel-devices" role="tabpanel" aria-label="Devices">
@@ -541,7 +729,7 @@ export function DevicesPanel() {
               className="settings-device-action"
               onClick={() => void copyFingerprint(self.keyFingerprint)}
             >
-              {copied ? "Copied." : "Copy"}
+              {copyState === "copied" ? "Copied." : copyState === "failed" ? "Copy failed" : "Copy"}
             </button>
           </div>
           <span className="settings-card-meta">
@@ -552,7 +740,9 @@ export function DevicesPanel() {
         </section>
 
         <section className="settings-card device-section">
-          <h3 className="settings-card-title">Pair a device</h3>
+          <h3 className="settings-card-title" ref={pairHeadingRef} tabIndex={-1}>
+            Pair a device
+          </h3>
           <p className="device-copy">
             One device shows a code, the other types it. The far side then has to confirm the
             pairing, and the code stops working five minutes after it appears.
@@ -617,6 +807,10 @@ export function DevicesPanel() {
                   spellCheck={false}
                   onChange={(event) => setEnterAddress(event.target.value)}
                 />
+                <span className="device-field-hint">
+                  host:port — an IPv6 address goes in brackets, like [fd7a:115c:a1e0::1]:
+                  {DEFAULT_PEER_PORT}
+                </span>
               </label>
               <label className="device-field">
                 <span>Code</span>
@@ -626,8 +820,10 @@ export function DevicesPanel() {
                   aria-label="pairing code"
                   placeholder="XXXX XXXX"
                   autoComplete="off"
+                  autoCapitalize="characters"
                   spellCheck={false}
                   inputMode="text"
+                  maxLength={CODE_LENGTH}
                   onChange={(event) => setEnterCode(sanitizePairingCode(event.target.value))}
                 />
               </label>
@@ -656,20 +852,26 @@ export function DevicesPanel() {
             </form>
           ) : null}
 
-          {liveWaiting === null ? null : (
+          {waiting === null ? null : (
             <div className="device-pair-block">
-              <span className="settings-card-meta">
-                Waiting for {liveWaiting.displayName} to confirm
-              </span>
-              <span className="settings-card-meta">
-                Expires in {formatDuration(liveWaiting.expiresAt - now)}
-              </span>
+              {waitingExpired ? (
+                <span className="settings-card-meta">Pairing expired</span>
+              ) : (
+                <>
+                  <span className="settings-card-meta">
+                    Waiting for {waiting.displayName} to confirm
+                  </span>
+                  <span className="settings-card-meta">
+                    Expires in {formatDuration(waiting.expiresAt - now)}
+                  </span>
+                </>
+              )}
               <button
                 type="button"
                 className="settings-device-action"
                 onClick={() => setWaiting(null)}
               >
-                Cancel
+                {waitingExpired ? "Dismiss" : "Cancel"}
               </button>
             </div>
           )}
@@ -689,7 +891,7 @@ export function DevicesPanel() {
 
         {reply.pending.length === 0 ? null : (
           <section className="settings-card device-section">
-            <h3 className="settings-card-title">
+            <h3 className="settings-card-title" ref={pendingHeadingRef} tabIndex={-1}>
               Waiting for your confirmation ({reply.pending.length})
             </h3>
             <p className="device-copy">
@@ -697,7 +899,10 @@ export function DevicesPanel() {
               device — the person there can read theirs aloud — before you let it in.
             </p>
             {reply.pending.map((pending) => (
-              <div className="settings-device-card device-pending" key={pending.deviceId}>
+              <div
+                className="settings-card settings-device-card device-pending"
+                key={pending.deviceId}
+              >
                 <div className="device-peer-head">
                   <span className="settings-card-title">{pending.displayName}</span>
                   <span className="device-role-chip">{pending.role}</span>
@@ -738,7 +943,7 @@ export function DevicesPanel() {
         )}
 
         <section className="settings-card device-section">
-          <h3 className="settings-card-title">
+          <h3 className="settings-card-title" ref={pairedHeadingRef} tabIndex={-1}>
             Paired devices
             {activePeers.length === 0 ? "" : ` (${activePeers.length})`}
           </h3>
@@ -761,7 +966,10 @@ export function DevicesPanel() {
             <details className="device-revoked">
               <summary>Revoked ({revokedPeers.length})</summary>
               {revokedPeers.map((row) => (
-                <div className="settings-device-card device-revoked-row" key={row.deviceId}>
+                <div
+                  className="settings-card settings-device-card device-revoked-row"
+                  key={row.deviceId}
+                >
                   <span className="settings-card-title">{row.displayName}</span>
                   <span className="device-role-chip">{row.role}</span>
                   <span

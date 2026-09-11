@@ -652,7 +652,10 @@ impl DaemonClient {
         match self.roundtrip(ClientMessage::DevicesList { id })? {
             reply @ DaemonMessage::Devices { .. } => Ok(reply),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
-            other => unexpected(other),
+            // Not `unexpected`: a `pairing_code` frame misdelivered here would
+            // otherwise be `Debug`-formatted into an error string, and that
+            // string is rendered on screen and printable by any error log.
+            _ => pairing_reply_mismatch(),
         }
     }
 
@@ -1405,7 +1408,13 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::ProviderUpdated { id, .. }
         | DaemonMessage::Ok { id }
         | DaemonMessage::Resume { id, .. }
-        | DaemonMessage::InvokeResult { id, .. } => Some(*id),
+        | DaemonMessage::InvokeResult { id, .. }
+        | DaemonMessage::Devices { id, .. }
+        | DaemonMessage::PairingCode { id, .. }
+        | DaemonMessage::PairingPending { id, .. }
+        | DaemonMessage::PairingDone { id, .. }
+        | DaemonMessage::PeerUpdated { id, .. }
+        | DaemonMessage::PairingDeclined { id, .. } => Some(*id),
     }
 }
 
