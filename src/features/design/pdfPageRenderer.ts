@@ -665,7 +665,14 @@ export async function renderPdfPages(
   if (pdfIsAborted(signal)) {
     return {
       ok: true,
-      outcome: { name, pageCount: 0, pages: [], omittedPages: [], downscaledPages: [], stoppedEarly: "cancelled" },
+      outcome: {
+        name,
+        pageCount: 0,
+        pages: [],
+        omittedPages: [],
+        downscaledPages: [],
+        stoppedEarly: "cancelled",
+      },
     };
   }
 
