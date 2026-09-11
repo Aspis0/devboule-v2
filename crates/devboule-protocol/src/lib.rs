@@ -228,6 +228,14 @@ pub const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
 /// - the JSON envelope, keys, MIME types and punctuation, which is a few
 ///   hundred bytes and never more than 4 KiB.
 ///
+/// That envelope figure describes a frame that **passes** validation. Nothing
+/// bounds `mime_type` by length — the allowlist refuses an unknown type rather
+/// than a long one — so a frame can arrive carrying a megabyte of it. Such a
+/// frame is refused, its rejection does not echo the value back (see
+/// `attachments::excerpt`), and [`MAX_FRAME_BYTES`] is what bounds it on the
+/// way in. The sum below is the largest frame the daemon ever accepts, not the
+/// largest it can be handed.
+///
 /// The base64 standard alphabet (`A-Z a-z 0-9 + /`) plus `=` needs no JSON
 /// escaping, so an attachment's encoded length is its length on the wire too.
 /// That puts a maximal frame at 65,536 + 393,216 + 1,020 + 4,096 = 463,868

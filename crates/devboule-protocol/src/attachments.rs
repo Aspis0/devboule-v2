@@ -42,7 +42,8 @@ pub fn empty_attachment_message() -> String {
 /// The rejection for a `mime_type` outside [`ATTACHMENT_MIME_TYPES`].
 pub fn unsupported_attachment_type_message(mime_type: &str) -> String {
     format!(
-        "Attachment type '{mime_type}' is not supported; expected one of {}.",
+        "Attachment type '{}' is not supported; expected one of {}.",
+        excerpt(mime_type),
         ATTACHMENT_MIME_TYPES.join(", ")
     )
 }
@@ -58,30 +59,39 @@ pub fn attachment_name_too_long_message(name: &str) -> String {
     )
 }
 
+/// At most 64 bytes of an untrusted string, cut on a character boundary.
+///
+/// Every string this module puts into a rejection arrives from the wire, and
+/// two of them — a file's `name` and its `mime_type` — have no length of their
+/// own that anything else bounds. Echoing one whole would move the flood the
+/// caps exist to prevent out of the frame and into the error string, which the
+/// app then renders. The cut lands on a character boundary, so what comes back
+/// is always valid UTF-8, and the ellipsis says the value was longer rather
+/// than letting a truncated one pass for the whole.
+fn excerpt(value: &str) -> String {
+    const EXCERPT_BYTES: usize = 64;
+    if value.len() <= EXCERPT_BYTES {
+        return value.to_string();
+    }
+    let mut end = EXCERPT_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
+}
+
 /// Which attachment a rejection is about: its 1-based position and its name.
 ///
-/// The name is untrusted and, before the length check in
-/// [`validate_attachments`] runs, unbounded, so the label keeps at most 64 bytes
-/// of it and closes with an ellipsis. Echoing it whole would move the flood the
-/// limit exists to prevent from the frame into the error string. The cut lands
-/// on a character boundary, so the label is always valid UTF-8. An empty name is
-/// legal and yields the position alone: a missing label is not a reason to
-/// refuse a file.
+/// The name goes through [`excerpt`], which is why a rejection about a file
+/// with an enormous name is still a sentence. An empty name is legal and yields
+/// the position alone: a missing label is not a reason to refuse a file, and the
+/// position alone already answers "which of the four".
 fn attachment_label(index: usize, name: &str) -> String {
-    const LABEL_NAME_BYTES: usize = 64;
     let position = index + 1;
     if name.is_empty() {
         return format!("Attachment {position}: ");
     }
-    let mut end = name.len().min(LABEL_NAME_BYTES);
-    while !name.is_char_boundary(end) {
-        end -= 1;
-    }
-    if end == name.len() {
-        format!("Attachment {position} ('{name}'): ")
-    } else {
-        format!("Attachment {position} ('{}…'): ", &name[..end])
-    }
+    format!("Attachment {position} ('{}'): ", excerpt(name))
 }
 
 /// The first reason these attachments cannot be sent, or `Ok(())`.
@@ -169,6 +179,38 @@ mod tests {
             name: "a.png".to_string(),
             mime_type: mime_type.to_string(),
             data: data.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_enormous_mime_type_is_not_echoed_whole() {
+        // `mime_type` is the last field on the wire that no cap bounds: the
+        // allowlist refuses an unknown one rather than a length rule, so a frame
+        // can carry a huge one and be rejected for its type. The rejection must
+        // not carry it back — that would move the flood out of the frame and
+        // into a string the app renders.
+        let shouting = "image/".to_string() + &"z".repeat(200_000);
+        let message = unsupported_attachment_type_message(&shouting);
+        assert!(
+            message.len() < 200,
+            "the rejection is a sentence: {}",
+            message.len()
+        );
+        assert!(!message.contains(&shouting));
+        assert!(message.contains("image/zzz"));
+        assert!(message.contains('…'));
+    }
+
+    #[test]
+    fn an_excerpt_never_splits_a_character() {
+        // A cut at a fixed byte count lands inside a multi-byte character unless
+        // it walks back to a boundary; the result would not be valid UTF-8 and
+        // the format! would panic rather than return a message.
+        for repeat in 1..40 {
+            let value = "è".repeat(repeat);
+            let cut = excerpt(&value);
+            assert!(cut.chars().count() > 0);
+            assert!(value.starts_with(cut.trim_end_matches('…')));
         }
     }
 
