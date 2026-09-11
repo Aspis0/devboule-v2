@@ -18,6 +18,7 @@ use super::{
     write_child_stdin, ModelSwitcher, PtyCommand, ReaderDispatch, SessionKiller, SpawnedSession,
     StderrSource, StdioWaitableChild,
 };
+use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
     catalog_from_response, mode_values, thread_mode_values, validate_mode, CodexCatalog,
     CodexState, CodexStdout, MAX_LINE_BYTES,
@@ -197,6 +198,8 @@ pub(super) fn spawn_process(
         switcher: Some(Box::new(switcher)),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
+        // Not an ACP session: no structured prompt route.
+        image_sink: None,
         reader: Box::new(stdout),
         reader_dispatch: Some(Box::new(reader)),
         stderr: Some(Box::new(CodexStderr::start(stderr))),
@@ -261,6 +264,12 @@ impl Write for CodexWriter {
         }
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
+        // Unchanged text-only `turn/start`: `localImage` entries stay a
+        // plan-side shape until the send-path follow-up sequences the Codex
+        // wiring. `turn_start_params_with_images` pins the measured input
+        // shape for that follow-up; the writer keeps today's literal so the
+        // two cannot drift under a shared name before the plan has a
+        // production caller.
         let (model, effort) = self.state.model_and_effort();
         let policy_mode = self.state.mode_override();
         send_request(
@@ -528,6 +537,139 @@ fn turn_start_params(
         params.insert("effort".to_string(), Value::String(effort.to_string()));
     }
     Value::Object(params)
+}
+
+/// One `turn/start` input entry for a materialized raster: the Paseo-measured
+/// `{"type": "localImage", "path": ...}` shape. The path is the one
+/// `materialize` returned, so the file at the other end is still the stripped
+/// file — no bytes travel. `detail` is omitted deliberately: `auto` is the
+/// server's own default and sending it would assert an unmeasured choice.
+/// Stays on `localImage` even though the schema also lists `image`: Paseo
+/// sends `localImage` and that is what was verified live, while `image` on
+/// this surface has not been measured. `#[cfg(test)]` while the send-path
+/// follow-up is unsequenced, like the params builder below.
+#[cfg(test)]
+fn codex_local_image_entry(path: &std::path::Path) -> serde_json::Value {
+    serde_json::json!({
+        "type": "localImage",
+        "path": path.to_string_lossy(),
+    })
+}
+
+/// `turn/start` params with one trailing `localImage` entry per carried
+/// raster, in attachment order, after the single text entry. The text entry
+/// is the shared fallback text: the user's text plus the path lines for the
+/// attachments that stay prose (SVG, which takes no inline shape).
+/// `#[cfg(test)]` while the send-path follow-up is unsequenced: the writer
+/// still builds today's text-only `input` inline above, and this stays the
+/// pinned shape for the follow-up rather than a second production caller.
+#[cfg(test)]
+fn turn_start_params_with_images(
+    thread_id: &str,
+    text: &str,
+    image_paths: &[std::path::PathBuf],
+    policy_mode: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Value {
+    // The thread already carries the mode preset from `thread/start`; the
+    // policy fields go back only after an explicit `set_mode`.
+    let mut params = policy_mode.map(mode_values).unwrap_or_default();
+    params.insert("threadId".to_string(), Value::String(thread_id.to_string()));
+    // The text entry first, then one `localImage` entry per carried raster,
+    // in attachment order.
+    let mut input = vec![serde_json::json!({ "type": "text", "text": text })];
+    input.extend(image_paths.iter().map(|path| codex_local_image_entry(path)));
+    params.insert("input".to_string(), Value::Array(input));
+    if let Some(model) = model {
+        params.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    if let Some(effort) = effort {
+        params.insert("effort".to_string(), Value::String(effort.to_string()));
+    }
+    Value::Object(params)
+}
+
+/// Prompt plan for one Codex send: the text plus one `localImage` path per
+/// raster. `fallback_text` is the user's text with the path lines for the
+/// non-raster attachments (SVG). `image_paths` are the `materialize` paths
+/// for the rasters, in attachment order — every attachment is materialized
+/// first, exactly the call the shared `with_attachment_paths` makes, so a
+/// request that fails on its third attachment leaves nothing half-built.
+///
+/// Not yet sent: the `session.rs` send path still takes the legacy path-line
+/// write for Codex, so this plan has no production caller until that
+/// follow-up lands.
+#[cfg(test)]
+struct CodexPromptPlan {
+    fallback_text: String,
+    image_paths: Vec<std::path::PathBuf>,
+}
+
+/// The delivery Codex is authorised for: a fact about the protocol, not a
+/// fact the peer agreed to — no negotiation, no capability probe. Uses the
+/// variant the sibling seam in `session.rs` reserved for this follow-up.
+/// `#[cfg(test)]` with the plan: the only reader is the gate above until the
+/// send-path follow-up lands. There is deliberately no probe here: an unknown
+/// method on this surface answers `-32600`, not `-32601`, so a
+/// method-not-found fallback would never fire and the feature would fail
+/// silent.
+#[cfg(test)]
+fn codex_delivery() -> super::ImageDelivery {
+    super::ImageDelivery::StaticImageBlock
+}
+
+/// Splits one request's attachments into `localImage` paths and path-line
+/// fallbacks. `#[cfg(test)]` with the plan: the only caller is the tests
+/// below until the send-path follow-up lands.
+#[cfg(test)]
+fn plan_codex_prompt(
+    store: &AttachmentStore,
+    session_id: &str,
+    text: &str,
+    attachments: &[devboule_protocol::PromptAttachment],
+) -> Result<Option<CodexPromptPlan>, devboule_protocol::WireError> {
+    if attachments.is_empty() {
+        return Ok(None);
+    }
+    // The static gate, read through the shared enum so a later change to
+    // what "statically known" authorises cannot silently re-route this
+    // sender: only the reserved variant frames paths.
+    if codex_delivery() != super::ImageDelivery::StaticImageBlock {
+        return Ok(None);
+    }
+    let session = store.session(session_id).ok_or_else(|| {
+        devboule_protocol::WireError::new(
+            devboule_protocol::ErrorCode::InvalidRequest,
+            "Invalid session id.",
+        )
+    })?;
+    let mut image_paths = Vec::new();
+    let mut fallback_paths = Vec::new();
+    for attachment in attachments {
+        let path = session.materialize(attachment)?;
+        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some() {
+            image_paths.push(path);
+        } else {
+            fallback_paths.push(path);
+        }
+    }
+    if image_paths.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(CodexPromptPlan {
+        fallback_text: super::prompt_text_with_fallback_paths(text, &fallback_paths),
+        image_paths,
+    }))
+}
+
+/// The read-side twin of the routing rule above: what the daemon kept on
+/// disk for a carried entry. Used by tests to pin the rule without spawning
+/// a child.
+#[cfg(test)]
+fn carried_image_paths(plan: Option<&CodexPromptPlan>) -> Vec<&std::path::Path> {
+    plan.map(|plan| plan.image_paths.iter().map(std::path::PathBuf::as_path).collect())
+        .unwrap_or_default()
 }
 
 fn interrupt_params(thread_id: &str, turn_id: &str) -> Value {
@@ -873,11 +1015,16 @@ mod tests {
     use super::super::permission_broker::PermissionBroker;
     use super::super::session_runtime::SessionRuntime;
     use super::{
-        decline_input_result, initialize_params, interrupt_params, mode_values, notification_frame,
-        permission_decision, permission_decision_frame, send_interrupt_request,
-        thread_start_params, turn_id_from_response, turn_start_params, validate_mode, CodexReader,
+        carried_image_paths, codex_delivery, codex_local_image_entry, decline_input_result,
+        initialize_params, interrupt_params, mode_values, notification_frame,
+        permission_decision, permission_decision_frame, plan_codex_prompt,
+        send_interrupt_request, thread_start_params, turn_id_from_response,
+        turn_start_params, turn_start_params_with_images, validate_mode, CodexReader,
     };
+    use crate::attachment_store::AttachmentStore;
     use crate::codex_view::{catalog_from_response, fixture_frames, CodexState, CodexView};
+    use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
+    use devboule_protocol::PromptAttachment;
     use devboule_protocol::SessionEvent;
     use std::collections::HashMap;
     use std::sync::atomic::AtomicU64;
@@ -1216,5 +1363,207 @@ mod tests {
         assert!(!events
             .iter()
             .any(|event| matches!(event.envelope.event, SessionEvent::AgentMessage { .. })));
+    }
+
+    // --- image delivery (plan-side; the send-path follow-up is unsequenced)
+    //
+    // The routing decision lives in `plan_codex_prompt`, tested here
+    // against the attachment store directly, without spawning a child — the
+    // same arrangement the ACP sibling seam's tests use. The wire shape of
+    // one entry is pinned against the live-verified `localImage` input:
+    // `{"type":"localImage","path":...}` with no `detail`.
+
+    struct PlanTempDir(std::path::PathBuf);
+
+    impl PlanTempDir {
+        fn new(tag: &str) -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
+            let dir = std::env::temp_dir().join(format!(
+                "devboule-codex-plan-{}-{}-{}",
+                std::process::id(),
+                tag,
+                COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for PlanTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn plan_attachment(name: &str, mime_type: &str, bytes: &[u8]) -> PromptAttachment {
+        use base64::Engine;
+        PromptAttachment {
+            name: name.to_string(),
+            mime_type: mime_type.to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+
+    #[test]
+    fn codex_delivery_is_the_reserved_static_variant() {
+        // No handshake to negotiate with and deliberately no probe: an
+        // unknown method on this surface answers `-32600`, not `-32601`, so
+        // a method-not-found fallback would never fire. The format accepts
+        // images, so the delivery is the static one the sibling seam
+        // reserved for this follow-up.
+        assert_eq!(
+            codex_delivery(),
+            super::super::ImageDelivery::StaticImageBlock
+        );
+    }
+
+    #[test]
+    fn a_capable_codex_prompt_plans_local_image_paths_and_no_path_line() {
+        // Each raster becomes one `localImage` path; the text is the bare
+        // user text, with no path line.
+        let temp = PlanTempDir::new("capable");
+        let store = AttachmentStore::new(&temp.0);
+        let session_id = "codex-plan-capable";
+        // A container the walk accepts but changes: what sits at the planned
+        // path must be the stripped bytes, never the wire bytes.
+        let sent = png_with_text_chunk();
+        let kept = clean_png(0x01);
+        assert_ne!(
+            sent, kept,
+            "the fixture must actually carry something that leaves"
+        );
+        let plan = plan_codex_prompt(
+            &store,
+            session_id,
+            "describe this",
+            &[plan_attachment("photo.png", "image/png", &sent)],
+        )
+        .expect("materialized")
+        .expect("a raster plans paths");
+        assert_eq!(plan.fallback_text, "describe this", "no path line");
+        assert_eq!(carried_image_paths(Some(&plan)).len(), 1);
+        let planned = carried_image_paths(Some(&plan))[0];
+        assert_eq!(
+            std::fs::read(planned).expect("read"),
+            kept,
+            "the path names the stripped file"
+        );
+        let params = turn_start_params_with_images(
+            "thread-1",
+            &plan.fallback_text,
+            &plan.image_paths,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(params["threadId"], "thread-1");
+        let input = params["input"].as_array().expect("input array");
+        assert_eq!(input.len(), 2);
+        assert_eq!(
+            input[0],
+            serde_json::json!({"type": "text", "text": "describe this"})
+        );
+        // The exact entry shape, pinned literally: `type` plus `path`, no
+        // `detail`, and `localImage` — not the unmeasured `image` the schema
+        // also lists.
+        assert_eq!(input[1]["type"], "localImage");
+        assert_eq!(
+            input[1]["path"].as_str().expect("path"),
+            planned.to_string_lossy(),
+            "the entry names the materialized file"
+        );
+        assert!(input[1].get("detail").is_none(), "no unmeasured detail");
+        let entry = codex_local_image_entry(planned);
+        assert_eq!(entry["type"], "localImage");
+        assert!(entry.get("detail").is_none());
+    }
+
+    #[test]
+    fn an_svg_only_codex_prompt_plans_no_paths_and_keeps_the_path_line() {
+        // SVG takes no inline shape on this surface. An SVG-only prompt
+        // plans nothing, so the caller takes the legacy path-line write.
+        let temp = PlanTempDir::new("svg-only");
+        let store = AttachmentStore::new(&temp.0);
+        let source = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let plan = plan_codex_prompt(
+            &store,
+            "codex-plan-svg-only",
+            "logo",
+            &[plan_attachment("drawing.svg", "image/svg+xml", source)],
+        )
+        .expect("materialized");
+        assert!(plan.is_none(), "an SVG plans no paths");
+    }
+
+    #[test]
+    fn an_svg_keeps_its_path_line_beside_codex_image_paths() {
+        // A mixed prompt carries both: the raster as a `localImage` path,
+        // the SVG as a path line in the text.
+        let temp = PlanTempDir::new("mixed");
+        let store = AttachmentStore::new(&temp.0);
+        let source = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let plan = plan_codex_prompt(
+            &store,
+            "codex-plan-mixed",
+            "logo and photo",
+            &[
+                plan_attachment("photo.png", "image/png", &clean_png(0x13)),
+                plan_attachment("drawing.svg", "image/svg+xml", source),
+            ],
+        )
+        .expect("materialized")
+        .expect("the raster plans a path");
+        assert_eq!(carried_image_paths(Some(&plan)).len(), 1);
+        assert!(
+            plan.fallback_text
+                .starts_with("logo and photo\n\n[Image available at: "),
+            "{}",
+            plan.fallback_text
+        );
+        assert!(plan.fallback_text.ends_with(".svg]"), "{}", plan.fallback_text);
+        assert!(
+            !plan.fallback_text.contains(".png]"),
+            "the raster left no path line: {}",
+            plan.fallback_text
+        );
+        let params = turn_start_params_with_images(
+            "thread-1",
+            &plan.fallback_text,
+            &plan.image_paths,
+            None,
+            None,
+            None,
+        );
+        let input = params["input"].as_array().expect("array");
+        assert_eq!(input.len(), 2);
+        assert!(input[0]["text"].as_str().expect("text").ends_with(".svg]"));
+        assert_eq!(input[1]["type"], "localImage");
+    }
+
+    #[test]
+    fn a_jpeg_plans_its_stripped_path_on_codex() {
+        const EXIF_JPEG_VECTOR: &str =
+            "a jpeg whose APP1 holds EXIF, between a kept JFIF APP0 and a kept ICC APP2";
+        let temp = PlanTempDir::new("jpeg");
+        let store = AttachmentStore::new(&temp.0);
+        let sent = vector_input(EXIF_JPEG_VECTOR);
+        let kept = vector_output(EXIF_JPEG_VECTOR);
+        assert_ne!(sent, kept, "the vector must actually strip something");
+        let plan = plan_codex_prompt(
+            &store,
+            "codex-plan-jpeg",
+            "describe this",
+            &[plan_attachment("photo.jpg", "image/jpeg", &sent)],
+        )
+        .expect("materialized")
+        .expect("a JPEG plans a path");
+        assert_eq!(plan.fallback_text, "describe this");
+        let planned = carried_image_paths(Some(&plan))[0];
+        assert_eq!(
+            std::fs::read(planned).expect("read"),
+            kept,
+            "stripped JPEG bytes at the planned path"
+        );
     }
 }

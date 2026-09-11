@@ -261,6 +261,17 @@ struct PtySession {
     stderr_handle: Option<JoinHandle<()>>,
     child_wait: Option<JoinHandle<Option<u32>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Structured prompt route for ACP image blocks, next to the plain-text
+    /// `writer`. `Some` only for an ACP session: the spawn path clones the
+    /// transport's request pieces here, and the other three providers and
+    /// every terminal session leave it `None`. Whether a prompt *uses* it is
+    /// a second, per-prompt capability decision (see [`ImageDelivery`]) — a
+    /// present sibling with an Absent/Unsupported verdict still falls back
+    /// to the path line. Locking: the sibling is an `Arc` cloned out of the
+    /// registry lock next to `writer`; the structured send itself runs under
+    /// the writer hold, in the same order the pre-existing `AcpWriter` path
+    /// already used, so no new ordering is introduced.
+    image_sink: Option<Arc<AcpPromptSink>>,
     reader_handle: Option<JoinHandle<()>>,
     coalesce_handle: Option<JoinHandle<()>>,
     runtime: Arc<SessionRuntime>,
@@ -278,6 +289,10 @@ struct SpawnedSession {
     switcher: Option<Box<dyn ModelSwitcher>>,
     child: Box<dyn WaitableChild>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// Structured prompt route for ACP image blocks; `None` for the other
+    /// three providers and for terminal sessions. Carried through spawn so
+    /// `start_spawned_session` can install it next to `writer`.
+    image_sink: Option<Arc<AcpPromptSink>>,
     reader: Box<dyn Read + Send>,
     /// ACP supplies a structured decoder. Terminal sessions use the shared
     /// byte coalescer, which is constructed by `start_spawned_session`.
@@ -521,6 +536,372 @@ fn with_attachment_paths(
         prompt.push(']');
     }
     Ok(prompt)
+}
+
+/// What the ACP handshake negotiated about sending images to the agent.
+///
+/// Two different kinds of fact: `NegotiatedImageBlock` came from this
+/// session's `initialize` reply (`agentCapabilities.promptCapabilities.image`,
+/// read by [`crate::acp_view::prompt_capabilities_from_initialize`]), while
+/// `StaticImageBlock` is what this daemon knows about a provider whose
+/// handshake says nothing — a fact about the protocol, not a fact the peer
+/// agreed to. They are stored in one enum because the send path asks one
+/// question (`may I send bytes?`), and that question must be answered the
+/// same way whatever the source: only `Supported` is yes. `Absent` (the agent
+/// said nothing) and `Unsupported` (the agent explicitly refused) are both
+/// no, because Unknown must never silently mean yes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ImageDelivery {
+    /// No image-capable route is available: fall back to the path line.
+    #[default]
+    PathLine,
+    /// The ACP handshake negotiated `promptCapabilities.image == true` for
+    /// this session. The only yes.
+    NegotiatedImageBlock,
+    /// A provider whose protocol carries images but whose handshake says
+    /// nothing the daemon reads. Reserved for the follow-up that wires the
+    /// other three providers; no session sets it yet.
+    #[allow(dead_code)]
+    StaticImageBlock,
+}
+
+impl ImageDelivery {
+    /// True only for a negotiated `Supported`. `Absent` and `Unsupported`
+    /// both fall back to the path line: silence is not consent, and a
+    /// refusal is not consent either.
+    fn allows_image_block(state: crate::acp_view::PromptCapabilityState) -> bool {
+        matches!(state, crate::acp_view::PromptCapabilityState::Supported)
+    }
+
+    /// Maps one handshake verdict to the delivery it authorises.
+    pub(crate) fn from_negotiated(state: crate::acp_view::PromptCapabilityState) -> Self {
+        if Self::allows_image_block(state) {
+            Self::NegotiatedImageBlock
+        } else {
+            Self::PathLine
+        }
+    }
+}
+
+/// One image block for a `session/prompt` content array.
+///
+/// The bytes are the STRIPPED bytes — read back from the file
+/// [`crate::attachment_store::SessionAttachments::materialize`] wrote, never
+/// the base64 that arrived on the wire — so nothing leaving the house carries
+/// identity metadata. The mime type is the stored attachment's declared type,
+/// which `materialize` already checked against the sniffed container (a file
+/// whose bytes and label disagree is refused, never stored).
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct AcpImageBlock {
+    pub mime_type: String,
+    pub data_base64: String,
+}
+
+/// Hand-written, and it must stay hand-written: `data_base64` holds a whole
+/// image. One rendered PDF page is ~128 KiB of base64 and a deck is forty of
+/// them, so a derived `Debug` would let any `{:?}` — a failing `assert_eq!`,
+/// a log line, an error path, a future panic — spill the user's picture into
+/// somewhere it was never meant to go. What a person debugging needs is the
+/// type and the size; the bytes have never once been the answer.
+impl std::fmt::Debug for AcpImageBlock {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AcpImageBlock")
+            .field("mime_type", &self.mime_type)
+            .field("data_base64_len", &self.data_base64.len())
+            .finish()
+    }
+}
+
+impl AcpImageBlock {
+    /// Reads the stripped file back and encodes it for the wire. Reading the
+    /// file — rather than keeping a parallel copy of the pre-strip bytes — is
+    /// what guarantees the block carries what is on disk.
+    fn from_stored_file(path: &std::path::Path, mime_type: &str) -> Result<Self, std::io::Error> {
+        use base64::Engine;
+        let bytes = std::fs::read(path)?;
+        Ok(Self {
+            mime_type: mime_type.to_string(),
+            data_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        })
+    }
+
+    fn to_content_block(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "image",
+            "mimeType": self.mime_type,
+            "data": self.data_base64,
+        })
+    }
+}
+
+/// A structured sender for ACP prompts.
+///
+/// Two halves, one decision. The DECISION — which attachments become image
+/// blocks, what text the journal records — is [`plan_structured_prompt`]: a
+/// pure function of the request's `(text, attachments)`, tested directly
+/// below without spawning a child. The DELIVERY — handing that plan to the
+/// child — is [`AcpPromptSink::send_structured_prompt`], which needs the
+/// live transport.
+///
+/// The plan carries both halves the send path needs: `fallback_text` (the
+/// user's text plus the path lines for the non-raster attachments — today:
+/// SVG, which no provider accepts inline) is the text block AND the exact
+/// string the journal records, so the transcript can never carry image
+/// base64; `images` are the blocks that travel. One constructor builds both,
+/// so the journaled string and the sent text block cannot drift apart.
+pub(crate) struct StructuredPromptPlan {
+    /// The text block: the user's text plus one path line per non-raster
+    /// attachment. Also the exact string the journal records.
+    pub fallback_text: String,
+    /// One block per raster attachment, in attachment order.
+    pub images: Vec<AcpImageBlock>,
+}
+
+impl StructuredPromptPlan {
+    /// The full `prompt` array the child receives: the text block, then one
+    /// image block per raster attachment. The journal records
+    /// `fallback_text` — element zero of this array — never the blocks.
+    /// `pub(crate)` for the acp_client wire-shape test, which pins the
+    /// exact JSON the read side already expects.
+    pub(crate) fn content_blocks(&self) -> Vec<serde_json::Value> {
+        let mut prompt =
+            vec![serde_json::json!({ "type": "text", "text": self.fallback_text })];
+        prompt.extend(self.images.iter().map(AcpImageBlock::to_content_block));
+        prompt
+    }
+}
+
+// HARD-WRITTEN ON PURPOSE — DO NOT REPLACE WITH `#[derive(Debug)]`.
+//
+// This struct carries the base64 of every attached image (one rendered PDF
+// page is ~128 KiB, a deck is forty of them) and the user's own prompt text.
+// A derived `Debug` would leave both exactly one `{:?}` away from a log line,
+// a journal row, an assertion message or a future panic hook, and the standing
+// rule from the earlier frame audit is that frame contents stay out of `Debug`
+// output. This impl prints what a human debugging a prompt needs and nothing
+// more: one `(mime type, base64 length in bytes)` pair per image block, plus
+// the length of the text block. Never the base64, never the text.
+//
+// Each pair is a `&str` label and a `usize`, so this impl cannot copy base64
+// into its output even by accident — the leak is excluded by the types, not by
+// remembering. Note that `AcpImageBlock` above still derives `Debug`; do not
+// route this impl (or anything else that renders a block) through it.
+impl std::fmt::Debug for StructuredPromptPlan {
+    /// The block as `(mime type, base64 byte length)`: the two facts a human
+    /// needs to size a prompt up, and nothing that carries image bytes.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let images: Vec<(&str, usize)> = self
+            .images
+            .iter()
+            .map(|block| (block.mime_type.as_str(), block.data_base64.len()))
+            .collect();
+        formatter
+            .debug_struct("StructuredPromptPlan")
+            .field("images", &images)
+            .field("fallback_text_bytes", &self.fallback_text.len())
+            .finish()
+    }
+}
+
+/// Decides the structured prompt for one request: materializes every
+/// attachment (exactly the call `with_attachment_paths` makes — a request
+/// that fails on its third attachment leaves nothing half-built), turns each
+/// raster (`image/png`, `image/jpeg`) into an image block carrying the
+/// STRIPPED bytes read back from disk, and keeps every other attachment
+/// (today: `image/svg+xml`) as a path line in the text. A prompt can
+/// therefore carry both blocks and path lines at once. Returns `None` when
+/// there is nothing to send inline (no attachments, or an SVG-only prompt),
+/// in which case the caller takes the legacy path-line write.
+fn plan_structured_prompt(
+    store: &AttachmentStore,
+    session_id: &str,
+    text: &str,
+    attachments: &[PromptAttachment],
+) -> Result<Option<StructuredPromptPlan>, WireError> {
+    if attachments.is_empty() {
+        return Ok(None);
+    }
+    let session = store
+        .session(session_id)
+        .ok_or_else(|| WireError::new(ErrorCode::InvalidRequest, "Invalid session id."))?;
+    let mut images = Vec::new();
+    let mut fallback_paths = Vec::new();
+    for attachment in attachments {
+        let path = session.materialize(attachment)?;
+        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some() {
+            images.push(
+                AcpImageBlock::from_stored_file(&path, &attachment.mime_type).map_err(
+                    |error| {
+                        WireError::new(
+                            ErrorCode::Io,
+                            format!("Could not read a stored attachment: {error}"),
+                        )
+                    },
+                )?,
+            );
+        } else {
+            fallback_paths.push(path);
+        }
+    }
+    if images.is_empty() {
+        // SVG-only (or otherwise non-raster) on a capable session: nothing
+        // would travel inline, so stay on the legacy write rather than
+        // materializing twice — the fallback below re-materializes from the
+        // content-addressed store, which is a wasted decode and strip, not a
+        // double write, but there is no reason to pay it.
+        return Ok(None);
+    }
+    Ok(Some(StructuredPromptPlan {
+        fallback_text: prompt_text_with_fallback_paths(text, &fallback_paths),
+        images,
+    }))
+}
+
+/// The DELIVERY half: the text plus any image blocks land
+/// as one `session/prompt` `prompt` array, instead of as a text blob with
+/// path lines appended. It holds an `Arc` to the session's transport — the
+/// same transport the plain-text [`Write`] half writes through — so both
+/// halves share one session id, one request-id sequence, one pending table,
+/// and the live negotiated capability slot.
+///
+/// The sibling is `Some` only for an ACP session; it is `None` for the other
+/// three providers and for every terminal session. Whether it is *used* is a
+/// second, per-prompt decision read from the negotiated capability (see
+/// [`ImageDelivery`]): a present sibling with an Absent/Unsupported verdict
+/// still falls back to the path line. The plain `Write` trait on `writer` is
+/// untouched — text-only writes keep flowing through exactly the path they
+/// use today.
+///
+/// Test seam: the send path calls [`Self::deliver`] — production sends the
+/// plan to the child, tests override it to record the plan. The override
+/// point is the delivery call, not the plan: `plan_structured_prompt` runs
+/// unconditionally first, so a test that records the plan sees the exact
+/// value production would have sent.
+pub(crate) struct AcpPromptSink {
+    transport: Arc<acp_client::AcpTransport>,
+    #[cfg(test)]
+    deliver: Arc<Mutex<ProbeDeliver>>,
+}
+
+/// What a test double does with the plan instead of writing child stdin.
+#[cfg(test)]
+#[derive(Debug, Default)]
+enum ProbeDeliver {
+    /// Send to the child, like production. The default, so a sink the test
+    /// forgot to arm behaves exactly like the production sibling — including
+    /// failing on a closed stdin, rather than silently recording nothing.
+    #[default]
+    Send,
+    /// Record the plan for later assertion instead of writing.
+    Record(Arc<Mutex<Vec<StructuredPromptPlan>>>),
+}
+
+impl AcpPromptSink {
+    fn new(transport: &Arc<acp_client::AcpTransport>) -> Self {
+        Self {
+            transport: Arc::clone(transport),
+            #[cfg(test)]
+            deliver: Arc::new(Mutex::new(ProbeDeliver::Send)),
+        }
+    }
+
+    /// Records one planned prompt without touching a child: the plan it was
+    /// handed, for tests. `pub(crate)` so the sibling's own test module can
+    /// reach it; production never calls it — every production sink keeps
+    /// the default `Send`.
+    #[cfg(test)]
+    pub(crate) fn probe_recorded(&self) -> Arc<Mutex<Vec<StructuredPromptPlan>>> {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        *self
+            .deliver
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            ProbeDeliver::Record(Arc::clone(&recorded));
+        recorded
+    }
+
+    /// The delivery this prompt is authorised for, read live from the
+    /// session's negotiated capability — not from a copy taken at spawn.
+    /// A `session/load` handshake re-derives the verdict like the rest of
+    /// the negotiated state, so a resumed session cannot send on a stale yes.
+    pub(crate) fn delivery(&self) -> ImageDelivery {
+        ImageDelivery::from_negotiated(self.transport.prompt_capabilities().image)
+    }
+
+    /// Sends one planned prompt as structured content: the plan's text block,
+    /// then one image block per raster attachment, in attachment order.
+    /// Takes the whole plan (not `fallback_text` + `images` separately) so
+    /// the text block the child receives and the string the journal records
+    /// are the same value by construction — a later edit cannot pass one
+    /// string to the wire and journal another.
+    pub(crate) fn send_structured_prompt(
+        &self,
+        plan: StructuredPromptPlan,
+    ) -> Result<(), WireError> {
+        // The capability is re-read here, at send time: only a negotiated
+        // `Supported` takes this path. Anything else never reaches the sink
+        // — the caller falls back to the path line instead.
+        debug_assert!(matches!(
+            self.delivery(),
+            ImageDelivery::NegotiatedImageBlock
+        ));
+        self.deliver(plan)?;
+        Ok(())
+    }
+
+    /// The delivery call: production sends the plan to the child; a test
+    /// double installed by [`Self::probe_recorded`] records it instead.
+    /// `&self` (not `&mut self`) so the send path needs no new lock order:
+    /// the recorded vec has its own mutex, taken only here.
+    fn deliver(&self, plan: StructuredPromptPlan) -> Result<(), WireError> {
+        #[cfg(test)]
+        {
+            let guard = self
+                .deliver
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let ProbeDeliver::Record(recorded) = &*guard {
+                recorded
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(plan);
+                return Ok(());
+            }
+        }
+        self.transport
+            .send_structured_prompt(plan.content_blocks())
+            .map_err(|error| {
+                WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not send input to the terminal: {error}"),
+                )
+            })?;
+        Ok(())
+    }
+}
+
+/// The text block for a structured prompt: the user's text, a blank line,
+/// then one path line per non-raster attachment. The same line shape
+/// `with_attachment_paths` writes, so the fallback reads identically whether
+/// it travels alone or beside image blocks. `plan_structured_prompt` is its
+/// only caller; it stays separate (rather than inlined) so the legacy write
+/// and the structured text block visibly share one line shape.
+fn prompt_text_with_fallback_paths(text: &str, fallback_paths: &[PathBuf]) -> String {
+    if fallback_paths.is_empty() {
+        return text.to_string();
+    }
+    let mut prompt = String::from(text);
+    prompt.push_str("\n\n");
+    for (index, path) in fallback_paths.iter().enumerate() {
+        if index > 0 {
+            prompt.push('\n');
+        }
+        prompt.push_str("[Image available at: ");
+        prompt.push_str(&path.to_string_lossy());
+        prompt.push(']');
+    }
+    prompt
 }
 
 type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
@@ -2616,7 +2997,7 @@ impl SessionRegistry {
         validate_attachments(attachments)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
         let has_prompt = !text.is_empty() || !attachments.is_empty();
-        let (writer, runtime, is_agent, mcp_required) = {
+        let (writer, image_sink, runtime, is_agent, mcp_required) = {
             let map = self
                 .inner
                 .lock()
@@ -2626,6 +3007,7 @@ impl SessionRegistry {
             let session = entry.as_live().ok_or_else(process_gone)?;
             (
                 Arc::clone(&session.writer),
+                session.image_sink.clone(),
                 Arc::clone(&session.runtime),
                 session.metadata.kind.is_agent(),
                 matches!(
@@ -2662,7 +3044,34 @@ impl SessionRegistry {
         // (MAX_ATTACHMENT_COUNT of them), so re-checking the extended prompt
         // could only refuse a prompt the daemon lengthened; the write is not
         // re-checked against the cap.
-        let prompt = with_attachment_paths(&self.attachments, session_id, text, attachments)?;
+        //
+        // The structured route: the sibling is present (an ACP session) AND
+        // the live negotiated capability says images are supported. The plan
+        // decides both halves — the blocks that travel and the exact string
+        // the journal records — so they cannot drift apart. Otherwise —
+        // sibling absent (other providers, terminals), or the handshake said
+        // no or nothing — fall through to exactly today's path-line write,
+        // byte for byte unchanged.
+        let plan = match image_sink.as_ref() {
+            Some(sink) if sink.delivery() == ImageDelivery::NegotiatedImageBlock => {
+                plan_structured_prompt(&self.attachments, session_id, text, attachments)?
+            }
+            _ => None,
+        };
+        // `plan` is `Some` only when at least one raster became a block, so
+        // an SVG-only prompt on a capable session takes this arm too: the
+        // legacy write, materialized once, never twice.
+        let prompt = match plan.as_ref() {
+            Some(plan) => plan.fallback_text.clone(),
+            None => with_attachment_paths(&self.attachments, session_id, text, attachments)?,
+        };
+        // Lock the writer FIRST, as today: the journaled transcript event is
+        // published under this same hold further down, so the journal keeps
+        // the order the process sees. The structured send runs under this
+        // hold too, locking the transport's pending table and child stdin —
+        // the same order the pre-existing `AcpWriter::flush` path already
+        // used when it issued its request from under this hold — so no new
+        // lock ordering is introduced.
         // Keep the complete write and its transcript event under this lock so
         // the journal preserves the same order the process receives.
         let mut writer = match writer.lock() {
@@ -2675,12 +3084,25 @@ impl SessionRegistry {
                 return Err(error);
             }
         };
-        if let Err(error) = writer.write_all(prompt.as_bytes()).map_err(|error| {
-            WireError::new(
-                ErrorCode::Io,
-                format!("Could not send input to the terminal: {error}"),
-            )
-        }) {
+        if let Err(error) = match plan {
+            // Structured route: the text block (with any SVG path lines) plus
+            // the image blocks go as one `session/prompt` content array on
+            // the sibling. The plain-text `writer` is not touched. The plan
+            // travels whole, so the text block the child receives IS the
+            // string journaled below — one value, two destinations.
+            Some(plan) => {
+                let sink = image_sink.as_ref().expect("plan implies a capable sibling");
+                sink.send_structured_prompt(plan)
+            }
+            // Today's path, unchanged: the prompt (with path lines) is typed
+            // into the plain-text writer.
+            None => writer.write_all(prompt.as_bytes()).map_err(|error| {
+                WireError::new(
+                    ErrorCode::Io,
+                    format!("Could not send input to the terminal: {error}"),
+                )
+            }),
+        } {
             drop(writer);
             if let Some(runtime) = agent_runtime.as_ref() {
                 runtime.publish_agent_error(error.message.clone());
@@ -2701,11 +3123,13 @@ impl SessionRegistry {
         }
         if has_prompt {
             if let Some(runtime) = agent_runtime.as_ref() {
-                // The journal records `prompt`, the same string the writer got:
-                // the user's text plus one path per attachment. The base64 never
-                // leaves `PromptAttachment` — a turn's row must not grow by
-                // hundreds of KiB, and the user's images must not be copied into
-                // the history database.
+                // The journal records `prompt`: on the fallback path that is
+                // the same string the writer got (the user's text plus one
+                // path per attachment); on the structured path it is the
+                // text block (the user's text plus any SVG path lines). The
+                // base64 never leaves `PromptAttachment` either way — a
+                // turn's row must not grow by hundreds of KiB, and the user's
+                // images must not be copied into the history database.
                 if !runtime.publish_agent_user_message(prompt.clone()) {
                     return Err(internal("Agent input could not be recorded."));
                 }
@@ -3224,6 +3648,9 @@ pub fn spawn_session(
         switcher: None,
         child: Box::new(PtyWaitableChild { child }),
         writer: Arc::new(Mutex::new(writer)),
+        // A terminal's writer is a PTY: nothing there can open a path, so no
+        // structured prompt route.
+        image_sink: None,
         reader,
         reader_dispatch: None,
         stderr: None,
@@ -3289,6 +3716,7 @@ fn start_spawned_session(
         switcher,
         child,
         writer,
+        image_sink,
         reader,
         reader_dispatch,
         stderr,
@@ -3401,6 +3829,7 @@ fn start_spawned_session(
         switcher,
         child_wait,
         writer,
+        image_sink,
         reader_handle: None,
         coalesce_handle: None,
         stderr_handle: None,
@@ -3672,6 +4101,7 @@ fn finish_reader_session(registry: &SessionRegistry, id: &str, runtime: &Session
     let PtySession {
         master,
         writer,
+        image_sink: _,
         killer,
         runtime: session_runtime,
         mcp_session,
@@ -3748,6 +4178,7 @@ fn teardown_session_inner(session: PtySession, finish_runtime: bool) {
         switcher: _,
         child_wait,
         writer,
+        image_sink: _,
         reader_handle,
         coalesce_handle,
         stderr_handle,
@@ -5880,6 +6311,20 @@ mod tests {
         kind: SessionKind,
         writer: Box<dyn Write + Send>,
     ) -> Arc<SessionRuntime> {
+        insert_live_agent_with_kind_writer_and_sink(registry, id, owner, kind, writer, None)
+    }
+
+    /// The insert behind the two helpers above, with the optional structured
+    /// prompt sibling. `None` is the fallback world: no structured route
+    /// unless a test installs a sink double.
+    fn insert_live_agent_with_kind_writer_and_sink(
+        registry: &SessionRegistry,
+        id: &str,
+        owner: OwnerId,
+        kind: SessionKind,
+        writer: Box<dyn Write + Send>,
+        image_sink: Option<Arc<AcpPromptSink>>,
+    ) -> Arc<SessionRuntime> {
         let metadata = Session {
             id: id.to_string(),
             workspace_id: None,
@@ -5905,6 +6350,10 @@ mod tests {
             stderr_handle: None,
             child_wait: None,
             writer: Arc::new(Mutex::new(writer)),
+            // Test sessions default to the fallback world: no structured
+            // route unless the test installs one, so the path-line
+            // assertions below pin the honest fallback.
+            image_sink,
             reader_handle: None,
             coalesce_handle: None,
             runtime: Arc::clone(&runtime),
@@ -6032,7 +6481,7 @@ mod tests {
     }
 
     #[test]
-    fn an_attachment_is_written_and_named_in_the_prompt() {
+    fn a_fallback_session_writes_an_attachment_path_line() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-attach-path", "process-attach");
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -6042,6 +6491,9 @@ mod tests {
             owner.clone(),
             Box::new(RecordingWriter(Arc::clone(&received))),
         );
+        // The sibling is `None` here — the fallback world — so this pins the
+        // honest path line, not a block. The structured tests below pin the
+        // block world on a session with a sink.
         let conn = attach_live_agent_for_test(&runtime, "attach-path", 41);
         // A container the daemon's walk accepts and changes nothing in, so the
         // name and the bytes asserted below are the ones the client sent.
@@ -6087,7 +6539,7 @@ mod tests {
     }
 
     #[test]
-    fn an_attachment_line_is_separated_from_the_prompt_by_a_blank_line() {
+    fn a_fallback_session_separates_attachment_lines_by_a_blank_line() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-attach-two", "process-attach");
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -6132,7 +6584,7 @@ mod tests {
     }
 
     #[test]
-    fn a_svg_is_delivered_as_a_file_because_no_provider_takes_it_inline() {
+    fn a_fallback_session_delivers_svg_as_a_file() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-attach-svg", "process-attach");
         let runtime = insert_live_agent_with_writer(
@@ -6302,7 +6754,7 @@ mod tests {
     }
 
     #[test]
-    fn the_text_cap_is_measured_before_the_attachment_lines_are_appended() {
+    fn a_fallback_session_measures_the_text_cap_before_appending_lines() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-attach-cap", "process-attach");
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -6352,7 +6804,7 @@ mod tests {
     }
 
     #[test]
-    fn the_journaled_prompt_carries_the_path_and_never_the_bytes() {
+    fn a_fallback_session_journals_the_path_and_never_the_bytes() {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-attach-journal", "process-attach");
         let conn = agent_ready_for_attachment(&registry, "attach-journal", &owner, 50);
@@ -6430,6 +6882,8 @@ mod tests {
 
     #[test]
     fn a_terminal_session_refuses_attachments_before_writing_anything() {
+        // Terminals have no sibling (`image_sink: None`) and fail before it:
+        // the PTY refusal above runs before any materialize or any write.
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-attach-terminal", "process-attach");
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -6467,6 +6921,254 @@ mod tests {
             "nothing is materialized for a session that cannot read it"
         );
 
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // --- structured prompts (ACP image blocks) -----------------------------
+    //
+    // The decision — which attachments become blocks, what text the journal
+    // records — is `plan_structured_prompt`, a pure function of the request's
+    // `(text, attachments)`, so the block-shape tests pin it against the
+    // attachment store directly, without spawning a child. The wire shape of
+    // one block is pinned against the exact JSON the ACP read-side test
+    // already expects
+    // (`{"type":"image","mimeType":"image/png","data":"<base64>"}`).
+    // The journal on the structured route is pinned below by reading the
+    // published `AgentUserMessage` — the same way `a_fallback_session_journals`
+    // pins the fallback route — through a sink double that stands in for the
+    // child. A test that saw the plan but not the journal call would still be
+    // an argument from reading the code, and the journal is the one place a
+    // leak would be permanent.
+
+    #[test]
+    fn a_supported_session_plans_an_image_block_and_no_path_line() {
+        // Supported: the raster becomes one image block; the text block is
+        // the bare user text, with no path line.
+        let (dir, _registry, journal) = tmp_delete_registry();
+        let session_id = "attach-block";
+        assert_eq!(
+            ImageDelivery::from_negotiated(crate::acp_view::PromptCapabilityState::Supported),
+            ImageDelivery::NegotiatedImageBlock,
+        );
+        // A container the walk accepts but changes: what the block carries
+        // must be the stripped bytes, never the wire bytes.
+        let sent = crate::raster_metadata::png_with_text_chunk();
+        let kept = clean_png(0x01);
+        assert_ne!(
+            sent, kept,
+            "the fixture must actually carry something that leaves"
+        );
+        let store = AttachmentStore::new(&dir);
+        let plan = plan_structured_prompt(
+            &store,
+            session_id,
+            "describe this",
+            &[attachment("photo.png", "image/png", &sent)],
+        )
+        .expect("planned")
+        .expect("a raster plans a structured prompt");
+        assert_eq!(
+            plan.fallback_text, "describe this",
+            "no fallback path means the bare text"
+        );
+        assert_eq!(plan.images.len(), 1);
+        assert_eq!(plan.images[0].mime_type, "image/png");
+        {
+            use base64::Engine;
+            assert_eq!(
+                plan.images[0].data_base64,
+                base64::engine::general_purpose::STANDARD.encode(&kept),
+                "the block carries the stripped bytes"
+            );
+        }
+        let block = plan.images[0].to_content_block();
+        assert_eq!(
+            block.get("type").and_then(|value| value.as_str()),
+            Some("image")
+        );
+        assert_eq!(
+            block.get("mimeType").and_then(|value| value.as_str()),
+            Some("image/png")
+        );
+        assert!(
+            block.get("data").and_then(|value| value.as_str()).is_some(),
+            "the ACP image block shape the read-side test pins"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_refused_session_keeps_the_path_line_and_builds_no_block() {
+        // Refused (`false` in the handshake): the safe answer is the path
+        // line, exactly as today, and no block is built.
+        assert_eq!(
+            ImageDelivery::from_negotiated(crate::acp_view::PromptCapabilityState::Unsupported),
+            ImageDelivery::PathLine,
+        );
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-refused", "process-attach");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        // No sibling installed: the fallback world, like a session whose
+        // handshake refused images.
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "attach-refused",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "attach-refused", 61);
+        let image = clean_png(0x11);
+        registry
+            .send_with_subscription(
+                "attach-refused",
+                61,
+                "describe this",
+                &[attachment("photo.png", "image/png", &image)],
+                &owner,
+                &conn,
+            )
+            .expect("send");
+        let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
+        assert!(
+            written.starts_with("describe this\n\n[Image available at: "),
+            "{written}"
+        );
+        assert!(!written.contains("\"type\":\"image\""), "{written}");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unknown_session_keeps_the_path_line_and_builds_no_block() {
+        // Absent (the agent said nothing, or a malformed value): silence is
+        // not consent, so the path line is the safe answer. Unknown never
+        // means yes.
+        assert_eq!(
+            ImageDelivery::from_negotiated(crate::acp_view::PromptCapabilityState::Absent),
+            ImageDelivery::PathLine,
+        );
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-unknown", "process-attach");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "attach-unknown",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "attach-unknown", 62);
+        registry
+            .send_with_subscription(
+                "attach-unknown",
+                62,
+                "describe this",
+                &[attachment("photo.png", "image/png", &clean_png(0x12))],
+                &owner,
+                &conn,
+            )
+            .expect("send");
+        let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
+        assert!(
+            written.starts_with("describe this\n\n[Image available at: "),
+            "{written}"
+        );
+        assert!(!written.contains("\"type\":\"image\""), "{written}");
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_svg_keeps_its_path_line_beside_image_blocks() {
+        // SVG never becomes a block — no provider accepts it inline — so a
+        // mixed prompt carries both: the raster as a block, the SVG as a
+        // path line in the text block.
+        let (dir, _registry, journal) = tmp_delete_registry();
+        let session_id = "attach-mixed";
+        let store = AttachmentStore::new(&dir);
+        let source = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let plan = plan_structured_prompt(
+            &store,
+            session_id,
+            "logo and photo",
+            &[
+                attachment("photo.png", "image/png", &clean_png(0x13)),
+                attachment("drawing.svg", "image/svg+xml", source),
+            ],
+        )
+        .expect("planned")
+        .expect("a mixed prompt plans a structured prompt");
+        assert_eq!(plan.images.len(), 1, "only the raster becomes a block");
+        assert_eq!(plan.images[0].mime_type, "image/png");
+        assert!(
+            plan.fallback_text
+                .starts_with("logo and photo\n\n[Image available at: "),
+            "{}",
+            plan.fallback_text
+        );
+        assert!(plan.fallback_text.ends_with(".svg]"), "{}", plan.fallback_text);
+        assert!(
+            !plan.fallback_text.contains(".png]"),
+            "the raster left no path line: {}",
+            plan.fallback_text
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_svg_only_prompt_plans_no_structured_prompt() {
+        // An SVG-only prompt on a capable session has nothing to send inline:
+        // the plan is `None`, so the send path takes the legacy write —
+        // materialized once, never twice.
+        let (dir, _registry, journal) = tmp_delete_registry();
+        let store = AttachmentStore::new(&dir);
+        let source = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let plan = plan_structured_prompt(
+            &store,
+            "attach-svg-only",
+            "logo",
+            &[attachment("drawing.svg", "image/svg+xml", source)],
+        )
+        .expect("planned");
+        assert!(
+            plan.is_none(),
+            "an SVG-only prompt stays on the legacy path-line write"
+        );
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_block_mime_type_matches_what_was_stored() {
+        // A JPEG stays a JPEG on the wire: the label `materialize` checked
+        // against the sniffed container is the label the block carries.
+        let (dir, _registry, journal) = tmp_delete_registry();
+        let store = AttachmentStore::new(&dir);
+        const EXIF_JPEG_VECTOR: &str =
+            "a jpeg whose APP1 holds EXIF, between a kept JFIF APP0 and a kept ICC APP2";
+        let sent = crate::raster_metadata::vector_input(EXIF_JPEG_VECTOR);
+        let kept = crate::raster_metadata::vector_output(EXIF_JPEG_VECTOR);
+        let plan = plan_structured_prompt(
+            &store,
+            "attach-mime",
+            "describe this",
+            &[attachment("photo.jpg", "image/jpeg", &sent)],
+        )
+        .expect("planned")
+        .expect("a raster plans a structured prompt");
+        assert_eq!(plan.fallback_text, "describe this");
+        assert_eq!(plan.images.len(), 1);
+        assert_eq!(plan.images[0].mime_type, "image/jpeg");
+        {
+            use base64::Engine;
+            assert_eq!(
+                plan.images[0].data_base64,
+                base64::engine::general_purpose::STANDARD.encode(&kept),
+                "stripped JPEG bytes, JPEG label"
+            );
+        }
         journal.shutdown();
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -6630,6 +7332,8 @@ mod tests {
             stderr_handle: None,
             child_wait: None,
             writer: Arc::new(Mutex::new(writer)),
+            // A terminal has no structured prompt route.
+            image_sink: None,
             reader_handle: None,
             coalesce_handle: None,
             runtime,
@@ -7800,6 +8504,8 @@ mod tests {
             stderr_handle: None,
             child_wait: None,
             writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            // Not an ACP session under test: no structured prompt route.
+            image_sink: None,
             reader_handle: None,
             coalesce_handle: None,
             runtime: Arc::clone(&runtime),
@@ -7908,6 +8614,9 @@ mod tests {
             stderr_handle: None,
             child_wait: None,
             writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            // Fallback world: no structured route, so the mode rejection below
+            // exercises the plain-text session, not the sink.
+            image_sink: None,
             reader_handle: None,
             coalesce_handle: None,
             runtime: Arc::clone(&runtime),

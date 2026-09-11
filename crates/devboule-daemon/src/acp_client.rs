@@ -594,6 +594,11 @@ fn spawn_process_with_load(
         })),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
+        // The sibling is installed for every ACP session; whether a prompt
+        // uses it is decided per prompt from the live negotiated capability.
+        // An agent that never declared `promptCapabilities.image` keeps the
+        // sibling present but unused, falling back to the path line.
+        image_sink: Some(Arc::new(super::AcpPromptSink::new(&transport))),
         reader: Box::new(reader),
         reader_dispatch: Some(Box::new(reader_dispatch)),
         stderr: Some(Box::new(stderr_source)),
@@ -664,7 +669,7 @@ enum PendingSwitch {
     },
 }
 
-struct AcpTransport {
+pub(super) struct AcpTransport {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     permission_broker: Arc<PermissionBroker>,
     host: Arc<AcpHost>,
@@ -686,6 +691,10 @@ struct AcpTransport {
     prompt_capabilities: Mutex<PromptCapabilities>,
 }
 
+/// The sink's write halves share one `session/prompt` sender: text-only
+/// ([`AcpWriter`]) and text-plus-image blocks (the structured sibling).
+/// Kept on the transport so both halves read the same session id and feed
+/// the same turn watch.
 impl AcpTransport {
     fn new(stdin: ChildStdin, host: Arc<AcpHost>) -> Self {
         let stdin = Arc::new(Mutex::new(Some(stdin)));
@@ -741,6 +750,25 @@ impl AcpTransport {
         }
     }
 
+    /// Issues one `session/prompt` request on this transport's stdin and starts
+    /// the turn watch on its id. [`AcpWriter`] sends a text-only block through
+    /// here; the structured sibling ([`super::AcpPromptSink`]) sends text plus
+    /// image blocks through [`AcpTransport::send_structured_prompt`] with the
+    /// same allocator and pending table, so both halves draw request ids from
+    /// one sequence.
+    fn send_prompt(&self, prompt: Vec<serde_json::Value>) -> io::Result<u64> {
+        let id = send_prompt_on(self, prompt)?;
+        self.turn.start_prompt(id);
+        Ok(id)
+    }
+
+    /// The structured sibling's write half ([`super::AcpPromptSink`]): text
+    /// plus image blocks through the same sender, id sequence, pending
+    /// table, session id and turn watch.
+    pub(super) fn send_structured_prompt(&self, prompt: Vec<serde_json::Value>) -> io::Result<u64> {
+        self.send_prompt(prompt)
+    }
+
     fn request(&self, method: &str, params: serde_json::Value) -> io::Result<u64> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.pending
@@ -785,7 +813,50 @@ impl AcpTransport {
     fn has_remote_modes(&self) -> bool {
         self.remote_modes.load(Ordering::Acquire)
     }
+}
 
+/// One `session/prompt` request on the transport's own handles: the shared
+/// write half behind both [`AcpTransport::send_prompt`] (text-only) and
+/// [`AcpTransport::send_structured_prompt`] (text plus image blocks). It
+/// takes `&self` so there is nothing new to share with the sibling — both
+/// halves already hold the transport — and so the two cannot drift into
+/// different envelopes, id sequences, or pending tables.
+fn send_prompt_on(transport: &AcpTransport, prompt: Vec<serde_json::Value>) -> io::Result<u64> {
+    let id = transport.next_id.fetch_add(1, Ordering::Relaxed);
+    transport
+        .pending
+        .lock()
+        .map_err(|_| io::Error::other("ACP pending-id lock poisoned"))?
+        .insert(id);
+    let frame = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "session/prompt",
+        "params": {
+            "sessionId": transport.session_id(),
+            "prompt": prompt,
+        },
+    });
+    let mut bytes = serde_json::to_vec(&frame)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    bytes.push(b'\n');
+    if let Err(error) = super::write_child_stdin(&transport.stdin, &bytes, "ACP") {
+        // Same poison handling as `request`'s failure path: a poisoned table
+        // still gives up its guard, so the id never leaks into `pending`.
+        match transport.pending.lock() {
+            Ok(mut pending) => {
+                pending.remove(&id);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().remove(&id);
+            }
+        }
+        return Err(error);
+    }
+    Ok(id)
+}
+
+impl AcpTransport {
     fn remove_pending_id(&self, id: u64) {
         match self.pending.lock() {
             Ok(mut pending) => {
@@ -839,10 +910,10 @@ impl AcpTransport {
         *slot = capabilities;
     }
 
-    /// The read side for a future image sender. Nothing sends an image yet, so
-    /// in production this is only the precondition this slice installs.
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn prompt_capabilities(&self) -> PromptCapabilities {
+    /// The read side for the structured prompt sink: the per-prompt delivery
+    /// decision reads the live negotiated verdict, so a `session/load`
+    /// handshake that re-derives it is honoured without a respawn.
+    pub(super) fn prompt_capabilities(&self) -> PromptCapabilities {
         match self.prompt_capabilities.lock() {
             Ok(capabilities) => *capabilities,
             Err(poisoned) => *poisoned.into_inner(),
@@ -1744,14 +1815,8 @@ impl Write for AcpWriter {
         }
         let prompt = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
-        let id = self.transport.request(
-            "session/prompt",
-            serde_json::json!({
-                "sessionId": self.transport.session_id(),
-                "prompt": [{ "type": "text", "text": prompt }]
-            }),
-        )?;
-        self.transport.turn.start_prompt(id);
+        self.transport
+            .send_prompt(vec![serde_json::json!({ "type": "text", "text": prompt })])?;
         Ok(())
     }
 }

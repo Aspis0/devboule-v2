@@ -439,6 +439,8 @@ pub(super) fn spawn_process(
         })),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
+        // Not an ACP session: no structured prompt route.
+        image_sink: None,
         reader: Box::new(stdout),
         reader_dispatch: Some(Box::new(reader_dispatch)),
         stderr: Some(Box::new(stderr_source)),
@@ -880,6 +882,155 @@ fn pi_permission_sender(
     })
 }
 
+/// One Pi `images[]` entry: the Paseo-measured `convertPromptInput` shape
+/// `{"type": "image", "data": ..., "mimeType": ...}` — flat, with a
+/// capital-T `mimeType`, unlike Claude's nested `source`/`media_type`. The
+/// bytes are the stripped bytes read back from the file `materialize`
+/// wrote, never the base64 that arrived on the wire. `#[cfg(test)]` while
+/// the send-path follow-up is unsequenced, like the frame below.
+#[cfg(test)]
+fn pi_image_entry(mime_type: &str, data_base64: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "image",
+        "data": data_base64,
+        "mimeType": mime_type,
+    })
+}
+
+/// The `prompt` frame with the optional `images` field: present only when at
+/// least one raster travels. Absent otherwise, matching Paseo's
+/// `...(images?.length ? { images } : {})` — the child must not see an empty
+/// array where the measured sender omits the field. `#[cfg(test)]` while the
+/// send-path follow-up is unsequenced: the writer still builds today's
+/// text-only frame inline, and this stays the pinned shape for the
+/// follow-up rather than a second production caller.
+#[cfg(test)]
+fn pi_prompt_frame(id: &str, text: &str, images: &[super::AcpImageBlock]) -> serde_json::Value {
+    let mut frame = serde_json::json!({
+        "id": id,
+        "type": "prompt",
+        "message": text,
+    });
+    if !images.is_empty() {
+        let entries = images
+            .iter()
+            .map(|image| pi_image_entry(&image.mime_type, &image.data_base64))
+            .collect::<Vec<_>>();
+        frame
+            .as_object_mut()
+            .expect("prompt frame is an object")
+            .insert("images".to_string(), serde_json::Value::Array(entries));
+    }
+    frame
+}
+
+/// Frame builder the writer shares with the plan: `images` is always the
+/// carried blocks, empty on the legacy text-only path. `#[cfg(test)]` so
+/// the production writer cannot drift from the shape the tests pin.
+/// (Kept while the send-path follow-up is unsequenced: the writer still
+/// builds its frame inline below.)
+#[cfg(test)]
+fn pi_prompt_frame_for_test(text: &str, images: &[super::AcpImageBlock]) -> serde_json::Value {
+    pi_prompt_frame("p-test", text, images)
+}
+
+/// Prompt plan for one Pi send: the text plus any image entries. The
+/// capability rule is Paseo's `piModelSupportsImageInput` — `image` in the
+/// current model's `input` — read through the tri-state this daemon already
+/// keeps per model: `Supported` frames bytes, `Unsupported` AND `Absent`
+/// keep the path line. A model whose inputs we do not know gets the path
+/// line, never an attempt.
+///
+/// Not yet sent: the `session.rs` send path still takes the legacy path-line
+/// write for Pi, so this plan has no production caller until that follow-up
+/// lands.
+#[cfg(test)]
+struct PiPromptPlan {
+    fallback_text: String,
+    images: Vec<super::AcpImageBlock>,
+}
+
+/// The delivery the current Pi model authorises, read from the catalog the
+/// handshake filled. `#[cfg(test)]` with the plan: the only reader is the
+/// gate above until the send-path follow-up lands.
+#[cfg(test)]
+fn pi_delivery(catalog: &PiCatalog, model_id: Option<&str>) -> super::ImageDelivery {
+    let image = model_id
+        .and_then(|id| catalog.input_kinds(id))
+        .map(|kinds| kinds.image)
+        .unwrap_or(PromptCapabilityState::Absent);
+    match image {
+        PromptCapabilityState::Supported => super::ImageDelivery::StaticImageBlock,
+        PromptCapabilityState::Unsupported | PromptCapabilityState::Absent => {
+            super::ImageDelivery::PathLine
+        }
+    }
+}
+
+/// Splits one request's attachments into inline image entries and path-line
+/// fallbacks. Every attachment is materialized first — exactly the call the
+/// shared `with_attachment_paths` makes — so a request that fails on its
+/// third attachment leaves nothing half-built. `#[cfg(test)]` with the plan:
+/// the only caller is the tests below until the send-path follow-up lands.
+#[cfg(test)]
+fn plan_pi_prompt(
+    store: &crate::attachment_store::AttachmentStore,
+    session_id: &str,
+    text: &str,
+    attachments: &[devboule_protocol::PromptAttachment],
+    catalog: &PiCatalog,
+    model_id: Option<&str>,
+) -> Result<Option<PiPromptPlan>, devboule_protocol::WireError> {
+    if attachments.is_empty() {
+        return Ok(None);
+    }
+    // Unknown is never yes: only a model that declared `image` frames bytes.
+    if pi_delivery(catalog, model_id) != super::ImageDelivery::StaticImageBlock {
+        return Ok(None);
+    }
+    let session = store.session(session_id).ok_or_else(|| {
+        devboule_protocol::WireError::new(
+            devboule_protocol::ErrorCode::InvalidRequest,
+            "Invalid session id.",
+        )
+    })?;
+    let mut images = Vec::new();
+    let mut fallback_paths = Vec::new();
+    for attachment in attachments {
+        let path = session.materialize(attachment)?;
+        if crate::raster_metadata::RasterMime::from_mime_type(&attachment.mime_type).is_some() {
+            images.push(
+                super::AcpImageBlock::from_stored_file(&path, &attachment.mime_type).map_err(
+                    |error| {
+                        devboule_protocol::WireError::new(
+                            devboule_protocol::ErrorCode::Io,
+                            format!("Could not read a stored attachment: {error}"),
+                        )
+                    },
+                )?,
+            );
+        } else {
+            fallback_paths.push(path);
+        }
+    }
+    if images.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(PiPromptPlan {
+        fallback_text: super::prompt_text_with_fallback_paths(text, &fallback_paths),
+        images,
+    }))
+}
+
+/// The read-side twin of the routing rule above: what the daemon kept on
+/// disk for a carried entry. Used by tests to pin the rule without spawning
+/// a child.
+#[cfg(test)]
+fn carried_pi_mime_types(plan: Option<&PiPromptPlan>) -> Vec<&str> {
+    plan.map(|plan| plan.images.iter().map(|image| image.mime_type.as_str()).collect())
+        .unwrap_or_default()
+}
+
 struct PiWriter {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
@@ -898,6 +1049,11 @@ impl Write for PiWriter {
         }
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
+        // Unchanged text-only frame: `images` stays a plan-side shape until
+        // the send-path follow-up sequences the Pi wiring. `pi_prompt_frame`
+        // pins the omission (`...(images?.length ? { images } : {})`) for
+        // that follow-up; the writer keeps today's literal so the two cannot
+        // drift under a shared name before the plan has a production caller.
         let frame = serde_json::json!({
             "id": format!("p-{}", self.next_id.fetch_add(1, Ordering::Relaxed)),
             "type": "prompt",
@@ -1701,14 +1857,18 @@ impl StderrSource for PiStderr {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_ready_notify, perform_handshake, permission_extension_path, permission_request_from_ui,
-        pi_permission_sender, spawn_args, thinking_level_allowed, write_permission_extension,
-        PiCatalog, PiControl, PiStdout, PiSwitcher,
+        carried_pi_mime_types, is_ready_notify, perform_handshake, permission_extension_path,
+        permission_request_from_ui, pi_delivery, pi_image_entry, pi_prompt_frame,
+        pi_prompt_frame_for_test, plan_pi_prompt, pi_permission_sender, spawn_args,
+        thinking_level_allowed, write_permission_extension, PiCatalog, PiControl, PiStdout,
+        PiSwitcher,
     };
     use crate::acp_view::PromptCapabilityState;
+    use crate::attachment_store::AttachmentStore;
     use crate::pi_view::events_from_line;
+    use crate::raster_metadata::{clean_png, png_with_text_chunk, vector_input, vector_output};
     use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch};
-    use devboule_protocol::SessionEvent;
+    use devboule_protocol::{PromptAttachment, SessionEvent};
     use std::collections::HashMap;
     use std::io::BufRead;
     use std::path::Path;
@@ -2179,5 +2339,251 @@ mod tests {
         let empty = catalog.input_kinds("empty").expect("empty");
         assert_eq!(empty.image, PromptCapabilityState::Unsupported);
         assert!(empty.declared.is_empty());
+    }
+
+    // --- image delivery (plan-side; the send-path follow-up is unsequenced)
+    //
+    // The routing decision lives in `plan_pi_prompt`, tested here against
+    // the attachment store directly, without spawning a child — the same
+    // arrangement the ACP sibling seam's tests use. The wire shape of one
+    // entry is pinned against Paseo's measured `convertPromptInput` output
+    // (`{"type":"image","data":...,"mimeType":"image/png"}`), and the
+    // frame omission against `...(images?.length ? { images } : {})`.
+
+    struct PlanTempDir(std::path::PathBuf);
+
+    impl PlanTempDir {
+        fn new(tag: &str) -> Self {
+            static COUNTER: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
+            let dir = std::env::temp_dir().join(format!(
+                "devboule-pi-plan-{}-{}-{}",
+                std::process::id(),
+                tag,
+                COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for PlanTempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn plan_attachment(name: &str, mime_type: &str, bytes: &[u8]) -> PromptAttachment {
+        use base64::Engine;
+        PromptAttachment {
+            name: name.to_string(),
+            mime_type: mime_type.to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+
+    fn capable_catalog() -> PiCatalog {
+        catalog_from_capture(PI_MODELS_CAPTURE)
+    }
+
+    #[test]
+    fn pi_delivery_follows_the_current_model_tri_state() {
+        // Paseo's `piModelSupportsImageInput` through the tri-state this
+        // daemon already keeps: `Supported` frames bytes, `Unsupported` AND
+        // `Absent` keep the path line.
+        let catalog = capable_catalog();
+        assert_eq!(
+            pi_delivery(&catalog, Some("minimax-m3")),
+            super::super::ImageDelivery::StaticImageBlock,
+            "a model that declared image frames bytes"
+        );
+        assert_eq!(
+            pi_delivery(&catalog, Some("deepseek-v4-flash")),
+            super::super::ImageDelivery::PathLine,
+            "a model that declared no image keeps the path line"
+        );
+        assert_eq!(
+            pi_delivery(&catalog, Some("no-such-model")),
+            super::super::ImageDelivery::PathLine,
+            "an unknown model is Absent: never an attempt"
+        );
+        assert_eq!(
+            pi_delivery(&catalog, None),
+            super::super::ImageDelivery::PathLine,
+            "no current model is Absent: never an attempt"
+        );
+    }
+
+    #[test]
+    fn a_capable_pi_model_plans_an_image_entry_and_no_path_line() {
+        // The raster becomes one `images[]` entry; the text is the bare user
+        // text, with no path line. The frame carries the field; the
+        // text-only frame omits it.
+        let temp = PlanTempDir::new("capable");
+        let store = AttachmentStore::new(&temp.0);
+        let catalog = capable_catalog();
+        // A container the walk accepts but changes: what the entry carries
+        // must be the stripped bytes, never the wire bytes.
+        let sent = png_with_text_chunk();
+        let kept = clean_png(0x01);
+        assert_ne!(
+            sent, kept,
+            "the fixture must actually carry something that leaves"
+        );
+        let plan = plan_pi_prompt(
+            &store,
+            "pi-plan-capable",
+            "describe this",
+            &[plan_attachment("photo.png", "image/png", &sent)],
+            &catalog,
+            Some("minimax-m3"),
+        )
+        .expect("materialized")
+        .expect("a capable model plans an entry");
+        assert_eq!(plan.fallback_text, "describe this", "no path line");
+        assert_eq!(carried_pi_mime_types(Some(&plan)), vec!["image/png"]);
+        assert_eq!(plan.images.len(), 1);
+        {
+            use base64::Engine;
+            assert_eq!(
+                plan.images[0].data_base64,
+                base64::engine::general_purpose::STANDARD.encode(&kept),
+                "the entry carries the stripped bytes"
+            );
+        }
+        // The exact entry shape, pinned literally: flat, capital-T
+        // `mimeType` — not Claude's nested `source`/`media_type`.
+        let entry = pi_image_entry(&plan.images[0].mime_type, &plan.images[0].data_base64);
+        assert_eq!(entry["type"], "image");
+        assert_eq!(entry["mimeType"], "image/png");
+        assert!(entry["data"].as_str().is_some());
+        assert!(entry.get("source").is_none(), "no Claude nesting");
+        assert!(entry.get("media_type").is_none(), "no Claude key");
+        let frame = pi_prompt_frame("p-1", &plan.fallback_text, &plan.images);
+        assert_eq!(frame["message"], "describe this");
+        let images = frame["images"].as_array().expect("images array");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0]["mimeType"], "image/png");
+        let bare = pi_prompt_frame_for_test("describe this", &[]);
+        assert_eq!(bare["message"], "describe this");
+        assert!(
+            bare.get("images").is_none(),
+            "text-only omits the field, never an empty array"
+        );
+    }
+
+    #[test]
+    fn an_incapable_pi_model_keeps_the_path_line_and_plans_nothing() {
+        // `deepseek-v4-flash` declares text only: the safe answer is no plan,
+        // so the caller takes the legacy path-line write.
+        let temp = PlanTempDir::new("incapable");
+        let store = AttachmentStore::new(&temp.0);
+        let catalog = capable_catalog();
+        let plan = plan_pi_prompt(
+            &store,
+            "pi-plan-incapable",
+            "describe this",
+            &[plan_attachment("photo.png", "image/png", &clean_png(0x11))],
+            &catalog,
+            Some("deepseek-v4-flash"),
+        )
+        .expect("materialized");
+        assert!(plan.is_none(), "an incapable model plans nothing");
+    }
+
+    #[test]
+    fn an_unknown_pi_model_keeps_the_path_line_and_plans_nothing() {
+        // Absent (unknown model, or no current model): silence is not
+        // consent, so the path line is the safe answer. Unknown never means
+        // yes — this is the third state the tri-state exists to keep apart
+        // from a refusal.
+        let temp = PlanTempDir::new("unknown");
+        let store = AttachmentStore::new(&temp.0);
+        let catalog = capable_catalog();
+        for model in [Some("no-such-model"), None] {
+            let plan = plan_pi_prompt(
+                &store,
+                "pi-plan-unknown",
+                "describe this",
+                &[plan_attachment("photo.png", "image/png", &clean_png(0x12))],
+                &catalog,
+                model,
+            )
+            .expect("materialized");
+            assert!(plan.is_none(), "an unknown model plans nothing");
+        }
+    }
+
+    #[test]
+    fn an_svg_keeps_its_path_line_beside_pi_image_entries() {
+        // A mixed prompt carries both: the raster as an entry, the SVG as a
+        // path line in the text.
+        let temp = PlanTempDir::new("mixed");
+        let store = AttachmentStore::new(&temp.0);
+        let catalog = capable_catalog();
+        let source = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+        let plan = plan_pi_prompt(
+            &store,
+            "pi-plan-mixed",
+            "logo and photo",
+            &[
+                plan_attachment("photo.png", "image/png", &clean_png(0x13)),
+                plan_attachment("drawing.svg", "image/svg+xml", source),
+            ],
+            &catalog,
+            Some("minimax-m3"),
+        )
+        .expect("materialized")
+        .expect("the raster plans an entry");
+        assert_eq!(carried_pi_mime_types(Some(&plan)), vec!["image/png"]);
+        assert!(
+            plan.fallback_text
+                .starts_with("logo and photo\n\n[Image available at: "),
+            "{}",
+            plan.fallback_text
+        );
+        assert!(plan.fallback_text.ends_with(".svg]"), "{}", plan.fallback_text);
+        assert!(
+            !plan.fallback_text.contains(".png]"),
+            "the raster left no path line: {}",
+            plan.fallback_text
+        );
+        let frame = pi_prompt_frame("p-2", &plan.fallback_text, &plan.images);
+        assert!(frame["message"].as_str().expect("text").ends_with(".svg]"));
+        assert_eq!(frame["images"].as_array().expect("array").len(), 1);
+    }
+
+    #[test]
+    fn a_jpeg_stays_a_jpeg_in_the_pi_entry() {
+        // The label `materialize` checked against the sniffed container is
+        // the label the entry carries.
+        const EXIF_JPEG_VECTOR: &str =
+            "a jpeg whose APP1 holds EXIF, between a kept JFIF APP0 and a kept ICC APP2";
+        let temp = PlanTempDir::new("jpeg");
+        let store = AttachmentStore::new(&temp.0);
+        let catalog = capable_catalog();
+        let sent = vector_input(EXIF_JPEG_VECTOR);
+        let kept = vector_output(EXIF_JPEG_VECTOR);
+        assert_ne!(sent, kept, "the vector must actually strip something");
+        let plan = plan_pi_prompt(
+            &store,
+            "pi-plan-jpeg",
+            "describe this",
+            &[plan_attachment("photo.jpg", "image/jpeg", &sent)],
+            &catalog,
+            Some("minimax-m3"),
+        )
+        .expect("materialized")
+        .expect("a JPEG plans an entry");
+        assert_eq!(plan.fallback_text, "describe this");
+        assert_eq!(carried_pi_mime_types(Some(&plan)), vec!["image/jpeg"]);
+        {
+            use base64::Engine;
+            assert_eq!(
+                plan.images[0].data_base64,
+                base64::engine::general_purpose::STANDARD.encode(&kept),
+                "stripped JPEG bytes, JPEG label"
+            );
+        }
     }
 }
