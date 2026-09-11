@@ -4,56 +4,47 @@
  * What the surface renders is a *fragment*, not a document: DesignSurface
  * wraps it only in one CSP meta line for the canvas iframe (`artifactSrcDoc`).
  * This module turns that fragment into a document that shows the same thing
- * when opened in any browser outside the app. It is pure (no DOM, no
- * clipboard) so the export stays usable from both the UI action and tests.
+ * when opened in any browser outside the app. It is pure (no clipboard) and
+ * runs wherever `DOMParser` exists — the WebView2 renderer and the happy-dom
+ * test environment alike.
  *
- * Two deliberate non-goals, both load-bearing for fidelity:
+ * The first version did this job with eight regular expressions and failed
+ * four live inputs (2026-09-11, hostile review): an `<svg><title>` read as
+ * the page name, a doubled `<head>` leaking two titles, a `<style>` ripped
+ * out of a `<pre>`, one style block emitted twice. A regex cannot know what
+ * a nested element is, so the fix is not a ninth regex: parse once with
+ * `DOMParser`, normalize the tree (fill the gaps, remove the forbidden),
+ * serialize. The canvas iframe parses the same fragment the same way, so
+ * tree fidelity IS rendering fidelity.
+ *
+ * Deliberately, there is no "is this already a document?" pre-check on the
+ * raw string: the parser normalizes fragments and documents into the same
+ * shape (`html > head + body`), and every step below only adds missing
+ * required pieces or removes forbidden ones. Any string-level branch here
+ * would reintroduce exactly the fragility the parser removes. In
+ * particular, nothing authored is ever moved: a style the model wrote in
+ * the head stays in the head, one written in the body stays in the body —
+ * the cascade applies document-wide either way, so hoisting was pointless
+ * as well as harmful, and not moving means nothing can be duplicated.
+ *
+ * Two non-goals, both load-bearing for fidelity:
  *
  * - The app CSP meta is NEVER carried into the file. It exists to confine
  *   the canvas iframe inside the app (`default-src 'none'`, `font-src
  *   'none'`, …); on the user's disk that confinement has no attacker to
- *   stop and would only break rendering (no webfonts, no images except
- *   data: URLs). Any CSP meta found in the fragment is stripped.
- * - No font or base styling is imposed. The canvas applies nothing from the
- *   outside into the frame: parent-page CSS cannot cross a srcdoc boundary,
- *   and `.design-artifact-frame` only sizes the iframe box (width/height/
- *   border), never its content. The app CSP additionally blocks webfonts
- *   (`font-src 'none'`), so whatever type the user sees is already declared
- *   by the fragment itself (inline `<style>`, inline `style=` attributes,
- *   system fonts). Adding the app's fonts here would render something the
- *   user never saw; a fragment that declares nothing keeps declaring
- *   nothing and the browser falls back exactly as it did on canvas.
+ *   stop and would only break rendering. Any CSP meta, wherever parsed, is
+ *   removed.
+ * - No font or base styling is imposed (see module history: the canvas
+ *   applies nothing from the outside into the frame, so whatever type the
+ *   user sees is already declared by the fragment itself).
  */
 
 export const ARTIFACT_EXPORT_FALLBACK_TITLE = "Generated artifact";
 
 const EXPORT_LANG = "en";
-const META_CHARSET = '<meta charset="utf-8">';
-const META_VIEWPORT = '<meta name="viewport" content="width=device-width, initial-scale=1">';
-
 const DOCTYPE_HTML = "<!DOCTYPE html>";
-
-const CSP_META_RE = /<meta\b(?=[^>]*http-equiv)(?=[^>]*content-security-policy)[^>]*>/gi;
-const DOCTYPE_RE = /<!doctype\b[^>]*>/i;
-const HTML_OPEN_RE = /<html\b[^>]*>/i;
-const LANG_ATTR_RE = /\blang\s*=/i;
-const HEAD_OPEN_RE = /<head\b[^>]*>/i;
-const HEAD_BLOCK_RE = /<head\b[^>]*>([\s\S]*?)<\/head\s*>/i;
-const META_CHARSET_RE = /<meta\b[^>]*charset/i;
-const META_VIEWPORT_RE = /<meta\b[^>]*name\s*=\s*("viewport"|'viewport'|viewport(?=[\s/>]))/i;
-const TITLE_BLOCK_RE = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i;
-const STYLE_BLOCK_RE = /<style\b[^>]*>[\s\S]*?<\/style\s*>/gi;
-const H1_BLOCK_RE = /<h1\b[^>]*>([\s\S]*?)<\/h1\s*>/i;
-const TAG_RE = /<[^>]*>/g;
+const XHTML_NS = "http://www.w3.org/1999/xhtml";
 const MAX_H1_TITLE_CHARS = 120;
-
-function escapeTitleText(title: string): string {
-  return title
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 function nonBlank(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
@@ -62,118 +53,98 @@ function nonBlank(value: string | null | undefined): string | null {
 }
 
 /**
- * A fragment that already carries a full document skeleton (`<html>`) is
- * patched, never re-wrapped: an `<html>` inside an `<html>` is a broken
- * file, and re-wrapping would also move the body the model wrote. Only the
- * pieces a standalone document needs and the fragment lacks are added
- * (doctype, `lang`, charset/viewport/title in `<head>`); every other byte
- * of the fragment is preserved so the page cannot change shape.
+ * HTML-namespace `<title>` elements under `root`, in tree order. The
+ * namespace check is the F1 fix: `querySelectorAll("title")` also matches
+ * `<svg><title>` (same local name, other namespace), which is accessibility
+ * text, not a page name — the parser knows the difference, a regex did not.
  */
-function upgradeDocument(source: string, explicitTitle: string | null): string {
-  let next = source;
-  if (!DOCTYPE_RE.test(next)) next = `${DOCTYPE_HTML}\n${next}`;
-  const htmlOpen = next.match(HTML_OPEN_RE)?.[0] ?? "";
-  if (!LANG_ATTR_RE.test(htmlOpen)) {
-    next = next.replace(HTML_OPEN_RE, (open) =>
-      open.replace(/<html/i, `<html lang="${EXPORT_LANG}"`),
-    );
-  }
-  const resolved = resolveExportTitle(next, explicitTitle);
-  const headOpen = next.match(HEAD_OPEN_RE)?.[0];
-  if (headOpen === undefined) {
-    return next.replace(
-      HTML_OPEN_RE,
-      (open) =>
-        `${open}\n<head>\n${META_CHARSET}\n${META_VIEWPORT}\n<title>${escapeTitleText(resolved)}</title>\n</head>`,
-    );
-  }
-  const additions: string[] = [];
-  if (!META_CHARSET_RE.test(next)) additions.push(META_CHARSET);
-  if (!META_VIEWPORT_RE.test(next)) additions.push(META_VIEWPORT);
-  if (!TITLE_BLOCK_RE.test(next)) {
-    additions.push(`<title>${escapeTitleText(resolved)}</title>`);
-  }
-  if (additions.length === 0) return next;
-  return next.replace(HEAD_OPEN_RE, (open) => `${open}\n${additions.join("\n")}\n`);
+function htmlTitlesUnder(root: ParentNode): Element[] {
+  return [...root.querySelectorAll("title")].filter((el) => el.namespaceURI === XHTML_NS);
 }
 
-function declaredTitle(source: string): string | null {
-  return nonBlank(source.match(TITLE_BLOCK_RE)?.[1]);
+function stripCspMetas(doc: Document): void {
+  for (const meta of doc.querySelectorAll("meta[http-equiv]")) {
+    if (meta.getAttribute("http-equiv")?.toLowerCase() === "content-security-policy") {
+      meta.remove();
+    }
+  }
 }
 
-function h1Title(source: string): string | null {
-  const inner = source.match(H1_BLOCK_RE)?.[1];
-  if (inner === undefined) return null;
-  const text = inner.replace(TAG_RE, "").replace(/\s+/g, " ").trim();
-  if (text.length === 0) return null;
-  if (text.length <= MAX_H1_TITLE_CHARS) return text;
-  return `${text.slice(0, MAX_H1_TITLE_CHARS).trimEnd()}…`;
+function headHasCharset(head: HTMLHeadElement): boolean {
+  return head.querySelector("meta[charset]") !== null;
 }
 
-/**
- * Who names the exported page. The page speaks first — its `<title>`, then
- * the text of its first `<h1>` — because both describe the page itself.
- * The run title is a status ("Edited Index header", worse: "Agent did not
- * report written files"), not a name; shown live it shipped verbatim into
- * the browser tab. It only speaks when the page is silent, and the honest
- * fallback closes the chain.
- */
-function resolveExportTitle(source: string, explicitTitle: string | null): string {
-  return (
-    declaredTitle(source) ?? h1Title(source) ?? explicitTitle ?? ARTIFACT_EXPORT_FALLBACK_TITLE
+function headHasViewport(head: HTMLHeadElement): boolean {
+  return [...head.querySelectorAll("meta[name]")].some(
+    (meta) => meta.getAttribute("name")?.toLowerCase() === "viewport",
   );
 }
 
+function h1Text(doc: Document): string | null {
+  const text = doc.body?.querySelector("h1")?.textContent;
+  const collapsed = text?.replace(/\s+/g, " ").trim();
+  if (!collapsed) return null;
+  if (collapsed.length <= MAX_H1_TITLE_CHARS) return collapsed;
+  return `${collapsed.slice(0, MAX_H1_TITLE_CHARS).trimEnd()}…`;
+}
+
 /**
- * A body fragment is wrapped in a minimal shell. `<style>` blocks and a
- * partial `<head>` travel into the built `<head>` instead of staying in the
- * body: CSS applies document-wide wherever the block sits (there is no
- * scoping), so hoisting keeps every rule applying exactly as before while
- * the body keeps only markup. Exactly one `<title>` is emitted.
- *
- * Stray `<body>` tags without an `<html>` ancestor are left alone on
- * purpose: the HTML parser ignores a second body start tag and a stray
- * body end tag, so unwrapping them would only risk dropping real content
- * for zero rendering difference.
+ * Who names the exported page. The page speaks first — its head `<title>`,
+ * then the text of its first `<h1>` — because both describe the page
+ * itself. The run title is a status ("Edited Index header", worse: "Agent
+ * did not report written files"), not a name; shown live it shipped verbatim
+ * into the browser tab. It only speaks when the page is silent, and the
+ * honest fallback closes the chain.
  */
-function wrapFragment(source: string, explicitTitle: string | null): string {
-  let body = source;
-  let headExtras = "";
-  const headBlock = body.match(HEAD_BLOCK_RE);
-  if (headBlock !== null && headBlock[0] !== undefined && headBlock[1] !== undefined) {
-    const rest = headBlock[1].replace(TITLE_BLOCK_RE, "").trim();
-    if (rest.length > 0) headExtras += `${rest}\n`;
-    body = body.replace(headBlock[0], "");
-  }
-  const styles = body.match(STYLE_BLOCK_RE) ?? [];
-  for (const style of styles) body = body.replace(style, "");
-  if (styles.length > 0) headExtras += `${styles.join("\n")}\n`;
-  // Title candidates are read after the head split: the declared title from
-  // the whole fragment, the h1 from the remaining page body.
-  const resolved =
-    declaredTitle(source) ?? h1Title(body) ?? explicitTitle ?? ARTIFACT_EXPORT_FALLBACK_TITLE;
-  return (
-    `${DOCTYPE_HTML}\n` +
-    `<html lang="${EXPORT_LANG}">\n` +
-    `<head>\n${META_CHARSET}\n${META_VIEWPORT}\n<title>${escapeTitleText(resolved)}</title>\n` +
-    `${headExtras}</head>\n` +
-    `<body>\n${body.trim()}\n</body>\n` +
-    `</html>\n`
-  );
+function resolveExportTitle(doc: Document, explicitTitle: string | null): string {
+  const declared = nonBlank(htmlTitlesUnder(doc.head)[0]?.textContent);
+  return declared ?? h1Text(doc) ?? explicitTitle ?? ARTIFACT_EXPORT_FALLBACK_TITLE;
 }
 
 /**
  * Build the standalone document for `fragment`. `title` is the title of the
  * assistant message that produced the artifact, but it is only a fallback:
- * the page names itself first (its `<title>`, then its first `<h1>` — see
- * `resolveExportTitle`), because a run title is a status, not a name. Only
- * when the page is silent does the run title speak, then the honest fallback
- * ("Generated artifact", the same label the canvas frame already carries).
- * No markup is ever invented beyond the shell: the body is the fragment.
+ * the page names itself first (its `<title>`, then its first `<h1>`).
+ * Author bytes are preserved modulo parser normalization (entity and
+ * attribute spelling may be reflowed; the tree is untouched).
  */
 export function buildStandaloneArtifactHtml(fragment: string, title?: string | null): string {
-  const source = fragment.replace(CSP_META_RE, "");
+  const doc = new DOMParser().parseFromString(fragment, "text/html");
   const explicit = nonBlank(title);
-  if (HTML_OPEN_RE.test(source)) return upgradeDocument(source, explicit);
-  return wrapFragment(source, explicit);
+  stripCspMetas(doc);
+
+  const html = doc.documentElement;
+  if (!html.hasAttribute("lang")) html.setAttribute("lang", EXPORT_LANG);
+
+  const head = doc.head;
+  if (!headHasCharset(head)) {
+    const meta = doc.createElement("meta");
+    meta.setAttribute("charset", "utf-8");
+    head.insertBefore(meta, head.firstChild);
+  }
+  if (!headHasViewport(head)) {
+    const meta = doc.createElement("meta");
+    meta.setAttribute("name", "viewport");
+    meta.setAttribute("content", "width=device-width, initial-scale=1");
+    head.appendChild(meta);
+  }
+
+  const resolved = resolveExportTitle(doc, explicit);
+  // Exactly one title, in the head. Strays (a folded second `<head>`, a
+  // doubled head title) are removed by tree position — keep the head's
+  // first, drop the rest — never by string comparison, so identical blocks
+  // the model wrote twice in different places are each left alone.
+  const keeper = htmlTitlesUnder(head)[0] ?? null;
+  for (const stray of htmlTitlesUnder(doc)) {
+    if (stray !== keeper) stray.remove();
+  }
+  if (keeper) {
+    if (keeper.textContent !== resolved) keeper.textContent = resolved;
+  } else {
+    const titleEl = doc.createElement("title");
+    titleEl.textContent = resolved;
+    head.appendChild(titleEl);
+  }
+
+  return `${DOCTYPE_HTML}\n${html.outerHTML}\n`;
 }

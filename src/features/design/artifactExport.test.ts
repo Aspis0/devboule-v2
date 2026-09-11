@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 import { describe, expect, it } from "vitest";
 import { ARTIFACT_EXPORT_FALLBACK_TITLE, buildStandaloneArtifactHtml } from "./artifactExport";
 
@@ -34,8 +36,11 @@ describe("artifact export", () => {
   });
 
   it("escapes title text instead of injecting markup", () => {
+    // DOM serialization since 2026-09-11 (parser rewrite): `<`, `&` are
+    // escaped, `"` stays raw in text nodes. Same document, equivalent bytes —
+    // the old `&quot;` spelling was string-splicing, not the parser.
     const doc = buildStandaloneArtifactHtml("<main>Hi</main>", 'A <b> & "quoted" title');
-    expect(doc).toContain("<title>A &lt;b&gt; &amp; &quot;quoted&quot; title</title>");
+    expect(doc).toContain('<title>A &lt;b&gt; &amp; "quoted" title</title>');
   });
 
   it("passes a complete document through without a second html element", () => {
@@ -90,7 +95,11 @@ describe("artifact export", () => {
     expect(upgraded).toContain("<main>Hi</main>");
   });
 
-  it("hoists a fragment style block into the head instead of leaving it in the body", () => {
+  it("leaves a body style block where the model wrote it", () => {
+    // Hoisting removed 2026-09-11 (F3): the cascade applies document-wide,
+    // so moving a style never changed rendering — it only rewrote the
+    // source (emptied `<pre>`, duplicated blocks). The parser keeps
+    // body-authored styles in the body, exactly like the canvas iframe does.
     const doc = buildStandaloneArtifactHtml(
       "<style>p{color:red}</style><main><p>Hi</p></main>",
       "T",
@@ -99,12 +108,12 @@ describe("artifact export", () => {
     expect(countOccurrences(doc, "<style>p{color:red}</style>")).toBe(1);
     const head = doc.slice(0, doc.indexOf("</head>"));
     const body = doc.slice(doc.indexOf("<body>"));
-    expect(head).toContain("<style>p{color:red}</style>");
-    expect(body).not.toContain("<style>");
+    expect(head).not.toContain("<style>");
+    expect(body).toContain("<style>p{color:red}</style>");
     expect(body).toContain("<p>Hi</p>");
   });
 
-  it("hoists a partial head and emits exactly one title", () => {
+  it("keeps a partial head where the model wrote it and emits exactly one title", () => {
     // Order flipped 2026-09-11 (defect 2, live evidence): a run title is a
     // status ("Edited Index header", worse: "Agent did not report written
     // files"), not a name, and it shipped verbatim into the browser tab.
@@ -179,5 +188,70 @@ describe("artifact export", () => {
     expect(doc).toContain("<!DOCTYPE html>");
     expect(doc).toContain("<title>T</title>");
     expect(doc).toContain("<body>");
+  });
+
+  it("ignores an svg title when naming the page (F1)", () => {
+    // `<title>` inside `<svg>` is accessibility text in another namespace,
+    // not the document title. The regex read it as the page name, so every
+    // page with an inline icon exported as "Icona freccia".
+    const doc = buildStandaloneArtifactHtml(
+      '<main><svg width="24"><title>Icona freccia</title></svg><h1>Dashboard</h1></main>',
+    );
+    expect(doc).toContain("<title>Dashboard</title>");
+    expect(doc).toContain("<title>Icona freccia</title>");
+  });
+
+  it("merges a doubled head into a single title (F2)", () => {
+    // The parser folds the second `<head>` into the body; the regex kept
+    // both titles and leaked "Second" as visible page text.
+    const doc = buildStandaloneArtifactHtml(
+      "<head><title>First</title></head><head><title>Second</title></head><main>Hi</main>",
+    );
+    expect(countOccurrences(doc.toLowerCase(), "<title")).toBe(1);
+    expect(doc).toContain("<title>First</title>");
+    expect(doc).not.toContain("Second");
+  });
+
+  it("leaves a style inside pre exactly where the model wrote it (F3)", () => {
+    // Hoisting ripped the style out of the `<pre>` and left it empty.
+    // Rendering was identical either way (the cascade is document-wide),
+    // which is precisely why moving it was pointless as well as harmful.
+    const doc = buildStandaloneArtifactHtml(
+      "<main><pre><style>not-real-css</style></pre></main>",
+      "T",
+    );
+    expect(doc.indexOf("<style>")).toBeGreaterThan(doc.indexOf("</head>"));
+    expect(doc).toContain("<pre><style>not-real-css</style></pre>");
+  });
+
+  it("never copies a style block the model already placed (F4)", () => {
+    // The head style and the body style are two authored placements, not
+    // two copies: the exporter moves nothing, so it cannot duplicate.
+    const doc = buildStandaloneArtifactHtml(
+      "<head><style>.x{color:blue}</style></head><style>.x{color:blue}</style><main>Hi</main>",
+      "T",
+    );
+    const head = doc.slice(0, doc.indexOf("</head>"));
+    expect(countOccurrences(head, "<style>.x{color:blue}</style>")).toBe(1);
+    expect(countOccurrences(doc, "<style>.x{color:blue}</style>")).toBe(2);
+  });
+
+  it("does not read a title out of an HTML comment", () => {
+    // Fifth case, same family: the regex matched `<title>` inside a comment
+    // and crowned it the page name. The parser knows comments are not elements.
+    const doc = buildStandaloneArtifactHtml(
+      "<!-- <title>Fake</title> --><main><h1>Real</h1></main>",
+    );
+    expect(doc).toContain("<title>Real</title>");
+  });
+
+  it("keeps the first of two titles inside one head", () => {
+    // F2's sibling: both titles survive parsing in the head, but the
+    // browser only ever honors the first, so the export keeps just it.
+    const doc = buildStandaloneArtifactHtml(
+      "<head><title>A</title><title>B</title></head><main>Hi</main>",
+    );
+    expect(countOccurrences(doc.toLowerCase(), "<title")).toBe(1);
+    expect(doc).toContain("<title>A</title>");
   });
 });
