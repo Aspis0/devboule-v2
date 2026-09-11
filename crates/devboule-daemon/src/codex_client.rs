@@ -18,6 +18,9 @@ use super::{
     write_child_stdin, ModelSwitcher, PtyCommand, ReaderDispatch, SessionKiller, SpawnedSession,
     StderrSource, StdioWaitableChild,
 };
+// Reached only by the image-plan builders below, which are still test-only
+// until the send path is wired to them.
+#[cfg(test)]
 use crate::attachment_store::AttachmentStore;
 use crate::codex_view::{
     catalog_from_response, mode_values, thread_mode_values, validate_mode, CodexCatalog,

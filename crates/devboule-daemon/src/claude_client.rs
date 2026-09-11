@@ -24,6 +24,9 @@ use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
     SpawnedSession, StderrSource, StdioWaitableChild,
 };
+// Reached only by the image-plan builders below, which are still test-only
+// until the send path is wired to them.
+#[cfg(test)]
 use crate::attachment_store::AttachmentStore;
 use crate::claude_view::ClaudeView;
 use crate::mcp_broker::McpLaunchConfig;
@@ -484,6 +487,7 @@ fn claude_image_block(mime_type: &str, data_base64: &str) -> serde_json::Value {
 /// `isImageMimeType`: jpeg/png/gif/webp go in the block, anything else
 /// keeps its `[Image available at: ...]` path line — never the silent drop
 /// Paseo's Claude provider performs.
+#[cfg(test)]
 fn claude_accepts_inline(mime_type: &str) -> bool {
     matches!(
         mime_type,

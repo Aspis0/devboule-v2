@@ -773,52 +773,24 @@ fn plan_structured_prompt(
 /// untouched — text-only writes keep flowing through exactly the path they
 /// use today.
 ///
-/// Test seam: the send path calls [`Self::deliver`] — production sends the
-/// plan to the child, tests override it to record the plan. The override
-/// point is the delivery call, not the plan: `plan_structured_prompt` runs
-/// unconditionally first, so a test that records the plan sees the exact
-/// value production would have sent.
+/// There is deliberately no test seam here. One was written — a recording
+/// double behind the delivery call — for a journal test on the structured
+/// route that was never finished, and it sat unreachable: a seam shaped for
+/// an imagined test, which is the shape least likely to fit the test someone
+/// eventually writes. What the decision produces is pinned instead by
+/// [`plan_structured_prompt`], which is pure and runs before anything is
+/// sent, so the tests assert the exact value production would deliver. When
+/// the journal on this route does get covered, the seam it needs should be
+/// built against that test rather than ahead of it.
 pub(crate) struct AcpPromptSink {
     transport: Arc<acp_client::AcpTransport>,
-    #[cfg(test)]
-    deliver: Arc<Mutex<ProbeDeliver>>,
-}
-
-/// What a test double does with the plan instead of writing child stdin.
-#[cfg(test)]
-#[derive(Debug, Default)]
-enum ProbeDeliver {
-    /// Send to the child, like production. The default, so a sink the test
-    /// forgot to arm behaves exactly like the production sibling — including
-    /// failing on a closed stdin, rather than silently recording nothing.
-    #[default]
-    Send,
-    /// Record the plan for later assertion instead of writing.
-    Record(Arc<Mutex<Vec<StructuredPromptPlan>>>),
 }
 
 impl AcpPromptSink {
     fn new(transport: &Arc<acp_client::AcpTransport>) -> Self {
         Self {
             transport: Arc::clone(transport),
-            #[cfg(test)]
-            deliver: Arc::new(Mutex::new(ProbeDeliver::Send)),
         }
-    }
-
-    /// Records one planned prompt without touching a child: the plan it was
-    /// handed, for tests. `pub(crate)` so the sibling's own test module can
-    /// reach it; production never calls it — every production sink keeps
-    /// the default `Send`.
-    #[cfg(test)]
-    pub(crate) fn probe_recorded(&self) -> Arc<Mutex<Vec<StructuredPromptPlan>>> {
-        let recorded = Arc::new(Mutex::new(Vec::new()));
-        *self
-            .deliver
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) =
-            ProbeDeliver::Record(Arc::clone(&recorded));
-        recorded
     }
 
     /// The delivery this prompt is authorised for, read live from the
@@ -850,25 +822,11 @@ impl AcpPromptSink {
         Ok(())
     }
 
-    /// The delivery call: production sends the plan to the child; a test
-    /// double installed by [`Self::probe_recorded`] records it instead.
-    /// `&self` (not `&mut self`) so the send path needs no new lock order:
-    /// the recorded vec has its own mutex, taken only here.
+    /// The delivery call: the plan's content blocks go to the child through
+    /// the shared transport. Kept separate from
+    /// [`Self::send_structured_prompt`] so the capability re-read and the
+    /// write stay two readable steps rather than one.
     fn deliver(&self, plan: StructuredPromptPlan) -> Result<(), WireError> {
-        #[cfg(test)]
-        {
-            let guard = self
-                .deliver
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if let ProbeDeliver::Record(recorded) = &*guard {
-                recorded
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .push(plan);
-                return Ok(());
-            }
-        }
         self.transport
             .send_structured_prompt(plan.content_blocks())
             .map_err(|error| {
