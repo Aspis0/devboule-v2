@@ -1912,6 +1912,7 @@ describe("DesignSurface host capabilities", () => {
       grounded: false,
       folderPath: null,
       outputMode: "page",
+      attachments: [],
     });
     await act(async () => root.unmount());
   });
@@ -2393,7 +2394,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Make the header quieter.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
     );
     await act(async () => root.unmount());
   });
@@ -2414,6 +2415,7 @@ describe("DesignSurface host capabilities", () => {
       grounded: true,
       folderPath: null,
       outputMode: "page",
+      attachments: [],
     });
     await act(async () => root.unmount());
   });
@@ -2442,7 +2444,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       expect.stringContaining("source file: src/components/Header.tsx"),
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
     );
     await act(async () => root.unmount());
   });
@@ -2624,7 +2626,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenLastCalledWith(
       "Refine this artifact.\n\nScope: Editing Generated artifact; the user is refining the artifact the agent just produced.",
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
     );
 
     await act(async () => {
@@ -2892,7 +2894,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
     );
     await act(async () => root.unmount());
   });
@@ -2925,7 +2927,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page", attachments: [] },
     );
     await act(async () => root.unmount());
   });
@@ -3353,6 +3355,7 @@ describe("DesignSurface host capabilities", () => {
       grounded: true,
       folderPath: null,
       outputMode: "page",
+      attachments: [],
     });
     await act(async () => root.unmount());
   });
@@ -3500,6 +3503,7 @@ describe("DesignSurface host capabilities", () => {
       grounded: true,
       folderPath: null,
       outputMode: "page",
+      attachments: [],
     });
     await act(async () => root.unmount());
   });
@@ -3610,6 +3614,7 @@ describe("DesignSurface host capabilities", () => {
       grounded: true,
       folderPath: null,
       outputMode: "page",
+      attachments: [],
     });
     await act(async () => root.unmount());
   });
@@ -3700,6 +3705,7 @@ describe("DesignSurface host capabilities", () => {
       grounded: true,
       folderPath: null,
       outputMode: "page",
+      attachments: [],
     });
     await act(async () => Promise.resolve());
     expect(container.textContent).toContain(`Automatic craft: ${selected.slug}`);
@@ -3885,7 +3891,8 @@ describe("Design chrome, composer and folder attachment", () => {
 
     const controls = container.querySelector(".design-composer-controls");
     if (controls === null) throw new Error("Composer controls strip missing");
-    expect(controls.children).toHaveLength(3);
+    expect(controls.children).toHaveLength(4);
+    expect(controls.querySelector(".design-attach-control")).not.toBeNull();
     expect(controls.querySelector('[data-design-skill-mode-trigger="true"]')).not.toBeNull();
     expect(controls.querySelectorAll(".design-agent-picker-wrap")).toHaveLength(2);
     // An empty context row would add a blank line above the composer.

@@ -6,13 +6,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
 import {
   artifactNodeRect,
+  buildLayerTree,
   DesignSurface,
+  layerAncestorIds,
+  layerMoveTarget,
   revealScrollTopFor,
   smallestSectionAt,
   type DesignDocument,
   type DesignHost,
 } from "./DesignSurface";
-import { clearCachedArtifactSections, setCachedArtifactSections } from "./artifactStructure";
+import {
+  clearCachedArtifactSections,
+  setCachedArtifactSections,
+  type ArtifactSection,
+} from "./artifactStructure";
+import type { DesignLayer } from "./designHost";
 
 const settingsMocks = vi.hoisted(() => ({
   load: vi.fn(),
@@ -105,12 +113,16 @@ const DOCUMENT: DesignDocument = {
 const ARTIFACT_HTML =
   "<header><h1>Shop</h1></header><main><section><h2>Deals</h2></section></main>";
 
+// The measured list the collector posts: two landmarks at the root and the
+// headings below them. `parent` is an index in this list, exactly as the frame
+// emits it; the surface turns it into a layer id.
 const ARTIFACT_SECTIONS = [
   {
     anchor: "body[1]/header[1]",
     tag: "header",
     name: "Shop",
     depth: 1,
+    parent: null,
     rect: { x: 0, y: 0, width: 1280, height: 120 },
   },
   {
@@ -118,6 +130,7 @@ const ARTIFACT_SECTIONS = [
     tag: "h1",
     name: "Shop",
     depth: 2,
+    parent: 0,
     rect: { x: 40, y: 20, width: 400, height: 60 },
   },
   {
@@ -125,6 +138,7 @@ const ARTIFACT_SECTIONS = [
     tag: "main",
     name: "Deals",
     depth: 1,
+    parent: null,
     rect: { x: 0, y: 120, width: 1280, height: 600 },
   },
   {
@@ -132,6 +146,7 @@ const ARTIFACT_SECTIONS = [
     tag: "section",
     name: "Deals",
     depth: 2,
+    parent: 2,
     rect: { x: 40, y: 160, width: 1200, height: 400 },
   },
   {
@@ -139,7 +154,56 @@ const ARTIFACT_SECTIONS = [
     tag: "h2",
     name: "Deals",
     depth: 3,
+    parent: 3,
     rect: { x: 60, y: 180, width: 600, height: 40 },
+  },
+] as const;
+
+// A page whose root level is two slides and whose leaves are named distinctly,
+// so a test can select one phrase and walk the chain back to its slide.
+const TREE_HTML =
+  '<section id="slide-1"><h2 id="s1-title">One</h2><p id="s1-body">Body</p></section>' +
+  '<section id="slide-2"><h2 id="s2-title">Two</h2></section>';
+const TREE_SECTIONS = [
+  {
+    anchor: "slide-1",
+    tag: "section",
+    name: "Slide one",
+    depth: 1,
+    parent: null,
+    rect: { x: 0, y: 0, width: 1280, height: 400 },
+  },
+  {
+    anchor: "s1-title",
+    tag: "h2",
+    name: "Title one",
+    depth: 2,
+    parent: 0,
+    rect: { x: 40, y: 20, width: 600, height: 60 },
+  },
+  {
+    anchor: "s1-body",
+    tag: "p",
+    name: "Body copy",
+    depth: 2,
+    parent: 0,
+    rect: { x: 40, y: 100, width: 600, height: 40 },
+  },
+  {
+    anchor: "slide-2",
+    tag: "section",
+    name: "Slide two",
+    depth: 1,
+    parent: null,
+    rect: { x: 0, y: 400, width: 1280, height: 400 },
+  },
+  {
+    anchor: "s2-title",
+    tag: "h2",
+    name: "Title two",
+    depth: 2,
+    parent: 3,
+    rect: { x: 40, y: 420, width: 600, height: 60 },
   },
 ] as const;
 
@@ -293,6 +357,52 @@ async function fillNote(container: HTMLDivElement, text: string): Promise<void> 
   if (add === undefined) throw new Error("Add-note control missing");
   await act(async () => {
     add.click();
+    await Promise.resolve();
+  });
+}
+
+async function generateCachedArtifact(
+  container: HTMLDivElement,
+  generate: ReturnType<typeof vi.fn>,
+  html: string,
+  sections: readonly ArtifactSection[],
+  prompt: string,
+): Promise<void> {
+  setCachedArtifactSections(html, [...sections]);
+  await fillDraft(container, prompt);
+  const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+  if (send === null) throw new Error("Generate control missing");
+  await act(async () => {
+    send.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(generate).toHaveBeenCalled();
+}
+
+async function selectOverlay(container: HTMLDivElement, name: string): Promise<void> {
+  const overlays = Array.from(
+    container.querySelectorAll<HTMLButtonElement>(".design-canvas-section-overlay"),
+  );
+  const overlay = overlays.find(
+    (candidate) => candidate.getAttribute("aria-label") === `Select ${name}`,
+  );
+  if (overlay === undefined) throw new Error(`Section overlay for ${name} missing`);
+  await act(async () => {
+    overlay.click();
+    await Promise.resolve();
+  });
+}
+
+function selectedAnchor(container: HTMLDivElement): string | null {
+  return container.querySelector(".design-layer-details .design-layer-anchor")?.textContent ?? null;
+}
+
+async function pressArrow(container: HTMLDivElement, key: string): Promise<void> {
+  const surface = container.querySelector<HTMLElement>(".design-surface");
+  if (surface === null) throw new Error("Design surface missing");
+  await act(async () => {
+    surface.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
     await Promise.resolve();
   });
 }
@@ -459,7 +569,7 @@ describe("DesignSurface direct-on-canvas section selection", () => {
 });
 
 describe("DesignSurface page sections", () => {
-  it("lists measured page sections in the Layers panel", async () => {
+  it("lists only the root sections in the short navigator, with their count", async () => {
     const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
     const host = createHost({ generate });
     const { container, root } = await renderDesign(host);
@@ -472,9 +582,14 @@ describe("DesignSurface page sections", () => {
     const kinds = Array.from(panel.querySelectorAll(".design-layer-kind")).map(
       (badge) => badge.textContent,
     );
-    // The badge carries the measured tag (nav, h2, section), not the repeated kind.
-    expect(kinds).toEqual(["header", "h1", "main", "section", "h2"]);
+    // Only the landmarks at the root: the h1 under header and the section and
+    // h2 under main are discovered by clicking, not listed up front.
+    expect(kinds).toEqual(["header", "main"]);
+    expect(panel.querySelector(".design-layer-count")?.textContent).toBe("2");
+    expect(panel.querySelectorAll(".design-layer-select")).toHaveLength(2);
     expect(panel.textContent).toContain("Deals");
+    // Every measured section still has its own canvas hit zone.
+    expect(container.querySelectorAll(".design-canvas-section-overlay")).toHaveLength(5);
     await act(async () => root.unmount());
   });
 
@@ -602,13 +717,21 @@ describe("DesignSurface page sections", () => {
     });
     expect(generate).toHaveBeenCalled();
 
+    // One root is no navigator: nothing to jump between, so the panel waits for
+    // the layer to be discovered by clicking. This is also the only panel path
+    // for a single-`main` page.
+    expect(container.querySelector(".design-layers-panel")).toBeNull();
+    const overlay = container.querySelector<HTMLButtonElement>(".design-canvas-section-overlay");
+    if (overlay === null) throw new Error("Section overlay missing");
     await act(async () => {
-      layerRowByName(container, "Nav").click();
+      overlay.click();
       await Promise.resolve();
     });
 
     const details = container.querySelector(".design-layer-details");
     if (details === null) throw new Error("Section details missing");
+    // The chain holds only the layer itself, so no breadcrumb is drawn.
+    expect(container.querySelector(".design-layer-trail")).toBeNull();
     const measured = details.querySelector(".design-layer-measured");
     const anchor = details.querySelector(".design-layer-anchor");
     if (measured === null || anchor === null) throw new Error("Diagnostics lines missing");
@@ -787,6 +910,149 @@ describe("DesignSurface page sections", () => {
         sectionNotes: [{ anchor: "body[1]/main[1]", text: "Persist me" }],
       }),
     );
+    await act(async () => root.unmount());
+  });
+});
+
+describe("layer tree helpers", () => {
+  const transform = { x: 0, y: 0, width: 100, height: 40 };
+  const layers: DesignLayer[] = [
+    {
+      id: "slide-1",
+      name: "Slide one",
+      kind: "SECTION",
+      transform,
+      section: { tag: "section", anchor: "slide-1" },
+    },
+    {
+      id: "a",
+      name: "A",
+      kind: "SECTION",
+      transform,
+      section: { tag: "h2", anchor: "a", parentId: "slide-1" },
+    },
+    {
+      id: "b",
+      name: "B",
+      kind: "SECTION",
+      transform,
+      section: { tag: "p", anchor: "b", parentId: "slide-1" },
+    },
+    { id: "canvas", name: "Node", kind: "TSX", transform },
+  ];
+
+  it("treats canvas nodes and parentless sections as roots", () => {
+    // Canvas layers carry no section at all, so they sit at the same level as
+    // the page roots instead of being stranded outside the navigator.
+    expect(buildLayerTree(layers).roots.map((layer) => layer.id)).toEqual(["slide-1", "canvas"]);
+  });
+
+  it("derives the four moves from parentId alone", () => {
+    const tree = buildLayerTree(layers);
+    expect(layerMoveTarget(tree, "b", "parent")).toBe("slide-1");
+    expect(layerMoveTarget(tree, "slide-1", "first-child")).toBe("a");
+    expect(layerMoveTarget(tree, "a", "next-sibling")).toBe("b");
+    expect(layerMoveTarget(tree, "b", "previous-sibling")).toBe("a");
+    expect(layerMoveTarget(tree, "slide-1", "previous-sibling")).toBeNull();
+    expect(layerMoveTarget(tree, "canvas", "next-sibling")).toBeNull();
+    expect(layerMoveTarget(tree, "slide-1", "parent")).toBeNull();
+    expect(layerMoveTarget(tree, "a", "first-child")).toBeNull();
+  });
+
+  it("rebuilds the root-to-leaf chain from ids", () => {
+    const tree = buildLayerTree(layers);
+    expect(layerAncestorIds(tree, "b")).toEqual(["slide-1", "b"]);
+    expect(layerAncestorIds(tree, "missing")).toEqual([]);
+  });
+});
+
+describe("DesignSurface layer tree navigation", () => {
+  async function openTree(): Promise<{
+    container: HTMLDivElement;
+    root: ReturnType<typeof createRoot>;
+  }> {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: TREE_HTML }));
+    const rendered = await renderDesign(createHost({ generate }));
+    await generateCachedArtifact(
+      rendered.container,
+      generate,
+      TREE_HTML,
+      [...TREE_SECTIONS],
+      "Build two slides.",
+    );
+    return rendered;
+  }
+
+  it("shows the clicked phrase with its chain and climbs back to the slide", async () => {
+    const { container, root } = await openTree();
+    // The navigator holds the two slides, never the leaves.
+    expect(
+      Array.from(container.querySelectorAll(".design-layer-select")).map(
+        (row) => row.querySelector(".design-layer-name")?.textContent,
+      ),
+    ).toEqual(["Slide one", "Slide two"]);
+
+    await selectOverlay(container, "Body copy");
+    expect(selectedAnchor(container)).toBe("s1-body");
+    expect(
+      Array.from(container.querySelectorAll(".design-layer-trail-step")).map(
+        (step) => step.textContent,
+      ),
+    ).toEqual(["Slide one", "Body copy"]);
+    // One expanded row only: the deep layer is the inspector, not a third
+    // navigator row, so the list cannot grow with the page.
+    expect(container.querySelectorAll(".design-layer-row-selected")).toHaveLength(1);
+
+    await act(async () => {
+      (container.querySelector(".design-layer-trail-step") as HTMLButtonElement).click();
+      await Promise.resolve();
+    });
+    expect(selectedAnchor(container)).toBe("slide-1");
+    // slide-1 is a root: it expands in place in the navigator, so there are
+    // still exactly two select rows and no duplicate inspector row.
+    expect(container.querySelectorAll(".design-layer-select")).toHaveLength(2);
+    expect(container.querySelectorAll(".design-layer-row-selected")).toHaveLength(1);
+    await act(async () => root.unmount());
+  });
+
+  it("moves parent, first child, and siblings with the arrow keys", async () => {
+    const { container, root } = await openTree();
+    await selectOverlay(container, "Body copy");
+    expect(selectedAnchor(container)).toBe("s1-body");
+
+    await pressArrow(container, "ArrowUp");
+    expect(selectedAnchor(container)).toBe("slide-1");
+    await pressArrow(container, "ArrowDown");
+    expect(selectedAnchor(container)).toBe("s1-title");
+    await pressArrow(container, "ArrowRight");
+    expect(selectedAnchor(container)).toBe("s1-body");
+    await pressArrow(container, "ArrowLeft");
+    expect(selectedAnchor(container)).toBe("s1-title");
+    await pressArrow(container, "ArrowUp");
+    expect(selectedAnchor(container)).toBe("slide-1");
+    await pressArrow(container, "ArrowRight");
+    expect(selectedAnchor(container)).toBe("slide-2");
+    await pressArrow(container, "ArrowLeft");
+    expect(selectedAnchor(container)).toBe("slide-1");
+    // At the root with no sibling in that direction the key keeps its default
+    // instead of dead-ending: the selection simply does not move.
+    await pressArrow(container, "ArrowLeft");
+    expect(selectedAnchor(container)).toBe("slide-1");
+    await act(async () => root.unmount());
+  });
+
+  it("leaves the arrow keys to the note field's caret", async () => {
+    const { container, root } = await openTree();
+    await selectOverlay(container, "Body copy");
+    const field = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Note for the agent on this section"]',
+    );
+    if (field === null) throw new Error("Note field missing");
+    await act(async () => {
+      field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(selectedAnchor(container)).toBe("s1-body");
     await act(async () => root.unmount());
   });
 });

@@ -1,6 +1,8 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ChangeEvent,
+  DragEvent,
+  ClipboardEvent as ReactClipboardEvent,
   KeyboardEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -9,6 +11,7 @@ import type {
 } from "react";
 import type {
   DesignAssistantMessage,
+  DesignAttachment,
   DesignDocument,
   DesignAgentSession,
   DesignHost,
@@ -75,6 +78,15 @@ import {
   type DesignSkillSelection,
 } from "./designSettings";
 import { DesignFolderControl } from "./DesignFolderControl";
+import {
+  ATTACHMENT_INPUT_ACCEPT,
+  collectAttachmentFiles,
+  formatAttachmentSize,
+  importDesignAttachments,
+  transferCarriesFiles,
+  unreadableNotice,
+  type TransferLike,
+} from "./designAttachments";
 import { DesignHistoryList } from "./DesignHistoryList";
 import { recordDesignHistoryEntry, type DesignHistoryEntry } from "./designHistory";
 import {
@@ -155,6 +167,12 @@ interface LayerViewModel extends DesignLayer {
   hasNote: boolean;
 }
 
+/** One clickable step of the root-to-leaf chain shown for the selected layer. */
+interface LayerChainStep {
+  id: string;
+  name: string;
+}
+
 interface DesignToolbarProps {
   /**
    * The folder control that owns the toolbar's left slot. It is passed in as an
@@ -182,7 +200,16 @@ interface DesignToolbarProps {
 }
 
 interface LayerPanelProps {
-  layers: readonly LayerViewModel[];
+  /**
+   * Top-level layers only: canvas nodes and page-section roots, in document
+   * order. The deep sections are discovered by clicking the canvas, so the
+   * navigator stays as short as the page is at its root.
+   */
+  navigator: readonly LayerViewModel[];
+  /** The selected layer, or null; its details render in the panel. */
+  selected: LayerViewModel | null;
+  /** Root-to-leaf chain for the selected section, inclusive. */
+  ancestors: readonly LayerChainStep[];
   onSelect: (layerId: string) => void;
   onDeselect: () => void;
   onToggleVisibility: (layerId: string) => void;
@@ -194,9 +221,28 @@ interface LayerPanelProps {
   onAddNote: (text: string) => void;
 }
 
+interface LayerRowProps {
+  layer: LayerViewModel;
+  /** Renders the row as the selected row and appends its details. */
+  expanded: boolean;
+  /** Set on the one expanded row, so the panel can reveal it after layout. */
+  rowRef?: RefObject<HTMLDivElement | null>;
+  ancestors: readonly LayerChainStep[];
+  onSelect: (layerId: string) => void;
+  onDeselect: () => void;
+  onToggleVisibility: (layerId: string) => void;
+  /** Notes on the selected section; only the expanded section row reads them. */
+  selectedSectionNotes: readonly ResolvedSectionNote[];
+  onAddNote: (text: string) => void;
+  onDeleteNote: (index: number) => void;
+}
+
 interface SectionDetailsProps {
   layer: LayerViewModel;
+  /** Root-to-leaf chain for the selected section, inclusive. */
+  ancestors: readonly LayerChainStep[];
   notes: readonly ResolvedSectionNote[];
+  onSelectAncestor: (layerId: string) => void;
   onAddNote: (text: string) => void;
   onDeleteNote: (index: number) => void;
   onDeselect: () => void;
@@ -316,11 +362,26 @@ interface AssistantProps extends DesignSkillViewProps {
   draftPlaceholder: string;
   sendLabel: string;
   busy: boolean;
+  /** Files imported as starting points for this run, in the order shown. */
+  attachments: readonly DesignAttachment[];
+  /**
+   * What the last import had to say: a rejection, or something the user should
+   * know about a file that was attached anyway. Empty renders nothing.
+   */
+  attachmentMessages: readonly AttachmentMessage[];
   messages: readonly DesignMessage[];
   assistantRef: RefObject<HTMLDivElement | null>;
   onDraftChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
+  /**
+   * Hand over files to import. `problem` is a sentence to show alongside whatever
+   * the import itself has to say — a drop that also carried a folder, which the
+   * importer never sees because it is handed files only.
+   */
+  onAttachFiles: (files: readonly File[], problem: string | null) => void;
+  onAttachmentProblem: (message: string) => void;
+  onRemoveAttachment: (id: string) => void;
   onVisualCheck: () => void;
   onClearContext: () => void;
   onMessageAction: (action: MessageAction, message: DesignMessage) => void;
@@ -339,6 +400,16 @@ interface DesignCraftSheetProps extends DesignSkillViewProps {
   readOnly: boolean;
   onClose: () => void;
   onSkillToggle: (slug: string) => void;
+}
+
+/**
+ * One line of import feedback. `error` is a file that was not attached, `note`
+ * is something the user should know about a file that was — a sanitizer that
+ * removed something, or a declared type the bytes contradicted.
+ */
+export interface AttachmentMessage {
+  kind: "error" | "note";
+  text: string;
 }
 
 const DESIGN_SKILL_MODES: readonly DesignSkillSelection["mode"][] = ["all", "manual", "auto"];
@@ -964,7 +1035,9 @@ const DesignToolbar = memo(function DesignToolbar({
 
 const SectionDetails = memo(function SectionDetails({
   layer,
+  ancestors,
   notes,
+  onSelectAncestor,
   onAddNote,
   onDeleteNote,
   onDeselect,
@@ -994,6 +1067,32 @@ const SectionDetails = memo(function SectionDetails({
         </button>
         <span className="design-mono-value design-layer-anchor">{section.anchor}</span>
       </div>
+      {/*
+        Root-to-leaf chain: the answer to "I clicked the phrase but meant the
+        whole slide". One step is the layer itself, which says nothing, so the
+        trail appears only when there is somewhere to climb.
+      */}
+      {ancestors.length > 1 ? (
+        <nav className="design-layer-trail" aria-label="Layer ancestry">
+          {ancestors.map((step, index) => (
+            <Fragment key={step.id}>
+              {index > 0 ? (
+                <span className="design-layer-trail-sep" aria-hidden="true">
+                  ›
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="design-layer-trail-step"
+                aria-current={index === ancestors.length - 1 ? "true" : undefined}
+                onClick={() => onSelectAncestor(step.id)}
+              >
+                {step.name}
+              </button>
+            </Fragment>
+          ))}
+        </nav>
+      ) : null}
       {notes.length > 0 ? (
         <ul className="design-section-notes">
           {notes.map((entry) => (
@@ -1060,8 +1159,73 @@ export function revealScrollTopFor(
   return scrollTop;
 }
 
+/**
+ * One row of the navigator or of the selected-layer inspector. The expanded
+ * row is the only one that opens the note collector, so a long index never
+ * paints more than the one layer the user is working on.
+ */
+const LayerRow = memo(function LayerRow({
+  layer,
+  expanded,
+  rowRef,
+  ancestors,
+  onSelect,
+  onDeselect,
+  onToggleVisibility,
+  selectedSectionNotes,
+  onAddNote,
+  onDeleteNote,
+}: LayerRowProps) {
+  return (
+    <div className={`design-layer-row${expanded ? " design-layer-row-selected" : ""}`} ref={rowRef}>
+      <button
+        className="design-layer-select"
+        type="button"
+        aria-pressed={layer.selected}
+        aria-label={`Select ${layer.name}`}
+        onClick={() => onSelect(layer.id)}
+      >
+        <span className="design-layer-kind">{layer.section?.tag ?? layer.kind}</span>
+        <span className={`design-layer-name${layer.hidden ? " design-layer-name-hidden" : ""}`}>
+          {layer.name}
+        </span>
+        {layer.hasNote ? (
+          <span
+            className="design-layer-note-dot"
+            title="Has an agent note"
+            aria-label="Has an agent note"
+          />
+        ) : null}
+      </button>
+      <button
+        className="design-layer-visibility"
+        type="button"
+        aria-pressed={!layer.hidden}
+        aria-label={`${layer.hidden ? "Show" : "Hide"} ${layer.name}`}
+        title="Hide / show"
+        onClick={() => onToggleVisibility(layer.id)}
+      >
+        {layer.hidden ? "◌" : "◉"}
+      </button>
+      {expanded && layer.section !== undefined ? (
+        <SectionDetails
+          layer={layer}
+          ancestors={ancestors}
+          notes={selectedSectionNotes}
+          onSelectAncestor={onSelect}
+          onAddNote={onAddNote}
+          onDeleteNote={onDeleteNote}
+          onDeselect={onDeselect}
+        />
+      ) : null}
+    </div>
+  );
+});
+
 const LayerPanel = memo(function LayerPanel({
-  layers,
+  navigator,
+  selected,
+  ancestors,
   onSelect,
   onDeselect,
   onToggleVisibility,
@@ -1072,9 +1236,17 @@ const LayerPanel = memo(function LayerPanel({
 }: LayerPanelProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const expandedRowRef = useRef<HTMLDivElement>(null);
-  const expandedRow = layers.find((layer) => layer.selected && layer.section !== undefined) ?? null;
-  const expandedRowId = expandedRow?.id ?? null;
-  const expandedRowNoteCount = expandedRow?.section === undefined ? 0 : selectedSectionNotes.length;
+  const expandedRowId = selected?.id ?? null;
+  const expandedRowNoteCount = selected?.section === undefined ? 0 : selectedSectionNotes.length;
+  // A navigator of one row is noise: with a single root there is nothing to
+  // jump between, and the layer is discovered by clicking it on the canvas. The
+  // selected row still renders, so the collector is never lost.
+  const showNavigator = navigator.length > 1;
+  // When the selected layer already owns a navigator row, its details expand
+  // there instead of painting the same layer twice.
+  const selectedInNavigator =
+    showNavigator && selected !== null && navigator.some((row) => row.id === selected.id);
+  const inspectorRow = selected !== null && !selectedInNavigator ? selected : null;
 
   // Selecting a section expands its row inside the scroller; the revealed note
   // and diagnostics must not stay cut off below the panel. Measured here, after
@@ -1096,79 +1268,72 @@ const LayerPanel = memo(function LayerPanel({
     <section className="design-layers-panel" aria-labelledby="design-layers-title">
       <div className="design-overlay-heading">
         <span id="design-layers-title">Layers</span>
-        <span className="design-layer-count">{layers.length}</span>
+        <span className="design-layer-count">{navigator.length}</span>
       </div>
       <div className="design-layer-list" ref={listRef}>
-        {layers.map((layer) => (
-          <div
-            className={`design-layer-row${layer.selected ? " design-layer-row-selected" : ""}`}
-            key={layer.id}
-            ref={layer.selected && layer.section !== undefined ? expandedRowRef : undefined}
-          >
-            <button
-              className="design-layer-select"
-              type="button"
-              aria-pressed={layer.selected}
-              aria-label={`Select ${layer.name}`}
-              onClick={() => onSelect(layer.id)}
-            >
-              <span className="design-layer-kind">{layer.section?.tag ?? layer.kind}</span>
-              <span
-                className={`design-layer-name${layer.hidden ? " design-layer-name-hidden" : ""}`}
-              >
-                {layer.name}
-              </span>
-              {layer.hasNote ? (
-                <span
-                  className="design-layer-note-dot"
-                  title="Has an agent note"
-                  aria-label="Has an agent note"
-                />
-              ) : null}
-            </button>
-            <button
-              className="design-layer-visibility"
-              type="button"
-              aria-pressed={!layer.hidden}
-              aria-label={`${layer.hidden ? "Show" : "Hide"} ${layer.name}`}
-              title="Hide / show"
-              onClick={() => onToggleVisibility(layer.id)}
-            >
-              {layer.hidden ? "◌" : "◉"}
-            </button>
-            {layer.selected && layer.section !== undefined ? (
-              <SectionDetails
+        {showNavigator
+          ? navigator.map((layer) => (
+              <LayerRow
+                key={layer.id}
                 layer={layer}
-                notes={selectedSectionNotes}
+                expanded={expandedRowId === layer.id}
+                rowRef={expandedRowId === layer.id ? expandedRowRef : undefined}
+                ancestors={ancestors}
+                onSelect={onSelect}
+                onDeselect={onDeselect}
+                onToggleVisibility={onToggleVisibility}
+                selectedSectionNotes={selectedSectionNotes}
                 onAddNote={onAddNote}
                 onDeleteNote={onDeleteNote}
-                onDeselect={onDeselect}
               />
-            ) : null}
+            ))
+          : null}
+        {inspectorRow !== null ? (
+          <LayerRow
+            key={inspectorRow.id}
+            layer={inspectorRow}
+            expanded
+            rowRef={expandedRowRef}
+            ancestors={ancestors}
+            onSelect={onSelect}
+            onDeselect={onDeselect}
+            onToggleVisibility={onToggleVisibility}
+            selectedSectionNotes={selectedSectionNotes}
+            onAddNote={onAddNote}
+            onDeleteNote={onDeleteNote}
+          />
+        ) : null}
+        {/*
+          Detached notes scroll with the rest. As a `flex: none` sibling of the
+          scroller they could not shrink, so a tall selection could only push
+          them into the panel's `overflow: hidden` clip, where their delete
+          control is unreachable. Inside the scroller every note scrolls back
+          into view.
+        */}
+        {orphanNotes.length > 0 ? (
+          <div className="design-layer-orphans">
+            <div className="design-layer-orphans-heading">
+              Detached notes ({orphanNotes.length})
+            </div>
+            <ul className="design-layer-orphans-list">
+              {orphanNotes.map((entry) => (
+                <li key={`${entry.note.anchor}:${entry.index}`}>
+                  <span className="design-layer-orphan-badge">orphan</span>
+                  <span className="design-layer-orphan-anchor">{entry.note.anchor}</span>
+                  <span className="design-layer-orphan-text">{entry.note.text}</span>
+                  <button
+                    type="button"
+                    aria-label={`Delete detached note on ${entry.note.anchor}`}
+                    onClick={() => onDeleteNote(entry.index)}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
-        ))}
+        ) : null}
       </div>
-      {orphanNotes.length > 0 ? (
-        <div className="design-layer-orphans">
-          <div className="design-layer-orphans-heading">Detached notes ({orphanNotes.length})</div>
-          <ul className="design-layer-orphans-list">
-            {orphanNotes.map((entry) => (
-              <li key={`${entry.note.anchor}:${entry.index}`}>
-                <span className="design-layer-orphan-badge">orphan</span>
-                <span className="design-layer-orphan-anchor">{entry.note.anchor}</span>
-                <span className="design-layer-orphan-text">{entry.note.text}</span>
-                <button
-                  type="button"
-                  aria-label={`Delete detached note on ${entry.note.anchor}`}
-                  onClick={() => onDeleteNote(entry.index)}
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
     </section>
   );
 });
@@ -1355,6 +1520,108 @@ export function smallestSectionAt(
   }
   return best;
 }
+
+/** One direction of tree movement while a layer is selected. */
+export type LayerMove = "parent" | "first-child" | "previous-sibling" | "next-sibling";
+
+/**
+ * The parent/child shape of the displayed layers, built once from
+ * `section.parentId` (see `ArtifactSection.parent`). Canvas layers carry no
+ * `section`, so they are roots; page-section roots sit at the same level. The
+ * keys are layer ids, never positions: `displayLayers` concatenates the canvas
+ * layers ahead of the measured sections, so an index into that list would point
+ * at the wrong layer the moment it is filtered or reordered.
+ */
+export interface LayerTree {
+  readonly roots: readonly DesignLayer[];
+  readonly byId: ReadonlyMap<string, DesignLayer>;
+  readonly parentOf: ReadonlyMap<string, string>;
+  readonly childrenOf: ReadonlyMap<string, readonly DesignLayer[]>;
+}
+
+/**
+ * Builds the tree in document order. A duplicate id keeps its first occurrence,
+ * matching `Map` semantics. A `parentId` that resolves to no layer in the list
+ * (only possible when a caller hands over a filtered list) reads as a root, so
+ * a child is never stranded: the child stays reachable even if its parent was
+ * left out.
+ */
+export function buildLayerTree(layers: readonly DesignLayer[]): LayerTree {
+  const byId = new Map<string, DesignLayer>();
+  for (const layer of layers) {
+    if (!byId.has(layer.id)) byId.set(layer.id, layer);
+  }
+  const parentOf = new Map<string, string>();
+  const childLists = new Map<string, DesignLayer[]>();
+  const roots: DesignLayer[] = [];
+  for (const layer of byId.values()) {
+    const parentId = layer.section?.parentId;
+    if (parentId === undefined || !byId.has(parentId)) {
+      roots.push(layer);
+      continue;
+    }
+    parentOf.set(layer.id, parentId);
+    const siblings = childLists.get(parentId);
+    if (siblings === undefined) childLists.set(parentId, [layer]);
+    else siblings.push(layer);
+  }
+  return { roots, byId, parentOf, childrenOf: childLists };
+}
+
+/** Root-to-leaf ids for the given layer, inclusive; empty when it is unknown. */
+export function layerAncestorIds(tree: LayerTree, layerId: string): readonly string[] {
+  const chain: string[] = [];
+  const seen = new Set<string>();
+  let current: string | null = tree.byId.has(layerId) ? layerId : null;
+  while (current !== null && !seen.has(current)) {
+    seen.add(current);
+    chain.push(current);
+    current = tree.parentOf.get(current) ?? null;
+  }
+  return chain.reverse();
+}
+
+/** Root-to-leaf layers for the given layer, inclusive; the breadcrumb source. */
+export function layerAncestorChain(tree: LayerTree, layerId: string): readonly DesignLayer[] {
+  const chain: DesignLayer[] = [];
+  for (const id of layerAncestorIds(tree, layerId)) {
+    const layer = tree.byId.get(id);
+    if (layer !== undefined) chain.push(layer);
+  }
+  return chain;
+}
+
+/** The id a move would select, or null when the move has nowhere to go. */
+export function layerMoveTarget(tree: LayerTree, layerId: string, move: LayerMove): string | null {
+  const parentId = tree.parentOf.get(layerId) ?? null;
+  if (move === "parent") return parentId;
+  if (move === "first-child") {
+    const children = tree.childrenOf.get(layerId);
+    return children !== undefined && children.length > 0 ? children[0].id : null;
+  }
+  const siblings = parentId === null ? tree.roots : (tree.childrenOf.get(parentId) ?? []);
+  const index = siblings.findIndex((layer) => layer.id === layerId);
+  if (index < 0) return null;
+  if (move === "previous-sibling") return index > 0 ? siblings[index - 1].id : null;
+  return index + 1 < siblings.length ? siblings[index + 1].id : null;
+}
+
+/**
+ * Arrow keys move through the tree once a layer is selected: Up to the parent,
+ * Down to the first child, Left/Right to the previous/next sibling. The canvas
+ * binds no arrow key — its pan is pointer drag and its zoom the wheel — so
+ * nothing here is taken from it. The shared shell pages surfaces with
+ * ArrowLeft/ArrowRight only while the crescent nav is open, and this listener
+ * lives on the design surface, so it fires only when focus is already inside
+ * the surface; stopping propagation there is what keeps a hover-opened nav from
+ * handling the same key twice.
+ */
+export const LAYER_MOVE_BY_ARROW: ReadonlyMap<string, LayerMove> = new Map<string, LayerMove>([
+  ["ArrowUp", "parent"],
+  ["ArrowDown", "first-child"],
+  ["ArrowLeft", "previous-sibling"],
+  ["ArrowRight", "next-sibling"],
+]);
 
 function artifactSrcDoc(html: string): string {
   return `${ARTIFACT_CSP_META}\n${html}`;
@@ -2131,11 +2398,16 @@ const DesignAssistant = memo(function DesignAssistant({
   draftPlaceholder,
   sendLabel,
   busy,
+  attachments,
+  attachmentMessages,
   messages,
   assistantRef,
   onDraftChange,
   onComposerKeyDown,
   onSend,
+  onAttachFiles,
+  onAttachmentProblem,
+  onRemoveAttachment,
   onVisualCheck,
   onClearContext,
   onMessageAction,
@@ -2152,6 +2424,13 @@ const DesignAssistant = memo(function DesignAssistant({
 }: AssistantProps) {
   const [providerPickerOpen, setProviderPickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  // Drag state is tracked with a depth counter, not a boolean: dragenter and
+  // dragleave fire again for every child the pointer crosses, so a boolean turns
+  // the highlight off when the pointer moves from the composer onto the textarea
+  // inside it. The counter is back at zero when the last leave arrives.
+  const [dropActive, setDropActive] = useState(false);
+  const dragDepthRef = useRef(0);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const providerButtonRef = useRef<HTMLButtonElement>(null);
   const providerPickerWrapRef = useRef<HTMLDivElement>(null);
   const consentConfirmRef = useRef<HTMLButtonElement>(null);
@@ -2187,6 +2466,97 @@ const DesignAssistant = memo(function DesignAssistant({
     }
     return null;
   }, [agentState, pendingPermission]);
+
+  /**
+   * Files arriving by drop or by paste. Both routes run the same collector and the
+   * same importer as the picker: one pipeline behind three entries, so a rule
+   * cannot hold on one route and not another. Returns whether the payload was
+   * claimed, which is what tells the paste handler whether to consume the event.
+   */
+  const attachFromTransfer = useCallback(
+    (transfer: TransferLike | null): boolean => {
+      const collected = collectAttachmentFiles(transfer);
+      if (collected.files.length === 0 && collected.unreadable === 0) return false;
+      if (collected.files.length === 0) {
+        onAttachmentProblem(unreadableNotice(collected.unreadable));
+        return true;
+      }
+      // A drop can carry both: attaching the images and saying nothing about the
+      // folder beside them would hide half of what the user handed over.
+      onAttachFiles(
+        collected.files,
+        collected.unreadable > 0 ? unreadableNotice(collected.unreadable) : null,
+      );
+      return true;
+    },
+    [onAttachFiles, onAttachmentProblem],
+  );
+
+  /**
+   * Three ways in — drop, paste, picker — over one importer.
+   *
+   * Drop is wired on the standard HTML5 path, and on this app that path cannot fire
+   * yet. Tauri replaces WebView2's own drag-drop handler unless the window declares
+   * `dragDropEnabled: false`, and src-tauri/tauri.conf.json declares nothing, so the
+   * default (true) stands and the browser never hands the composer a DragEvent. Paste
+   * and the picker do reach the importer today. The drop handlers are kept because
+   * they are the standard path and the switch is one line in a config file this slice
+   * does not own; the alternative, Tauri's own drag-drop event, yields file *paths*
+   * and reading those needs a filesystem capability this app does not have (only
+   * core:default and dialog:default are granted). Because all three routes share the
+   * importer below, no rule is missing from the two that work.
+   */
+  const handleDragEnter = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!transferCarriesFiles(event.dataTransfer)) return;
+    dragDepthRef.current += 1;
+    setDropActive(true);
+  }, []);
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!transferCarriesFiles(event.dataTransfer)) return;
+    // Without this the drop event never arrives: the platform's default action on
+    // a dropped file is to have the window open it, and that default is only
+    // cancelled by a listener that prevents it here.
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDropActive(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      dragDepthRef.current = 0;
+      setDropActive(false);
+      if (!transferCarriesFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      attachFromTransfer(event.dataTransfer);
+    },
+    [attachFromTransfer],
+  );
+
+  const handlePaste = useCallback(
+    (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+      // A text paste stays a text paste: only a payload that actually carries files
+      // is consumed, so pasting a paragraph still lands in the textarea.
+      if (!attachFromTransfer(event.clipboardData)) return;
+      event.preventDefault();
+    },
+    [attachFromTransfer],
+  );
+
+  const handleAttachmentInput = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files ?? []);
+      // Cleared before the hand-off so that picking the same file twice fires
+      // change again: a file input only reports a value that differs from its own.
+      event.target.value = "";
+      if (files.length > 0) onAttachFiles(files, null);
+    },
+    [onAttachFiles],
+  );
 
   const modelLabel = sessionClosed
     ? "Session closed"
@@ -2418,12 +2788,49 @@ const DesignAssistant = memo(function DesignAssistant({
               </div>
             </div>
           ) : null}
-          <div className="design-composer">
+          <div
+            className="design-composer"
+            data-drop-active={dropActive ? "true" : undefined}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {attachments.length > 0 ? (
+              <div className="design-attachment-row">
+                {attachments.map((attachment) => (
+                  <span className="design-attachment-pill" key={attachment.id}>
+                    <span className="design-attachment-name" title={attachment.name}>
+                      {attachment.name}
+                    </span>
+                    <span className="design-attachment-kind">
+                      {attachment.kind === "svg"
+                        ? "SVG"
+                        : attachment.mimeType === "image/png"
+                          ? "PNG"
+                          : "JPEG"}
+                    </span>
+                    <span className="design-attachment-size">
+                      {formatAttachmentSize(attachment.bytes)}
+                    </span>
+                    <button
+                      className="design-attachment-remove"
+                      type="button"
+                      aria-label={`Remove ${attachment.name}`}
+                      onClick={() => onRemoveAttachment(attachment.id)}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <div className="design-composer-input">
               <textarea
                 value={draft}
                 onChange={onDraftChange}
                 onKeyDown={onComposerKeyDown}
+                onPaste={handlePaste}
                 placeholder={draftPlaceholder}
                 aria-label="Describe a design change"
                 rows={3}
@@ -2452,6 +2859,28 @@ const DesignAssistant = memo(function DesignAssistant({
             ) : null}
             <div className="design-composer-footer">
               <div className="design-composer-controls">
+                <span className="design-attach-control">
+                  <button
+                    className="design-attach-button"
+                    type="button"
+                    // Reachable by keyboard because it is a real button in the
+                    // composer's own control strip; the input behind it is hidden
+                    // and out of the tab order so the picker has one way in.
+                    aria-label="Attach an image or an SVG as a starting point"
+                    onClick={() => attachmentInputRef.current?.click()}
+                  >
+                    Attach
+                  </button>
+                  <input
+                    ref={attachmentInputRef}
+                    className="design-attachment-input"
+                    type="file"
+                    accept={ATTACHMENT_INPUT_ACCEPT}
+                    multiple
+                    hidden
+                    onChange={handleAttachmentInput}
+                  />
+                </span>
                 <DesignSkillModeControl
                   skillSelection={skillSelection}
                   onSkillModeChange={onSkillModeChange}
@@ -2649,8 +3078,27 @@ const DesignAssistant = memo(function DesignAssistant({
               </div>
             </div>
           </div>
+          {attachmentMessages.length > 0 ? (
+            // Every rejected file is named here, with the reason it was rejected.
+            // A file the user handed over that vanished without a word is the one
+            // outcome this feature must never produce.
+            <div className="design-attachment-feedback" role="status">
+              {attachmentMessages.map((message, index) => (
+                // Keyed by position on purpose: the list is replaced wholesale and
+                // never reordered, while two files can produce the same sentence
+                // (the same name dropped twice), which would collide on text.
+                <p
+                  key={`${message.kind}-${index.toString()}`}
+                  className={message.kind === "error" ? "design-attachment-error" : undefined}
+                >
+                  {message.text}
+                </p>
+              ))}
+            </div>
+          ) : null}
           <div className="design-composer-hint">
-            <b>Enter</b> to send · <b>Shift+Enter</b> for a new line
+            <b>Enter</b> to send · <b>Shift+Enter</b> for a new line · drop or paste an image to
+            start from it
           </div>
         </div>
       ) : null}
@@ -2790,6 +3238,34 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const [outputMode, setOutputModeState] = useState<DesignOutputMode>("page");
   const outputModeInteractedRef = useRef(false);
   const [draft, setDraft] = useState(document.initialState.draft);
+  /**
+   * Files imported as starting points for the run the user is about to start.
+   * Deliberately not part of the document and never persisted: an attachment
+   * belongs to the request it was attached to, and `startGeneration` clears both
+   * this and the draft at once so the composer never shows a file that the run it
+   * is describing did not carry.
+   */
+  const [attachments, setAttachments] = useState<readonly DesignAttachment[]>([]);
+  const [attachmentMessages, setAttachmentMessages] = useState<readonly AttachmentMessage[]>([]);
+  /**
+   * The same list the state holds, and the one imports are measured against. The
+   * importer's ceilings are computed from what is already attached, so an import
+   * has to see the list as it stands when it runs, not as it stood when its handler
+   * was created; and two imports must not measure against the same baseline and
+   * together pass a ceiling neither would pass alone. Hence the queue: one import
+   * at a time, each reading the ref the previous one finished writing.
+   */
+  const attachmentsRef = useRef<readonly DesignAttachment[]>([]);
+  const attachQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  /**
+   * The one place the two are written together. `setAttachments` alone would leave
+   * the ref behind, and the ref is what the next import measures against.
+   */
+  const commitAttachments = useCallback((next: readonly DesignAttachment[]) => {
+    attachmentsRef.current = next;
+    setAttachments(next);
+  }, []);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
@@ -3334,6 +3810,29 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     [displayLayers, selectedLayerId, snapshot.hiddenLayerIds, sectionNotes],
   );
 
+  // The tree is rebuilt from layer ids, so it survives filters and reorders of
+  // `displayLayers`; the navigator is its root level and the keyboard walks it.
+  const layerTree = useMemo(() => buildLayerTree(displayLayers), [displayLayers]);
+  const layerRowById = useMemo(
+    () => new Map<string, LayerViewModel>(layerRows.map((row) => [row.id, row])),
+    [layerRows],
+  );
+  const navigatorRows = useMemo(
+    () =>
+      layerTree.roots
+        .map((layer) => layerRowById.get(layer.id))
+        .filter((row): row is LayerViewModel => row !== undefined),
+    [layerTree, layerRowById],
+  );
+  const selectedRow = selectedLayer === null ? null : (layerRowById.get(selectedLayer.id) ?? null);
+  const selectedAncestors = useMemo<readonly LayerChainStep[]>(() => {
+    if (selectedRow === null || selectedRow.section === undefined) return [];
+    return layerAncestorChain(layerTree, selectedRow.id).map((layer) => ({
+      id: layer.id,
+      name: layer.name,
+    }));
+  }, [layerTree, selectedRow]);
+
   const fitRects = useMemo<NodeRect[]>(() => {
     const rects = layerRectsFor(layers).filter(
       (layer) => !snapshot.hiddenLayerIds.includes(layer.id),
@@ -3585,6 +4084,36 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [deselectLayer, selectedLayer]);
+
+  // Tree movement while a layer is selected. The listener lives on the surface
+  // element, not on the window: the shell's ArrowLeft/ArrowRight paging only
+  // runs while the crescent nav holds focus, and a key from inside the surface
+  // never reaches it. The note field keeps its caret keys; every other arrow
+  // scroll default is left alone when the move has no target.
+  useEffect(() => {
+    const surface = designSurfaceRef.current;
+    if (surface === null || selectedLayer === null) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLElement && target.isContentEditable)
+      ) {
+        return;
+      }
+      const move = LAYER_MOVE_BY_ARROW.get(event.key);
+      if (move === undefined) return;
+      const next = layerMoveTarget(layerTree, selectedLayer.id, move);
+      if (next === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectLayer(next);
+    };
+    surface.addEventListener("keydown", handleKeyDown);
+    return () => surface.removeEventListener("keydown", handleKeyDown);
+  }, [layerTree, selectLayer, selectedLayer]);
 
   const addSectionNote = useCallback(
     (anchor: string, text: string) => {
@@ -4033,6 +4562,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       setMessages((current) => [...current, userMessage, assistantMessage]);
       useAppStore.getState().setDesignGeneration(host, { assistantId, controller });
       setDraft("");
+      // The run consumed the starting points; a second run must not silently
+      // resend files the user attached for the first one.
+      commitAttachments([]);
+      setAttachmentMessages([]);
       setPermissionNotice(null);
       setSkillResultNotice(null);
       setAppliedSkillSlugs(null);
@@ -4045,7 +4578,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       const folderPath = attachedFolderPath ?? null;
       const generationOptions =
         skillSelection.mode === "auto"
-          ? { skillMode: "auto" as const, grounded, folderPath, outputMode }
+          ? { skillMode: "auto" as const, grounded, folderPath, outputMode, attachments }
           : skillSelection.mode === "manual"
             ? {
                 skillMode: "manual" as const,
@@ -4053,8 +4586,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                 grounded,
                 folderPath,
                 outputMode,
+                attachments,
               }
-            : { skillMode: "all" as const, grounded, folderPath, outputMode };
+            : { skillMode: "all" as const, grounded, folderPath, outputMode, attachments };
       void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
           const currentGeneration = useAppStore.getState().designSession.generation;
@@ -4178,7 +4712,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     },
     [
       attachedFolderPath,
+      attachments,
       busy,
+      commitAttachments,
       composerContextLayerName,
       composerContextTarget,
       document.contextPrefix,
@@ -4208,6 +4744,39 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const handleDraftChange = useCallback(
     (event: ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value),
     [],
+  );
+
+  const handleAttachFiles = useCallback(
+    (files: readonly File[], problem: string | null) => {
+      attachQueueRef.current = attachQueueRef.current.then(async () => {
+        const result = await importDesignAttachments(files, attachmentsRef.current);
+        if (result.attachments.length > 0) {
+          commitAttachments([...attachmentsRef.current, ...result.attachments]);
+        }
+        // Replaced wholesale, including by an empty list: the feedback describes
+        // the last import, and an import that had nothing to say clears what the
+        // one before it said.
+        setAttachmentMessages([
+          ...(problem === null ? [] : [{ kind: "error" as const, text: problem }]),
+          ...result.rejections.map((rejection) => ({
+            kind: "error" as const,
+            text: rejection.reason,
+          })),
+          ...result.notices.map((notice) => ({ kind: "note" as const, text: notice })),
+        ]);
+      });
+    },
+    [commitAttachments],
+  );
+
+  const handleAttachmentProblem = useCallback(
+    (message: string) => setAttachmentMessages([{ kind: "error", text: message }]),
+    [],
+  );
+
+  const handleRemoveAttachment = useCallback(
+    (id: string) => commitAttachments(attachmentsRef.current.filter((item) => item.id !== id)),
+    [commitAttachments],
   );
 
   const handleComposerKeyDown = useCallback(
@@ -4373,9 +4942,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             onViewportChange={handleCanvasViewportChange}
             onArtifactMeasured={handleArtifactMeasured}
           />
-          {layerRows.length > 0 || orphanNotes.length > 0 ? (
+          {navigatorRows.length > 1 || selectedRow !== null || orphanNotes.length > 0 ? (
             <LayerPanel
-              layers={layerRows}
+              navigator={navigatorRows}
+              selected={selectedRow}
+              ancestors={selectedAncestors}
               onSelect={selectLayer}
               onDeselect={deselectLayer}
               onToggleVisibility={toggleLayerVisibility}
@@ -4425,11 +4996,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           }
           sendLabel={busy ? "Working…" : "Generate"}
           busy={busy}
+          attachments={attachments}
+          attachmentMessages={attachmentMessages}
           messages={messages}
           assistantRef={assistantRef}
           onDraftChange={handleDraftChange}
           onComposerKeyDown={handleComposerKeyDown}
           onSend={send}
+          onAttachFiles={handleAttachFiles}
+          onAttachmentProblem={handleAttachmentProblem}
+          onRemoveAttachment={handleRemoveAttachment}
           onVisualCheck={visualCheck}
           onClearContext={clearComposerContext}
           onMessageAction={handleMessageAction}

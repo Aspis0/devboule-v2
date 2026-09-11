@@ -23,7 +23,15 @@
         "minHeight": 640,
         "center": true,
         "resizable": true,
-        "decorations": true
+        "decorations": true,
+        // Tauri replaces WebView2's drag-drop handler on Windows and defaults
+        // this to true, which swallows the DOM drag events entirely: dropping a
+        // file on the Design composer fires no dragenter, dragover, or drop.
+        // Turning it off hands HTML5 drag and drop back to the page, which is
+        // where the import intake reads the bytes. The Tauri-side alternative
+        // (onDragDropEvent) delivers paths rather than bytes, so it would need
+        // filesystem permissions this app does not grant.
+        "dragDropEnabled": false
       }
     ],
     "security": {

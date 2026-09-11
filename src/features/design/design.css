@@ -45,6 +45,7 @@
 .design-zoom-controls button,
 .design-layer-details-close,
 .design-layer-select,
+.design-layer-trail-step,
 .design-layer-visibility,
 .design-section-note-compose button,
 .design-section-notes li button {
@@ -913,6 +914,47 @@
   min-width: 0;
 }
 
+/* Root-to-leaf path for the selected section: each step is a button, so a
+   clicked phrase can climb back to the slide that holds it. Mono and small like
+   the anchor it sits under; the current step is marked, not linked. */
+.design-layer-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  min-width: 0;
+}
+
+.design-layer-trail-step {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 2px;
+  color: var(--silence);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+.design-layer-trail-step[aria-current="true"] {
+  color: var(--ink-soft);
+}
+
+.design-layer-trail-step:hover,
+.design-layer-trail-step:focus-visible {
+  color: var(--ink);
+  background: var(--selection);
+}
+
+.design-layer-trail-sep {
+  flex: none;
+  color: var(--silence);
+  font-size: 9.5px;
+}
+
 .design-layer-details-close {
   display: grid;
   flex: none;
@@ -1773,6 +1815,130 @@
   transform: translateX(20px);
 }
 
+/* Imported starting points. The pill below is shaped like the editing-context chip
+   above it (muted surface, hairline border, 999px radius, 10px ink) so an attached
+   file reads as the same kind of object as the context it was attached to. It does
+   not reuse that chip's rule: the chip's ✕ is pulled over its own label by a
+   negative margin and a transform, which assumes a single label. A pill here holds
+   a name, a type, a size and a remove control in a row, and only the name may lose
+   characters — a clipped file name is recoverable from its title, a clipped size
+   or type is not. */
+.design-attachment-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.design-attachment-pill {
+  display: flex;
+  max-width: 100%;
+  min-width: 0;
+  height: 21px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 3px 0 9px;
+  color: var(--purple-deep);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+}
+
+/* shrink-allowed: the name ellipsises when the row is clamped, and its full value
+   stays reachable through the title attribute. */
+.design-attachment-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.design-attachment-kind,
+.design-attachment-size {
+  flex: none;
+  color: var(--silence);
+}
+
+.design-attachment-kind {
+  letter-spacing: 0.04em;
+}
+
+.design-attachment-remove {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  color: var(--silence);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.design-attachment-remove:hover,
+.design-attachment-remove:focus-visible {
+  color: var(--terracotta-deep);
+  background: var(--surface);
+}
+
+/* A drop target the user cannot see is one they will not use. The attribute is set
+   by the composer's own drag handlers and by nothing else. */
+.design-composer[data-drop-active="true"] {
+  border-color: var(--terracotta);
+  border-style: dashed;
+}
+
+/* The picker's trigger, with the geometry of .design-provider-button so it joins the
+   strip as an equal. It never shrinks: a squeezed pill cuts its word in half, while
+   the wrapping strip already moves a control that does not fit onto the next row. */
+.design-attach-control {
+  display: flex;
+  max-width: 100%;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.design-attach-button {
+  height: 24px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.design-attach-button:hover,
+.design-attach-button:focus-visible {
+  color: var(--terracotta-deep);
+  border-color: var(--border-strong);
+}
+
+/* Import feedback. A rejection must not read as a whisper, so it is the one line
+   here painted in the danger colour; the notes stay at the chrome's own volume. */
+.design-attachment-feedback {
+  display: grid;
+  gap: 2px;
+  margin: 5px 0 0;
+  color: var(--silence);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.design-attachment-feedback p {
+  margin: 0;
+}
+
+.design-attachment-error {
+  color: var(--danger-deep);
+}
+
 .design-composer textarea {
   display: block;
   width: 100%;
@@ -2312,6 +2478,11 @@
 
 .design-layer-orphans-list {
   display: grid;
+  /* The implicit auto column sizes to max-content, so a long orphan anchor
+     pushed the row past the panel and a horizontal scrollbar appeared in the
+     scrolling list. minmax(0, 1fr) lets the anchor's 40% cap and the text's
+     ellipsis actually constrain the row to the panel width. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   margin: 0;
   padding: 0;
