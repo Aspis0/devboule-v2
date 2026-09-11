@@ -1,8 +1,10 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
+  Cap,
   CommandError,
   DaemonDiagnostics,
   DaemonStatus,
+  DevicesReply,
   FileTab,
   Id,
   JournalRetention,
@@ -14,6 +16,10 @@ import type {
   OracleIndexStats,
   OracleWorkspace,
   OracleSearchResponse,
+  PairingCode,
+  PeerRole,
+  PeerRow,
+  PendingPairing,
   PermissionOutcome,
   PluginBackendStatus,
   PluginInventory,
@@ -118,6 +124,12 @@ export type CommandArgs = {
   plugin_backend_ensure: { pluginId: string };
   plugin_backend_stop: { pluginId: string; generation?: number };
   plugin_invoke: { pluginId: string; method: string; payload?: unknown };
+  devices_list: undefined;
+  pairing_start: { role: PeerRole };
+  pairing_complete: { address: string; code: string; role: PeerRole };
+  pairing_confirm: { deviceId: string; accept: boolean };
+  peer_revoke: { deviceId: string };
+  peer_set_caps: { deviceId: string; caps: readonly Cap[] };
 };
 
 type CommandResults = {
@@ -176,6 +188,12 @@ type CommandResults = {
   plugin_backend_ensure: PluginBackendStatus;
   plugin_backend_stop: void;
   plugin_invoke: unknown;
+  devices_list: DevicesReply;
+  pairing_start: PairingCode;
+  pairing_complete: PairingOutcome;
+  pairing_confirm: PeerRow;
+  peer_revoke: PeerRow;
+  peer_set_caps: PeerRow;
 };
 
 type CommandName = keyof CommandArgs & keyof CommandResults;
@@ -247,6 +265,12 @@ export const COMMAND_ARG_KEYS = {
   plugin_backend_ensure: ["pluginId"],
   plugin_backend_stop: ["pluginId", "generation"],
   plugin_invoke: ["pluginId", "method", "payload"],
+  devices_list: [],
+  pairing_start: ["role"],
+  pairing_complete: ["address", "code", "role"],
+  pairing_confirm: ["deviceId", "accept"],
+  peer_revoke: ["deviceId"],
+  peer_set_caps: ["deviceId", "caps"],
 } as const satisfies {
   [K in CommandName]: readonly (CommandArgs[K] extends undefined
     ? never
@@ -572,3 +596,47 @@ export const pluginBackendStop = (pluginId: string, generation?: number) =>
   });
 export const pluginInvoke = (pluginId: string, method: string, payload?: unknown) =>
   invokeTyped("plugin_invoke", { pluginId, method, payload });
+
+/**
+ * The two ways `pairing_complete` can land: the far side parked the request and
+ * a person there has to confirm (`pairing_pending`), or the peers row is
+ * already written (`pairing_done`). The tag is the daemon frame's own name, so
+ * the frontend discriminates on the reply variant instead of on which fields
+ * happen to be present.
+ */
+export type PairingOutcome =
+  | { type: "pairing_pending"; peer: PendingPairing }
+  | { type: "pairing_done"; peer: PeerRow };
+
+/**
+ * This device's identity plus every paired and pending peer. Read-only: the
+ * daemon writes the peers table, this only asks for the current rows.
+ */
+export const devicesList = () => invokeTyped("devices_list");
+/**
+ * Asks the daemon to display a fresh one-time pairing code for the given role.
+ * The code is a five-minute secret: it goes on screen, never into a log, and it
+ * expires on its own (there is no cancel message in the protocol).
+ */
+export const pairingStart = (role: PeerRole) => invokeTyped("pairing_start", { role });
+/**
+ * Types a code another device is showing. Resolves with either the parked
+ * pairing (a confirmation is pending on the far side) or the finished row.
+ */
+export const pairingComplete = (address: string, code: string, role: PeerRole) =>
+  invokeTyped("pairing_complete", { address, code, role });
+/** Answers a pending `client` pairing; the daemon returns the row it wrote. */
+export const pairingConfirm = (deviceId: string, accept: boolean) =>
+  invokeTyped("pairing_confirm", { deviceId, accept });
+/**
+ * Revokes one peer: row update, live connections dropped, audit row written.
+ * The same command backs both "Revoke" and "Lost or stolen device"; only the
+ * copy shown before the click differs.
+ */
+export const peerRevoke = (deviceId: string) => invokeTyped("peer_revoke", { deviceId });
+/**
+ * Replaces a `client` peer's whole grant list. The daemon stores the array it
+ * receives, so callers pass the complete set (including `view`), never a delta.
+ */
+export const peerSetCaps = (deviceId: string, caps: readonly Cap[]) =>
+  invokeTyped("peer_set_caps", { deviceId, caps: [...caps] });
