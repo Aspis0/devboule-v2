@@ -80,7 +80,7 @@ use devboule_protocol::{
     compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, ErrorDetails,
     JournalRetention, JournalStats, OwnerId, PermissionOutcome, Project, RetentionPatch, Session,
     SessionEvent, SessionKind, SessionModel, SessionState, SessionStateSnapshot, WireError,
-    Workspace, WorkspaceIsolation,
+    Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
 };
 #[cfg(test)]
 use std::sync::Barrier;
@@ -146,7 +146,6 @@ const PULL_BATCH: usize = 16;
 const READ_CHUNK: usize = 16 * 1024;
 const INITIAL_COLS: u16 = 120;
 const INITIAL_ROWS: u16 = 32;
-pub const MAX_WRITE_BYTES: usize = 64 * 1024;
 const READER_JOIN_BUDGET: Duration = Duration::from_millis(150);
 
 /// Accumulate reader output until this many bytes, then assign one seq.

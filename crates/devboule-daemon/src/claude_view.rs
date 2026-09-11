@@ -13,6 +13,7 @@ use devboule_protocol::{
 use serde_json::Value;
 
 use crate::tool_paths::relativize_tool_path;
+use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
 
 /// Stateful mapper: stream-json emits `stream_event` deltas and then a
 /// consolidated `assistant` message. Track streamed length per content block
@@ -447,20 +448,6 @@ impl ClaudeView {
     }
 }
 
-fn tool_kind(name: &str) -> &'static str {
-    match name {
-        "Read" => "read",
-        "Edit" | "Write" | "NotebookEdit" => "edit",
-        "Bash" | "PowerShell" => "execute",
-        "Glob" | "Grep" => "search",
-        "WebFetch" => "fetch",
-        "WebSearch" => "search",
-        "Agent" | "Task" => "think",
-        "Skill" => "other",
-        _ => "other",
-    }
-}
-
 fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
     let field = |key: &str| {
         input
@@ -533,7 +520,7 @@ fn tool_call_from_block(
         tool_call_id,
         title: tool_title(name, input, cwd),
         status: "pending".to_string(),
-        kind: Some(tool_kind(name).to_string()),
+        kind: Some(tool_kind_from_name(name).to_string()),
         locations: tool_locations(name, input, cwd),
         subagent_type: (name == "Agent")
             .then(|| input.get("subagent_type"))
@@ -544,20 +531,6 @@ fn tool_call_from_block(
         parent_tool_use_id,
         spawn_depth,
     })
-}
-
-fn tool_result_text(content: &Value) -> String {
-    if let Some(text) = content.as_str() {
-        return text.to_string();
-    }
-    if let Some(blocks) = content.as_array() {
-        return blocks
-            .iter()
-            .filter_map(|block| block.get("text").and_then(Value::as_str))
-            .collect::<Vec<_>>()
-            .join("");
-    }
-    String::new()
 }
 
 fn tool_update_from_result(
@@ -576,14 +549,10 @@ fn tool_update_from_result(
         .get("is_error")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let text = block.get("content").map(tool_result_text);
+    let text = block.get("content").map(blocks_text);
     Some(SessionEvent::AgentToolUpdate {
         tool_call_id,
-        status: Some(if failed {
-            "failed".to_string()
-        } else {
-            "completed".to_string()
-        }),
+        status: Some(tool_status(failed).to_string()),
         text,
         title: None,
         kind: None,

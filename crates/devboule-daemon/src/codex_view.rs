@@ -806,16 +806,12 @@ fn item_event(
     }
 }
 
-fn change_path(path: &str, cwd: Option<&std::path::Path>) -> String {
-    relativize_tool_path(path, cwd)
-}
-
 fn first_change_path(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<String> {
     let changes = value?.as_array()?;
     let path = changes
         .iter()
         .find_map(|change| change.get("path")?.as_str())?;
-    Some(change_path(path, cwd))
+    Some(relativize_tool_path(path, cwd))
 }
 
 fn locations(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<Vec<ToolLocation>> {
@@ -825,7 +821,7 @@ fn locations(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<Vec
         .filter_map(|change| {
             let path = change.get("path").and_then(Value::as_str)?;
             Some(ToolLocation {
-                path: change_path(path, cwd),
+                path: relativize_tool_path(path, cwd),
                 line: None,
             })
         })
@@ -1167,7 +1163,10 @@ mod tests {
     #[test]
     fn change_path_keeps_the_full_path_when_it_equals_the_cwd() {
         let cwd = std::path::Path::new(r"C:\w");
-        assert_eq!(super::change_path(r"C:\w", Some(cwd)), r"C:\w");
+        assert_eq!(
+            crate::tool_paths::relativize_tool_path(r"C:\w", Some(cwd)),
+            r"C:\w"
+        );
     }
 
     #[cfg(windows)]
@@ -1175,7 +1174,7 @@ mod tests {
     fn change_path_relativizes_despite_drive_letter_case() {
         let cwd = std::path::Path::new(r"C:\Work");
         assert_eq!(
-            super::change_path(r"c:\Work\src\lib.rs", Some(cwd)),
+            crate::tool_paths::relativize_tool_path(r"c:\Work\src\lib.rs", Some(cwd)),
             std::path::PathBuf::from("src")
                 .join("lib.rs")
                 .to_string_lossy()

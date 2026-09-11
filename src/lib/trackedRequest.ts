@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commandErrorMessage } from "./oracleUtils";
+import { commandErrorMessage } from "./format";
 
 export type RequestState<T> =
   | { status: "loading" }

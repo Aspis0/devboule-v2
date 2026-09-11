@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProviderInfo } from "../../types/ipc";
-import { quotePermissionArg } from "./commandLine";
+import { quotePermissionArg } from "../../components/PermissionCard";
 
 export interface ProviderConsentState {
   pending: ProviderInfo | null;

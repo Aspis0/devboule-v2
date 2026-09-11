@@ -56,6 +56,8 @@ mod spawn;
 mod tool_paths;
 mod transport;
 #[cfg(feature = "server")]
+mod wire_json;
+#[cfg(feature = "server")]
 mod workspace;
 #[cfg(feature = "server")]
 mod worktree;

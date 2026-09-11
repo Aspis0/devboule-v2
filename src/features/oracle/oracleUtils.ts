@@ -1,4 +1,5 @@
 import { isCommandError } from "../../lib/tauri";
+import { formatCount } from "../../lib/format";
 import type {
   OracleIndexStats,
   OracleIndexStatus,
@@ -6,7 +7,7 @@ import type {
   OracleResult,
   OracleWorkspace,
 } from "../../types/ipc";
-import type { TrackedRequestState } from "./oracleRequests";
+import type { TrackedRequestState } from "../../lib/trackedRequest";
 
 export function normalizedLineRange(result: OracleResult): [number, number] {
   return [
@@ -63,10 +64,6 @@ export function splitSnippetAtFocus(
   };
 }
 
-export function formatCount(value: number): string {
-  return value.toLocaleString("en-US").replaceAll(",", " ");
-}
-
 export function formatMegabytes(bytes: number): string {
   return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
@@ -99,13 +96,6 @@ export function totalReadLines(results: OracleResult[]): number {
   }
 
   return total;
-}
-
-export function commandErrorMessage(error: unknown): string {
-  if (isCommandError(error) && error.message.trim()) return error.message;
-  if (typeof error === "string" && error.trim()) return error;
-  if (error instanceof Error && error.message.trim()) return error.message;
-  return "Unknown Oracle error.";
 }
 
 export function isUnimplemented(error: unknown): boolean {

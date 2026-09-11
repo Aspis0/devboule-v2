@@ -44,6 +44,8 @@ tmp-jobs/
 # Not the Windows null device. A POSIX shell redirecting to `nul` creates an
 # ordinary file, so this is where stray error output collects unnoticed.
 nul
+# Created by a shell that did not expand the variable.
+%DEVBOULE_RUNTIME_DIR%/
 
 # Whole-output captures from gate runs. Every check here is run by redirecting
 # its complete output to a file and searching the file afterwards, because a

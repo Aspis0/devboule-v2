@@ -1,9 +1,9 @@
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 import type { OracleIndexStatus, OracleModelStatus, OracleWorkspace } from "../../types/ipc";
-import type { TrackedRequestState } from "./oracleRequests";
+import type { TrackedRequestState } from "../../lib/trackedRequest";
+import { formatCount } from "../../lib/format";
 import {
-  formatCount,
   modelProgressPercentage,
   modelStateLabel,
   progressPercentage,

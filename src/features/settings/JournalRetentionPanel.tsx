@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { journalRetentionGet, journalRetentionSet, journalUsage } from "../../lib/tauri";
 import type { JournalRetention, JournalUsage, RetentionPatch } from "../../types/ipc";
-import { useTrackedRequest } from "../oracle/oracleRequests";
-import { commandErrorMessage, formatCount } from "../oracle/oracleUtils";
+import { useTrackedRequest } from "../../lib/trackedRequest";
+import { commandErrorMessage, formatCount } from "../../lib/format";
 
 const RETENTION_FIELDS = [
   "sessionMaxBytes",

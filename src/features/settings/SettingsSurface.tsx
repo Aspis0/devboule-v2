@@ -12,35 +12,54 @@ import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import type { Project, ProviderCatalog, ProviderInfo, Workspace } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
-import { NewProjectDialog } from "../workspace/NewProjectDialog";
-import { MOCK_DEVICES, MOCK_SETTINGS_TABS, type SettingsTab } from "./mockData";
+import { NewProjectDialog } from "../../components/NewProjectDialog";
+import { MOCK_DEVICES } from "./mockData";
 import "./settings.css";
+
+export type SettingsTab =
+  | "general"
+  | "projects"
+  | "oracle"
+  | "providers"
+  | "devices"
+  | "diagnostics";
+
+// Real navigation for the Settings surface, not a mock: add or remove an
+// entry here when a tab comes or goes.
+export const SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] = [
+  { id: "general", label: "General" },
+  { id: "projects", label: "Projects" },
+  { id: "oracle", label: "Oracle" },
+  { id: "providers", label: "Providers & models" },
+  { id: "devices", label: "Devices" },
+  { id: "diagnostics", label: "Diagnostics" },
+];
 
 export function SettingsSurface() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("providers");
 
-  const settingsTabs = MOCK_SETTINGS_TABS.map((tab) => ({
+  const settingsTabs = SETTINGS_TABS.map((tab) => ({
     ...tab,
     active: activeTab === tab.id,
   }));
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    const currentIndex = MOCK_SETTINGS_TABS.findIndex((tab) => tab.id === activeTab);
+    const currentIndex = SETTINGS_TABS.findIndex((tab) => tab.id === activeTab);
     let nextIndex = currentIndex;
 
     if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      nextIndex = (currentIndex + 1) % MOCK_SETTINGS_TABS.length;
+      nextIndex = (currentIndex + 1) % SETTINGS_TABS.length;
     } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      nextIndex = (currentIndex - 1 + MOCK_SETTINGS_TABS.length) % MOCK_SETTINGS_TABS.length;
+      nextIndex = (currentIndex - 1 + SETTINGS_TABS.length) % SETTINGS_TABS.length;
     } else if (event.key === "Home") {
       nextIndex = 0;
     } else if (event.key === "End") {
-      nextIndex = MOCK_SETTINGS_TABS.length - 1;
+      nextIndex = SETTINGS_TABS.length - 1;
     } else {
       return;
     }
 
     event.preventDefault();
-    setActiveTab(MOCK_SETTINGS_TABS[nextIndex].id);
+    setActiveTab(SETTINGS_TABS[nextIndex].id);
   }
 
   function renderActivePanel() {

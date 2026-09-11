@@ -168,6 +168,16 @@ pub const IDEMPOTENCY_MAX_ENTRIES: usize = 4096;
 /// assuming snapshots are always small.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
+/// Session input larger than this is refused with `InvalidRequest` (64 KiB).
+///
+/// The daemon (`session`) and the app (`backend/session`) enforce the same
+/// cap with the same message, so it lives here: the daemon's `session`
+/// module is `server`-gated and the app links the daemon with
+/// `default-features = false`, which would leave the app without the value.
+/// 64 KiB is far under the 1 MiB [`MAX_FRAME_BYTES`] cap because input is
+/// one `session_send` text, not a screen snapshot.
+pub const MAX_WRITE_BYTES: usize = 64 * 1024;
+
 /// Default plugin-invoke payload budget, in bytes (16 MiB).
 ///
 /// This is not the daemon's default NDJSON framing cap. Plugin backends talk

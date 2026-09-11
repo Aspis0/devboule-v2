@@ -52,3 +52,84 @@
   box-shadow: 0 3px 12px rgba(var(--ink-rgb), 0.12);
   font-size: 12px;
 }
+
+/* Polis readiness readout — a fact about this machine, not a gate. It sits
+   under the placeholder because the question it answers ("will the isometric
+   view draw here?") is the one that decides whether M5 is worth starting. */
+.polis-readiness {
+  margin-top: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--silence);
+  border-radius: 12px;
+}
+
+.polis-readiness-kicker {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.polis-readiness p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.polis-readiness-note {
+  margin-top: 6px !important;
+  color: var(--ink-soft) !important;
+  font-size: 12px !important;
+}
+
+.polis-readiness-ready {
+  border-left-color: var(--green);
+}
+
+.polis-readiness-unknown {
+  border-left-color: var(--silence);
+}
+
+.polis-readiness-blocked {
+  border-left-color: var(--danger);
+}
+
+.polis-readiness-error {
+  color: var(--danger) !important;
+}
+
+.polis-readiness-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Installing a plugin does not restart the app, so the one readout that can
+   change while the window is open can be asked again. */
+.polis-readiness-button {
+  margin-top: 10px;
+  padding: 0 11px;
+  height: 26px;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 11.5px;
+}
+
+.polis-readiness-button:hover:not(:disabled),
+.polis-readiness-button:focus-visible:not(:disabled) {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta-deep);
+}
+
+.polis-readiness-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
