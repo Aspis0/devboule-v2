@@ -1858,6 +1858,35 @@
   font-size: 10px;
 }
 
+/* The attached file itself, at the head of the pill. 16px is the size this pill
+   already uses for a control of exactly this size — the remove control three
+   elements along is 16px — and it is also what keeps the row's height what it
+   was: the pill's content box is 19px, and a square that filled it would sit
+   flush against the pill's top and bottom borders, while anything larger would
+   force the pill, and with it the whole row, to grow the moment the first file
+   is attached. That growth is the layout jump this row is arranged to avoid. A
+   radius of 5px follows .design-layer-visibility; the pill's own 999px would
+   turn a square this small into a circle, which reads as an avatar and not as
+   the file. */
+.design-attachment-preview {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  /* The pill is --surface-muted, so a transparent SVG or a pale photograph
+     would otherwise dissolve into it. */
+  background: var(--surface);
+}
+
+/* A file that is attached but that the browser could not draw keeps its slot,
+   emptied. The dashes say "nothing was drawn here" where an absent preview
+   would let a file that failed to render pass for one that rendered fine. */
+.design-attachment-preview-empty {
+  border-style: dashed;
+}
+
 /* shrink-allowed: the name ellipsises when the row is clamped, and its full value
    stays reachable through the title attribute. */
 .design-attachment-name {

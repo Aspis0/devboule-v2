@@ -431,6 +431,145 @@ describe("a file that is not attached", () => {
   });
 });
 
+describe("an attached file shows itself in its pill", () => {
+  it("draws a raster from the base64 the attachment carries", async () => {
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [imageFile("hero.png", PNG_BYTES, "image/png")],
+    });
+
+    // The expected string is the file's own base64: this PNG carries no metadata
+    // chunk, and a file nothing was removed from comes back from the strip as
+    // the same bytes rather than as a rebuilt copy.
+    const expected = `data:image/png;base64,${btoa(String.fromCharCode(...PNG_BYTES))}`;
+    const image = container.querySelector<HTMLImageElement>(".design-attachment-pill img");
+    expect(image?.getAttribute("src")?.startsWith("data:image/png;base64,")).toBe(true);
+    expect(image?.getAttribute("src")).toBe(expected);
+    // The name is beside it and already read aloud; a named image would say it
+    // twice, and a lazy data: URL would only defer bytes that are already here.
+    expect(image?.getAttribute("alt")).toBe("");
+    expect(image?.getAttribute("loading")).toBe("eager");
+  });
+
+  it("draws an SVG from its sanitized source, percent-encoded rather than base64", async () => {
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [
+        new File(
+          [
+            '<svg xmlns="http://www.w3.org/2000/svg"><script>1</script><rect width="4" height="4"/></svg>',
+          ],
+          "mark.svg",
+          { type: "image/svg+xml" },
+        ),
+      ],
+    });
+
+    const src =
+      container
+        .querySelector<HTMLImageElement>(".design-attachment-pill img")
+        ?.getAttribute("src") ?? "";
+    expect(src.startsWith("data:image/svg+xml,")).toBe(true);
+    // The source is carried as text: the tags are percent-encoded, so the
+    // attribute holds no `<script` for anything downstream to find, and none was
+    // in the sanitized source to begin with.
+    expect(src).not.toContain("<script");
+    expect(src).toContain("%3Csvg");
+  });
+
+  it("keeps a preview for an SVG whose title is not ASCII", async () => {
+    // This is the case that decides the encoding. `btoa` takes only Latin-1 and
+    // the sanitized source is UTF-8, so base64-ing this file would throw where
+    // its data: URL is built and the preview would vanish on a file that is
+    // entirely fine. Percent-encoding carries the same characters, so the src
+    // exists and decodes back to the title that was written.
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [
+        new File(
+          ['<svg xmlns="http://www.w3.org/2000/svg"><title>Café résumé</title><rect/></svg>'],
+          "cafe.svg",
+          { type: "image/svg+xml" },
+        ),
+      ],
+    });
+
+    const src =
+      container
+        .querySelector<HTMLImageElement>(".design-attachment-pill img")
+        ?.getAttribute("src") ?? "";
+    const prefix = "data:image/svg+xml,";
+    expect(src.startsWith(prefix)).toBe(true);
+    const decoded = decodeURIComponent(src.slice(prefix.length));
+    expect(decoded).toContain("Café résumé");
+    // The accented characters travel as UTF-8 percent-encodings, never as
+    // themselves, which is what keeps the attribute a valid URL.
+    expect(src).not.toContain("é");
+  });
+
+  it("keeps the slot and names the file when the preview cannot be drawn", async () => {
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [imageFile("hero.png", PNG_BYTES, "image/png")],
+    });
+
+    const image = container.querySelector<HTMLImageElement>(".design-attachment-pill img");
+    if (image === null) throw new Error("preview missing");
+    await act(async () => {
+      image.dispatchEvent(new Event("error"));
+    });
+
+    // Emptied, not hidden. A preview that disappeared on failure would make a
+    // file the renderer choked on indistinguishable from a healthy one, which is
+    // the only thing this element is here to tell apart.
+    const empty = container.querySelector(".design-attachment-preview-empty");
+    expect(container.querySelector(".design-attachment-pill img")).toBeNull();
+    expect(empty?.getAttribute("aria-label")).toBe("Preview unavailable");
+    expect(empty?.getAttribute("title")).toBe("Preview unavailable");
+    // A notice and not an error: the file is attached, and the sentence says so
+    // by naming it in the same place the import's own notes arrive.
+    expect(feedback(container)).toEqual([
+      "hero.png was attached, but its preview could not be drawn.",
+    ]);
+    // The pill lost none of what it said before.
+    const pill = container.querySelector(".design-attachment-pill");
+    expect(pillNames(container)).toEqual(["hero.png"]);
+    expect(pill?.querySelector(".design-attachment-kind")?.textContent).toBe("PNG");
+    expect(pill?.querySelector(".design-attachment-size")?.textContent).toBe(
+      formatAttachmentSize(PNG_BYTES.length),
+    );
+  });
+
+  it("gives four attachments four previews without disturbing the row", async () => {
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [
+        imageFile("one.png", PNG_BYTES, "image/png"),
+        imageFile("two.png", PNG_BYTES, "image/png"),
+        imageFile("three.png", PNG_BYTES, "image/png"),
+        new File([CLEAN_SVG], "four.svg", { type: "image/svg+xml" }),
+      ],
+    });
+
+    expect(pillNames(container)).toEqual(["one.png", "two.png", "three.png", "four.svg"]);
+    expect(container.querySelectorAll(".design-attachment-pill img")).toHaveLength(4);
+    // One preview per pill, ahead of the name, so the row keeps the arrangement
+    // the rest of these tests describe.
+    for (const pill of container.querySelectorAll(".design-attachment-pill")) {
+      const preview = pill.querySelector(".design-attachment-preview");
+      expect(preview?.nextElementSibling?.classList.contains("design-attachment-name")).toBe(true);
+    }
+    expect(
+      notice(container)?.previousElementSibling?.classList.contains("design-attachment-row"),
+    ).toBe(true);
+  });
+});
+
 describe("the composer says what it will not send", () => {
   it("shows the delivery notice beside the pills as soon as one file is attached", async () => {
     const { container } = await renderDesign(createHost());

@@ -2506,6 +2506,58 @@ function confirmedEffort(model: SessionModel | null): string {
   return "";
 }
 
+/**
+ * The `data:` URL an attachment's preview is drawn from.
+ *
+ * A raster carries base64 already, so its URL is that string behind the prefix
+ * its measured type declares. An SVG is percent-encoded instead, and the reason
+ * is not taste: `btoa` accepts only Latin-1, while the sanitized source is
+ * UTF-8, so an SVG with an accented character in its title would make `btoa`
+ * throw and the preview would vanish on exactly the file that is fine.
+ * `encodeURIComponent` encodes the string's UTF-8 bytes, which is what a `data:`
+ * URL in an HTML document is read as.
+ *
+ * That an attached SVG may be drawn through an <img> at all is safe for two
+ * independent reasons, either of which would be enough on its own:
+ *
+ * 1. An SVG loaded as an image is a document in secure static mode: the browser
+ *    does not run its script and does not fetch what it references. That is a
+ *    rule of the image element, not a precaution taken here.
+ * 2. `source` has already been through `sanitizeSvgSource`, which removes
+ *    scripts, `on*` handlers, `foreignObject`, doctypes, animations that
+ *    rewrite an attribute, and every off-document reference — so the value is
+ *    inert before this function is ever called with it.
+ *
+ * The app's CSP allows the data: URL: `img-src 'self' data:
+ * http://plugin.localhost` in src-tauri/tauri.conf.json.
+ */
+function attachmentPreviewSrc(attachment: DesignAttachment): string {
+  return attachment.kind === "raster"
+    ? `data:${attachment.mimeType};base64,${attachment.base64}`
+    : `data:image/svg+xml,${encodeURIComponent(attachment.source)}`;
+}
+
+/**
+ * What fills the preview slot when the browser could not draw the file. One
+ * string, used as both the tooltip and the accessible name: the slot is empty on
+ * purpose, and that is the whole of what it has to say.
+ */
+const PREVIEW_UNAVAILABLE_LABEL = "Preview unavailable";
+
+/**
+ * What the composer says about a file it holds but could not draw.
+ *
+ * A notice, not an error. The file is attached — measured, sanitized, held in
+ * the composer and stated by the pill beside this sentence — and the only thing
+ * that did not happen is the drawing of it. What that means is the user's call:
+ * a file whose pixels they still want is worth keeping, and one whose preview is
+ * blank is worth removing before a run. The danger colour is reserved for a file
+ * that was not attached at all.
+ */
+function attachmentPreviewNotice(name: string): string {
+  return `${name} was attached, but its preview could not be drawn.`;
+}
+
 const DesignAssistant = memo(function DesignAssistant({
   canGenerate,
   contextPrefix,
@@ -2557,6 +2609,22 @@ const DesignAssistant = memo(function DesignAssistant({
   // the highlight off when the pointer moves from the composer onto the textarea
   // inside it. The counter is back at zero when the last leave arrives.
   const [dropActive, setDropActive] = useState(false);
+  /**
+   * Ids of attachments whose preview the browser could not draw.
+   *
+   * A failure does not take the thumbnail away: hiding it would make a file the
+   * renderer choked on look exactly like a healthy one, and telling those two
+   * apart is the only reason the thumbnail is here. The pill keeps the slot, and
+   * the composer names the file below.
+   *
+   * Ids rather than the files, so every sentence about a file is read through
+   * `attachments` and leaves with it — removing the pill removes its sentence,
+   * with nothing to clean up by hand.
+   */
+  const [undrawnPreviewIds, setUndrawnPreviewIds] = useState<readonly string[]>([]);
+  const reportUndrawnPreview = useCallback((id: string) => {
+    setUndrawnPreviewIds((current) => (current.includes(id) ? current : [...current, id]));
+  }, []);
   const dragDepthRef = useRef(0);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const providerButtonRef = useRef<HTMLButtonElement>(null);
@@ -2818,6 +2886,19 @@ const DesignAssistant = memo(function DesignAssistant({
     };
   }, [dismissProviderPicker, providerPickerOpen]);
 
+  // Import feedback and preview failures in one list: they are read in the same
+  // place, because both say something about the files in the pills above. The
+  // preview sentences are derived from `attachments` rather than stored, so a
+  // removed file takes its sentence with it and no state has to be pruned.
+  const attachmentFeedback: readonly AttachmentMessage[] = [
+    ...attachmentMessages,
+    ...attachments.flatMap((attachment) =>
+      undrawnPreviewIds.includes(attachment.id)
+        ? [{ kind: "note" as const, text: attachmentPreviewNotice(attachment.name) }]
+        : [],
+    ),
+  ];
+
   return (
     <aside className="design-assistant" aria-labelledby="design-assistant-title">
       <div className="design-assistant-header">
@@ -2929,6 +3010,31 @@ const DesignAssistant = memo(function DesignAssistant({
                 <div className="design-attachment-row">
                   {attachments.map((attachment) => (
                     <span className="design-attachment-pill" key={attachment.id}>
+                      {undrawnPreviewIds.includes(attachment.id) ? (
+                        // The same slot, emptied. Not hidden: an absent preview
+                        // and a preview that failed are the two things this
+                        // element exists to tell apart.
+                        <span
+                          className="design-attachment-preview design-attachment-preview-empty"
+                          role="img"
+                          aria-label={PREVIEW_UNAVAILABLE_LABEL}
+                          title={PREVIEW_UNAVAILABLE_LABEL}
+                        />
+                      ) : (
+                        <img
+                          className="design-attachment-preview"
+                          src={attachmentPreviewSrc(attachment)}
+                          // The file name is the next thing in the pill and is
+                          // already read aloud; naming the image would say it
+                          // twice.
+                          alt=""
+                          // A data: URL has nothing to defer: the bytes are
+                          // already here, so waiting to decode them would only
+                          // delay the one signal this element carries.
+                          loading="eager"
+                          onError={() => reportUndrawnPreview(attachment.id)}
+                        />
+                      )}
                       <span className="design-attachment-name" title={attachment.name}>
                         {attachment.name}
                       </span>
@@ -3218,12 +3324,13 @@ const DesignAssistant = memo(function DesignAssistant({
               </div>
             </div>
           </div>
-          {attachmentMessages.length > 0 ? (
-            // Every rejected file is named here, with the reason it was rejected.
-            // A file the user handed over that vanished without a word is the one
-            // outcome this feature must never produce.
+          {attachmentFeedback.length > 0 ? (
+            // Every rejected file is named here, with the reason it was rejected,
+            // and every attached file whose preview did not draw. A file the user
+            // handed over that vanished without a word is the one outcome this
+            // feature must never produce.
             <div className="design-attachment-feedback" role="status">
-              {attachmentMessages.map((message, index) => (
+              {attachmentFeedback.map((message, index) => (
                 // Keyed by position on purpose: the list is replaced wholesale and
                 // never reordered, while two files can produce the same sentence
                 // (the same name dropped twice), which would collide on text.
