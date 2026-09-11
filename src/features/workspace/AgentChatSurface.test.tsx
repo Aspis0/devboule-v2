@@ -1353,6 +1353,52 @@ describe("AgentChatSurface", () => {
     expect(container.querySelector('button[aria-label="Stop the current turn"]')).toBeNull();
   });
 
+  it("steers with the running turn and sends plainly when idle", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <AgentChatSurface sessionId="steer-agent" title="Agent" observedState={LIVE_OBSERVED} />
+        </StrictMode>,
+      );
+    });
+    await act(async () => undefined);
+
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Message the agent"]',
+    );
+    const send = container.querySelector<HTMLButtonElement>(".workspace-send-action");
+    if (textarea === null || send === null) throw new Error("agent chat controls did not render");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("textarea value setter did not exist");
+
+    // Idle: the behavior is left off the send entirely, so the daemon keeps its
+    // interrupt-and-replace default.
+    setValue.call(textarea, "First task");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => send.click());
+    const idleCall = vi.mocked(sessionSend).mock.calls[0] ?? [];
+    expect(idleCall[0]).toBe("steer-agent");
+    expect(idleCall[2]).toBe("First task");
+    expect(idleCall).toHaveLength(3);
+
+    // Mid-turn: Enter is the steering key. The composer stays enabled (the
+    // button is Stop, not Send) and the textarea takes the next steer.
+    expect(textarea.disabled).toBe(false);
+    setValue.call(textarea, "Turn left instead");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    const steerCall = vi.mocked(sessionSend).mock.calls[1] ?? [];
+    expect(steerCall[1]).toBe(channelHarness.activeSubscriptionId);
+    expect(steerCall[2]).toBe("Turn left instead");
+    expect(steerCall[4]).toBe("steer");
+    expect(textarea.disabled).toBe(false);
+  });
+
   it("renders auxiliary last in the conversation, before the composer", async () => {
     root = createRoot(container);
     await act(async () => {

@@ -430,6 +430,10 @@ export class TerminalSession {
         // ACP sessions use these same daemon channels; the terminal view has
         // no agent transcript renderer yet, so it safely ignores them.
         break;
+      case "steered":
+        // Journaled for audit and not emitted to observers; listed so a leak
+        // is ignored rather than reported as an unknown protocol event.
+        break;
       case "sessions_snapshot":
         // Roster snapshots are consumed by the connection watcher before
         // attach events reach this channel. Ignore a leak rather than

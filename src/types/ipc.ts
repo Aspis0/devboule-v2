@@ -30,6 +30,18 @@ export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" 
   return kind === "acp" || kind === "claude" || kind === "pi" || kind === "codex";
 }
 export type SendIntent = "interrupt" | "steer" | "queue";
+
+/**
+ * What a `session_send` does when the target session already has a turn
+ * running: the protocol's `SessionSend.activeTurnBehavior`. Omitting the field
+ * is the daemon's default — interrupt the running turn and replace it — so the
+ * frontend only ever names the two values that differ from it: `"steer"`
+ * delivers the text into the running turn, `"queue"` holds it for the next
+ * one. The wider `SendIntent` above spells the same idea including
+ * `"interrupt"`; it has no caller and is not this field's type.
+ */
+export type ActiveTurnBehavior = "queue" | "steer";
+
 export type PermissionOutcome = "allow_once" | "deny";
 
 export interface PermissionOption {
@@ -437,6 +449,14 @@ export type SessionEvent =
     }
   /** Echo of the user prompt, one ACP `user_message_chunk` at a time. */
   | { type: "agent_user_message"; messageId: string | null; text: string }
+  /**
+   * A prompt the daemon delivered into a turn that was already running
+   * (protocol `SessionEvent::Steered`). Journaled for audit; the daemon does
+   * not emit it to observers, so no view here renders it, and it is listed so
+   * the protocol snapshot and this union keep the same tags. Rendering steered
+   * messages in the transcript is slice 4b (OQ-6).
+   */
+  | { type: "steered"; messageId: string | null; text: string }
   /** Agent reasoning, one ACP `agent_thought_chunk` at a time. */
   | {
       type: "agent_thought";
@@ -929,4 +949,52 @@ export interface PluginBackendStatus {
   pingOk: boolean;
   /** Host-side ownership token for generation-safe teardown. */
   generation: number;
+}
+
+/**
+ * The state a message to another session reports back to its sender, in the
+ * design's own vocabulary (D6). `accepted` and `queued` are the receiving
+ * daemon's intake states; the rest follow that session's turn. A target that
+ * is not live is `rejected_absent`. A message refused for a brake or for
+ * crossing two peers is a wire error, not a receipt.
+ */
+export type AgentMessageState =
+  | "accepted"
+  | "queued"
+  | "delivered"
+  | "started"
+  | "completed"
+  | "rejected_absent"
+  | "rejected_unpaired"
+  | "expired"
+  | "failed";
+
+/**
+ * Wire mirror of `ClientMessage::AgentMessageSend`: one session hands text to
+ * another session's turn. `fromSession` is imposed by the daemon — from the
+ * authenticated owner on the pipe path, from the bearer's registered session
+ * on the MCP tool path — never from anything the sender sets. `id` is the
+ * request id the receipt echoes.
+ *
+ * This is the daemon protocol's shape, not a Tauri command payload; the app
+ * has no send path for inter-agent messages yet, and the layer that adds one
+ * strips the request id from what the frontend sees, as `DevicesReply` does.
+ */
+export interface AgentMessageSend {
+  id: number;
+  fromSession: string;
+  toSession: string;
+  text: string;
+  idempotencyKey?: string;
+}
+
+/**
+ * Wire mirror of `DaemonMessage::AgentMessageReceipt`: the daemon's answer to
+ * one `AgentMessageSend`, returned on the sending connection. `id` is the
+ * request id being answered, so the sender can pair it with its own send even
+ * with several in flight; `state` is where that message ended up.
+ */
+export interface AgentMessageReceipt {
+  id: number;
+  state: AgentMessageState;
 }

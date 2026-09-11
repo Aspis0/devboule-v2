@@ -910,6 +910,23 @@ describe("ACP agent session", () => {
     });
   });
 
+  it("steers an in-flight turn only when the caller asks for it", async () => {
+    const harness = makeHarness();
+
+    await harness.session.start();
+    await harness.session.send("keep going", [], "steer");
+
+    // The behavior key exists exactly when steering was asked for: an idle
+    // send leaves it off the payload so the daemon's interrupt-and-replace
+    // default still applies (asserted by the plain-send payload tests).
+    expect(harness.invoke).toHaveBeenCalledWith("session_send", {
+      id: "agent-1",
+      subscriptionId: 41,
+      text: "keep going",
+      activeTurnBehavior: "steer",
+    });
+  });
+
   it("does not detach when attach did not return a subscription id", async () => {
     const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
     const session = new AgentSession({

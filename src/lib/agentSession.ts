@@ -1,4 +1,5 @@
 import type {
+  ActiveTurnBehavior,
   PermissionRequest,
   PromptAttachment,
   SessionEvent,
@@ -200,7 +201,18 @@ export class AgentSession {
     return this.subscriptionId;
   }
 
-  async send(text: string, attachments: readonly PromptAttachment[] = []): Promise<boolean> {
+  /**
+   * Send one prompt. `activeTurnBehavior: "steer"` asks the daemon to deliver
+   * this text into the turn that is already running instead of interrupting
+   * it; omitted, the daemon keeps its interrupt-and-replace default. This is
+   * the same path either way — steering is a property of the send, not a
+   * second send method.
+   */
+  async send(
+    text: string,
+    attachments: readonly PromptAttachment[] = [],
+    activeTurnBehavior?: ActiveTurnBehavior,
+  ): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || this.disposed || !this.started || !this.attached) return false;
     if (this.state.status === "closed") return false;
@@ -218,6 +230,10 @@ export class AgentSession {
         // the payload it produced before attachments existed. The daemon reads
         // an absent field as an empty list.
         ...(attachments.length === 0 ? {} : { attachments }),
+        // Omitted, not `"interrupt"`, for a plain send: the daemon's own
+        // default is interrupt-and-replace. Present only when the caller asked
+        // for a send to join the turn that is already running.
+        ...(activeTurnBehavior === undefined ? {} : { activeTurnBehavior }),
       });
       return true;
     } catch (error) {
@@ -455,6 +471,9 @@ export class AgentSession {
       case "sessions_snapshot":
       case "snapshot":
       case "agent_reported":
+      // Journaled for audit and not emitted to observers; the transcript gains
+      // steer rendering in slice 4b.
+      case "steered":
         return;
     }
   }

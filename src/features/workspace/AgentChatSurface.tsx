@@ -20,6 +20,7 @@ import {
   type SessionChannel,
 } from "../../lib/tauri";
 import type {
+  ActiveTurnBehavior,
   PermissionRequest,
   PromptAttachment,
   SessionManifest,
@@ -81,11 +82,16 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     const attachments = args?.attachments as readonly PromptAttachment[] | undefined;
     const text = typeof args?.text === "string" ? args.text : "";
     const subscriptionId = args?.subscriptionId as SubscriptionId;
-    return (
-      attachments === undefined
-        ? sessionSend(id, subscriptionId, text)
-        : sessionSend(id, subscriptionId, text, attachments)
-    ) as Promise<T>;
+    // The controller only ever names the two behaviours that differ from the
+    // daemon's default; anything else on the wire is a bug and is dropped here
+    // rather than typed as a behaviour the daemon does not know.
+    const behavior = args?.activeTurnBehavior;
+    const activeTurnBehavior: ActiveTurnBehavior | undefined =
+      behavior === "queue" || behavior === "steer" ? behavior : undefined;
+    if (attachments === undefined && activeTurnBehavior === undefined) {
+      return sessionSend(id, subscriptionId, text) as Promise<T>;
+    }
+    return sessionSend(id, subscriptionId, text, attachments, activeTurnBehavior) as Promise<T>;
   }
   if (command === "session_set_model") {
     return sessionSetModel(
@@ -775,7 +781,13 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         disabled={composerDisabled}
         disabledReason={disabledReason}
         availableCommands={state.availableCommands}
-        onSend={(text) => void sessionRef.current?.send(text)}
+        onSend={(text) =>
+          // A send while the agent is mid-turn steers that turn; an idle send
+          // omits the field and the daemon keeps its interrupt-and-replace
+          // default. Enter is the steering key: the send button is the Stop
+          // button while the turn runs, and the textarea stays enabled.
+          void sessionRef.current?.send(text, [], state.streaming ? "steer" : undefined)
+        }
         onStop={() => void sessionRef.current?.interrupt()}
         controls={
           <>

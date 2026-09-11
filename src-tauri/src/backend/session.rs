@@ -106,6 +106,17 @@ pub fn session_presence(
 /// every other caller that predates attachments sends no such key, and a missing
 /// key for a bare `Vec` is an `invalid args` rejection rather than an empty
 /// vector.
+///
+/// `active_turn_behavior` is the same kind of optional key for the slice-4
+/// steering field: `"steer"` asks the daemon to deliver this text into a turn
+/// that is already running, `"queue"` asks it to hold the text for the next
+/// turn, and an absent key keeps the old interrupt-and-replace default. The
+/// value travels as the protocol's own string; the daemon owns what the two
+/// words mean.
+///
+/// SOURCE ONLY, not compiled here: the daemon half of slice 4
+/// (`DaemonClient::session_send_with_subscription`) is written in the daemon
+/// crate and does not take this argument at this commit.
 #[tauri::command]
 pub fn session_send(
     bridge: State<'_, DaemonBridge>,
@@ -113,6 +124,7 @@ pub fn session_send(
     subscription_id: SubscriptionId,
     text: String,
     attachments: Option<Vec<PromptAttachment>>,
+    active_turn_behavior: Option<String>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     require_write_size(&text)?;
@@ -124,6 +136,7 @@ pub fn session_send(
         subscription_id,
         &text,
         &attachments,
+        active_turn_behavior.as_deref(),
     )?)
 }
 
