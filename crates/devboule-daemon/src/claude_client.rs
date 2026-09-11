@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-#[cfg(test)]
 use std::time::Duration;
 
 use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, WireError};
@@ -32,10 +32,47 @@ use crate::server::ServerState;
 
 const COMMAND_ENV: &str = "DEVBOULE_CLAUDE_COMMAND";
 const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
+const CONTROL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+
+type ClaudeModeResponses = Arc<Mutex<HashMap<String, Sender<Result<(), String>>>>>;
 
 struct ClaudePendingControl {
     request_id: String,
     input: Value,
+}
+
+enum ClaudeModeGateState {
+    AwaitingResponse {
+        request_id: String,
+        requested_mode: String,
+    },
+    Ready,
+    Failed(String),
+}
+
+struct ClaudeModeGate {
+    state: ClaudeModeGateState,
+    pending_frames: Vec<Vec<u8>>,
+}
+
+type ClaudeModeGateRef = Arc<Mutex<ClaudeModeGate>>;
+
+/// Launch-time mode gate wiring: the stdin the gate writes through, the gate
+/// itself, and the response deadline.
+struct ClaudeModeGateWiring {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+    gate: ClaudeModeGateRef,
+    timeout: Duration,
+}
+
+impl ClaudeModeGateWiring {
+    fn new(stdin: Arc<Mutex<Option<ChildStdin>>>, gate: ClaudeModeGateRef) -> Self {
+        Self {
+            stdin,
+            gate,
+            timeout: CONTROL_RESPONSE_TIMEOUT,
+        }
+    }
 }
 
 /// Resolve `claude` plus the measured stream-json launch args. Honors
@@ -82,11 +119,64 @@ pub(super) fn resolve_command(_paths: &RuntimePaths) -> Result<PtyCommand, WireE
     Ok(PtyCommand::new(program, argv, cwd, Vec::new()).with_provider_id("claude"))
 }
 
+fn launch_in_bypass_mode(argv: Vec<String>) -> Vec<String> {
+    let mut args = strip_flag(argv, "--permission-mode");
+    args.extend([
+        "--permission-mode".to_string(),
+        "bypassPermissions".to_string(),
+    ]);
+    args
+}
+
+/// The CLI runs its own default model when no `--model` is passed, so the tab
+/// would name a model the process is not running. Pin the catalog's current
+/// model at launch; a later set_model control request still overrides it.
+fn launch_with_model(argv: Vec<String>, model_id: Option<&str>) -> Vec<String> {
+    let mut args = strip_flag(argv, "--model");
+    if let Some(model_id) = model_id {
+        args.extend(["--model".to_string(), model_id.to_string()]);
+    }
+    args
+}
+
+fn strip_flag(argv: Vec<String>, flag: &str) -> Vec<String> {
+    let with_equals = format!("{flag}=");
+    let mut args = Vec::with_capacity(argv.len());
+    let mut skip_value = false;
+    for arg in argv {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if arg == flag {
+            skip_value = true;
+            continue;
+        }
+        if arg.starts_with(&with_equals) {
+            continue;
+        }
+        args.push(arg);
+    }
+    args
+}
+
 pub(super) fn spawn_process(
     state: &Arc<ServerState>,
     command: PtyCommand,
     mcp: Option<McpLaunchConfig>,
+    requested_mode: Option<String>,
 ) -> Result<SpawnedSession, WireError> {
+    let requested_mode = requested_mode.unwrap_or_else(|| "default".to_string());
+    if !crate::claude_view::mode_state(&requested_mode)
+        .available_modes
+        .iter()
+        .any(|mode| mode.id == requested_mode)
+    {
+        return Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("Claude session mode '{requested_mode}' is not available."),
+        ));
+    }
     let mut args = command.args.clone();
     if let Some(path) = mcp
         .as_ref()
@@ -98,6 +188,10 @@ pub(super) fn spawn_process(
             args.push("--strict-mcp-config".to_string());
         }
     }
+    let args = launch_with_model(
+        launch_in_bypass_mode(args),
+        crate::claude_catalog::default_model_id(&state.claude_models().models).as_deref(),
+    );
     let mut process = Command::new(&command.program);
     process
         .args(&args)
@@ -179,7 +273,21 @@ pub(super) fn spawn_process(
     let process = Arc::new(Mutex::new(child));
     let stdin = Arc::new(Mutex::new(Some(stdin)));
     let controls = Arc::new(Mutex::new(HashMap::new()));
+    let mode_responses = Arc::new(Mutex::new(HashMap::new()));
     let next_id = Arc::new(AtomicU64::new(1));
+    let mode_gate = match start_initial_mode(&stdin, &next_id, requested_mode.clone()) {
+        Ok(mode_gate) => mode_gate,
+        Err(error) => {
+            if let Ok(mut process) = process.lock() {
+                terminate_process(&mut process);
+            }
+            drop(process_job);
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not send initial Claude mode request: {error}"),
+            ));
+        }
+    };
     let sender = claude_permission_sender(Arc::clone(&stdin), Arc::clone(&controls));
     let permission_broker = PermissionBroker::with_sender(sender);
     let stderr_source = match ClaudeStderr::start(stderr) {
@@ -198,6 +306,7 @@ pub(super) fn spawn_process(
     let writer = ClaudeWriter {
         stdin: Arc::clone(&stdin),
         pending: Vec::new(),
+        mode_gate: Some(Arc::clone(&mode_gate)),
     };
     let killer = ClaudeKiller {
         process: Arc::clone(&process),
@@ -206,11 +315,13 @@ pub(super) fn spawn_process(
         permission_broker: Arc::clone(&permission_broker),
         cancelled: Arc::new(AtomicBool::new(false)),
     };
-    let reader_dispatch = ClaudeReader::new(
+    let reader_dispatch = ClaudeReader::with_mode_gate(
         ClaudeView::new(Some(command.cwd.clone())),
         Arc::clone(&permission_broker),
         Arc::clone(&controls),
+        Arc::clone(&mode_responses),
         Arc::clone(&next_id),
+        ClaudeModeGateWiring::new(Arc::clone(&stdin), mode_gate),
     );
     Ok(SpawnedSession {
         process_job,
@@ -219,6 +330,7 @@ pub(super) fn spawn_process(
         switcher: Some(Box::new(ClaudeSwitcher {
             stdin: Arc::clone(&stdin),
             next_id: Arc::clone(&next_id),
+            mode_responses,
         })),
         child: Box::new(StdioWaitableChild { process }),
         writer: Arc::new(Mutex::new(Box::new(writer) as Box<dyn Write + Send>)),
@@ -242,20 +354,29 @@ fn claude_permission_sender(
     controls: Arc<Mutex<HashMap<u64, ClaudePendingControl>>>,
 ) -> Arc<PermissionSender> {
     Arc::new(move |id, result| {
-        let pending = controls
-            .lock()
-            .map_err(|_| io::Error::other("Claude permission map lock poisoned"))?
-            .remove(&id);
-        let Some(pending) = pending else {
-            return Err(io::Error::other(
-                "Claude permission response had no matching control request",
-            ));
+        let frame = {
+            let controls = controls
+                .lock()
+                .map_err(|_| io::Error::other("Claude permission map lock poisoned"))?;
+            let pending = controls.get(&id);
+            let Some(pending) = pending else {
+                return Err(io::Error::other(
+                    "Claude permission response had no matching control request",
+                ));
+            };
+            control_response_frame(&pending.request_id, &pending.input, &result)
         };
-        let frame = control_response_frame(&pending.request_id, &pending.input, &result);
         let mut bytes = serde_json::to_vec(&frame)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         bytes.push(b'\n');
-        write_child_stdin(&stdin, &bytes, "Claude")
+        let result = write_child_stdin(&stdin, &bytes, "Claude");
+        if result.is_ok() {
+            controls
+                .lock()
+                .map_err(|_| io::Error::other("Claude permission map lock poisoned"))?
+                .remove(&id);
+        }
+        result
     })
 }
 
@@ -310,6 +431,7 @@ fn frame_user_message(text: &str) -> io::Result<Vec<u8>> {
 struct ClaudeWriter {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     pending: Vec<u8>,
+    mode_gate: Option<ClaudeModeGateRef>,
 }
 
 impl Write for ClaudeWriter {
@@ -325,6 +447,21 @@ impl Write for ClaudeWriter {
         let text = String::from_utf8_lossy(&self.pending).into_owned();
         self.pending.clear();
         let bytes = frame_user_message(&text)?;
+        if let Some(mode_gate) = &self.mode_gate {
+            let mut gate = mode_gate
+                .lock()
+                .map_err(|_| io::Error::other("Claude mode gate lock poisoned"))?;
+            match &gate.state {
+                ClaudeModeGateState::Ready => {}
+                ClaudeModeGateState::Failed(message) => {
+                    return Err(io::Error::other(message.clone()));
+                }
+                ClaudeModeGateState::AwaitingResponse { .. } => {
+                    gate.pending_frames.push(bytes);
+                    return Ok(());
+                }
+            }
+        }
         write_child_stdin(&self.stdin, &bytes, "Claude")
     }
 }
@@ -340,10 +477,10 @@ struct ClaudeKiller {
 struct ClaudeSwitcher {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     next_id: Arc<AtomicU64>,
+    mode_responses: ClaudeModeResponses,
 }
 
-/// The single control_request interrupt frame builder shared by the hard
-/// stop and the soft turn interrupt, so the wire format cannot drift apart.
+/// Build a Claude control_request frame.
 fn interrupt_frame_bytes(request_id: &str) -> Option<Vec<u8>> {
     control_request_frame_bytes(request_id, serde_json::json!({"subtype": "interrupt"}))
 }
@@ -357,6 +494,102 @@ fn control_request_frame_bytes(request_id: &str, request: Value) -> Option<Vec<u
     let mut bytes = serde_json::to_vec(&frame).ok()?;
     bytes.push(b'\n');
     Some(bytes)
+}
+
+fn start_initial_mode(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    next_id: &AtomicU64,
+    requested_mode: String,
+) -> io::Result<ClaudeModeGateRef> {
+    let request_id = format!(
+        "initial-permission-mode-{}",
+        next_id.fetch_add(1, Ordering::Relaxed)
+    );
+    let mode_gate = Arc::new(Mutex::new(ClaudeModeGate {
+        state: ClaudeModeGateState::AwaitingResponse {
+            request_id: request_id.clone(),
+            requested_mode: requested_mode.clone(),
+        },
+        pending_frames: Vec::new(),
+    }));
+    let bytes = control_request_frame_bytes(
+        &request_id,
+        serde_json::json!({
+            "subtype": "set_permission_mode",
+            "mode": requested_mode,
+        }),
+    )
+    .ok_or_else(|| io::Error::other("Could not encode Claude mode request."))?;
+    if let Err(error) = write_child_stdin(stdin, &bytes, "Claude") {
+        if let Ok(mut gate) = mode_gate.lock() {
+            gate.state = ClaudeModeGateState::Failed(error.to_string());
+        }
+        return Err(error);
+    }
+    Ok(mode_gate)
+}
+
+/// Flush the prompts queued behind the gate and mark it Ready. The caller
+/// holds the gate lock; a write failure leaves the gate awaiting so the
+/// caller can fail it through the normal path.
+fn flush_gate_frames(
+    gate: &mut ClaudeModeGate,
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    view: &mut ClaudeView,
+    mode_id: &str,
+) -> Option<io::Error> {
+    view.set_mode(mode_id);
+    for bytes in std::mem::take(&mut gate.pending_frames) {
+        if let Err(error) = write_child_stdin(stdin, &bytes, "Claude") {
+            return Some(error);
+        }
+    }
+    gate.state = ClaudeModeGateState::Ready;
+    None
+}
+
+fn fail_initial_mode_parts(
+    mode_gate: &ClaudeModeGateRef,
+    stdin: Option<&Arc<Mutex<Option<ChildStdin>>>>,
+    runtime: &Arc<SessionRuntime>,
+    expected_request_id: Option<&str>,
+    require_awaiting: bool,
+    message: &str,
+) -> bool {
+    let should_publish = match mode_gate.lock() {
+        Ok(mut gate) => {
+            let can_fail = match &gate.state {
+                ClaudeModeGateState::Failed(_) => false,
+                ClaudeModeGateState::Ready => !require_awaiting,
+                ClaudeModeGateState::AwaitingResponse { request_id, .. } => expected_request_id
+                    .map(|expected| expected == request_id)
+                    .unwrap_or(true),
+            };
+            if can_fail {
+                drop(std::mem::take(&mut gate.pending_frames));
+                gate.state = ClaudeModeGateState::Failed(message.to_string());
+                true
+            } else {
+                false
+            }
+        }
+        Err(_) => expected_request_id.is_none(),
+    };
+    if !should_publish {
+        return false;
+    }
+    if let Some(stdin) = stdin {
+        if let Ok(mut stdin) = stdin.lock() {
+            *stdin = None;
+        }
+    }
+    let _ = runtime.publish_agent_event(
+        SessionEvent::AgentError {
+            message: message.to_string(),
+        },
+        None,
+    );
+    true
 }
 
 /// The frame write happens on a spawned thread because a full stdin pipe
@@ -415,10 +648,55 @@ impl ModelSwitcher for ClaudeSwitcher {
         Ok(())
     }
 
+    fn set_mode(&self, mode_id: &str) -> Result<(), WireError> {
+        let request_id = format!(
+            "set-permission-mode-{}",
+            self.next_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let (sender, receiver) = mpsc::channel();
+        self.mode_responses
+            .lock()
+            .map_err(|_| WireError::new(ErrorCode::Io, "Claude mode response map is unavailable."))?
+            .insert(request_id.clone(), sender);
+        let bytes = control_request_frame_bytes(
+            &request_id,
+            serde_json::json!({
+                "subtype": "set_permission_mode",
+                "mode": mode_id,
+            }),
+        )
+        .ok_or_else(|| WireError::new(ErrorCode::Io, "Could not encode Claude mode request."))?;
+        if let Err(error) = write_child_stdin(&self.stdin, &bytes, "Claude") {
+            let _ = self
+                .mode_responses
+                .lock()
+                .map(|mut responses| responses.remove(&request_id));
+            return Err(WireError::new(
+                ErrorCode::Io,
+                format!("Could not send Claude mode request: {error}"),
+            ));
+        }
+        match receiver.recv_timeout(CONTROL_RESPONSE_TIMEOUT) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(message)) => Err(WireError::new(ErrorCode::InvalidRequest, message)),
+            Err(error) => {
+                let _ = self
+                    .mode_responses
+                    .lock()
+                    .map(|mut responses| responses.remove(&request_id));
+                Err(WireError::new(
+                    ErrorCode::Io,
+                    format!("Claude mode response timed out: {error}"),
+                ))
+            }
+        }
+    }
+
     fn clone_switcher(&self) -> Box<dyn ModelSwitcher> {
         Box::new(Self {
             stdin: Arc::clone(&self.stdin),
             next_id: Arc::clone(&self.next_id),
+            mode_responses: Arc::clone(&self.mode_responses),
         })
     }
 }
@@ -434,14 +712,14 @@ impl SessionKiller for ClaudeKiller {
         }
         let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         send_interrupt_frame(Arc::clone(&self.stdin), request_id);
-        self.permission_broker.cancel_all();
+        self.permission_broker.cancel_pending();
     }
 
     fn kill(&mut self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             let request_id = format!("interrupt-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
             send_interrupt_frame(Arc::clone(&self.stdin), request_id);
-            self.permission_broker.cancel_all();
+            self.permission_broker.close();
         }
         if let Ok(mut process) = self.process.lock() {
             let _ = process.kill();
@@ -468,7 +746,14 @@ struct ClaudeReader {
     view: ClaudeView,
     permission_broker: Arc<PermissionBroker>,
     controls: Arc<Mutex<HashMap<u64, ClaudePendingControl>>>,
+    mode_responses: ClaudeModeResponses,
     next_id: Arc<AtomicU64>,
+    stdin: Option<Arc<Mutex<Option<ChildStdin>>>>,
+    mode_gate: Option<ClaudeModeGateRef>,
+    initial_mode_timeout: Duration,
+    initial_mode_timer_started: bool,
+    initial_mode_timer_cancel: Option<Sender<()>>,
+    initial_mode_timer_thread: Option<JoinHandle<()>>,
 }
 
 fn observe_mcp_status(value: &Value, runtime: &SessionRuntime) {
@@ -506,6 +791,7 @@ impl ClaudeReader {
         view: ClaudeView,
         permission_broker: Arc<PermissionBroker>,
         controls: Arc<Mutex<HashMap<u64, ClaudePendingControl>>>,
+        mode_responses: ClaudeModeResponses,
         next_id: Arc<AtomicU64>,
     ) -> Self {
         Self {
@@ -514,8 +800,30 @@ impl ClaudeReader {
             view,
             permission_broker,
             controls,
+            mode_responses,
             next_id,
+            stdin: None,
+            mode_gate: None,
+            initial_mode_timeout: CONTROL_RESPONSE_TIMEOUT,
+            initial_mode_timer_started: false,
+            initial_mode_timer_cancel: None,
+            initial_mode_timer_thread: None,
         }
+    }
+
+    fn with_mode_gate(
+        view: ClaudeView,
+        permission_broker: Arc<PermissionBroker>,
+        controls: Arc<Mutex<HashMap<u64, ClaudePendingControl>>>,
+        mode_responses: ClaudeModeResponses,
+        next_id: Arc<AtomicU64>,
+        wiring: ClaudeModeGateWiring,
+    ) -> Self {
+        let mut reader = Self::new(view, permission_broker, controls, mode_responses, next_id);
+        reader.stdin = Some(wiring.stdin);
+        reader.mode_gate = Some(wiring.gate);
+        reader.initial_mode_timeout = wiring.timeout;
+        reader
     }
 
     fn publish(&self, runtime: &SessionRuntime, event: SessionEvent) {
@@ -547,12 +855,16 @@ impl ClaudeReader {
         let value = runtime.redact_mcp_value(&value);
         observe_mcp_status(&value, runtime);
         let event_seq = runtime.journal_agent_envelope(&value);
+        if self.dispatch_control_response(&value, runtime) {
+            return;
+        }
         if is_can_use_tool(&value) {
             self.dispatch_permission(&value, runtime, event_seq);
             return;
         }
         for event in self.view.ingest(&value) {
             let event = if matches!(&event, SessionEvent::SessionManifest { .. }) {
+                let event = self.manifest_with_requested_mode(event);
                 let event = runtime.store_session_manifest(event);
                 if let Some(session_id) = self.view.peer_session_id() {
                     runtime.set_peer_session_id(session_id.to_string());
@@ -563,6 +875,233 @@ impl ClaudeReader {
             };
             self.publish_with_seq(runtime, event, event_seq);
         }
+    }
+
+    fn manifest_with_requested_mode(&self, event: SessionEvent) -> SessionEvent {
+        let Some(mode_gate) = &self.mode_gate else {
+            return event;
+        };
+        let requested_mode = mode_gate.lock().ok().and_then(|gate| match &gate.state {
+            ClaudeModeGateState::AwaitingResponse { requested_mode, .. } => {
+                Some(requested_mode.clone())
+            }
+            ClaudeModeGateState::Ready | ClaudeModeGateState::Failed(_) => None,
+        });
+        let Some(requested_mode) = requested_mode else {
+            return event;
+        };
+        match event {
+            SessionEvent::SessionManifest {
+                provider_id,
+                current_model_id,
+                models,
+                mut modes,
+            } => {
+                if let Some(modes) = &mut modes {
+                    modes.current_mode_id = requested_mode;
+                }
+                SessionEvent::SessionManifest {
+                    provider_id,
+                    current_model_id,
+                    models,
+                    modes,
+                }
+            }
+            event => event,
+        }
+    }
+
+    fn start_initial_mode_timeout(&mut self, runtime: &Arc<SessionRuntime>) {
+        if self.initial_mode_timer_started {
+            return;
+        }
+        self.initial_mode_timer_started = true;
+        let Some(mode_gate) = self.mode_gate.as_ref().cloned() else {
+            return;
+        };
+        let Some(stdin) = self.stdin.as_ref().cloned() else {
+            return;
+        };
+        let Some(request_id) = mode_gate.lock().ok().and_then(|gate| match &gate.state {
+            ClaudeModeGateState::AwaitingResponse { request_id, .. } => Some(request_id.clone()),
+            _ => None,
+        }) else {
+            return;
+        };
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+        self.initial_mode_timer_cancel = Some(cancel_tx);
+        let timer_gate = Arc::clone(&mode_gate);
+        let timer_stdin = Arc::clone(&stdin);
+        let timer_runtime = Arc::clone(runtime);
+        let timer_timeout = self.initial_mode_timeout;
+        match std::thread::Builder::new()
+            .name("claude-mode-timeout".to_string())
+            .spawn(move || {
+                if cancel_rx.recv_timeout(timer_timeout).is_err() {
+                    fail_initial_mode_parts(
+                        &timer_gate,
+                        Some(&timer_stdin),
+                        &timer_runtime,
+                        Some(&request_id),
+                        true,
+                        "Claude mode response timed out; queued prompt(s) were not delivered because Claude never confirmed the permission mode.",
+                    );
+                }
+            }) {
+            Ok(thread) => self.initial_mode_timer_thread = Some(thread),
+            Err(_) => {
+                self.initial_mode_timer_cancel = None;
+                self.fail_initial_mode(runtime, "Could not start Claude mode response timeout.");
+            }
+        }
+    }
+
+    fn cancel_initial_mode_timeout(&mut self) {
+        if let Some(cancel) = &self.initial_mode_timer_cancel {
+            let _ = cancel.send(());
+        }
+        if let Some(thread) = self.initial_mode_timer_thread.take() {
+            let _ = thread.join();
+        }
+    }
+
+    fn fail_initial_mode(&mut self, runtime: &Arc<SessionRuntime>, message: &str) {
+        self.cancel_initial_mode_timeout();
+        if let Some(mode_gate) = &self.mode_gate {
+            fail_initial_mode_parts(
+                mode_gate,
+                self.stdin.as_ref(),
+                runtime,
+                None,
+                false,
+                message,
+            );
+        } else {
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: message.to_string(),
+                },
+            );
+        }
+    }
+
+    fn complete_initial_mode(
+        &mut self,
+        runtime: &Arc<SessionRuntime>,
+        request_id: &str,
+        result: Result<String, String>,
+    ) {
+        let Some(mode_gate) = self.mode_gate.as_ref().cloned() else {
+            return;
+        };
+        self.cancel_initial_mode_timeout();
+        match result {
+            Err(message) => {
+                fail_initial_mode_parts(
+                    &mode_gate,
+                    self.stdin.as_ref(),
+                    runtime,
+                    Some(request_id),
+                    true,
+                    &message,
+                );
+            }
+            Ok(mode_id) => {
+                let write_error = {
+                    let Ok(mut gate) = mode_gate.lock() else {
+                        self.fail_initial_mode(runtime, "Claude mode gate is unavailable.");
+                        return;
+                    };
+                    if !matches!(
+                        &gate.state,
+                        ClaudeModeGateState::AwaitingResponse {
+                            request_id: expected,
+                            ..
+                        } if expected == request_id
+                    ) {
+                        return;
+                    }
+                    flush_gate_frames(
+                        &mut gate,
+                        self.stdin.as_ref().expect("mode gate has stdin"),
+                        &mut self.view,
+                        &mode_id,
+                    )
+                };
+                if let Some(error) = write_error {
+                    self.fail_initial_mode(
+                        runtime,
+                        &format!("Could not send queued Claude prompt: {error}"),
+                    );
+                }
+            }
+        }
+    }
+
+    fn dispatch_control_response(&mut self, value: &Value, runtime: &Arc<SessionRuntime>) -> bool {
+        if value.get("type").and_then(Value::as_str) != Some("control_response") {
+            return false;
+        }
+        let Some(request_id) = value
+            .pointer("/response/request_id")
+            .and_then(Value::as_str)
+        else {
+            return true;
+        };
+        let initial = self.mode_gate.as_ref().and_then(|mode_gate| {
+            mode_gate.lock().ok().and_then(|gate| match &gate.state {
+                ClaudeModeGateState::AwaitingResponse {
+                    request_id: expected,
+                    requested_mode,
+                } if expected == request_id => Some(requested_mode.clone()),
+                _ => None,
+            })
+        });
+        if let Some(requested_mode) = initial {
+            let result = match value.pointer("/response/subtype").and_then(Value::as_str) {
+                Some("success") => Ok(value
+                    .pointer("/response/response/mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&requested_mode)
+                    .to_string()),
+                Some("error") => Err(value
+                    .pointer("/response/error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Claude rejected the initial permission mode.")
+                    .to_string()),
+                _ => Err("Claude returned an invalid permission mode response.".to_string()),
+            };
+            self.complete_initial_mode(runtime, request_id, result);
+            return true;
+        }
+        let sender = self
+            .mode_responses
+            .lock()
+            .ok()
+            .and_then(|mut responses| responses.remove(request_id));
+        let Some(sender) = sender else {
+            return true;
+        };
+        let result = match value.pointer("/response/subtype").and_then(Value::as_str) {
+            Some("success") => {
+                if let Some(mode_id) = value
+                    .pointer("/response/response/mode")
+                    .and_then(Value::as_str)
+                {
+                    self.view.set_mode(mode_id);
+                }
+                Ok(())
+            }
+            Some("error") => Err(value
+                .pointer("/response/error")
+                .and_then(Value::as_str)
+                .unwrap_or("Claude rejected the permission mode change.")
+                .to_string()),
+            _ => Err("Claude returned an invalid permission mode response.".to_string()),
+        };
+        let _ = sender.send(result);
+        true
     }
 
     fn dispatch_permission(
@@ -642,25 +1181,22 @@ impl ClaudeReader {
                 },
             );
         }
-        let pending = match self
+        if let Err(error) = self
             .permission_broker
             .register(acp_id, event.clone(), runtime)
         {
-            Ok(pending) => pending,
-            Err(error) => {
-                let _ = self.permission_broker.send(
-                    acp_id,
-                    serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
-                );
-                self.publish(
-                    runtime,
-                    SessionEvent::AgentError {
-                        message: format!("Could not queue Claude permission request: {error}"),
-                    },
-                );
-                return;
-            }
-        };
+            let _ = self.permission_broker.send(
+                acp_id,
+                serde_json::json!({ "outcome": { "outcome": "cancelled" } }),
+            );
+            self.publish(
+                runtime,
+                SessionEvent::AgentError {
+                    message: format!("Could not queue Claude permission request: {error}"),
+                },
+            );
+            return;
+        }
         if runtime.permission_delivery_enabled() == Some(false) {
             let _ = self.permission_broker.respond(
                 match &event {
@@ -671,23 +1207,24 @@ impl ClaudeReader {
             );
             return;
         }
-        if let Err(error) = self.permission_broker.arm_timeout(Arc::clone(&pending)) {
-            let tool_call_id = match &event {
-                SessionEvent::PermissionRequest { tool_call_id, .. } => tool_call_id.as_str(),
-                _ => "",
-            };
-            let _ = self
-                .permission_broker
-                .respond(tool_call_id, devboule_protocol::PermissionOutcome::Deny);
-            self.publish(
-                runtime,
-                SessionEvent::AgentError {
-                    message: format!(
-                        "Could not start the Claude permission deadline; the request was cancelled: {error}"
-                    ),
-                },
-            );
-            return;
+        let tool_call_id = match &event {
+            SessionEvent::PermissionRequest { tool_call_id, .. } => tool_call_id.as_str(),
+            _ => return,
+        };
+        match self.permission_broker.auto_answer(tool_call_id, runtime) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                self.publish(
+                    runtime,
+                    SessionEvent::AgentError {
+                        message: format!(
+                            "Could not auto-answer Claude permission request: {error}"
+                        ),
+                    },
+                );
+                return;
+            }
         }
         self.publish_with_seq(runtime, event, event_seq);
     }
@@ -695,6 +1232,7 @@ impl ClaudeReader {
 
 impl ReaderDispatch for ClaudeReader {
     fn feed(&mut self, bytes: &[u8], runtime: &Arc<SessionRuntime>) -> Result<(), String> {
+        self.start_initial_mode_timeout(runtime);
         let mut bytes = bytes;
         if self.discarding_oversized_line {
             let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') else {
@@ -741,7 +1279,18 @@ impl ReaderDispatch for ClaudeReader {
     }
 
     fn finish(&mut self, runtime: &Arc<SessionRuntime>) {
-        self.permission_broker.cancel_all();
+        self.cancel_initial_mode_timeout();
+        if let Some(mode_gate) = &self.mode_gate {
+            fail_initial_mode_parts(
+                mode_gate,
+                self.stdin.as_ref(),
+                runtime,
+                None,
+                true,
+                "Claude exited before confirming the permission mode; queued prompt(s) were not delivered because Claude never confirmed the permission mode.",
+            );
+        }
+        self.permission_broker.close();
         if !self.buffer.is_empty() {
             self.publish(
                 runtime,
@@ -855,6 +1404,12 @@ mod tests {
     use crate::session::{ConnHandle, PendingEvent};
     use devboule_protocol::PermissionOutcome;
     use std::path::PathBuf;
+    use std::process::{Child, ChildStdin, ChildStdout};
+
+    const CLAUDE_MODE_CAPTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/wire/claude-set-mode.jsonl"
+    ));
 
     fn drain(conn: &ConnHandle) -> Vec<SessionEvent> {
         let mut events = Vec::new();
@@ -929,6 +1484,144 @@ mod tests {
         assert_eq!(value["request"]["subtype"], "interrupt");
     }
 
+    fn claude_model(model_id: &str) -> devboule_protocol::SessionModel {
+        devboule_protocol::SessionModel {
+            model_id: model_id.to_string(),
+            name: model_id.to_string(),
+            description: None,
+            context_tokens: None,
+            current_effort: None,
+            efforts: None,
+        }
+    }
+
+    fn pinned(argv: Vec<String>, model_id: Option<&str>) -> Vec<String> {
+        launch_with_model(launch_in_bypass_mode(argv), model_id)
+    }
+
+    #[test]
+    fn claude_launch_always_uses_bypass_permission_mode() {
+        let args = launch_in_bypass_mode(vec![
+            "-p".to_string(),
+            "--permission-mode".to_string(),
+            "plan".to_string(),
+        ]);
+        assert_eq!(
+            args.windows(2)
+                .find(|pair| pair[0] == "--permission-mode")
+                .map(|pair| pair[1].as_str()),
+            Some("bypassPermissions")
+        );
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.as_str() == "--permission-mode")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn claude_launch_pins_the_catalog_model() {
+        let derived = vec![
+            claude_model("claude-sonnet-5"),
+            claude_model("claude-opus-5"),
+        ];
+        let args = pinned(
+            vec!["-p".to_string()],
+            crate::claude_catalog::default_model_id(&derived).as_deref(),
+        );
+        assert_eq!(
+            args.windows(2)
+                .find(|pair| pair[0] == "--model")
+                .map(|pair| pair[1].as_str()),
+            Some("claude-opus-5")
+        );
+
+        let no_opus = vec![
+            claude_model("claude-sonnet-5"),
+            claude_model("claude-haiku-5"),
+        ];
+        let args = pinned(
+            vec!["-p".to_string()],
+            crate::claude_catalog::default_model_id(&no_opus).as_deref(),
+        );
+        assert_eq!(
+            args.windows(2)
+                .find(|pair| pair[0] == "--model")
+                .map(|pair| pair[1].as_str()),
+            Some("claude-sonnet-5")
+        );
+        assert_eq!(args.iter().filter(|arg| *arg == "--model").count(), 1);
+
+        // An explicit launch model is replaced, never duplicated.
+        let replaced = launch_with_model(
+            vec![
+                "-p".to_string(),
+                "--model".to_string(),
+                "sonnet".to_string(),
+                "--model=haiku".to_string(),
+            ],
+            Some("claude-opus-5"),
+        );
+        assert_eq!(replaced, ["-p", "--model", "claude-opus-5"]);
+    }
+
+    #[test]
+    fn set_mode_frame_matches_the_measured_control_request_wire() {
+        let bytes = control_request_frame_bytes(
+            "measure-acceptEdits",
+            serde_json::json!({
+                "subtype": "set_permission_mode",
+                "mode": "acceptEdits",
+            }),
+        )
+        .expect("frame");
+        let value: Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "control_request",
+                "request_id": "measure-acceptEdits",
+                "request": {
+                    "subtype": "set_permission_mode",
+                    "mode": "acceptEdits",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn measured_set_mode_control_responses_resolve_success_and_error() {
+        let mode_responses = Arc::new(Mutex::new(HashMap::new()));
+        let (success_tx, success_rx) = mpsc::channel();
+        let (error_tx, error_rx) = mpsc::channel();
+        mode_responses.lock().expect("mode responses").extend([
+            ("measure-acceptEdits".to_string(), success_tx),
+            ("measure-bypassPermissions".to_string(), error_tx),
+        ]);
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = ClaudeReader::new(
+            ClaudeView::new(Some(PathBuf::from(r"C:\work"))),
+            Arc::clone(&broker),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::clone(&mode_responses),
+            Arc::new(AtomicU64::new(1)),
+        );
+        let runtime = Arc::new(SessionRuntime::new());
+        let mut lines = CLAUDE_MODE_CAPTURE.lines();
+        let success = lines.next().expect("measured success response");
+        let error = lines.next().expect("measured error response");
+        assert!(lines.next().is_none());
+        reader
+            .feed(format!("{success}\n{error}\n").as_bytes(), &runtime)
+            .expect("feed");
+        assert_eq!(success_rx.recv().expect("success response"), Ok(()));
+        assert_eq!(
+            error_rx.recv().expect("error response"),
+            Err("Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions".to_string())
+        );
+    }
+
     #[test]
     fn writer_frames_buffered_text_as_a_user_message() {
         let bytes = frame_user_message("Reply with exactly one word: PONG").expect("frame");
@@ -942,6 +1635,518 @@ mod tests {
             value["message"]["content"][0]["text"],
             "Reply with exactly one word: PONG"
         );
+    }
+
+    struct InitialModeHarness {
+        child: Child,
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+        stdout: BufReader<ChildStdout>,
+        gate: ClaudeModeGateRef,
+        next_id: Arc<AtomicU64>,
+    }
+
+    fn initial_mode_test_setup() -> InitialModeHarness {
+        let mut child = std::process::Command::new("node")
+            .args([
+                "-e",
+                "process.stdin.on('data', data => process.stdout.write(data))",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("node is required for the Claude mode gate test");
+        let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
+        let stdout = child.stdout.take().expect("stdout");
+        let next_id = Arc::new(AtomicU64::new(1));
+        let gate =
+            start_initial_mode(&stdin, &next_id, "default".to_string()).expect("mode request");
+        InitialModeHarness {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            gate,
+            next_id,
+        }
+    }
+
+    fn initial_mode_test_reader(
+        broker: &Arc<PermissionBroker>,
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+        gate: ClaudeModeGateRef,
+        next_id: Arc<AtomicU64>,
+        mode_responses: ClaudeModeResponses,
+    ) -> ClaudeReader {
+        initial_mode_test_reader_with_timeout(
+            broker,
+            stdin,
+            gate,
+            next_id,
+            mode_responses,
+            CONTROL_RESPONSE_TIMEOUT,
+        )
+    }
+
+    fn initial_mode_test_reader_with_timeout(
+        broker: &Arc<PermissionBroker>,
+        stdin: Arc<Mutex<Option<ChildStdin>>>,
+        gate: ClaudeModeGateRef,
+        next_id: Arc<AtomicU64>,
+        mode_responses: ClaudeModeResponses,
+        timeout: Duration,
+    ) -> ClaudeReader {
+        ClaudeReader::with_mode_gate(
+            ClaudeView::new(Some(PathBuf::from(r"C:\work"))),
+            Arc::clone(broker),
+            Arc::new(Mutex::new(HashMap::new())),
+            mode_responses,
+            next_id,
+            ClaudeModeGateWiring {
+                stdin,
+                gate,
+                timeout,
+            },
+        )
+    }
+
+    fn read_json_line(stdout: &mut BufReader<ChildStdout>) -> Value {
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("child output");
+        serde_json::from_str(&line).expect("child output json")
+    }
+
+    fn initial_mode_response(request: &Value) -> Value {
+        initial_mode_response_with_mode(request, "default")
+    }
+
+    fn initial_mode_response_with_mode(request: &Value, mode: &str) -> Value {
+        serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": request["request_id"],
+                "response": {"mode": mode}
+            }
+        })
+    }
+
+    fn initial_mode_error(request: &Value, message: &str) -> Value {
+        serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": request["request_id"],
+                "error": message
+            }
+        })
+    }
+
+    #[test]
+    fn initial_claude_mode_response_flushes_prompt_without_init() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = initial_mode_test_reader(
+            &broker,
+            Arc::clone(&harness.stdin),
+            Arc::clone(&harness.gate),
+            Arc::clone(&harness.next_id),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: reader.mode_gate.clone(),
+        };
+        writer.write_all(b"Reply DONE").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+
+        let request = read_json_line(&mut harness.stdout);
+        assert_eq!(request["request"]["subtype"], "set_permission_mode");
+        assert_eq!(request["request"]["mode"], "default");
+        let runtime = Arc::new(SessionRuntime::new());
+        let response = initial_mode_response(&request);
+        reader
+            .feed(format!("{response}\n").as_bytes(), &runtime)
+            .expect("mode response");
+        let prompt = read_json_line(&mut harness.stdout);
+        assert_eq!(prompt["type"], "user");
+        assert_eq!(prompt["message"]["content"][0]["text"], "Reply DONE");
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn claude_prompts_waiting_for_initial_mode_response_flush_in_order() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = initial_mode_test_reader(
+            &broker,
+            Arc::clone(&harness.stdin),
+            Arc::clone(&harness.gate),
+            Arc::clone(&harness.next_id),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"FIRST").expect("buffer first prompt");
+        writer.flush().expect("queue first prompt");
+        writer.write_all(b"SECOND").expect("buffer second prompt");
+        writer.flush().expect("queue second prompt");
+
+        let request = read_json_line(&mut harness.stdout);
+        let runtime = Arc::new(SessionRuntime::new());
+        let response = initial_mode_response(&request);
+        reader
+            .feed(format!("{response}\n").as_bytes(), &runtime)
+            .expect("mode response");
+        let first = read_json_line(&mut harness.stdout);
+        let second = read_json_line(&mut harness.stdout);
+        assert_eq!(first["message"]["content"][0]["text"], "FIRST");
+        assert_eq!(second["message"]["content"][0]["text"], "SECOND");
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn initial_claude_mode_request_is_written_before_the_first_prompt() {
+        let mut harness = initial_mode_test_setup();
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"FIRST").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+
+        let request = read_json_line(&mut harness.stdout);
+        assert_eq!(request["type"], "control_request");
+        assert_eq!(request["request"]["subtype"], "set_permission_mode");
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn initial_claude_mode_error_publishes_once_and_closes_stdin() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = initial_mode_test_reader(
+            &broker,
+            Arc::clone(&harness.stdin),
+            Arc::clone(&harness.gate),
+            Arc::clone(&harness.next_id),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"DROP ME").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+        let request = read_json_line(&mut harness.stdout);
+        let (runtime, conn) = attached(&broker);
+        reader
+            .feed(
+                format!("{}\n", initial_mode_error(&request, "rejected")).as_bytes(),
+                &runtime,
+            )
+            .expect("mode error");
+
+        let events = drain(&conn);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SessionEvent::AgentError { .. }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentError { message } if message == "rejected"
+        )));
+        let gate = harness.gate.lock().expect("gate");
+        assert!(
+            matches!(&gate.state, ClaudeModeGateState::Failed(message) if message == "rejected")
+        );
+        assert!(gate.pending_frames.is_empty());
+        drop(gate);
+        assert!(harness.stdin.lock().expect("stdin").is_none());
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn initial_claude_mode_timeout_publishes_once_and_drops_frames() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = initial_mode_test_reader_with_timeout(
+            &broker,
+            Arc::clone(&harness.stdin),
+            Arc::clone(&harness.gate),
+            Arc::clone(&harness.next_id),
+            Arc::new(Mutex::new(HashMap::new())),
+            Duration::ZERO,
+        );
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"DROP ME").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+        let (runtime, conn) = attached(&broker);
+        let _request = read_json_line(&mut harness.stdout);
+        reader.feed(b"", &runtime).expect("start timeout");
+        reader
+            .initial_mode_timer_thread
+            .take()
+            .expect("timeout thread")
+            .join()
+            .expect("timeout thread join");
+        let events = drain(&conn);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SessionEvent::AgentError { .. }))
+                .count(),
+            1
+        );
+        let gate = harness.gate.lock().expect("gate");
+        assert!(
+            matches!(&gate.state, ClaudeModeGateState::Failed(message) if message == "Claude mode response timed out; queued prompt(s) were not delivered because Claude never confirmed the permission mode.")
+        );
+        assert!(gate.pending_frames.is_empty());
+        drop(gate);
+        assert!(harness.stdin.lock().expect("stdin").is_none());
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn initial_claude_mode_timeout_after_success_is_a_noop() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = initial_mode_test_reader_with_timeout(
+            &broker,
+            Arc::clone(&harness.stdin),
+            Arc::clone(&harness.gate),
+            Arc::clone(&harness.next_id),
+            Arc::new(Mutex::new(HashMap::new())),
+            Duration::from_secs(1),
+        );
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"KEEP ME").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+        let request = read_json_line(&mut harness.stdout);
+        let (runtime, conn) = attached(&broker);
+        reader
+            .feed(
+                format!("{}\n", initial_mode_response(&request)).as_bytes(),
+                &runtime,
+            )
+            .expect("mode response");
+        let prompt = read_json_line(&mut harness.stdout);
+        assert_eq!(prompt["message"]["content"][0]["text"], "KEEP ME");
+        assert!(drain(&conn)
+            .iter()
+            .all(|event| !matches!(event, SessionEvent::AgentError { .. })));
+        assert!(reader.initial_mode_timer_thread.is_none());
+        let gate = harness.gate.lock().expect("gate");
+        assert!(matches!(&gate.state, ClaudeModeGateState::Ready));
+        assert!(gate.pending_frames.is_empty());
+        drop(gate);
+        assert!(harness.stdin.lock().expect("stdin").is_some());
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn claude_mode_timeout_on_a_ready_gate_is_a_noop() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = initial_mode_test_reader(
+            &broker,
+            Arc::clone(&harness.stdin),
+            Arc::clone(&harness.gate),
+            Arc::clone(&harness.next_id),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"KEEP ME").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+        let _request = read_json_line(&mut harness.stdout);
+        let (runtime, conn) = attached(&broker);
+        reader.feed(b"", &runtime).expect("start timeout");
+
+        // Hold the gate so the fired deadline cannot inspect it before the
+        // Ready transition lands; dropping the timer sender is the deadline
+        // firing, without a sleep.
+        let mut gate = harness.gate.lock().expect("gate");
+        drop(reader.initial_mode_timer_cancel.take());
+        assert!(
+            flush_gate_frames(&mut gate, &harness.stdin, &mut reader.view, "default",).is_none()
+        );
+        drop(gate);
+
+        reader
+            .initial_mode_timer_thread
+            .take()
+            .expect("timeout thread")
+            .join()
+            .expect("timeout thread join");
+        let prompt = read_json_line(&mut harness.stdout);
+        assert_eq!(prompt["message"]["content"][0]["text"], "KEEP ME");
+        assert!(drain(&conn)
+            .iter()
+            .all(|event| !matches!(event, SessionEvent::AgentError { .. })));
+        let gate = harness.gate.lock().expect("gate");
+        assert!(matches!(&gate.state, ClaudeModeGateState::Ready));
+        assert!(gate.pending_frames.is_empty());
+        drop(gate);
+        assert!(harness.stdin.lock().expect("stdin").is_some());
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn claude_finish_while_initial_mode_is_pending_publishes_once_without_flushing() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = initial_mode_test_reader(
+            &broker,
+            Arc::clone(&harness.stdin),
+            Arc::clone(&harness.gate),
+            Arc::clone(&harness.next_id),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        let mut writer = ClaudeWriter {
+            stdin: Arc::clone(&harness.stdin),
+            pending: Vec::new(),
+            mode_gate: Some(Arc::clone(&harness.gate)),
+        };
+        writer.write_all(b"DROP ON EXIT").expect("buffer prompt");
+        writer.flush().expect("queue prompt");
+        let _request = read_json_line(&mut harness.stdout);
+        let (runtime, conn) = attached(&broker);
+        reader.finish(&runtime);
+        reader.finish(&runtime);
+        let events = drain(&conn);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SessionEvent::AgentError { .. }))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentError { message }
+                if message == "Claude exited before confirming the permission mode; queued prompt(s) were not delivered because Claude never confirmed the permission mode."
+        )));
+        let gate = harness.gate.lock().expect("gate");
+        assert!(
+            matches!(&gate.state, ClaudeModeGateState::Failed(message) if message == "Claude exited before confirming the permission mode; queued prompt(s) were not delivered because Claude never confirmed the permission mode.")
+        );
+        assert!(gate.pending_frames.is_empty());
+        drop(gate);
+        assert!(harness.stdin.lock().expect("stdin").is_none());
+        drop(writer);
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
+    }
+
+    #[test]
+    fn user_mode_switch_during_initial_mode_is_fifo_and_wins_in_the_view() {
+        let mut harness = initial_mode_test_setup();
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mode_responses = Arc::new(Mutex::new(HashMap::new()));
+        let mut reader = initial_mode_test_reader(
+            &broker,
+            Arc::clone(&harness.stdin),
+            Arc::clone(&harness.gate),
+            Arc::clone(&harness.next_id),
+            Arc::clone(&mode_responses),
+        );
+        let switcher = ClaudeSwitcher {
+            stdin: Arc::clone(&harness.stdin),
+            next_id: Arc::clone(&harness.next_id),
+            mode_responses,
+        };
+        let user_mode = std::thread::spawn(move || switcher.set_mode("acceptEdits"));
+        let initial_request = read_json_line(&mut harness.stdout);
+        let user_request = read_json_line(&mut harness.stdout);
+        assert_eq!(initial_request["request"]["mode"], "default");
+        assert_eq!(user_request["request"]["mode"], "acceptEdits");
+        assert_ne!(initial_request["request_id"], user_request["request_id"]);
+
+        let (runtime, conn) = attached(&broker);
+        let init = serde_json::json!({
+            "type": "system",
+            "subtype": "init",
+            "session_id": "s1",
+            "model": "model-a",
+            "permissionMode": "default"
+        });
+        reader
+            .feed(format!("{init}\n").as_bytes(), &runtime)
+            .expect("init");
+        reader
+            .feed(
+                format!("{}\n", initial_mode_response(&initial_request)).as_bytes(),
+                &runtime,
+            )
+            .expect("initial mode response");
+        reader
+            .feed(
+                format!(
+                    "{}\n",
+                    initial_mode_response_with_mode(&user_request, "acceptEdits")
+                )
+                .as_bytes(),
+                &runtime,
+            )
+            .expect("user mode response");
+        assert!(user_mode.join().expect("mode thread").is_ok());
+
+        let assistant = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "model": "model-b",
+                "id": "message-b",
+                "role": "assistant",
+                "content": []
+            }
+        });
+        reader
+            .feed(format!("{assistant}\n").as_bytes(), &runtime)
+            .expect("assistant model change");
+        let events = drain(&conn);
+        let current_mode = events.iter().rev().find_map(|event| match event {
+            SessionEvent::SessionManifest {
+                modes: Some(modes), ..
+            } => Some(modes.current_mode_id.clone()),
+            _ => None,
+        });
+        assert_eq!(current_mode.as_deref(), Some("acceptEdits"));
+        let _ = harness.child.kill();
+        let _ = harness.child.wait();
     }
 
     #[test]
@@ -984,6 +2189,7 @@ mod tests {
             ClaudeView::new(Some(PathBuf::from(r"C:\work"))),
             broker,
             controls,
+            Arc::new(Mutex::new(HashMap::new())),
             Arc::new(AtomicU64::new(1)),
         )
     }
@@ -1159,6 +2365,164 @@ mod tests {
             .expect("deny");
         let frames = captured.lock().expect("captured");
         assert_eq!(frames[0]["response"]["response"]["behavior"], "deny");
+    }
+
+    #[test]
+    fn claude_bypass_auto_answers_can_use_tool_without_client_prompt() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_for_sender = Arc::clone(&sent);
+        let sender: Arc<PermissionSender> = Arc::new(move |_, result| {
+            sent_for_sender.lock().expect("sent").push(result);
+            Ok(())
+        });
+        let broker = PermissionBroker::for_test(sender);
+        let controls = Arc::new(Mutex::new(HashMap::new()));
+        let mut reader = test_reader(Arc::clone(&broker), controls);
+        let (runtime, conn) = attached(&broker);
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "bypassPermissions".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        let line = serde_json::json!({
+            "type": "control_request",
+            "request_id": "claude-bypass-request",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": {"command": "echo devboule-probe"},
+                "tool_use_id": "claude-bypass-tool",
+            }
+        });
+        reader
+            .feed(format!("{line}\n").as_bytes(), &runtime)
+            .expect("feed bypass request");
+        assert!(!drain(&conn)
+            .iter()
+            .any(|event| matches!(event, SessionEvent::PermissionRequest { .. })));
+        assert_eq!(broker.pending_len(), 0);
+        assert_eq!(
+            sent.lock().expect("sent")[0]["outcome"]["optionId"],
+            "allow"
+        );
+
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = test_reader(Arc::clone(&broker), Arc::new(Mutex::new(HashMap::new())));
+        let (runtime, conn) = attached(&broker);
+        runtime.store_session_manifest(SessionEvent::SessionManifest {
+            provider_id: Some("claude".to_string()),
+            current_model_id: None,
+            models: Vec::new(),
+            modes: Some(devboule_protocol::SessionModeStateView {
+                current_mode_id: "default".to_string(),
+                available_modes: Vec::new(),
+            }),
+        });
+        reader
+            .feed(format!("{line}\n").as_bytes(), &runtime)
+            .expect("feed default request");
+        assert!(drain(&conn).iter().any(|event| matches!(
+            event,
+            SessionEvent::PermissionRequest { tool_call_id, .. }
+                if tool_call_id == "claude-bypass-tool"
+        )));
+        broker
+            .respond("claude-bypass-tool", PermissionOutcome::Deny)
+            .expect("deny default request");
+    }
+
+    #[test]
+    fn soft_interrupt_cancels_the_pending_permission_and_keeps_the_broker_open() {
+        let mut command = Command::new("ping");
+        command
+            .args(["-t", "127.0.0.1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let child = command.spawn().expect("ping");
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let sent_for_sender = Arc::clone(&sent);
+        let sender: Arc<PermissionSender> = Arc::new(move |_, result| {
+            sent_for_sender.lock().expect("sent").push(result);
+            Ok(())
+        });
+        let broker = PermissionBroker::for_test(sender);
+        let mut reader = test_reader(Arc::clone(&broker), Arc::new(Mutex::new(HashMap::new())));
+        let (runtime, conn) = attached(&broker);
+        let first = serde_json::json!({
+            "type": "control_request",
+            "request_id": "req-before-stop",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": {"command": "echo one"},
+                "tool_use_id": "tool-before-stop"
+            }
+        });
+        reader
+            .feed(format!("{first}\n").as_bytes(), &runtime)
+            .expect("feed pending request");
+        assert!(drain(&conn).iter().any(|event| matches!(
+            event,
+            SessionEvent::PermissionRequest { tool_call_id, .. }
+                if tool_call_id == "tool-before-stop"
+        )));
+
+        let mut killer = ClaudeKiller {
+            process: Arc::new(Mutex::new(child)),
+            stdin: Arc::new(Mutex::new(None)),
+            next_id: Arc::new(AtomicU64::new(1)),
+            permission_broker: Arc::clone(&broker),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        killer.interrupt();
+        let stopped = drain(&conn);
+        assert!(stopped.iter().any(|event| matches!(
+            event,
+            SessionEvent::PermissionResolved {
+                tool_call_id,
+                selected_option_id: None,
+                ..
+            } if tool_call_id == "tool-before-stop"
+        )));
+        assert_eq!(broker.pending_len(), 0);
+
+        let second = serde_json::json!({
+            "type": "control_request",
+            "request_id": "req-after-stop",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": {"command": "echo two"},
+                "tool_use_id": "tool-after-stop"
+            }
+        });
+        reader
+            .feed(format!("{second}\n").as_bytes(), &runtime)
+            .expect("feed request after the soft stop");
+        let after = drain(&conn);
+        assert!(after.iter().any(|event| matches!(
+            event,
+            SessionEvent::PermissionRequest { tool_call_id, .. }
+                if tool_call_id == "tool-after-stop"
+        )));
+        assert!(!after.iter().any(|event| matches!(
+            event,
+            SessionEvent::AgentError { message } if message.contains("closed")
+        )));
+        assert_eq!(broker.pending_len(), 1);
     }
 
     #[test]

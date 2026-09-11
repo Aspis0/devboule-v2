@@ -1,5 +1,5 @@
 import type { Channel } from "@tauri-apps/api/core";
-import type { PermissionRequest, SessionEvent, SessionManifest } from "../types/ipc";
+import type { PermissionRequest, SessionEvent, SessionManifest, ToolLocation } from "../types/ipc";
 
 export type AgentChannel = Channel<SessionEvent>;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -31,14 +31,18 @@ export type AgentChatItem =
   | {
       id: string;
       role: "tool";
-      text: string;
+      title: string;
+      output: string;
       toolCallId: string;
       status: string;
+      kind?: string;
+      locations?: ToolLocation[];
       parentToolUseId?: string;
       spawnDepth?: number;
       subagentType?: string;
     }
-  | { id: string; role: "error"; text: string };
+  | { id: string; role: "error"; text: string }
+  | { id: string; role: "system"; text: string; severity: "info" | "warning" };
 
 export interface AgentFinished {
   stopReason: string;
@@ -57,6 +61,8 @@ export interface AgentSessionState {
   manifest: SessionManifest | null;
   /** A model/effort switch sent to the daemon that no manifest confirmed yet. */
   pendingSwitch: { modelId?: string; effort?: string; at: number } | null;
+  /** A mode switch shown optimistically until the next manifest confirms it. */
+  pendingModeId: string | null;
 }
 
 export interface AgentSessionDeps {
@@ -77,6 +83,7 @@ const INITIAL_STATE: AgentSessionState = {
   lastFinished: null,
   manifest: null,
   pendingSwitch: null,
+  pendingModeId: null,
 };
 
 const SWITCH_CONFIRM_TIMEOUT_MS = 15_000;
@@ -141,6 +148,8 @@ export class AgentSession {
   private turnOpen = false;
   private disposed = false;
   private switchTimer: ReturnType<typeof setTimeout> | null = null;
+  private modeTimer: ReturnType<typeof setTimeout> | null = null;
+  private modeRequest = 0;
 
   constructor(private readonly deps: AgentSessionDeps) {}
 
@@ -257,6 +266,40 @@ export class AgentSession {
     this.armSwitchTimeout();
   }
 
+  /**
+   * Hot-switch the permission mode. Like setModel, the invoke response is not
+   * a confirmation: the chip shows the chosen mode optimistically until a
+   * later session_manifest reports it, and a rejected invoke reverts to the
+   * manifest value through the chat error path.
+   */
+  async setMode(modeId: string): Promise<void> {
+    if (this.disposed || !this.started || !this.attached) return;
+    if (this.state.status === "closed") return;
+    if (!modeId) return;
+    if (modeId === (this.state.pendingModeId ?? this.state.manifest?.modes?.currentModeId)) return;
+
+    // A stale invoke result (a newer selection superseded it) must neither
+    // revert the newer pending mode nor report its error, so each request
+    // carries its generation.
+    const requestId = ++this.modeRequest;
+    this.update({ pendingModeId: modeId });
+    try {
+      await this.deps.invoke("session_set_mode", {
+        id: this.deps.sessionId,
+        modeId,
+      });
+    } catch (error) {
+      if (requestId !== this.modeRequest) return;
+      this.update({ pendingModeId: null });
+      this.fail(`Could not switch the mode: ${eventError(error)}`);
+      return;
+    }
+    if (this.disposed || this.state.pendingModeId === null || requestId !== this.modeRequest) {
+      return;
+    }
+    this.armModeTimeout();
+  }
+
   handleEvent(event: SessionEvent): void {
     if (this.disposed) return;
 
@@ -285,6 +328,20 @@ export class AgentSession {
           event.parentToolUseId,
           event.spawnDepth,
         );
+        return;
+      case "session_notice":
+        this.closeActiveBlocks();
+        this.update({
+          items: [
+            ...this.state.items,
+            {
+              id: `system-${this.nextItemId++}`,
+              role: "system",
+              text: event.text,
+              severity: event.severity,
+            },
+          ],
+        });
         return;
       case "agent_finished":
         this.turnOpen = false;
@@ -326,17 +383,21 @@ export class AgentSession {
         return;
       case "session_manifest": {
         // The provider also pushes spontaneous manifest updates (grok's
-        // models/update); only a manifest that confirms or supersedes the
-        // pending switch resolves it. Everything else leaves the strip dimmed
-        // and the backstop timer running.
-        const pending = this.state.pendingSwitch;
+        // models/update); only a manifest that confirms or supersedes a
+        // pending switch or mode resolves it. Everything else leaves the
+        // strip dimmed and the backstop timer running.
         const previous = this.state.manifest;
-        if (pending !== null && this.manifestResolvesSwitch(event, previous, pending)) {
-          this.clearSwitchTimer();
-          this.update({ manifest: event, pendingSwitch: null });
-        } else {
-          this.update({ manifest: event });
+        let pendingSwitch = this.state.pendingSwitch;
+        let pendingModeId = this.state.pendingModeId;
+        if (pendingSwitch !== null && this.manifestResolvesSwitch(event, previous, pendingSwitch)) {
+          pendingSwitch = null;
         }
+        if (pendingModeId !== null && this.manifestResolvesMode(event, previous, pendingModeId)) {
+          pendingModeId = null;
+        }
+        if (pendingSwitch === null) this.clearSwitchTimer();
+        if (pendingModeId === null) this.clearModeTimer();
+        this.update({ manifest: event, pendingSwitch, pendingModeId });
         return;
       }
       case "agent_tool_call":
@@ -348,6 +409,8 @@ export class AgentSession {
           event.parentToolUseId,
           event.spawnDepth,
           event.subagentType,
+          event.kind,
+          event.locations,
         );
         return;
       case "agent_tool_update":
@@ -358,6 +421,9 @@ export class AgentSession {
           event.text,
           event.parentToolUseId,
           event.spawnDepth,
+          event.kind,
+          event.locations,
+          event.title,
         );
         return;
       case "exit":
@@ -387,6 +453,7 @@ export class AgentSession {
     if (this.disposed) return;
     this.disposed = true;
     this.clearSwitchTimer();
+    this.clearModeTimer();
     this.pendingPermissionRequests.length = 0;
     if (this.channel !== null) {
       this.channel.onmessage = () => undefined;
@@ -423,6 +490,24 @@ export class AgentSession {
     );
   }
 
+  /**
+   * Whether a session_manifest resolves the pending mode: it either reports
+   * the requested mode, or a third party moved the mode away (superseded).
+   */
+  private manifestResolvesMode(
+    event: SessionManifest,
+    previous: SessionManifest | null,
+    pendingModeId: string,
+  ): boolean {
+    const current = event.modes?.currentModeId;
+    if (current === pendingModeId) return true;
+    return (
+      previous?.modes !== undefined &&
+      current !== undefined &&
+      current !== previous.modes.currentModeId
+    );
+  }
+
   /** Deliver the requests held while the subscription id was still unknown, exactly once. */
   private deliverPendingPermissionRequests(): void {
     if (this.disposed || this.subscriptionId === null) return;
@@ -438,11 +523,26 @@ export class AgentSession {
     }
   }
 
+  private clearModeTimer(): void {
+    if (this.modeTimer !== null) {
+      clearTimeout(this.modeTimer);
+      this.modeTimer = null;
+    }
+  }
+
   private armSwitchTimeout(): void {
     this.clearSwitchTimer();
     this.switchTimer = setTimeout(() => {
       this.switchTimer = null;
       if (!this.disposed) this.update({ pendingSwitch: null });
+    }, SWITCH_CONFIRM_TIMEOUT_MS);
+  }
+
+  private armModeTimeout(): void {
+    this.clearModeTimer();
+    this.modeTimer = setTimeout(() => {
+      this.modeTimer = null;
+      if (!this.disposed) this.update({ pendingModeId: null });
     }, SWITCH_CONFIRM_TIMEOUT_MS);
   }
 
@@ -510,6 +610,9 @@ export class AgentSession {
     parentToolUseId?: string,
     spawnDepth?: number,
     subagentType?: string,
+    kind?: string,
+    locations?: ToolLocation[],
+    output = "",
   ): void {
     // A tool-call item is a transcript boundary. Tool updates for an existing
     // item mutate it in place and must not close text that arrived afterward.
@@ -524,9 +627,12 @@ export class AgentSession {
           {
             id: `tool-${this.nextItemId++}`,
             role: "tool",
-            text: title,
+            title,
+            output,
             toolCallId,
             status,
+            ...(kind === undefined ? {} : { kind }),
+            ...(locations === undefined ? {} : { locations }),
             ...itemParentage(parentToolUseId, spawnDepth),
             ...(subagentType === undefined ? {} : { subagentType }),
           },
@@ -548,16 +654,24 @@ export class AgentSession {
     text: string | null,
     parentToolUseId?: string,
     spawnDepth?: number,
+    kind?: string,
+    locations?: ToolLocation[],
+    title?: string,
   ): void {
     const key = `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
+    const nextTitle = typeof title === "string" && title.length > 0 ? title : undefined;
     if (index === undefined) {
       this.appendTool(
         toolCallId,
-        text ?? "Tool call",
+        nextTitle ?? text ?? "Tool call",
         status ?? "running",
         parentToolUseId,
         spawnDepth,
+        undefined,
+        kind,
+        locations,
+        nextTitle === undefined ? "" : (text ?? ""),
       );
       return;
     }
@@ -568,7 +682,12 @@ export class AgentSession {
     items[index] = {
       ...item,
       status: status ?? item.status,
-      ...(text === null ? {} : { text: `${item.text}\n${text}` }),
+      ...(text === null || text === ""
+        ? {}
+        : { output: item.output ? `${item.output}\n${text}` : text }),
+      ...(nextTitle === undefined ? {} : { title: nextTitle }),
+      ...(kind === undefined ? {} : { kind }),
+      ...(locations === undefined ? {} : { locations }),
     };
     this.update({ items });
   }

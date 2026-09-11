@@ -24,10 +24,10 @@ export interface Workspace {
   path: string;
 }
 
-export type SessionKind = "terminal" | "acp" | "claude" | "pi";
+export type SessionKind = "terminal" | "acp" | "claude" | "pi" | "codex";
 
-export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" {
-  return kind === "acp" || kind === "claude" || kind === "pi";
+export function isAgentKind(kind: SessionKind): kind is "acp" | "claude" | "pi" | "codex" {
+  return kind === "acp" || kind === "claude" || kind === "pi" || kind === "codex";
 }
 export type SendIntent = "interrupt" | "steer" | "queue";
 export type PermissionOutcome = "allow_once" | "deny";
@@ -63,6 +63,9 @@ export interface PermissionRequest {
 export interface PermissionResolved {
   type: "permission_resolved";
   toolCallId: Id;
+  selectedOptionId?: string;
+  selectedOptionKind?: string;
+  selectedOptionName?: string;
 }
 
 export interface SessionModelEffort {
@@ -98,6 +101,14 @@ export interface SessionManifest {
   currentModelId?: string;
   models: SessionModel[];
   modes?: SessionModeState;
+}
+
+export type NoticeSeverity = "info" | "warning";
+
+export interface SessionNotice {
+  type: "session_notice";
+  text: string;
+  severity: NoticeSeverity;
 }
 
 export type RetentionSource = "default" | "user";
@@ -280,6 +291,7 @@ export interface DaemonDiagnostics {
     acp: number;
     claude: number;
     pi: number;
+    codex: number;
     resumable: number;
     oldestLiveAgeMs: number | null;
   };
@@ -360,6 +372,7 @@ export interface SessionSnapshot {
  */
 export type SessionEvent =
   | { type: "output"; seq: number; data: string }
+  | SessionNotice
   /** Text emitted by an ACP agent message chunk. */
   | {
       type: "agent_message";
@@ -386,6 +399,7 @@ export type SessionEvent =
       toolCallId: string;
       status: string | null;
       text: string | null;
+      title?: string;
       kind?: string;
       locations?: ToolLocation[];
       parentToolUseId?: string;
@@ -542,7 +556,7 @@ export interface ProviderInfo {
    * start failed with a one-line reason.
    */
   authentication: string;
-  /** `"acp"`, `"stream-json"`, or `"pi-rpc"` when the CLI can start a chat session. */
+  /** `"acp"`, `"stream-json"`, `"pi-rpc"`, or `"codex-app-server"` when chat is available. */
   protocol?: string | null;
   /** `"user-binary"` from PATH; `"npx-wrapper"` from the ACP registry. */
   origin?: "user-binary" | "npx-wrapper" | null;

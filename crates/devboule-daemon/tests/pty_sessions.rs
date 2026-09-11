@@ -276,6 +276,7 @@ fn event_carries_marker(event: &SessionEvent, marker: &str) -> bool {
         | SessionEvent::PermissionRequest { .. }
         | SessionEvent::PermissionResolved { .. }
         | SessionEvent::SessionManifest { .. }
+        | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentReported { .. } => false,
     }
 }
@@ -682,6 +683,7 @@ fn reattach_with_a_cursor_synchronises_screen_state() {
             | SessionEvent::PermissionRequest { .. }
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentReported { .. } => None,
         })
         .max()
@@ -1026,6 +1028,7 @@ fn shutdown_drain_never_delivers_a_pending_sequence_twice() {
             | SessionEvent::PermissionRequest { .. }
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentReported { .. } => None,
         })
         .collect();
@@ -1555,6 +1558,7 @@ fn real_pty_channel_flood_correctness() {
         | SessionEvent::PermissionRequest { .. }
         | SessionEvent::PermissionResolved { .. }
         | SessionEvent::SessionManifest { .. }
+        | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentReported { .. } => {}
     });
     client
@@ -1958,6 +1962,7 @@ fn real_pty_channel_file_transport_ab_benchmark() {
         | SessionEvent::PermissionRequest { .. }
         | SessionEvent::PermissionResolved { .. }
         | SessionEvent::SessionManifest { .. }
+        | SessionEvent::SessionNotice { .. }
         | SessionEvent::AgentReported { .. } => {}
     });
     if let Err(error) = client.session_attach(&session.id, None, handler) {
@@ -2335,6 +2340,7 @@ fn journal_outlives_the_256kib_ring() {
             | SessionEvent::PermissionRequest { .. }
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentReported { .. } => {}
         }
     }
@@ -2608,6 +2614,7 @@ fn journal_growth_after_13mb_flood() {
             | SessionEvent::PermissionRequest { .. }
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentReported { .. } => {}
         }
     });
@@ -2907,6 +2914,7 @@ fn attach_during_flood_delivers_every_sequence_once() {
             | SessionEvent::PermissionRequest { .. }
             | SessionEvent::PermissionResolved { .. }
             | SessionEvent::SessionManifest { .. }
+            | SessionEvent::SessionNotice { .. }
             | SessionEvent::AgentReported { .. } => {}
         }
     }

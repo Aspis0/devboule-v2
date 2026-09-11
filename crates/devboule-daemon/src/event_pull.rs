@@ -173,6 +173,7 @@ impl ConnHandle {
             .next_attachment_generation
             .fetch_add(1, Ordering::Relaxed);
         let is_pi = runtime.agent_kind() == Some(devboule_protocol::SessionKind::Pi);
+        let is_codex = runtime.agent_kind() == Some(devboule_protocol::SessionKind::Codex);
         map.insert(
             subscription_id,
             PullState {
@@ -191,7 +192,9 @@ impl ConnHandle {
                     pending: VecDeque::new(),
                     replayed_seqs: std::collections::HashSet::new(),
                     claude_view: None,
+                    codex_view: None,
                     is_pi,
+                    is_codex,
                     manifest_emitted: false,
                     catch_up_extensions: 0,
                     durable_done: false,
@@ -372,7 +375,8 @@ impl ConnHandle {
                 | SessionEvent::AgentStderr { .. }
                 | SessionEvent::PermissionRequest { .. }
                 | SessionEvent::PermissionResolved { .. }
-                | SessionEvent::SessionManifest { .. } => {
+                | SessionEvent::SessionManifest { .. }
+                | SessionEvent::SessionNotice { .. } => {
                     if let (Some(cursor), Some(seq)) =
                         (pull.transcript_cursor.as_mut(), event.transcript_seq)
                     {
@@ -569,7 +573,12 @@ fn pull_live_agent_replay_events(
                 crate::journal::EventKind::AcpEnvelope => {
                     match serde_json::from_slice::<serde_json::Value>(&record.payload) {
                         Ok(value) => {
-                            if replay.is_pi {
+                            if replay.is_codex {
+                                let view = replay
+                                    .codex_view
+                                    .get_or_insert_with(|| crate::codex_view::CodexView::new(None));
+                                view.ingest(&value)
+                            } else if replay.is_pi {
                                 crate::pi_view::events_from_line(&value)
                             } else if let Some(event) =
                                 crate::acp_view::view_from_envelope(&value, "")
@@ -2307,6 +2316,7 @@ mod tests {
                 SessionEvent::PermissionRequest { .. } => "permission_request",
                 SessionEvent::PermissionResolved { .. } => "permission_resolved",
                 SessionEvent::SessionManifest { .. } => "session_manifest",
+                SessionEvent::SessionNotice { .. } => "session_notice",
                 SessionEvent::AgentReported { .. } => "agent_reported",
             })
             .collect();
@@ -2506,6 +2516,7 @@ mod tests {
                 SessionEvent::PermissionRequest { .. } => "permission_request",
                 SessionEvent::PermissionResolved { .. } => "permission_resolved",
                 SessionEvent::SessionManifest { .. } => "session_manifest",
+                SessionEvent::SessionNotice { .. } => "session_notice",
                 SessionEvent::AgentReported { .. } => "agent_reported",
             })
             .collect();

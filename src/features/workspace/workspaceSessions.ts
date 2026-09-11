@@ -45,6 +45,7 @@ export interface WorkspaceSessionController {
   select: (sessionId: string) => void;
   open: (session: Session) => void;
   watch: () => () => void;
+  reconnect: () => Promise<void>;
   dismissError: () => void;
 }
 
@@ -65,6 +66,15 @@ const DEFAULT_SOURCE: WorkspaceSessionSource = {
 
 const LIST_ERROR = "Could not load sessions. The daemon is unreachable.";
 const CREATE_FALLBACK_ERROR = "Could not create the agent session.";
+
+/**
+ * A session with a running process belongs in the tab strip. Journal-only
+ * records (recovered or ended) stay out of it — they remain reachable from
+ * History, and join the strip only once the user opens them there.
+ */
+function sessionHasProcess(session: Session): boolean {
+  return session.state.type === "live" || session.state.type === "silent";
+}
 
 /**
  * Message from a rejected invoke. Tauri rejections are not always `Error`s:
@@ -152,6 +162,9 @@ export function createWorkspaceSessionController(
   };
   let refreshGeneration = 0;
   const listeners = new Set<() => void>();
+  // Ids the user opened explicitly (from History) in this app run. They keep
+  // their tab even when the daemon reports no running process.
+  const openedIds = new Set<string>();
   let watchLeases = 0;
   let watchPromise: Promise<() => void> | null = null;
   let watchStop: (() => void) | null = null;
@@ -161,21 +174,27 @@ export function createWorkspaceSessionController(
     for (const listener of listeners) listener();
   };
 
+  const stripSessions = (candidates: readonly Session[]): Session[] =>
+    candidates.filter((session) => sessionHasProcess(session) || openedIds.has(session.id));
+
+  const chooseSelected = (
+    candidates: readonly Session[],
+    preferred: string | null,
+  ): string | null =>
+    preferred !== null && candidates.some((session) => session.id === preferred)
+      ? preferred
+      : (candidates[0]?.id ?? null);
+
   const refresh = async (): Promise<void> => {
     const generation = ++refreshGeneration;
     publish({ ...state, loading: true, error: null });
     try {
-      const listed = workspaceSessions(await source.list());
+      const listed = stripSessions(workspaceSessions(await source.list()));
       if (generation !== refreshGeneration) return;
-      const selected =
-        state.selectedSessionId !== null &&
-        listed.some((session) => session.id === state.selectedSessionId)
-          ? state.selectedSessionId
-          : (listed[0]?.id ?? null);
       publish({
         ...state,
         sessions: listed,
-        selectedSessionId: selected,
+        selectedSessionId: chooseSelected(listed, state.selectedSessionId),
         loading: false,
         error: null,
       });
@@ -209,15 +228,15 @@ export function createWorkspaceSessionController(
             ...carried,
           };
     });
-    const selected =
-      state.selectedSessionId !== null &&
-      sessions.some((session) => session.id === state.selectedSessionId)
-        ? state.selectedSessionId
-        : (sessions[0]?.id ?? null);
+    const visible = stripSessions(sessions);
+    // The roster is authoritative for opened ids too: a session the daemon no
+    // longer reports (deleted from the journal) must not keep a History tab.
+    const rosterIds = new Set(sessions.map((session) => session.id));
+    for (const id of openedIds) if (!rosterIds.has(id)) openedIds.delete(id);
     publish({
       ...state,
-      sessions,
-      selectedSessionId: selected,
+      sessions: visible,
+      selectedSessionId: chooseSelected(visible, state.selectedSessionId),
       loading: false,
       error: null,
     });
@@ -233,11 +252,14 @@ export function createWorkspaceSessionController(
     publish({ ...state, creating: true, error: null });
     try {
       const session = await source.create(workspaceId, kind, provider);
-      const sessions = [...state.sessions.filter((current) => current.id !== session.id), session];
+      const listed = stripSessions([
+        ...state.sessions.filter((current) => current.id !== session.id),
+        session,
+      ]);
       publish({
         ...state,
-        sessions,
-        selectedSessionId: session.id,
+        sessions: listed,
+        selectedSessionId: chooseSelected(listed, session.id),
         creating: false,
         error: null,
       });
@@ -255,29 +277,32 @@ export function createWorkspaceSessionController(
     }
   };
 
+  const startWatch = (): void => {
+    if (!source.watch || watchPromise !== null) return;
+    watchPromise = source
+      .watch(applySnapshot)
+      .then((stop) => {
+        watchStop = stop;
+        if (watchLeases === 0) {
+          stop();
+          watchStop = null;
+          watchPromise = null;
+        }
+        return stop;
+      })
+      .catch(() => {
+        watchPromise = null;
+        if (watchLeases > 0) {
+          publish({ ...state, error: LIST_ERROR });
+        }
+        return () => undefined;
+      });
+  };
+
   const watch = (): (() => void) => {
     watchLeases += 1;
     let released = false;
-    if (source.watch && watchPromise === null) {
-      watchPromise = source
-        .watch(applySnapshot)
-        .then((stop) => {
-          watchStop = stop;
-          if (watchLeases === 0) {
-            stop();
-            watchStop = null;
-            watchPromise = null;
-          }
-          return stop;
-        })
-        .catch(() => {
-          watchPromise = null;
-          if (watchLeases > 0) {
-            publish({ ...state, error: LIST_ERROR });
-          }
-          return () => undefined;
-        });
-    }
+    startWatch();
     return () => {
       if (released) return;
       released = true;
@@ -290,6 +315,17 @@ export function createWorkspaceSessionController(
     };
   };
 
+  /** Reloads after the daemon (re)connected and revives a watch that never came up.
+   * Do NOT tear down a live watch here: the Rust bridge owns the roster
+   * subscription and rebinds it across daemon recovery (RosterSubscription,
+   * src-tauri/src/client/mod.rs), so a started watch survives a restart. Only
+   * a failed initial watch needs retrying, and startWatch()'s catch resets
+   * watchPromise for exactly that case. */
+  const reconnect = async (): Promise<void> => {
+    if (watchLeases > 0) startWatch();
+    await refresh();
+  };
+
   return {
     getState: () => state,
     subscribe: (listener) => {
@@ -299,6 +335,7 @@ export function createWorkspaceSessionController(
     refresh,
     create,
     watch,
+    reconnect,
     select: (sessionId) => {
       if (state.sessions.some((session) => session.id === sessionId)) {
         publish({ ...state, selectedSessionId: sessionId });
@@ -306,6 +343,7 @@ export function createWorkspaceSessionController(
     },
     open: (session) => {
       ++refreshGeneration;
+      openedIds.add(session.id);
       publish({
         ...state,
         sessions: [...state.sessions.filter((current) => current.id !== session.id), session],
@@ -326,7 +364,8 @@ export function chatCapableProviders(providers: ProviderInfo[]): ProviderInfo[] 
       provider.pickable !== false &&
       (provider.protocol === "acp" ||
         provider.protocol === "stream-json" ||
-        provider.protocol === "pi-rpc"),
+        provider.protocol === "pi-rpc" ||
+        provider.protocol === "codex-app-server"),
   );
 }
 
@@ -342,12 +381,14 @@ export function sessionCreateFromProvider(provider: ProviderInfo | undefined): {
   if (provider === undefined) return { kind: "acp", provider: null };
   if (provider.protocol === "stream-json") return { kind: "claude", provider: null };
   if (provider.protocol === "pi-rpc") return { kind: "pi", provider: null };
+  if (provider.protocol === "codex-app-server") return { kind: "codex", provider: null };
   if (provider.protocol === "acp") return { kind: "acp", provider: provider.id };
   return { kind: "acp", provider: null };
 }
 
 export function useWorkspaceSessions(workspaceId: string | null = null): WorkspaceSessionState & {
   refresh: () => Promise<void>;
+  reconnect: () => Promise<void>;
   create: (
     kind?: SessionKind,
     provider?: string | null,
@@ -373,6 +414,7 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
   }, [controller]);
 
   const refresh = useCallback(() => controller.refresh(), [controller]);
+  const reconnect = useCallback(() => controller.reconnect(), [controller]);
   const create = useCallback(
     (kind?: SessionKind, provider?: string | null, requestedWorkspaceId?: string | null) =>
       controller.create(
@@ -386,5 +428,5 @@ export function useWorkspaceSessions(workspaceId: string | null = null): Workspa
   const open = useCallback((session: Session) => controller.open(session), [controller]);
   const dismissError = useCallback(() => controller.dismissError(), [controller]);
 
-  return { ...state, refresh, create, select, open, dismissError };
+  return { ...state, refresh, reconnect, create, select, open, dismissError };
 }

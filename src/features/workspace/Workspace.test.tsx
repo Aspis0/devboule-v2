@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PermissionRequest, Session } from "../../types/ipc";
+import type { DaemonStatus, PermissionRequest, Session } from "../../types/ipc";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   // The recovery confirmation dialog; each test that needs a specific answer
@@ -69,10 +69,12 @@ vi.mock("../terminal/TerminalSurface", () => ({
 vi.mock("./AgentChatSurface", () => ({
   AgentChatSurface: ({
     sessionId,
+    auxiliary,
     onPermissionRequest,
     onPermissionResolved,
   }: {
     sessionId: string;
+    auxiliary?: ReactNode;
     onPermissionRequest?: (
       sessionId: string,
       subscriptionId: number,
@@ -82,6 +84,8 @@ vi.mock("./AgentChatSurface", () => ({
   }) => (
     <div data-testid="agent-chat-surface">
       {sessionId}
+      <div className="workspace-conversation">{auxiliary}</div>
+      <div data-testid="mock-composer" />
       <button
         type="button"
         data-testid="emit-permission-a"
@@ -175,6 +179,7 @@ import {
   sessionDelete,
   sessionPermissionRespond,
   sessionsList,
+  sessionsWatch,
 } from "../../lib/tauri";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { JournalUsage, Project, Workspace as IpcWorkspace } from "../../types/ipc";
@@ -225,6 +230,26 @@ const createdWorkspace: IpcWorkspace = {
   title: "new-workspace",
   isolation: "local",
   path: "C:\\devboule",
+};
+
+const daemonConnected: DaemonStatus = {
+  state: "connected",
+  pid: 42,
+  instanceId: "daemon-test",
+  protocolVersion: 1,
+  clients: 1,
+  capabilities: ["typed_permissions"],
+  message: null,
+};
+
+const daemonDisconnected: DaemonStatus = {
+  state: "disconnected",
+  pid: null,
+  instanceId: null,
+  protocolVersion: null,
+  clients: null,
+  capabilities: [],
+  message: "daemon unreachable",
 };
 
 const permissionRequest: PermissionRequest = {
@@ -312,6 +337,8 @@ describe("Workspace sessions", () => {
     await act(async () => root.render(<Workspace />));
     await act(async () => undefined);
 
+    // Projects load exactly once — from the daemon's connected transition,
+    // with no duplicate mount load.
     expect(projectsList).toHaveBeenCalledTimes(1);
     expect(workspacesList).toHaveBeenCalledWith(project.id);
     const row = container.querySelector<HTMLButtonElement>(
@@ -408,7 +435,11 @@ describe("Workspace sessions", () => {
     expect(rows[1]?.title).toBe("");
   });
 
-  it("shows the daemon's project-load failure instead of an empty-project message", async () => {
+  it("keeps the project-load failure visible on a connected daemon until the user retries", async () => {
+    // With no mount load there is no pre-connection call to fail; the honest
+    // failure case is a connected daemon whose projectsList rejects. The
+    // error must stay up (no silent retry loop) with the retry in the
+    // user's hands.
     vi.mocked(projectsList).mockRejectedValueOnce(new Error("journal is unavailable"));
     root = createRoot(container);
     await act(async () => root.render(<Workspace />));
@@ -417,7 +448,127 @@ describe("Workspace sessions", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "journal is unavailable",
     );
+    expect(projectsList).toHaveBeenCalledTimes(1);
     expect(container.textContent).not.toContain("No matching workspaces");
+
+    // Still failing, still shown: nothing reloaded behind the user's back.
+    await act(async () => undefined);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "journal is unavailable",
+    );
+    expect(projectsList).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the project-load error when the daemon disconnects and reconnects", async () => {
+    // The daemon hook polls every 2 s, so the disconnect/reconnect ticks are
+    // driven by fake timers instead of real waits.
+    vi.useFakeTimers();
+    try {
+      let answerFirst!: (status: DaemonStatus) => void;
+      let answerSecond!: (status: DaemonStatus) => void;
+      let answerThird!: (status: DaemonStatus) => void;
+      vi.mocked(daemonStatus)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answerFirst = resolve;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answerSecond = resolve;
+            }),
+        )
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              answerThird = resolve;
+            }),
+        );
+      vi.mocked(projectsList).mockRejectedValueOnce(new Error("journal is unavailable"));
+      root = createRoot(container);
+      await act(async () => root.render(<Workspace />));
+      await act(async () => answerFirst(daemonConnected));
+      await act(async () => undefined);
+
+      // The first connected load failed; only the user or a fresh connected
+      // transition may clear the error.
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "journal is unavailable",
+      );
+      expect(projectsList).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      await act(async () => answerSecond(daemonDisconnected));
+      await act(async () => undefined);
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      await act(async () => answerThird(daemonConnected));
+      await act(async () => undefined);
+
+      // The reconnect transition reloaded through the same load path and the
+      // successful load cleared the error.
+      expect(projectsList).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.textContent).toContain("main");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reloads sessions and revives the watch when the daemon becomes connected", async () => {
+    let answerDaemon!: (status: DaemonStatus) => void;
+    vi.mocked(daemonStatus).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerDaemon = resolve;
+        }),
+    );
+    vi.mocked(sessionsList).mockRejectedValueOnce(new Error("pipe not open"));
+    vi.mocked(sessionsWatch).mockRejectedValueOnce(new Error("pipe not open"));
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("Could not load sessions");
+    expect(container.querySelector("[data-testid=terminal-surface]")).toBeNull();
+
+    await act(async () => answerDaemon(daemonConnected));
+    await act(async () => undefined);
+
+    expect(sessionsList).toHaveBeenCalledTimes(2);
+    expect(sessionsWatch).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("[data-testid=terminal-surface]")?.textContent).toContain(
+      "session-1",
+    );
+    expect(container.textContent).not.toContain("Could not load sessions");
+  });
+
+  it("keeps recovered journal sessions out of the tab strip but renders a live one", async () => {
+    vi.mocked(sessionsList).mockResolvedValue([
+      {
+        ...terminal("recovered-1", "recovered agent"),
+        state: {
+          type: "recovered",
+          generation: 3,
+          integrity: { kind: "unverifiable", droppedFrames: 0, droppedBytes: 0, trimmedBytes: 0 },
+        },
+      },
+      terminal("live-1", "running agent"),
+    ]);
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const tabs = [...container.querySelectorAll(".workspace-session-tab")];
+    expect(tabs.map((tab) => tab.textContent)).toEqual([expect.stringContaining("running agent")]);
+    expect(container.textContent).not.toContain("recovered · unverifiable");
+    // Selection stays on the visible tab instead of a hidden one.
+    expect(container.querySelector("[data-testid=terminal-surface]")?.textContent).toBe("live-1");
   });
 
   it("keeps healthy projects visible, marks a failed project, and retries its load", async () => {
@@ -522,6 +673,10 @@ describe("Workspace sessions", () => {
     const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
     if (add === null) throw new Error("session add control did not render");
     await act(async () => add.click());
+    // Flush the async provider-choice chain (chooseProvider → providersList →
+    // sessionCreate) deliberately instead of trusting act's incidental
+    // microtask draining.
+    await act(async () => {});
 
     expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp");
     expect(container.textContent).toContain("agent two");
@@ -653,6 +808,9 @@ describe("Workspace sessions", () => {
     if (menu === null) throw new Error("provider popover did not render");
     expect(menu.textContent).toContain("grok");
     expect(menu.textContent).toContain("claude");
+    const groups = menu.querySelectorAll(".workspace-provider-group");
+    expect(groups).toHaveLength(1);
+    expect(groups[0].textContent).toContain("Installed");
 
     const claudeOption = Array.from(menu.querySelectorAll("button")).find(
       (button) => button.textContent === "claude",
@@ -754,6 +912,136 @@ describe("Workspace sessions", () => {
 
     expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
     expect(sessionCreate).toHaveBeenCalledWith("workspace-created", "acp");
+  });
+
+  it("offers the provider picker from the + button and passes the chosen provider to sessionCreate", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [grokProvider, claudeProvider],
+      unreadableDirs: 0,
+    });
+    vi.mocked(sessionCreate).mockResolvedValue({
+      ...terminal("session-claude", "Agent"),
+      kind: "claude",
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const menu = container.querySelector('[aria-label="Choose agent"]');
+    if (menu === null) throw new Error("provider popover did not render");
+    const claudeOption = Array.from(menu.querySelectorAll("button")).find(
+      (button) => button.textContent === "claude",
+    );
+    if (claudeOption === undefined) throw new Error("claude option did not render");
+    await act(async () => claudeOption.click());
+    await act(async () => undefined);
+
+    // The + button creates a session in the selected workspace, never a workspace.
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "claude");
+    expect(workspaceCreate).not.toHaveBeenCalled();
+  });
+
+  it("splits the provider picker into installed and available-to-install groups", async () => {
+    vi.mocked(providersList).mockResolvedValue({
+      providers: [npxProvider, claudeProvider, grokProvider],
+      unreadableDirs: 0,
+    });
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const menu = container.querySelector('[aria-label="Choose agent"]');
+    if (menu === null) throw new Error("provider popover did not render");
+    const groups = menu.querySelectorAll(".workspace-provider-group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0].textContent).toContain("Installed");
+    expect(groups[0].textContent).toContain("grok");
+    expect(groups[0].textContent).toContain("claude");
+    expect(groups[0].textContent).not.toContain("codex-acp");
+    expect(groups[1].textContent).toContain("Available to install");
+    expect(groups[1].textContent).toContain("codex-acp");
+
+    // Choosing a registry agent still routes through the consent flow.
+    const npxOption = Array.from(groups[1].querySelectorAll("button")).find(
+      (button) => button.textContent === "codex-acp",
+    );
+    if (npxOption === undefined) throw new Error("npx option did not render");
+    await act(async () => npxOption.click());
+    await act(async () => undefined);
+
+    expect(sessionCreate).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+  });
+
+  it("runs the npx consent flow before creating a session from the + button", async () => {
+    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    expect(sessionCreate).not.toHaveBeenCalled();
+
+    const confirm = container.querySelector<HTMLButtonElement>(".workspace-primary-action");
+    if (confirm === null) throw new Error("Confirm button did not render");
+    await act(async () => confirm.click());
+    await act(async () => undefined);
+
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp", "codex-acp");
+  });
+
+  it("returns focus to the + button when the single-npx consent is cancelled", async () => {
+    // With one npx provider no picker opens, so the consent card is the only
+    // stop between the triggering button and Escape; cancelling must hand
+    // focus back to that button rather than dropping it on the body.
+    vi.mocked(providersList).mockResolvedValue({ providers: [npxProvider], unreadableDirs: 0 });
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[aria-label="Confirm agent"]')).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(container.querySelector('[aria-label="Confirm agent"]')).toBeNull();
+    expect(sessionCreate).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(add);
+  });
+
+  it("falls back to sessionCreate without a provider when + is used with none installed", async () => {
+    vi.mocked(providersList).mockResolvedValue({ providers: [], unreadableDirs: 0 });
+    root = createRoot(container);
+    await act(async () => root.render(<Workspace />));
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    expect(container.querySelector('[aria-label="Choose agent"]')).toBeNull();
+    expect(sessionCreate).toHaveBeenCalledWith("workspace-1", "acp");
   });
 
   it("dismisses the provider popover on Escape without creating", async () => {
@@ -958,6 +1246,213 @@ describe("Workspace sessions", () => {
       41,
       "tool-test",
       "allow_once",
+    );
+  });
+
+  it("renders the deny and allow-once controls with their kind classes", async () => {
+    const optionsRequest: PermissionRequest = {
+      type: "permission_request",
+      toolCallId: "tool-a",
+      title: "Run command",
+      options: [
+        { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+        { optionId: "always", name: "Allow for this session", kind: "allow_always" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    };
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          sessionId="session-2"
+          subscriptionId={41}
+          request={optionsRequest}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    const buttons = [
+      ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
+    ];
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(buttons[0].className).toContain("permission-card-secondary-action");
+    expect(buttons[0].className).toContain("permission-card-deny-action");
+    expect(buttons[1].className).toContain("permission-card-primary-action");
+    expect(buttons[1].className).not.toContain("permission-card-deny-action");
+
+    await act(async () => {
+      buttons[1].click();
+    });
+    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 41, "tool-a", "allow_once");
+  });
+
+  it("sends the deny outcome without an option id when deny is clicked", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          sessionId="session-2"
+          subscriptionId={41}
+          request={{
+            type: "permission_request",
+            toolCallId: "tool-a",
+            title: "Run command",
+            options: [
+              { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+              { optionId: "reject", name: "Reject", kind: "reject_once" },
+            ],
+          }}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    const reject = container.querySelector<HTMLButtonElement>(".permission-card-deny-action");
+    if (reject === null) throw new Error("permission reject control did not render");
+    await act(async () => {
+      reject.click();
+    });
+    expect(sessionPermissionRespond).toHaveBeenCalledWith("session-2", 41, "tool-a", "deny");
+  });
+
+  it("shows a fresh waiting card when a new request replaces one mid-flight", async () => {
+    const requestA: PermissionRequest = {
+      type: "permission_request",
+      toolCallId: "tool-a",
+      title: "First command",
+      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+    };
+    const requestB: PermissionRequest = {
+      type: "permission_request",
+      toolCallId: "tool-b",
+      title: "Second command",
+      options: [{ optionId: "reject", name: "Reject", kind: "reject_once" }],
+    };
+    let resolveRespond!: (value: undefined) => void;
+    const respondGate = new Promise<undefined>((resolve) => {
+      resolveRespond = resolve;
+    });
+    vi.mocked(sessionPermissionRespond).mockImplementationOnce(() => respondGate);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          key="tool-a"
+          sessionId="session-1"
+          subscriptionId={41}
+          request={requestA}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    const allow = container.querySelector<HTMLButtonElement>(".permission-card-primary-action");
+    if (allow === null) throw new Error("permission allow control did not render");
+    await act(async () => {
+      allow.click();
+    });
+    expect(container.querySelector(".permission-card-label")?.textContent).toBe(
+      "Sending decision…",
+    );
+
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          key="tool-b"
+          sessionId="session-1"
+          subscriptionId={41}
+          request={requestB}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+    expect(container.querySelector(".permission-card-label")?.textContent).toBe("Waiting on you");
+    const buttons = [
+      ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
+    ];
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(buttons[1].disabled).toBe(true);
+
+    await act(async () => {
+      resolveRespond(undefined);
+      await respondGate;
+    });
+    expect(container.querySelector(".permission-card-label")?.textContent).toBe("Waiting on you");
+  });
+
+  it("disables every outcome and never responds when no options are offered", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={{
+            type: "permission_request",
+            toolCallId: "tool-legacy",
+            title: "Run command",
+            options: [],
+          }}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    const buttons = [
+      ...container.querySelectorAll<HTMLButtonElement>(".permission-card-actions button"),
+    ];
+    expect(buttons.map((button) => button.textContent)).toEqual(["Deny", "Allow once"]);
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+    expect(container.textContent).toContain("Deny is not offered for this request.");
+    expect(container.textContent).toContain("Allow once is not offered for this request.");
+    expect(sessionPermissionRespond).not.toHaveBeenCalled();
+  });
+
+  it("renders the permission card inside the conversation, above the composer", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await act(async () => undefined);
+
+    const add = container.querySelector<HTMLButtonElement>(".workspace-session-add");
+    if (add === null) throw new Error("session add control did not render");
+    await act(async () => add.click());
+    await act(async () => undefined);
+
+    const emitA = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emitA === null) throw new Error("permission emitter did not render");
+    await act(async () => emitA.click());
+
+    const card = container.querySelector(".permission-card");
+    if (card === null) throw new Error("permission card did not render");
+    const surface = container.querySelector('[data-testid="agent-chat-surface"]');
+    if (surface === null) throw new Error("agent chat surface did not render");
+    expect(surface.contains(card)).toBe(true);
+    const conversation = card.closest(".workspace-conversation");
+    expect(conversation).not.toBeNull();
+    expect(conversation?.lastElementChild).toBe(card);
+    const composer = container.querySelector('[data-testid="mock-composer"]');
+    if (composer === null) throw new Error("composer did not render");
+    expect(conversation?.compareDocumentPosition(composer)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
+  it("renders the description in its own compact class", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <WorkspacePermissionCard
+          sessionId="session-1"
+          subscriptionId={41}
+          request={{ ...permissionRequest, description: "This will run the tests" }}
+          capabilities={["typed_permissions"]}
+        />,
+      );
+    });
+
+    expect(container.querySelector(".permission-card-description")?.textContent).toBe(
+      "This will run the tests",
     );
   });
 

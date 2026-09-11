@@ -1924,7 +1924,7 @@ const DesignAssistant = memo(function DesignAssistant({
     if (toolCallId === undefined || agentState === null) return null;
     for (let index = agentState.items.length - 1; index >= 0; index -= 1) {
       const item = agentState.items[index];
-      if (item.role === "tool" && item.toolCallId === toolCallId) return item.text;
+      if (item.role === "tool" && item.toolCallId === toolCallId) return item.title;
     }
     return null;
   }, [agentState, pendingPermission]);

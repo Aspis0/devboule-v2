@@ -14,6 +14,8 @@ const CACHE_FILE: &str = "claude-model-catalog-cache.json";
 const WINDOW_BYTES: usize = 4 * 1024 * 1024;
 const OVERLAP_BYTES: usize = 1024 * 1024;
 const RECORD_PREFIX: &[u8] = b"{id:\"claude-";
+/// Claude's own default when no `--model` is passed on this machine.
+const DEFAULT_MODEL_ID: &str = "claude-opus-5";
 const FALLBACK_MODEL_IDS: &[(&str, &str)] = &[
     ("opus", "Claude Opus"),
     ("sonnet", "Claude Sonnet"),
@@ -245,13 +247,7 @@ pub(crate) fn manifest_with_current(
     models: Vec<SessionModel>,
     current_model_id: Option<String>,
 ) -> SessionEvent {
-    let current_model_id = current_model_id.or_else(|| {
-        models
-            .iter()
-            .find(|model| model.model_id == "claude-sonnet-5")
-            .or_else(|| models.first())
-            .map(|model| model.model_id.clone())
-    });
+    let current_model_id = current_model_id.or_else(|| default_model_id(&models));
     SessionEvent::SessionManifest {
         provider_id: Some("claude".to_string()),
         current_model_id,
@@ -260,8 +256,30 @@ pub(crate) fn manifest_with_current(
     }
 }
 
+/// The model the CLI runs when no `--model` is passed. It is only a
+/// preference: a catalog that does not carry it falls back to its first
+/// model, never to an id the CLI may not know.
+pub(crate) fn default_model_id(models: &[SessionModel]) -> Option<String> {
+    models
+        .iter()
+        .find(|model| model.model_id == DEFAULT_MODEL_ID)
+        .or_else(|| models.first())
+        .map(|model| model.model_id.clone())
+}
+
+#[cfg(test)]
 pub(crate) fn initial_manifest(models: Vec<SessionModel>) -> SessionEvent {
     manifest_with_current(models, None)
+}
+
+pub(crate) fn initial_manifest_with_mode(models: Vec<SessionModel>, mode_id: &str) -> SessionEvent {
+    let current_model_id = default_model_id(&models);
+    SessionEvent::SessionManifest {
+        provider_id: Some("claude".to_string()),
+        current_model_id,
+        models,
+        modes: Some(crate::claude_view::mode_state(mode_id)),
+    }
 }
 
 pub(crate) fn fallback_models() -> Vec<SessionModel> {
@@ -906,6 +924,71 @@ mod tests {
         };
         assert_eq!(models.len(), 3);
         assert_eq!(runtime.session_manifest(), Some(initial_manifest(models)));
+    }
+
+    #[test]
+    fn initial_manifest_includes_the_requested_claude_modes() {
+        let SessionEvent::SessionManifest {
+            modes: Some(modes), ..
+        } = initial_manifest_with_mode(fallback_models(), "acceptEdits")
+        else {
+            panic!("initial Claude manifest must include modes");
+        };
+        assert_eq!(modes.current_mode_id, "acceptEdits");
+        assert_eq!(
+            modes
+                .available_modes
+                .iter()
+                .map(|mode| mode.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "plan",
+                "default",
+                "acceptEdits",
+                "auto",
+                "bypassPermissions"
+            ]
+        );
+    }
+
+    fn model(model_id: &str) -> SessionModel {
+        SessionModel {
+            model_id: model_id.to_string(),
+            name: model_id.to_string(),
+            description: None,
+            context_tokens: None,
+            current_effort: None,
+            efforts: None,
+        }
+    }
+
+    #[test]
+    fn initial_manifest_prefers_the_cli_default_model() {
+        let SessionEvent::SessionManifest {
+            current_model_id, ..
+        } = initial_manifest_with_mode(
+            vec![model("claude-sonnet-5"), model("claude-opus-5")],
+            "default",
+        )
+        else {
+            panic!("initial Claude manifest must be a session manifest");
+        };
+        assert_eq!(current_model_id.as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
+    fn initial_manifest_falls_back_to_the_first_catalog_model() {
+        let SessionEvent::SessionManifest {
+            current_model_id, ..
+        } = initial_manifest_with_mode(
+            vec![model("claude-sonnet-5"), model("claude-haiku-5")],
+            "default",
+        )
+        else {
+            panic!("initial Claude manifest must be a session manifest");
+        };
+        assert_eq!(current_model_id.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(default_model_id(&[]), None);
     }
 
     #[test]

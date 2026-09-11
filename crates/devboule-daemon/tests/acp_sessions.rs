@@ -490,7 +490,7 @@ fn acp_resolved_permission_is_not_reopened_after_live_reattach() {
         .expect("allow once");
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
-            matches!(event, SessionEvent::PermissionResolved { tool_call_id } if tool_call_id == "tool-perm")
+            matches!(event, SessionEvent::PermissionResolved { tool_call_id, .. } if tool_call_id == "tool-perm")
         })
     });
     test.client

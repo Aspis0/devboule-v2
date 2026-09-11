@@ -333,10 +333,10 @@ export function extractArtifactHtml(state: AgentSessionState, startIndex = 0): s
 /**
  * The agent's own conversation from `startIndex` on: prose, reasoning, and tool
  * activity. User echoes are dropped (the surface renders the user's prompt and
- * the echo carries the doctrine block), and so are error items, which the run's
- * summary card reports in full. An assistant or thought item with no text is a
- * chunk that carried nothing, and a blank row would only be noise. Tool rows
- * are always kept: a tool with no title yet is still activity.
+ * the echo carries the doctrine block), and so are error and system items,
+ * which the run's summary card reports in full. An assistant or thought item
+ * with no text is a chunk that carried nothing, and a blank row would only be
+ * noise. Tool rows are always kept: a tool with no title yet is still activity.
  */
 export function transcriptItems(
   items: readonly AgentChatItem[],
@@ -345,7 +345,7 @@ export function transcriptItems(
   const rows: DesignTranscriptItem[] = [];
   for (let index = Math.max(0, startIndex); index < items.length; index += 1) {
     const item = items[index];
-    if (item.role === "user" || item.role === "error") continue;
+    if (item.role === "user" || item.role === "error" || item.role === "system") continue;
     const parentage = {
       ...(item.parentToolUseId === undefined ? {} : { parentToolUseId: item.parentToolUseId }),
       ...(item.spawnDepth === undefined ? {} : { spawnDepth: item.spawnDepth }),
@@ -354,7 +354,7 @@ export function transcriptItems(
       rows.push({
         id: item.id,
         role: "tool",
-        text: item.text,
+        text: item.output.length > 0 ? `${item.title}\n${item.output}` : item.title,
         toolCallId: item.toolCallId,
         status: item.status,
         ...parentage,
@@ -1123,7 +1123,7 @@ export function createAgentHost(): DesignHost {
         const reply = state.items
           .slice(itemStart)
           .filter((item) => item.role === "assistant")
-          .map((item) => item.text)
+          .map((item) => (item.role === "assistant" ? item.text : ""))
           .join("\n");
         const selected = parseAutomaticSkillReply(reply, index);
         settle(

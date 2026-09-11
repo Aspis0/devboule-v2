@@ -2,6 +2,18 @@ import { useEffect, useState } from "react";
 import { daemonStatus } from "../../lib/tauri";
 import type { DaemonStatus } from "../../types/ipc";
 
+// The supervisor itself reports "connecting" before its first answer, so the
+// footer must not claim a verdict it has not heard yet.
+const CONNECTING_DAEMON: DaemonStatus = {
+  state: "connecting",
+  pid: null,
+  instanceId: null,
+  protocolVersion: null,
+  clients: null,
+  capabilities: [],
+  message: null,
+};
+
 const DISCONNECTED_DAEMON: DaemonStatus = {
   state: "disconnected",
   pid: null,
@@ -13,7 +25,7 @@ const DISCONNECTED_DAEMON: DaemonStatus = {
 };
 
 export function useWorkspaceDaemon(): DaemonStatus {
-  const [daemon, setDaemon] = useState<DaemonStatus>(DISCONNECTED_DAEMON);
+  const [daemon, setDaemon] = useState<DaemonStatus>(CONNECTING_DAEMON);
 
   useEffect(() => {
     let cancelled = false;

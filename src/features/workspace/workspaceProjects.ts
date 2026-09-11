@@ -75,7 +75,6 @@ export function useWorkspaceProjects() {
   const loadProjects = useCallback(async () => {
     const generation = ++loadGenerationRef.current;
     setLoading(true);
-    setError(null);
     try {
       const listedProjects = await projectsList();
       const records = await Promise.all(
@@ -94,6 +93,7 @@ export function useWorkspaceProjects() {
       if (generation !== loadGenerationRef.current) return;
       setProjectRecords((current) => reconcileProjectRecords(records, current));
       setLoading(false);
+      setError(null);
     } catch (cause: unknown) {
       if (generation !== loadGenerationRef.current) return;
       setLoading(false);
@@ -101,10 +101,11 @@ export function useWorkspaceProjects() {
     }
   }, []);
 
-  useEffect(() => {
-    void loadProjects();
-  }, [loadProjects]);
-
+  // There is deliberately no mount load: until the daemon first answers
+  // "connected" the IPC pipe is not open, so a startup load only races it and
+  // latches a bogus error. Workspace loads projects exactly once per
+  // connected transition (first connect and every reconnect) via
+  // retryProjects; manual retries go through the same path.
   const projectViews = useMemo(
     () => projectRecords.map((project) => projectView(project, sessionFacts)),
     [projectRecords, sessionFacts],

@@ -85,6 +85,7 @@
     "spawnDepth": 1,
     "status": null,
     "text": null,
+    "title": "cargo test",
     "toolCallId": "",
     "type": "agent_tool_update"
   },
@@ -135,6 +136,11 @@
   {
     "models": [],
     "type": "session_manifest"
+  },
+  {
+    "severity": "info",
+    "text": "",
+    "type": "session_notice"
   },
   {
     "sessions": [],

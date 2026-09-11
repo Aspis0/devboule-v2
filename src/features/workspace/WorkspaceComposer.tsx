@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 export interface WorkspaceCommand {
@@ -7,12 +7,18 @@ export interface WorkspaceCommand {
   hint?: string;
 }
 
+/** Height cap of the growing textarea: eight 20px lines. */
+const TEXTAREA_MAX_HEIGHT_PX = 160;
+
 interface WorkspaceComposerProps {
   streaming: boolean;
   disabled?: boolean;
   disabledReason?: string;
   availableCommands?: readonly WorkspaceCommand[];
   onSend: (text: string) => void;
+  onStop?: () => void;
+  /** Pickers rendered on the left of the control bar, below the textarea. */
+  controls?: ReactNode;
 }
 
 function commandQuery(input: string): string | null {
@@ -29,9 +35,20 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
   disabledReason = "This session is no longer available.",
   availableCommands = [],
   onSend,
+  onStop,
+  controls = null,
 }: WorkspaceComposerProps) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea === null) return;
+    textarea.style.height = "auto";
+    const overflowing = textarea.scrollHeight > TEXTAREA_MAX_HEIGHT_PX;
+    textarea.style.height = `${Math.min(textarea.scrollHeight, TEXTAREA_MAX_HEIGHT_PX)}px`;
+    textarea.style.overflowY = overflowing ? "auto" : "hidden";
+  }, [input]);
 
   const sendInput = useCallback(() => {
     const text = input.trim();
@@ -97,27 +114,38 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={handleComposerKeyDown}
-          placeholder={streaming ? "Steer the running turn…" : "Message the agent…"}
-          rows={3}
+          placeholder={
+            streaming ? "Steer the running turn…" : "Message the agent, or type / for commands"
+          }
+          rows={1}
           aria-label="Message the agent"
           disabled={disabled}
         />
-        <div className="workspace-composer-footer">
-          <span className="workspace-composer-hint">
-            {disabled
-              ? disabledReason
-              : availableCommands.length > 0
-                ? "Type / for commands · Enter to send · Shift+Enter for a new line"
-                : "Enter to send · Shift+Enter for a new line"}
-          </span>
-          <button
-            type="button"
-            className="workspace-primary-action workspace-send-action"
-            onClick={sendInput}
-            disabled={disabled || !input.trim()}
-          >
-            Send
-          </button>
+        <div className="workspace-composer-bar">
+          <div className="workspace-composer-controls">
+            {controls}
+            {disabled ? <span className="workspace-composer-hint">{disabledReason}</span> : null}
+          </div>
+          {streaming && onStop ? (
+            <button
+              type="button"
+              className="workspace-secondary-action workspace-send-action"
+              aria-label="Stop the current turn"
+              onClick={onStop}
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="workspace-primary-action workspace-send-action"
+              title="Send · Enter (Shift+Enter for a new line)"
+              onClick={sendInput}
+              disabled={disabled || !input.trim()}
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -55,6 +55,8 @@ pub struct KnownAgent {
     pub stream_json_args: Option<&'static [&'static str]>,
     /// Native Pi RPC argv, used only by the Pi adapter.
     pub rpc_args: Option<&'static [&'static str]>,
+    /// Native Codex app-server argv, used only by the Codex adapter.
+    pub app_server_args: Option<&'static [&'static str]>,
     pub npm_package: Option<&'static str>,
 }
 
@@ -89,6 +91,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         acp_args: None,
         stream_json_args: Some(CLAUDE_STREAM_JSON_ARGS),
         rpc_args: None,
+        app_server_args: None,
         npm_package: Some("@anthropic-ai/claude-code"),
     },
     KnownAgent {
@@ -97,6 +100,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         acp_args: None,
         stream_json_args: None,
         rpc_args: None,
+        app_server_args: Some(&["app-server"]),
         npm_package: Some("@openai/codex"),
     },
     KnownAgent {
@@ -105,6 +109,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         acp_args: Some(&["agent", "stdio"]),
         stream_json_args: None,
         rpc_args: None,
+        app_server_args: None,
         npm_package: None,
     },
     KnownAgent {
@@ -115,6 +120,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         // The Pi adapter validates this mode and adds its permission
         // extension after the caller's arguments.
         rpc_args: Some(&["--mode", "rpc"]),
+        app_server_args: None,
         npm_package: None,
     },
     KnownAgent {
@@ -126,6 +132,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         acp_args: Some(&["--acp"]),
         stream_json_args: None,
         rpc_args: None,
+        app_server_args: None,
         npm_package: Some("@qwen-code/qwen-code"),
     },
     KnownAgent {
@@ -134,6 +141,7 @@ pub const KNOWN_AGENTS: &[KnownAgent] = &[
         acp_args: Some(&["--acp"]),
         stream_json_args: None,
         rpc_args: None,
+        app_server_args: None,
         npm_package: Some("@google/gemini-cli"),
     },
 ];
@@ -161,6 +169,7 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[KnownAgent {
     acp_args: None,
     stream_json_args: None,
     rpc_args: None,
+    app_server_args: None,
     npm_package: None,
 }];
 #[cfg(not(debug_assertions))]
@@ -171,16 +180,19 @@ const TEST_ONLY_AGENTS: &[KnownAgent] = &[];
 /// `claude-acp` is a proprietary npx wrapper, while native `claude` already
 /// speaks stream-json and reuses the user's Claude subscription. It stays in
 /// Settings so the installed option remains honest and discoverable.
-/// `codex-acp` is intentionally not covered because native codex is not
-/// chat-capable. `pi-acp` is covered because native pi is the first-class Pi
+/// `codex-acp` is covered because native codex is the first-class Codex
+/// chat provider. `pi-acp` is covered because native pi is the first-class Pi
 /// chat provider. The native `pi-acp` 0.0.33 wrapper speaks ACP and reports
 /// models, but does not emit `session/request_permission` for native tools;
 /// a measured write completed with zero permission requests. The wrapper
 /// therefore stays visible in Settings and is not pickable when native Pi is
 /// installed.
 #[cfg(feature = "server")]
-const REGISTRY_NATIVE_CHAT_COVERAGE: &[(&str, &str)] =
-    &[("claude-acp", "claude"), ("pi-acp", "pi")];
+const REGISTRY_NATIVE_CHAT_COVERAGE: &[(&str, &str)] = &[
+    ("claude-acp", "claude"),
+    ("codex-acp", "codex"),
+    ("pi-acp", "pi"),
+];
 
 /// Explicit product policy for selecting the default ACP provider.
 ///
@@ -269,6 +281,9 @@ pub struct InstalledAgent {
     /// Resolved spawn argv for Pi RPC: executable, then prefix args, then the
     /// Pi RPC flags. Element 0 is the path that CreateProcess will run.
     pub rpc_command: Option<Vec<String>>,
+    /// Resolved spawn argv for Codex app-server: executable, then prefix
+    /// args, then the app-server flag.
+    pub app_server_command: Option<Vec<String>>,
     pub authentication: AuthenticationStatus,
     pub origin: ProviderOrigin,
     /// Registry-supplied arguments appended after `npx -y <package>`. None
@@ -321,6 +336,9 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
             let rpc_command = spec
                 .rpc_args
                 .map(|args| protocol_argv(&launch.program, &launch.prefix_args, args));
+            let app_server_command = spec
+                .app_server_args
+                .map(|args| protocol_argv(&launch.program, &launch.prefix_args, args));
             let install_channel = if launch.prefix_args.is_empty() {
                 InstallChannel::Native
             } else {
@@ -340,6 +358,7 @@ pub(crate) fn discover_in_paths(directories: &[PathBuf]) -> ProviderDiscovery {
                 acp_command,
                 stream_json_command,
                 rpc_command,
+                app_server_command,
                 authentication: AuthenticationStatus::Unknown,
                 origin: ProviderOrigin::UserBinary,
                 launch_args: None,
@@ -426,7 +445,9 @@ pub fn chat_protocol(agent: &InstalledAgent) -> Option<&'static str> {
     if !agent.installed {
         return None;
     }
-    if agent.acp_command.is_some() {
+    if agent.app_server_command.is_some() {
+        Some("codex-app-server")
+    } else if agent.acp_command.is_some() {
         Some("acp")
     } else if agent.stream_json_command.is_some() {
         Some("stream-json")
@@ -531,6 +552,7 @@ fn add_missing_npm_rows(
             acp_command: None,
             stream_json_command: None,
             rpc_command: None,
+            app_server_command: None,
             authentication: AuthenticationStatus::Unknown,
             origin: ProviderOrigin::UserBinary,
             launch_args: None,
@@ -562,6 +584,7 @@ fn registry_agent(
         acp_command,
         stream_json_command: None,
         rpc_command: None,
+        app_server_command: None,
         authentication: AuthenticationStatus::Unknown,
         origin: ProviderOrigin::NpxWrapper,
         launch_args: Some(args),
@@ -1615,7 +1638,7 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         };
         assert_eq!(protocol_of("claude"), Some("stream-json"));
         assert_eq!(protocol_of("grok"), Some("acp"));
-        assert_eq!(protocol_of("codex"), None);
+        assert_eq!(protocol_of("codex"), Some("codex-app-server"));
         assert_eq!(protocol_of("pi"), Some("pi-rpc"));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -1974,6 +1997,7 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         let dir = temporary_directory("registry-coverage-native");
         fs::create_dir_all(&dir).expect("temporary directory");
         fake_cli_path(&dir, "claude");
+        fake_cli_path(&dir, "codex");
         fake_cli_path(&dir, "pi");
         fake_cli_path(&dir, "npx");
         let cache = temporary_directory("registry-coverage-native-cache");
@@ -2010,8 +2034,8 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
                 .find(|agent| agent.id == "codex-acp")
                 .expect("codex-acp from registry")
                 .pickable,
-            None,
-            "native codex is not chat-capable, so codex-acp stays pickable when present"
+            Some(false),
+            "native Codex uses app-server, so codex-acp remains Settings-only"
         );
         assert_eq!(
             catalog
@@ -2072,7 +2096,7 @@ IF EXIST \"%NPM_PREFIX_NPX_CLI_JS%\" ( SET \"NPX_CLI_JS=%NPM_PREFIX_NPX_CLI_JS%\
         );
         assert!(
             ids.contains(&"codex-acp"),
-            "codex-acp has no native equivalent: {ids:?}"
+            "codex-acp remains visible when native Codex is absent: {ids:?}"
         );
         let grok = catalog
             .agents

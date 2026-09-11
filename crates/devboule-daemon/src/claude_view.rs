@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use devboule_protocol::{
-    AgentBackgroundTask, AgentTaskStatus, SessionEvent, SessionModel, ToolLocation, TurnUsage,
+    AgentBackgroundTask, AgentTaskStatus, SessionEvent, SessionModeStateView, SessionModeView,
+    SessionModel, ToolLocation, TurnUsage,
 };
 use serde_json::Value;
 
@@ -19,6 +20,7 @@ pub(crate) struct ClaudeView {
     current_message_ids: HashMap<Option<String>, String>,
     current_model: Option<String>,
     last_manifest_model: Option<String>,
+    current_mode: Option<String>,
     peer_session_id: Option<String>,
     cwd: Option<PathBuf>,
 }
@@ -30,6 +32,7 @@ impl ClaudeView {
             current_message_ids: HashMap::new(),
             current_model: None,
             last_manifest_model: None,
+            current_mode: None,
             peer_session_id: None,
             cwd,
         }
@@ -37,6 +40,10 @@ impl ClaudeView {
 
     pub(crate) fn peer_session_id(&self) -> Option<&str> {
         self.peer_session_id.as_deref()
+    }
+
+    pub(crate) fn set_mode(&mut self, mode_id: &str) {
+        self.current_mode = Some(mode_id.to_string());
     }
 
     /// Map one parsed envelope to zero or more view events. Unknown or
@@ -79,6 +86,12 @@ impl ClaudeView {
             .and_then(Value::as_str)
             .filter(|model| !model.is_empty())
             .map(str::to_string);
+        self.current_mode = envelope
+            .get("permissionMode")
+            .and_then(Value::as_str)
+            .filter(|mode| !mode.is_empty())
+            .map(str::to_string)
+            .or_else(|| Some("default".to_string()));
         if let Some(model) = model.clone() {
             self.current_model = Some(model);
         }
@@ -98,8 +111,14 @@ impl ClaudeView {
             provider_id: Some("claude".to_string()),
             current_model_id: model,
             models,
-            modes: None,
+            modes: self.mode_state(),
         }]
+    }
+
+    fn mode_state(&self) -> Option<SessionModeStateView> {
+        Some(mode_state(
+            self.current_mode.as_deref().unwrap_or("default"),
+        ))
     }
 
     fn ingest_stream_event(&mut self, envelope: &Value) -> Vec<SessionEvent> {
@@ -212,7 +231,7 @@ impl ClaudeView {
                         current_effort: None,
                         efforts: None,
                     }],
-                    modes: None,
+                    modes: self.mode_state(),
                 });
             }
         }
@@ -432,41 +451,50 @@ fn tool_kind(name: &str) -> &'static str {
         "Edit" | "Write" | "NotebookEdit" => "edit",
         "Bash" | "PowerShell" => "execute",
         "Glob" | "Grep" => "search",
-        "WebFetch" | "WebSearch" => "fetch",
+        "WebFetch" => "fetch",
+        "WebSearch" => "search",
         "Agent" | "Task" => "think",
+        "Skill" => "other",
         _ => "other",
     }
 }
 
-fn tool_title(name: &str, input: &Value) -> String {
-    if let Some(description) = input
-        .get("description")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        return format!("{name} {description}");
-    }
-    if let Some(command) = input
-        .get("command")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        let command = if command.len() > 80 {
+fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
+    let field = |key: &str| {
+        input
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let truncated_command = |command: &str| {
+        if command.chars().count() > 80 {
             format!("{}...", command.chars().take(80).collect::<String>())
         } else {
             command.to_string()
-        };
-        return format!("{name} {command}");
+        }
+    };
+    // The summary only; the frontend derives the display name from `kind`.
+    match name {
+        "Bash" | "PowerShell" => field("command").map(truncated_command).unwrap_or_default(),
+        "Read" | "Edit" | "Write" | "NotebookEdit" => field("file_path")
+            .or_else(|| field("path"))
+            .map(|path| relativize_tool_path(path, cwd))
+            .unwrap_or_default(),
+        "Grep" | "Glob" => field("pattern").unwrap_or_default().to_string(),
+        "WebSearch" => field("query").unwrap_or_default().to_string(),
+        "WebFetch" => field("url").unwrap_or_default().to_string(),
+        "Agent" | "Task" => field("description").unwrap_or_default().to_string(),
+        "Skill" => field("skill").unwrap_or_default().to_string(),
+        _ => field("description")
+            .map(str::to_string)
+            .or_else(|| field("command").map(truncated_command))
+            .or_else(|| {
+                field("file_path")
+                    .or_else(|| field("path"))
+                    .map(|path| relativize_tool_path(path, cwd))
+            })
+            .unwrap_or_else(|| name.to_string()),
     }
-    if let Some(path) = input
-        .get("file_path")
-        .or_else(|| input.get("path"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        return format!("{name} {path}");
-    }
-    name.to_string()
 }
 
 fn tool_locations(name: &str, input: &Value, cwd: Option<&Path>) -> Option<Vec<ToolLocation>> {
@@ -499,7 +527,7 @@ fn tool_call_from_block(
     let input = block.get("input").unwrap_or(&Value::Null);
     Some(SessionEvent::AgentToolCall {
         tool_call_id,
-        title: tool_title(name, input),
+        title: tool_title(name, input, cwd),
         status: "pending".to_string(),
         kind: Some(tool_kind(name).to_string()),
         locations: tool_locations(name, input, cwd),
@@ -553,6 +581,7 @@ fn tool_update_from_result(
             "completed".to_string()
         }),
         text,
+        title: None,
         kind: None,
         locations: None,
         parent_tool_use_id,
@@ -681,6 +710,48 @@ fn windows_components_eq_ignore_case(
     }
 }
 
+pub(crate) fn mode_state(current_mode_id: &str) -> SessionModeStateView {
+    SessionModeStateView {
+        current_mode_id: current_mode_id.to_string(),
+        available_modes: vec![
+            SessionModeView {
+                id: "plan".to_string(),
+                name: "Plan Mode".to_string(),
+                description: Some(
+                    "Analyze the codebase without executing tools or edits".to_string(),
+                ),
+            },
+            SessionModeView {
+                id: "default".to_string(),
+                name: "Always Ask".to_string(),
+                description: Some(
+                    "Prompts for permission the first time a tool is used".to_string(),
+                ),
+            },
+            SessionModeView {
+                id: "acceptEdits".to_string(),
+                name: "Accept File Edits".to_string(),
+                description: Some(
+                    "Automatically approves edit-focused tools without prompting".to_string(),
+                ),
+            },
+            SessionModeView {
+                id: "auto".to_string(),
+                name: "Auto mode".to_string(),
+                description: Some(
+                    "Uses a model classifier to review permission prompts automatically"
+                        .to_string(),
+                ),
+            },
+            SessionModeView {
+                id: "bypassPermissions".to_string(),
+                name: "Bypass".to_string(),
+                description: Some("Skip all permission prompts (use with caution)".to_string()),
+            },
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,7 +799,47 @@ mod tests {
                 assert_eq!(models.len(), 1);
                 assert_eq!(models[0].model_id, "claude-opus-5[1m]");
                 assert_eq!(models[0].name, "claude-opus-5[1m]");
-                assert!(modes.is_none());
+                let modes = modes.as_ref().expect("Claude modes");
+                assert_eq!(modes.current_mode_id, "default");
+                assert_eq!(
+                    modes
+                        .available_modes
+                        .iter()
+                        .map(|mode| mode.id.as_str())
+                        .collect::<Vec<_>>(),
+                    [
+                        "plan",
+                        "default",
+                        "acceptEdits",
+                        "auto",
+                        "bypassPermissions"
+                    ]
+                );
+                assert_eq!(modes.available_modes[0].name, "Plan Mode");
+                assert_eq!(
+                    modes.available_modes[0].description.as_deref(),
+                    Some("Analyze the codebase without executing tools or edits")
+                );
+                assert_eq!(modes.available_modes[1].name, "Always Ask");
+                assert_eq!(
+                    modes.available_modes[1].description.as_deref(),
+                    Some("Prompts for permission the first time a tool is used")
+                );
+                assert_eq!(modes.available_modes[2].name, "Accept File Edits");
+                assert_eq!(
+                    modes.available_modes[2].description.as_deref(),
+                    Some("Automatically approves edit-focused tools without prompting")
+                );
+                assert_eq!(modes.available_modes[3].name, "Auto mode");
+                assert_eq!(
+                    modes.available_modes[3].description.as_deref(),
+                    Some("Uses a model classifier to review permission prompts automatically")
+                );
+                assert_eq!(modes.available_modes[4].name, "Bypass");
+                assert_eq!(
+                    modes.available_modes[4].description.as_deref(),
+                    Some("Skip all permission prompts (use with caution)")
+                );
             }
             other => panic!("expected SessionManifest, got {other:?}"),
         }
@@ -862,7 +973,7 @@ mod tests {
                 ..
             }] => {
                 assert_eq!(tool_call_id, "toolu_agent");
-                assert_eq!(title, "Agent Find the relevant files");
+                assert_eq!(title, "Find the relevant files");
                 assert_eq!(kind.as_deref(), Some("think"));
                 assert_eq!(subagent_type.as_deref(), Some("explorer"));
                 assert!(parent_tool_use_id.is_none());
@@ -1274,7 +1385,10 @@ mod tests {
                 ..
             }] => {
                 assert_eq!(tool_call_id, "toolu_01SPEx5ftKiRM6gUm1VBwYKz");
-                assert_eq!(title, "Bash Delete a nonexistent temp file");
+                assert_eq!(
+                    title,
+                    r"cmd /c del /q C:\Windows\Temp\devboule-nonexistent.txt"
+                );
                 assert_eq!(status, "pending");
                 assert_eq!(kind.as_deref(), Some("execute"));
                 assert!(locations.is_none());
@@ -1315,7 +1429,7 @@ mod tests {
                     locations[0].path,
                     PathBuf::from("src").join("lib.rs").to_string_lossy()
                 );
-                assert!(title.contains("Read"));
+                assert_eq!(title, &locations[0].path);
             }
             other => panic!("expected Read tool call, got {other:?}"),
         }
@@ -1342,6 +1456,7 @@ mod tests {
                 tool_call_id: "toolu_ok".to_string(),
                 status: Some("completed".to_string()),
                 text: Some("devboule-perm-probe".to_string()),
+                title: None,
                 kind: None,
                 locations: None,
                 parent_tool_use_id: None,
@@ -1366,6 +1481,7 @@ mod tests {
                 tool_call_id: "toolu_01SPEx5ftKiRM6gUm1VBwYKz".to_string(),
                 status: Some("failed".to_string()),
                 text: Some("The user declined this command in the probe.".to_string()),
+                title: None,
                 kind: None,
                 locations: None,
                 parent_tool_use_id: None,
@@ -1445,7 +1561,7 @@ mod tests {
             ("Glob", "search"),
             ("Grep", "search"),
             ("WebFetch", "fetch"),
-            ("WebSearch", "fetch"),
+            ("WebSearch", "search"),
             ("Task", "think"),
             ("Agent", "think"),
             ("Skill", "other"),
@@ -1465,6 +1581,91 @@ mod tests {
                     assert_eq!(kind.as_deref(), Some(expected), "tool {name}");
                 }
                 other => panic!("tool {name}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn websearch_title_is_the_query_and_kind_is_search() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": "WebSearch",
+                    "input": {"query": "how to test rust", "allowed_domains": []}}]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { kind, title, .. }] => {
+                assert_eq!(kind.as_deref(), Some("search"));
+                assert_eq!(title, "how to test rust");
+            }
+            other => panic!("expected WebSearch tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn webfetch_title_is_the_url() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": "WebFetch",
+                    "input": {"url": "https://example.com", "prompt": "summarize"}}]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { kind, title, .. }] => {
+                assert_eq!(kind.as_deref(), Some("fetch"));
+                assert_eq!(title, "https://example.com");
+            }
+            other => panic!("expected WebFetch tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grep_title_is_the_pattern() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": "Grep",
+                    "input": {"pattern": "foo.*", "path": "/work"}}]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { kind, title, .. }] => {
+                assert_eq!(kind.as_deref(), Some("search"));
+                assert_eq!(title, "foo.*");
+            }
+            other => panic!("expected Grep tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_tool_falls_back_to_the_bare_tool_name() {
+        for name in ["mcp__probe__ping", "custom_tool"] {
+            let mut mapper = view();
+            let events = mapper.ingest(&json!({
+                "type": "assistant",
+                "message": {
+                    "id": "m",
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t", "name": name, "input": {}}]
+                }
+            }));
+            match events.as_slice() {
+                [SessionEvent::AgentToolCall { kind, title, .. }] => {
+                    assert_eq!(kind.as_deref(), Some("other"));
+                    assert_eq!(title, name);
+                }
+                other => panic!("expected unknown tool call, got {other:?}"),
             }
         }
     }

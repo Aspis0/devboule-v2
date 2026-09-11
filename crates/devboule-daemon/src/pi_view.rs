@@ -6,6 +6,34 @@
 use devboule_protocol::{SessionEvent, TurnUsage};
 use serde_json::Value;
 
+/// Raw pi tool names are not categories; map them the way Paseo's pi
+/// mapper does so the frontend can label the row.
+fn tool_kind(tool_name: &str) -> &'static str {
+    match tool_name.to_ascii_lowercase().as_str() {
+        "bash" | "powershell" => "execute",
+        "read" => "read",
+        "edit" | "write" => "edit",
+        "grep" | "find" | "ls" => "search",
+        _ => "other",
+    }
+}
+
+/// The one field that matters, in the same priority as Claude's fallback:
+/// command, then path, then pattern.
+fn tool_summary(arguments: Option<&Value>) -> Option<String> {
+    let arguments = arguments?;
+    ["command", "path", "pattern"]
+        .into_iter()
+        .filter_map(|key| {
+            arguments
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        })
+        .next()
+        .map(str::to_string)
+}
+
 pub(crate) fn events_from_line(value: &Value) -> Vec<SessionEvent> {
     let Some(kind) = value.get("type").and_then(Value::as_str) else {
         return Vec::new();
@@ -53,18 +81,15 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
             .get("id")
             .and_then(Value::as_str)
             .map(|id| {
+                let tool_name = event
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 vec![SessionEvent::AgentToolCall {
                     tool_call_id: id.to_string(),
-                    title: event
-                        .get("toolName")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
+                    title: tool_name.to_string(),
                     status: "pending".to_string(),
-                    kind: event
-                        .get("toolName")
-                        .and_then(Value::as_str)
-                        .map(str::to_string),
+                    kind: Some(tool_kind(tool_name).to_string()),
                     locations: None,
                     subagent_type: None,
                     parent_tool_use_id: None,
@@ -81,14 +106,14 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
     let tool_call = value
         .get("assistantMessageEvent")
         .and_then(|event| event.get("toolCall"))?;
+    let name = tool_call.get("name").and_then(Value::as_str);
     Some(SessionEvent::AgentToolUpdate {
         tool_call_id: tool_call.get("id")?.as_str()?.to_string(),
         status: Some("in_progress".to_string()),
         text: None,
-        kind: tool_call
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        // Arguments arrive here, so retitle the row with the summary.
+        title: tool_summary(tool_call.get("arguments")),
+        kind: name.map(|name| tool_kind(name).to_string()),
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -100,10 +125,11 @@ fn tool_execution_start(value: &Value) -> Option<SessionEvent> {
         tool_call_id: value.get("toolCallId")?.as_str()?.to_string(),
         status: Some("in_progress".to_string()),
         text: None,
+        title: None,
         kind: value
             .get("toolName")
             .and_then(Value::as_str)
-            .map(str::to_string),
+            .map(|name| tool_kind(name).to_string()),
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -123,10 +149,11 @@ fn tool_execution_end(value: &Value) -> Option<SessionEvent> {
             "completed".to_string()
         }),
         text: value.get("result").and_then(tool_result_text),
+        title: None,
         kind: value
             .get("toolName")
             .and_then(Value::as_str)
-            .map(str::to_string),
+            .map(|name| tool_kind(name).to_string()),
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -216,16 +243,19 @@ mod tests {
         );
         assert!(matches!(
             events_from_line(&start).as_slice(),
-            [SessionEvent::AgentToolCall { tool_call_id, title, status, .. }]
+            [SessionEvent::AgentToolCall { tool_call_id, title, status, kind, .. }]
                 if tool_call_id == "call_e855bd93a9d545228d528feb"
                     && title == "write"
                     && status == "pending"
+                    && kind.as_deref() == Some("edit")
         ));
         assert!(matches!(
             events_from_line(&end).as_slice(),
-            [SessionEvent::AgentToolUpdate { tool_call_id, status, .. }]
+            [SessionEvent::AgentToolUpdate { tool_call_id, status, title, kind, .. }]
                 if tool_call_id == "call_e855bd93a9d545228d528feb"
                     && status.as_deref() == Some("in_progress")
+                    && title.as_deref() == Some("probe_tool.txt")
+                    && kind.as_deref() == Some("edit")
         ));
         assert!(matches!(
             events_from_line(&execution).as_slice(),

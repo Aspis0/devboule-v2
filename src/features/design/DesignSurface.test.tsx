@@ -377,6 +377,7 @@ function agentState(manifest: AgentSessionState["manifest"]): AgentSessionState 
     lastFinished: null,
     manifest,
     pendingSwitch: null,
+    pendingModeId: null,
   };
 }
 
@@ -556,7 +557,8 @@ describe("DesignSurface host capabilities", () => {
         {
           id: "tool-1",
           role: "tool",
-          text: "Read src/app/App.tsx",
+          title: "Read src/app/App.tsx",
+          output: "",
           toolCallId: "design-1",
           status: "pending",
         },
@@ -1189,6 +1191,7 @@ describe("DesignSurface host capabilities", () => {
         ...session.getState(),
         manifest: confirmedManifest,
         pendingSwitch: null,
+        pendingModeId: null,
       });
     });
 

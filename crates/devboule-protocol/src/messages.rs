@@ -60,6 +60,8 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
     SessionAttach {
@@ -119,12 +121,19 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
     },
+    SessionSetMode {
+        id: u64,
+        session_id: String,
+        mode_id: String,
+    },
     SessionPermissionRespond {
         id: u64,
         session_id: String,
         subscription_id: SubscriptionId,
         request_id: String,
         outcome: PermissionOutcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        option_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
@@ -260,6 +269,7 @@ impl ClientMessage {
             | Self::SessionResize { id, .. }
             | Self::SessionInterrupt { id, .. }
             | Self::SessionSetModel { id, .. }
+            | Self::SessionSetMode { id, .. }
             | Self::SessionPermissionRespond { id, .. }
             | Self::SessionReportAgent { id, .. }
             | Self::SessionsList { id }
@@ -318,6 +328,7 @@ impl ClientMessage {
             | Self::SessionResize { .. }
             | Self::SessionInterrupt { .. }
             | Self::SessionSetModel { .. }
+            | Self::SessionSetMode { .. }
             | Self::SessionReportAgent { .. }
             | Self::SessionsList { .. }
             | Self::SessionsWatch { .. }
@@ -860,6 +871,7 @@ mod tests {
             workspace_id: None,
             kind: SessionKind::Terminal,
             provider: None,
+            mode: None,
             idempotency_key: Some("k1".to_string()),
         };
         let send = ClientMessage::SessionSend {
@@ -875,6 +887,7 @@ mod tests {
             subscription_id: 12,
             request_id: "r1".to_string(),
             outcome: PermissionOutcome::AllowOnce,
+            option_id: Some("allow-once".to_string()),
             idempotency_key: Some("k3".to_string()),
         };
         assert_eq!(create.idempotency_key(), Some("k1"));
@@ -884,6 +897,80 @@ mod tests {
             serde_json::to_value(&perm).expect("json")["outcome"],
             "allow_once"
         );
+        assert_eq!(
+            serde_json::to_value(&perm).expect("json")["optionId"],
+            "allow-once"
+        );
+        let decoded: ClientMessage =
+            serde_json::from_value(serde_json::to_value(&perm).expect("json"))
+                .expect("permission response round trip");
+        assert_eq!(decoded, perm);
+    }
+
+    #[test]
+    fn permission_resolved_reports_the_selected_option() {
+        let event = DaemonMessage::Event(SessionEventEnvelope {
+            session_id: "s.a.1".to_string(),
+            generation: 1,
+            event: SessionEvent::PermissionResolved {
+                tool_call_id: "tool-1".to_string(),
+                selected_option_id: Some("allow-once".to_string()),
+                selected_option_kind: Some("allow_once".to_string()),
+                selected_option_name: Some("Allow once".to_string()),
+            },
+        });
+        let value = serde_json::to_value(&event).expect("permission resolved json");
+        assert_eq!(value["event"]["selectedOptionId"], "allow-once");
+        assert_eq!(value["event"]["selectedOptionKind"], "allow_once");
+        assert_eq!(value["event"]["selectedOptionName"], "Allow once");
+        assert_eq!(
+            serde_json::from_value::<DaemonMessage>(value).expect("permission resolved round trip"),
+            event
+        );
+    }
+
+    #[test]
+    fn legacy_permission_frames_without_option_fields_still_parse() {
+        // Bytes, not Rust-to-Rust: an older client answers without
+        // `optionId`, and an older daemon resolves without the option triple.
+        let respond: ClientMessage = serde_json::from_str(
+            r#"{"type":"session_permission_respond","id":3,"sessionId":"s.a.1","subscriptionId":12,"requestId":"r1","outcome":"allow_once"}"#,
+        )
+        .expect("legacy permission response parses");
+        assert_eq!(
+            respond,
+            ClientMessage::SessionPermissionRespond {
+                id: 3,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 12,
+                request_id: "r1".to_string(),
+                outcome: PermissionOutcome::AllowOnce,
+                option_id: None,
+                idempotency_key: None,
+            }
+        );
+
+        let resolved: DaemonMessage = serde_json::from_str(
+            r#"{"type":"event","sessionId":"s.a.1","generation":1,"event":{"type":"permission_resolved","toolCallId":"tool-1"}}"#,
+        )
+        .expect("legacy permission resolved parses");
+        assert_eq!(
+            resolved,
+            DaemonMessage::Event(SessionEventEnvelope {
+                session_id: "s.a.1".to_string(),
+                generation: 1,
+                event: SessionEvent::PermissionResolved {
+                    tool_call_id: "tool-1".to_string(),
+                    selected_option_id: None,
+                    selected_option_kind: None,
+                    selected_option_name: None,
+                },
+            })
+        );
+        let value = serde_json::to_value(&resolved).expect("resolved json");
+        assert!(value["event"].get("selectedOptionId").is_none());
+        assert!(value["event"].get("selectedOptionKind").is_none());
+        assert!(value["event"].get("selectedOptionName").is_none());
     }
 
     #[test]
@@ -957,6 +1044,43 @@ mod tests {
         };
         let effort_only_value = serde_json::to_value(effort_only).expect("json");
         assert!(effort_only_value.get("modelId").is_none());
+    }
+
+    #[test]
+    fn session_set_mode_round_trips_with_camel_case_fields() {
+        let message = ClientMessage::SessionSetMode {
+            id: 10,
+            session_id: "s.a.1".to_string(),
+            mode_id: "acceptEdits".to_string(),
+        };
+        let value = serde_json::to_value(&message).expect("json");
+        assert_eq!(value["type"], "session_set_mode");
+        assert_eq!(value["sessionId"], "s.a.1");
+        assert_eq!(value["modeId"], "acceptEdits");
+        assert_eq!(message.request_id(), Some(10));
+        assert_eq!(message.idempotency_key(), None);
+        assert_eq!(
+            serde_json::from_value::<ClientMessage>(value).expect("round trip"),
+            message
+        );
+    }
+
+    #[test]
+    fn session_create_round_trips_an_optional_mode() {
+        let message = ClientMessage::SessionCreate {
+            id: 11,
+            workspace_id: None,
+            kind: SessionKind::Claude,
+            provider: None,
+            mode: Some("plan".to_string()),
+            idempotency_key: None,
+        };
+        let value = serde_json::to_value(&message).expect("json");
+        assert_eq!(value["mode"], "plan");
+        assert_eq!(
+            serde_json::from_value::<ClientMessage>(value).expect("round trip"),
+            message
+        );
     }
 
     #[test]

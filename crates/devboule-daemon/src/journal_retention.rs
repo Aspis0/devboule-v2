@@ -496,7 +496,10 @@ pub(super) fn journal_usage(
         if cutoff.is_some_and(|value| updated_at_ms < value)
             && (status == "live"
                 || pins.contains(&id)
-                || matches!(kind, SessionKind::Acp | SessionKind::Pi))
+                || matches!(
+                    kind,
+                    SessionKind::Acp | SessionKind::Pi | SessionKind::Codex
+                ))
         {
             aged_out += 1;
         }
