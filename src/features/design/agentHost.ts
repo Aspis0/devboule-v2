@@ -29,6 +29,7 @@ import type {
   DesignGenerationOptions,
   DesignGenerationResult,
   DesignHost,
+  DesignOutputMode,
   DesignTranscriptItem,
   PendingPermission,
 } from "./designHost";
@@ -412,6 +413,7 @@ export function groundedPrompt(
   oracleResults: readonly OracleResult[],
   composedDoctrine = buildSkillBlock(builtInSkillSources(), builtInSkillSlugs()).text,
   grounded = true,
+  outputMode: DesignOutputMode = "page",
 ): string {
   const doctrine = embedDoctrineBlock(composedDoctrine);
   const promptParts = [
@@ -433,13 +435,27 @@ export function groundedPrompt(
       "Oracle grounding is off for this request: do not search or read repository files, and do not assume any search result.",
     );
   }
-  promptParts.push(
-    "",
-    "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
-    "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
-    "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
-    "If you produce more than one block, only the last one is used.",
-  );
+  if (outputMode === "slides") {
+    promptParts.push(
+      "",
+      'When you produce visual output, include a single self-contained HTML document that renders a slide deck: one <section> per slide, each with a stable id (id="slide-1", id="slide-2", ...).',
+      // The id is the note anchor: without one the anchor falls back to document
+      // position, so a regeneration would detach every note from its slide.
+      "Keep every slide id stable across regenerations of the same deck.",
+      "Size every slide as a fixed 16:9 frame (1280x720 CSS px at the 1280 page width): compose inside that box, one idea per slide, never a scrolling column.",
+      "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
+      "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
+      "If you produce more than one block, only the last one is used.",
+    );
+  } else {
+    promptParts.push(
+      "",
+      "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
+      "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
+      "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
+      "If you produce more than one block, only the last one is used.",
+    );
+  }
   if (doctrine.length > 0) promptParts.push(doctrine, DESIGN_DOCTRINE_RESTATEMENT);
   return promptParts.join("\n\n");
 }
@@ -1255,7 +1271,13 @@ export function createAgentHost(): DesignHost {
     // Subscribe only after send() so a prior turn cannot settle this run.
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
     const sendPromise = handle.controller.send(
-      groundedPrompt(prompt, oracleResults, composedDoctrine, promptGrounded),
+      groundedPrompt(
+        prompt,
+        oracleResults,
+        composedDoctrine,
+        promptGrounded,
+        options?.outputMode ?? "page",
+      ),
     );
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;

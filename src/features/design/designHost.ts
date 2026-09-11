@@ -152,6 +152,17 @@ export interface DesignGenerationResult {
 }
 
 /**
+ * Declared output shape of a generation: a scrolling page or a slide deck.
+ * Declared on the wire by the caller, never inferred from the prompt text:
+ * inferring a mode from a derived value was tried for the skill mode and
+ * rejected — it degraded silently whenever the derived value moved while
+ * the UI kept saying something else. Absent means a caller that predates
+ * slides and keeps the page behaviour; the surface always states it
+ * explicitly, exactly like `grounded` and `folderPath`.
+ */
+export type DesignOutputMode = "page" | "slides";
+
+/**
  * Call-time options, never persisted. The skill mode is declared on the wire
  * with the same ids the persisted selection uses (`all` | `manual` | `auto`):
  * the caller knows which mode is active and says so; the host never has to
@@ -178,12 +189,18 @@ export interface DesignGenerationResult {
  * grounding, and the host then keeps the legacy global-index behaviour. The
  * surface always states it explicitly: a string grounds the run on that
  * folder's own index, null means no grounding without a notice.
+ *
+ * `outputMode` names which shape the run must produce (`page` | `slides`).
+ * It is absent when a caller predates slides, and the host then keeps the
+ * page behaviour. The surface always states it explicitly, so the output
+ * switch — which lives beside the surface until its file is free — is the
+ * only thing deciding it.
  */
 export type DesignGenerationOptions = (
   | { skillMode: "auto" }
   | { skillMode: "all" }
   | { skillMode: "manual"; skills: readonly string[] }
-) & { grounded?: boolean; folderPath?: string | null };
+) & { grounded?: boolean; folderPath?: string | null; outputMode?: DesignOutputMode };
 
 export interface DesignInitialState {
   // Initial values; zoom seeds the view but is not rewritten by document saves.

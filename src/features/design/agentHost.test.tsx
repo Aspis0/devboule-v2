@@ -2920,6 +2920,66 @@ describe("ACP design host", () => {
       });
     });
 
+    describe("slide output mode", () => {
+      it("keeps the page instructions by default", () => {
+        const prompt = groundedPrompt("Update the design", []);
+
+        expect(prompt).toContain("self-contained HTML fragment");
+        expect(prompt).not.toContain("slide-1");
+        expect(prompt).not.toContain("16:9");
+      });
+
+      it("asks for one id-anchored section per slide with the same fence constraints", () => {
+        const prompt = groundedPrompt("Update the design", [], "", true, "slides");
+
+        expect(prompt).toContain("one <section> per slide");
+        expect(prompt).toContain('id="slide-1"');
+        expect(prompt).toContain("16:9");
+        expect(prompt).toContain("Put it in a single fenced ```html code block.");
+        expect(prompt).toContain("Use inline CSS for all styling.");
+        expect(prompt).toContain("do not rely on JavaScript");
+        expect(prompt).toContain("only the last one is used");
+        expect(prompt).not.toContain("self-contained HTML fragment");
+      });
+
+      it("threads the declared output mode from generation options to the sent prompt", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host, { skillMode: "all", outputMode: "slides" });
+        finishRun();
+        await run;
+
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+        expect(sentText).toContain('id="slide-1"');
+        expect(sentText).toContain("16:9");
+        await disposeAgentHost(host);
+      });
+
+      it("sends page instructions when the caller predates the output mode", async () => {
+        const host = createAgentHost();
+        const { run } = await startRun(host, { skillMode: "all" });
+        finishRun();
+        await run;
+
+        const sentText = mocks.sessionSend.mock.calls[0]?.[2] as string;
+        expect(sentText).toContain("self-contained HTML fragment");
+        expect(sentText).not.toContain("slide-1");
+        await disposeAgentHost(host);
+      });
+
+      it("extracts a multi-section deck from one fence without changing the extractor", () => {
+        const deck = [
+          '<section id="slide-1">Intro</section>',
+          '<section id="slide-2">Body</section>',
+          '<section id="slide-3">Close</section>',
+        ].join("\n");
+        const html = extractFencedHtml(`Here is the deck:\n\`\`\`html\n${deck}\n\`\`\``);
+
+        expect(html).toContain('id="slide-1"');
+        expect(html).toContain('id="slide-2"');
+        expect(html).toContain('id="slide-3"');
+      });
+    });
+
     describe("integration: artifact in generation result", () => {
       it("carries the artifact HTML from the assistant text to the result", async () => {
         const host = createAgentHost();
