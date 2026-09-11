@@ -74,6 +74,7 @@
 //! result; a retry with the same key and a different payload returns
 //! [`ErrorCode::IdempotencyConflict`].
 
+mod attachments;
 mod capability;
 mod error;
 mod handshake;
@@ -85,6 +86,10 @@ mod session;
 #[cfg(test)]
 mod session_event_guard;
 
+pub use attachments::{
+    attachment_name_too_long_message, empty_attachment_message, invalid_base64_message,
+    unsupported_attachment_type_message, validate_attachments, ATTACHMENT_MIME_TYPES,
+};
 pub use capability::{intersect_capabilities, Capability};
 pub use error::{ErrorCode, ErrorDetails, WireError};
 pub use handshake::{negotiate, ClientHello, DaemonHello, Negotiation};
@@ -94,8 +99,8 @@ pub use ids::{
 };
 pub use messages::{
     ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits, JournalRetention,
-    JournalSessionUsage, JournalStats, JournalUsage, ProviderInfo, RetentionLimit, RetentionPatch,
-    RetentionSource, SessionEventEnvelope, Unreclaimable,
+    JournalSessionUsage, JournalStats, JournalUsage, PromptAttachment, ProviderInfo,
+    RetentionLimit, RetentionPatch, RetentionSource, SessionEventEnvelope, Unreclaimable,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -177,6 +182,64 @@ pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 /// 64 KiB is far under the 1 MiB [`MAX_FRAME_BYTES`] cap because input is
 /// one `session_send` text, not a screen snapshot.
 pub const MAX_WRITE_BYTES: usize = 64 * 1024;
+
+/// At most this many files may ride on one `session_send` (4).
+///
+/// The composer refuses a fifth file at the same number
+/// (`MAX_ATTACHMENT_COUNT` in `designAttachments.ts`), so the wire bound and
+/// the UI bound are the same rule stated twice. Unlike [`MAX_WRITE_BYTES`],
+/// attachments are *not* counted against the text budget and the text is not
+/// counted against theirs: the two caps bound different payloads.
+pub const MAX_ATTACHMENT_COUNT: usize = 4;
+
+/// Largest base64 `data` a single attachment may carry (192 KiB).
+///
+/// Derived, not chosen. The composer accepts at most 128 KiB of file bytes for
+/// one attachment (`MAX_ATTACHMENT_BYTES` in `designAttachments.ts`). Base64
+/// maps 3 bytes to 4, so `n` raw bytes become `ceil(n / 3) * 4` encoded: 128 KiB
+/// (131,072) becomes 174,764 bytes, or 170.7 KiB. 192 KiB is that figure with
+/// room for a client that pads differently.
+pub const MAX_ATTACHMENT_DATA_BYTES: usize = 192 * 1024;
+
+/// Largest `name` one attachment may carry (255 bytes).
+///
+/// The name is the one field of a `SessionSend` frame that nothing else bounds:
+/// the text has [`MAX_WRITE_BYTES`], `data` has [`MAX_ATTACHMENT_DATA_BYTES`]
+/// and the count has [`MAX_ATTACHMENT_COUNT`], so without this cap the largest
+/// frame cannot be derived at all (see [`MAX_ATTACHMENTS_TOTAL_BYTES`]).
+///
+/// 255 bytes is what a single path component holds on NTFS, APFS and ext4
+/// alike, so a name that does not fit one is not a file name.
+pub const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
+
+/// Largest sum of every attachment's base64 `data` on one request (384 KiB).
+///
+/// Derived the same way. The composer caps one import at 256 KiB of raw bytes
+/// across the request (`MAX_ATTACHMENT_TOTAL_BYTES`), which is 349,528 bytes
+/// encoded — 341.3 KiB. 384 KiB is that with headroom.
+///
+/// The number is also what keeps an attachment from breaking the frame. A
+/// `SessionSend` frame carries:
+///
+/// - the text, at most [`MAX_WRITE_BYTES`] = 65,536 bytes;
+/// - every attachment's base64 `data`, at most this budget = 393,216 bytes;
+/// - up to [`MAX_ATTACHMENT_COUNT`] names, each at most
+///   [`MAX_ATTACHMENT_NAME_BYTES`] = 255 bytes, so 4 x 255 = 1,020 bytes;
+/// - the JSON envelope, keys, MIME types and punctuation, which is a few
+///   hundred bytes and never more than 4 KiB.
+///
+/// The base64 standard alphabet (`A-Z a-z 0-9 + /`) plus `=` needs no JSON
+/// escaping, so an attachment's encoded length is its length on the wire too.
+/// That puts a maximal frame at 65,536 + 393,216 + 1,020 + 4,096 = 463,868
+/// bytes, about 453 KiB against the 1 MiB [`MAX_FRAME_BYTES`] and 584,708 bytes
+/// of margin. That margin is the only reason the framing survives a maximal
+/// attachment request.
+///
+/// The appended `[Image available at: …]` lines are deliberately not counted:
+/// the daemon builds them in `with_attachment_paths` after the frame has been
+/// received and parsed, and writes them to the provider, not to the wire. What
+/// *is* in the frame is `name`, which is why it is capped above.
+pub const MAX_ATTACHMENTS_TOTAL_BYTES: usize = 384 * 1024;
 
 /// Default plugin-invoke payload budget, in bytes (16 MiB).
 ///

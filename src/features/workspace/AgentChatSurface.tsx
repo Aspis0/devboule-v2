@@ -21,6 +21,7 @@ import {
 } from "../../lib/tauri";
 import type {
   PermissionRequest,
+  PromptAttachment,
   SessionManifest,
   SessionModel,
   SessionState,
@@ -75,10 +76,15 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     ) as Promise<T>;
   }
   if (command === "session_send") {
-    return sessionSend(
-      id,
-      args?.subscriptionId as SubscriptionId,
-      typeof args?.text === "string" ? args.text : "",
+    // Left off when absent, not passed as an explicit `undefined`, so a send
+    // with no attachment keeps the arity every existing caller expects.
+    const attachments = args?.attachments as readonly PromptAttachment[] | undefined;
+    const text = typeof args?.text === "string" ? args.text : "";
+    const subscriptionId = args?.subscriptionId as SubscriptionId;
+    return (
+      attachments === undefined
+        ? sessionSend(id, subscriptionId, text)
+        : sessionSend(id, subscriptionId, text, attachments)
     ) as Promise<T>;
   }
   if (command === "session_set_model") {

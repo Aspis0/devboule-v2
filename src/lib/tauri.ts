@@ -20,6 +20,7 @@ import type {
   Project,
   ProviderCatalog,
   ProviderUpdateOutcome,
+  PromptAttachment,
   ResumeResult,
   Session,
   Workspace,
@@ -57,7 +58,17 @@ export type CommandArgs = {
   };
   session_resume: { sessionId: Id };
   session_attach: { id: Id; fromCursor: number | null; ch: SessionChannel };
-  session_send: { id: Id; subscriptionId: SubscriptionId; text: string };
+  session_send: {
+    id: Id;
+    subscriptionId: SubscriptionId;
+    text: string;
+    /**
+     * Omitted, not empty, when the run has no attachments: the daemon treats an
+     * absent field as an empty list (`#[serde(default)]` on the Rust variant)
+     * and the terminal surface's sends stay byte-identical to what they were.
+     */
+    attachments?: readonly PromptAttachment[];
+  };
   session_interrupt: { id: Id; subscriptionId: SubscriptionId };
   session_claim: { subscriptionId: SubscriptionId };
   session_set_model: { id: Id; modelId?: string; effort?: string };
@@ -192,7 +203,7 @@ export const COMMAND_ARG_KEYS = {
   session_create: ["workspaceId", "kind", "provider", "mode"],
   session_resume: ["sessionId"],
   session_attach: ["id", "fromCursor", "ch"],
-  session_send: ["id", "subscriptionId", "text"],
+  session_send: ["id", "subscriptionId", "text", "attachments"],
   session_interrupt: ["id", "subscriptionId"],
   session_claim: ["subscriptionId"],
   session_set_model: ["id", "modelId", "effort"],
@@ -372,8 +383,18 @@ export const sessionAttach = (id: Id, fromCursor: number | null, ch: SessionChan
   // Tauri v2 converts snake_case Rust params to camelCase for the JS side, so
   // the key must be `fromCursor`, not `from_cursor`.
   invokeTyped("session_attach", { id, fromCursor, ch });
-export const sessionSend = (id: Id, subscriptionId: SubscriptionId, text: string) =>
-  invokeTyped("session_send", { id, subscriptionId, text });
+export const sessionSend = (
+  id: Id,
+  subscriptionId: SubscriptionId,
+  text: string,
+  attachments?: readonly PromptAttachment[],
+) =>
+  invokeTyped("session_send", {
+    id,
+    subscriptionId,
+    text,
+    ...(attachments === undefined || attachments.length === 0 ? {} : { attachments }),
+  });
 export const sessionInterrupt = (id: Id, subscriptionId: SubscriptionId) =>
   invokeTyped("session_interrupt", { id, subscriptionId });
 export const sessionClaim = (subscriptionId: SubscriptionId) =>

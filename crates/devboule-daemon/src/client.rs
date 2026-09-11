@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use devboule_protocol::{
     AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
     DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PermissionOutcome,
-    Persistence, Project, ProviderInfo, ResumeResult, RetentionPatch, Session, SessionEvent,
-    SessionEventEnvelope, SessionKind, SessionStateSnapshot, SubscriptionId, WireError, Workspace,
-    WorkspaceIsolation,
+    Persistence, Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session,
+    SessionEvent, SessionEventEnvelope, SessionKind, SessionStateSnapshot, SubscriptionId,
+    WireError, Workspace, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -413,14 +413,22 @@ impl DaemonClient {
             session_id,
             self.control_subscription_id(session_id)?,
             text,
+            &[],
         )
     }
 
+    /// Send one prompt with the files attached to it.
+    ///
+    /// `attachments` travels as bytes (base64 inside the message), never as a
+    /// path: see [`PromptAttachment`] for why.
+    ///
+    /// [`PromptAttachment`]: devboule_protocol::PromptAttachment
     pub fn session_send_with_subscription(
         &self,
         session_id: &str,
         subscription_id: SubscriptionId,
         text: &str,
+        attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::SessionSend {
@@ -428,6 +436,7 @@ impl DaemonClient {
             session_id: session_id.to_string(),
             subscription_id,
             text: text.to_string(),
+            attachments: attachments.to_vec(),
             idempotency_key: None,
         })? {
             DaemonMessage::Ok { .. } => Ok(()),

@@ -19,12 +19,14 @@ import type {
   OracleFolderIndexStatus,
   OracleResult,
   PermissionRequest,
+  PromptAttachment,
   ProviderInfo,
   Session,
   SessionEvent,
   Workspace,
 } from "../../types/ipc";
 import type {
+  DesignAttachment,
   DesignDocument,
   DesignGenerationOptions,
   DesignGenerationResult,
@@ -43,6 +45,7 @@ import {
 } from "./builtInSkills";
 export { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
 import { createDesignDocumentDefaults } from "./designDocumentDefaults";
+import { encodeSvgSourceBase64 } from "./designAttachments";
 import { buildSkillBlock, DOCTRINE_DESCRIPTION_CEILING_CHARS } from "./skillLoader";
 import { rankSkillsForQuery } from "./skillRanking";
 
@@ -654,6 +657,29 @@ function lastErrorText(state: AgentSessionState): string {
   return "The agent session did not answer.";
 }
 
+/**
+ * The wire form of the files the composer attached to this run.
+ *
+ * A raster already carries base64 of its own bytes. An SVG carries sanitized
+ * source, so its bytes are the UTF-8 encoding of that source, base64'd here:
+ * the daemon writes both kinds to a file, and a file is made of bytes.
+ *
+ * The converter runs at send time rather than at import time on purpose. The
+ * SVG's base64 exists only for this one request; keeping it out of the composer
+ * state keeps a second copy of the source from living as long as the pill does.
+ */
+function wireAttachments(attachments: readonly DesignAttachment[]): readonly PromptAttachment[] {
+  return attachments.map((attachment) =>
+    attachment.kind === "raster"
+      ? { name: attachment.name, mimeType: attachment.mimeType, data: attachment.base64 }
+      : {
+          name: attachment.name,
+          mimeType: "image/svg+xml" as const,
+          data: encodeSvgSourceBase64(attachment.source),
+        },
+  );
+}
+
 export function invokeAgentCommand<T>(
   command: string,
   args: Record<string, unknown> = {},
@@ -665,12 +691,22 @@ export function invokeAgentCommand<T>(
         (args.fromCursor as number | null | undefined) ?? null,
         args.ch as SessionChannel,
       ) as Promise<T>;
-    case "session_send":
-      return sessionSend(
-        args.id as string,
-        args.subscriptionId as number,
-        args.text as string,
+    case "session_send": {
+      // The attachment argument is left off, not passed as an explicit
+      // `undefined`: the arity of every send that carries no attachment stays
+      // what it was, and the request is identical either way.
+      const attachments = args.attachments as readonly PromptAttachment[] | undefined;
+      return (
+        attachments === undefined
+          ? sessionSend(args.id as string, args.subscriptionId as number, args.text as string)
+          : sessionSend(
+              args.id as string,
+              args.subscriptionId as number,
+              args.text as string,
+              attachments,
+            )
       ) as Promise<T>;
+    }
     case "session_set_model":
       return sessionSetModel(
         args.id as string,
@@ -1293,6 +1329,7 @@ export function createAgentHost(): DesignHost {
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
     const sendPromise = handle.controller.send(
       groundedPrompt(prompt, oracleResults, composedDoctrine, promptGrounded, outputMode),
+      wireAttachments(options?.attachments ?? []),
     );
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;

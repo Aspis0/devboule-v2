@@ -12,6 +12,8 @@ mod agent_report;
 #[cfg(feature = "server")]
 mod atomic;
 #[cfg(feature = "server")]
+mod attachment_store;
+#[cfg(feature = "server")]
 mod claude_catalog;
 #[cfg(feature = "server")]
 mod claude_view;

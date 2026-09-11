@@ -894,6 +894,22 @@ describe("ACP agent session", () => {
     expect(harness.invoke).toHaveBeenCalledWith("session_detach", { subscriptionId: 41 });
   });
 
+  it("carries attachments on the send when a run has them", async () => {
+    const harness = makeHarness();
+
+    await harness.session.start();
+    await harness.session.send("look at this", [
+      { name: "photo.png", mimeType: "image/png", data: "AAAA" },
+    ]);
+
+    expect(harness.invoke).toHaveBeenCalledWith("session_send", {
+      id: "agent-1",
+      subscriptionId: 41,
+      text: "look at this",
+      attachments: [{ name: "photo.png", mimeType: "image/png", data: "AAAA" }],
+    });
+  });
+
   it("does not detach when attach did not return a subscription id", async () => {
     const invoke = vi.fn(async () => undefined) as unknown as AgentSessionDeps["invoke"];
     const session = new AgentSession({

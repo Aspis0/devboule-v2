@@ -466,6 +466,19 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/**
+ * The sanitized SVG source as base64 of its UTF-8 bytes.
+ *
+ * The bytes, not the string, because that is what the daemon writes to a file.
+ * The source has to go through `TextEncoder` first: `btoa` accepts only Latin-1,
+ * so an SVG with an accented character in its title would make it throw, and
+ * that file is not the one to refuse. The `data:` URL the preview uses is
+ * percent-encoded instead — that is a URL, and this is a file.
+ */
+export function encodeSvgSourceBase64(source: string): string {
+  return encodeBase64(new TextEncoder().encode(source));
+}
+
 export interface TransferItemLike {
   readonly kind?: string;
   getAsFile?: () => File | null;

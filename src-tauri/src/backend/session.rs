@@ -11,8 +11,8 @@ use tauri::State;
 
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
 use devboule_protocol::{
-    ErrorCode, PermissionOutcome, Persistence, PersistenceKind, ResumeResult, SubscriptionId,
-    MAX_WRITE_BYTES,
+    ErrorCode, PermissionOutcome, Persistence, PersistenceKind, PromptAttachment, ResumeResult,
+    SubscriptionId, MAX_WRITE_BYTES,
 };
 
 use crate::client::DaemonBridge;
@@ -100,17 +100,31 @@ pub fn session_presence(
     Ok(require_client(&bridge)?.session_presence(focused_session_id.as_deref(), app_visible)?)
 }
 
+/// Send one prompt.
+///
+/// `attachments` is optional rather than a bare `Vec`: the terminal surface and
+/// every other caller that predates attachments sends no such key, and a missing
+/// key for a bare `Vec` is an `invalid args` rejection rather than an empty
+/// vector.
 #[tauri::command]
 pub fn session_send(
     bridge: State<'_, DaemonBridge>,
     id: String,
     subscription_id: SubscriptionId,
     text: String,
+    attachments: Option<Vec<PromptAttachment>>,
 ) -> Result<(), CommandError> {
     require_session_id(&id)?;
     require_write_size(&text)?;
+    let attachments = attachments.unwrap_or_default();
+    require_attachment_limits(&attachments)?;
     bridge.ensure_subscription_attached(subscription_id)?;
-    Ok(require_client(&bridge)?.session_send_with_subscription(&id, subscription_id, &text)?)
+    Ok(require_client(&bridge)?.session_send_with_subscription(
+        &id,
+        subscription_id,
+        &text,
+        &attachments,
+    )?)
 }
 
 #[tauri::command]
@@ -259,6 +273,19 @@ fn require_write_size(text: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
+/// The same attachment limits the daemon enforces, refused here as well.
+///
+/// Both sides check, and the message comes from one place, for the reason the
+/// [`MAX_WRITE_BYTES`] comment gives: an oversized or malformed request should
+/// be answered before it becomes a pipe round-trip, and the daemon must not
+/// depend on a client that may skip the check. `validate_attachments` is shared
+/// rather than copied because five interdependent rules written twice are five
+/// chances for the two sides to disagree about what the wire allows.
+fn require_attachment_limits(attachments: &[PromptAttachment]) -> Result<(), CommandError> {
+    devboule_protocol::validate_attachments(attachments)
+        .map_err(|message| CommandError::new(ErrorCode::InvalidRequest, message))
+}
+
 fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
     match kind {
         SessionKind::Terminal
@@ -272,6 +299,9 @@ fn require_terminal_kind(kind: &SessionKind) -> Result<(), CommandError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use devboule_protocol::{
+        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
+    };
 
     #[test]
     fn invalid_session_id_is_invalid_request() {
@@ -286,6 +316,87 @@ mod tests {
         let error = require_write_size(&"x".repeat(MAX_WRITE_BYTES + 1)).expect_err("rejected");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
         assert_eq!(error.message, "Session input is too large.");
+    }
+
+    fn attachment(mime_type: &str, data: String) -> PromptAttachment {
+        PromptAttachment {
+            name: "a.png".to_string(),
+            mime_type: mime_type.to_string(),
+            data,
+        }
+    }
+
+    #[test]
+    fn no_attachments_is_not_a_limit_violation() {
+        require_attachment_limits(&[]).expect("an empty list is the common case");
+    }
+
+    #[test]
+    fn attachments_at_the_count_limit_are_accepted() {
+        let four = vec![attachment("image/png", "AA==".to_string()); MAX_ATTACHMENT_COUNT];
+        require_attachment_limits(&four).expect("at the count cap");
+    }
+
+    #[test]
+    fn an_attachment_limit_violation_is_invalid_request_and_names_the_limit() {
+        let five = vec![attachment("image/png", "AA==".to_string()); MAX_ATTACHMENT_COUNT + 1];
+        let error = require_attachment_limits(&five).expect_err("rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains(&MAX_ATTACHMENT_COUNT.to_string()),
+            "{}",
+            error.message
+        );
+
+        let error = require_attachment_limits(&[attachment("image/gif", "AA==".to_string())])
+            .expect_err("rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(error.message.contains("image/gif"), "{}", error.message);
+
+        let error = require_attachment_limits(&[attachment(
+            "image/png",
+            "A".repeat(MAX_ATTACHMENT_DATA_BYTES + 4),
+        )])
+        .expect_err("rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error
+                .message
+                .contains(&MAX_ATTACHMENT_DATA_BYTES.to_string()),
+            "{}",
+            error.message
+        );
+
+        let error =
+            require_attachment_limits(&[attachment("image/png", "not base64!".to_string())])
+                .expect_err("rejected");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(
+            error.message,
+            format!(
+                "Attachment 1 ('a.png'): {}",
+                devboule_protocol::invalid_base64_message()
+            )
+        );
+    }
+
+    /// The daemon module is `server`-gated, so the app cannot call into it. The
+    /// limit set is one function in the protocol crate for exactly that reason;
+    /// this asserts the two sides are looking at the same numbers.
+    #[test]
+    fn the_app_and_the_protocol_agree_on_the_attachment_limits() {
+        assert_eq!(
+            MAX_ATTACHMENT_COUNT,
+            devboule_protocol::MAX_ATTACHMENT_COUNT
+        );
+        assert_eq!(
+            MAX_ATTACHMENT_DATA_BYTES,
+            devboule_protocol::MAX_ATTACHMENT_DATA_BYTES
+        );
+        assert_eq!(
+            MAX_ATTACHMENTS_TOTAL_BYTES,
+            devboule_protocol::MAX_ATTACHMENTS_TOTAL_BYTES
+        );
     }
 
     #[test]

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   base64Length,
   collectAttachmentFiles,
+  encodeSvgSourceBase64,
   formatAttachmentSize,
   importDesignAttachments,
   MAX_ATTACHMENT_BYTES,
@@ -684,6 +685,23 @@ describe("the numbers the limits are made of", () => {
   it("sizes a payload the way base64 does", () => {
     expect(base64Length(3)).toBe(4);
     expect(base64Length(4)).toBe(8);
+  });
+
+  it("encodes SVG source as base64 of its UTF-8 bytes", () => {
+    expect(encodeSvgSourceBase64("<svg/>")).toBe("PHN2Zy8+");
+    // The reason this is not plain `btoa`: the source is a string, and a
+    // character outside ASCII has to survive as its UTF-8 bytes — what the
+    // daemon writes to the file — not as a Latin-1 code point. The comparison
+    // is against a Latin-1 encoding, because that is the bug this avoids.
+    const source = "<svg><title>città</title></svg>";
+    const bytes = Uint8Array.from(atob(encodeSvgSourceBase64(source)), (character) =>
+      character.charCodeAt(0),
+    );
+    expect(bytes).toEqual(new TextEncoder().encode(source));
+    expect(bytes).not.toEqual(
+      Uint8Array.from(source, (character) => character.charCodeAt(0) & 0xff),
+    );
+    expect(new TextDecoder().decode(bytes)).toBe(source);
   });
 
   it("formats a size with one decimal and a unit", () => {

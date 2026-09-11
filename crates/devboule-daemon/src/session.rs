@@ -77,14 +77,15 @@ use portable_pty::{Child, ChildKiller, MasterPty, PtySize};
 #[cfg(test)]
 use devboule_protocol::CursorShape;
 use devboule_protocol::{
-    compose_session_id, cursor_replay_ok, validate_session_id, Cursor, ErrorCode, ErrorDetails,
-    JournalRetention, JournalStats, OwnerId, PermissionOutcome, Project, RetentionPatch, Session,
-    SessionEvent, SessionKind, SessionModel, SessionState, SessionStateSnapshot, WireError,
-    Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
+    compose_session_id, cursor_replay_ok, validate_attachments, validate_session_id, Cursor,
+    ErrorCode, ErrorDetails, JournalRetention, JournalStats, OwnerId, PermissionOutcome, Project,
+    PromptAttachment, RetentionPatch, Session, SessionEvent, SessionKind, SessionModel,
+    SessionState, SessionStateSnapshot, WireError, Workspace, WorkspaceIsolation, MAX_WRITE_BYTES,
 };
 #[cfg(test)]
 use std::sync::Barrier;
 
+use crate::attachment_store::AttachmentStore;
 use crate::journal::{new_session_record, Journal, PersistStatus, SessionRecord};
 use crate::mcp_broker::McpSessionGuard;
 use crate::paths::RuntimePaths;
@@ -481,6 +482,47 @@ fn check_resize_owner(
     runtime.is_resize_owner(conn.id, subscription_id)
 }
 
+/// The prompt the writer receives: the user's text, a blank line, then one line
+/// per attachment naming the absolute path its bytes were written to.
+///
+/// The line is Paseo's shape (`[Image available at: <path>]`), and every
+/// attachment gets one — including an SVG, which no provider accepts as an
+/// inline image block, so a path on disk is its only route to the agent both
+/// now and after the per-provider blocks land. Nothing else about the prompt
+/// changes, which is what lets the four provider writers stay untouched.
+///
+/// Every file is written before any of the text is built: a request that fails
+/// on its third attachment leaves nothing to clean up out of the prompt that a
+/// half-built string would otherwise have implied.
+fn with_attachment_paths(
+    store: &AttachmentStore,
+    session_id: &str,
+    text: &str,
+    attachments: &[PromptAttachment],
+) -> Result<String, WireError> {
+    if attachments.is_empty() {
+        return Ok(text.to_string());
+    }
+    let session = store
+        .session(session_id)
+        .ok_or_else(|| WireError::new(ErrorCode::InvalidRequest, "Invalid session id."))?;
+    let mut paths = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        paths.push(session.materialize(attachment)?);
+    }
+    let mut prompt = String::from(text);
+    prompt.push_str("\n\n");
+    for (index, path) in paths.iter().enumerate() {
+        if index > 0 {
+            prompt.push('\n');
+        }
+        prompt.push_str("[Image available at: ");
+        prompt.push_str(&path.to_string_lossy());
+        prompt.push(']');
+    }
+    Ok(prompt)
+}
+
 type TransitionSink = Arc<dyn Fn(OwnerId) + Send + Sync>;
 type JournalRosterCache = Arc<Mutex<Option<(u64, Vec<SessionRecord>)>>>;
 
@@ -554,6 +596,10 @@ pub struct SessionRegistry {
     inner: Arc<Mutex<HashMap<String, RegistryEntry>>>,
     paths: RuntimePaths,
     journal: Option<Arc<Journal>>,
+    /// The bytes of prompt attachments, on disk under the runtime dir. Files
+    /// are written here and never in the workspace: a workspace is a git
+    /// checkout whose `git status` the user reads.
+    attachments: AttachmentStore,
     transition_sink: Arc<Mutex<Option<TransitionSink>>>,
     presence: Arc<Mutex<HashMap<u64, ConnectionPresence>>>,
     /// Journal rows are the slow, mostly-static half of a roster. Keep them
@@ -595,6 +641,12 @@ impl SessionRegistry {
         &self.paths.dir
     }
 
+    /// Sweep attachment folders left behind by a session that never closed.
+    pub(crate) fn sweep_attachments(&self, now: std::time::SystemTime) -> usize {
+        self.attachments
+            .sweep_older_than(now, crate::attachment_store::ATTACHMENT_RETENTION)
+    }
+
     pub(crate) fn pipe_name(&self) -> &str {
         &self.paths.pipe_name
     }
@@ -611,6 +663,7 @@ impl SessionRegistry {
     pub fn new(paths: RuntimePaths, journal: Option<Arc<Journal>>) -> Self {
         let registry = Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            attachments: AttachmentStore::new(&paths.dir),
             paths,
             journal,
             transition_sink: Arc::new(Mutex::new(None)),
@@ -2222,6 +2275,10 @@ impl SessionRegistry {
                     self.invalidate_journal_roster();
                 }
                 teardown_session(*session);
+                // The attachments existed for this session's turns. Removing
+                // them here is the normal path; `sweep_attachments` on the next
+                // daemon start is the fallback for a close that never ran.
+                self.attachments.remove_session(session_id);
                 self.notify_session_transition(owner, session_id);
                 Ok(true)
             }
@@ -2231,6 +2288,7 @@ impl SessionRegistry {
                     journal.unpin(session_id);
                     self.invalidate_journal_roster();
                 }
+                self.attachments.remove_session(session_id);
                 self.notify_session_transition(owner, session_id);
                 Ok(false)
             }
@@ -2244,6 +2302,7 @@ impl SessionRegistry {
                         }
                         journal.try_mark_closed(session_id);
                         self.invalidate_journal_roster();
+                        self.attachments.remove_session(session_id);
                         self.notify_session_transition(owner, session_id);
                         return Ok(false);
                     }
@@ -2497,7 +2556,7 @@ impl SessionRegistry {
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
-        self.send_with_subscription(session_id, conn.id, text, owner, conn)
+        self.send_with_subscription(session_id, conn.id, text, &[], owner, conn)
     }
 
     pub fn send_with_subscription(
@@ -2505,6 +2564,7 @@ impl SessionRegistry {
         session_id: &str,
         subscription_id: u64,
         text: &str,
+        attachments: &[PromptAttachment],
         owner: &OwnerId,
         conn: &ConnHandle,
     ) -> Result<(), WireError> {
@@ -2512,6 +2572,7 @@ impl SessionRegistry {
             session_id,
             subscription_id,
             text,
+            attachments,
             owner,
             conn,
             crate::mcp_broker::ready_timeout(),
@@ -2527,26 +2588,34 @@ impl SessionRegistry {
         conn: &ConnHandle,
         timeout: Duration,
     ) -> Result<(), WireError> {
-        self.send_with_subscription_timeout(session_id, conn.id, text, owner, conn, timeout)
+        self.send_with_subscription_timeout(session_id, conn.id, text, &[], owner, conn, timeout)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn send_with_subscription_timeout(
         &self,
         session_id: &str,
         subscription_id: u64,
         text: &str,
+        attachments: &[PromptAttachment],
         owner: &OwnerId,
         conn: &ConnHandle,
         mcp_timeout: Duration,
     ) -> Result<(), WireError> {
         validate_session_id(session_id)
             .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        // The daemon does not trust the app's copy of these checks: the pipe
+        // accepts frames from any client that can open it, so the limits are
+        // enforced here too, on the payload as it arrived.
         if text.len() > MAX_WRITE_BYTES {
             return Err(WireError::new(
                 ErrorCode::InvalidRequest,
                 "Session input is too large.",
             ));
         }
+        validate_attachments(attachments)
+            .map_err(|message| WireError::new(ErrorCode::InvalidRequest, message))?;
+        let has_prompt = !text.is_empty() || !attachments.is_empty();
         let (writer, runtime, is_agent, mcp_required) = {
             let map = self
                 .inner
@@ -2565,16 +2634,35 @@ impl SessionRegistry {
                 ),
             )
         };
+        // A terminal's writer is a PTY, so an appended line is typed, not
+        // read: nothing there can open a path. Writing the bytes would leave a
+        // file behind for a session that can never consume it, and the pipe
+        // accepts frames from any process that can open it, so the daemon does
+        // not rely on the app never attaching to a terminal.
+        if !attachments.is_empty() && !is_agent {
+            return Err(WireError::new(
+                ErrorCode::InvalidRequest,
+                "This session does not accept attachments.",
+            ));
+        }
         check_attached(&runtime, conn, subscription_id)?;
         let agent_runtime = is_agent.then_some(runtime);
         if let Some(runtime) = agent_runtime.as_ref() {
-            if !text.is_empty() && mcp_required {
+            if has_prompt && mcp_required {
                 runtime.wait_for_mcp_ready(mcp_timeout)?;
             }
-            if !text.is_empty() && !runtime.can_publish_agent_user_message() {
+            if has_prompt && !runtime.can_publish_agent_user_message() {
                 return Err(internal("Agent input could not be recorded."));
             }
         }
+        // The user's text was checked against MAX_WRITE_BYTES above, before a
+        // single line of ours is added, so the cap can never refuse a prompt
+        // that was legal on arrival. The appended block is bounded by a fixed
+        // number of absolute paths the daemon composed itself
+        // (MAX_ATTACHMENT_COUNT of them), so re-checking the extended prompt
+        // could only refuse a prompt the daemon lengthened; the write is not
+        // re-checked against the cap.
+        let prompt = with_attachment_paths(&self.attachments, session_id, text, attachments)?;
         // Keep the complete write and its transcript event under this lock so
         // the journal preserves the same order the process receives.
         let mut writer = match writer.lock() {
@@ -2587,7 +2675,7 @@ impl SessionRegistry {
                 return Err(error);
             }
         };
-        if let Err(error) = writer.write_all(text.as_bytes()).map_err(|error| {
+        if let Err(error) = writer.write_all(prompt.as_bytes()).map_err(|error| {
             WireError::new(
                 ErrorCode::Io,
                 format!("Could not send input to the terminal: {error}"),
@@ -2611,9 +2699,14 @@ impl SessionRegistry {
             }
             return Err(error);
         }
-        if !text.is_empty() {
+        if has_prompt {
             if let Some(runtime) = agent_runtime.as_ref() {
-                if !runtime.publish_agent_user_message(text.to_string()) {
+                // The journal records `prompt`, the same string the writer got:
+                // the user's text plus one path per attachment. The base64 never
+                // leaves `PromptAttachment` — a turn's row must not grow by
+                // hundreds of KiB, and the user's images must not be copied into
+                // the history database.
+                if !runtime.publish_agent_user_message(prompt.clone()) {
                     return Err(internal("Agent input could not be recorded."));
                 }
                 if runtime.clear_attention() {
@@ -3928,6 +4021,9 @@ pub(crate) fn insert_test_live_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use devboule_protocol::{
+        MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
+    };
 
     /// A Write sink that records everything, standing in for the PTY input
     /// side so the DSR fast path is observable without a ConPTY.
@@ -5897,6 +5993,478 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // --- prompt attachments ------------------------------------------------
+
+    fn attachment(name: &str, mime_type: &str, bytes: &[u8]) -> PromptAttachment {
+        use base64::Engine;
+        PromptAttachment {
+            name: name.to_string(),
+            mime_type: mime_type.to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+
+    /// A live agent session, attached, with a writer that swallows the prompt.
+    fn agent_ready_for_attachment(
+        registry: &SessionRegistry,
+        session_id: &str,
+        owner: &OwnerId,
+        conn_id: u64,
+    ) -> Arc<ConnHandle> {
+        let runtime = insert_live_agent_with_writer(
+            registry,
+            session_id,
+            owner.clone(),
+            Box::new(std::io::sink()),
+        );
+        attach_live_agent_for_test(&runtime, session_id, conn_id)
+    }
+
+    /// The folder an attachment send is expected to fill.
+    fn attachment_folder(registry: &SessionRegistry, session_id: &str) -> PathBuf {
+        registry.runtime_dir().join("attachments").join(session_id)
+    }
+
+    fn attachment_message(error: &WireError) -> &str {
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
+        &error.message
+    }
+
+    #[test]
+    fn an_attachment_is_written_and_named_in_the_prompt() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-path", "process-attach");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "attach-path",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "attach-path", 41);
+
+        registry
+            .send_with_subscription(
+                "attach-path",
+                41,
+                "describe this",
+                &[attachment("photo.png", "image/png", b"the png bytes")],
+                &owner,
+                &conn,
+            )
+            .expect("send with one attachment");
+
+        let files: Vec<PathBuf> = std::fs::read_dir(attachment_folder(&registry, "attach-path"))
+            .expect("session folder")
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(files.len(), 1, "one attachment, one file");
+        let path = &files[0];
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("png")
+        );
+        assert_eq!(
+            path.file_stem().and_then(|value| value.to_str()),
+            Some(crate::attachment_store::sha256_hex(b"the png bytes").as_str())
+        );
+        assert_eq!(std::fs::read(path).expect("read"), b"the png bytes");
+
+        let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
+        assert_eq!(
+            written,
+            format!("describe this\n\n[Image available at: {}]", path.display())
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_attachment_line_is_separated_from_the_prompt_by_a_blank_line() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-two", "process-attach");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "attach-two",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "attach-two", 42);
+
+        registry
+            .send_with_subscription(
+                "attach-two",
+                42,
+                "two files",
+                &[
+                    attachment("a.png", "image/png", b"first"),
+                    attachment("b.svg", "image/svg+xml", b"<svg/>"),
+                ],
+                &owner,
+                &conn,
+            )
+            .expect("send with two attachments");
+
+        let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
+        let lines: Vec<&str> = written.split('\n').collect();
+        assert_eq!(lines[0], "two files");
+        assert_eq!(lines[1], "", "the block is separated from the prompt");
+        assert!(lines[2].starts_with("[Image available at: "), "{written}");
+        assert!(lines[2].ends_with(".png]"), "{written}");
+        assert!(lines[3].starts_with("[Image available at: "), "{written}");
+        assert!(lines[3].ends_with(".svg]"), "{written}");
+        assert_eq!(
+            lines.len(),
+            4,
+            "one line per attachment, no extras: {written}"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_svg_is_delivered_as_a_file_because_no_provider_takes_it_inline() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-svg", "process-attach");
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "attach-svg",
+            owner.clone(),
+            Box::new(std::io::sink()),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "attach-svg", 43);
+        let source = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>\n";
+
+        registry
+            .send_with_subscription(
+                "attach-svg",
+                43,
+                "logo",
+                &[attachment("logo.svg", "image/svg+xml", source)],
+                &owner,
+                &conn,
+            )
+            .expect("send with an svg");
+
+        let files: Vec<PathBuf> = std::fs::read_dir(attachment_folder(&registry, "attach-svg"))
+            .expect("session folder")
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].extension().and_then(|value| value.to_str()),
+            Some("svg")
+        );
+        assert_eq!(std::fs::read(&files[0]).expect("read"), source);
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn too_many_attachments_are_refused_by_the_count_limit() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-count", "process-attach");
+        let conn = agent_ready_for_attachment(&registry, "attach-count", &owner, 44);
+        let many = vec![attachment("a.png", "image/png", b"x"); MAX_ATTACHMENT_COUNT + 1];
+
+        let error = registry
+            .send_with_subscription("attach-count", 44, "hello", &many, &owner, &conn)
+            .expect_err("a fifth file is refused");
+        assert!(
+            attachment_message(&error).contains(&MAX_ATTACHMENT_COUNT.to_string()),
+            "{}",
+            error.message
+        );
+        assert!(
+            !attachment_folder(&registry, "attach-count").exists(),
+            "a refused request writes nothing"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unsupported_attachment_type_is_refused() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-type", "process-attach");
+        let conn = agent_ready_for_attachment(&registry, "attach-type", &owner, 45);
+
+        let error = registry
+            .send_with_subscription(
+                "attach-type",
+                45,
+                "hello",
+                &[attachment("anim.gif", "image/gif", b"gif")],
+                &owner,
+                &conn,
+            )
+            .expect_err("a gif is refused");
+        assert!(
+            attachment_message(&error).contains("image/gif"),
+            "{}",
+            error.message
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_oversized_attachment_is_refused_by_the_per_file_limit() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-size", "process-attach");
+        let conn = agent_ready_for_attachment(&registry, "attach-size", &owner, 46);
+        let huge = "A".repeat(MAX_ATTACHMENT_DATA_BYTES + 4);
+
+        let error = registry
+            .send_with_subscription(
+                "attach-size",
+                46,
+                "hello",
+                &[attachment("big.png", "image/png", huge.as_bytes())],
+                &owner,
+                &conn,
+            )
+            .expect_err("oversized data is refused");
+        assert!(
+            attachment_message(&error).contains(&MAX_ATTACHMENT_DATA_BYTES.to_string()),
+            "{}",
+            error.message
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_attachment_that_is_not_base64_is_refused() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-b64", "process-attach");
+        let conn = agent_ready_for_attachment(&registry, "attach-b64", &owner, 47);
+        let mut not_base64 = attachment("a.png", "image/png", b"fine");
+        not_base64.data = "not base64!".to_string();
+
+        let error = registry
+            .send_with_subscription("attach-b64", 47, "hello", &[not_base64], &owner, &conn)
+            .expect_err("invalid base64 is refused");
+        assert_eq!(
+            attachment_message(&error),
+            format!(
+                "Attachment 1 ('a.png'): {}",
+                devboule_protocol::invalid_base64_message()
+            )
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn attachments_over_the_total_limit_are_refused() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-total", "process-attach");
+        let conn = agent_ready_for_attachment(&registry, "attach-total", &owner, 48);
+        // Four items each just under the per-item cap, so only the total is
+        // wrong. Bypassing `attachment()` on purpose: it encodes, and what the
+        // limits count is the encoded length.
+        let each = "A".repeat(MAX_ATTACHMENT_DATA_BYTES - 4);
+        let one = PromptAttachment {
+            name: "a.png".to_string(),
+            mime_type: "image/png".to_string(),
+            data: each.clone(),
+        };
+        assert!(each.len() * MAX_ATTACHMENT_COUNT > MAX_ATTACHMENTS_TOTAL_BYTES);
+        let four = vec![one; MAX_ATTACHMENT_COUNT];
+
+        let error = registry
+            .send_with_subscription("attach-total", 48, "hello", &four, &owner, &conn)
+            .expect_err("a total over the cap is refused");
+        assert!(
+            attachment_message(&error).contains(&MAX_ATTACHMENTS_TOTAL_BYTES.to_string()),
+            "{}",
+            error.message
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_text_cap_is_measured_before_the_attachment_lines_are_appended() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-cap", "process-attach");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "attach-cap",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "attach-cap", 49);
+        let files = vec![attachment("a.png", "image/png", b"png")];
+
+        // A text exactly at the cap, plus the lines this function adds: the
+        // cap governs the user's text, and the lines are not charged to it.
+        let at_cap = "x".repeat(MAX_WRITE_BYTES);
+        registry
+            .send_with_subscription("attach-cap", 49, &at_cap, &files, &owner, &conn)
+            .expect("a prompt at the cap is still sent");
+        let written = received.lock().expect("writer").clone();
+        assert!(written.len() > MAX_WRITE_BYTES, "the lines were appended");
+        assert!(written.starts_with(at_cap.as_bytes()));
+        received.lock().expect("writer").clear();
+
+        // One byte over the cap is still refused, and nothing is written or
+        // materialized on the way to that refusal. The bytes are distinct from
+        // the first send's: that file already exists, so the name that must not
+        // exist is what a materialize-before-the-cap-check regression creates.
+        let over = "x".repeat(MAX_WRITE_BYTES + 1);
+        let unreached = vec![attachment("b.png", "image/png", b"unreached")];
+        let error = registry
+            .send_with_subscription("attach-cap", 49, &over, &unreached, &owner, &conn)
+            .expect_err("an oversized text is refused");
+        assert_eq!(attachment_message(&error), "Session input is too large.");
+        assert!(received.lock().expect("writer").is_empty());
+        let refused_file = attachment_folder(&registry, "attach-cap").join(format!(
+            "{}.png",
+            crate::attachment_store::sha256_hex(b"unreached")
+        ));
+        assert!(
+            !refused_file.exists(),
+            "a refused prompt must not materialize its attachment"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_journaled_prompt_carries_the_path_and_never_the_bytes() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-journal", "process-attach");
+        let conn = agent_ready_for_attachment(&registry, "attach-journal", &owner, 50);
+        let image = attachment("photo.png", "image/png", b"the png bytes");
+        let encoded = image.data.clone();
+        assert!(
+            encoded.len() > 8,
+            "the fixture must be findable in a transcript"
+        );
+
+        registry
+            .send_with_subscription(
+                "attach-journal",
+                50,
+                "look at this",
+                &[image],
+                &owner,
+                &conn,
+            )
+            .expect("send");
+
+        let events: Vec<SessionEvent> = conn
+            .pull_events()
+            .into_iter()
+            .map(|event| event.envelope.event)
+            .collect();
+        let recorded = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::AgentUserMessage { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("the user message is published, and that is what is journaled");
+        assert!(recorded.contains("[Image available at: "), "{recorded}");
+        assert!(recorded.ends_with(".png]"), "{recorded}");
+        assert!(
+            !recorded.contains(&encoded),
+            "the base64 must never reach the transcript"
+        );
+        assert!(
+            recorded.len() < MAX_WRITE_BYTES,
+            "the transcript row stays the size it was before attachments"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_send_without_attachments_is_byte_identical_to_before() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-none", "process-attach");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let runtime = insert_live_agent_with_writer(
+            &registry,
+            "attach-none",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = attach_live_agent_for_test(&runtime, "attach-none", 51);
+
+        registry
+            .send_with_subscription("attach-none", 51, "plain prompt", &[], &owner, &conn)
+            .expect("send");
+
+        assert_eq!(received.lock().expect("writer").as_slice(), b"plain prompt");
+        assert!(
+            !attachment_folder(&registry, "attach-none").exists(),
+            "no attachment means no folder"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_terminal_session_refuses_attachments_before_writing_anything() {
+        let (dir, registry, journal) = tmp_delete_registry();
+        let owner = test_owner("S-1-5-21-attach-terminal", "process-attach");
+        let received = Arc::new(Mutex::new(Vec::new()));
+        insert_live_with_writer(
+            &registry,
+            "attach-terminal",
+            owner.clone(),
+            Box::new(RecordingWriter(Arc::clone(&received))),
+        );
+        let conn = ConnHandle::new(52);
+        registry
+            .attach("attach-terminal", None, &conn, &owner, false)
+            .expect("terminal attaches");
+
+        let error = registry
+            .send_with_subscription(
+                "attach-terminal",
+                52,
+                "hello",
+                &[attachment("photo.png", "image/png", b"the png bytes")],
+                &owner,
+                &conn,
+            )
+            .expect_err("a terminal does not accept attachments");
+        assert_eq!(
+            attachment_message(&error),
+            "This session does not accept attachments."
+        );
+        assert!(
+            received.lock().expect("writer").is_empty(),
+            "an appended line would be typed into the PTY"
+        );
+        assert!(
+            !attachment_folder(&registry, "attach-terminal").exists(),
+            "nothing is materialized for a session that cannot read it"
+        );
+
+        journal.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn multiple_observers_can_send_complete_inputs_concurrently() {
         let (dir, registry, journal) = tmp_delete_registry();
@@ -5933,7 +6501,14 @@ mod tests {
         let first_handle = std::thread::spawn(move || {
             first_start.wait();
             first_registry
-                .send_with_subscription(&first_session_id, 101, &first_text, &first_owner, &first)
+                .send_with_subscription(
+                    &first_session_id,
+                    101,
+                    &first_text,
+                    &[],
+                    &first_owner,
+                    &first,
+                )
                 .expect("first input");
             first_text
         });
@@ -5948,6 +6523,7 @@ mod tests {
                     &second_session_id,
                     202,
                     &second_text,
+                    &[],
                     &second_owner,
                     &second,
                 )
@@ -6012,6 +6588,15 @@ mod tests {
     }
 
     fn insert_live(registry: &SessionRegistry, id: &str, owner: OwnerId) {
+        insert_live_with_writer(registry, id, owner, Box::new(std::io::sink()));
+    }
+
+    fn insert_live_with_writer(
+        registry: &SessionRegistry,
+        id: &str,
+        owner: OwnerId,
+        writer: Box<dyn Write + Send>,
+    ) {
         let metadata = Session {
             id: id.to_string(),
             workspace_id: None,
@@ -6038,7 +6623,7 @@ mod tests {
             switcher: None,
             stderr_handle: None,
             child_wait: None,
-            writer: Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            writer: Arc::new(Mutex::new(writer)),
             reader_handle: None,
             coalesce_handle: None,
             runtime,

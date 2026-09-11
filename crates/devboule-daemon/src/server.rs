@@ -11,8 +11,9 @@ use devboule_protocol::{
     caps, m3a_daemon_capabilities, negotiate, validate_idempotency_key, ClientMessage, DaemonHello,
     DaemonMessage, DaemonStatusBody, ErrorCode, JournalLimits as WireJournalLimits,
     JournalSessionUsage as WireJournalSessionUsage, JournalUsage as WireJournalUsage, OwnerId,
-    PersistenceKind, ResumeResult, RetentionPatch, SessionEvent, SessionEventEnvelope, SessionKind,
-    Unreclaimable as WireUnreclaimable, WireError, PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
+    PersistenceKind, PromptAttachment, ResumeResult, RetentionPatch, SessionEvent,
+    SessionEventEnvelope, SessionKind, Unreclaimable as WireUnreclaimable, WireError,
+    PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
 use crate::diagnostics::{DiagnosticsInput, DiagnosticsReport};
@@ -794,6 +795,13 @@ fn run_windows() -> Result<(), DaemonError> {
     lock.write_identity(pid, &instance_id, &paths.pipe_name)?;
 
     let state = ServerState::with_paths(instance_id, paths.clone())?;
+    // Attachments survive a session close that never ran, because the daemon was
+    // killed first. Sweep the ones past the retention window on every start:
+    // this is the fallback existence's only reason to be here.
+    let swept = state.sessions.sweep_attachments(SystemTime::now());
+    if swept > 0 {
+        eprintln!("daemon removed {swept} attachment folder(s) left by sessions that never closed");
+    }
     let mcp_server = state.mcp.start(&state).map_err(DaemonError::from)?;
     let (listener, shutdown) = transport::bind(&paths, Arc::clone(&state.stop))?;
     let accept_state = Arc::clone(&state);
@@ -2119,6 +2127,7 @@ fn dispatch_session(
             session_id,
             subscription_id,
             text,
+            attachments,
             idempotency_key,
         } => session_send(
             state,
@@ -2128,6 +2137,7 @@ fn dispatch_session(
             session_id,
             subscription_id,
             text,
+            attachments,
             idempotency_key,
         ),
         ClientMessage::SessionResize {
@@ -2344,17 +2354,22 @@ fn session_send(
     session_id: String,
     subscription_id: u64,
     text: String,
+    attachments: Vec<PromptAttachment>,
     idempotency_key: Option<String>,
 ) -> DaemonMessage {
-    let fingerprint = format!("send:{session_id}:{text}");
+    let fingerprint = send_fingerprint(&session_id, &text, &attachments);
     if let Some(reply) = idempotent_hit(state, owner, id, idempotency_key.as_deref(), &fingerprint)
     {
         return reply;
     }
-    match state
-        .sessions
-        .send_with_subscription(&session_id, subscription_id, &text, owner, conn)
-    {
+    match state.sessions.send_with_subscription(
+        &session_id,
+        subscription_id,
+        &text,
+        &attachments,
+        owner,
+        conn,
+    ) {
         Ok(()) => {
             let reply = DaemonMessage::Ok { id };
             remember(
@@ -2368,6 +2383,29 @@ fn session_send(
         }
         Err(error) => DaemonMessage::Error(error.with_id(id)),
     }
+}
+
+/// The idempotency fingerprint of one send.
+///
+/// The attachment digests belong in it because the text is not the whole
+/// payload. Without them, two sends with the same text and different images
+/// share a fingerprint, and the second comes back as an idempotent replay of
+/// the first: the user swaps the picture, presses Generate, and gets the
+/// previous answer. The count fixes how many digests follow so the text cannot
+/// be mistaken for one of them.
+///
+/// The digests are sha256 hex, not the encoded bytes. This string is stored
+/// beside every key the daemon has seen and must not weigh as much as the
+/// images it identifies.
+fn send_fingerprint(session_id: &str, text: &str, attachments: &[PromptAttachment]) -> String {
+    let mut fingerprint = format!("send:{session_id}:{}", attachments.len());
+    for attachment in attachments {
+        fingerprint.push(':');
+        fingerprint.push_str(&crate::attachment_store::attachment_digest(attachment));
+    }
+    fingerprint.push(':');
+    fingerprint.push_str(text);
+    fingerprint
 }
 
 fn idempotent_hit(
@@ -2492,6 +2530,67 @@ mod tests {
 
     fn state() -> Arc<ServerState> {
         ServerState::new("test-instance".to_string())
+    }
+
+    fn wire_attachment(name: &str, bytes: &[u8]) -> PromptAttachment {
+        use base64::Engine;
+        PromptAttachment {
+            name: name.to_string(),
+            mime_type: "image/png".to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
+
+    #[test]
+    fn one_text_with_two_images_is_two_fingerprints() {
+        // The defect this closes: with the text alone in the fingerprint, the
+        // second send comes back as an idempotent replay of the first, so the
+        // user swaps the picture, presses Generate, and gets the old answer.
+        let first = send_fingerprint("s.a.1", "draw this", &[wire_attachment("a.png", b"one")]);
+        let second = send_fingerprint("s.a.1", "draw this", &[wire_attachment("a.png", b"two")]);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn the_same_text_and_images_keep_one_fingerprint() {
+        let attachments = [
+            wire_attachment("a.png", b"one"),
+            wire_attachment("b.png", b"two"),
+        ];
+        assert_eq!(
+            send_fingerprint("s.a.1", "draw this", &attachments),
+            send_fingerprint("s.a.1", "draw this", &attachments),
+        );
+    }
+
+    #[test]
+    fn attachment_order_is_part_of_the_fingerprint() {
+        let first = wire_attachment("a.png", b"one");
+        let second = wire_attachment("b.png", b"two");
+        assert_ne!(
+            send_fingerprint("s.a.1", "draw this", &[first.clone(), second.clone()]),
+            send_fingerprint("s.a.1", "draw this", &[second, first]),
+        );
+    }
+
+    #[test]
+    fn a_text_that_looks_like_a_digest_does_not_collide_with_one() {
+        // The count field is what makes the digest region unambiguous, so a text
+        // ending in hex cannot be read as an attachment's digest.
+        let attachment = wire_attachment("a.png", b"one");
+        let digest = crate::attachment_store::attachment_digest(&attachment);
+        assert_ne!(
+            send_fingerprint("s.a.1", &format!(":{digest}"), &[]),
+            send_fingerprint("s.a.1", "", &[attachment]),
+        );
+    }
+
+    #[test]
+    fn the_fingerprint_does_not_carry_the_encoded_bytes() {
+        let attachment = wire_attachment("a.png", b"the png bytes");
+        let fingerprint = send_fingerprint("s.a.1", "draw this", std::slice::from_ref(&attachment));
+        assert!(!fingerprint.contains(&attachment.data));
+        assert!(fingerprint.contains(&crate::attachment_store::attachment_digest(&attachment)));
     }
 
     #[test]

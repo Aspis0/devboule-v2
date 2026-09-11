@@ -1,4 +1,10 @@
-import type { PermissionRequest, SessionEvent, SessionManifest, ToolLocation } from "../types/ipc";
+import type {
+  PermissionRequest,
+  PromptAttachment,
+  SessionEvent,
+  SessionManifest,
+  ToolLocation,
+} from "../types/ipc";
 import type { SessionChannel } from "./tauri";
 
 export type AgentChannel = SessionChannel;
@@ -194,7 +200,7 @@ export class AgentSession {
     return this.subscriptionId;
   }
 
-  async send(text: string): Promise<boolean> {
+  async send(text: string, attachments: readonly PromptAttachment[] = []): Promise<boolean> {
     const trimmed = text.trim();
     if (!trimmed || this.disposed || !this.started || !this.attached) return false;
     if (this.state.status === "closed") return false;
@@ -208,6 +214,10 @@ export class AgentSession {
         id: this.deps.sessionId,
         subscriptionId,
         text: trimmed,
+        // Omitted when empty so a caller that attaches nothing produces exactly
+        // the payload it produced before attachments existed. The daemon reads
+        // an absent field as an empty list.
+        ...(attachments.length === 0 ? {} : { attachments }),
       });
       return true;
     } catch (error) {

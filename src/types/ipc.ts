@@ -199,6 +199,21 @@ export type SessionState =
       integrity: UnverifiableTranscriptIntegrity;
     };
 
+/**
+ * One file attached to a prompt, in the shape the daemon's `PromptAttachment`
+ * deserializes.
+ *
+ * `data` is the bytes, base64, and never a path: the daemon that talks to the
+ * provider writes the file itself, so the same message can be forwarded to
+ * another device unchanged. `name` is display metadata — the daemon digests the
+ * bytes and never puts this name in a path.
+ */
+export interface PromptAttachment {
+  name: string;
+  mimeType: "image/png" | "image/jpeg" | "image/svg+xml";
+  data: string;
+}
+
 export interface Session {
   id: Id;
   workspaceId: Id | null;

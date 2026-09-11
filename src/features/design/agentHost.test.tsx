@@ -12,6 +12,7 @@ import type {
   SessionEvent,
   Workspace,
 } from "../../types/ipc";
+import type { DesignAttachment } from "./designHost";
 
 const channelHarness = vi.hoisted(() => ({
   emit: null as ((event: SessionEvent) => void) | null,
@@ -1163,6 +1164,53 @@ describe("ACP design host", () => {
     // A pin is reported like any other selection, and it never falls back.
     expect(result.appliedSkillSlugs).toEqual([selected.slug]);
     expect(result.skillSelectionFallback).toBe(false);
+
+    await disposeAgentHost(host);
+  });
+
+  it("sends the composer's attachments as bytes the daemon can decode", async () => {
+    const host = createAgentHost();
+    const attachments: readonly DesignAttachment[] = [
+      {
+        id: "att-raster",
+        kind: "raster",
+        name: "photo.png",
+        mimeType: "image/png",
+        bytes: 3,
+        base64: "AAAA",
+      },
+      {
+        id: "att-svg",
+        kind: "svg",
+        name: "logo.svg",
+        mimeType: "image/svg+xml",
+        bytes: 6,
+        source: "<svg/>",
+      },
+    ];
+    const { run } = await startRun(host, { skillMode: "all", attachments });
+    finishRun();
+    await run;
+
+    // A raster already carries base64 of its own bytes; an SVG carries source,
+    // so its UTF-8 bytes are encoded here. Both arrive as `data`, never a path.
+    expect(mocks.sessionSend.mock.calls[0]?.[3]).toEqual([
+      { name: "photo.png", mimeType: "image/png", data: "AAAA" },
+      { name: "logo.svg", mimeType: "image/svg+xml", data: "PHN2Zy8+" },
+    ]);
+
+    await disposeAgentHost(host);
+  });
+
+  it("sends no attachment field when the composer holds none", async () => {
+    const host = createAgentHost();
+    const { run } = await startRun(host, { skillMode: "all" });
+    finishRun();
+    await run;
+
+    // Undefined, not an empty array: the daemon reads an absent field as an
+    // empty list, and the terminal surface's sends must not grow a key.
+    expect(mocks.sessionSend.mock.calls[0]?.[3]).toBeUndefined();
 
     await disposeAgentHost(host);
   });

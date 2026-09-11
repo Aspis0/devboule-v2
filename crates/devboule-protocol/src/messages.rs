@@ -12,6 +12,27 @@ use crate::session::{
     SessionEvent, SessionKind, SubscriptionId,
 };
 
+/// One file the user attached to a prompt, carried as bytes.
+///
+/// `data` holds the bytes themselves, base64, and never a path. The reason is
+/// the next slice of this feature: two daemons on two devices will relay a
+/// request to each other, and a local file path does not survive that trip.
+/// Keeping the bytes in the message means this field can be forwarded exactly
+/// as it arrives; the file is written to disk by the daemon that is about to
+/// talk to the provider, and never earlier.
+///
+/// `name` is the user's file name and is display metadata only. It may contain
+/// `..`, a path separator, or a drive letter, so it is never used to build a
+/// path — see `attachment_store` in the daemon for the name that is used.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptAttachment {
+    pub name: String,
+    pub mime_type: String,
+    /// The bytes, base64. Never a path.
+    pub data: String,
+}
+
 /// Messages the client writes.
 ///
 /// # Session operations that cannot be collapsed
@@ -98,6 +119,8 @@ pub enum ClientMessage {
         session_id: String,
         subscription_id: SubscriptionId,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<PromptAttachment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idempotency_key: Option<String>,
     },
@@ -714,6 +737,66 @@ mod tests {
     }
 
     #[test]
+    fn session_send_without_attachments_still_deserializes() {
+        // An older client does not know the field at all. Dropping it here
+        // would make `serde(default)` on the variant look like it worked while
+        // every other builder in this crate still had to pass it: the frame
+        // below is the one a v4 client sends today.
+        let frame = r#"{"type":"session_send","id":7,"sessionId":"s.a.1","subscriptionId":11,"text":"hello"}"#;
+        let message: ClientMessage = serde_json::from_str(frame).expect("old frame");
+        assert_eq!(
+            message,
+            ClientMessage::SessionSend {
+                id: 7,
+                session_id: "s.a.1".to_string(),
+                subscription_id: 11,
+                text: "hello".to_string(),
+                attachments: Vec::new(),
+                idempotency_key: None,
+            }
+        );
+    }
+
+    #[test]
+    fn session_send_with_attachments_round_trips() {
+        let message = ClientMessage::SessionSend {
+            id: 7,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 11,
+            text: "hello".to_string(),
+            attachments: vec![PromptAttachment {
+                name: "photo.png".to_string(),
+                mime_type: "image/png".to_string(),
+                data: "AA==".to_string(),
+            }],
+            idempotency_key: None,
+        };
+        let value = serde_json::to_value(&message).expect("json");
+        assert_eq!(value["attachments"][0]["mimeType"], "image/png");
+        assert_eq!(value["attachments"][0]["name"], "photo.png");
+        assert_eq!(value["attachments"][0]["data"], "AA==");
+        let decoded: ClientMessage = serde_json::from_value(value).expect("round trip");
+        assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn session_send_with_no_attachments_omits_the_field() {
+        let value = serde_json::to_value(ClientMessage::SessionSend {
+            id: 7,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 11,
+            text: "hello".to_string(),
+            attachments: Vec::new(),
+            idempotency_key: None,
+        })
+        .expect("json");
+        assert!(
+            value.get("attachments").is_none(),
+            "an empty list must not add a field to every send frame"
+        );
+    }
+
+    #[test]
     fn session_state_broadcast_is_a_compact_event_snapshot() {
         let message = DaemonMessage::Event(SessionEventEnvelope {
             session_id: String::new(),
@@ -879,6 +962,7 @@ mod tests {
             session_id: "s.a.1".to_string(),
             subscription_id: 12,
             text: "x".to_string(),
+            attachments: Vec::new(),
             idempotency_key: Some("k2".to_string()),
         };
         let perm = ClientMessage::SessionPermissionRespond {
