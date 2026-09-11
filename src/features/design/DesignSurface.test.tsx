@@ -121,7 +121,7 @@ import {
 } from "./designViewport";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
-import type { DesignGenerationResult, PendingPermission } from "./designHost";
+import type { DesignGenerationResult, DesignOutputMode, PendingPermission } from "./designHost";
 import { AUTOMATIC_ALWAYS_INCLUDED_SKILL_SLUGS } from "./agentHost";
 import {
   DESIGN_DOCTRINE_BEGIN,
@@ -4052,6 +4052,149 @@ describe("Design output shape toggle", () => {
     await act(async () => locked.click());
     expect(skillSettingsMocks.saveOutput).not.toHaveBeenCalled();
     expect(outputToggle(container).textContent).toContain("Slides");
+    await act(async () => root.unmount());
+  });
+});
+
+describe("artifact slides shape notice", () => {
+  function outputToggle(container: HTMLDivElement): HTMLButtonElement {
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label^="Output shape"]');
+    if (toggle === null) throw new Error("Output shape toggle missing");
+    return toggle;
+  }
+
+  function slideNotice(container: HTMLDivElement): HTMLElement | null {
+    return container.querySelector<HTMLElement>(
+      '[role="status"].design-canvas-artifact-slide-notice',
+    );
+  }
+
+  async function generateArtifact(container: HTMLDivElement, prompt: string): Promise<void> {
+    await fillDraft(container, prompt);
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+  }
+
+  // The artifact as the producing run recorded it: the run declares its shape,
+  // and the result carries that declaration onto the message the canvas reads.
+  function artifactResult(outputMode: DesignOutputMode) {
+    return { ...ARTIFACT_RESULT, outputMode };
+  }
+
+  it("reports a slides-mode artifact that has no sections", async () => {
+    skillSettingsMocks.loadOutput.mockResolvedValueOnce("slides");
+    const generate = vi.fn(async () => artifactResult("slides"));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    // The mode the notice gates on is the one the run recorded, which is the
+    // one the surface sent on this run.
+    expect(outputToggle(container).textContent).toContain("Slides");
+
+    await generateArtifact(container, "Make a deck about the release.");
+
+    const notice = slideNotice(container);
+    if (notice === null) throw new Error("Slides shape notice missing");
+    expect(notice.textContent).toBe(
+      "Slides mode asked for one <section> per slide; this artifact has no <section> elements.",
+    );
+    // A notice, not a gate: the artifact is still on the canvas and still exports.
+    expect(container.querySelector(".design-canvas-artifact")).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Save HTML"]')).not.toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("says nothing when the artifact matches the slides contract", async () => {
+    skillSettingsMocks.loadOutput.mockResolvedValueOnce("slides");
+    const deck = [
+      '<section id="slide-1">One</section>',
+      '<section id="slide-2">Two</section>',
+      '<section id="slide-3">Three</section>',
+    ].join("");
+    const generate = vi.fn(async () => ({
+      ...artifactResult("slides"),
+      artifactHtml: deck,
+    }));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    expect(outputToggle(container).textContent).toContain("Slides");
+
+    await generateArtifact(container, "Make a deck about the release.");
+
+    expect(slideNotice(container)).toBeNull();
+    // A green badge on every successful render would be noise, so there is no
+    // status line about the shape at all when the shape is what was asked.
+    expect(container.textContent).not.toContain("Slides mode asked for");
+    await act(async () => root.unmount());
+  });
+
+  it("does not run the check outside slides mode even with no sections", async () => {
+    const generate = vi.fn(async () => artifactResult("page"));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    expect(outputToggle(container).textContent).toContain("Page");
+
+    await generateArtifact(container, "Make the header count dynamic.");
+
+    expect(slideNotice(container)).toBeNull();
+    expect(container.textContent).not.toContain("Slides mode asked for");
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the producing run's notice after the toggle moves to Page", async () => {
+    skillSettingsMocks.loadOutput.mockResolvedValueOnce("slides");
+    const generate = vi.fn(async () => artifactResult("slides"));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    expect(outputToggle(container).textContent).toContain("Slides");
+
+    await generateArtifact(container, "Make a deck about the release.");
+    expect(slideNotice(container)).not.toBeNull();
+
+    // The switch states what the next run will ask for. It regenerates nothing,
+    // so the artifact on screen keeps the notice its own run earned.
+    await act(async () => outputToggle(container).click());
+    expect(outputToggle(container).textContent).toContain("Page");
+    expect(slideNotice(container)?.textContent).toBe(
+      "Slides mode asked for one <section> per slide; this artifact has no <section> elements.",
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("grows no notice when the toggle moves to Slides after a page run", async () => {
+    const generate = vi.fn(async () => artifactResult("page"));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    expect(outputToggle(container).textContent).toContain("Page");
+
+    await generateArtifact(container, "Make the header count dynamic.");
+    expect(slideNotice(container)).toBeNull();
+
+    // Slides was never asked of this artifact, and the switch cannot ask it
+    // after the fact: no contract applies, so there is nothing to report.
+    await act(async () => outputToggle(container).click());
+    expect(outputToggle(container).textContent).toContain("Slides");
+    expect(slideNotice(container)).toBeNull();
+    expect(container.textContent).not.toContain("Slides mode asked for");
+    await act(async () => root.unmount());
+  });
+
+  it("says nothing when the producing run recorded no mode", async () => {
+    skillSettingsMocks.loadOutput.mockResolvedValueOnce("slides");
+    // A result with no `outputMode`: a message restored from a document saved
+    // before the field existed, or a host that never reported one.
+    const generate = vi.fn(async () => ARTIFACT_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    expect(outputToggle(container).textContent).toContain("Slides");
+
+    await generateArtifact(container, "Make a deck about the release.");
+
+    // Absent is not `page`: an unknown mode is a mode nobody can show was asked
+    // for, so it is not accused of failing the slides contract either.
+    expect(slideNotice(container)).toBeNull();
+    expect(container.textContent).not.toContain("Slides mode asked for");
     await act(async () => root.unmount());
   });
 });

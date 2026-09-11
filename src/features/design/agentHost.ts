@@ -1347,6 +1347,10 @@ export function createAgentHost(): DesignHost {
           appliedSkillSlugs: [...skillSlugs],
           skillSelectionFallback: skillChoice.fallback,
           groundingNotice,
+          // Verbatim from the request, never the `page` default applied above: the
+          // default is what a caller that predates slides gets, not a shape that
+          // caller declared, and the surface must be able to tell the two apart.
+          outputMode: options?.outputMode,
         };
         const resultWithSession = {
           ...result,

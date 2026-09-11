@@ -23,6 +23,7 @@ import type {
   SectionNote,
 } from "./designHost";
 import { ARTIFACT_CSP_META } from "./artifactCsp";
+import { artifactSlideNotice, readArtifactSlideShape } from "./artifactSlides";
 import { ArtifactCopyControl } from "./ArtifactCopyControl";
 import { ArtifactSaveControl } from "./ArtifactSaveControl";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
@@ -262,6 +263,13 @@ interface CanvasProps {
   artifactHtml?: string;
   artifactError?: string;
   artifactMissingTokens: readonly string[];
+  /**
+   * The slides-contract report for the artifact on screen, or `""` when there is
+   * nothing to say: the artifact was not generated in slides mode, or it already
+   * has the shape slides mode asked for. A notice, never a gate — the artifact
+   * still renders, exports and copies whatever it says.
+   */
+  artifactSlideShapeNotice: string;
   artifactHeight: number;
   /**
    * Measured full page height in page CSS px, or undefined when the artifact
@@ -1701,6 +1709,7 @@ const DesignCanvas = memo(function DesignCanvas({
   artifactHtml,
   artifactError,
   artifactMissingTokens,
+  artifactSlideShapeNotice,
   artifactHeight,
   artifactContentHeight,
   sectionHighlight,
@@ -2192,6 +2201,11 @@ const DesignCanvas = memo(function DesignCanvas({
                     This artifact references{" "}
                     {artifactMissingTokens.length === 1 ? "a token" : "tokens"} it does not define:{" "}
                     {artifactMissingTokens.join(", ")}.
+                  </div>
+                ) : null}
+                {artifactSlideShapeNotice !== "" ? (
+                  <div className="design-canvas-artifact-slide-notice" role="status">
+                    {artifactSlideShapeNotice}
                   </div>
                 ) : null}
                 {artifactHtml !== undefined ? (
@@ -3799,12 +3813,30 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   );
   const artifactHtml = artifact?.html;
   const artifactError = artifact?.error;
+  const artifactOutputMode = artifact?.outputMode;
   const artifactMissingTokens = useMemo(
     () =>
       artifactHtml !== undefined && artifactError === undefined
         ? findUndefinedCustomProperties(artifactHtml)
         : [],
     [artifactError, artifactHtml],
+  );
+  // The slides contract, read back from the artifact that came out of it. The
+  // mode is the one the producing run recorded on the artifact, never the
+  // toggle's current position: flipping the toggle regenerates nothing, so it
+  // states what the next run will ask for and cannot describe what is already
+  // on screen. An artifact with no recorded mode is neither page nor slides —
+  // it has no contract to report on, so it is silent rather than assumed.
+  // The gate sits before the parse: a page-mode artifact is allowed to contain
+  // <section> landmarks, and reporting on it would state a contract that never
+  // applied (see `artifactSlides.ts`). Keyed on the markup and the recorded
+  // mode, so the parse reruns when either changes — not once per canvas event.
+  const artifactSlideShapeNotice = useMemo(
+    () =>
+      artifactOutputMode === "slides" && artifactHtml !== undefined
+        ? artifactSlideNotice(readArtifactSlideShape(artifactHtml))
+        : "",
+    [artifactHtml, artifactOutputMode],
   );
   // The export title is the title of the run that produced the artifact on
   // screen, matched by markup identity so a stale message cannot lend its
@@ -4674,6 +4706,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                 sources: [],
                 nodeIds: [],
                 instruction: entry.title,
+                // No outputMode: the history entry does not record the shape the run
+                // asked for, so a reopened artifact has no contract to read back and
+                // stays silent rather than being accused of one.
                 ...(result.status === "artifact"
                   ? { artifactHtml: result.html }
                   : { artifactError: result.message }),
@@ -4798,6 +4833,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
                       result.transcript === undefined ? message.transcript : [...result.transcript],
                     artifactHtml: result.artifactHtml,
                     artifactError: result.artifactError,
+                    // The run's own mode travels with its artifact, so a later
+                    // flip of the output switch cannot re-label this result.
+                    outputMode: result.outputMode,
                     groundingNotice: result.groundingNotice ?? null,
                     instruction: prompt,
                   }
@@ -5124,6 +5162,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             artifactHtml={artifactHtml}
             artifactError={artifactError}
             artifactMissingTokens={artifactMissingTokens}
+            artifactSlideShapeNotice={artifactSlideShapeNotice}
             artifactHeight={artifactPageHeight}
             artifactContentHeight={artifactContentHeight}
             sectionHighlight={sectionHighlight}

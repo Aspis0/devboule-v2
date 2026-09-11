@@ -693,6 +693,7 @@
 }
 
 .design-canvas-artifact-token-warning,
+.design-canvas-artifact-slide-notice,
 .design-canvas-artifact-render-warning {
   position: static;
   padding: 10px 14px;

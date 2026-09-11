@@ -68,9 +68,19 @@
  * document, and a function of the artifact text cannot become wrong when the toggle next
  * to it is set to page. A page-mode artifact is allowed to contain `<section>` landmarks
  * and usually does; running this check on one produces a statement about a contract that
- * never applied — not a noise, a falsehood. So the caller gates on the mode:
+ * never applied — not a noise, a falsehood. So the caller gates on the mode the run
+ * recorded on the artifact it produced — never on the switch beside the canvas, which
+ * states what the *next* run will ask for, and would accuse the artifact on screen of a
+ * contract it was never given, or drop a real finding when the switch moves the other
+ * way:
  *
- *   const notice = outputMode === "slides" ? artifactSlideNotice(readArtifactSlideShape(html)) : "";
+ *   const notice =
+ *     producedMode === "slides" ? artifactSlideNotice(readArtifactSlideShape(html)) : "";
+ *
+ * `producedMode` is absent for a run that recorded none — a message restored from a
+ * document saved before the field existed, or a host that did not report one. Absent
+ * fails the gate silently, which is the point: a mode nobody can show was asked for is
+ * not `page`.
  *
  * `artifactSlideNotice` returns the empty string when there is nothing to report, which is
  * the convention the other notice builders in this feature follow (`svgSanitizerNotice`,

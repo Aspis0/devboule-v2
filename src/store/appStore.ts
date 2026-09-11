@@ -4,6 +4,7 @@ import type {
   DesignDocument,
   DesignHost,
   DesignMessage,
+  DesignOutputMode,
   SectionNote,
 } from "../features/design/designHost";
 import type { PluginInventory } from "../types/ipc";
@@ -12,6 +13,13 @@ import type { SurfaceKey } from "../types/surface";
 export interface DesignArtifact {
   html?: string;
   error?: string;
+  /**
+   * The output shape the run that produced this artifact declared; carried
+   * off the message rather than off the live output switch, which answers
+   * about the next run. Absent means the producing run recorded none, and
+   * that is not `page`. See `DesignAssistantMessage.outputMode`.
+   */
+  outputMode?: DesignOutputMode;
 }
 
 export interface DesignGenerationState {
@@ -60,7 +68,11 @@ function latestArtifact(messages: readonly DesignMessage[]): DesignArtifact | nu
       message.status === "done" &&
       (message.artifactHtml !== undefined || message.artifactError !== undefined)
     ) {
-      return { html: message.artifactHtml, error: message.artifactError };
+      return {
+        html: message.artifactHtml,
+        error: message.artifactError,
+        outputMode: message.outputMode,
+      };
     }
   }
   return null;

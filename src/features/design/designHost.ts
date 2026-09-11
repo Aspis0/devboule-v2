@@ -99,6 +99,19 @@ export interface DesignAssistantMessage {
   artifactHtml?: string;
   artifactError?: string;
   /**
+   * The output shape the run that produced this artifact declared
+   * (`page` | `slides`), recorded at the moment the artifact was produced.
+   * The surface reads the slides-shape notice off this, never off the live
+   * output switch: the switch states what the next run will ask for and
+   * regenerates nothing, so it cannot describe the artifact already on screen.
+   *
+   * Absent is a third state, not `page`: a message restored from a document
+   * saved before this field existed, or one whose host did not report a mode,
+   * was given no shape contract, and a contract nobody can show was applied is
+   * nothing to report on.
+   */
+  outputMode?: DesignOutputMode;
+  /**
    * One quiet line about Oracle grounding for this run, shown under the
    * summary. Set only when a grounded run could not use the attached
    * folder's index; absent or null means nothing to report (grounded on the
@@ -128,6 +141,16 @@ export interface DesignGenerationResult {
   nodeIds: readonly string[];
   artifactHtml?: string;
   artifactError?: string;
+  /**
+   * The output shape this run was asked to produce (`page` | `slides`), taken
+   * verbatim from `DesignGenerationOptions.outputMode` so the surface can
+   * record it on the artifact it produces. A request that named no mode leaves
+   * it absent; see `DesignAssistantMessage.outputMode` for why absent is not
+   * `page`. The host deliberately does not substitute its own `page` default
+   * here, which is a behaviour for a run that predates slides, not a shape the
+   * caller declared.
+   */
+  outputMode?: DesignOutputMode;
   /** The run's conversation; see DesignAssistantMessage.transcript. */
   transcript?: readonly DesignTranscriptItem[];
   /**
