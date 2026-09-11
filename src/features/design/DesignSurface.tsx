@@ -227,6 +227,10 @@ interface ZoomControlsProps {
   onZoomOut: () => void;
   onZoomReset: () => void;
   onFit: () => void;
+  /** Current artifact markup; absent when nothing is on screen, so the copy action cannot exist without one. */
+  artifactHtml?: string;
+  /** Title of the assistant message that produced the artifact, for the exported document. */
+  artifactTitle?: string;
 }
 
 interface WorkspaceProject extends Project {
@@ -295,10 +299,6 @@ interface AssistantProps extends DesignSkillViewProps {
   sendLabel: string;
   busy: boolean;
   messages: readonly DesignMessage[];
-  /** Current artifact markup; absent when nothing is on screen, so the copy action cannot exist without one. */
-  artifactHtml?: string;
-  /** Title of the assistant message that produced the artifact, for the exported document. */
-  artifactTitle?: string;
   assistantRef: RefObject<HTMLDivElement | null>;
   onDraftChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -1123,11 +1123,13 @@ const ZoomControls = memo(function ZoomControls({
   onZoomOut,
   onZoomReset,
   onFit,
+  artifactHtml,
+  artifactTitle,
 }: ZoomControlsProps) {
   const zoomLabel = `${Math.round(zoom * 100)}%`;
 
   return (
-    <div className="design-zoom-controls" aria-label="Canvas zoom">
+    <div className="design-zoom-controls" aria-label="Canvas controls">
       <button
         type="button"
         title="Zoom out"
@@ -1158,6 +1160,14 @@ const ZoomControls = memo(function ZoomControls({
       <button className="design-fit-button" type="button" title="Fit canvas" onClick={onFit}>
         Fit
       </button>
+      {/* The export acts on the artifact on screen, so it lives with the
+          canvas controls, not the session: the 365px assistant header held
+          four items already and cut the fifth ("Copy HTM", live 2026-09-11).
+          The pill sizes to its content and is anchored right, so it cannot
+          overflow its box toward the layer panel in the opposite corner. */}
+      {artifactHtml !== undefined ? (
+        <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
+      ) : null}
     </div>
   );
 });
@@ -1762,10 +1772,10 @@ const DesignTranscriptRow = memo(function DesignTranscriptRow({
 function ArtifactCopyControl({ html, title }: { html: string; title: string | undefined }) {
   // Same shape as the diagnostics copy in settings: one write, a short
   // "Copied." on success, a visible failure when the browser blocks the
-  // clipboard. The failure text stays short because this lives in the 40px
-  // assistant header; the cause rides in the tooltip. There is no manual
-  // fallback to offer (the document exists only in memory until copied),
-  // so unlike diagnostics this failure is terminal, not a detour.
+  // clipboard. The texts stay short because this lives in the canvas pill;
+  // the cause rides in the tooltip. There is no manual fallback to offer
+  // (the document exists only in memory until copied), so unlike
+  // diagnostics this failure is terminal, not a detour.
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1798,7 +1808,7 @@ function ArtifactCopyControl({ html, title }: { html: string; title: string | un
   return (
     <>
       <button
-        className="design-session-end-button"
+        className="design-fit-button"
         type="button"
         title="Copy the generated page as a standalone HTML document"
         aria-label="Copy HTML"
@@ -1943,8 +1953,6 @@ const DesignAssistant = memo(function DesignAssistant({
   sendLabel,
   busy,
   messages,
-  artifactHtml,
-  artifactTitle,
   assistantRef,
   onDraftChange,
   onComposerKeyDown,
@@ -2172,15 +2180,6 @@ const DesignAssistant = memo(function DesignAssistant({
             >
               ◉
             </button>
-          ) : null}
-          {/* The export copies the artifact on screen, so it renders only
-              while one exists: no dead control, no disabled state without an
-              explanation. It sits with the session-level actions, beside the
-              visual check, where it takes no space from the canvas and stays
-              clear of the layer panel, the crescent, the zoom pill, and the
-              frame itself. */}
-          {artifactHtml !== undefined ? (
-            <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
           ) : null}
         </div>
       </div>
@@ -4164,6 +4163,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             onZoomOut={zoomOut}
             onZoomReset={zoomReset}
             onFit={fitCanvas}
+            artifactHtml={artifactHtml}
+            artifactTitle={artifactSourceTitle}
           />
         </div>
 
@@ -4195,8 +4196,6 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           sendLabel={busy ? "Working…" : "Generate"}
           busy={busy}
           messages={messages}
-          artifactHtml={artifactHtml}
-          artifactTitle={artifactSourceTitle}
           assistantRef={assistantRef}
           onDraftChange={handleDraftChange}
           onComposerKeyDown={handleComposerKeyDown}

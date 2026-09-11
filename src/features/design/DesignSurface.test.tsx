@@ -3941,6 +3941,36 @@ describe("artifact export copy", () => {
     vi.useRealTimers();
   });
 
+  it("lives in the canvas controls, not the assistant header", async () => {
+    // Regression for the live 2026-09-11 cut ("Copy HTM" in the 365px
+    // header): the pill sizes to its content and is anchored right, so the
+    // action cannot be squeezed by session chrome again.
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const pill = container.querySelector(".design-zoom-controls");
+    if (pill === null) throw new Error("Canvas controls missing");
+    expect(pill.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
+    const header = container.querySelector(".design-assistant-header");
+    if (header === null) throw new Error("Assistant header missing");
+    expect(header.querySelector('button[aria-label="Copy HTML"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("canvas controls do not overflow their box", async () => {
+    // happy-dom reports no layout (0 <= 0); this pins the gate so a real
+    // browser harness or CDP probe can fail it honestly.
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const pill = container.querySelector(".design-zoom-controls");
+    if (pill === null) throw new Error("Canvas controls missing");
+    expect(pill.scrollWidth <= pill.clientWidth).toBe(true);
+    await act(async () => root.unmount());
+  });
+
   it("shows no copy action while no artifact is on screen", async () => {
     const { container, root } = await renderDesign(
       createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),

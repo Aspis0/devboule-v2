@@ -43,6 +43,9 @@ const META_CHARSET_RE = /<meta\b[^>]*charset/i;
 const META_VIEWPORT_RE = /<meta\b[^>]*name\s*=\s*("viewport"|'viewport'|viewport(?=[\s/>]))/i;
 const TITLE_BLOCK_RE = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i;
 const STYLE_BLOCK_RE = /<style\b[^>]*>[\s\S]*?<\/style\s*>/gi;
+const H1_BLOCK_RE = /<h1\b[^>]*>([\s\S]*?)<\/h1\s*>/i;
+const TAG_RE = /<[^>]*>/g;
+const MAX_H1_TITLE_CHARS = 120;
 
 function escapeTitleText(title: string): string {
   return title
@@ -75,9 +78,9 @@ function upgradeDocument(source: string, explicitTitle: string | null): string {
       open.replace(/<html/i, `<html lang="${EXPORT_LANG}"`),
     );
   }
+  const resolved = resolveExportTitle(next, explicitTitle);
   const headOpen = next.match(HEAD_OPEN_RE)?.[0];
   if (headOpen === undefined) {
-    const resolved = explicitTitle ?? declaredTitle(next) ?? ARTIFACT_EXPORT_FALLBACK_TITLE;
     return next.replace(
       HTML_OPEN_RE,
       (open) =>
@@ -88,7 +91,6 @@ function upgradeDocument(source: string, explicitTitle: string | null): string {
   if (!META_CHARSET_RE.test(next)) additions.push(META_CHARSET);
   if (!META_VIEWPORT_RE.test(next)) additions.push(META_VIEWPORT);
   if (!TITLE_BLOCK_RE.test(next)) {
-    const resolved = explicitTitle ?? ARTIFACT_EXPORT_FALLBACK_TITLE;
     additions.push(`<title>${escapeTitleText(resolved)}</title>`);
   }
   if (additions.length === 0) return next;
@@ -97,6 +99,29 @@ function upgradeDocument(source: string, explicitTitle: string | null): string {
 
 function declaredTitle(source: string): string | null {
   return nonBlank(source.match(TITLE_BLOCK_RE)?.[1]);
+}
+
+function h1Title(source: string): string | null {
+  const inner = source.match(H1_BLOCK_RE)?.[1];
+  if (inner === undefined) return null;
+  const text = inner.replace(TAG_RE, "").replace(/\s+/g, " ").trim();
+  if (text.length === 0) return null;
+  if (text.length <= MAX_H1_TITLE_CHARS) return text;
+  return `${text.slice(0, MAX_H1_TITLE_CHARS).trimEnd()}…`;
+}
+
+/**
+ * Who names the exported page. The page speaks first — its `<title>`, then
+ * the text of its first `<h1>` — because both describe the page itself.
+ * The run title is a status ("Edited Index header", worse: "Agent did not
+ * report written files"), not a name; shown live it shipped verbatim into
+ * the browser tab. It only speaks when the page is silent, and the honest
+ * fallback closes the chain.
+ */
+function resolveExportTitle(source: string, explicitTitle: string | null): string {
+  return (
+    declaredTitle(source) ?? h1Title(source) ?? explicitTitle ?? ARTIFACT_EXPORT_FALLBACK_TITLE
+  );
 }
 
 /**
@@ -114,10 +139,8 @@ function declaredTitle(source: string): string | null {
 function wrapFragment(source: string, explicitTitle: string | null): string {
   let body = source;
   let headExtras = "";
-  let declared: string | null = null;
   const headBlock = body.match(HEAD_BLOCK_RE);
   if (headBlock !== null && headBlock[0] !== undefined && headBlock[1] !== undefined) {
-    declared = nonBlank(headBlock[1].match(TITLE_BLOCK_RE)?.[1]);
     const rest = headBlock[1].replace(TITLE_BLOCK_RE, "").trim();
     if (rest.length > 0) headExtras += `${rest}\n`;
     body = body.replace(headBlock[0], "");
@@ -125,7 +148,10 @@ function wrapFragment(source: string, explicitTitle: string | null): string {
   const styles = body.match(STYLE_BLOCK_RE) ?? [];
   for (const style of styles) body = body.replace(style, "");
   if (styles.length > 0) headExtras += `${styles.join("\n")}\n`;
-  const resolved = explicitTitle ?? declared ?? ARTIFACT_EXPORT_FALLBACK_TITLE;
+  // Title candidates are read after the head split: the declared title from
+  // the whole fragment, the h1 from the remaining page body.
+  const resolved =
+    declaredTitle(source) ?? h1Title(body) ?? explicitTitle ?? ARTIFACT_EXPORT_FALLBACK_TITLE;
   return (
     `${DOCTYPE_HTML}\n` +
     `<html lang="${EXPORT_LANG}">\n` +
@@ -138,8 +164,10 @@ function wrapFragment(source: string, explicitTitle: string | null): string {
 
 /**
  * Build the standalone document for `fragment`. `title` is the title of the
- * assistant message that produced the artifact; when it is missing or blank
- * the fragment's own `<title>` is used, and only then the honest fallback
+ * assistant message that produced the artifact, but it is only a fallback:
+ * the page names itself first (its `<title>`, then its first `<h1>` — see
+ * `resolveExportTitle`), because a run title is a status, not a name. Only
+ * when the page is silent does the run title speak, then the honest fallback
  * ("Generated artifact", the same label the canvas frame already carries).
  * No markup is ever invented beyond the shell: the body is the fragment.
  */
