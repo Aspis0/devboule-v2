@@ -3907,3 +3907,102 @@ describe("Design chrome, composer and folder attachment", () => {
     await act(async () => root.unmount());
   });
 });
+
+describe("artifact export copy", () => {
+  const clipboardWrites: string[] = [];
+  const realClipboard = navigator.clipboard;
+  let clipboardImpl: (text: string) => Promise<void>;
+
+  function copyButton(container: HTMLDivElement): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>('button[aria-label="Copy HTML"]');
+  }
+
+  async function generateArtifact(container: HTMLDivElement, prompt: string): Promise<void> {
+    await fillDraft(container, prompt);
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+    await act(async () => undefined);
+  }
+
+  beforeEach(() => {
+    clipboardImpl = async (text: string) => {
+      clipboardWrites.push(text);
+    };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: (text: string) => clipboardImpl(text) },
+    });
+    clipboardWrites.length = 0;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: realClipboard });
+    vi.useRealTimers();
+  });
+
+  it("shows no copy action while no artifact is on screen", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await generateArtifact(container, "Build the settings page.");
+    expect(copyButton(container)).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("copies the standalone document with the producing run's title", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const button = copyButton(container);
+    if (button === null) throw new Error("Copy HTML action missing");
+    await act(async () => button.click());
+    await act(async () => undefined);
+
+    expect(clipboardWrites).toHaveLength(1);
+    const copied = clipboardWrites[0] ?? "";
+    expect(copied).toContain("<!DOCTYPE html>");
+    expect(copied).toContain('<html lang="en">');
+    expect(copied).toContain('<meta charset="utf-8">');
+    expect(copied).toContain('<meta name="viewport"');
+    expect(copied).toContain("<title>Generated result</title>");
+    expect(copied).toContain('<main class="generated-card">Generated</main>');
+    expect(copied.toLowerCase()).not.toContain("content-security-policy");
+    expect(container.textContent).toContain("Copied.");
+    await act(async () => root.unmount());
+  });
+
+  it("reports a blocked clipboard instead of pretending", async () => {
+    clipboardImpl = async () => {
+      throw new DOMException("Denied", "NotAllowedError");
+    };
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const button = copyButton(container);
+    if (button === null) throw new Error("Copy HTML action missing");
+    await act(async () => button.click());
+    await act(async () => undefined);
+
+    expect(clipboardWrites).toHaveLength(0);
+    expect(container.textContent).toContain("Copy failed.");
+    await act(async () => root.unmount());
+  });
+
+  it("clears Copied. after a short delay", async () => {
+    vi.useFakeTimers();
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const button = copyButton(container);
+    if (button === null) throw new Error("Copy HTML action missing");
+    await act(async () => button.click());
+    expect(container.textContent).toContain("Copied.");
+    await act(async () => vi.advanceTimersByTime(2_000));
+    expect(container.textContent).not.toContain("Copied.");
+    await act(async () => root.unmount());
+  });
+});

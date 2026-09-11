@@ -18,6 +18,7 @@ import type {
   PendingPermission,
   SectionNote,
 } from "./designHost";
+import { buildStandaloneArtifactHtml } from "./artifactExport";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
 import {
@@ -294,6 +295,10 @@ interface AssistantProps extends DesignSkillViewProps {
   sendLabel: string;
   busy: boolean;
   messages: readonly DesignMessage[];
+  /** Current artifact markup; absent when nothing is on screen, so the copy action cannot exist without one. */
+  artifactHtml?: string;
+  /** Title of the assistant message that produced the artifact, for the exported document. */
+  artifactTitle?: string;
   assistantRef: RefObject<HTMLDivElement | null>;
   onDraftChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
@@ -1754,6 +1759,71 @@ const DesignTranscriptRow = memo(function DesignTranscriptRow({
   );
 });
 
+function ArtifactCopyControl({ html, title }: { html: string; title: string | undefined }) {
+  // Same shape as the diagnostics copy in settings: one write, a short
+  // "Copied." on success, a visible failure when the browser blocks the
+  // clipboard. The failure text stays short because this lives in the 40px
+  // assistant header; the cause rides in the tooltip. There is no manual
+  // fallback to offer (the document exists only in memory until copied),
+  // so unlike diagnostics this failure is terminal, not a detour.
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  async function copyHtml(): Promise<void> {
+    if (copyResetTimerRef.current !== null) {
+      clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
+    try {
+      await navigator.clipboard.writeText(buildStandaloneArtifactHtml(html, title));
+      setCopyState("copied");
+      copyResetTimerRef.current = setTimeout(() => {
+        copyResetTimerRef.current = null;
+        setCopyState("idle");
+      }, 2_000);
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  return (
+    <>
+      <button
+        className="design-session-end-button"
+        type="button"
+        title="Copy the generated page as a standalone HTML document"
+        aria-label="Copy HTML"
+        onClick={() => void copyHtml()}
+      >
+        Copy HTML
+      </button>
+      {copyState === "copied" ? (
+        <span className="design-generation-label" role="status">
+          Copied.
+        </span>
+      ) : null}
+      {copyState === "failed" ? (
+        <span
+          className="design-provider-unavailable"
+          role="status"
+          title="The browser blocked clipboard access, so nothing was copied."
+        >
+          Copy failed.
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 const DesignMessageCard = memo(function DesignMessageCard({
   canGenerate,
   liveTranscript,
@@ -1873,6 +1943,8 @@ const DesignAssistant = memo(function DesignAssistant({
   sendLabel,
   busy,
   messages,
+  artifactHtml,
+  artifactTitle,
   assistantRef,
   onDraftChange,
   onComposerKeyDown,
@@ -2100,6 +2172,15 @@ const DesignAssistant = memo(function DesignAssistant({
             >
               ◉
             </button>
+          ) : null}
+          {/* The export copies the artifact on screen, so it renders only
+              while one exists: no dead control, no disabled state without an
+              explanation. It sits with the session-level actions, beside the
+              visual check, where it takes no space from the canvas and stays
+              clear of the layer panel, the crescent, the zoom pill, and the
+              frame itself. */}
+          {artifactHtml !== undefined ? (
+            <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
           ) : null}
         </div>
       </div>
@@ -2876,6 +2957,23 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         : [],
     [artifactError, artifactHtml],
   );
+  // The export title is the title of the run that produced the artifact on
+  // screen, matched by markup identity so a stale message cannot lend its
+  // name. Absent when the run is unknown; the exporter then falls back.
+  const artifactSourceTitle = useMemo(() => {
+    if (artifactHtml === undefined) return undefined;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        message?.role === "assistant" &&
+        message.status === "done" &&
+        message.artifactHtml === artifactHtml
+      ) {
+        return message.title;
+      }
+    }
+    return undefined;
+  }, [artifactHtml, messages]);
   const artifactRect = useMemo(
     () =>
       artifactHtml !== undefined || artifactError !== undefined
@@ -4097,6 +4195,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           sendLabel={busy ? "Working…" : "Generate"}
           busy={busy}
           messages={messages}
+          artifactHtml={artifactHtml}
+          artifactTitle={artifactSourceTitle}
           assistantRef={assistantRef}
           onDraftChange={handleDraftChange}
           onComposerKeyDown={handleComposerKeyDown}
