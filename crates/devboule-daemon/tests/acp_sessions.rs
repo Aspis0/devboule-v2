@@ -1202,7 +1202,14 @@ fn acp_config_option_categories_are_advisory_and_declared_ids_are_used() {
     test.client
         .session_set_model(&session.id, Some("m2"), Some("low"))
         .expect("set model and effort");
-    assert_eq!(wait_for_file(&test.set_config_file()), "reasoner=low");
+    // This call sets a model AND an effort, so the stub writes the file twice:
+    // `engine=m2` lands first. Waiting for "not empty" races that first write
+    // and reads the wrong value, so wait for the value this test is about.
+    assert_eq!(
+        wait_for_file_value(&test.set_config_file(), "reasoner=low"),
+        "reasoner=low",
+        "the declared effort id must be the one sent"
+    );
     wait_for(&events, Duration::from_secs(5), |events| {
         events.iter().any(|event| {
             matches!(

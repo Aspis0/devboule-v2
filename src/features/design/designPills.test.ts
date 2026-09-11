@@ -36,6 +36,32 @@ describe("design message source pills", () => {
   });
 });
 
+describe("design section note controls", () => {
+  it("paints the note field with the surface, not the WebView default", () => {
+    const block = blockFor(".design-section-note-compose input");
+    expect(block).toContain("background: var(--surface)");
+    expect(block).toContain("border: 1px solid var(--border-strong)");
+    expect(block).toContain("font-size: 11.5px");
+    expect(block).not.toContain("#fff");
+    expect(block).not.toContain("#ffffff");
+  });
+
+  it("paints the Add action as a primary terracotta button", () => {
+    // Braced form: the bare selector also sits in the border-0 reset list.
+    const block = blockFor(".design-section-note-compose button {");
+    expect(block).toContain("background: var(--terracotta-deep)");
+    expect(block).toContain("color: var(--white)");
+  });
+
+  it("keeps the note delete control a discrete transparent button", () => {
+    // Exact opening: the bare selector also closes the border-0 reset list.
+    expect(css).toContain(".design-section-notes li button {\n  display: grid;");
+    const block = blockFor(".design-section-notes li button {\n  display: grid;");
+    expect(block).toContain("background: transparent");
+    expect(block).toContain("color: var(--silence)");
+  });
+});
+
 describe("design layers panel", () => {
   it("scrolls its list inside the canvas instead of outgrowing it", () => {
     const block = blockFor(".design-layer-list");
