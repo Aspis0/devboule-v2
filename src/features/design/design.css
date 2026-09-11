@@ -743,6 +743,21 @@
   pointer-events: none;
 }
 
+/* The print frame is parked off-screen like the measurement frame and for the
+   same reason (it must not be seen), but unlike it this one must stay
+   PAINTABLE: the WebView's print pipeline renders the frame's document, and a
+   `display: none` or `visibility: hidden` frame is exactly the shape that
+   prints blank pages. So it is moved out of the viewport, never hidden. The
+   size still comes from ARTIFACT_PAGE_WIDTH/HEIGHT in the control, so the
+   document is paginated at the viewport it was authored and previewed at. */
+.design-artifact-print-frame {
+  position: fixed;
+  top: 0;
+  left: -100000px;
+  border: 0;
+  pointer-events: none;
+}
+
 .design-layers-panel {
   position: absolute;
   z-index: 2;

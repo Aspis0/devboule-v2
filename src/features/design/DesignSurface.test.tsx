@@ -791,6 +791,113 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("closes History when an entry is picked", async () => {
+    historyOpenMocks.open.mockReturnValue({ dispose: vi.fn() });
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    const onOpen = historyListMocks.onOpen;
+    if (trigger === null || popover === null || onOpen === null) {
+      throw new Error("History controls missing");
+    }
+
+    await act(async () => trigger.click());
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+
+    await act(async () => onOpen({ sessionId: "history-picked" }));
+
+    expect(historyOpenMocks.open).toHaveBeenCalledTimes(1);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(popover.hidden).toBe(true);
+    // closeHistory keeps parking focus on its trigger; that keyboard path is unchanged.
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => root.unmount());
+  });
+
+  it("leaves History open when the pick is the design already on the canvas", async () => {
+    const host = createHost({
+      getAgentSessionRecord: () => ({ id: "session-design" }) as Session,
+    });
+    const { container, root } = await renderDesign(host);
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    const onOpen = historyListMocks.onOpen;
+    if (trigger === null || popover === null || onOpen === null) {
+      throw new Error("History controls missing");
+    }
+
+    await act(async () => trigger.click());
+    await act(async () => onOpen({ sessionId: "session-design" }));
+
+    expect(historyOpenMocks.open).not.toHaveBeenCalled();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(popover.hidden).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("leaves History open when a second pick is refused mid-attach", async () => {
+    historyOpenMocks.open.mockReturnValue({ dispose: vi.fn() });
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    const onOpen = historyListMocks.onOpen;
+    if (trigger === null || popover === null || onOpen === null) {
+      throw new Error("History controls missing");
+    }
+
+    await act(async () => trigger.click());
+    await act(async () => onOpen({ sessionId: "history-first" }));
+    expect(popover.hidden).toBe(true);
+
+    // The first attach never reports back, so the guard refuses the second pick. The
+    // popover the user reopened must stay up, because that click did nothing.
+    await act(async () => trigger.click());
+    expect(popover.hidden).toBe(false);
+    await act(async () => onOpen({ sessionId: "history-second" }));
+
+    expect(historyOpenMocks.open).toHaveBeenCalledTimes(1);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(popover.hidden).toBe(false);
+    await act(async () => root.unmount());
+  });
+
+  it("closes History on a pointerdown outside the menu", async () => {
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[aria-controls="design-history-popover"]',
+    );
+    const popover = container.querySelector<HTMLDivElement>("#design-history-popover");
+    if (trigger === null || popover === null) throw new Error("History controls missing");
+
+    await act(async () => trigger.click());
+    expect(popover.hidden).toBe(false);
+
+    await act(async () => {
+      document.body.dispatchEvent(
+        pointerEvent("pointerdown", { button: 0, clientX: 4, clientY: 4, pointerId: 31 }),
+      );
+    });
+
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(popover.hidden).toBe(true);
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => root.unmount());
+  });
+
   it("does not start a second history attach from the same tick", async () => {
     const firstDispose = vi.fn();
     const secondDispose = vi.fn();
@@ -4313,10 +4420,12 @@ describe("artifact export copy", () => {
     const pill = container.querySelector(".design-zoom-controls");
     if (pill === null) throw new Error("Canvas controls missing");
     expect(pill.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
-    // Both export actions, because a control that exists but is never mounted
+    // All three export actions, because a control that exists but is never mounted
     // is indistinguishable from one that was never written: Save HTML shipped
-    // unreachable until this assertion existed.
+    // unreachable until this assertion existed, and Print / PDF is wired the
+    // same way.
     expect(pill.querySelector('button[aria-label="Save HTML"]')).not.toBeNull();
+    expect(pill.querySelector('button[aria-label="Print / PDF"]')).not.toBeNull();
     const header = container.querySelector(".design-assistant-header");
     if (header === null) throw new Error("Assistant header missing");
     expect(header.querySelector('button[aria-label="Copy HTML"]')).toBeNull();
@@ -4414,5 +4523,67 @@ describe("artifact export copy", () => {
     await act(async () => vi.advanceTimersByTime(2_000));
     expect(container.textContent).not.toContain("Copied.");
     await act(async () => root.unmount());
+  });
+
+  it("prints under the mode the producing run recorded, not the shape of the markup", async () => {
+    // The end-to-end half of the live defect: `readArtifactPrintLayout` now
+    // decides from the recorded mode, and this pins that the surface actually
+    // hands it over. Both halves are chosen so that a missing prop fails them:
+    // the page half carries `slide-N` ids, which the shape-only fallback reads
+    // as a deck, and the deck half is the measured pricing page, which the
+    // fallback reads as a page. Either direction alone would pass on the other
+    // side's answer.
+    const slideDeck =
+      '<section id="slide-1"><h2>One</h2></section><section id="slide-2"><h2>Two</h2></section>';
+    const { container, root } = await renderDesign(
+      createHost({
+        generate: vi.fn(async (): Promise<DesignGenerationResult> => ({
+          ...ARTIFACT_RESULT,
+          artifactHtml: slideDeck,
+          outputMode: "page",
+        })),
+      }),
+    );
+    await generateArtifact(container, "Write it as one page.");
+
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Print / PDF"]');
+    if (button === null) throw new Error("Print / PDF action missing");
+    await act(async () => button.click());
+
+    const frame = document.body.querySelector<HTMLIFrameElement>(".design-artifact-print-frame");
+    if (frame === null) throw new Error("Print frame missing");
+    const srcDoc = frame.getAttribute("srcdoc") ?? "";
+    expect(srcDoc).toContain("size: A4 portrait");
+    expect(srcDoc).not.toContain("break-before");
+
+    // And a recorded deck made of the measured pricing page: landscape, one
+    // slide per page, because the run said so.
+    await act(async () => root.unmount());
+    const pricingPage =
+      '<section class="plans"><h2>Plans</h2></section><section class="faq"><h2>FAQ</h2></section>';
+    const slides = await renderDesign(
+      createHost({
+        generate: vi.fn(async (): Promise<DesignGenerationResult> => ({
+          ...ARTIFACT_RESULT,
+          artifactHtml: pricingPage,
+          outputMode: "slides",
+        })),
+      }),
+    );
+    await generateArtifact(slides.container, "Turn it into a deck.");
+    const deckButton = slides.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Print / PDF"]',
+    );
+    if (deckButton === null) throw new Error("Print / PDF action missing");
+    await act(async () => deckButton.click());
+
+    const deckFrame = document.body.querySelector<HTMLIFrameElement>(
+      ".design-artifact-print-frame",
+    );
+    if (deckFrame === null) throw new Error("Print frame missing");
+    const deckSrcDoc = deckFrame.getAttribute("srcdoc") ?? "";
+    expect(deckSrcDoc).toContain("size: A4 landscape");
+    expect(deckSrcDoc).toContain("break-before: page");
+    await act(async () => slides.root.unmount());
   });
 });
