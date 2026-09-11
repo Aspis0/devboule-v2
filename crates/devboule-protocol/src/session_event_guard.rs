@@ -84,6 +84,7 @@ fn session_event_samples() -> Vec<SessionEvent> {
             tool_call_id: String::new(),
             status: None,
             text: None,
+            title: Some("cargo test".to_string()),
             kind: Some("edit".to_string()),
             locations: Some(vec![crate::ToolLocation {
                 path: "src/main.rs".to_string(),

@@ -85,6 +85,7 @@
     "spawnDepth": 1,
     "status": null,
     "text": null,
+    "title": "cargo test",
     "toolCallId": "",
     "type": "agent_tool_update"
   },

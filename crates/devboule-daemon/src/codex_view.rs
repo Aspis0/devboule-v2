@@ -712,6 +712,7 @@ fn tool_delta(params: &Value, kind: &str) -> Vec<SessionEvent> {
         tool_call_id: id.to_string(),
         status: None,
         text: Some(text.to_string()),
+        title: None,
         kind: Some(kind.to_string()),
         locations: None,
         parent_tool_use_id: None,
@@ -742,6 +743,7 @@ fn item_event(
                         .and_then(Value::as_str)
                         .filter(|text| !text.is_empty())
                         .map(str::to_string),
+                    title: None,
                     kind,
                     locations: None,
                     parent_tool_use_id: None,
@@ -775,6 +777,7 @@ fn item_event(
                     tool_call_id: id.to_string(),
                     status: item.get("status").and_then(Value::as_str).map(status_name),
                     text: None,
+                    title: None,
                     kind: Some("edit".to_string()),
                     locations,
                     parent_tool_use_id: None,
@@ -783,7 +786,7 @@ fn item_event(
             } else {
                 vec![SessionEvent::AgentToolCall {
                     tool_call_id: id.to_string(),
-                    title: "File changes".to_string(),
+                    title: first_change_path(item.get("changes"), cwd).unwrap_or_default(),
                     status: item
                         .get("status")
                         .and_then(Value::as_str)
@@ -801,17 +804,30 @@ fn item_event(
     }
 }
 
+fn change_path(path: &str, cwd: Option<&std::path::Path>) -> String {
+    cwd.and_then(|cwd| std::path::Path::new(path).strip_prefix(cwd).ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn first_change_path(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<String> {
+    let changes = value?.as_array()?;
+    let path = changes
+        .iter()
+        .find_map(|change| change.get("path")?.as_str())?;
+    Some(change_path(path, cwd))
+}
+
 fn locations(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<Vec<ToolLocation>> {
     let changes = value?.as_array()?;
     let locations = changes
         .iter()
         .filter_map(|change| {
             let path = change.get("path").and_then(Value::as_str)?;
-            let path = cwd
-                .and_then(|cwd| std::path::Path::new(path).strip_prefix(cwd).ok())
-                .map(|path| path.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.to_string());
-            Some(ToolLocation { path, line: None })
+            Some(ToolLocation {
+                path: change_path(path, cwd),
+                line: None,
+            })
         })
         .collect::<Vec<_>>();
     (!locations.is_empty()).then_some(locations)
@@ -1080,7 +1096,8 @@ mod tests {
         );
         assert!(matches!(
             events_from_envelope(&start).as_slice(),
-            [SessionEvent::AgentToolCall { locations: Some(locations), .. }] if locations[0].path == "src/lib.rs"
+            [SessionEvent::AgentToolCall { title, locations: Some(locations), .. }]
+                if title == "src/lib.rs" && locations[0].path == "src/lib.rs"
         ));
         let failed = parse(
             r#"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th","turn":{"id":"tu","status":"failed","error":{"message":"nope"}}}}"#,
@@ -1092,6 +1109,29 @@ mod tests {
                 severity: devboule_protocol::NoticeSeverity::Warning,
             }]
         );
+    }
+
+    #[test]
+    fn file_change_title_skips_a_pathless_first_change() {
+        let mut view = CodexView::new(Some(std::path::PathBuf::from(r"C:\w")));
+        let events = view.ingest(&parse(
+            r#"{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"fileChange","id":"f1","status":"inProgress","changes":[{"kind":"delete"},{"kind":"update","path":"C:\\w\\src\\lib.rs"}]},"startedAtMs":1,"threadId":"th","turnId":"tu"}}"#,
+        ));
+        let expected = std::path::PathBuf::from("src")
+            .join("lib.rs")
+            .to_string_lossy()
+            .into_owned();
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall {
+                title, locations, ..
+            }] => {
+                assert_eq!(title, &expected);
+                let locations = locations.as_ref().expect("locations");
+                assert_eq!(locations.len(), 1);
+                assert_eq!(locations[0].path, expected);
+            }
+            other => panic!("expected fileChange tool call, got {other:?}"),
+        }
     }
 
     #[test]

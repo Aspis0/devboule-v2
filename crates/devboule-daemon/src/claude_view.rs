@@ -451,41 +451,50 @@ fn tool_kind(name: &str) -> &'static str {
         "Edit" | "Write" | "NotebookEdit" => "edit",
         "Bash" | "PowerShell" => "execute",
         "Glob" | "Grep" => "search",
-        "WebFetch" | "WebSearch" => "fetch",
+        "WebFetch" => "fetch",
+        "WebSearch" => "search",
         "Agent" | "Task" => "think",
+        "Skill" => "other",
         _ => "other",
     }
 }
 
-fn tool_title(name: &str, input: &Value) -> String {
-    if let Some(description) = input
-        .get("description")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        return format!("{name} {description}");
-    }
-    if let Some(command) = input
-        .get("command")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        let command = if command.len() > 80 {
+fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
+    let field = |key: &str| {
+        input
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let truncated_command = |command: &str| {
+        if command.chars().count() > 80 {
             format!("{}...", command.chars().take(80).collect::<String>())
         } else {
             command.to_string()
-        };
-        return format!("{name} {command}");
+        }
+    };
+    // The summary only; the frontend derives the display name from `kind`.
+    match name {
+        "Bash" | "PowerShell" => field("command").map(truncated_command).unwrap_or_default(),
+        "Read" | "Edit" | "Write" | "NotebookEdit" => field("file_path")
+            .or_else(|| field("path"))
+            .map(|path| relativize_tool_path(path, cwd))
+            .unwrap_or_default(),
+        "Grep" | "Glob" => field("pattern").unwrap_or_default().to_string(),
+        "WebSearch" => field("query").unwrap_or_default().to_string(),
+        "WebFetch" => field("url").unwrap_or_default().to_string(),
+        "Agent" | "Task" => field("description").unwrap_or_default().to_string(),
+        "Skill" => field("skill").unwrap_or_default().to_string(),
+        _ => field("description")
+            .map(str::to_string)
+            .or_else(|| field("command").map(truncated_command))
+            .or_else(|| {
+                field("file_path")
+                    .or_else(|| field("path"))
+                    .map(|path| relativize_tool_path(path, cwd))
+            })
+            .unwrap_or_else(|| name.to_string()),
     }
-    if let Some(path) = input
-        .get("file_path")
-        .or_else(|| input.get("path"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        return format!("{name} {path}");
-    }
-    name.to_string()
 }
 
 fn tool_locations(name: &str, input: &Value, cwd: Option<&Path>) -> Option<Vec<ToolLocation>> {
@@ -518,7 +527,7 @@ fn tool_call_from_block(
     let input = block.get("input").unwrap_or(&Value::Null);
     Some(SessionEvent::AgentToolCall {
         tool_call_id,
-        title: tool_title(name, input),
+        title: tool_title(name, input, cwd),
         status: "pending".to_string(),
         kind: Some(tool_kind(name).to_string()),
         locations: tool_locations(name, input, cwd),
@@ -572,6 +581,7 @@ fn tool_update_from_result(
             "completed".to_string()
         }),
         text,
+        title: None,
         kind: None,
         locations: None,
         parent_tool_use_id,
@@ -963,7 +973,7 @@ mod tests {
                 ..
             }] => {
                 assert_eq!(tool_call_id, "toolu_agent");
-                assert_eq!(title, "Agent Find the relevant files");
+                assert_eq!(title, "Find the relevant files");
                 assert_eq!(kind.as_deref(), Some("think"));
                 assert_eq!(subagent_type.as_deref(), Some("explorer"));
                 assert!(parent_tool_use_id.is_none());
@@ -1375,7 +1385,10 @@ mod tests {
                 ..
             }] => {
                 assert_eq!(tool_call_id, "toolu_01SPEx5ftKiRM6gUm1VBwYKz");
-                assert_eq!(title, "Bash Delete a nonexistent temp file");
+                assert_eq!(
+                    title,
+                    r"cmd /c del /q C:\Windows\Temp\devboule-nonexistent.txt"
+                );
                 assert_eq!(status, "pending");
                 assert_eq!(kind.as_deref(), Some("execute"));
                 assert!(locations.is_none());
@@ -1416,7 +1429,7 @@ mod tests {
                     locations[0].path,
                     PathBuf::from("src").join("lib.rs").to_string_lossy()
                 );
-                assert!(title.contains("Read"));
+                assert_eq!(title, &locations[0].path);
             }
             other => panic!("expected Read tool call, got {other:?}"),
         }
@@ -1443,6 +1456,7 @@ mod tests {
                 tool_call_id: "toolu_ok".to_string(),
                 status: Some("completed".to_string()),
                 text: Some("devboule-perm-probe".to_string()),
+                title: None,
                 kind: None,
                 locations: None,
                 parent_tool_use_id: None,
@@ -1467,6 +1481,7 @@ mod tests {
                 tool_call_id: "toolu_01SPEx5ftKiRM6gUm1VBwYKz".to_string(),
                 status: Some("failed".to_string()),
                 text: Some("The user declined this command in the probe.".to_string()),
+                title: None,
                 kind: None,
                 locations: None,
                 parent_tool_use_id: None,
@@ -1546,7 +1561,7 @@ mod tests {
             ("Glob", "search"),
             ("Grep", "search"),
             ("WebFetch", "fetch"),
-            ("WebSearch", "fetch"),
+            ("WebSearch", "search"),
             ("Task", "think"),
             ("Agent", "think"),
             ("Skill", "other"),
@@ -1566,6 +1581,91 @@ mod tests {
                     assert_eq!(kind.as_deref(), Some(expected), "tool {name}");
                 }
                 other => panic!("tool {name}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn websearch_title_is_the_query_and_kind_is_search() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": "WebSearch",
+                    "input": {"query": "how to test rust", "allowed_domains": []}}]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { kind, title, .. }] => {
+                assert_eq!(kind.as_deref(), Some("search"));
+                assert_eq!(title, "how to test rust");
+            }
+            other => panic!("expected WebSearch tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn webfetch_title_is_the_url() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": "WebFetch",
+                    "input": {"url": "https://example.com", "prompt": "summarize"}}]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { kind, title, .. }] => {
+                assert_eq!(kind.as_deref(), Some("fetch"));
+                assert_eq!(title, "https://example.com");
+            }
+            other => panic!("expected WebFetch tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn grep_title_is_the_pattern() {
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "t", "name": "Grep",
+                    "input": {"pattern": "foo.*", "path": "/work"}}]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { kind, title, .. }] => {
+                assert_eq!(kind.as_deref(), Some("search"));
+                assert_eq!(title, "foo.*");
+            }
+            other => panic!("expected Grep tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_tool_falls_back_to_the_bare_tool_name() {
+        for name in ["mcp__probe__ping", "custom_tool"] {
+            let mut mapper = view();
+            let events = mapper.ingest(&json!({
+                "type": "assistant",
+                "message": {
+                    "id": "m",
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t", "name": name, "input": {}}]
+                }
+            }));
+            match events.as_slice() {
+                [SessionEvent::AgentToolCall { kind, title, .. }] => {
+                    assert_eq!(kind.as_deref(), Some("other"));
+                    assert_eq!(title, name);
+                }
+                other => panic!("expected unknown tool call, got {other:?}"),
             }
         }
     }

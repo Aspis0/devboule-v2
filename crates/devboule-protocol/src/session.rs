@@ -313,6 +313,8 @@ pub enum SessionEvent {
         status: Option<String>,
         text: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         locations: Option<Vec<ToolLocation>>,
@@ -1444,6 +1446,7 @@ mod tests {
             tool_call_id: "t".to_string(),
             status: Some("completed".to_string()),
             text: Some("ok".to_string()),
+            title: None,
             kind: Some("edit".to_string()),
             locations: Some(vec![ToolLocation {
                 path: "src/main.rs".to_string(),

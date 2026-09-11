@@ -150,6 +150,11 @@ fn view_from_session_update(
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string),
                 text,
+                title: update
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
                 kind: update
                     .get("kind")
                     .and_then(serde_json::Value::as_str)
@@ -1148,6 +1153,38 @@ mod tests {
                 assert!(locations[0].line.is_none());
             }
             other => panic!("expected tool update with replaced locations, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_update_forwards_title_when_present() {
+        let line = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"in_progress","title":"cargo test"}}}"#,
+        );
+        match view_from_envelope(&line, SESSION) {
+            Some(SessionEvent::AgentToolUpdate { title, status, .. }) => {
+                assert_eq!(status.as_deref(), Some("in_progress"));
+                assert_eq!(title.as_deref(), Some("cargo test"));
+            }
+            other => panic!("expected tool update with title, got {other:?}"),
+        }
+        let untitled = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1"}}}"#,
+        );
+        match view_from_envelope(&untitled, SESSION) {
+            Some(SessionEvent::AgentToolUpdate { title, .. }) => {
+                assert!(title.is_none());
+            }
+            other => panic!("expected tool update without title, got {other:?}"),
+        }
+        let empty = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"01a06c70-ea2b-7882-ad27-aae8188fc243","update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","title":""}}}"#,
+        );
+        match view_from_envelope(&empty, SESSION) {
+            Some(SessionEvent::AgentToolUpdate { title, .. }) => {
+                assert!(title.is_none(), "empty title must not overwrite the row");
+            }
+            other => panic!("expected tool update with empty title, got {other:?}"),
         }
     }
 }

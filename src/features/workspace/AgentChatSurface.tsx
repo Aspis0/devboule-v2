@@ -24,14 +24,16 @@ import type {
   SessionModel,
   SessionState,
 } from "../../types/ipc";
-import {
-  AgentSession,
-  type AgentChatItem,
-  type AgentSessionState,
-  type AgentSubagent,
-  type AgentSubagentStatusCounts,
-  type AgentSubagentStatus,
+import { AgentSession } from "../../lib/agentSession";
+import type {
+  AgentChatItem,
+  AgentSessionState,
+  AgentSubagent,
+  AgentSubagentStatusCounts,
+  AgentSubagentStatus,
 } from "../../lib/agentSession";
+import { toolRowDisplay } from "./toolRowDisplay";
+import { ToolIcon } from "./ToolIcon";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 
@@ -148,10 +150,6 @@ function itemLabel(item: AgentChatItem): string {
   if (item.role === "assistant") return subagentLabel ? `Subagent${depthCopy}` : "Agent";
   if (item.role === "thought") {
     return subagentLabel ? `Subagent thought${depthCopy}` : "Thought";
-  }
-  if (item.role === "tool") {
-    const type = item.subagentType ? ` · ${item.subagentType}` : "";
-    return `${subagentLabel ? "Subagent tool" : "Tool"}${type} · ${item.status}${depthCopy}`;
   }
   return "Error";
 }
@@ -479,6 +477,45 @@ function renderItem(item: AgentChatItem) {
     isSubagent && visibleDepth !== null
       ? { marginInlineStart: `${visibleDepth * SUBAGENT_INDENT_PX}px` }
       : undefined;
+  if (item.role === "tool") {
+    const model = toolRowDisplay(item);
+    const status = item.status.toLowerCase();
+    const running = status === "running" || status === "pending" || status === "in_progress";
+    const failed = status === "failed";
+    const cancelled = status === "cancelled" || status === "canceled";
+    const toolClassName = `${className}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}`;
+    return (
+      <details className={toolClassName} key={item.id} style={style}>
+        <summary className="workspace-chat-tool-summary">
+          <ToolIcon name={model.icon} />
+          <span className="workspace-chat-tool-label">{model.displayName}</span>
+          {model.summary !== undefined ? (
+            <span className="workspace-chat-tool-summary-text">{model.summary}</span>
+          ) : null}
+          {failed ? (
+            <span className="workspace-chat-tool-failed" aria-hidden="true">
+              ×
+            </span>
+          ) : null}
+        </summary>
+        <div className="workspace-chat-tool-body">
+          {item.locations !== undefined && item.locations.length > 0 ? (
+            <div className="workspace-chat-tool-locations">
+              {item.locations.map((location, index) => (
+                <span className="workspace-chat-tool-location" key={index}>
+                  {location.line !== undefined
+                    ? `${location.path}:${location.line}`
+                    : location.path}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {item.output ? <div className="workspace-chat-copy">{item.output}</div> : null}
+        </div>
+      </details>
+    );
+  }
+
   if (item.role === "thought") {
     return (
       <details className={className} key={item.id} open style={style}>

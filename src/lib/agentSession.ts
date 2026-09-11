@@ -1,5 +1,5 @@
 import type { Channel } from "@tauri-apps/api/core";
-import type { PermissionRequest, SessionEvent, SessionManifest } from "../types/ipc";
+import type { PermissionRequest, SessionEvent, SessionManifest, ToolLocation } from "../types/ipc";
 
 export type AgentChannel = Channel<SessionEvent>;
 export type AgentStatus = "initializing" | "idle" | "running" | "error" | "closed";
@@ -31,9 +31,12 @@ export type AgentChatItem =
   | {
       id: string;
       role: "tool";
-      text: string;
+      title: string;
+      output: string;
       toolCallId: string;
       status: string;
+      kind?: string;
+      locations?: ToolLocation[];
       parentToolUseId?: string;
       spawnDepth?: number;
       subagentType?: string;
@@ -406,6 +409,8 @@ export class AgentSession {
           event.parentToolUseId,
           event.spawnDepth,
           event.subagentType,
+          event.kind,
+          event.locations,
         );
         return;
       case "agent_tool_update":
@@ -416,6 +421,9 @@ export class AgentSession {
           event.text,
           event.parentToolUseId,
           event.spawnDepth,
+          event.kind,
+          event.locations,
+          event.title,
         );
         return;
       case "exit":
@@ -602,6 +610,9 @@ export class AgentSession {
     parentToolUseId?: string,
     spawnDepth?: number,
     subagentType?: string,
+    kind?: string,
+    locations?: ToolLocation[],
+    output = "",
   ): void {
     // A tool-call item is a transcript boundary. Tool updates for an existing
     // item mutate it in place and must not close text that arrived afterward.
@@ -616,9 +627,12 @@ export class AgentSession {
           {
             id: `tool-${this.nextItemId++}`,
             role: "tool",
-            text: title,
+            title,
+            output,
             toolCallId,
             status,
+            ...(kind === undefined ? {} : { kind }),
+            ...(locations === undefined ? {} : { locations }),
             ...itemParentage(parentToolUseId, spawnDepth),
             ...(subagentType === undefined ? {} : { subagentType }),
           },
@@ -640,16 +654,24 @@ export class AgentSession {
     text: string | null,
     parentToolUseId?: string,
     spawnDepth?: number,
+    kind?: string,
+    locations?: ToolLocation[],
+    title?: string,
   ): void {
     const key = `tool:${this.turn}:${toolCallId}`;
     const index = this.blocks.get(key);
+    const nextTitle = typeof title === "string" && title.length > 0 ? title : undefined;
     if (index === undefined) {
       this.appendTool(
         toolCallId,
-        text ?? "Tool call",
+        nextTitle ?? text ?? "Tool call",
         status ?? "running",
         parentToolUseId,
         spawnDepth,
+        undefined,
+        kind,
+        locations,
+        nextTitle === undefined ? "" : (text ?? ""),
       );
       return;
     }
@@ -660,7 +682,12 @@ export class AgentSession {
     items[index] = {
       ...item,
       status: status ?? item.status,
-      ...(text === null ? {} : { text: `${item.text}\n${text}` }),
+      ...(text === null || text === ""
+        ? {}
+        : { output: item.output ? `${item.output}\n${text}` : text }),
+      ...(nextTitle === undefined ? {} : { title: nextTitle }),
+      ...(kind === undefined ? {} : { kind }),
+      ...(locations === undefined ? {} : { locations }),
     };
     this.update({ items });
   }

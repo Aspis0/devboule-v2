@@ -1,6 +1,11 @@
 import { describe, expect, it, vi, type Mock } from "vitest";
 import type { PermissionRequest, SessionEvent } from "../types/ipc";
-import { AgentSession, type AgentChannel, type AgentSessionDeps } from "./agentSession";
+import {
+  AgentSession,
+  type AgentChannel,
+  type AgentChatItem,
+  type AgentSessionDeps,
+} from "./agentSession";
 
 interface Harness {
   session: AgentSession;
@@ -25,6 +30,11 @@ function makeHarness(): Harness {
   return { session: new AgentSession(deps), emit: (event) => emit(event), invoke };
 }
 
+/** Generic `{role, text}` projection; a tool row contributes its title as its text. */
+function itemRoleText(item: AgentChatItem): { role: string; text: string } {
+  return { role: item.role, text: item.role === "tool" ? item.title : item.text };
+}
+
 describe("ACP agent session", () => {
   it("reassembles agent message chunks into one assistant message", async () => {
     const harness = makeHarness();
@@ -37,9 +47,9 @@ describe("ACP agent session", () => {
 
     const assistantMessages = harness.session
       .getState()
-      .items.filter((item) => item.role === "assistant");
-    expect(assistantMessages).toHaveLength(1);
-    expect(assistantMessages[0].text).toBe("Hello");
+      .items.filter((item) => item.role === "assistant")
+      .map((item) => (item.role === "assistant" ? item.text : ""));
+    expect(assistantMessages).toEqual(["Hello"]);
   });
 
   it("reduces a session notice to a system item without changing status", async () => {
@@ -77,7 +87,7 @@ describe("ACP agent session", () => {
     harness.emit({ type: "agent_message", messageId: null, text: "lo" });
 
     expect(harness.session.getState().status).toBe("idle");
-    expect(harness.session.getState().items.map(({ role, text }) => ({ role, text }))).toEqual([
+    expect(harness.session.getState().items.map(itemRoleText)).toEqual([
       { role: "assistant", text: "Hel" },
       { role: "system", text: "Codex declined an out-of-scope request." },
       { role: "assistant", text: "lo" },
@@ -109,7 +119,7 @@ describe("ACP agent session", () => {
       text: "risposta due",
     });
 
-    expect(harness.session.getState().items.map(({ role, text }) => ({ role, text }))).toEqual([
+    expect(harness.session.getState().items.map(itemRoleText)).toEqual([
       { role: "user", text: "prima domanda" },
       { role: "assistant", text: "risposta uno" },
       { role: "user", text: "seconda domanda" },
@@ -125,7 +135,7 @@ describe("ACP agent session", () => {
     harness.emit({ type: "agent_thought", messageId: null, text: "penso" });
     harness.emit({ type: "agent_message", messageId: null, text: "parte due" });
 
-    expect(harness.session.getState().items.map(({ role, text }) => ({ role, text }))).toEqual([
+    expect(harness.session.getState().items.map(itemRoleText)).toEqual([
       { role: "assistant", text: "parte uno" },
       { role: "thought", text: "penso" },
       { role: "assistant", text: "parte due" },
@@ -139,7 +149,7 @@ describe("ACP agent session", () => {
     harness.emit({ type: "agent_message", messageId: null, text: "Hel" });
     harness.emit({ type: "agent_message", messageId: null, text: "lo" });
 
-    expect(harness.session.getState().items.map(({ role, text }) => ({ role, text }))).toEqual([
+    expect(harness.session.getState().items.map(itemRoleText)).toEqual([
       { role: "assistant", text: "Hello" },
     ]);
   });
@@ -170,7 +180,7 @@ describe("ACP agent session", () => {
       }
     }
 
-    const items = harness.session.getState().items.map(({ role, text }) => ({ role, text }));
+    const items = harness.session.getState().items.map(itemRoleText);
     expect(items).toEqual(
       Array.from({ length: 3 }, (_, index) => {
         const turn = index + 1;
@@ -208,12 +218,13 @@ describe("ACP agent session", () => {
     });
     harness.emit({ type: "agent_message", messageId: null, text: "dopo" });
 
-    expect(harness.session.getState().items.map(({ role, text }) => `${role}:${text}`)).toEqual([
-      "user:vai",
-      "assistant:prima",
-      "tool:Read file",
-      "assistant:dopo",
-    ]);
+    expect(
+      harness.session
+        .getState()
+        .items.map((item) =>
+          item.role === "tool" ? `tool:${item.title}\n${item.output}` : `${item.role}:${item.text}`,
+        ),
+    ).toEqual(["user:vai", "assistant:prima", "tool:Read file\n", "assistant:dopo"]);
   });
 
   it("keeps an existing tool update inside the tool bubble", async () => {
@@ -235,11 +246,13 @@ describe("ACP agent session", () => {
     });
     harness.emit({ type: "agent_message", messageId: null, text: "dopo" });
 
-    expect(harness.session.getState().items.map(({ role, text }) => `${role}:${text}`)).toEqual([
-      "assistant:prima",
-      "tool:Read file\ncontents",
-      "assistant:dopo",
-    ]);
+    expect(
+      harness.session
+        .getState()
+        .items.map((item) =>
+          item.role === "tool" ? `tool:${item.title}\n${item.output}` : `${item.role}:${item.text}`,
+        ),
+    ).toEqual(["assistant:prima", "tool:Read file\ncontents", "assistant:dopo"]);
   });
 
   it("does not close a later text bubble when an existing tool is updated", async () => {
@@ -262,11 +275,156 @@ describe("ACP agent session", () => {
     });
     harness.emit({ type: "agent_message", messageId: null, text: " ancora" });
 
-    expect(harness.session.getState().items.map(({ role, text }) => `${role}:${text}`)).toEqual([
-      "assistant:prima",
-      "tool:Read file\ncontents",
-      "assistant:dopo ancora",
-    ]);
+    expect(
+      harness.session
+        .getState()
+        .items.map((item) =>
+          item.role === "tool" ? `tool:${item.title}\n${item.output}` : `${item.role}:${item.text}`,
+        ),
+    ).toEqual(["assistant:prima", "tool:Read file\ncontents", "assistant:dopo ancora"]);
+  });
+
+  it("stores kind and locations on a tool call with empty output", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "src/lib.rs",
+      status: "pending",
+      kind: "read",
+      locations: [{ path: "src/lib.rs", line: 12 }],
+    });
+
+    const items = harness.session.getState().items;
+    expect(items).toHaveLength(1);
+    const item = items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.title).toBe("src/lib.rs");
+    expect(item.output).toBe("");
+    expect(item.kind).toBe("read");
+    expect(item.locations).toEqual([{ path: "src/lib.rs", line: 12 }]);
+  });
+
+  it("appends update text to output without touching the title", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "cargo test",
+      status: "running",
+      kind: "execute",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "in_progress",
+      text: "line one",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "completed",
+      text: "line two",
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.title).toBe("cargo test");
+    expect(item.output).toBe("line one\nline two");
+    expect(item.status).toBe("completed");
+  });
+
+  it("retitles a tool call and replaces kind and locations on update", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "write",
+      status: "pending",
+      kind: "edit",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "in_progress",
+      text: null,
+      title: "probe_tool.txt",
+      kind: "edit",
+      locations: [{ path: "probe_tool.txt" }],
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.title).toBe("probe_tool.txt");
+    expect(item.output).toBe("");
+    expect(item.kind).toBe("edit");
+    expect(item.locations).toEqual([{ path: "probe_tool.txt" }]);
+  });
+
+  it("keeps the old title when an update carries an empty title", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "cargo test",
+      status: "running",
+      kind: "execute",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "in_progress",
+      text: null,
+      title: "",
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.title).toBe("cargo test");
+    expect(item.output).toBe("");
+  });
+
+  it("ignores empty update text the way it ignores null", async () => {
+    const harness = makeHarness();
+    await harness.session.start();
+
+    harness.emit({
+      type: "agent_tool_call",
+      toolCallId: "t1",
+      title: "cargo test",
+      status: "running",
+      kind: "execute",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "in_progress",
+      text: "abc",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "in_progress",
+      text: "",
+    });
+    harness.emit({
+      type: "agent_tool_update",
+      toolCallId: "t1",
+      status: "completed",
+      text: "",
+    });
+
+    const item = harness.session.getState().items[0];
+    if (item.role !== "tool") throw new Error("expected a tool item");
+    expect(item.output).toBe("abc");
   });
 
   it("keeps subagent identity, parentage, metadata, and live status counts", async () => {
@@ -1143,7 +1301,9 @@ describe("ACP agent session", () => {
     harness.emit({ type: "agent_message", messageId: "answer-1", text: "text" });
 
     expect(
-      harness.session.getState().items.map((item) => ({ role: item.role, text: item.text })),
+      harness.session
+        .getState()
+        .items.map((item) => ({ role: item.role, text: itemRoleText(item).text })),
     ).toEqual([
       { role: "thought", text: "First thought" },
       { role: "assistant", text: "answer text" },

@@ -614,7 +614,7 @@ export function createAgentHost(): DesignHost {
         const reply = state.items
           .slice(itemStart)
           .filter((item) => item.role === "assistant")
-          .map((item) => item.text)
+          .map((item) => (item.role === "assistant" ? item.text : ""))
           .join("\n");
         const selected = parseAutomaticSkillReply(reply, index);
         settle(

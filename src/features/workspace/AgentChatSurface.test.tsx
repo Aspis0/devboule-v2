@@ -1414,4 +1414,136 @@ describe("AgentChatSurface", () => {
 
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("Ready");
   });
+
+  it("renders a shell tool row with the command in the summary", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="tool-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t1",
+        title: "cargo test",
+        status: "running",
+        kind: "execute",
+      });
+    });
+
+    const row = container.querySelector("details.workspace-chat-tool");
+    if (row === null) throw new Error("tool row did not render");
+    expect(row.classList.contains("is-running")).toBe(true);
+    const summary = row.querySelector("summary")?.textContent ?? "";
+    expect(summary).toContain("Shell");
+    expect(summary).toContain("cargo test");
+  });
+
+  it("renders a websearch tool row with the query and keeps output in the body", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="tool-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t1",
+        title: "how to test",
+        status: "running",
+        kind: "search",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "t1",
+        status: "completed",
+        text: "result body",
+      });
+    });
+
+    const row = container.querySelector("details.workspace-chat-tool");
+    if (row === null) throw new Error("tool row did not render");
+    const summary = row.querySelector("summary")?.textContent ?? "";
+    expect(summary).toContain("Search");
+    expect(summary).toContain("how to test");
+    expect(summary).not.toContain("result body");
+    expect(row.querySelector(".workspace-chat-tool-body")?.textContent).toContain("result body");
+  });
+
+  it("marks failed tool rows and running rows with their classes", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="tool-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-fail",
+        title: "cargo test",
+        status: "running",
+        kind: "execute",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "t-fail",
+        status: "failed",
+        text: "boom",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-run",
+        title: "src/lib.rs",
+        status: "pending",
+        kind: "read",
+        locations: [{ path: "src/lib.rs", line: 12 }],
+      });
+    });
+
+    const rows = container.querySelectorAll("details.workspace-chat-tool");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].classList.contains("is-failed")).toBe(true);
+    expect(rows[0].querySelector(".workspace-chat-tool-failed")?.textContent).toBe("×");
+    expect(rows[1].classList.contains("is-running")).toBe(true);
+    expect(rows[1].querySelector(".workspace-chat-tool-location")?.textContent).toBe(
+      "src/lib.rs:12",
+    );
+  });
+
+  it("marks cancelled tool rows as cancelled without the failed mark", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="tool-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-cancelled",
+        title: "cargo test",
+        status: "cancelled",
+        kind: "execute",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-canceled",
+        title: "cargo test",
+        status: "canceled",
+        kind: "execute",
+      });
+    });
+
+    const rows = container.querySelectorAll("details.workspace-chat-tool");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.classList.contains("is-cancelled")).toBe(true);
+      expect(row.classList.contains("is-failed")).toBe(false);
+      expect(row.classList.contains("is-running")).toBe(false);
+      expect(row.querySelector(".workspace-chat-tool-failed")).toBeNull();
+    }
+  });
 });

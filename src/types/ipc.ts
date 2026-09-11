@@ -399,6 +399,7 @@ export type SessionEvent =
       toolCallId: string;
       status: string | null;
       text: string | null;
+      title?: string;
       kind?: string;
       locations?: ToolLocation[];
       parentToolUseId?: string;
