@@ -12,8 +12,10 @@ import {
   ARTIFACT_RENDER_CRITIC_SOURCE,
   ARTIFACT_RENDER_CRITIC_TIMEOUT_MS,
   ArtifactRenderCritic,
+  ArtifactRenderCriticCspError,
   buildArtifactMeasurementSrcDoc,
   contrastRatio,
+  deriveArtifactRenderCriticCsp,
   findingHeadline,
   isLargeScaleText,
   readArtifactRenderCriticMessage,
@@ -96,6 +98,23 @@ describe("artifact render critic pure helpers", () => {
     expect(
       ARTIFACT_RENDER_CRITIC_CSP.replace("script-src 'unsafe-inline'", "script-src 'none'"),
     ).toBe(ARTIFACT_CSP);
+  });
+
+  it("refuses a base policy that does not carry the script directive exactly once", () => {
+    // The failure mode the module-scope check exists for: `.replace` returns
+    // its subject unchanged on a miss, so a renamed, reordered or duplicated
+    // directive would ship a policy that bans the critic's own measurement
+    // script and surface as a timeout, not as a broken build. The derivation is
+    // called directly because a test cannot corrupt the module's constant.
+    expect(() => deriveArtifactRenderCriticCsp("script-src 'unsafe-inline'")).toThrow(
+      ArtifactRenderCriticCspError,
+    );
+    expect(() => deriveArtifactRenderCriticCsp("script-src 'unsafe-inline'")).toThrow(
+      /occurs 0 times/,
+    );
+    expect(() => deriveArtifactRenderCriticCsp("script-src 'none'; script-src 'none'")).toThrow(
+      /occurs 2 times/,
+    );
   });
 
   it("strips script elements and on* attributes while preserving other markup", () => {

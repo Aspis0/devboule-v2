@@ -239,8 +239,9 @@ describe("artifact export", () => {
     const plain = buildStandaloneArtifactHtml("<main><p>Hi</p></main>", "T");
     const parsed = new DOMParser().parseFromString(plain, "text/html");
     expect(parsed.querySelectorAll("style, link")).toHaveLength(0);
+    expect(parsed.querySelectorAll("[style]")).toHaveLength(0);
     expect(plain).not.toContain("font-family");
-    expect(parsed.body?.firstElementChild?.hasAttribute("style")).toBe(false);
+    expect(plain).not.toContain("@font-face");
 
     const declared = buildStandaloneArtifactHtml(
       "<style>p{font-family:system-ui}</style><main><p>Hi</p></main>",

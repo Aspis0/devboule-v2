@@ -52,10 +52,51 @@ export const ARTIFACT_RENDER_CRITIC_SANDBOX = "allow-scripts";
 // discovered later: what the critic sees is a document whose scripts run, and
 // nothing about its verdicts should be read as a statement about the
 // script-free document the user previews and saves.
-export const ARTIFACT_RENDER_CRITIC_CSP = ARTIFACT_CSP.replace(
-  "script-src 'none'",
-  "script-src 'unsafe-inline'",
-);
+const ARTIFACT_RENDER_CRITIC_SCRIPT_DIRECTIVE = "script-src 'none'";
+const ARTIFACT_RENDER_CRITIC_SCRIPT_DIRECTIVE_SWAP = "script-src 'unsafe-inline'";
+
+/**
+ * Thrown when the canvas policy cannot be turned into the critic's policy.
+ * Named so a failed import says which invariant broke instead of surfacing as
+ * an opaque module evaluation error.
+ */
+export class ArtifactRenderCriticCspError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ArtifactRenderCriticCspError";
+  }
+}
+
+/**
+ * The critic's policy: the canvas policy with exactly one directive swapped.
+ * `String.replace` returns its subject unchanged when the pattern does not
+ * match, and replaces only the first match when it does, so the derivation is
+ * only sound while `ARTIFACT_CSP` contains the source directive exactly once.
+ * A renamed, reordered or duplicated directive would otherwise ship a policy
+ * that bans the measurement script the critic exists to run, and nothing would
+ * say so until a timeout. The check runs at module scope because a policy that
+ * cannot be derived is not one the critic may measure under.
+ */
+export function deriveArtifactRenderCriticCsp(base: string): string {
+  const occurrences = base.split(ARTIFACT_RENDER_CRITIC_SCRIPT_DIRECTIVE).length - 1;
+  if (occurrences !== 1) {
+    throw new ArtifactRenderCriticCspError(
+      `ARTIFACT_CSP must contain "${ARTIFACT_RENDER_CRITIC_SCRIPT_DIRECTIVE}" exactly once for the render critic to derive its policy from it; it occurs ${occurrences} times. Fix artifactCsp.ts: a derivation that does not match returns the policy unchanged, banning the critic's measurement script.`,
+    );
+  }
+  const derived = base.replace(
+    ARTIFACT_RENDER_CRITIC_SCRIPT_DIRECTIVE,
+    ARTIFACT_RENDER_CRITIC_SCRIPT_DIRECTIVE_SWAP,
+  );
+  if (derived === base) {
+    throw new ArtifactRenderCriticCspError(
+      `Deriving the render critic's policy from ARTIFACT_CSP returned it unchanged: "${ARTIFACT_RENDER_CRITIC_SCRIPT_DIRECTIVE_SWAP}" was not substituted for "${ARTIFACT_RENDER_CRITIC_SCRIPT_DIRECTIVE}". Fix artifactCsp.ts.`,
+    );
+  }
+  return derived;
+}
+
+export const ARTIFACT_RENDER_CRITIC_CSP = deriveArtifactRenderCriticCsp(ARTIFACT_CSP);
 export const ARTIFACT_RENDER_CRITIC_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_RENDER_CRITIC_CSP}" />`;
 
 interface ParsedTag {

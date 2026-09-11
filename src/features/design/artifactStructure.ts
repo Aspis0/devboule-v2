@@ -19,9 +19,13 @@ import type { DesignLayer } from "./designHost";
  *   ARIA role, or a `tabindex` attribute;
  * - media (`ARTIFACT_STRUCTURE_MEDIA_TAGS`).
  *
- * The filters that already existed are unchanged: an element with a missing,
- * empty, or non-finite box is skipped, and so are `script`, `style`, and
- * anything inside `head`.
+ * Rejection rules, after membership is decided: page furniture (`body`,
+ * `head`, `html`, `script`, `style`) and anything inside `head`; a box that is
+ * missing, non-finite, or has no area; `display: none`; an anchor that comes
+ * out empty (an id over the posted budget and no path the builder will
+ * return) or that repeats an earlier entry's anchor; and
+ * `MAX_ARTIFACT_STRUCTURE_ENTRIES`, past which the tail of the page is left
+ * unindexed.
  *
  * The list is flat, in document order, and each entry carries the index of its
  * nearest collected ancestor. That single number is the tree: the panel walks
