@@ -81,8 +81,21 @@ impl AttachmentStore {
 
     /// Drop one session's folder. Absent is not an error: close may run for a
     /// session that never sent an attachment.
+    ///
+    /// The write lock is taken here for the same reason `materialize` takes it.
+    /// The temp file plus rename protects a *reader* from observing half an
+    /// image; it does not protect the *writer* whose folder is deleted between
+    /// the temp write and the rename. Holding the lock across the removal makes
+    /// a close wait for the write in flight instead of pulling the directory
+    /// out from under it.
     pub(crate) fn remove_session(&self, session_id: &str) {
         if let Some(session) = self.session(session_id) {
+            // Poisoning is ignored the way `materialize` ignores it: a panic in
+            // some unrelated thread must not make session close start failing.
+            let _guard = self
+                .write_lock
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let _ = std::fs::remove_dir_all(&session.dir);
         }
     }
@@ -105,19 +118,46 @@ impl AttachmentStore {
             if !metadata.is_dir() {
                 continue;
             }
-            let Some(newest) = newest_write(&entry.path()) else {
+            // A cheap filter, taken without the lock, so the lock stays off the
+            // folders that obviously are not candidates. The decision is made
+            // again under the lock by `remove_if_still_older_than`.
+            if is_older_than(&entry.path(), now, max_age) != Some(true) {
                 continue;
-            };
-            // A timestamp in the future is not evidence of age; keep the folder
-            // and let a later sweep decide.
-            let Ok(age) = now.duration_since(newest) else {
-                continue;
-            };
-            if age > max_age && std::fs::remove_dir_all(entry.path()).is_ok() {
+            }
+            if self.remove_if_still_older_than(&entry.path(), now, max_age) {
                 removed += 1;
             }
         }
         removed
+    }
+
+    /// Remove one candidate folder, but only if it is still older than
+    /// `max_age` with the write lock held. Returns whether the folder was
+    /// removed.
+    ///
+    /// The sweep's age filter runs without the lock, so its answer can be out
+    /// of date by the time the lock is held: a write into the folder can land
+    /// in between, and deleting then would throw away an attachment the user
+    /// made moments ago. Under the lock the newest write cannot change, so the
+    /// age is read again here and a folder that is no longer older than the
+    /// limit is kept.
+    ///
+    /// The lock is taken per removal, not around the whole walk. The walk reads
+    /// every folder and can run long, and one process-wide mutex held across it
+    /// would park every materialize behind a directory scan; the race this
+    /// closes is between one delete and one write into the folder being
+    /// deleted, so the lock only has to cover the delete.
+    fn remove_if_still_older_than(&self, dir: &Path, now: SystemTime, max_age: Duration) -> bool {
+        // Poisoning is ignored the way `materialize` ignores it: a panic in
+        // some unrelated thread must not make retention start failing.
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if is_older_than(dir, now, max_age) != Some(true) {
+            return false;
+        }
+        std::fs::remove_dir_all(dir).is_ok()
     }
 }
 
@@ -311,6 +351,19 @@ fn newest_write(dir: &Path) -> Option<SystemTime> {
         }
     }
     Some(newest)
+}
+
+/// Whether `dir`'s newest write is older than `max_age` as of `now`.
+///
+/// `None` is "cannot tell", and it is not a candidate. The folder could not be
+/// read, or its newest write does not sit behind `now` — a timestamp in the
+/// future is not evidence of age. Callers keep such a folder and let a later
+/// sweep decide rather than deleting on a guess; an unreadable folder is not an
+/// empty one.
+fn is_older_than(dir: &Path, now: SystemTime, max_age: Duration) -> Option<bool> {
+    let newest = newest_write(dir)?;
+    let age = now.duration_since(newest).ok()?;
+    Some(age > max_age)
 }
 
 #[cfg(test)]
@@ -761,6 +814,192 @@ mod tests {
 
         assert!(!store.session("s.a.1").expect("session").dir.exists());
         assert!(kept_path.exists());
+    }
+
+    #[test]
+    fn an_under_lock_recheck_keeps_a_folder_that_became_fresh() {
+        // The sweep decides on age without the lock and deletes under it, and
+        // the decision is made again there. This pins the second decision: a
+        // folder that was old enough when the unlocked filter ran, and had a
+        // write land before the lock, is kept — deleting it would lose an
+        // attachment the user made moments ago.
+        //
+        // The interleaving with a real writer is not reproduced, and cannot be
+        // pinned here: the only synchronization point between the unlocked
+        // filter and the removal is the lock wait itself, which std offers no
+        // way to observe. A second thread told to "materialize while the sweep
+        // is parked" would have to be held back by a sleep, which is a guess
+        // rather than an assertion. What is pinned is the rule the removal
+        // runs under the lock.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let session = store.session("s.a.1").expect("session");
+        let path = session
+            .materialize(&attachment(
+                "a.png",
+                "image/png",
+                &encoded(&clean_png(0x0d)),
+            ))
+            .expect("materialized");
+
+        // `now` is a parameter of the sweep, so the folder can be made old by
+        // moving `now` forward instead of moving file timestamps back.
+        let now = SystemTime::now();
+        let sweep_now = now + ATTACHMENT_RETENTION + Duration::from_secs(120);
+
+        // What the unlocked filter sees: a candidate.
+        assert_eq!(
+            is_older_than(&session.dir, sweep_now, ATTACHMENT_RETENTION),
+            Some(true)
+        );
+
+        // A write lands in the folder while the sweep is on its way to the
+        // lock, so its newest write moves in front of the limit.
+        let file = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open");
+        file.set_modified(sweep_now - Duration::from_secs(30))
+            .expect("set mtime");
+        assert_eq!(
+            is_older_than(&session.dir, sweep_now, ATTACHMENT_RETENTION),
+            Some(false)
+        );
+
+        assert!(
+            !store.remove_if_still_older_than(&session.dir, sweep_now, ATTACHMENT_RETENTION),
+            "a folder that is no longer old must not be removed under the lock"
+        );
+        assert!(path.exists(), "the write's folder must survive");
+    }
+
+    #[test]
+    fn an_under_lock_recheck_keeps_a_path_it_cannot_read() {
+        // An unreadable folder is not an empty one. When `newest_write` cannot
+        // read the path — here a file where a folder is expected, the portable
+        // stand-in for any path that cannot be listed — the answer is "cannot
+        // tell", and the removal refuses instead of deleting on a guess.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let stray = temp.0.join("not-a-folder");
+        std::fs::write(&stray, b"x").expect("write");
+
+        let now = SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(120);
+        assert_eq!(is_older_than(&stray, now, ATTACHMENT_RETENTION), None);
+        assert!(
+            !store.remove_if_still_older_than(&stray, now, ATTACHMENT_RETENTION),
+            "a path whose age cannot be read must not be removed"
+        );
+        assert!(stray.exists(), "nothing may be deleted on a guess");
+    }
+
+    /// How long the tests below give a deleter that should be blocked before
+    /// they call it blocked. The value is generous on purpose: under the fix
+    /// the deleter cannot proceed while this thread holds the lock, so no
+    /// timeout can make the assertion fail, and a build without the lock
+    /// answers as soon as its thread is scheduled. See the comment on
+    /// `closing_a_session_waits_for_an_in_flight_write` for why the wait is a
+    /// timeout and not a sleep.
+    const BLOCKED_TIMEOUT: Duration = Duration::from_millis(500);
+
+    #[test]
+    fn closing_a_session_waits_for_an_in_flight_write() {
+        // The refusal to race is asserted as serialization: hold the write
+        // lock, ask another thread to close the session, and require that the
+        // close does not finish while the lock is held. The wait is a channel
+        // timeout, which is the shape of the statement and not a sleep — a
+        // fixed build cannot satisfy `recv_timeout` here because the deleter
+        // is parked on a mutex, while a build missing the lock sends `done` as
+        // soon as the thread runs. The `started` message makes the assertion
+        // about the close itself rather than about thread scheduling.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let session = store.session("s.a.1").expect("session");
+        let path = session
+            .materialize(&attachment(
+                "a.png",
+                "image/png",
+                &encoded(&clean_png(0x0b)),
+            ))
+            .expect("materialized");
+
+        let guard = store
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let closer = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                started_tx.send(()).expect("signal start");
+                store.remove_session("s.a.1");
+                done_tx.send(()).expect("signal done");
+            })
+        };
+
+        started_rx.recv().expect("the closer started");
+        assert!(
+            done_rx.recv_timeout(BLOCKED_TIMEOUT).is_err(),
+            "the close finished while a writer held the lock"
+        );
+        assert!(path.exists(), "the folder was removed under the lock");
+
+        drop(guard);
+        done_rx.recv().expect("the close finished once the lock was free");
+        closer.join().expect("thread");
+        assert!(!path.exists(), "the close must still remove the folder");
+    }
+
+    #[test]
+    fn a_retention_sweep_waits_for_an_in_flight_write() {
+        // The sweep takes the lock per removal. The observable half of that is
+        // the same serialization the close shows: while this thread holds the
+        // lock, a sweep that has decided to delete the folder cannot finish.
+        let temp = TempDir::new();
+        let store = AttachmentStore::new(&temp.0);
+        let session = store.session("s.a.1").expect("session");
+        let path = session
+            .materialize(&attachment(
+                "a.png",
+                "image/png",
+                &encoded(&clean_png(0x0c)),
+            ))
+            .expect("materialized");
+
+        let guard = store
+            .write_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let sweeper = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                started_tx.send(()).expect("signal start");
+                let later = SystemTime::now() + ATTACHMENT_RETENTION + Duration::from_secs(60);
+                let removed = store.sweep_older_than(later, ATTACHMENT_RETENTION);
+                done_tx.send(removed).expect("signal done");
+            })
+        };
+
+        started_rx.recv().expect("the sweeper started");
+        assert!(
+            done_rx.recv_timeout(BLOCKED_TIMEOUT).is_err(),
+            "the sweep finished while a writer held the lock"
+        );
+        assert!(path.exists(), "the folder was removed under the lock");
+
+        drop(guard);
+        assert_eq!(
+            done_rx.recv().expect("the sweep finished once the lock was free"),
+            1,
+            "the sweep still reports the folder it removed"
+        );
+        sweeper.join().expect("thread");
+        assert!(!path.exists(), "the sweep must still remove the folder");
     }
 
     #[test]
