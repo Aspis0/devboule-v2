@@ -29,8 +29,9 @@
  * serves those three decoders only. The app's CSP grants neither
  * `'wasm-unsafe-eval'` nor a wasm MIME route pdf.js fetches through, so the
  * common case works without wasm and the uncovered case fails loudly through
- * the named `Jbig2Error`/`JpxError` branch below, never as a blank page.
- * Nothing about this module widens the app CSP in
+ * the codec branch below — a match on the surviving message text, because the
+ * worker boundary rewrites the error names (see `isPdfImageCodecFailure`) —
+ * never as a blank page. Nothing about this module widens the app CSP in
  * `src-tauri/tauri.conf.json`, and nothing may.
  *
  * The worker is the same-origin bundle Vite emits from
@@ -184,6 +185,38 @@ export interface PdfRenderOptions {
   readonly timeoutMs?: number;
   /** Longest one page waits, in milliseconds. Defaults to `PDF_PAGE_TIMEOUT_MS`. */
   readonly pageTimeoutMs?: number;
+  /**
+   * Stops the render when the caller no longer wants it — the composer Run
+   * button becoming a Stop button, a batch moving on without this file. The
+   * render checks it between pages and inside a page's render loop, so a hung
+   * page does not hold a cancelled call hostage; pdf.js itself takes no
+   * signal on the render path, so cancellation races its promises and tears
+   * the work down (see `renderPdfPages`), rather than being handed to the
+   * library. A cancelled call is not a failure: it resolves `ok: true` with
+   * the pages rendered so far, `stoppedEarly: "cancelled"`, and the
+   * unrendered pages in `omittedPages` — while `pdfPageNotice` stays silent
+   * about pages the user deliberately abandoned.
+   */
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Reads `aborted` through a call, so the compiler cannot narrow it away.
+ *
+ * `AbortSignal.aborted` is declared `readonly boolean`, so after a single
+ * `if (signal?.aborted)` guard TypeScript narrows the property to `false` for
+ * the rest of the function and reports every later check as an impossible
+ * comparison. Those checks are not impossible: the flag is flipped from
+ * outside this module, between two awaits, which is the entire purpose of a
+ * cancellation signal. Narrowing is sound only for values the type system can
+ * see change, and this is not one of them.
+ *
+ * Going through a function call gives each site a fresh read and keeps the
+ * checks honest. Do not inline this back into a direct property read — the
+ * code will still look right and will stop cancelling anything.
+ */
+function pdfIsAborted(signal?: AbortSignal): boolean {
+  return signal?.aborted ?? false;
 }
 
 export interface PdfRenderedPage {
@@ -201,11 +234,24 @@ export interface PdfRenderedPage {
   readonly bytes: Uint8Array;
 }
 
+export type PdfStoppedEarly = "timeout" | "cancelled";
+
 export interface PdfRenderOutcome {
   /** The file's own name, carried through so every sentence can name it. */
   readonly name: string;
   /** Pages in the document, read from the parsed file. */
   readonly pageCount: number;
+  /**
+   * Why the call stopped before every page in range travelled. `null` is the
+   * ordinary ending: everything in range rendered, or pages were left out
+   * only because `maxPages` ran out. `"timeout"` means the clock ran out —
+   * the timed-out page and everything after it sit in `omittedPages`, and
+   * `pdfPageNotice` names them. `"cancelled"` means the caller's signal
+   * fired — the unrendered pages still sit in `omittedPages`, so nothing is
+   * lost silently, but the notice stays quiet about them, because a user who
+   * stopped the render already knows they stopped it.
+   */
+  readonly stoppedEarly: PdfStoppedEarly | null;
   /** Pages rendered, in document order. Never held all at once: see `renderPdfPages`. */
   readonly pages: readonly PdfRenderedPage[];
   /**
@@ -228,6 +274,40 @@ export interface PdfRenderFailure {
 
 function positiveOr(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/**
+ * Whether a thrown error is pdf.js reporting a JBIG2 or JPEG 2000 plate it
+ * could not decode — the one codec failure this renderer names instead of
+ * passing through as an unreadable file.
+ *
+ * This is a match on the surviving message text, and the comment has to say
+ * so plainly, because the obvious check does not fire. The decoder classes
+ * (`Jbig2Error`, `JpxError`) live in the worker bundle only — zero
+ * occurrences in `pdfjs-dist/build/pdf.mjs` — and every error crossing the
+ * worker boundary goes through `wrapReason`, which preserves exactly five
+ * names (`AbortException`, `InvalidPDFException`, `PasswordException`,
+ * `ResponseException`, `UnknownErrorException`) and rewrites everything else
+ * to `UnknownErrorException` with the original text kept in the message.
+ * The name check is kept for the one path where the classes survive —
+ * pdf.js's main-thread fallback, which imports the worker module in-thread
+ * — but every error there still crosses an internal `postMessage`, whose
+ * receiving side runs the same `wrapReason` before rejecting the caller's
+ * promise, so in practice the message match below is what fires on both
+ * paths and the name check is a backstop, not the mechanism. Saying otherwise
+ * would assert a path that the message handler closes. So the check reads the
+ * message for the wording pdf.js 6.3.289 emits ("JBig2 failed to
+ * initialize", "OpenJPEG failed to initialize") and names that version
+ * here: if a later pdf.js rewords it, this goes quiet and the failure falls
+ * through to the generic unreadable-PDF sentence, which is wrong but
+ * visible, rather than silently matching something else.
+ */
+export function isPdfImageCodecFailure(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const name = "name" in error ? (error as { name?: unknown }).name : undefined;
+  if (name === "Jbig2Error" || name === "JpxError") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(jbig2|openjpeg) failed to initialize\b/iu.test(message);
 }
 
 export function resolvePdfRenderOptions(options?: PdfRenderOptions): {
@@ -280,9 +360,58 @@ export function pdfFittingScale(
   return null;
 }
 
+/**
+ * The 1-based pages a render walks, in document order. Pure, so the range
+ * arithmetic is pinnable without a renderer: a backwards range yields no
+ * pages here, and the caller refuses it outright (see
+ * `pdfBackwardsRangeMessage`) rather than rendering an empty success.
+ */
+export function pdfInRangePages(
+  pageCount: number,
+  from: number,
+  to: number | null,
+): readonly number[] {
+  const last = to === null ? pageCount : Math.min(to, pageCount);
+  const numbers: number[] = [];
+  for (let pageNumber = from; pageNumber <= last; pageNumber += 1) numbers.push(pageNumber);
+  return numbers;
+}
+
+/**
+ * Why a backwards range is a refusal, not an empty success. Rendering nothing
+ * and reporting `ok: true` would read as a file with no pages; the range is
+ * the caller's, so the sentence names it rather than the file's contents.
+ */
+export function pdfBackwardsRangeMessage(name: string, from: number, to: number): string {
+  return `${name} was asked for pages ${from} to ${to}, which runs backwards; nothing was rendered. Check the page range and try again.`;
+}
+
 /** base64's own sizing: 4 characters per 3 bytes, rounded up. */
 export function pdfBase64Length(bytes: number): number {
   return Math.ceil(bytes / 3) * 4;
+}
+
+/**
+ * The kind of error every `renderPdfPages` catch block funnels through, minus
+ * the caller. `pdfjs` is pdf.js failing on the file; `sink` is the caller's
+ * own `onPage` throwing on a page that rendered fine; `cancelled` is the
+ * caller's signal firing. The split exists so a bug in the caller's sink is
+ * never reported as a defect in the user's file.
+ *
+ * Running out of time is deliberately not a kind here. A render that hits the
+ * clock has usually produced pages already, and those pages are worth having,
+ * so the clock ends the walk and reports itself through `stoppedEarly:
+ * "timeout"` on a partial outcome instead of throwing away what it rendered.
+ */
+type PdfRenderErrorKind = "pdfjs" | "sink" | "cancelled";
+
+class PdfRenderError extends Error {
+  readonly kind: PdfRenderErrorKind;
+  constructor(kind: PdfRenderErrorKind, message: string) {
+    super(message);
+    this.name = "PdfRenderError";
+    this.kind = kind;
+  }
 }
 
 /**
@@ -293,11 +422,18 @@ export function pdfBase64Length(bytes: number): number {
  * every page in range travelled at or above the readability floor — the same
  * "no message" convention those builders follow, so "nothing to say" is a
  * value the caller can render without asking a second question.
+ *
+ * A cancelled render is silent about its unrendered pages: `omittedPages`
+ * still lists them, so nothing is dropped without a record, but the user
+ * stopped the render on purpose and a sentence scolding them for pages they
+ * abandoned would answer a question nobody asked. A timed-out render names
+ * them instead — the clock, not the user, chose those.
  */
 export function pdfPageNotice(outcome: PdfRenderOutcome): string {
   const rendered = outcome.pages.length;
   const parts: string[] = [];
-  if (outcome.omittedPages.length > 0) {
+  if (outcome.stoppedEarly === "cancelled" && outcome.downscaledPages.length === 0) return "";
+  if (outcome.omittedPages.length > 0 && outcome.stoppedEarly !== "cancelled") {
     const total = rendered + outcome.omittedPages.length;
     parts.push(
       `only the first ${rendered} of ${total} pages were attached; ` +
@@ -394,10 +530,16 @@ async function renderOnePage(
   annotationMode: number,
   remainingMs: () => number,
   pageTimeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<PdfRenderedPage> {
   const measured: { readonly scale: number; readonly byteLength: number }[] = [];
   let smallest: PdfRenderedPage | null = null;
   for (const scale of ladder) {
+    // The signal is checked here rather than passed to pdf.js: the library
+    // takes no signal on the render path (zero occurrences in its public
+    // types), so cancellation races its promises and tears the work down,
+    // and the check has to live at every point a rung could start one.
+    if (pdfIsAborted(signal)) throw new PdfRenderError("cancelled", "cancelled");
     if (remainingMs() <= 0) break;
     const viewport = page.getViewport({ scale });
     const width = Math.max(1, Math.floor(viewport.width));
@@ -414,9 +556,19 @@ async function renderOnePage(
       Math.max(1, Math.min(remainingMs(), pageTimeoutMs)),
       "timeout",
     );
+    const abortListener = (): void => {
+      try {
+        renderTask.cancel();
+      } catch {
+        // Cancelling a finished task throws; the abort already decided.
+      }
+      renderTimeout.cancel();
+    };
+    signal?.addEventListener("abort", abortListener, { once: true });
     try {
       await Promise.race([renderTask.promise, renderTimeout.promise]);
     } catch (error) {
+      if (pdfIsAborted(signal)) throw new PdfRenderError("cancelled", "cancelled");
       try {
         renderTask.cancel();
       } catch {
@@ -424,8 +576,10 @@ async function renderOnePage(
       }
       throw error;
     } finally {
+      signal?.removeEventListener("abort", abortListener);
       renderTimeout.cancel();
     }
+    if (pdfIsAborted(signal)) throw new PdfRenderError("cancelled", "cancelled");
     const dataUrl = canvas.toDataURL("image/jpeg", PDF_JPEG_QUALITY);
     const encoded = Uint8Array.from(atob(dataUrl.split(",")[1] ?? ""), (character) =>
       character.charCodeAt(0),
@@ -472,13 +626,20 @@ async function renderOnePage(
  * throws `PasswordException` out of `getDocument`; reporting pdf.js's own
  * words ("No password given") would answer a question the user did not ask,
  * so it becomes the sentence in `pdfEncryptedMessage`. A PDF whose image
- * codecs need wasm throws `Jbig2Error`/`JpxError` ("failed to initialize" —
- * the JS fallbacks `jbig2_nowasm_fallback.js` / `openjpeg_nowasm_fallback.js`
- * themselves failed to load) out of the render; the app's CSP grants no wasm
- * route, so that becomes a sentence saying the page needs image support the
- * app does not ship, not a blank page and not a widened CSP. What the fallbacks
- * do cover is the common case: fax and JPEG 2000 plates decode through them,
- * slower but pixel-identical, so most PDFs never reach this branch at all.
+ * codecs need wasm fails out of the render with the wording
+ * `isPdfImageCodecFailure` matches — the JS fallbacks
+ * (`jbig2_nowasm_fallback.js` / `openjpeg_nowasm_fallback.js`) themselves
+ * failed to load; the app's CSP grants no wasm route, so that becomes a
+ * sentence saying the page needs image support the app does not ship, not a
+ * blank page and not a widened CSP. What the fallbacks do cover is the common
+ * case: fax and JPEG 2000 plates decode through them, slower but
+ * pixel-identical, so most PDFs never reach this branch at all.
+ *
+ * Three endings are `ok: true`, and only two of them mean finished. The
+ * pages travelled through `sink` either way; the outcome tells the caller
+ * what to say about the ones that did not. A page lost to the clock and a
+ * page the user abandoned are both "did not travel", but the notice names
+ * the first and stays silent about the second — see `stoppedEarly`.
  */
 export async function renderPdfPages(
   bytes: Uint8Array,
@@ -500,6 +661,13 @@ export async function renderPdfPages(
   const resolved = resolvePdfRenderOptions(options);
   const from = resolved.from;
   const to = resolved.to;
+  const signal = options?.signal;
+  if (pdfIsAborted(signal)) {
+    return {
+      ok: true,
+      outcome: { name, pageCount: 0, pages: [], omittedPages: [], downscaledPages: [], stoppedEarly: "cancelled" },
+    };
+  }
 
   const pdfjs = await import("pdfjs-dist");
   configurePdfWorker((source) => {
@@ -509,6 +677,10 @@ export async function renderPdfPages(
   const remainingMs = (): number => resolved.timeoutMs - (Date.now() - startedAt);
 
   let loadingTask: PDFDocumentLoadingTask | null = null;
+  const pages: PdfRenderedPage[] = [];
+  const downscaledPages: number[] = [];
+  let stoppedEarly: PdfStoppedEarly | null = null;
+  let openAbortListener: (() => void) | null = null;
   try {
     loadingTask = pdfjs.getDocument({
       data: bytes.slice(),
@@ -516,30 +688,51 @@ export async function renderPdfPages(
       verbosity: 0,
     });
     const openTimeout = failAfter<never>(resolved.timeoutMs, "timeout");
+    const openAbort = new Promise<never>((_, reject) => {
+      if (signal === undefined) return;
+      // Named so the outer `finally` can remove it: an anonymous listener
+      // would stack one per call on a caller reusing a signal across renders.
+      openAbortListener = () => reject(new PdfRenderError("cancelled", "cancelled"));
+      if (pdfIsAborted(signal)) {
+        openAbortListener();
+        return;
+      }
+      signal.addEventListener("abort", openAbortListener, { once: true });
+    });
+    // An abort listener with no handler until the race below attaches one
+    // would surface as noise if the open wins; the `catch` beside `failAfter`
+    // keeps it quiet the same way.
+    openAbort.catch(() => undefined);
     let pdfDocument: PDFDocumentProxy;
     try {
       pdfDocument = (await Promise.race([
         loadingTask.promise,
         openTimeout.promise,
+        ...(signal === undefined ? [] : [openAbort]),
       ])) as PDFDocumentProxy;
     } finally {
       openTimeout.cancel();
     }
 
     const pageCount = pdfDocument.numPages;
-    const last = to === null ? pageCount : Math.min(to, pageCount);
-    const inRange: number[] = [];
-    for (let pageNumber = from; pageNumber <= last; pageNumber += 1) inRange.push(pageNumber);
+    if (to !== null && to < from) {
+      return { ok: false, failure: { reason: pdfBackwardsRangeMessage(name, from, to) } };
+    }
+    const inRange = pdfInRangePages(pageCount, from, to);
     const renderedNumbers = inRange.slice(0, resolved.maxPages);
     const omittedPages = inRange.slice(resolved.maxPages);
 
-    const pages: PdfRenderedPage[] = [];
-    const downscaledPages: number[] = [];
     const ladder = pdfScaleLadder(resolved.startScale);
 
     for (const pageNumber of renderedNumbers) {
+      if (pdfIsAborted(signal)) {
+        stoppedEarly = "cancelled";
+        omittedPages.push(...renderedNumbers.slice(pages.length));
+        break;
+      }
       const budget = Math.min(remainingMs(), resolved.pageTimeoutMs);
       if (budget <= 0) {
+        stoppedEarly = "timeout";
         const skipped = renderedNumbers.slice(pages.length);
         omittedPages.push(...skipped);
         break;
@@ -547,12 +740,34 @@ export async function renderPdfPages(
       const pageTimeout = failAfter<PDFPageProxy>(budget, "timeout");
       let page: PDFPageProxy;
       try {
-        page = await Promise.race([pdfDocument.getPage(pageNumber), pageTimeout.promise]);
+        page = await Promise.race([
+          pdfDocument.getPage(pageNumber),
+          pageTimeout.promise,
+          ...(signal === undefined ? [] : [openAbort]),
+        ]);
+      } catch (error) {
+        // A hung page is a page that did not travel, not a failed document:
+        // the pages already streamed through the sink stay streamed, and the
+        // outcome names this page and everything after it. The `getPage`
+        // promise still holds the page request on pdf.js's side; destroying
+        // the loading task in the outer `finally` tears it down.
+        if (error instanceof PdfRenderError && error.kind === "cancelled") {
+          stoppedEarly = "cancelled";
+          omittedPages.push(...renderedNumbers.slice(pages.length));
+          break;
+        }
+        if (error instanceof Error && error.message === "timeout") {
+          stoppedEarly = "timeout";
+          omittedPages.push(...renderedNumbers.slice(pages.length));
+          break;
+        }
+        throw error;
       } finally {
         pageTimeout.cancel();
       }
+      let chosen: PdfRenderedPage;
       try {
-        const chosen = await renderOnePage(
+        chosen = await renderOnePage(
           page,
           pageNumber,
           ladder,
@@ -560,27 +775,75 @@ export async function renderPdfPages(
           pdfjs.AnnotationMode.DISABLE,
           remainingMs,
           resolved.pageTimeoutMs,
+          signal,
         );
-        if (chosen.scale < PDF_READABILITY_FLOOR) downscaledPages.push(pageNumber);
-        pages.push(chosen);
-        sink.onPage(chosen);
+      } catch (error) {
+        if (error instanceof PdfRenderError && error.kind === "cancelled") {
+          stoppedEarly = "cancelled";
+          omittedPages.push(...renderedNumbers.slice(pages.length));
+          break;
+        }
+        if (error instanceof Error && error.message === "timeout") {
+          stoppedEarly = "timeout";
+          omittedPages.push(...renderedNumbers.slice(pages.length));
+          break;
+        }
+        throw error;
       } finally {
         page.cleanup();
+      }
+      if (chosen.scale < PDF_READABILITY_FLOOR) downscaledPages.push(pageNumber);
+      pages.push(chosen);
+      // The sink is the caller's code, and its exceptions are the caller's
+      // bug: they are tagged here so the catch below cannot wrap them as a
+      // defect in the user's file. The page already counts as travelled — it
+      // rendered fine, and `pages` keeps it — but no further page starts on
+      // a sink that just threw, because every later `onPage` would throw the
+      // same way. The failure names the page and blames the receiving code,
+      // never the file.
+      try {
+        sink.onPage(chosen);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new PdfRenderError("sink", `${chosen.pageNumber}: ${detail}`);
       }
     }
 
     return {
       ok: true,
-      outcome: { name, pageCount, pages, omittedPages, downscaledPages },
+      outcome: { name, pageCount, pages, omittedPages, downscaledPages, stoppedEarly },
     };
   } catch (error) {
+    if (error instanceof PdfRenderError && error.kind === "sink") {
+      return {
+        ok: false,
+        failure: {
+          reason:
+            `${name} rendered, but the receiving code threw on page ${error.message}. ` +
+            `The file is fine; this is a bug in the caller, not in the PDF.`,
+        },
+      };
+    }
+    if (error instanceof PdfRenderError && error.kind === "cancelled") {
+      return {
+        ok: true,
+        outcome: {
+          name,
+          pageCount: 0,
+          pages: [],
+          omittedPages: [],
+          downscaledPages: [],
+          stoppedEarly: "cancelled",
+        },
+      };
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (error !== null && typeof error === "object" && "name" in error) {
       const kind = (error as { name?: unknown }).name;
       if (kind === "PasswordException") {
         return { ok: false, failure: { reason: pdfEncryptedMessage(name) } };
       }
-      if (kind === "Jbig2Error" || kind === "JpxError" || /failed to initialize/iu.test(message)) {
+      if (isPdfImageCodecFailure(error)) {
         return {
           ok: false,
           failure: {
@@ -605,6 +868,12 @@ export async function renderPdfPages(
     }
     return { ok: false, failure: { reason: pdfInvalidMessage(name, message) } };
   } finally {
+    // The abort listener outlives every race it was added for — `once: true`
+    // removes it only when it fires — so a caller reusing one signal across
+    // renders would stack a listener per call without this.
+    if (signal !== undefined && openAbortListener !== null) {
+      signal.removeEventListener("abort", openAbortListener);
+    }
     try {
       await loadingTask?.destroy();
     } catch {

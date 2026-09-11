@@ -35,6 +35,10 @@ function outcome(overrides: Partial<PdfRenderOutcome> = {}): PdfRenderOutcome {
     name: "deck.pdf",
     pageCount: 12,
     pages: [],
+    // "Ran to the end" is `null`, not an absent field: the outcome type makes
+    // the caller state it, so a test that forgets to cannot quietly read as a
+    // complete render.
+    stoppedEarly: null,
     omittedPages: [],
     downscaledPages: [],
     ...overrides,
