@@ -102,30 +102,105 @@ export interface DesignAttachmentImport {
   notices: readonly string[];
 }
 
+export interface SvgSanitizerRuleDefinition {
+  /**
+   * What was taken out of the file, named for the person who dropped it there.
+   * Short, a noun phrase, and true of what actually went: this is most of what
+   * an attaching user reads about a file that was edited under their hands.
+   */
+  label: string;
+  /**
+   * Why the rule exists, for whoever reads this source in a year. Long is fine
+   * here, and only here — the notice below no longer repeats it.
+   */
+  reason: string;
+}
+
 /**
- * Every sanitizer rule, each with the reason it exists. An SVG is a document that
- * can act, and each rule below closes one way it could act once the generated page
- * renders it. The reasons are part of the definition, not a comment beside it:
- * a rule whose reason cannot be stated should not be there.
+ * Every sanitizer rule, each with what the user is told was removed and the
+ * reason it is removed at all. An SVG is a document that can act, and each rule
+ * below closes one way it could act once the generated page renders it. Both
+ * halves of a rule live in one entry, so the sentence shown to the user and the
+ * argument for the rule cannot drift apart, and a rule whose reason cannot be
+ * stated should not be there.
  */
 export const SVG_SANITIZER_RULES = {
-  script:
-    "a <script> inside the SVG runs with the page's own privileges when the artifact renders it.",
-  eventHandler:
-    "an on* attribute is a script by another name: removing <script> alone leaves it runnable.",
-  foreignObject:
-    "it hosts arbitrary HTML — script, forms, iframes — outside the restrictions SVG places on itself.",
-  externalReference:
-    "an href or src pointing off-document makes the user's app fetch a third-party URL, leaking the request and their IP. Only a fragment, or an inline payload on an element that renders it as a picture, is kept.",
-  doctype:
-    "an internal DTD subset can expand entities without bound, and an external one is fetched.",
-  animationTarget:
-    "a SMIL animation rewrites its attribute after load, so it can restore an href this pass removed.",
-  externalCssUrl:
-    "CSS url() fetches exactly as an href does, through @import, fill, filter and mask.",
-} as const;
+  script: {
+    label: "a script",
+    reason:
+      "a <script> inside the SVG runs with the page's own privileges when the artifact renders it.",
+  },
+  eventHandler: {
+    label: "an event handler",
+    reason:
+      "an on* attribute is a script by another name: removing <script> alone leaves it runnable.",
+  },
+  foreignObject: {
+    label: "an embedded HTML block",
+    reason:
+      "it hosts arbitrary HTML — script, forms, iframes — outside the restrictions SVG places on itself.",
+  },
+  svg12Handler: {
+    label: "an SVG 1.2 event-binding element",
+    reason:
+      "the SVG 1.2 <handler> and <listener> elements bind a script to an event. No current browser executes them, so this is not exploitable today, but an element that carries behaviour is not kept on the chance that it is inert.",
+  },
+  externalReference: {
+    label: "a link to another site",
+    reason:
+      "an href or src pointing off-document makes the user's app fetch a third-party URL, leaking the request and their IP. Only a fragment, or an inline payload on an element that renders it as a picture, is kept.",
+  },
+  doctype: {
+    label: "a document type declaration",
+    reason:
+      "an internal DTD subset can expand entities without bound, and an external one is fetched.",
+  },
+  animationTarget: {
+    label: "an animation that rewrites attributes",
+    reason:
+      "a SMIL animation rewrites its attribute after load, so it can restore an href this pass removed.",
+  },
+  externalCssUrl: {
+    label: "a CSS reference to another site",
+    reason: "CSS url() fetches exactly as an href does, through @import, fill, filter and mask.",
+  },
+} as const satisfies Record<string, SvgSanitizerRuleDefinition>;
 
 export type SvgSanitizerRule = keyof typeof SVG_SANITIZER_RULES;
+
+/** `a`, `a and b`, `a, b and c`: a conjunction before the last item, never a stray one. */
+function listWithAnd(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * What the composer says about a file it edited on the way in: one sentence,
+ * about that file, naming what was taken out of it.
+ *
+ * The reasons in `SVG_SANITIZER_RULES` argue the rule to whoever maintains the
+ * sanitizer, and they used to be what the user read — six lines of security
+ * reasoning printed under a dropped logo, which answers a question nobody asked.
+ * Someone who has just attached a file wants to know one thing: whether their
+ * file survived intact, and if not, what is gone. The rules are named rather
+ * than summarized, because "some unsafe elements were removed" would be shorter
+ * and would hide which parts of the drawing will not be there.
+ *
+ * Rules are listed in the order they are declared, so the same input always
+ * reads the same way, and each is named once however many times it fired.
+ */
+export function svgSanitizerNotice(name: string, removed: readonly SvgSanitizerRule[]): string {
+  const fired = new Set(removed);
+  const labels = (Object.keys(SVG_SANITIZER_RULES) as SvgSanitizerRule[])
+    .filter((rule) => fired.has(rule))
+    .map((rule) => SVG_SANITIZER_RULES[rule].label);
+  // An empty list is not a message — "…: was removed" describes nothing. The
+  // import below asks only when a rule fired; this keeps the answer honest for
+  // any other caller.
+  if (labels.length === 0) return "";
+  const verb = labels.length === 1 ? "was removed" : "were removed";
+  return `${name} was sanitized before attaching: ${listWithAnd(labels)} ${verb}.`;
+}
 
 export interface SvgSanitizeSuccess {
   ok: true;
@@ -249,6 +324,12 @@ export function sanitizeSvgSource(source: string): SvgSanitizeResult {
     // foreignObject is removed with its subtree; a check inside it would be a
     // second, weaker parser for HTML that the browser already has.
     else if (name === "foreignobject") drop(element, "foreignObject");
+    // SVG 1.2's <handler> carries the script and <listener> points at it; both go
+    // with their subtree. No current browser executes either one, so this is not
+    // a hole anyone can walk through today, and that is not why the rule is here:
+    // this pass keeps what it has examined, and an element that carries behaviour
+    // does not survive on the chance that it is inert.
+    else if (name === "handler" || name === "listener") drop(element, "svg12Handler");
   }
   // A DOCTYPE is the one node that can define entities. The serializer would
   // carry it back out, so dropping it is the whole fix.
@@ -581,10 +662,10 @@ export async function importDesignAttachments(
         });
         continue;
       }
-      if (sanitized.removed.length > 0) {
-        const reasons = sanitized.removed.map((rule) => SVG_SANITIZER_RULES[rule]);
-        notices.push(`${file.name} was sanitized before attaching: ${reasons.join(" ")}`);
-      }
+      // One sentence about this file. The reasons for the rules stay in
+      // SVG_SANITIZER_RULES, where whoever maintains the sanitizer reads them.
+      const sanitizeNotice = svgSanitizerNotice(file.name, sanitized.removed);
+      if (sanitizeNotice !== "") notices.push(sanitizeNotice);
       if (
         declared !== "" &&
         declared !== "image/svg+xml" &&

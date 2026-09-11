@@ -391,8 +391,9 @@ describe("a file that is not attached", () => {
 
     expect(pillNames(container)).toEqual(["logo.svg"]);
     expect(feedback(container)).toHaveLength(1);
-    expect(feedback(container)[0]).toContain("logo.svg was sanitized before attaching");
-    expect(feedback(container)[0]).toContain("<script>");
+    expect(feedback(container)[0]).toBe(
+      "logo.svg was sanitized before attaching: a script and an event handler were removed.",
+    );
   });
 });
 
