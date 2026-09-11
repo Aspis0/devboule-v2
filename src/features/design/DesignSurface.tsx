@@ -80,7 +80,6 @@ import {
 } from "./designSettings";
 import { DesignFolderControl } from "./DesignFolderControl";
 import {
-  ATTACHMENT_DELIVERY_NOTICE,
   ATTACHMENT_INPUT_ACCEPT,
   collectAttachmentFiles,
   formatAttachmentSize,
@@ -3059,16 +3058,6 @@ const DesignAssistant = memo(function DesignAssistant({
                     </span>
                   ))}
                 </div>
-                {/*
-                  Sits with the pills, not at the foot of the transcript, because the
-                  decision it bears on is the one being made here. It states what the
-                  pills do not: the file is held, and the next run will not carry it.
-                  Plain visible text — an aria-label would say nothing to the designer
-                  reading the composer, and a tooltip would say it only on hover.
-                */}
-                <p className="design-attachment-notice" role="status">
-                  {ATTACHMENT_DELIVERY_NOTICE}
-                </p>
               </>
             ) : null}
             <div className="design-composer-input">

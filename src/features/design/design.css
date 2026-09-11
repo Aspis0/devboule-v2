@@ -1830,19 +1830,6 @@
   margin-bottom: 6px;
 }
 
-/* The line that says the pills above are not on the wire yet. Its volume is
-   copied from the composer's own note (.design-skill-result: --silence, 10px,
-   1.35) rather than invented, because this states a limit and not a failure;
-   .design-attachment-feedback's danger colour belongs to a rejected file, and
-   nothing was rejected here. The margin is stated rather than inherited: the
-   reset above zeroes margins on a handful of elements, not on a paragraph. */
-.design-attachment-notice {
-  margin: 0 0 6px;
-  color: var(--silence);
-  font-size: 10px;
-  line-height: 1.35;
-}
-
 .design-attachment-pill {
   display: flex;
   max-width: 100%;

@@ -59,27 +59,6 @@ export const MAX_ATTACHMENT_TOTAL_BYTES = 256 * 1024;
  */
 export const MAX_ATTACHMENT_COUNT = 4;
 
-/**
- * What the composer says about a file it holds but cannot deliver.
- *
- * The import is complete and the file is real: it is measured, sanitized and
- * kept in the composer. It is not on the wire. `runGeneration` in agentHost.ts
- * reads five fields off `DesignGenerationOptions` — `grounded`, `folderPath`,
- * `skillMode`, `outputMode`, `skills` — and `attachments` is not one of them, so
- * a run reaches the provider with the typed prompt and nothing else. That is a
- * property of the request, not a failure of the import, which is why this is a
- * note and not an error.
- *
- * This sentence is the only thing standing between the user and a run that
- * produces something other than what the pills suggest. It is therefore shown
- * exactly while the condition holds: an attachment is present. Delete it in the
- * same change that makes `runGeneration` forward `options.attachments` to the
- * provider, and delete it completely — a notice left behind after the wire
- * exists is the same lie pointing the other way. One copy, here.
- */
-export const ATTACHMENT_DELIVERY_NOTICE =
-  "Attachments are kept here but not sent: the request to the agent carries text only, so Generate will work from your prompt alone.";
-
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
 

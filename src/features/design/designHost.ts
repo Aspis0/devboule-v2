@@ -250,14 +250,9 @@ export type DesignAttachment = DesignRasterAttachment | DesignSvgAttachment;
  * field here and are never persisted: a starting point belongs to the request it
  * was attached to, and the composer clears them the moment the run starts. The
  * field is optional and its absence means the caller predates importing, which
- * is the same thing as an empty list to every consumer that has one. No frontend
- * consumer exists yet — the daemon and the provider wire are a separate slice;
- * the types are declared here so the boundary is stated where the request is
- * built rather than inferred later from a prompt that happens to contain base64.
- * The composer does not leave that gap for the user to discover by pressing
- * Generate: the notice declared as `ATTACHMENT_DELIVERY_NOTICE` in
- * designAttachments.ts is shown while this field has no reader, and it is
- * deleted by whoever gives this field its first one.
+ * is the same thing as an empty list to every consumer that has one. The types
+ * are declared here so the boundary is stated where the request is built rather
+ * than inferred later from a prompt that happens to contain base64.
  */
 export type DesignGenerationOptions = (
   | { skillMode: "auto" }

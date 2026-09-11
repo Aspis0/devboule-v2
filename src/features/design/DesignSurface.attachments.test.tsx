@@ -4,11 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
-import {
-  ATTACHMENT_DELIVERY_NOTICE,
-  ATTACHMENT_INPUT_ACCEPT,
-  formatAttachmentSize,
-} from "./designAttachments";
+import { ATTACHMENT_INPUT_ACCEPT, formatAttachmentSize } from "./designAttachments";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationOptions } from "./designHost";
 
@@ -210,10 +206,6 @@ function feedback(container: HTMLDivElement): readonly string[] {
   return Array.from(container.querySelectorAll(".design-attachment-feedback p")).map(
     (element) => element.textContent ?? "",
   );
-}
-
-function notice(container: HTMLDivElement): HTMLElement | null {
-  return container.querySelector<HTMLElement>(".design-attachment-notice");
 }
 
 async function fillDraft(container: HTMLDivElement, prompt: string): Promise<void> {
@@ -564,72 +556,25 @@ describe("an attached file shows itself in its pill", () => {
       const preview = pill.querySelector(".design-attachment-preview");
       expect(preview?.nextElementSibling?.classList.contains("design-attachment-name")).toBe(true);
     }
-    expect(
-      notice(container)?.previousElementSibling?.classList.contains("design-attachment-row"),
-    ).toBe(true);
   });
 });
 
-describe("the composer says what it will not send", () => {
-  it("shows the delivery notice beside the pills as soon as one file is attached", async () => {
-    const { container } = await renderDesign(createHost());
-    expect(notice(container)).toBeNull();
-
-    await dispatchTransferEvent(composer(container), "drop", {
-      files: [imageFile("hero.png", PNG_BYTES, "image/png")],
-    });
-
-    const element = notice(container);
-    expect(element?.textContent).toBe(ATTACHMENT_DELIVERY_NOTICE);
-    // In the composer, directly after the row of pills: the sentence has to be
-    // read at the moment of attaching, not found after a wasted run.
-    expect(element?.parentElement?.classList.contains("design-composer")).toBe(true);
-    expect(element?.previousElementSibling?.classList.contains("design-attachment-row")).toBe(true);
-    // Visible text, not an accessible name on an invisible node and not a tooltip.
-    expect(element?.hasAttribute("title")).toBe(false);
-    expect(element?.getAttribute("aria-label")).toBeNull();
-    expect(element?.textContent?.length).toBeGreaterThan(0);
-  });
-
-  it("carries the three facts the pills leave out, as a note rather than an error", async () => {
-    // The sentence is the deliverable, so its meaning is asserted directly: it
-    // must say the file is held, that it is not sent, and why. A rewrite that
-    // drops one of the three turns the notice into decoration.
-    expect(ATTACHMENT_DELIVERY_NOTICE).toMatch(/kept here/);
-    expect(ATTACHMENT_DELIVERY_NOTICE).toMatch(/not sent/);
-    expect(ATTACHMENT_DELIVERY_NOTICE).toMatch(/text only/);
-
-    const { container } = await renderDesign(createHost());
-    await dispatchTransferEvent(composer(container), "drop", {
-      files: [
-        imageFile("hero.png", PNG_BYTES, "image/png"),
-        imageFile("detail.png", PNG_BYTES, "image/png"),
-      ],
-    });
-
-    const element = notice(container);
-    expect(element?.classList.contains("design-attachment-error")).toBe(false);
-    expect(element?.className).toBe("design-attachment-notice");
-    // role=status: a reader without sight learns it when it appears, not never.
-    expect(element?.getAttribute("role")).toBe("status");
-  });
-
-  it("takes the notice away with the last attachment", async () => {
+describe("the composer does not warn about delivery", () => {
+  it("attaches a file without claiming the run will not carry it", async () => {
     const { container } = await renderDesign(createHost());
 
     await dispatchTransferEvent(composer(container), "drop", {
       files: [imageFile("hero.png", PNG_BYTES, "image/png")],
     });
-    expect(notice(container)).not.toBeNull();
 
-    const remove = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Remove hero.png"]',
-    );
-    if (remove === null) throw new Error("remove control missing");
-    await act(async () => remove.click());
-
-    expect(pillNames(container)).toEqual([]);
-    expect(notice(container)).toBeNull();
+    expect(pillNames(container)).toEqual(["hero.png"]);
+    // The attachment is carried on the generation options, so nothing is
+    // withheld and there is nothing left to warn about. Asserted against the
+    // composer's visible text rather than one class name, so a notice that came
+    // back reworded instead of deleted fails here too.
+    const composerText = composer(container).textContent ?? "";
+    expect(composerText).not.toMatch(/not sent|kept here|text only/i);
+    expect(container.querySelector(".design-attachment-notice")).toBeNull();
   });
 });
 

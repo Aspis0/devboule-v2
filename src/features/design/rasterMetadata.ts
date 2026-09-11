@@ -7,10 +7,11 @@ import type { RasterMimeType } from "./designAttachments";
  * side channels a camera or an editor wrote next to them — the GPS fix where it
  * was taken (EXIF or XMP), the device model and its serial number, free-text
  * notes and a time of day. Nothing in the composer needs any of that to draw the
- * image, and today the composer's message says the file is not sent anywhere.
- * That sentence stops being true the moment an attachment is put on the wire, so
- * the bytes have to be clean *before* the delivery exists, not after: a strip
- * added later cleans new imports and leaves every file already stored dirty.
+ * image, and an attachment now leaves the machine: the bytes travel to the
+ * daemon, which writes them to a file the agent opens. This pass landed one
+ * commit before that delivery did, and the order was the point — a strip added
+ * afterwards cleans new imports and leaves every file already held dirty, and a
+ * composer's attachments outlive the run they were attached for.
  *
  * The pass works on the container's own segments, never on a re-encode. Running
  * a raster through a canvas and reading `toDataURL` back would remove the
