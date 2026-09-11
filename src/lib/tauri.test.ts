@@ -5,6 +5,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   COMMAND_ARG_KEYS,
+  devicesList,
   invokeTyped,
   isCommandError,
   journalRetentionGet,
@@ -12,6 +13,11 @@ import {
   journalUsage,
   oracleAskFolder,
   oracleFolderStatus,
+  pairingComplete,
+  pairingConfirm,
+  pairingStart,
+  peerRevoke,
+  peerSetCaps,
   providersRefresh,
   sessionAttach,
   sessionClaim,
@@ -27,7 +33,9 @@ import {
   sessionResume,
   surfaceSettingsGet,
   surfaceSettingsSet,
+  type PairingOutcome,
 } from "./tauri";
+import type { PeerRow, PendingPairing } from "../types/ipc";
 
 function rustCommandFiles(root: string): string[] {
   return readdirSync(root, { withFileTypes: true })
@@ -593,5 +601,136 @@ describe("folder-scoped Oracle wrappers", () => {
     // signatures; this pins the exact keys so a rename cannot pass unnoticed.
     expect(COMMAND_ARG_KEYS.oracle_folder_status).toEqual(["path"]);
     expect(COMMAND_ARG_KEYS.oracle_ask_folder).toEqual(["path", "query"]);
+  });
+});
+
+const PAIRED_PEER: PeerRow = {
+  deviceId: "9f6b0f2e-6f1c-4a1e-9c62-1e2f7d59a9c3",
+  displayName: "Xiaomi 14",
+  role: "client",
+  publicKey: "cHVibGljLWtleQ==",
+  keyFingerprint: "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+  bindingKind: "tailnet",
+  bindingNodeName: "xiaomi-14.tail80a42d.ts.net.",
+  bindingLoginName: "user@example.com",
+  address: "100.74.116.126:47831",
+  pairedAt: 1_760_000_000_000,
+  revokedAt: null,
+  caps: ["view", "send"],
+  pairedByUser: "S-1-5-21-1004336348-1177238915-682003330-1001",
+  online: true,
+};
+
+const WAITING_PAIRING: PendingPairing = {
+  deviceId: "3ac1f0de-4b5a-4c3d-8e9f-0a1b2c3d4e5f",
+  displayName: "Marco's MacBook Pro",
+  role: "daemon",
+  keyFingerprint: "f9e8d7c6b5a4938271605f4e3d2c1b0a",
+  address: "100.74.116.126:47831",
+  expiresAt: 1_760_000_060_000,
+};
+
+describe("pairing outcome narrowing", () => {
+  // The whole point of `PairingOutcome` is that the two replies are told apart
+  // by their wire tag, not by which fields look present. This helper only
+  // compiles while the union stays discriminated; an added variant fails the
+  // `never` assignment below instead of silently falling through.
+  function pairingLine(outcome: PairingOutcome): string {
+    switch (outcome.type) {
+      case "pairing_pending":
+        return `waiting for ${outcome.peer.displayName} to confirm`;
+      case "pairing_done":
+        return `paired ${outcome.peer.displayName}`;
+      default: {
+        const unhandled: never = outcome;
+        return `unknown reply ${String(unhandled)}`;
+      }
+    }
+  }
+
+  it("reads the pending reply as a pending pairing", () => {
+    expect(pairingLine({ type: "pairing_pending", peer: WAITING_PAIRING })).toBe(
+      "waiting for Marco's MacBook Pro to confirm",
+    );
+  });
+
+  it("reads the done reply as a written peer row", () => {
+    expect(pairingLine({ type: "pairing_done", peer: PAIRED_PEER })).toBe("paired Xiaomi 14");
+  });
+
+  it("resolves pairing_complete with the reply the daemon sent", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({ type: "pairing_done", peer: PAIRED_PEER } as never);
+
+    const outcome = await pairingComplete("100.74.116.126:47831", "ABCD2345", "client");
+
+    expect(invoke).toHaveBeenCalledWith("pairing_complete", {
+      address: "100.74.116.126:47831",
+      code: "ABCD2345",
+      role: "client",
+    });
+    expect(outcome.type).toBe("pairing_done");
+    if (outcome.type !== "pairing_done") throw new Error("narrowing failed");
+    expect(outcome.peer.deviceId).toBe(PAIRED_PEER.deviceId);
+  });
+});
+
+describe("device command wrappers", () => {
+  it("sends each argument as the camelCase key Tauri v2 expects", async () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue({} as never);
+
+    await devicesList();
+    await pairingStart("daemon");
+    await pairingConfirm("device-1", true);
+    await peerRevoke("device-1");
+    await peerSetCaps("device-1", ["view", "send", "answer_permissions"]);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "devices_list", undefined);
+    expect(invoke).toHaveBeenNthCalledWith(2, "pairing_start", { role: "daemon" });
+    expect(invoke).toHaveBeenNthCalledWith(3, "pairing_confirm", {
+      deviceId: "device-1",
+      accept: true,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, "peer_revoke", { deviceId: "device-1" });
+    expect(invoke).toHaveBeenNthCalledWith(5, "peer_set_caps", {
+      deviceId: "device-1",
+      caps: ["view", "send", "answer_permissions"],
+    });
+  });
+
+  it("carries a declined pairing through as null, not as a rejection", async () => {
+    vi.mocked(invoke).mockClear();
+    // The daemon's `pairing_declined` reply is a success: Tauri hands the
+    // Option's None back as null, and the wrapper must not turn that into an
+    // error the panel would show as a failed decline.
+    vi.mocked(invoke).mockResolvedValue(null as never);
+
+    await expect(pairingConfirm("device-1", false)).resolves.toBeNull();
+    expect(invoke).toHaveBeenCalledWith("pairing_confirm", {
+      deviceId: "device-1",
+      accept: false,
+    });
+  });
+
+  it("sends the full grant array, never a delta", () => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockResolvedValue(PAIRED_PEER as never);
+    const caps = ["view"] as const;
+    void peerSetCaps("device-1", caps);
+
+    const payload = vi.mocked(invoke).mock.calls[0]?.[1] as { caps: string[] };
+    // The daemon stores the array it receives, so dropping `view` here would
+    // silently revoke it.
+    expect(payload.caps).toEqual(["view"]);
+  });
+
+  it("pins the wire keys of every device command", () => {
+    expect(COMMAND_ARG_KEYS.devices_list).toEqual([]);
+    expect(COMMAND_ARG_KEYS.pairing_start).toEqual(["role"]);
+    expect(COMMAND_ARG_KEYS.pairing_complete).toEqual(["address", "code", "role"]);
+    expect(COMMAND_ARG_KEYS.pairing_confirm).toEqual(["deviceId", "accept"]);
+    expect(COMMAND_ARG_KEYS.peer_revoke).toEqual(["deviceId"]);
+    expect(COMMAND_ARG_KEYS.peer_set_caps).toEqual(["deviceId", "caps"]);
   });
 });

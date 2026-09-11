@@ -571,11 +571,6 @@
   background: var(--border-strong);
 }
 
-.settings-device-name {
-  font-size: 12.5px;
-  font-weight: 500;
-}
-
 .settings-devices-list {
   margin-top: 18px;
 }
@@ -702,4 +697,246 @@
   margin: 0;
   color: var(--silence);
   font-size: 11px;
+}
+
+/* Devices panel: this device, the pairing directions, the confirmations this
+   device owes, and the paired list. Every card is a .settings-card; these
+   rules only lay the panel out. */
+.device-section {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 13px 15px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.device-copy {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.device-self-head,
+.device-peer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+}
+
+.device-self-head .settings-card-value,
+.device-peer-head .settings-card-value {
+  margin-left: auto;
+}
+
+.device-fingerprint-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+}
+
+.device-fingerprint {
+  color: var(--ink-soft);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  word-break: break-word;
+}
+
+.device-role-chip {
+  flex: none;
+  padding: 1px 7px;
+  color: var(--ink-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.settings-device-action {
+  display: grid;
+  width: fit-content;
+  height: 26px;
+  padding: 0 12px;
+  place-items: center;
+  color: var(--ink-soft);
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.settings-device-action:hover,
+.settings-device-action:focus-visible {
+  color: var(--terracotta-deep);
+  border-color: var(--terracotta);
+}
+
+.settings-device-action:disabled {
+  color: var(--silence);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-pair-block {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+}
+
+.device-pair-code {
+  color: var(--ink);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 20px;
+  letter-spacing: 0.18em;
+}
+
+.device-pair-form {
+  display: grid;
+  gap: 8px;
+}
+
+.device-field {
+  display: grid;
+  gap: 3px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.device-field input {
+  padding: 5px 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+}
+
+.device-field-hint {
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.device-role-choice {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.device-role-choice legend {
+  padding: 0;
+  color: var(--silence);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.device-role-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.device-role-name {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.device-role-hint {
+  flex: 1 1 100%;
+  padding-left: 22px;
+  font-size: 10.5px;
+}
+
+.device-error {
+  margin: 0;
+  color: var(--danger-deep);
+  font-size: 11px;
+}
+
+/* The peer, pending and revoked cards carry `settings-card` in the JSX as well
+   as their own class: `display: flex` comes from there, and these rules only
+   override how the column lays out. Removing that class silently turns every
+   declaration below inert. */
+.device-peer,
+.device-pending {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line-subtle);
+}
+
+.device-caps {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.device-caps-legend {
+  padding: 0;
+  color: var(--silence);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.device-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.device-cap-note {
+  flex: 1 1 100%;
+  padding-left: 22px;
+  color: var(--silence);
+  font-size: 10px;
+}
+
+.device-inline-confirm {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.device-revoked {
+  margin-top: 4px;
+  color: var(--silence);
+  font-size: 11px;
+}
+
+.device-revoked summary {
+  cursor: pointer;
+}
+
+.device-revoked-row {
+  gap: 9px;
+  padding: 5px 0;
 }

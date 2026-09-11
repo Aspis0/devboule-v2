@@ -516,6 +516,15 @@ export interface DaemonStatus {
   capabilities: string[];
   /** For `unresponsive`: a human sentence from the supervisor, shown verbatim. */
   message: string | null;
+  /**
+   * Remote reachability and the secret store the daemon selected. Both live in
+   * the daemon's `Status` body; this supervisor projection does not forward
+   * them yet (`UiDaemonStatus` in `src-tauri/src/client/mod.rs`), so they stay
+   * optional here. The Devices panel reads the authoritative copy from
+   * `DevicesReply.selfInfo.remote` instead of guessing from these.
+   */
+  remote?: RemoteState;
+  secretStore?: SecretStore;
 }
 
 /**
@@ -804,6 +813,111 @@ export interface PluginInventory {
   plugins: PluginEntry[];
   /** Set when the plugins directory exists but could not be read. */
   problem: string | null;
+}
+
+/**
+ * Device identity and pairing, mirroring the `devices` / `pairing_*` frames of
+ * the daemon protocol (slice 1a). Nested payload structs follow the protocol
+ * crate's `rename_all = "camelCase"` convention (`Project`, `Workspace`,
+ * `Session`); enum *values* stay snake_case (`answer_permissions`), the same
+ * split `PermissionOutcome` already uses.
+ */
+
+/** What a paired device is allowed to be. Decided at pairing, never changed later. */
+export type PeerRole = "client" | "daemon";
+
+/**
+ * One grant a `client` peer may hold. `view` is always on: a paired client can
+ * always see its own sessions. `daemon` peers are origin-scoped by the daemon
+ * and are not toggled from here.
+ */
+export type Cap = "view" | "send" | "answer_permissions" | "create_sessions";
+
+/** Where the daemon keeps its Noise static key. Reported in `Status`. */
+export type SecretStore = "keyring" | "file";
+
+/**
+ * Whether this device can be reached remotely, as the daemon sees it. `reason`
+ * is the daemon's own sentence for a `disabled` or `key_missing` state; the
+ * panel renders it verbatim and never invents one.
+ */
+export interface RemoteState {
+  state: "enabled" | "disabled" | "key_missing";
+  reason: string | null;
+}
+
+/** This device's own identity, from `DevicesReply.selfInfo`. */
+export interface SelfInfo {
+  deviceId: string;
+  displayName: string;
+  /** Base64 Noise static public key. */
+  publicKey: string;
+  /** Hex SHA-256 prefix of `publicKey`; what a person reads aloud at pairing. */
+  keyFingerprint: string;
+  /** Tailnet addresses this daemon listens on; empty when remote is off. */
+  addresses: string[];
+  port: number;
+  daemonVersion: string;
+  protocolVersion: number;
+  remote: RemoteState;
+}
+
+/** One paired device, as the `peers` table holds it. */
+export interface PeerRow {
+  deviceId: string;
+  displayName: string;
+  role: PeerRole;
+  publicKey: string;
+  keyFingerprint: string;
+  /** The only binding that exists today; `relay` is designed but unbuilt. */
+  bindingKind: "tailnet";
+  bindingNodeName: string | null;
+  bindingLoginName: string | null;
+  /** `ip:port` learned at pairing. */
+  address: string;
+  /** Unix milliseconds. */
+  pairedAt: number;
+  /** Unix milliseconds; `null` while the peer is paired. */
+  revokedAt: number | null;
+  caps: Cap[];
+  /**
+   * The local user the pairing was confirmed by, as the daemon recorded it.
+   * `null` on a platform without a SID. Daemon-side bookkeeping: the panel
+   * shows peers, not this field.
+   */
+  pairedByUser: string | null;
+  online: boolean;
+}
+
+/** A pairing the far side asked for and a person here still has to confirm. */
+export interface PendingPairing {
+  deviceId: string;
+  displayName: string;
+  role: PeerRole;
+  keyFingerprint: string;
+  address: string;
+  /** Unix milliseconds when the parked pairing gives up. */
+  expiresAt: number;
+}
+
+/**
+ * The `pairing_start` reply: what this device displays. The code is shown once
+ * and never logged; it expires on its own, there is no cancel message.
+ */
+export interface PairingCode {
+  code: string;
+  /** Unix milliseconds. */
+  expiresAt: number;
+  /** `ip:port` the other device types. */
+  address: string;
+}
+
+/** The `devices_list` reply: this device plus everything paired or pending. */
+export interface DevicesReply {
+  selfInfo: SelfInfo;
+  /** Paired rows, revoked ones included: the panel splits them itself. */
+  peers: PeerRow[];
+  pending: PendingPairing[];
 }
 
 /** Handshake readout after the host has spawned a plugin backend. */

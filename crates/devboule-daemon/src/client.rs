@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use devboule_protocol::{
     AgentActivityState, ClientHello, ClientMessage, Cursor, DaemonHello, DaemonMessage,
-    DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PermissionOutcome,
-    Persistence, Project, PromptAttachment, ProviderInfo, ResumeResult, RetentionPatch, Session,
-    SessionEvent, SessionEventEnvelope, SessionKind, SessionStateSnapshot, SubscriptionId,
-    WireError, Workspace, WorkspaceIsolation,
+    DaemonStatusBody, ErrorCode, JournalRetention, JournalUsage, OwnerId, PeerRow,
+    PermissionOutcome, Persistence, Project, PromptAttachment, ProviderInfo, ResumeResult,
+    RetentionPatch, Session, SessionEvent, SessionEventEnvelope, SessionKind,
+    SessionStateSnapshot, SubscriptionId, WireError, Workspace, WorkspaceIsolation,
 };
 
 use crate::diagnostics::DiagnosticsReport;
@@ -651,6 +651,117 @@ impl DaemonClient {
             DaemonMessage::Ok { .. } => Ok(()),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             other => unexpected(other),
+        }
+    }
+
+    /// This device's identity plus every paired and pending peer, straight from
+    /// the daemon's frame. The panel needs the frame's field names unchanged, so
+    /// this method hands the reply on instead of re-shaping it.
+    pub fn devices_list(&self) -> Result<DaemonMessage, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::DevicesList { id })? {
+            reply @ DaemonMessage::Devices { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            // Not `unexpected`: a `pairing_code` frame misdelivered here would
+            // otherwise be `Debug`-formatted into an error string, and that
+            // string is rendered on screen and printable by any error log.
+            _ => pairing_reply_mismatch(),
+        }
+    }
+
+    /// Asks the daemon to display a fresh one-time pairing code for `role`.
+    ///
+    /// The code is a five-minute secret: it leaves here only inside the returned
+    /// frame, which the panel puts on screen. This method formats no frame into
+    /// a message, so no error path of it can carry the code.
+    pub fn pairing_start(&self, role: &str) -> Result<DaemonMessage, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::PairingStart { id, role: role.to_string() })? {
+            reply @ DaemonMessage::PairingCode { .. } => Ok(reply),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            _ => pairing_reply_mismatch(),
+        }
+    }
+
+    /// Types a code shown on another device. The daemon answers either with a
+    /// parked pairing this device's user still has to confirm, or with the row
+    /// it already wrote.
+    ///
+    /// `code` is moved into the request and dropped with it; it is never
+    /// formatted into any error string here.
+    pub fn pairing_complete(
+        &self,
+        address: &str,
+        code: &str,
+        role: &str,
+    ) -> Result<DaemonMessage, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::PairingComplete {
+            id,
+            address: address.to_string(),
+            code: code.to_string(),
+            role: role.to_string(),
+        })? {
+            reply @ (DaemonMessage::PairingPending { .. } | DaemonMessage::PairingDone { .. }) => {
+                Ok(reply)
+            }
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            _ => pairing_reply_mismatch(),
+        }
+    }
+
+    /// Answers a pending `client` pairing. `Some(row)` is the peer the daemon
+    /// wrote for an accept; `None` is a decline, which is a success too — the
+    /// daemon replies `PairingDeclined` because the parked pairing is gone, not
+    /// because anything failed.
+    pub fn pairing_confirm(
+        &self,
+        device_id: &str,
+        accept: bool,
+    ) -> Result<Option<PeerRow>, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::PairingConfirm {
+            id,
+            device_id: device_id.to_string(),
+            accept,
+        })? {
+            DaemonMessage::PeerUpdated { peer, .. } => Ok(Some(peer)),
+            DaemonMessage::PairingDeclined { .. } => Ok(None),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            _ => pairing_reply_mismatch(),
+        }
+    }
+
+    /// Revokes one peer: the row is stamped, live connections are dropped, and
+    /// the audit table records it. Returns the row as it now stands.
+    pub fn peer_revoke(&self, device_id: &str) -> Result<PeerRow, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::PeerRevoke {
+            id,
+            device_id: device_id.to_string(),
+        })? {
+            DaemonMessage::PeerUpdated { peer, .. } => Ok(peer),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            _ => pairing_reply_mismatch(),
+        }
+    }
+
+    /// Replaces a peer's whole capability list. The daemon stores what it is
+    /// given, so `caps` is always the complete set, never a delta.
+    pub fn peer_set_caps(
+        &self,
+        device_id: &str,
+        caps: Vec<String>,
+    ) -> Result<PeerRow, DaemonError> {
+        let id = self.alloc_id();
+        match self.roundtrip(ClientMessage::PeerSetCaps {
+            id,
+            device_id: device_id.to_string(),
+            caps,
+        })? {
+            DaemonMessage::PeerUpdated { peer, .. } => Ok(peer),
+            DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
+            _ => pairing_reply_mismatch(),
         }
     }
 
@@ -1327,6 +1438,16 @@ fn unexpected<T>(message: DaemonMessage) -> Result<T, DaemonError> {
     Err(DaemonError::Protocol(format!(
         "unexpected daemon frame: {message:?}"
     )))
+}
+
+/// A reply the pairing and peer-management methods did not expect. Unlike
+/// [`unexpected`] it never formats the frame: a `pairing_code` frame carries
+/// the live code, and the code must not reach a log or an error string through
+/// a `Debug` of a reply, whichever request the frame was misdelivered to.
+fn pairing_reply_mismatch<T>() -> Result<T, DaemonError> {
+    Err(DaemonError::Protocol(
+        "unexpected daemon frame on a pairing or peer request".to_string(),
+    ))
 }
 
 #[cfg(all(test, feature = "server"))]

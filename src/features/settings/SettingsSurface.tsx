@@ -9,11 +9,11 @@ import {
   workspacesList,
 } from "../../lib/tauri";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
+import { DevicesPanel } from "./DevicesPanel";
 import type { Project, ProviderCatalog, ProviderInfo, Workspace } from "../../types/ipc";
 import { OraclePanel } from "../oracle/OraclePanel";
 import { JournalRetentionPanel } from "./JournalRetentionPanel";
 import { NewProjectDialog } from "../../components/NewProjectDialog";
-import { MOCK_DEVICES } from "./mockData";
 import "./settings.css";
 
 export type SettingsTab =
@@ -663,26 +663,6 @@ function ProjectsPanel() {
       </div>
 
       <NewProjectDialog open={dialogOpen} onClose={closeDialog} onCreate={handleProjectAdded} />
-    </div>
-  );
-}
-
-function DevicesPanel() {
-  return (
-    <div id="settings-panel-devices" role="tabpanel" aria-label="Devices">
-      <SettingsHeading
-        title="Devices"
-        description="Paired clients that may drive this daemon. Pairing is per-device and revocable."
-      />
-      <div className="settings-stack settings-stack-tight settings-devices-list">
-        {MOCK_DEVICES.map((device) => (
-          <div className="settings-card settings-device-card" key={device.name}>
-            <span className={`device-dot device-dot-${device.tone}`} aria-hidden="true" />
-            <span className="settings-device-name">{device.name}</span>
-            <span className="settings-card-value">{device.state}</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
