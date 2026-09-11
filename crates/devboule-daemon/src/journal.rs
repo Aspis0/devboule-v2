@@ -278,12 +278,6 @@ impl WorkspaceRecord {
     }
 }
 
-/// Capabilities a freshly paired peer starts with (`DESIGN-remote-agents.md`
-/// §8b A11: every per-peer toggle is off by default except "view").
-/// Used from S6 (pairing); the allow is removed when that lands.
-#[allow(dead_code)]
-pub const DEFAULT_PEER_CAPS: &[&str] = &["view"];
-
 /// One paired device, as stored in `peers`.
 ///
 /// `role` is `client` or `daemon` (the CHECK constraint holds the same set).
@@ -308,8 +302,6 @@ pub struct PeerRecord {
 }
 
 impl PeerRecord {
-    /// Used by the S5/S6 live-connection checks; the allow is removed there.
-    #[allow(dead_code)]
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some()
     }
@@ -327,9 +319,9 @@ impl PeerRecord {
     }
 
     /// Whether `address` is this peer's stored address. Numeric comparison,
-    /// so `100.64.0.1` and `100.64.0.10` cannot match each other.
-    /// Used by the S5 pre-Noise filter; the allow is removed there.
-    #[allow(dead_code)]
+    /// so `100.64.0.1` and `100.64.0.10` cannot match each other. Used by the
+    /// pre-Noise filter, which is the only check that runs before a byte is
+    /// read.
     pub fn owns_address(&self, address: &std::net::IpAddr) -> bool {
         self.address_ip()
             .map(|owned| owned == *address)
@@ -3604,7 +3596,7 @@ mod tests {
             address: "100.74.116.126:47831".to_string(),
             paired_at: 1_700_000_000_000,
             revoked_at: None,
-            caps: DEFAULT_PEER_CAPS
+            caps: devboule_protocol::PEER_DEFAULT_CAPS
                 .iter()
                 .map(|cap| cap.to_string())
                 .collect(),

@@ -243,7 +243,18 @@ impl PluginSession {
                         | DaemonMessage::ProviderUpdated { id, .. }
                         | DaemonMessage::Ok { id }
                         | DaemonMessage::Resume { id, .. }
-                        | DaemonMessage::InvokeResult { id, .. } => Some(*id),
+                        | DaemonMessage::InvokeResult { id, .. }
+                        // The device RPCs are not on a plugin backend's path.
+                        // They carry an id like every other reply, so they are
+                        // listed rather than swept into a wildcard: this match
+                        // is exhaustive on purpose, and the compiler is what
+                        // tells us a new variant needs a decision here.
+                        | DaemonMessage::Devices { id, .. }
+                        | DaemonMessage::PairingCode { id, .. }
+                        | DaemonMessage::PairingPending { id, .. }
+                        | DaemonMessage::PairingDone { id, .. }
+                        | DaemonMessage::PeerUpdated { id, .. }
+                        | DaemonMessage::PairingDeclined { id, .. } => Some(*id),
                         DaemonMessage::Hello(_)
                         | DaemonMessage::Event(_)
                         | DaemonMessage::SessionAttached { .. }

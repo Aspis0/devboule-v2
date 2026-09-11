@@ -122,7 +122,12 @@ pub(super) fn open_connection(path: &Path) -> Result<Connection, JournalError> {
         [],
     );
     // The age floor alone is a disk sink: enforce the cap at every start too.
-    let _ = sweep_audit(&conn, unix_millis());
+    // A failure here must not be silent: the operator would otherwise see a
+    // clean open and an audit table that grows without bound. The line names
+    // the stage and the error only, never a path or a secret.
+    if let Err(error) = sweep_audit(&conn, unix_millis()) {
+        eprintln!("daemon audit sweep at journal open failed: {error}");
+    }
     // Reaped-but-still-live: the process was observed to exit, then the
     // daemon died during ConPTY drain. That is Ended (we saw the child),
     // not Recovered (we did not lose the process unobserved).
@@ -313,6 +318,7 @@ CREATE TABLE IF NOT EXISTS audit (
     outcome TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_device ON audit(device_id, id);
+CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
 CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
@@ -347,12 +353,21 @@ fn ensure_audit_triggers(conn: &Connection) -> Result<(), JournalError> {
             conn.execute_batch(sql)?;
         }
     }
+    // The age floor is a range scan on `at`; without this index the hourly
+    // sweep degrades to a full table scan on the writer thread.
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS audit_at ON audit(at);")?;
     Ok(())
 }
 
 /// The one place allowed to drop the append-only triggers: inside a single
 /// transaction that deletes the aged rows, applies the per-device cap, and
 /// recreates them. Returns `(deleted_by_age, deleted_by_cap)`.
+///
+/// Both deletes are single statements. The per-device cap used to be one
+/// `DELETE ... NOT IN (...)` per distinct `device_id`, which is `O(devices)`
+/// full scans and, on the writer thread, a stall proportional to the number
+/// of peers; the window function does it in one pass and uses
+/// `audit(device_id, id)` to partition.
 pub(super) fn sweep_audit(conn: &Connection, now_ms: i64) -> Result<(u64, u64), JournalError> {
     let floor_ms = now_ms - AUDIT_FLOOR_DAYS * 24 * 60 * 60 * 1000;
     let tx = conn.unchecked_transaction()?;
@@ -361,23 +376,18 @@ pub(super) fn sweep_audit(conn: &Connection, now_ms: i64) -> Result<(u64, u64), 
          DROP TRIGGER IF EXISTS audit_no_update;",
     )?;
     let aged = tx.execute("DELETE FROM audit WHERE at < ?1", [floor_ms])?;
-    let devices: Vec<String> = {
-        let mut statement = tx.prepare("SELECT DISTINCT device_id FROM audit")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-    let mut capped = 0usize;
-    for device_id in devices {
-        capped += tx.execute(
-            "DELETE FROM audit
-              WHERE device_id = ?1
-                AND id NOT IN (
-                    SELECT id FROM audit WHERE device_id = ?1
-                     ORDER BY id DESC LIMIT ?2
-                )",
-            rusqlite::params![device_id, AUDIT_MAX_ROWS_PER_DEVICE],
-        )?;
-    }
+    let capped = tx.execute(
+        "DELETE FROM audit
+          WHERE id IN (
+              SELECT id FROM (
+                  SELECT id, ROW_NUMBER() OVER (
+                      PARTITION BY device_id ORDER BY id DESC
+                  ) AS rank
+                  FROM audit
+              ) WHERE rank > ?1
+          )",
+        rusqlite::params![AUDIT_MAX_ROWS_PER_DEVICE],
+    )?;
     tx.execute_batch(&format!("{AUDIT_NO_DELETE_SQL}{AUDIT_NO_UPDATE_SQL}"))?;
     tx.commit()?;
     Ok((aged as u64, capped as u64))
@@ -467,7 +477,7 @@ mod tests {
 
     use super::super::{
         sample_session, tmp_journal, AuditRecord, Journal, JournalError, PeerRecord,
-        DEFAULT_PEER_CAPS, JOURNAL_MAX_AGE_MS, JOURNAL_MAX_SESSIONS, JOURNAL_SCHEMA_VERSION,
+        JOURNAL_MAX_AGE_MS, JOURNAL_MAX_SESSIONS, JOURNAL_SCHEMA_VERSION,
     };
     use super::SCHEMA_SQL;
 
@@ -889,7 +899,7 @@ mod tests {
                 address: "100.64.0.9:47831".to_string(),
                 paired_at: 1,
                 revoked_at: None,
-                caps: DEFAULT_PEER_CAPS
+                caps: devboule_protocol::PEER_DEFAULT_CAPS
                     .iter()
                     .map(|cap| cap.to_string())
                     .collect(),

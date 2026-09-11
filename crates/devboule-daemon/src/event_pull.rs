@@ -9,6 +9,7 @@ use devboule_protocol::{
 
 use crate::agent_report::PeerIdentity;
 use crate::outbound::ConnOut;
+use crate::peer_policy::ConnPeer;
 use crate::screen::{ScreenSnapshot, SnapshotCursorShape};
 
 use super::session_runtime::LiveAgentReplay;
@@ -106,7 +107,15 @@ fn snapshot_event(as_of_seq: u64, screen: ScreenSnapshot) -> SessionEvent {
 pub struct ConnHandle {
     pub id: u64,
     pub outbound: Arc<ConnOut>,
+    /// Kernel-derived identity, still read by `session.rs` for the local
+    /// ownership checks. `Some` for a named-pipe client, `None` for a remote
+    /// (Noise) peer, whose identity is [`ConnHandle::conn_peer`].
     pub peer: Option<PeerIdentity>,
+    /// The connection-level peer: `Local` for the pipe, `Remote` for a peer
+    /// whose Noise static key matched a pinned `peers` row. Kept in addition
+    /// to `peer` so `session.rs` does not have to learn a second type while
+    /// the dispatch gate still needs the remote identity.
+    pub conn_peer: Option<ConnPeer>,
     attached: Mutex<HashMap<u64, PullState>>,
     state_events: Mutex<VecDeque<SessionEventEnvelope>>,
     next_attachment_generation: AtomicU64,
@@ -119,10 +128,19 @@ impl ConnHandle {
     }
 
     pub fn with_peer(id: u64, peer: Option<PeerIdentity>) -> Arc<Self> {
+        Self::with_conn_peer(id, peer, None)
+    }
+
+    pub fn with_conn_peer(
+        id: u64,
+        peer: Option<PeerIdentity>,
+        conn_peer: Option<ConnPeer>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             id,
             outbound: ConnOut::new(),
             peer,
+            conn_peer,
             attached: Mutex::new(HashMap::new()),
             state_events: Mutex::new(VecDeque::new()),
             next_attachment_generation: AtomicU64::new(1),

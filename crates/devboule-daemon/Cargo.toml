@@ -15,7 +15,7 @@ default = ["server"]
 # Optional so a client-only build (the GUI process) does not link ConPTY.
 # rusqlite is the conversation journal (M3c). Optional for the same reason:
 # the GUI process never opens the database.
-server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest", "dep:uuid", "dep:base64", "dep:sha2", "dep:snow", "dep:keyring", "dep:zeroize"]
+server = ["dep:portable-pty", "dep:rusqlite", "dep:alacritty_terminal", "dep:reqwest", "dep:uuid", "dep:base64", "dep:sha2", "dep:snow", "dep:keyring", "dep:zeroize", "dep:spake2", "dep:getrandom", "dep:hkdf"]
 
 [lib]
 name = "devboule_daemon"
@@ -90,6 +90,20 @@ keyring = { version = "=4.2.0", default-features = false, features = ["v1"], opt
 # Envelope/PSK hygiene. The version snow's crypto backend already resolves in
 # this workspace (curve25519-dalek -> zeroize 1.9.0).
 zeroize = { version = "=1.9.0", optional = true }
+# Pairing PAKE. MIT/Apache-2.0; not constant-time, which the design accepts for
+# a single-use 40-bit code with lockout (DESIGN-remote-agents.md §9). Default
+# features are required: `start_a`/`start_b` live behind `getrandom`.
+spake2 = { version = "=0.4.0", optional = true }
+# Pairing code entropy and key derivation, from the RustCrypto family whose
+# digest major (`digest 0.11`) the `sha2` above already uses. Both versions are
+# already resolved in Cargo.lock; nothing else may be selected.
+#
+# The entropy source is `getrandom` itself rather than a UUID: a v4 UUID carries
+# six fixed version/variant bits, and a secret must not be derived from an
+# identifier type. `hkdf` re-exports `hmac`, so HMAC is not a separate direct
+# dependency.
+getrandom = { version = "=0.4.3", optional = true }
+hkdf = { version = "=0.13.0", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Named pipe, DACL, and LockFileEx. Version 0.61.2 is already in the lockfile

@@ -29,6 +29,11 @@ impl OwnerId {
 
     /// Short token embedded in a session id. Not a secret; it only names the
     /// owner so two clients of the same user do not share a bare counter.
+    ///
+    /// A remote owner (`peer_<device_id>`, `devboule-daemon/src/peer_policy.rs`)
+    /// gets a `p` prefix so a session id of remote origin is recognisable and
+    /// cannot collide with `process-<pid>` or `app-<pid>`. The token is
+    /// cosmetic: authority is [`OwnerId::user`].
     pub fn session_token(&self) -> String {
         let mut token = String::new();
         for (index, byte) in self.client.bytes().enumerate() {
@@ -40,7 +45,10 @@ impl OwnerId {
             }
         }
         if token.is_empty() {
-            "client".to_string()
+            token = "client".to_string();
+        }
+        if self.user.starts_with("peer_") {
+            format!("p{token}")
         } else {
             token
         }
@@ -133,5 +141,40 @@ mod tests {
     fn owner_session_token_is_short_and_safe() {
         let owner = OwnerId::new("S-1-5-21-1-2-3-1001", "app-9999").expect("owner");
         assert_eq!(owner.session_token(), "app-9999");
+    }
+
+    #[test]
+    fn a_remote_owner_gets_a_p_prefixed_token_that_cannot_collide() {
+        // Design §8b A2. The prefix is cosmetic; the point of the test is that
+        // the two namespaces (`process-*`/`app-*` and `peer_*`) cannot produce
+        // the same token, and that the result is a valid session id.
+        let remote = OwnerId::new("peer_dev-1", "client").expect("remote owner");
+        let daemon = OwnerId::new("peer_dev-1", "daemon").expect("remote owner");
+        assert_eq!(remote.session_token(), "pclient");
+        assert_eq!(daemon.session_token(), "pdaemon");
+
+        // No local client label can produce the same token. Note that the
+        // `p` prefix is *not* a namespace guarantee on its own: the local
+        // label `process-1` legitimately yields the token `process-1`, which
+        // also starts with `p`. What rules out collision is that a remote
+        // token is `p` + a role name, and no local token is.
+        let remote_tokens = [remote.session_token(), daemon.session_token()];
+        assert_eq!(
+            remote_tokens,
+            ["pclient".to_string(), "pdaemon".to_string()]
+        );
+        for local in ["process-1", "app-1", "client"] {
+            let owner = OwnerId::new("S-1-5-21-1", local).expect("local owner");
+            assert!(
+                !remote_tokens.contains(&owner.session_token()),
+                "local token {} collides with a remote token",
+                owner.session_token()
+            );
+            assert_eq!(owner.session_token(), local);
+        }
+
+        let id = compose_session_id(&remote.session_token(), "00000001").expect("compose");
+        assert!(validate_session_id(&id).is_ok(), "{id}");
+        assert!(id.starts_with("s.pclient."), "{id}");
     }
 }

@@ -38,7 +38,13 @@ mod login_shell_env;
 mod mcp_broker;
 #[cfg(feature = "server")]
 mod outbound;
+#[cfg(feature = "server")]
+mod pairing;
 mod paths;
+#[cfg(feature = "server")]
+mod peer_policy;
+#[cfg(feature = "server")]
+mod peer_transport;
 #[cfg(feature = "server")]
 mod pi_view;
 mod process_tree;
@@ -106,6 +112,11 @@ pub use login_shell_env::{
     LoginShellCaptureState,
 };
 pub use paths::RuntimePaths;
+#[cfg(feature = "server")]
+pub use peer_transport::{
+    initiator_handshake, split_session, NoiseReader, NoiseWriter, PeerTransport, Tailnet,
+    PEER_NOISE_PATTERN, PEER_PROLOGUE,
+};
 pub use process_tree::JobObject;
 #[cfg(feature = "server")]
 pub use provider_update::{NpmInstallResult, NpmInstallRunner, ProcessNpmInstallRunner};

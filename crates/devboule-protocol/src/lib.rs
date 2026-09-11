@@ -99,8 +99,10 @@ pub use ids::{
 };
 pub use messages::{
     ClientMessage, DaemonMessage, DaemonStatusBody, JournalLimits, JournalRetention,
-    JournalSessionUsage, JournalStats, JournalUsage, PromptAttachment, ProviderInfo,
-    RetentionLimit, RetentionPatch, RetentionSource, SessionEventEnvelope, Unreclaimable,
+    JournalSessionUsage, JournalStats, JournalUsage, PairingSecret, PeerRole, PeerRow,
+    PendingPairing, PromptAttachment, ProviderInfo, RemoteState, RemoteStateKind, RetentionLimit,
+    RetentionPatch, RetentionSource, SelfInfo, SessionEventEnvelope, Unreclaimable, PEER_CAPS,
+    PEER_DEFAULT_CAPS,
 };
 pub use plugin::WorkspaceRootBody;
 pub use project::{Project, Workspace, WorkspaceIsolation};
@@ -156,6 +158,9 @@ pub mod caps {
     pub const GRAPH_IMPORTS: &str = "graph.imports";
     pub const SESSIONS_WATCH: &str = "sessions.watch";
     pub const AGENT_RUN: &str = "agent.run";
+    /// The pairing server and the tailnet listener. Advertised to local
+    /// clients only: `peer_allows` denies all six device variants to peers.
+    pub const DEVICES: &str = "devices";
     pub const TYPED_PERMISSIONS: &str = "typed_permissions";
 }
 
@@ -419,6 +424,7 @@ pub fn m3a_daemon_capabilities() -> Vec<Capability> {
         Capability::new(caps::JOURNAL),
     ];
     capabilities.push(Capability::new(caps::TYPED_PERMISSIONS));
+    capabilities.push(Capability::new(caps::DEVICES));
     capabilities
 }
 
@@ -432,6 +438,11 @@ pub fn m3a_client_capabilities() -> Vec<Capability> {
         Capability::new(caps::JOURNAL),
     ];
     capabilities.push(Capability::new(caps::TYPED_PERMISSIONS));
+    // `devices` is in both lists on purpose: the handshake intersects them, so
+    // a capability only the daemon offered would never be negotiated and the
+    // Devices panel would be refused its own RPCs. Whether a *connection* may
+    // use it is `peer_allows`, not this list.
+    capabilities.push(Capability::new(caps::DEVICES));
     capabilities
 }
 

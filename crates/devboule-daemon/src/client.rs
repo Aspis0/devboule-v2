@@ -122,7 +122,17 @@ impl DaemonClient {
                 )
             })?;
             crate::transport::terminate_server_process_if_identity_matches(
-                &self.inner.framed.as_file(),
+                self.inner
+                    .framed
+                    .as_file()
+                    .ok_or_else(|| {
+                        DaemonError::Protocol(
+                            "this connection is not a named pipe; its daemon cannot be terminated \
+                         by handle"
+                                .to_string(),
+                        )
+                    })?
+                    .as_ref(),
                 expected,
             )
             .map_err(DaemonError::from)
@@ -859,7 +869,9 @@ impl DaemonClient {
 
     #[cfg(windows)]
     pub fn pipe_dacl_sddl(&self) -> std::io::Result<String> {
-        let file = self.inner.framed.as_file();
+        let file = self.inner.framed.as_file().ok_or_else(|| {
+            std::io::Error::other("this connection is not a named pipe and has no DACL")
+        })?;
         crate::transport::inspect_pipe_dacl(&file)
     }
 
@@ -1280,7 +1292,17 @@ fn daemon_message_id(message: &DaemonMessage) -> Option<u64> {
         | DaemonMessage::Event(_)
         | DaemonMessage::SubscriptionEvent { .. } => None,
         DaemonMessage::Error(error) => error.id,
-        DaemonMessage::Pong { id, .. }
+        // Every request-shaped reply carries its id. The device RPCs are
+        // listed rather than swept into a wildcard: this match is exhaustive on
+        // purpose, so a new reply variant is a compile error here until it is
+        // given a decision.
+        DaemonMessage::Devices { id, .. }
+        | DaemonMessage::PairingCode { id, .. }
+        | DaemonMessage::PairingPending { id, .. }
+        | DaemonMessage::PairingDone { id, .. }
+        | DaemonMessage::PeerUpdated { id, .. }
+        | DaemonMessage::PairingDeclined { id, .. }
+        | DaemonMessage::Pong { id, .. }
         | DaemonMessage::Status { id, .. }
         | DaemonMessage::Diagnostics { id, .. }
         | DaemonMessage::Shutdown { id, .. }

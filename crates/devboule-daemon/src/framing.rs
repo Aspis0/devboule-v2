@@ -11,6 +11,13 @@
 //! not hold the write lock. This is important because duplicating a named
 //! pipe handle and reading on one copy while writing on the other did not
 //! deliver duplex traffic on this stack.
+//!
+//! There are two shapes, not one trait object. The Windows pipe path drives
+//! raw overlapped `ReadFile`/`WriteFile` on a `HANDLE` and cannot be expressed
+//! through `Read`/`Write`; a remote peer arrives as a Noise session over a
+//! `TcpStream`. [`FramedInner`] keeps both concrete, so the pipe keeps its
+//! semantics and the stream gets a deadline that is recomputed on every read
+//! and write exactly like the overlapped path does.
 
 use std::fs::File;
 use std::io;
@@ -24,6 +31,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::DaemonError;
+#[cfg(feature = "server")]
+use crate::peer_transport::{NoiseReader, NoiseWriter};
 
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
@@ -38,14 +47,67 @@ use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 #[cfg(windows)]
 use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
+/// Both halves of one Noise session. Each half owns its own `TcpStream` (from
+/// `try_clone`), so a blocking read never holds the write lock and the two
+/// directions are independent, the same duplex property the pipe has.
+///
+/// Server-only: a client-only build has no peer listener and therefore no
+/// Noise, and the whole stream path disappears with it.
+#[cfg(feature = "server")]
+pub struct StreamPair {
+    pub reader: Mutex<NoiseReader>,
+    pub writer: Mutex<NoiseWriter>,
+}
+
+enum FramedInner {
+    Pipe(PipeInner),
+    #[cfg(feature = "server")]
+    Stream(Arc<StreamPair>),
+}
+
+#[cfg(windows)]
+struct PipeInner {
+    file: Arc<File>,
+    write_lock: Arc<Mutex<()>>,
+}
+
+#[cfg(not(windows))]
+struct PipeInner {
+    file: Arc<Mutex<File>>,
+}
+
+impl Clone for FramedInner {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Pipe(pipe) => Self::Pipe(pipe.clone()),
+            #[cfg(feature = "server")]
+            Self::Stream(pair) => Self::Stream(Arc::clone(pair)),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Clone for PipeInner {
+    fn clone(&self) -> Self {
+        Self {
+            file: Arc::clone(&self.file),
+            write_lock: Arc::clone(&self.write_lock),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Clone for PipeInner {
+    fn clone(&self) -> Self {
+        Self {
+            file: Arc::clone(&self.file),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Framed {
-    #[cfg(windows)]
-    file: Arc<File>,
-    #[cfg(windows)]
-    write_lock: Arc<Mutex<()>>,
-    #[cfg(not(windows))]
-    file: Arc<Mutex<File>>,
+    inner: FramedInner,
     buf: Arc<Mutex<Vec<u8>>>,
     max_frame_bytes: usize,
 }
@@ -53,6 +115,19 @@ pub struct Framed {
 impl Framed {
     pub fn new(file: File) -> Self {
         Self::with_limit(file, MAX_FRAME_BYTES)
+    }
+
+    /// Carry a protocol frame over a Noise session instead of a pipe.
+    #[cfg(feature = "server")]
+    pub fn from_stream(reader: NoiseReader, writer: NoiseWriter) -> Self {
+        Self {
+            inner: FramedInner::Stream(Arc::new(StreamPair {
+                reader: Mutex::new(reader),
+                writer: Mutex::new(writer),
+            })),
+            buf: Arc::new(Mutex::new(Vec::new())),
+            max_frame_bytes: MAX_FRAME_BYTES,
+        }
     }
 
     /// Construct a pipe with an explicit frame limit. `new` remains the
@@ -65,11 +140,14 @@ impl Framed {
         );
         Self {
             #[cfg(windows)]
-            file: Arc::new(file),
-            #[cfg(windows)]
-            write_lock: Arc::new(Mutex::new(())),
+            inner: FramedInner::Pipe(PipeInner {
+                file: Arc::new(file),
+                write_lock: Arc::new(Mutex::new(())),
+            }),
             #[cfg(not(windows))]
-            file: Arc::new(Mutex::new(file)),
+            inner: FramedInner::Pipe(PipeInner {
+                file: Arc::new(Mutex::new(file)),
+            }),
             buf: Arc::new(Mutex::new(Vec::new())),
             max_frame_bytes,
         }
@@ -109,28 +187,33 @@ impl Framed {
 
     /// Establish a pipe delivery barrier during connection teardown. This is
     /// intentionally separate from event writes: on Windows the barrier waits
-    /// for the client to read all bytes buffered on the server end.
+    /// for the client to read all bytes buffered on the server end. A socket
+    /// write is already a syscall into the kernel buffer, so the stream case
+    /// has no barrier to establish.
     #[allow(dead_code)]
     pub(crate) fn flush_pipe(&self) -> Result<(), DaemonError> {
-        #[cfg(windows)]
-        {
-            let _write_lock = self
-                .write_lock
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
-            let ok = unsafe { FlushFileBuffers(self.file.as_raw_handle() as HANDLE) };
-            if ok == 0 {
-                return Err(DaemonError::Io(io::Error::last_os_error()));
+        match &self.inner {
+            #[cfg(feature = "server")]
+            FramedInner::Stream(_) => Ok(()),
+            #[cfg(windows)]
+            FramedInner::Pipe(pipe) => {
+                let _write_lock = pipe
+                    .write_lock
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                let ok = unsafe { FlushFileBuffers(pipe.file.as_raw_handle() as HANDLE) };
+                if ok == 0 {
+                    return Err(DaemonError::Io(io::Error::last_os_error()));
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        #[cfg(not(windows))]
-        {
-            self.file
+            #[cfg(not(windows))]
+            FramedInner::Pipe(pipe) => pipe
+                .file
                 .lock()
                 .unwrap_or_else(|err| err.into_inner())
                 .flush()
-                .map_err(DaemonError::from)
+                .map_err(DaemonError::from),
         }
     }
 
@@ -140,18 +223,31 @@ impl Framed {
         deadline: Option<Instant>,
         flush: bool,
     ) -> Result<(), DaemonError> {
-        #[cfg(windows)]
-        {
-            let _write_lock = self
-                .write_lock
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
-            write_frame(&self.file, value, self.max_frame_bytes, deadline, flush)
-        }
-        #[cfg(not(windows))]
-        {
-            let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
-            write_frame(&mut file, value, self.max_frame_bytes, flush)
+        match &self.inner {
+            #[cfg(windows)]
+            FramedInner::Pipe(pipe) => {
+                let _write_lock = pipe
+                    .write_lock
+                    .lock()
+                    .unwrap_or_else(|err| err.into_inner());
+                write_frame(&pipe.file, value, self.max_frame_bytes, deadline, flush)
+            }
+            #[cfg(not(windows))]
+            FramedInner::Pipe(pipe) => {
+                let mut file = pipe.file.lock().unwrap_or_else(|err| err.into_inner());
+                write_frame(&mut file, value, self.max_frame_bytes, flush)
+            }
+            #[cfg(feature = "server")]
+            FramedInner::Stream(pair) => {
+                // The frame is serialised under the caller's cap first, so an
+                // oversized frame is refused before any byte reaches the
+                // wire, exactly as on the pipe.
+                let bytes = frame_bytes(value, self.max_frame_bytes)?;
+                let mut writer = pair.writer.lock().unwrap_or_else(|err| err.into_inner());
+                writer
+                    .write_frame(&bytes, deadline)
+                    .map_err(DaemonError::from)
+            }
         }
     }
 
@@ -166,26 +262,52 @@ impl Framed {
         Ok(serde_json::from_slice(&line)?)
     }
 
+    /// The pipe handle, when this connection is a pipe.
+    ///
+    /// Kernel peer identity (`GetNamedPipeClientProcessId`) only exists on the
+    /// pipe path; a remote connection's identity is the Noise static key the
+    /// peer authenticated with, which is decided before `Framed` is built. A
+    /// caller that needs the handle must branch on this, never unwrap it: the
+    /// stream case is routine, not an error.
     #[cfg(windows)]
-    pub fn as_file(&self) -> Arc<File> {
-        Arc::clone(&self.file)
+    pub fn as_file(&self) -> Option<Arc<File>> {
+        match &self.inner {
+            FramedInner::Pipe(pipe) => Some(Arc::clone(&pipe.file)),
+            #[cfg(feature = "server")]
+            FramedInner::Stream(_) => None,
+        }
     }
 
     /// Cancel a blocking server-side read during daemon shutdown.
     #[cfg(windows)]
     #[allow(dead_code)]
     pub fn cancel_read(&self) {
-        unsafe {
-            let _ = windows_sys::Win32::System::IO::CancelIoEx(
-                self.file.as_raw_handle() as HANDLE,
-                std::ptr::null(),
-            );
+        match &self.inner {
+            FramedInner::Pipe(pipe) => unsafe {
+                let _ = windows_sys::Win32::System::IO::CancelIoEx(
+                    pipe.file.as_raw_handle() as HANDLE,
+                    std::ptr::null(),
+                );
+            },
+            // A socket has no overlapped operation to cancel; shutting the
+            // read side down is what unblocks the reader thread.
+            #[cfg(feature = "server")]
+            FramedInner::Stream(pair) => {
+                let reader = pair.reader.lock().unwrap_or_else(|err| err.into_inner());
+                let _ = reader.shutdown();
+            }
         }
     }
 
     #[cfg(not(windows))]
     #[allow(dead_code)]
-    pub fn cancel_read(&self) {}
+    pub fn cancel_read(&self) {
+        #[cfg(feature = "server")]
+        if let FramedInner::Stream(pair) = &self.inner {
+            let reader = pair.reader.lock().unwrap_or_else(|err| err.into_inner());
+            let _ = reader.shutdown();
+        }
+    }
 
     fn read_line(&self, deadline: Option<Instant>) -> Result<Vec<u8>, DaemonError> {
         loop {
@@ -202,16 +324,7 @@ impl Framed {
                 }
             }
             let mut chunk = [0u8; 8192];
-            #[cfg(windows)]
-            let read = match read_chunk(&self.file, &mut chunk, deadline)? {
-                Some(read) => read,
-                None => return Err(DaemonError::timed_out("reading a protocol frame")),
-            };
-            #[cfg(not(windows))]
-            let read = {
-                let mut file = self.file.lock().unwrap_or_else(|err| err.into_inner());
-                file.read(&mut chunk)?
-            };
+            let read = self.read_chunk(&mut chunk, deadline)?;
             if read == 0 {
                 return Err(DaemonError::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -223,6 +336,34 @@ impl Framed {
                 return Err(frame_limit_error(self.max_frame_bytes));
             }
             buf.extend_from_slice(&chunk[..read]);
+        }
+    }
+
+    /// `0` means end of stream. A deadline that passes returns a timeout
+    /// error, never `0`, so the caller cannot mistake one for the other.
+    fn read_chunk(
+        &self,
+        chunk: &mut [u8],
+        deadline: Option<Instant>,
+    ) -> Result<usize, DaemonError> {
+        match &self.inner {
+            #[cfg(windows)]
+            FramedInner::Pipe(pipe) => match read_chunk(&pipe.file, chunk, deadline)? {
+                Some(read) => Ok(read),
+                None => Err(DaemonError::timed_out("reading a protocol frame")),
+            },
+            #[cfg(not(windows))]
+            FramedInner::Pipe(pipe) => {
+                let mut file = pipe.file.lock().unwrap_or_else(|err| err.into_inner());
+                Ok(file.read(chunk)?)
+            }
+            #[cfg(feature = "server")]
+            FramedInner::Stream(pair) => {
+                let mut reader = pair.reader.lock().unwrap_or_else(|err| err.into_inner());
+                reader
+                    .read_plaintext(chunk, deadline)
+                    .map_err(DaemonError::from)
+            }
         }
     }
 }

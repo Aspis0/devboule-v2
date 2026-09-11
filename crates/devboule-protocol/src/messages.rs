@@ -12,6 +12,87 @@ use crate::session::{
     SessionEvent, SessionKind, SubscriptionId,
 };
 
+/// The role a device is paired as, on the wire as `"client"` or `"daemon"`.
+///
+/// One definition for the wire and for the daemon's policy check
+/// (`devboule-daemon/src/peer_policy.rs` re-exports this type) so a rename
+/// cannot leave the two disagreeing.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PeerRole {
+    Client,
+    Daemon,
+}
+
+impl PeerRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::Daemon => "daemon",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "client" => Some(Self::Client),
+            "daemon" => Some(Self::Daemon),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for PeerRole {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// The capability names a paired peer may hold. The set is closed on the wire:
+/// an unknown name is an error, never a silently dropped entry.
+pub const PEER_CAPS: [&str; 4] = ["view", "send", "answer_permissions", "create_sessions"];
+/// Every new pairing starts here (design §8b A11: only "view" is on).
+pub const PEER_DEFAULT_CAPS: [&str; 1] = ["view"];
+
+/// One pairing code, with its `Debug` redacted.
+///
+/// A one-time secret that travels in two messages and through generic error
+/// paths (`unexpected daemon frame: {message:?}`); the manual `Debug` is what
+/// makes every one of those paths safe by construction rather than by review.
+/// The buffer is overwritten on drop for the same reason.
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct PairingSecret(String);
+
+impl PairingSecret {
+    pub fn new(code: impl Into<String>) -> Self {
+        Self(code.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for PairingSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("\"<redacted>\"")
+    }
+}
+
+impl Drop for PairingSecret {
+    fn drop(&mut self) {
+        // SAFETY: every byte is replaced by NUL, which is valid UTF-8, so the
+        // `String` invariant holds throughout. This is a best-effort wipe of
+        // the buffer before it is freed; it deliberately avoids pulling a
+        // cryptographic dependency into the protocol crate for eight bytes.
+        unsafe {
+            for byte in self.0.as_bytes_mut() {
+                *byte = 0;
+            }
+        }
+    }
+}
+
 /// One file the user attached to a prompt, carried as bytes.
 ///
 /// `data` holds the bytes themselves, base64, and never a path. The reason is
@@ -272,6 +353,41 @@ pub enum ClientMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         payload: Option<serde_json::Value>,
     },
+    /// This device's peers, the pending Client-role confirmations, and this
+    /// device's own advertised identity.
+    DevicesList {
+        id: u64,
+    },
+    /// Show a pairing code on **this** device. `role` is the role this device
+    /// will have in the pairing.
+    PairingStart {
+        id: u64,
+        role: PeerRole,
+    },
+    /// Type a code shown by another device. `role` is this device's role, and
+    /// `address` is the other device's `ip:port`.
+    PairingComplete {
+        id: u64,
+        address: String,
+        code: PairingSecret,
+        role: PeerRole,
+    },
+    /// Answer a Client-role pairing parked on this device.
+    PairingConfirm {
+        id: u64,
+        device_id: String,
+        accept: bool,
+    },
+    PeerRevoke {
+        id: u64,
+        device_id: String,
+    },
+    /// Replace a peer's capability set with exactly the names in `caps`.
+    PeerSetCaps {
+        id: u64,
+        device_id: String,
+        caps: Vec<String>,
+    },
 }
 
 impl ClientMessage {
@@ -312,7 +428,13 @@ impl ClientMessage {
             | Self::ProvidersList { id }
             | Self::ProvidersRefresh { id }
             | Self::ProviderUpdate { id, .. }
-            | Self::Invoke { id, .. } => Some(*id),
+            | Self::Invoke { id, .. }
+            | Self::DevicesList { id }
+            | Self::PairingStart { id, .. }
+            | Self::PairingComplete { id, .. }
+            | Self::PairingConfirm { id, .. }
+            | Self::PeerRevoke { id, .. }
+            | Self::PeerSetCaps { id, .. } => Some(*id),
         }
     }
 
@@ -367,7 +489,117 @@ impl ClientMessage {
             | Self::WorkspacesList { .. }
             | Self::WorkspaceCreate { .. }
             | Self::WorkspaceDelete { .. }
-            | Self::Invoke { .. } => None,
+            | Self::Invoke { .. }
+            | Self::DevicesList { .. }
+            | Self::PairingStart { .. }
+            | Self::PairingComplete { .. }
+            | Self::PairingConfirm { .. }
+            | Self::PeerRevoke { .. }
+            | Self::PeerSetCaps { .. } => None,
+        }
+    }
+
+    /// ASCII variant name, for audit rows. A closed match: a new variant must
+    /// name itself here as well as decide its peer policy in `peer_policy`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Hello(_) => "Hello",
+            Self::Ping { .. } => "Ping",
+            Self::Status { .. } => "Status",
+            Self::DaemonDiagnostics { .. } => "DaemonDiagnostics",
+            Self::Shutdown { .. } => "Shutdown",
+            Self::SessionCreate { .. } => "SessionCreate",
+            Self::SessionAttach { .. } => "SessionAttach",
+            Self::SessionDetach { .. } => "SessionDetach",
+            Self::SessionClaim { .. } => "SessionClaim",
+            Self::SessionClose { .. } => "SessionClose",
+            Self::SessionStop { .. } => "SessionStop",
+            Self::SessionSend { .. } => "SessionSend",
+            Self::SessionResize { .. } => "SessionResize",
+            Self::SessionInterrupt { .. } => "SessionInterrupt",
+            Self::SessionSetModel { .. } => "SessionSetModel",
+            Self::SessionSetMode { .. } => "SessionSetMode",
+            Self::SessionPermissionRespond { .. } => "SessionPermissionRespond",
+            Self::SessionReportAgent { .. } => "SessionReportAgent",
+            Self::SessionsList { .. } => "SessionsList",
+            Self::SessionsWatch { .. } => "SessionsWatch",
+            Self::SessionsUnwatch { .. } => "SessionsUnwatch",
+            Self::SessionsPresence { .. } => "SessionsPresence",
+            Self::SessionResume { .. } => "SessionResume",
+            Self::JournalUsage { .. } => "JournalUsage",
+            Self::JournalRetentionGet { .. } => "JournalRetentionGet",
+            Self::JournalRetentionSet { .. } => "JournalRetentionSet",
+            Self::SessionDelete { .. } => "SessionDelete",
+            Self::ProjectsList { .. } => "ProjectsList",
+            Self::ProjectAdd { .. } => "ProjectAdd",
+            Self::WorkspacesList { .. } => "WorkspacesList",
+            Self::WorkspaceCreate { .. } => "WorkspaceCreate",
+            Self::WorkspaceDelete { .. } => "WorkspaceDelete",
+            Self::ProvidersList { .. } => "ProvidersList",
+            Self::ProvidersRefresh { .. } => "ProvidersRefresh",
+            Self::ProviderUpdate { .. } => "ProviderUpdate",
+            Self::Invoke { .. } => "Invoke",
+            Self::DevicesList { .. } => "DevicesList",
+            Self::PairingStart { .. } => "PairingStart",
+            Self::PairingComplete { .. } => "PairingComplete",
+            Self::PairingConfirm { .. } => "PairingConfirm",
+            Self::PeerRevoke { .. } => "PeerRevoke",
+            Self::PeerSetCaps { .. } => "PeerSetCaps",
+        }
+    }
+
+    /// Whether this request may change durable state, and therefore may
+    /// produce an audit row.
+    ///
+    /// A closed match, because the two failure modes are asymmetric: an audit
+    /// row for a read is a disk sink a `Ping` loop can drive (muse M1), and a
+    /// missing row for a write is an untraceable remote action. Listing every
+    /// variant forces the next one to pick a side.
+    pub fn is_state_changing(&self) -> bool {
+        match self {
+            Self::Hello(_)
+            | Self::Ping { .. }
+            | Self::Status { .. }
+            | Self::DaemonDiagnostics { .. }
+            | Self::SessionsList { .. }
+            | Self::SessionsWatch { .. }
+            | Self::JournalUsage { .. }
+            | Self::JournalRetentionGet { .. }
+            | Self::ProjectsList { .. }
+            | Self::WorkspacesList { .. }
+            | Self::ProvidersList { .. }
+            | Self::DevicesList { .. } => false,
+
+            Self::Shutdown { .. }
+            | Self::SessionCreate { .. }
+            | Self::SessionAttach { .. }
+            | Self::SessionDetach { .. }
+            | Self::SessionClaim { .. }
+            | Self::SessionClose { .. }
+            | Self::SessionStop { .. }
+            | Self::SessionSend { .. }
+            | Self::SessionResize { .. }
+            | Self::SessionInterrupt { .. }
+            | Self::SessionSetModel { .. }
+            | Self::SessionSetMode { .. }
+            | Self::SessionPermissionRespond { .. }
+            | Self::SessionReportAgent { .. }
+            | Self::SessionsUnwatch { .. }
+            | Self::SessionsPresence { .. }
+            | Self::SessionResume { .. }
+            | Self::JournalRetentionSet { .. }
+            | Self::SessionDelete { .. }
+            | Self::ProjectAdd { .. }
+            | Self::WorkspaceCreate { .. }
+            | Self::WorkspaceDelete { .. }
+            | Self::ProvidersRefresh { .. }
+            | Self::ProviderUpdate { .. }
+            | Self::Invoke { .. }
+            | Self::PairingStart { .. }
+            | Self::PairingComplete { .. }
+            | Self::PairingConfirm { .. }
+            | Self::PeerRevoke { .. }
+            | Self::PeerSetCaps { .. } => true,
         }
     }
 }
@@ -468,6 +700,131 @@ pub enum DaemonMessage {
         subscription_id: SubscriptionId,
         envelope: SessionEventEnvelope,
     },
+    /// Everything the Devices panel needs in one reply, already projected for
+    /// the connection's role: a local client sees the full rows, a remote peer
+    /// sees a subset (`devboule-daemon/src/server.rs`).
+    Devices {
+        id: u64,
+        self_info: SelfInfo,
+        peers: Vec<PeerRow>,
+        /// Client-role pairings parked on this device waiting for
+        /// [`ClientMessage::PairingConfirm`]. This is how a far-side
+        /// `PairingPending` reaches the owner: the panel polls `DevicesList`.
+        #[serde(default)]
+        pending: Vec<PendingPairing>,
+    },
+    PairingCode {
+        id: u64,
+        code: PairingSecret,
+        /// Unix milliseconds.
+        expires_at: i64,
+        address: String,
+    },
+    /// The reply to `PairingComplete` when the far side must confirm locally.
+    PairingPending {
+        id: u64,
+        peer: PendingPairing,
+    },
+    /// The reply to `PairingComplete` when the pairing completed at once.
+    PairingDone {
+        id: u64,
+        peer: PeerRow,
+    },
+    /// The reply to a `PairingConfirm` that declined. A decline is a success,
+    /// not a failure: the panel must not render it as an error, and there is
+    /// no row to report (a `PeerRow` that is not in the table would be a lie).
+    PairingDeclined {
+        id: u64,
+        device_id: String,
+    },
+    /// The reply to `PairingConfirm`, `PeerRevoke` and `PeerSetCaps`.
+    PeerUpdated {
+        id: u64,
+        peer: PeerRow,
+    },
+}
+
+/// This device's own advertised identity. `remote` deliberately carries only
+/// the state and reason: the addresses and the port are right here, because
+/// they describe *where* this node can be reached and the wire `remote` object
+/// answers only *whether* it is reachable.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SelfInfo {
+    pub device_id: String,
+    pub display_name: String,
+    /// The Noise static public key, base64. Omitted when the projection withholds
+    /// it (the `Daemon`-role projection does): an empty string is not the same
+    /// frame as an absent key, and the reader must not be able to mistake one
+    /// for a key of zero length.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub public_key: String,
+    /// Hex of the first 16 bytes of SHA-256 of that key: the value a person
+    /// reads aloud when confirming a pairing. Omitted with `public_key`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_fingerprint: String,
+    /// Where this device can be reached. Absent for any peer that is not the
+    /// device's own person: it is the local network position, not identity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addresses: Vec<String>,
+    /// The peer port, absent when it is zero (no listener).
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    pub port: u16,
+    pub daemon_version: String,
+    pub protocol_version: u32,
+    /// Whether the tailnet listener is up, and why not when it is not. Local
+    /// information; a `Daemon` peer is told `Ping` is the liveness answer and
+    /// nothing about this device's network position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteState>,
+}
+
+fn is_zero_u16(value: &u16) -> bool {
+    *value == 0
+}
+
+/// One paired device as the Devices panel sees it.
+///
+/// `role` is the *peer's* role. `binding_kind` is `"tailnet"` today.
+/// `address` is the `ip:port` recorded at pairing (design §8 R4, F-15); the
+/// `whois` check at connect time is the backstop, not the source of truth.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerRow {
+    pub device_id: String,
+    pub display_name: String,
+    pub role: PeerRole,
+    /// The pinned Noise static public key, base64.
+    pub public_key: String,
+    pub key_fingerprint: String,
+    pub binding_kind: String,
+    pub binding_node_name: Option<String>,
+    pub binding_login_name: Option<String>,
+    pub address: String,
+    /// Unix milliseconds.
+    pub paired_at: i64,
+    /// Unix milliseconds; `None` while the pairing stands.
+    pub revoked_at: Option<i64>,
+    pub caps: Vec<String>,
+    /// The SID this daemon paired the peer from, or `None` on a platform with
+    /// no SID or for a peer paired before the value was recorded.
+    pub paired_by_user: Option<String>,
+    /// Whether this peer has a live connection right now.
+    pub online: bool,
+}
+
+/// A Client-role pairing parked on this device, awaiting a local decision.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingPairing {
+    pub device_id: String,
+    pub display_name: String,
+    pub role: PeerRole,
+    pub key_fingerprint: String,
+    pub address: String,
+    /// Unix milliseconds: when the parked socket is closed and the pairing is
+    /// answered `accepted: false`.
+    pub expires_at: i64,
 }
 
 /// One CLI agent the daemon found on PATH. Authentication is never probed:
@@ -688,8 +1045,73 @@ pub struct DaemonStatusBody {
     /// Live counters of the journal writer, present when the journal was
     /// opened. `None` means the journal is unavailable (see `journalError`):
     /// there is no writer whose behaviour could be counted.
+    ///
+    /// Boxed only to keep this frame small: `serde` treats `Box<T>`
+    /// transparently, so the JSON is identical to an inline field, while the
+    /// Tauri client holds the whole body by value inside a request/response
+    /// enum and `clippy::large_enum_variant` measures that enum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub journal_stats: Option<JournalStats>,
+    pub journal_stats: Option<Box<JournalStats>>,
+    /// Which store holds the Noise static private key: `"keyring"` or
+    /// `"file"`. Local-only information; peers are denied `Status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_store: Option<String>,
+    /// Remote-listener state. Local-only information; peers are denied
+    /// `Status`, and `DevicesList.self_info` carries the identity instead.
+    /// Boxed for the same size reason as `journal_stats`; the wire is
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<Box<RemoteState>>,
+}
+
+/// Whether the tailnet listener is up, and why it is not when it is not.
+///
+/// The addresses and the port are **not** here: they describe where this node
+/// can be reached, which is `SelfInfo`'s business (brief 1b, wire contract).
+/// This type answers one question — is the daemon reachable — and carries the
+/// daemon's own reason string when the answer is no.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteState {
+    pub state: RemoteStateKind,
+    /// Present as `null` when the state is `enabled`. Always serialised, so a
+    /// client can distinguish "no reason" from "field absent".
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteStateKind {
+    Enabled,
+    Disabled,
+    KeyMissing,
+}
+
+impl RemoteState {
+    pub fn enabled() -> Self {
+        Self {
+            state: RemoteStateKind::Enabled,
+            reason: None,
+        }
+    }
+
+    pub fn disabled(reason: impl Into<String>) -> Self {
+        Self {
+            state: RemoteStateKind::Disabled,
+            reason: Some(reason.into()),
+        }
+    }
+
+    pub fn key_missing() -> Self {
+        Self {
+            state: RemoteStateKind::KeyMissing,
+            reason: Some(
+                "the Noise static key is missing from the secret store; the remote listener \
+                 is not started"
+                    .to_string(),
+            ),
+        }
+    }
 }
 
 /// Live session event on the daemon pipe. `generation` is here, not inside
@@ -707,6 +1129,384 @@ pub struct SessionEventEnvelope {
 mod tests {
     use super::*;
     use crate::{SessionState, SessionStateSnapshot};
+
+    #[test]
+    fn the_pairing_code_is_never_debug_formatted() {
+        let complete = ClientMessage::PairingComplete {
+            id: 1,
+            address: "100.64.0.2:47831".to_string(),
+            code: PairingSecret::new("ABCD2345"),
+            role: PeerRole::Client,
+        };
+        let rendered = format!("{complete:?}");
+        assert!(
+            !rendered.contains("ABCD2345"),
+            "a pairing code must never reach a log or an error string: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+
+        let code = DaemonMessage::PairingCode {
+            id: 1,
+            code: PairingSecret::new("ABCD2345"),
+            expires_at: 1,
+            address: "100.64.0.2:47831".to_string(),
+        };
+        let rendered = format!("{code:?}");
+        assert!(!rendered.contains("ABCD2345"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+
+        // The ordinary case: a generic error path formats the whole frame.
+        let wrapped = format!("unexpected daemon frame {code:?}");
+        assert!(!wrapped.contains("ABCD2345"), "{wrapped}");
+    }
+
+    #[test]
+    fn the_devices_wire_contract_round_trips_with_its_exact_field_names() {
+        // Brief 1b's wire contract is normative for the frontend, so the field
+        // names are asserted on the serialised JSON, not on the struct.
+        let pending = PendingPairing {
+            device_id: "dev-2".to_string(),
+            display_name: "Phone".to_string(),
+            role: PeerRole::Client,
+            key_fingerprint: "ab".repeat(16),
+            address: "100.64.0.2:47831".to_string(),
+            expires_at: 1_700_000_000_000,
+        };
+        let pending_json = serde_json::to_value(&pending).expect("json");
+        for key in [
+            "deviceId",
+            "displayName",
+            "role",
+            "keyFingerprint",
+            "address",
+            "expiresAt",
+        ] {
+            assert!(
+                pending_json.get(key).is_some(),
+                "PendingPairing is missing {key}"
+            );
+        }
+        assert_eq!(pending_json["role"], "client");
+        assert_eq!(
+            serde_json::from_value::<PendingPairing>(pending_json.clone()).expect("back"),
+            pending
+        );
+
+        let row = PeerRow {
+            device_id: "dev-1".to_string(),
+            display_name: "MacBook".to_string(),
+            role: PeerRole::Daemon,
+            public_key: "AAAA".to_string(),
+            key_fingerprint: "cd".repeat(16),
+            binding_kind: "tailnet".to_string(),
+            binding_node_name: Some("host.tailnet.ts.net.".to_string()),
+            binding_login_name: Some("user@example.com".to_string()),
+            address: "100.64.0.1:47831".to_string(),
+            paired_at: 1_700_000_000_000,
+            revoked_at: None,
+            caps: vec!["view".to_string()],
+            paired_by_user: Some("S-1-5-21-1".to_string()),
+            online: true,
+        };
+        let row_json = serde_json::to_value(&row).expect("json");
+        for key in [
+            "deviceId",
+            "displayName",
+            "role",
+            "publicKey",
+            "keyFingerprint",
+            "bindingKind",
+            "bindingNodeName",
+            "bindingLoginName",
+            "address",
+            "pairedAt",
+            "revokedAt",
+            "caps",
+            "pairedByUser",
+            "online",
+        ] {
+            assert!(row_json.get(key).is_some(), "PeerRow is missing {key}");
+        }
+        // Present as `null`, not absent: the panel distinguishes the two.
+        assert!(row_json["revokedAt"].is_null());
+        assert_eq!(row_json["role"], "daemon");
+        assert_eq!(
+            serde_json::from_value::<PeerRow>(row_json.clone()).expect("back"),
+            row
+        );
+
+        let self_info = SelfInfo {
+            device_id: "dev-1".to_string(),
+            display_name: "MacBook".to_string(),
+            public_key: "AAAA".to_string(),
+            key_fingerprint: "cd".repeat(16),
+            addresses: vec!["100.64.0.1".to_string()],
+            port: 47831,
+            daemon_version: "0.1.0".to_string(),
+            protocol_version: crate::PROTOCOL_VERSION,
+            remote: Some(RemoteState::enabled()),
+        };
+        let self_json = serde_json::to_value(&self_info).expect("json");
+        for key in [
+            "deviceId",
+            "displayName",
+            "publicKey",
+            "keyFingerprint",
+            "addresses",
+            "port",
+            "daemonVersion",
+            "protocolVersion",
+            "remote",
+        ] {
+            assert!(self_json.get(key).is_some(), "SelfInfo is missing {key}");
+        }
+        assert_eq!(
+            self_json["remote"],
+            serde_json::json!({ "state": "enabled", "reason": null })
+        );
+
+        // A projection withholds by **omission**, not by blanking: a
+        // `Daemon` peer's `self_info` must not contain an `addresses` array, a
+        // `port`, a `publicKey` or a `remote` object at all, because an empty
+        // string in any of them still answers a question the peer may not ask.
+        let withheld = SelfInfo {
+            device_id: "dev-1".to_string(),
+            display_name: "MacBook".to_string(),
+            public_key: String::new(),
+            key_fingerprint: String::new(),
+            addresses: Vec::new(),
+            port: 0,
+            daemon_version: "0.1.0".to_string(),
+            protocol_version: crate::PROTOCOL_VERSION,
+            remote: None,
+        };
+        let withheld_json = serde_json::to_value(&withheld).expect("json");
+        for key in ["publicKey", "keyFingerprint", "addresses", "port", "remote"] {
+            assert!(
+                withheld_json.get(key).is_none(),
+                "a withheld SelfInfo must omit {key}: {withheld_json}"
+            );
+        }
+        for key in [
+            "deviceId",
+            "displayName",
+            "daemonVersion",
+            "protocolVersion",
+        ] {
+            assert!(
+                withheld_json.get(key).is_some(),
+                "a withheld SelfInfo keeps {key}: {withheld_json}"
+            );
+        }
+
+        // The reply variants carry exactly the contract's fields.
+        let devices = serde_json::to_value(DaemonMessage::Devices {
+            id: 4,
+            self_info: self_info.clone(),
+            peers: vec![row.clone()],
+            pending: vec![pending.clone()],
+        })
+        .expect("json");
+        assert_eq!(devices["type"], "devices");
+        assert_eq!(devices["id"], 4);
+        for key in ["selfInfo", "peers", "pending"] {
+            assert!(devices.get(key).is_some(), "Devices is missing {key}");
+        }
+        assert_eq!(
+            serde_json::to_value(DaemonMessage::PairingPending {
+                id: 5,
+                peer: pending.clone(),
+            })
+            .expect("json")["type"],
+            "pairing_pending"
+        );
+        assert_eq!(
+            serde_json::to_value(DaemonMessage::PairingDone {
+                id: 6,
+                peer: row.clone(),
+            })
+            .expect("json")["type"],
+            "pairing_done"
+        );
+        assert_eq!(
+            serde_json::to_value(DaemonMessage::PeerUpdated { id: 7, peer: row }).expect("json")
+                ["type"],
+            "peer_updated"
+        );
+        let declined = serde_json::to_value(DaemonMessage::PairingDeclined {
+            id: 8,
+            device_id: "dev-2".to_string(),
+        })
+        .expect("json");
+        assert_eq!(declined["type"], "pairing_declined");
+        assert_eq!(declined["id"], 8);
+        assert_eq!(declined["deviceId"], "dev-2");
+
+        // And the request variants, with their argument names.
+        let requests: [(ClientMessage, &str, &[&str]); 6] = [
+            (
+                ClientMessage::DevicesList { id: 1 },
+                "devices_list",
+                &["id"],
+            ),
+            (
+                ClientMessage::PairingStart {
+                    id: 1,
+                    role: PeerRole::Daemon,
+                },
+                "pairing_start",
+                &["id", "role"],
+            ),
+            (
+                ClientMessage::PairingComplete {
+                    id: 1,
+                    address: "100.64.0.2:47831".to_string(),
+                    code: PairingSecret::new("ABCD2345"),
+                    role: PeerRole::Client,
+                },
+                "pairing_complete",
+                &["id", "address", "code", "role"],
+            ),
+            (
+                ClientMessage::PairingConfirm {
+                    id: 1,
+                    device_id: "dev-2".to_string(),
+                    accept: true,
+                },
+                "pairing_confirm",
+                &["id", "deviceId", "accept"],
+            ),
+            (
+                ClientMessage::PeerRevoke {
+                    id: 1,
+                    device_id: "dev-2".to_string(),
+                },
+                "peer_revoke",
+                &["id", "deviceId"],
+            ),
+            (
+                ClientMessage::PeerSetCaps {
+                    id: 1,
+                    device_id: "dev-2".to_string(),
+                    caps: vec!["view".to_string(), "send".to_string()],
+                },
+                "peer_set_caps",
+                &["id", "deviceId", "caps"],
+            ),
+        ];
+        for (request, tag, keys) in requests {
+            let json = serde_json::to_value(&request).expect("json");
+            assert_eq!(json["type"], tag, "{request:?}");
+            for key in keys {
+                assert!(json.get(key).is_some(), "{tag} is missing {key}");
+            }
+            assert_eq!(
+                serde_json::from_value::<ClientMessage>(json.clone()).expect("back"),
+                request
+            );
+        }
+    }
+
+    #[test]
+    fn devices_capability_is_advertised_and_the_peer_caps_are_the_agreed_set() {
+        assert!(crate::m3a_daemon_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == crate::caps::DEVICES));
+        assert_eq!(PEER_DEFAULT_CAPS, ["view"]);
+        assert_eq!(
+            PEER_CAPS,
+            ["view", "send", "answer_permissions", "create_sessions"]
+        );
+    }
+
+    #[test]
+    fn remote_state_serialises_exactly_the_agreed_shape() {
+        // Brief 1b's wire contract, pinned here because the frontend is built
+        // against this JSON: `{ state, reason }`, both keys always present.
+        let enabled = serde_json::to_value(RemoteState::enabled()).expect("json");
+        assert_eq!(
+            enabled,
+            serde_json::json!({ "state": "enabled", "reason": null })
+        );
+
+        let disabled =
+            serde_json::to_value(RemoteState::disabled("Tailscale is not running")).expect("json");
+        assert_eq!(
+            disabled,
+            serde_json::json!({ "state": "disabled", "reason": "Tailscale is not running" })
+        );
+
+        let missing = serde_json::to_value(RemoteState::key_missing()).expect("json");
+        assert_eq!(missing["state"], "key_missing");
+        assert!(missing["reason"].is_string());
+
+        // Round-trips, so a local client can echo it back in a test fixture.
+        for state in [
+            RemoteState::enabled(),
+            RemoteState::disabled("why"),
+            RemoteState::key_missing(),
+        ] {
+            let json = serde_json::to_string(&state).expect("serialize");
+            assert_eq!(
+                serde_json::from_str::<RemoteState>(&json).expect("deserialize"),
+                state
+            );
+        }
+    }
+
+    #[test]
+    fn only_writes_are_state_changing_and_every_variant_names_itself() {
+        assert!(!ClientMessage::Ping { id: 1 }.is_state_changing());
+        assert!(!ClientMessage::Status { id: 1 }.is_state_changing());
+        assert!(!ClientMessage::SessionsList { id: 1 }.is_state_changing());
+        assert!(!ClientMessage::JournalUsage { id: 1 }.is_state_changing());
+        assert!(!ClientMessage::ProjectsList { id: 1 }.is_state_changing());
+        assert!(!ClientMessage::JournalRetentionGet { id: 1 }.is_state_changing());
+        assert!(ClientMessage::Shutdown { id: 1 }.is_state_changing());
+        assert!(ClientMessage::JournalRetentionSet {
+            id: 1,
+            max_age_ms: None,
+            max_bytes: None,
+            max_sessions: None,
+            session_max_bytes: None,
+            idempotency_key: None,
+        }
+        .is_state_changing());
+        assert!(ClientMessage::SessionSend {
+            id: 1,
+            session_id: "s.a.1".to_string(),
+            subscription_id: 1,
+            text: "hi".to_string(),
+            attachments: Vec::new(),
+            idempotency_key: None,
+        }
+        .is_state_changing());
+        assert!(ClientMessage::ProvidersRefresh { id: 1 }.is_state_changing());
+
+        assert_eq!(ClientMessage::Ping { id: 1 }.name(), "Ping");
+        assert_eq!(
+            ClientMessage::SessionSetMode {
+                id: 1,
+                session_id: "s.a.1".to_string(),
+                mode_id: "acceptEdits".to_string(),
+            }
+            .name(),
+            "SessionSetMode"
+        );
+        assert_eq!(
+            ClientMessage::Hello(crate::ClientHello::m3a(
+                crate::OwnerId::new("u", "c").expect("owner"),
+                "test",
+            ))
+            .name(),
+            "Hello"
+        );
+        assert!(!ClientMessage::Hello(crate::ClientHello::m3a(
+            crate::OwnerId::new("u", "c").expect("owner"),
+            "test",
+        ))
+        .is_state_changing());
+    }
 
     #[test]
     fn detach_close_stop_are_three_type_tags() {
@@ -1272,6 +2072,57 @@ mod tests {
         let decoded = serde_json::from_value::<DaemonStatusBody>(older_daemon_frame)
             .expect("a status frame without journalStats");
         assert!(decoded.journal_stats.is_none());
+    }
+
+    #[test]
+    fn boxing_journal_stats_and_remote_does_not_change_the_wire() {
+        // The two fields are `Box`ed purely to keep this frame small: the Tauri
+        // client stores the whole body inside an enum and
+        // `clippy::large_enum_variant` measures that enum. `serde` treats
+        // `Box<T>` as transparent, so the JSON must be byte-identical to the
+        // inline shape, including the camelCase names and the nested `remote`
+        // object.
+        let body = DaemonStatusBody {
+            instance_id: "i".to_string(),
+            protocol_version: 4,
+            daemon_version: "0.0.0".to_string(),
+            pid: 1,
+            uptime_ms: 2,
+            clients: 0,
+            sessions: 0,
+            capabilities: Vec::new(),
+            peak_ring_bytes: 0,
+            ring_evicted_bytes: 0,
+            ring_dropped_frames: 0,
+            journal_error: None,
+            journal_stats: Some(Box::new(JournalStats {
+                accepted_frames: 1,
+                accepted_bytes: 2,
+                committed_frames: 3,
+                committed_bytes: 4,
+                failed_frames: 5,
+            })),
+            secret_store: Some("file".to_string()),
+            remote: Some(Box::new(RemoteState::disabled("no tailscale"))),
+        };
+        let json = serde_json::to_value(&body).expect("json");
+        assert_eq!(json["journalStats"]["acceptedFrames"], 1);
+        assert_eq!(json["journalStats"]["failedFrames"], 5);
+        assert_eq!(json["secretStore"], "file");
+        assert_eq!(json["remote"]["state"], "disabled");
+        assert_eq!(json["remote"]["reason"], "no tailscale");
+
+        let decoded: DaemonStatusBody = serde_json::from_value(json.clone()).expect("back");
+        assert_eq!(
+            decoded.journal_stats.as_deref(),
+            body.journal_stats.as_deref()
+        );
+        assert_eq!(decoded.remote.as_deref(), body.remote.as_deref());
+        assert_eq!(
+            serde_json::to_value(&decoded).expect("json"),
+            json,
+            "the round trip must not move a byte"
+        );
     }
 
     #[test]

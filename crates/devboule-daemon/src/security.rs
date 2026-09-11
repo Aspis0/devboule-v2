@@ -9,6 +9,8 @@ use std::ptr;
 
 #[cfg(feature = "server")]
 use windows_sys::core::BOOL;
+#[cfg(feature = "server")]
+use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::{GetLastError, LocalFree, HANDLE, INVALID_HANDLE_VALUE};
 #[cfg(feature = "server")]
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
@@ -195,8 +197,8 @@ pub fn dacl_sddl(handle: HANDLE) -> io::Result<String> {
 
 /// DACL of a file or directory, by path. `GetSecurityInfo` on a handle needs
 /// `READ_CONTROL`; a handle opened for writing does not carry it, so the
-/// private-file check in tests has to ask by name.
-#[allow(dead_code)]
+/// private-file check in tests has to ask by name. Test oracle only.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn dacl_sddl_for_path(path: &std::path::Path) -> io::Result<String> {
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
 
@@ -240,8 +242,14 @@ unsafe fn descriptor_dacl_sddl(sd: PSECURITY_DESCRIPTOR) -> io::Result<String> {
 }
 
 /// Create (or truncate) a file whose DACL grants the current user alone.
-/// The same SDDL the pipe uses, applied at creation so no window exists in
-/// which the file is world-readable.
+///
+/// The SDDL is applied twice on purpose. Win32 honours `lpSecurityDescriptor`
+/// only when `CreateFileW` actually creates the file; on the truncate path
+/// (the file already existed) the parameter is ignored and the pre-existing
+/// DACL survives. `CREATE_ALWAYS` takes both paths, so the descriptor is
+/// re-applied to the object after the handle is open: a wide DACL left by a
+/// previous run, a restore from backup, or another tool is corrected before
+/// any byte is written through this handle.
 #[cfg(feature = "server")]
 pub fn create_private_file(path: &std::path::Path) -> io::Result<std::fs::File> {
     use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
@@ -270,8 +278,103 @@ pub fn create_private_file(path: &std::path::Path) -> io::Result<std::fs::File> 
     if handle == INVALID_HANDLE_VALUE {
         return Err(last_os_error());
     }
+    if let Err(error) = apply_current_user_dacl(path) {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return Err(error);
+    }
     // SAFETY: CreateFileW returned a new owned handle.
     Ok(unsafe { std::fs::File::from_raw_handle(handle as RawHandle) })
+}
+
+/// Apply the current-user-only DACL to an existing file or directory.
+///
+/// `SetNamedSecurityInfoW` with a protected (`P`) one-ACE DACL replaces the
+/// DACL rather than merging into it, so a wide ACE added earlier is removed,
+/// not added to. This is what makes it usable after the fact for both the
+/// truncate path of [`create_private_file`] and the `secrets/` directory.
+#[cfg(feature = "server")]
+pub fn apply_current_user_dacl(path: &std::path::Path) -> io::Result<()> {
+    use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{ACL, PROTECTED_DACL_SECURITY_INFORMATION};
+
+    let sid = current_user_sid()?;
+    let sddl = user_only_sddl(&sid);
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    let wide_sddl = wide(&sddl);
+    let ok: BOOL = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide_sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            ptr::null_mut(),
+        )
+    };
+    if ok == 0 || descriptor.is_null() {
+        return Err(security_context(
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+            last_os_error(),
+        ));
+    }
+    let mut acl: *mut ACL = ptr::null_mut();
+    let mut present = 0;
+    let mut defaulted = 0;
+    let got_acl = unsafe {
+        windows_sys::Win32::Security::GetSecurityDescriptorDacl(
+            descriptor,
+            &mut present,
+            &mut acl,
+            &mut defaulted,
+        )
+    };
+    if got_acl == 0 || present == 0 {
+        unsafe {
+            LocalFree(descriptor as _);
+        }
+        return Err(security_context(
+            "GetSecurityDescriptorDacl",
+            last_os_error(),
+        ));
+    }
+    let wide_path = wide(&path.to_string_lossy());
+    // `PROTECTED` as well as `DACL`: without it Windows re-applies the
+    // parent's inheritable ACEs on top of the one set here, which is exactly
+    // how an inherited `Everyone` grant survives a DACL write. This is what
+    // makes the result provably one ACE for one SID.
+    let status = unsafe {
+        SetNamedSecurityInfoW(
+            wide_path.as_ptr() as *mut u16,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            acl,
+            ptr::null_mut(),
+        )
+    };
+    unsafe {
+        LocalFree(descriptor as _);
+    }
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
+    Ok(())
+}
+
+/// Apply the current-user-only DACL to a directory (the `secrets/` folder).
+/// A directory inherits its parent's DACL by default, which on a default
+/// Windows profile grants other accounts on the machine read access.
+#[cfg(feature = "server")]
+pub fn harden_directory(path: &std::path::Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a directory", path.display()),
+        ));
+    }
+    apply_current_user_dacl(path)
 }
 
 /// Test-only oracle; production code never calls this function. The daemon

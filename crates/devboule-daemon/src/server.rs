@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,17 +16,21 @@ use devboule_protocol::{
     PROTOCOL_MIN_VERSION, PROTOCOL_VERSION,
 };
 
+use crate::device_identity::RemoteState;
 use crate::diagnostics::{DiagnosticsInput, DiagnosticsReport};
 use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::idempotency::{IdempotencyOutcome, IdempotencyStore};
-use crate::journal::{Journal, JOURNAL_SCHEMA_VERSION};
+use crate::journal::{AuditRecord, Journal, PeerRecord, JOURNAL_SCHEMA_VERSION};
 use crate::lock::SingleInstanceLock;
 use crate::login_shell_env::login_shell_capture_outcome;
 use crate::outbound::ConnOut;
 use crate::paths::RuntimePaths;
+use crate::peer_policy::{peer_allows, ConnPeer, PeerDecision, PeerRole};
+use crate::peer_transport::{accept_peers, TokenBucket};
 use crate::process_tree::JobObject;
 use crate::provider_update::{NpmInstallRunner, ProcessNpmInstallRunner};
+use crate::secret_store::SecretStore;
 use crate::session::{ConnHandle, PendingEvent, SessionRegistry};
 use crate::transport::{self, Listener};
 use crate::IDLE_SHUTDOWN_GRACE;
@@ -79,6 +83,36 @@ pub struct ServerState {
     /// The only process-launch seam for provider updates. Tests replace this
     /// runner so no npm or network is ever started by the test suite.
     npm_install_runner: Arc<dyn NpmInstallRunner>,
+    /// Runtime paths, kept so the secret store can be selected lazily.
+    /// Probing the OS credential store here would put a credential read into
+    /// every unit test that builds a `ServerState`.
+    paths: RuntimePaths,
+    /// The same journal handle the session registry writes through, kept for
+    /// the `peers` and `audit` tables (schema v8). `None` when the journal
+    /// could not be opened.
+    journal: Option<Arc<Journal>>,
+    secret_store: OnceLock<(Arc<dyn SecretStore>, &'static str)>,
+    /// This device's identity and Noise static key, loaded once. The result is
+    /// cached including the error: a missing key must stay missing, not be
+    /// retried (and certainly not regenerated) on every call.
+    device_identity: OnceLock<
+        Result<
+            Arc<crate::device_identity::DeviceIdentity>,
+            crate::device_identity::DeviceIdentityError,
+        >,
+    >,
+    /// The tailnet listener's state, replaced by the peer accept loop once it
+    /// starts. Before that (and with no Tailscale) it says so, with a reason,
+    /// rather than pretending the daemon is reachable.
+    remote: Mutex<RemoteState>,
+    /// Live remote connections, so revocation can close them immediately.
+    remote_conns: Mutex<HashMap<u64, (String, Arc<AtomicBool>)>>,
+    /// The transport the peer listener uses, and that the initiator side of a
+    /// pairing uses for its own `whois` on the responder's address. One
+    /// instance for the process: a `Tailnet` on a real daemon is a unit struct,
+    /// so this costs nothing and lets a test substitute a stub.
+    peer_transport: OnceLock<Arc<dyn crate::peer_transport::PeerTransport>>,
+    pairing: Arc<crate::pairing::PairingService>,
     #[cfg(test)]
     provider_update_catalog: Mutex<Option<crate::provider_catalog::ProviderDiscovery>>,
     #[cfg(test)]
@@ -153,6 +187,8 @@ impl ServerState {
             Ok(journal) => (Some(Arc::new(journal)), None),
             Err(error) => (None, Some(error.to_string())),
         };
+        let journal_for_peers = journal.clone();
+        let paths_for_state = paths.clone();
         let state = Arc::new(Self {
             instance_id,
             started: Instant::now(),
@@ -172,6 +208,16 @@ impl ServerState {
             provider_cli_versions: Mutex::new(HashMap::new()),
             claude_version_probes: Mutex::new(HashSet::new()),
             npm_install_runner,
+            paths: paths_for_state,
+            journal: journal_for_peers,
+            secret_store: OnceLock::new(),
+            device_identity: OnceLock::new(),
+            remote: Mutex::new(RemoteState::Disabled(
+                "the remote listener is not running".to_string(),
+            )),
+            remote_conns: Mutex::new(HashMap::new()),
+            peer_transport: OnceLock::new(),
+            pairing: Arc::new(crate::pairing::PairingService::new()),
             #[cfg(test)]
             provider_update_catalog: Mutex::new(None),
             #[cfg(test)]
@@ -607,8 +653,223 @@ impl ServerState {
                 ring_evicted_bytes: output_metrics.coalesced_bytes,
                 ring_dropped_frames: output_metrics.coalesced_frames,
                 journal_error,
-                journal_stats: self.sessions.journal_stats(),
+                journal_stats: self.sessions.journal_stats().map(Box::new),
+                // The selector, never the key. A peer is denied `Status`
+                // precisely because this body is local-only (muse M7).
+                secret_store: Some(self.secret_store().1.to_string()),
+                remote: Some(Box::new(self.remote_state())),
             },
+        }
+    }
+
+    /// The selected secret store: the OS credential store when it
+    /// initialises, the private file store otherwise. Selected once, lazily,
+    /// so a unit test that builds a `ServerState` does not read the OS
+    /// credential store unless it asks about the remote listener.
+    fn secret_store(&self) -> &(Arc<dyn SecretStore>, &'static str) {
+        self.secret_store.get_or_init(|| {
+            let (store, kind) = crate::secret_store::select_secret_store(&self.paths);
+            (store, kind.as_str())
+        })
+    }
+
+    fn remote_state(&self) -> devboule_protocol::RemoteState {
+        self.remote
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .to_wire()
+    }
+
+    /// This device's live peers, revoked rows included. The transport filters
+    /// to the non-revoked ones; the Devices panel shows both.
+    pub(crate) fn peers(&self) -> Result<Vec<crate::journal::PeerRecord>, String> {
+        let Some(journal) = &self.journal else {
+            return Err("the journal is unavailable".to_string());
+        };
+        journal.peers_list().map_err(|error| error.to_string())
+    }
+
+    /// This device's identity and Noise static key, loaded at most once.
+    ///
+    /// Borrowed rather than cloned: the private key is inside, and the value is
+    /// the same for the lifetime of the daemon.
+    pub(crate) fn device_identity(
+        &self,
+    ) -> &Result<
+        Arc<crate::device_identity::DeviceIdentity>,
+        crate::device_identity::DeviceIdentityError,
+    > {
+        self.device_identity.get_or_init(|| {
+            let (store, _) = self.secret_store();
+            crate::device_identity::load_or_create(&self.paths, store.as_ref()).map(Arc::new)
+        })
+    }
+
+    /// The shutdown flag the peer accept loop polls.
+    pub(crate) fn stop_flag(&self) -> &Arc<AtomicBool> {
+        &self.stop
+    }
+
+    /// This device's own user SID, or `None` on a platform without one. This
+    /// is what `paired_by_user` records: the person here who ran the pairing,
+    /// never a value from the wire.
+    #[cfg(windows)]
+    pub(crate) fn local_user_sid(&self) -> Option<String> {
+        crate::security::current_user_sid().ok()
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn local_user_sid(&self) -> Option<String> {
+        None
+    }
+
+    pub(crate) fn peer_upsert(&self, record: PeerRecord) -> Result<PeerRecord, String> {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| "the journal is unavailable".to_string())?;
+        journal
+            .peer_upsert(record)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn peer_get(&self, device_id: &str) -> Result<Option<PeerRecord>, String> {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| "the journal is unavailable".to_string())?;
+        journal
+            .peer_get(device_id)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn peer_revoke(&self, device_id: &str, at: i64) -> Result<bool, String> {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| "the journal is unavailable".to_string())?;
+        journal
+            .peer_revoke(device_id, at)
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn peer_set_caps(&self, device_id: &str, caps: Vec<String>) -> Result<bool, String> {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| "the journal is unavailable".to_string())?;
+        journal
+            .peer_set_caps(device_id, caps)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Record a live remote connection so a revoke can close it.
+    pub(crate) fn register_remote_conn(&self, conn_id: u64, device_id: &str) -> Arc<AtomicBool> {
+        let close = Arc::new(AtomicBool::new(false));
+        self.remote_conns
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(conn_id, (device_id.to_string(), Arc::clone(&close)));
+        close
+    }
+
+    pub(crate) fn unregister_remote_conn(&self, conn_id: u64) {
+        self.remote_conns
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&conn_id);
+    }
+
+    /// Close every live connection of `device_id`. Returns how many were
+    /// asked to close; the flag is what actually drops them, on the next turn
+    /// of their own loop.
+    pub(crate) fn revoke_peer_connections(&self, device_id: &str) -> usize {
+        let connections = self
+            .remote_conns
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut closed = 0;
+        for (owner, close) in connections.values() {
+            if owner == device_id {
+                close.store(true, Ordering::SeqCst);
+                closed += 1;
+            }
+        }
+        closed
+    }
+
+    pub(crate) fn is_peer_online(&self, device_id: &str) -> bool {
+        self.remote_conns
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .any(|(owner, _)| owner == device_id)
+    }
+
+    /// The addresses `Status.remote` and `SelfInfo` advertise.
+    pub(crate) fn remote_addresses(&self) -> Vec<String> {
+        self.remote
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .addresses()
+    }
+
+    pub(crate) fn remote_port(&self) -> Option<u16> {
+        self.remote
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .port()
+    }
+
+    /// The pairing service: the displayed code, its lockouts, and the parked
+    /// confirmations.
+    pub(crate) fn pairing(&self) -> &Arc<crate::pairing::PairingService> {
+        &self.pairing
+    }
+
+    /// The peer transport, defaulting to the tailnet. `set_peer_transport` is
+    /// how a test substitutes a stub that answers `pre_noise_filter` and
+    /// `binding` without Tailscale.
+    pub(crate) fn peer_transport(&self) -> Arc<dyn crate::peer_transport::PeerTransport> {
+        Arc::clone(self.peer_transport.get_or_init(|| {
+            Arc::new(crate::peer_transport::Tailnet)
+                as Arc<dyn crate::peer_transport::PeerTransport>
+        }))
+    }
+
+    /// Install the transport before the peer listener starts. `Ok(())` means it
+    /// was not already chosen.
+    #[cfg(test)]
+    pub(crate) fn set_peer_transport(
+        &self,
+        transport: Arc<dyn crate::peer_transport::PeerTransport>,
+    ) -> Result<(), Arc<dyn crate::peer_transport::PeerTransport>> {
+        self.peer_transport.set(transport)
+    }
+
+    /// Replace the remote-listener state. Called by the peer accept loop when
+    /// it binds (and by the start-up path when it cannot).
+    pub(crate) fn set_remote_state(&self, state: RemoteState) {
+        *self
+            .remote
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = state;
+    }
+
+    /// Append one audit row.
+    ///
+    /// The request it describes proceeds either way: losing the trail is bad,
+    /// refusing a legitimate request because the trail could not be written is
+    /// worse. The line names the action and the error only — never a peer
+    /// identity, a key or a code.
+    pub(crate) fn audit(&self, record: AuditRecord) {
+        let action = record.action.clone();
+        let Some(journal) = &self.journal else {
+            eprintln!("daemon could not audit {action}: the journal is unavailable");
+            return;
+        };
+        if let Err(error) = journal.audit_append(record) {
+            eprintln!("daemon could not audit {action}: {error}");
         }
     }
 }
@@ -810,11 +1071,22 @@ fn run_windows() -> Result<(), DaemonError> {
         .spawn(move || accept_loop(listener, accept_state))
         .map_err(DaemonError::from)?;
 
+    // The peer listener is best-effort and runs beside the pipe: no Tailscale,
+    // no tailnet address, or a missing key leaves the daemon local-only and
+    // says why in `Status.remote` rather than failing to start.
+    let peer_stop = Arc::new(AtomicBool::new(false));
+    let peer_accept = start_peer_listener(&state, &paths, Arc::clone(&peer_stop));
+
     state.wait_until_shutdown();
     // Flush the conversation journal before the listener is torn down so a
     // clean shutdown does not drop the last coalesced frames.
     state.sessions.flush_journal();
     shutdown.shutdown();
+    // The peer loop polls, so its stop is a flag rather than a wake-up connect.
+    peer_stop.store(true, Ordering::SeqCst);
+    if let Some(handle) = peer_accept {
+        bounded_join(handle, JOIN_BUDGET);
+    }
     let deadline = Instant::now() + JOIN_BUDGET;
     while !accept.is_finished() && Instant::now() < deadline {
         let _ = transport::connect(&paths);
@@ -824,6 +1096,49 @@ fn run_windows() -> Result<(), DaemonError> {
     drop(mcp_server);
     drop(lock);
     Ok(())
+}
+
+/// Bind and serve the tailnet listener, or record why it is not up.
+///
+/// Returns the `daemon-peer-accept` thread when one was started. The caller
+/// stops it with `peer_stop`.
+#[cfg(windows)]
+fn start_peer_listener(
+    state: &Arc<ServerState>,
+    paths: &RuntimePaths,
+    peer_stop: Arc<AtomicBool>,
+) -> Option<JoinHandle<()>> {
+    // A missing key is a refusal, not an environment fact: creating a new one
+    // would silently orphan every pairing this device has.
+    if let Err(error) = state.device_identity() {
+        state.set_remote_state(match error {
+            crate::device_identity::DeviceIdentityError::KeyMissing => RemoteState::KeyMissing,
+            other => RemoteState::Disabled(other.to_string()),
+        });
+        return None;
+    }
+    let transport = state.peer_transport();
+    let listener = match transport.listen(paths, Arc::clone(&peer_stop)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            state.set_remote_state(RemoteState::Disabled(error.to_string()));
+            return None;
+        }
+    };
+    state.set_remote_state(RemoteState::Enabled {
+        addresses: listener.addrs().iter().map(|addr| addr.ip()).collect(),
+        port: crate::peer_transport::peer_port(),
+    });
+    // The pairing service is the same object the RPCs use, so a code shown in
+    // the panel is the code this listener accepts, and a parked confirmation
+    // is visible to `DevicesList`. Coerced to the trait object here rather than
+    // stored as one: the state's field is the concrete type the RPCs call.
+    let pairing: Arc<dyn crate::peer_transport::PairingHook> = state.pairing().clone();
+    let accept_state = Arc::clone(state);
+    std::thread::Builder::new()
+        .name("daemon-peer-accept".into())
+        .spawn(move || accept_peers(listener, transport, accept_state, pairing))
+        .ok()
 }
 
 fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) {
@@ -842,7 +1157,9 @@ fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) 
                 match std::thread::Builder::new()
                     .name("daemon-client".into())
                     .spawn(move || {
-                        if let Err(error) = handle_client(Framed::new(stream), conn_state.clone()) {
+                        if let Err(error) =
+                            handle_client(Framed::new(stream), conn_state.clone(), None)
+                        {
                             eprintln!("daemon client connection failed: {error}");
                         }
                         conn_state.client_disconnected();
@@ -868,7 +1185,17 @@ fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) 
     }
 }
 
-fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonError> {
+/// Serve one connection until it closes.
+///
+/// `conn_peer` is `Some(ConnPeer::Remote {..})` when this connection arrived
+/// over Noise: its identity was authenticated before this call. A pipe
+/// connection passes `None` and is identified by the kernel through the pipe
+/// handle. The two are never mixed: a remote peer has no pipe handle at all.
+pub(crate) fn handle_client(
+    framed: Framed,
+    state: Arc<ServerState>,
+    conn_peer: Option<ConnPeer>,
+) -> Result<(), DaemonError> {
     if state.is_shutting_down() {
         send_shutting_down(&framed, None)?;
         return Ok(());
@@ -885,35 +1212,58 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         send_shutting_down(&framed, None)?;
         return Ok(());
     }
+    // `as_file()` is `Option` because a stream connection has no pipe handle;
+    // that case is routine, so it is a branch and never an unwrap.
     #[cfg(windows)]
-    let peer = match transport::peer_identity(framed.as_file().as_ref()) {
-        Ok(peer) => peer,
-        Err(error) => {
-            eprintln!("could not derive named-pipe peer identity: {error}");
-            let _ = framed.send(&DaemonMessage::Error(WireError::new(
-                ErrorCode::Unauthorized,
-                "Could not verify the daemon client identity.",
-            )));
-            return Err(DaemonError::Io(error));
-        }
-    };
-    #[cfg(windows)]
-    let true_owner = match OwnerId::new(peer.user.clone(), format!("process-{}", peer.pid)) {
-        Ok(owner) => owner,
-        Err(message) => {
-            let _ = framed.send(&DaemonMessage::Error(WireError::new(
-                ErrorCode::Unauthorized,
-                "Could not verify the daemon client identity.",
-            )));
-            return Err(DaemonError::Protocol(message));
-        }
+    let peer: Option<crate::agent_report::PeerIdentity> = match framed.as_file() {
+        Some(file) => match transport::peer_identity(&file) {
+            Ok(peer) => Some(peer),
+            Err(error) => {
+                eprintln!("could not derive named-pipe peer identity: {error}");
+                let _ = framed.send(&DaemonMessage::Error(WireError::new(
+                    ErrorCode::Unauthorized,
+                    "Could not verify the daemon client identity.",
+                )));
+                return Err(DaemonError::Io(error));
+            }
+        },
+        None => None,
     };
     #[cfg(not(windows))]
-    let true_owner = client_hello.owner.clone();
+    let peer: Option<crate::agent_report::PeerIdentity> = None;
+
+    // Authority is `OwnerId.user`: a kernel SID (starts with `S-` on Windows)
+    // for a local client, `peer_<device_id>` for a remote one.
+    let true_owner = match &conn_peer {
+        Some(ConnPeer::Remote {
+            device_id, role, ..
+        }) => OwnerId::new(format!("peer_{device_id}"), role.as_str())
+            .map_err(DaemonError::Protocol)?,
+        _ => match &peer {
+            Some(peer) => match OwnerId::new(peer.user.clone(), format!("process-{}", peer.pid)) {
+                Ok(owner) => owner,
+                Err(message) => {
+                    let _ = framed.send(&DaemonMessage::Error(WireError::new(
+                        ErrorCode::Unauthorized,
+                        "Could not verify the daemon client identity.",
+                    )));
+                    return Err(DaemonError::Protocol(message));
+                }
+            },
+            // No pipe identity on this platform: today's behaviour, the hello
+            // owner label. The peer case is handled above.
+            None => client_hello.owner.clone(),
+        },
+    };
     if client_hello.owner != true_owner {
+        // Redacted, not printed: this line used to carry the user SID and, on
+        // a peer connection, `peer_<device_id>` — both of which §8 R7 keeps out
+        // of logs. The mismatch is still diagnosable; the identities are not in
+        // the file.
         eprintln!(
-            "client hello owner label {:?} did not match pipe peer {:?}",
-            client_hello.owner, true_owner
+            "client hello owner label {} did not match the connection peer {}",
+            crate::device_identity::redact(&client_hello.owner.user),
+            crate::device_identity::redact(&true_owner.user)
         );
     }
     let daemon_hello = daemon_hello(&state);
@@ -943,13 +1293,14 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
         .capabilities
         .iter()
         .any(|capability| capability.as_str() == caps::TYPED_PERMISSIONS);
+    let devices_ok = agreed
+        .capabilities
+        .iter()
+        .any(|capability| capability.as_str() == caps::DEVICES);
     // The hello owner is diagnostic only. All idempotency and session access
-    // below use the identity derived from the connected pipe's peer process.
+    // below use the identity decided above.
     let owner = true_owner;
-    #[cfg(windows)]
-    let conn = ConnHandle::with_peer(state.alloc_conn(), Some(peer));
-    #[cfg(not(windows))]
-    let conn = ConnHandle::with_peer(state.alloc_conn(), None);
+    let conn = ConnHandle::with_conn_peer(state.alloc_conn(), peer, conn_peer.clone());
     let (request_tx, request_rx) = mpsc::sync_channel(64);
     let reader_wake = Arc::clone(&conn.outbound);
     let reader_framed = framed.clone();
@@ -960,9 +1311,26 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     let mut pending_events = VecDeque::new();
     let mut pending_state_events = VecDeque::new();
     let mut pending_replies = VecDeque::new();
+    // Remote connections are rate limited; a local pipe is not (muse M1).
+    let is_remote = matches!(conn.conn_peer, Some(ConnPeer::Remote { .. }));
+    let mut bucket = TokenBucket::new(Instant::now());
+    // A revocation must drop a live connection, so the connection registers
+    // itself and polls the flag its own revoke sets.
+    let close_requested = match &conn.conn_peer {
+        Some(ConnPeer::Remote { device_id, .. }) => {
+            Some(state.register_remote_conn(conn.id, device_id))
+        }
+        _ => None,
+    };
     let loop_result = (|| -> Result<(), DaemonError> {
         loop {
             if state.stop.load(Ordering::SeqCst) {
+                break;
+            }
+            if close_requested
+                .as_ref()
+                .is_some_and(|close| close.load(Ordering::SeqCst))
+            {
                 break;
             }
             let observed_generation = conn.outbound.wake_generation();
@@ -992,6 +1360,24 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     }
                 };
                 let close_request = matches!(&request, ClientMessage::SessionClose { .. });
+                if is_remote && !bucket.take(Instant::now()) {
+                    // Exactly one audit row, then close: the audit table must
+                    // not amplify a flood.
+                    if let Some(ConnPeer::Remote {
+                        device_id, role, ..
+                    }) = &conn.conn_peer
+                    {
+                        state.audit(AuditRecord {
+                            device_id: device_id.clone(),
+                            role: role.as_str().to_string(),
+                            claimed_origin: None,
+                            action: "rate_limited".to_string(),
+                            session_id: None,
+                            outcome: "denied".to_string(),
+                        });
+                    }
+                    break;
+                }
                 if drains_events_before_dispatch(&request) {
                     // A close must leave the pull state alive for the
                     // post-dispatch pull: teardown_session joins the
@@ -1034,6 +1420,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
                     sessions_ok,
                     journal_ok,
                     typed_permissions_ok,
+                    devices_ok,
                 ) else {
                     continue;
                 };
@@ -1116,6 +1503,7 @@ fn handle_client(framed: Framed, state: Arc<ServerState>) -> Result<(), DaemonEr
     state.sessions.detach_conn(&conn);
     state.unwatch_sessions(conn.id);
     state.sessions.clear_presence(conn.id);
+    state.unregister_remote_conn(conn.id);
     loop_result
 }
 
@@ -1280,6 +1668,10 @@ fn daemon_hello(state: &ServerState) -> DaemonHello {
     }
 }
 
+/// The eighth argument is whether the `devices` capability was negotiated.
+/// `session_send` in this file already declines a parameter object for the
+/// same reason: one call shape, one place to read.
+#[allow(clippy::too_many_arguments)]
 fn dispatch(
     state: &Arc<ServerState>,
     owner: &OwnerId,
@@ -1288,7 +1680,56 @@ fn dispatch(
     sessions_ok: bool,
     journal_ok: bool,
     typed_permissions_ok: bool,
+    devices_ok: bool,
 ) -> Option<DaemonMessage> {
+    // The peer gate is the first statement: nothing below (not the provider
+    // spawns, not the readiness check) runs for a remote connection before
+    // its request has a decision (`DESIGN-remote-agents.md` §8b A1).
+    if let Some(ConnPeer::Remote { role, .. }) = &conn.conn_peer {
+        match peer_allows(*role, &request) {
+            PeerDecision::Deny(reason) => {
+                audit_peer_request(state, &conn.conn_peer, &request, "denied");
+                return Some(capability_not_supported(request.request_id(), reason));
+            }
+            PeerDecision::Allow => {
+                // Only state-changing requests audit on success. An allowed
+                // read must never write a row: a `Ping` loop would fill the
+                // disk (muse M1).
+                if request.is_state_changing() {
+                    audit_peer_request(state, &conn.conn_peer, &request, "ok");
+                }
+            }
+        }
+    }
+    // A remote peer's session list is a projection, not the local list:
+    // `Client` sees the sessions of the user it was paired by (the SID this
+    // daemon wrote into its own `peers` row at pairing time), `Daemon` sees
+    // none in 1a. Implemented here so `session.rs` keeps its single
+    // owner-user filter, which does exactly this for a synthetic `OwnerId`.
+    if let Some(ConnPeer::Remote {
+        role,
+        paired_by_user,
+        ..
+    }) = &conn.conn_peer
+    {
+        if let ClientMessage::SessionsList { id } = &request {
+            let owner = match role {
+                PeerRole::Client => paired_by_user.clone(),
+                PeerRole::Daemon => None,
+            };
+            let sessions = match owner {
+                Some(paired_by) => match OwnerId::new(paired_by, "peer") {
+                    Ok(owner) => match state.sessions.list(&owner) {
+                        Ok(sessions) => sessions,
+                        Err(error) => return Some(DaemonMessage::Error(error.with_id(*id))),
+                    },
+                    Err(_) => Vec::new(),
+                },
+                None => Vec::new(),
+            };
+            return Some(DaemonMessage::Sessions { id: *id, sessions });
+        }
+    }
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
         let mut error = WireError::new(ErrorCode::ShuttingDown, "daemon is shutting down");
         if let Some(id) = request.request_id() {
@@ -1341,9 +1782,11 @@ fn dispatch(
         sessions_ok,
         journal_ok,
         typed_permissions_ok,
+        devices_ok,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_immediate(
     state: &Arc<ServerState>,
     owner: &OwnerId,
@@ -1352,6 +1795,7 @@ fn dispatch_immediate(
     sessions_ok: bool,
     journal_ok: bool,
     typed_permissions_ok: bool,
+    devices_ok: bool,
 ) -> DaemonMessage {
     if state.is_shutting_down() && !matches!(request, ClientMessage::Shutdown { .. }) {
         return DaemonMessage::Error({
@@ -1421,6 +1865,17 @@ fn dispatch_immediate(
             dispatch_session(state, owner, request, conn, typed_permissions_ok)
         }
         ClientMessage::ProvidersList { id } => providers_reply(state, id, false),
+        ClientMessage::DevicesList { .. }
+        | ClientMessage::PairingStart { .. }
+        | ClientMessage::PairingComplete { .. }
+        | ClientMessage::PairingConfirm { .. }
+        | ClientMessage::PeerRevoke { .. }
+        | ClientMessage::PeerSetCaps { .. } => {
+            if !devices_ok {
+                return capability_not_supported(request.request_id(), caps::DEVICES);
+            }
+            dispatch_devices(state, conn, request)
+        }
         ClientMessage::ProvidersRefresh { .. } => {
             unreachable!("ProvidersRefresh is dispatched by the async wrapper")
         }
@@ -1830,6 +2285,284 @@ fn collapse_health_reason(message: &str) -> String {
     reason
 }
 
+/// The device commands. Everything here is a local act except `DevicesList`,
+/// which is projected for whoever asks: a local client sees the full rows, a
+/// remote peer sees a subset (design §8b A13, muse M4).
+fn dispatch_devices(
+    state: &Arc<ServerState>,
+    conn: &Arc<ConnHandle>,
+    request: ClientMessage,
+) -> DaemonMessage {
+    match request {
+        ClientMessage::DevicesList { id } => match devices_reply(state, &conn.conn_peer) {
+            Ok(reply) => DaemonMessage::Devices {
+                id,
+                self_info: reply.self_info,
+                peers: reply.peers,
+                pending: reply.pending,
+            },
+            Err(error) => DaemonMessage::Error(error.with_id(id)),
+        },
+        ClientMessage::PairingStart { id, role } => {
+            // The address shown is where *this* device can be reached.
+            match pairing_address(state) {
+                Err(error) => DaemonMessage::Error(error.with_id(id)),
+                Ok(address) => match state.pairing().start(role) {
+                    Ok((code, expires_at)) => DaemonMessage::PairingCode {
+                        id,
+                        code,
+                        expires_at,
+                        address,
+                    },
+                    // Only the OS entropy source can fail here, and refusing
+                    // is the only safe answer.
+                    Err(error) => DaemonMessage::Error(
+                        WireError::new(ErrorCode::Internal, error.to_string()).with_id(id),
+                    ),
+                },
+            }
+        }
+        ClientMessage::PairingComplete {
+            id,
+            address,
+            code,
+            role,
+        } => {
+            let transport = state.peer_transport();
+            match state
+                .pairing()
+                .complete(transport.as_ref(), state, &address, &code, role)
+            {
+                Ok(crate::pairing::PairingOutcome::Pending(peer)) => {
+                    DaemonMessage::PairingPending { id, peer }
+                }
+                Ok(crate::pairing::PairingOutcome::Done(peer)) => {
+                    DaemonMessage::PairingDone { id, peer }
+                }
+                // The message never contains the code: `PairingError` renders
+                // only reasons, and `PairingSecret`'s `Debug` is redacted.
+                Err(error) => DaemonMessage::Error(
+                    WireError::new(ErrorCode::InvalidRequest, error.to_string()).with_id(id),
+                ),
+            }
+        }
+        ClientMessage::PairingConfirm {
+            id,
+            device_id,
+            accept,
+        } => match state.pairing().confirm(state, &device_id, accept) {
+            Ok(crate::pairing::ConfirmOutcome::Accepted(peer)) => {
+                DaemonMessage::PeerUpdated { id, peer: *peer }
+            }
+            // A decline is a completed act, not an error: the panel must not
+            // render it as a failure.
+            Ok(crate::pairing::ConfirmOutcome::Declined) => {
+                DaemonMessage::PairingDeclined { id, device_id }
+            }
+            Err(error) => DaemonMessage::Error(
+                WireError::new(ErrorCode::InvalidRequest, error.to_string()).with_id(id),
+            ),
+        },
+        ClientMessage::PeerRevoke { id, device_id } => {
+            match state.peer_revoke(&device_id, unix_millis() as i64) {
+                Ok(true) => {
+                    // Revocation closes live connections under the same lock
+                    // that recorded it, so at most one already-decoded frame
+                    // is processed afterwards (design §8 R8).
+                    let closed = state.revoke_peer_connections(&device_id);
+                    let _ = closed;
+                    match state.peer_get(&device_id) {
+                        Ok(Some(record)) => DaemonMessage::PeerUpdated {
+                            id,
+                            peer: crate::pairing::peer_row(state, &record),
+                        },
+                        _ => DaemonMessage::Ok { id },
+                    }
+                }
+                Ok(false) => DaemonMessage::Error(
+                    WireError::new(ErrorCode::InvalidRequest, "No such peer to revoke.")
+                        .with_id(id),
+                ),
+                Err(error) => {
+                    DaemonMessage::Error(WireError::new(ErrorCode::Internal, error).with_id(id))
+                }
+            }
+        }
+        ClientMessage::PeerSetCaps {
+            id,
+            device_id,
+            caps,
+        } => match state.peer_get(&device_id) {
+            Err(error) => {
+                DaemonMessage::Error(WireError::new(ErrorCode::Internal, error).with_id(id))
+            }
+            Ok(None) => DaemonMessage::Error(
+                WireError::new(ErrorCode::InvalidRequest, "No such peer.").with_id(id),
+            ),
+            Ok(Some(record)) => {
+                let role = PeerRole::parse(&record.role).unwrap_or(PeerRole::Daemon);
+                match crate::pairing::validate_caps(role, &caps) {
+                    Err(message) => DaemonMessage::Error(
+                        WireError::new(ErrorCode::InvalidRequest, message).with_id(id),
+                    ),
+                    Ok(caps) => match state.peer_set_caps(&device_id, caps) {
+                        Ok(true) => match state.peer_get(&device_id) {
+                            Ok(Some(refreshed)) => DaemonMessage::PeerUpdated {
+                                id,
+                                peer: crate::pairing::peer_row(state, &refreshed),
+                            },
+                            _ => DaemonMessage::Ok { id },
+                        },
+                        Ok(false) => DaemonMessage::Error(
+                            WireError::new(ErrorCode::InvalidRequest, "No such peer.").with_id(id),
+                        ),
+                        Err(error) => DaemonMessage::Error(
+                            WireError::new(ErrorCode::Internal, error).with_id(id),
+                        ),
+                    },
+                }
+            }
+        },
+        other => DaemonMessage::Error(WireError::new(
+            ErrorCode::InvalidRequest,
+            format!("unexpected device frame {other:?}"),
+        )),
+    }
+}
+
+struct DevicesReply {
+    self_info: devboule_protocol::SelfInfo,
+    peers: Vec<devboule_protocol::PeerRow>,
+    pending: Vec<devboule_protocol::PendingPairing>,
+}
+
+/// Build the reply for the requesting role.
+///
+/// A `Daemon` peer sees `{device_id, display_name, role, online}` per peer and
+/// `{device_id, display_name, daemon_version, protocol_version}` for this
+/// device: never an address, a binding, a public key, or the SID this device
+/// paired it from. Its own Noise key is what it needs, and it already has it.
+fn devices_reply(
+    state: &Arc<ServerState>,
+    conn_peer: &Option<ConnPeer>,
+) -> Result<DevicesReply, WireError> {
+    let records = state
+        .peers()
+        .map_err(|error| WireError::new(ErrorCode::Internal, error))?;
+    let identity = state
+        .device_identity()
+        .as_ref()
+        .map_err(|error| WireError::new(ErrorCode::Internal, error.to_string()))?;
+    let pending = state.pairing().pending_snapshot();
+
+    match conn_peer {
+        Some(ConnPeer::Remote {
+            role: PeerRole::Daemon,
+            ..
+        }) => {
+            let peers = records
+                .iter()
+                .map(|record| devboule_protocol::PeerRow {
+                    device_id: record.device_id.clone(),
+                    display_name: record.display_name.clone(),
+                    role: PeerRole::parse(&record.role).unwrap_or(PeerRole::Daemon),
+                    public_key: String::new(),
+                    key_fingerprint: String::new(),
+                    binding_kind: String::new(),
+                    binding_node_name: None,
+                    binding_login_name: None,
+                    address: String::new(),
+                    paired_at: record.paired_at,
+                    revoked_at: record.revoked_at,
+                    caps: Vec::new(),
+                    paired_by_user: None,
+                    online: state.is_peer_online(&record.device_id),
+                })
+                .collect();
+            Ok(DevicesReply {
+                self_info: devboule_protocol::SelfInfo {
+                    device_id: identity.device_id.clone(),
+                    display_name: identity.display_name.clone(),
+                    public_key: String::new(),
+                    key_fingerprint: String::new(),
+                    addresses: Vec::new(),
+                    port: 0,
+                    daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+                    protocol_version: PROTOCOL_VERSION,
+                    // Withheld from a machine peer: whether this device's
+                    // listener is up is not its business, and the fields are
+                    // omitted rather than blanked so the frame cannot be read
+                    // as "an empty address".
+                    remote: None,
+                },
+                peers,
+                // A peer has no business deciding this device's pairings.
+                pending: Vec::new(),
+            })
+        }
+        Some(ConnPeer::Remote {
+            role: PeerRole::Client,
+            ..
+        }) => Ok(DevicesReply {
+            self_info: devboule_protocol::SelfInfo {
+                device_id: identity.device_id.clone(),
+                display_name: identity.display_name.clone(),
+                public_key: identity.public_key_b64(),
+                key_fingerprint: identity.key_fingerprint.clone(),
+                // No addresses, no port, and no remote state: where this
+                // device sits on the tailnet is not a client's business.
+                addresses: Vec::new(),
+                port: 0,
+                daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+                protocol_version: PROTOCOL_VERSION,
+                remote: None,
+            },
+            peers: records
+                .iter()
+                .map(|record| {
+                    let mut row = crate::pairing::peer_row(state, record);
+                    // The SID this device paired the peer from is local-only.
+                    row.paired_by_user = None;
+                    row
+                })
+                .collect(),
+            pending: Vec::new(),
+        }),
+        _ => Ok(DevicesReply {
+            self_info: devboule_protocol::SelfInfo {
+                device_id: identity.device_id.clone(),
+                display_name: identity.display_name.clone(),
+                public_key: identity.public_key_b64(),
+                key_fingerprint: identity.key_fingerprint.clone(),
+                addresses: state.remote_addresses(),
+                port: state.remote_port().unwrap_or(0),
+                daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+                protocol_version: PROTOCOL_VERSION,
+                remote: Some(state.remote_state()),
+            },
+            peers: records
+                .iter()
+                .map(|record| crate::pairing::peer_row(state, record))
+                .collect(),
+            pending,
+        }),
+    }
+}
+
+/// Where this device can be reached, for the code it displays.
+fn pairing_address(state: &Arc<ServerState>) -> Result<String, WireError> {
+    let addresses = state.remote_addresses();
+    let port = state.remote_port();
+    match (addresses.first(), port) {
+        (Some(address), Some(port)) => Ok(format!("{address}:{port}")),
+        _ => Err(WireError::new(
+            ErrorCode::InvalidRequest,
+            "This device has no tailnet address to pair over.\
+             Start Tailscale, then show a code again.",
+        )),
+    }
+}
+
 fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage {
     let mut error = WireError::new(
         ErrorCode::CapabilityNotSupported,
@@ -1839,6 +2572,54 @@ fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage 
         error = error.with_id(id);
     }
     DaemonMessage::Error(error)
+}
+
+/// Audit one request that came from a remote peer.
+///
+/// `device_id` and `role` come from the Noise-authenticated `ConnPeer`, never
+/// from the frame, and the action is the variant name.
+fn audit_peer_request(
+    state: &Arc<ServerState>,
+    conn_peer: &Option<ConnPeer>,
+    request: &ClientMessage,
+    outcome: &str,
+) {
+    let Some(ConnPeer::Remote {
+        device_id, role, ..
+    }) = conn_peer
+    else {
+        return;
+    };
+    state.audit(AuditRecord {
+        device_id: device_id.clone(),
+        role: role.as_str().to_string(),
+        claimed_origin: None,
+        action: request.name().to_string(),
+        session_id: request_session_id(request),
+        outcome: outcome.to_string(),
+    });
+}
+
+/// The session id a request names, when it names one. Deliberately not a
+/// closed match: this is audit context, and the exhaustiveness that matters
+/// lives in `peer_allows` (`peer_policy.rs`).
+fn request_session_id(request: &ClientMessage) -> Option<String> {
+    match request {
+        ClientMessage::SessionAttach { session_id, .. }
+        | ClientMessage::SessionDetach { session_id, .. }
+        | ClientMessage::SessionClaim { session_id, .. }
+        | ClientMessage::SessionClose { session_id, .. }
+        | ClientMessage::SessionStop { session_id, .. }
+        | ClientMessage::SessionSend { session_id, .. }
+        | ClientMessage::SessionResize { session_id, .. }
+        | ClientMessage::SessionInterrupt { session_id, .. }
+        | ClientMessage::SessionSetModel { session_id, .. }
+        | ClientMessage::SessionSetMode { session_id, .. }
+        | ClientMessage::SessionPermissionRespond { session_id, .. }
+        | ClientMessage::SessionReportAgent { session_id, .. }
+        | ClientMessage::SessionDelete { session_id, .. } => Some(session_id.clone()),
+        _ => None,
+    }
 }
 
 fn dispatch_journal(
@@ -2528,8 +3309,63 @@ mod tests {
     use super::*;
     use devboule_protocol::{ClientMessage, OwnerId, PermissionOutcome, RetentionPatch};
 
+    use crate::journal::new_session_record;
+    use crate::peer_policy::TransportBinding;
+
     fn state() -> Arc<ServerState> {
         ServerState::new("test-instance".to_string())
+    }
+
+    /// A state with a runtime dir whose `journal.db` the test can also open
+    /// directly, for asserting what the daemon wrote to `audit`/`peers`.
+    fn temp_state(tag: &str) -> (std::path::PathBuf, Arc<ServerState>) {
+        let path = std::env::temp_dir().join(format!(
+            "devboule-{tag}-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let state = ServerState::with_paths(
+            "test-instance".to_string(),
+            RuntimePaths::from_dir(path.clone()),
+        )
+        .expect("state");
+        (path, state)
+    }
+
+    fn remote_conn(role: PeerRole, paired_by_user: Option<&str>) -> Arc<ConnHandle> {
+        ConnHandle::with_conn_peer(
+            7,
+            None,
+            Some(ConnPeer::Remote {
+                device_id: "dev-peer-1".to_string(),
+                role,
+                paired_by_user: paired_by_user.map(str::to_string),
+                binding: TransportBinding::tailnet(
+                    "nstable",
+                    "host.tailnet.ts.net.",
+                    "user@example.com",
+                ),
+            }),
+        )
+    }
+
+    /// Audit rows as `action:outcome`, in insertion order.
+    fn audit_rows(path: &std::path::Path) -> Vec<String> {
+        let connection = rusqlite::Connection::open(path.join("journal.db")).expect("journal");
+        let mut statement = connection
+            .prepare("SELECT action, outcome FROM audit ORDER BY id")
+            .expect("prepare");
+        statement
+            .query_map([], |row| {
+                Ok(format!(
+                    "{}:{}",
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?
+                ))
+            })
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows")
     }
 
     fn wire_attachment(name: &str, bytes: &[u8]) -> PromptAttachment {
@@ -2709,6 +3545,7 @@ mod tests {
             true,
             true,
             true,
+            true,
         )
         .expect("immediate dispatch reply");
         assert!(matches!(
@@ -2739,6 +3576,7 @@ mod tests {
                 idempotency_key: None,
             },
             &conn,
+            false,
             true,
             true,
             false,
@@ -2773,6 +3611,7 @@ mod tests {
             &owner,
             ClientMessage::ProvidersList { id: 11 },
             &conn,
+            false,
             false,
             false,
             false,
@@ -2817,6 +3656,7 @@ mod tests {
             &owner,
             ClientMessage::DaemonDiagnostics { id: 12 },
             &conn,
+            true,
             true,
             true,
             true,
@@ -3021,6 +3861,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         )
         .is_none());
         assert_eq!(
@@ -3119,6 +3960,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         )
         .is_none());
         assert_eq!(
@@ -3170,6 +4012,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         )
         .is_none());
         let DaemonMessage::Error(error) = wait_for_update_reply(&conn) else {
@@ -3202,6 +4045,7 @@ mod tests {
                 provider_id: "devboule-acp-stub".to_string(),
             },
             &conn,
+            false,
             false,
             false,
             false,
@@ -3256,6 +4100,7 @@ mod tests {
                 provider_id: "codex".to_string(),
             },
             &conn,
+            false,
             false,
             false,
             false,
@@ -3338,6 +4183,7 @@ mod tests {
             true,
             true,
             true,
+            true,
         )
         .expect("immediate dispatch reply");
         assert!(matches!(usage, DaemonMessage::JournalUsage { id: 1, .. }));
@@ -3346,6 +4192,7 @@ mod tests {
             &owner,
             ClientMessage::JournalRetentionGet { id: 2 },
             &conn,
+            true,
             true,
             true,
             true,
@@ -3409,6 +4256,7 @@ mod tests {
                 true,
                 true,
                 true,
+                true,
             )
             .expect("immediate dispatch reply");
             assert!(matches!(
@@ -3440,6 +4288,7 @@ mod tests {
                 idempotency_key: None,
             },
             &conn,
+            true,
             true,
             true,
             true,
@@ -3494,6 +4343,7 @@ mod tests {
             true,
             true,
             true,
+            true,
         )
         .expect("immediate dispatch reply");
         assert!(matches!(
@@ -3515,6 +4365,7 @@ mod tests {
             true,
             true,
             true,
+            true,
         )
         .expect("immediate dispatch reply");
         assert!(matches!(
@@ -3533,6 +4384,7 @@ mod tests {
                 idempotency_key: Some("retention-once".to_string()),
             },
             &conn,
+            true,
             true,
             true,
             true,
@@ -3570,6 +4422,7 @@ mod tests {
             true,
             true,
             true,
+            true,
         )
         .expect("immediate dispatch reply");
         assert!(matches!(first_delete, DaemonMessage::Ok { id: 4 }));
@@ -3585,10 +4438,250 @@ mod tests {
             true,
             true,
             true,
+            true,
         )
         .expect("immediate dispatch reply");
         assert!(matches!(replayed_delete, DaemonMessage::Ok { id: 5 }));
         drop(state);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn the_peer_gate_denies_the_destructive_set_before_any_spawn() {
+        let (path, state) = temp_state("peer-gate");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = remote_conn(PeerRole::Daemon, None);
+        let requests = [
+            ClientMessage::Shutdown { id: 1 },
+            ClientMessage::ProvidersRefresh { id: 2 },
+            ClientMessage::ProviderUpdate {
+                id: 3,
+                provider_id: "claude".to_string(),
+            },
+            ClientMessage::Status { id: 4 },
+        ];
+        for request in requests {
+            // `ProvidersRefresh`/`ProviderUpdate` are answered by an async
+            // wrapper that returns `None` and spawns a thread. A `Some(Error)`
+            // here is proof the gate returned before the spawn, not merely
+            // that the reply looked similar.
+            let reply = dispatch(&state, &owner, request, &conn, true, true, true, true)
+                .expect("the gate must answer synchronously");
+            match reply {
+                DaemonMessage::Error(error) => assert_eq!(
+                    error.code,
+                    ErrorCode::CapabilityNotSupported,
+                    "unexpected refusal: {error:?}"
+                ),
+                other => panic!("expected CapabilityNotSupported, got {other:?}"),
+            }
+        }
+        drop(state);
+        assert_eq!(
+            audit_rows(&path),
+            vec![
+                "Shutdown:denied",
+                "ProvidersRefresh:denied",
+                "ProviderUpdate:denied",
+                "Status:denied",
+            ]
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn an_allowed_read_writes_no_audit_row() {
+        let (path, state) = temp_state("peer-ping");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = remote_conn(PeerRole::Client, Some("S-1-5-21-1"));
+        for id in 0..20 {
+            let reply = dispatch(
+                &state,
+                &owner,
+                ClientMessage::Ping { id },
+                &conn,
+                true,
+                true,
+                true,
+                true,
+            )
+            .expect("ping replies");
+            assert!(matches!(reply, DaemonMessage::Pong { .. }));
+        }
+        drop(state);
+        assert!(
+            audit_rows(&path).is_empty(),
+            "20 allowed pings must not write an audit row"
+        );
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn a_remote_sessions_list_is_projected_by_role_and_paired_user() {
+        let (path, state) = temp_state("peer-sessions");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        {
+            let journal = state.journal.as_ref().expect("journal");
+            journal
+                .upsert_blocking(new_session_record(
+                    "s.user-a.1",
+                    "S-user-a",
+                    None,
+                    SessionKind::Terminal,
+                    "A",
+                ))
+                .expect("session a");
+            journal
+                .upsert_blocking(new_session_record(
+                    "s.user-b.1",
+                    "S-user-b",
+                    None,
+                    SessionKind::Terminal,
+                    "B",
+                ))
+                .expect("session b");
+        }
+
+        let ids = |conn: &Arc<ConnHandle>| match dispatch(
+            &state,
+            &owner,
+            ClientMessage::SessionsList { id: 1 },
+            conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("sessions reply")
+        {
+            DaemonMessage::Sessions { sessions, .. } => sessions
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            other => panic!("expected Sessions, got {other:?}"),
+        };
+
+        assert_eq!(
+            ids(&remote_conn(PeerRole::Client, Some("S-user-a"))),
+            vec!["s.user-a.1".to_string()]
+        );
+        assert_eq!(
+            ids(&remote_conn(PeerRole::Client, Some("S-user-b"))),
+            vec!["s.user-b.1".to_string()]
+        );
+        assert!(ids(&remote_conn(PeerRole::Client, None)).is_empty());
+        assert!(ids(&remote_conn(PeerRole::Daemon, Some("S-user-a"))).is_empty());
+
+        // A read is a read: none of these wrote an audit row.
+        drop(state);
+        assert!(audit_rows(&path).is_empty());
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// The initiator path must be reachable from the dispatch gate, not just
+    /// compiled. The address is a closed port, so the pairing fails at connect:
+    /// what this asserts is that the request reaches `PairingService::complete`
+    /// (an error, not a `CapabilityNotSupported` refusal and not a panic) and
+    /// that the failure text never echoes the code the caller typed.
+    #[test]
+    fn pairing_complete_reaches_the_initiator_and_never_echoes_the_code() {
+        use std::net::TcpListener;
+
+        let (path, state) = temp_state("pairing-complete");
+        let owner = OwnerId::new("test-user", "test-client").expect("owner");
+        let conn = ConnHandle::new(3);
+        assert!(
+            state
+                .set_peer_transport(Arc::new(crate::peer_transport::TestTransport::default()))
+                .is_ok(),
+            "the stub transport is installed before anything can choose the real one"
+        );
+
+        // A port that was bound and then released: connecting is refused rather
+        // than left hanging.
+        let port = {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            listener.local_addr().expect("addr").port()
+        };
+        let address = format!("127.0.0.1:{port}");
+
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::PairingComplete {
+                id: 5,
+                address,
+                code: devboule_protocol::PairingSecret::new("ABCD2345"),
+                role: PeerRole::Client,
+            },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("immediate dispatch reply");
+        match reply {
+            DaemonMessage::Error(error) => {
+                assert_eq!(error.id, Some(5));
+                assert_ne!(
+                    error.code,
+                    ErrorCode::CapabilityNotSupported,
+                    "the devices capability is negotiated here, so this must not be a policy refusal"
+                );
+                assert!(
+                    !error.message.contains("ABCD2345"),
+                    "a pairing failure must never carry the code: {}",
+                    error.message
+                );
+            }
+            other => panic!("expected a pairing failure, got {other:?}"),
+        }
+
+        // A code the alphabet cannot express is refused before any socket work.
+        let reply = dispatch(
+            &state,
+            &owner,
+            ClientMessage::PairingComplete {
+                id: 6,
+                address: "127.0.0.1:1".to_string(),
+                code: devboule_protocol::PairingSecret::new("aaaa0000"),
+                role: PeerRole::Client,
+            },
+            &conn,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("immediate dispatch reply");
+        match reply {
+            DaemonMessage::Error(error) => {
+                assert!(!error.message.contains("aaaa0000"), "{}", error.message)
+            }
+            other => panic!("expected a malformed-code refusal, got {other:?}"),
+        }
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn status_carries_the_secret_store_selector_and_a_remote_state() {
+        let (_path, state) = temp_state("status");
+        let _ = state.secret_store();
+        match state.status_body(9) {
+            DaemonMessage::Status { body, .. } => {
+                assert!(
+                    matches!(body.secret_store.as_deref(), Some("keyring" | "file")),
+                    "unexpected selector: {:?}",
+                    body.secret_store
+                );
+                let remote = body.remote.expect("remote state is always reported");
+                assert_eq!(remote.state, devboule_protocol::RemoteStateKind::Disabled);
+                assert!(remote.reason.is_some());
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
     }
 }

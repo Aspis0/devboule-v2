@@ -10,11 +10,6 @@
 //!
 //! The store is selected once, at startup, and the choice is reported in
 //! `Status.secret_store`: `keyring` or `file`.
-//!
-//! Wired by S4 (`status_body` and the daemon start-up path). Until then the
-//! module has no non-test caller; remove this allowance in the step that
-//! wires it.
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -59,6 +54,10 @@ pub trait SecretStore: Send + Sync {
     /// as an empty secret.
     fn get(&self, name: &str) -> Result<Option<Vec<u8>>, SecretStoreError>;
     fn set(&self, name: &str, bytes: &[u8]) -> Result<(), SecretStoreError>;
+    /// Remove an entry. Called when a pairing is revoked and the key material
+    /// is retired; nothing in 1a reaches it yet, so the trait method carries
+    /// the allowance until S6.
+    #[allow(dead_code)]
     fn delete(&self, name: &str) -> Result<(), SecretStoreError>;
 }
 
@@ -159,6 +158,17 @@ impl FileStore {
         }
         Ok(self.dir.join(format!("{name}.bin")))
     }
+
+    /// Prepare `secrets/` for a write: create it if needed, then harden its
+    /// DACL. A directory inherits the parent's DACL, and re-creating an
+    /// existing directory keeps whatever it has, so the DACL is re-applied on
+    /// every write rather than only on creation.
+    fn prepare_dir(&self) -> Result<(), SecretStoreError> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|error| SecretStoreError::Unavailable(error.to_string()))?;
+        harden_directory(&self.dir)
+            .map_err(|error| SecretStoreError::Unavailable(error.to_string()))
+    }
 }
 
 impl SecretStore for FileStore {
@@ -173,14 +183,26 @@ impl SecretStore for FileStore {
 
     fn set(&self, name: &str, bytes: &[u8]) -> Result<(), SecretStoreError> {
         let path = self.path_for(name)?;
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|error| SecretStoreError::Unavailable(error.to_string()))?;
-        let mut file = open_private_file(&path)
-            .map_err(|error| SecretStoreError::Unavailable(error.to_string()))?;
-        use std::io::Write;
-        file.write_all(bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|error| SecretStoreError::Unavailable(error.to_string()))
+        self.prepare_dir()?;
+        // Write beside the target and rename over it. A crash or a full disk
+        // mid-write then leaves the previous key intact instead of a torn
+        // file, which the reader would report as a malformed envelope: a
+        // permanent brick for a device that had a perfectly good key.
+        let temp = self
+            .dir
+            .join(format!(".{name}.tmp-{:016x}", random_suffix()));
+        let result = (|| -> std::io::Result<()> {
+            let mut file = open_private_file(&temp)?;
+            use std::io::Write;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            drop(file);
+            replace_file(&temp, &path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        result.map_err(|error| SecretStoreError::Unavailable(error.to_string()))
     }
 
     fn delete(&self, name: &str) -> Result<(), SecretStoreError> {
@@ -208,6 +230,44 @@ fn open_private_file(path: &Path) -> std::io::Result<std::fs::File> {
         .truncate(true)
         .mode(0o600)
         .open(path)
+}
+
+#[cfg(windows)]
+fn harden_directory(path: &Path) -> std::io::Result<()> {
+    crate::security::harden_directory(path)
+}
+
+#[cfg(not(windows))]
+fn harden_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Move `temp` onto `target`, replacing it, in one filesystem operation.
+#[cfg(windows)]
+fn replace_file(temp: &Path, target: &Path) -> std::io::Result<()> {
+    // `std::fs::rename` on Windows uses `MOVEFILE_REPLACE_EXISTING`, which is
+    // the atomic-replace primitive here; the explicit MoveFileExW call is not
+    // needed and would add an error mode of its own.
+    std::fs::rename(temp, target)
+}
+
+#[cfg(not(windows))]
+fn replace_file(temp: &Path, target: &Path) -> std::io::Result<()> {
+    std::fs::rename(temp, target)
+}
+
+/// A process-unique suffix for the temporary file. Not a security value: the
+/// temporary lives in the same private directory as the target, so a guess
+/// buys an attacker nothing they do not already have as this user.
+fn random_suffix() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ (u64::from(std::process::id()) << 32) ^ COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,6 +417,155 @@ mod tests {
         assert!(
             crate::security::dacl_is_current_user_only(&sddl, &sid),
             "secret file DACL must name only the current user: {sddl}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F2: `CreateFileW` ignores `lpSecurityDescriptor` on its truncate path, so
+    /// a file that already existed with a wide DACL keeps it unless the DACL is
+    /// re-applied after the handle is open.
+    #[cfg(windows)]
+    #[test]
+    fn a_pre_existing_world_readable_file_is_narrowed_on_the_next_write() {
+        let dir = tmp_dir();
+        let store = FileStore::new(&dir);
+        std::fs::create_dir_all(dir.join("secrets")).expect("secrets dir");
+        let path = store.path_for(NAME).expect("path");
+        // The file has to exist for its DACL to be widened, which is the whole
+        // point: `CreateFileW` ignores `lpSecurityDescriptor` on the truncate
+        // path, so a pre-existing wide file keeps its DACL unless it is
+        // re-applied after the handle opens.
+        std::fs::write(&path, b"previous").expect("pre-existing file");
+        // Everyone-full-control, exactly the DACL the finding describes.
+        widen_dacl(&path, "D:(A;;GA;;;WD)");
+        assert!(!crate::security::dacl_is_current_user_only(
+            &crate::security::dacl_sddl_for_path(&path).expect("dacl"),
+            &crate::security::current_user_sid().expect("sid")
+        ));
+
+        store.set(NAME, b"secret").expect("set");
+        let sddl = crate::security::dacl_sddl_for_path(&path).expect("dacl");
+        let sid = crate::security::current_user_sid().expect("sid");
+        assert!(
+            crate::security::dacl_is_current_user_only(&sddl, &sid),
+            "the wide DACL must be replaced, not inherited: {sddl}"
+        );
+        assert_eq!(
+            store.get(NAME).expect("get").as_deref(),
+            Some(&b"secret"[..])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// F3a: a directory inherits its parent's DACL, and re-creating an existing
+    /// directory keeps whatever it has.
+    #[cfg(windows)]
+    #[test]
+    fn a_pre_existing_wide_secrets_directory_is_narrowed() {
+        let dir = tmp_dir();
+        let secrets = dir.join("secrets");
+        std::fs::create_dir_all(&secrets).expect("secrets dir");
+        widen_dacl(&secrets, "D:(A;;GA;;;WD)");
+        let store = FileStore::new(&dir);
+        store.set(NAME, b"secret").expect("set");
+        let sddl = crate::security::dacl_sddl_for_path(&secrets).expect("dacl");
+        let sid = crate::security::current_user_sid().expect("sid");
+        assert!(
+            crate::security::dacl_is_current_user_only(&sddl, &sid),
+            "the secrets directory must be current-user-only: {sddl}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    fn widen_dacl(path: &Path, sddl: &str) {
+        use windows_sys::Win32::Security::Authorization::{
+            SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::{ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+        let wide_sddl = crate::security::wide(sddl);
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let ok = unsafe {
+            windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide_sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(ok, 0, "convert the wide test DACL");
+        let mut acl: *mut ACL = std::ptr::null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        let got = unsafe {
+            windows_sys::Win32::Security::GetSecurityDescriptorDacl(
+                descriptor,
+                &mut present,
+                &mut acl,
+                &mut defaulted,
+            )
+        };
+        assert_ne!(got, 0, "read the wide test DACL");
+        assert_ne!(present, 0);
+        let wide_path = crate::security::wide(&path.to_string_lossy());
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                wide_path.as_ptr() as *mut u16,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                acl,
+                std::ptr::null_mut(),
+            )
+        };
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(descriptor as _);
+        }
+        assert_eq!(status, 0, "apply the wide test DACL");
+    }
+
+    /// F3b: the write goes to a temporary and is renamed over the target, so a
+    /// crash mid-write cannot leave a torn secret behind. The observable
+    /// consequences are that the target is replaced atomically and that no
+    /// temporary survives a successful write.
+    #[test]
+    fn a_write_replaces_the_target_atomically_and_leaves_no_temporary() {
+        let dir = tmp_dir();
+        let store = FileStore::new(&dir);
+        store.set(NAME, b"first").expect("first set");
+        store.set(NAME, b"second").expect("second set");
+        assert_eq!(
+            store.get(NAME).expect("get").as_deref(),
+            Some(&b"second"[..])
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(dir.join("secrets"))
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporary files left behind: {leftovers:?}"
+        );
+
+        // A stray temporary (a crash between write and rename) is never read
+        // as the secret, and the next successful write still lands.
+        std::fs::write(
+            dir.join("secrets").join(".noise-static.tmp-dead"),
+            b"garbage",
+        )
+        .expect("stray temporary");
+        assert_eq!(
+            store.get(NAME).expect("get").as_deref(),
+            Some(&b"second"[..])
+        );
+        store.set(NAME, b"third").expect("third set");
+        assert_eq!(
+            store.get(NAME).expect("get").as_deref(),
+            Some(&b"third"[..])
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

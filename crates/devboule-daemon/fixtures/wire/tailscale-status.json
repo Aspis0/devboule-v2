@@ -1,20 +1,43 @@
 {
-	"Version": "1.102.2-t0000000000",
+	"Version": "1.102.2-t6cac91817-g6ff0ddc72",
 	"TUN": true,
 	"BackendState": "Running",
+	"HaveNodeKey": true,
+	"AuthURL": "",
+	"TailscaleIPs": [
+		"100.102.128.70",
+		"fd7a:115c:a1e0::1"
+	],
 	"Self": {
-		"ID": "nSELFNODE0000001",
-		"StableID": "nJZ7SELFNODE0001",
-		"Name": "marcolenovo.tail80a42d.ts.net.",
+		"ID": "nbeQUiqfU811CNTRL",
+		"NodeID": 957535729315464,
+		"PublicKey": "nodekey:c3434c958b4bcb1354d6720ccc651e53266ae7ac4da32702abebe786b9268045",
+		"HostName": "Marcolenovo",
 		"DNSName": "marcolenovo.tail80a42d.ts.net.",
-		"UserID": 1234567890,
-		"Addresses": [
-			"100.102.128.70/32"
-		],
+		"OS": "windows",
+		"UserID": 5984288831017536,
 		"TailscaleIPs": [
 			"100.102.128.70"
 		],
-		"Online": true
+		"AllowedIPs": [
+			"100.102.128.70/32"
+		],
+		"Addrs": [
+			"100.102.128.70:41641",
+			"192.168.1.50:41641"
+		],
+		"Online": true,
+		"InNetworkMap": true,
+		"InMagicSock": false,
+		"InEngine": false
 	},
-	"Peer": {}
+	"Health": [],
+	"MagicDNSSuffix": "tail80a42d.ts.net",
+	"CurrentTailnet": {
+		"Name": "example.net",
+		"MagicDNSEnabled": true
+	},
+	"Peer": {},
+	"User": {},
+	"ClientVersion": "1.102.2-t6cac91817-g6ff0ddc72"
 }

@@ -6,12 +6,6 @@
 //! half never touches `device.json` or the journal: it lives in the secret
 //! store ([`crate::secret_store`]), and its absence is a distinct state
 //! (`RemoteState::KeyMissing`) rather than a reason to mint a new key.
-//!
-//! Wired by S4 (`status_body`) and S5 (the peer listener). Until then the
-//! module has no non-test caller, so the whole-module allowance below keeps
-//! `-D warnings` honest about what is genuinely dead rather than silencing
-//! individual items. Remove it in the step that wires the module.
-#![allow(dead_code)]
 
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,6 +40,10 @@ pub enum DeviceIdentityError {
     Json(String),
     Secret(SecretStoreError),
     KeyMissing,
+    /// The stored bytes are not a valid envelope: wrong length or an unknown
+    /// version. Distinct from `KeyMissing` so a truncated file fails loudly
+    /// instead of being read as "no key yet", which would mint a new identity
+    /// and silently orphan every pairing this device has.
     Envelope(String),
     Crypto(String),
     DeviceFile(String),
@@ -62,7 +60,12 @@ impl std::fmt::Display for DeviceIdentityError {
                 "device.json exists but the Noise static key is not in the secret store; \
                  refusing to generate a new key silently"
             ),
-            Self::Envelope(message) => write!(formatter, "noise static envelope: {message}"),
+            Self::Envelope(message) => write!(
+                formatter,
+                "noise static envelope is malformed ({message}); restore the key from a backup \
+                 or, if this device has no pairings worth keeping, delete device.json and the \
+                 stored secret to start over"
+            ),
             Self::Crypto(message) => write!(formatter, "noise static key: {message}"),
             Self::DeviceFile(message) => write!(formatter, "device.json: {message}"),
         }
@@ -102,40 +105,30 @@ pub struct DeviceFile {
     pub key_fingerprint: String,
 }
 
-/// The remote-listener state, reported in `Status.remote`. `Disabled` carries
-/// the reason (no Tailscale, operator choice); `KeyMissing` is the one state
-/// that is a refusal to guess rather than an environment fact.
+/// The remote-listener state, as this daemon tracks it internally. Serialised
+/// through [`RemoteState::to_wire`]: the addresses and port are part of this
+/// node's reachability but do **not** belong on the wire's `remote` object
+/// (brief 1b's contract puts them in `SelfInfo`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemoteState {
     Disabled(String),
     KeyMissing,
-    Listening { addresses: Vec<IpAddr>, port: u16 },
+    Enabled { addresses: Vec<IpAddr>, port: u16 },
 }
 
 impl RemoteState {
-    pub fn status_word(&self) -> &'static str {
+    /// The wire shape: `{ state, reason }` and nothing else.
+    pub fn to_wire(&self) -> devboule_protocol::RemoteState {
         match self {
-            Self::Disabled(_) => "disabled",
-            Self::KeyMissing => "key_missing",
-            Self::Listening { .. } => "listening",
-        }
-    }
-
-    pub fn reason(&self) -> Option<String> {
-        match self {
-            Self::Disabled(reason) => Some(reason.clone()),
-            Self::KeyMissing => Some(
-                "the Noise static key is missing from the secret store; the remote listener \
-                 is not started"
-                    .to_string(),
-            ),
-            Self::Listening { .. } => None,
+            Self::Disabled(reason) => devboule_protocol::RemoteState::disabled(reason.clone()),
+            Self::KeyMissing => devboule_protocol::RemoteState::key_missing(),
+            Self::Enabled { .. } => devboule_protocol::RemoteState::enabled(),
         }
     }
 
     pub fn addresses(&self) -> Vec<String> {
         match self {
-            Self::Listening { addresses, .. } => addresses
+            Self::Enabled { addresses, .. } => addresses
                 .iter()
                 .map(|address| address.to_string())
                 .collect(),
@@ -145,7 +138,7 @@ impl RemoteState {
 
     pub fn port(&self) -> Option<u16> {
         match self {
-            Self::Listening { port, .. } => Some(*port),
+            Self::Enabled { port, .. } => Some(*port),
             _ => None,
         }
     }
@@ -155,14 +148,10 @@ impl RemoteState {
 /// secret store. The private key is zeroized on drop.
 pub struct DeviceIdentity {
     pub device_id: String,
-    pub created_at: u64,
     pub display_name: String,
     pub public_key: [u8; STATIC_KEY_LEN],
     pub key_fingerprint: String,
     private_key: [u8; STATIC_KEY_LEN],
-    /// The keyring username this identity was stored under, for diagnostics
-    /// (never logged verbatim: it is derived from a local path).
-    pub keyring_username: String,
 }
 
 impl Drop for DeviceIdentity {
@@ -228,6 +217,9 @@ fn hex(bytes: &[u8]) -> String {
 
 /// A short, non-reversible label for a log line. Identities, keys, pairing
 /// codes and bearers never reach `eprintln!` as themselves.
+///
+/// Used by the hello-mismatch diagnostic in `server.rs`, which otherwise
+/// carries the user SID and the `peer_<device_id>` form of a remote owner.
 pub fn redact(value: &str) -> String {
     if value.is_empty() {
         return "[redacted]".to_string();
@@ -258,22 +250,18 @@ fn load(
     let raw = std::fs::read(&paths.device_file)?;
     let file: DeviceFile = serde_json::from_slice(&raw)?;
     validate_device_file(&file)?;
-    let stored = store
+    let mut stored = store
         .get(NOISE_STATIC_SECRET_NAME)?
         .ok_or(DeviceIdentityError::KeyMissing)?;
-    let private_key = decode_envelope(&stored)?;
+    let private_key = decode_envelope(&stored).inspect_err(|_| stored.zeroize())?;
+    stored.zeroize();
     let public_key = decode_public_key(&file.public_key)?;
     Ok(DeviceIdentity {
         device_id: file.device_id,
-        created_at: file.created_at,
         display_name: file.display_name,
         public_key,
         key_fingerprint: file.key_fingerprint,
         private_key,
-        keyring_username: format!(
-            "{NOISE_STATIC_SECRET_NAME}-{}",
-            crate::paths::runtime_dir_hash(&paths.dir)
-        ),
     })
 }
 
@@ -287,8 +275,16 @@ fn create(
     let keypair = snow::Builder::new(params)
         .generate_keypair()
         .map_err(|error| DeviceIdentityError::Crypto(error.to_string()))?;
-    let private_key = to_static_key(&keypair.private, "private")?;
-    let public_key = to_static_key(&keypair.public, "public")?;
+    // `Keypair`'s two `Vec<u8>`s are heap copies of the secret and are not
+    // `Zeroizing`, so both are wiped by hand on every path out of here —
+    // including the error path of `to_static_key`.
+    let mut private_bytes = keypair.private;
+    let mut public_bytes = keypair.public;
+    let keys = to_static_key(&private_bytes, "private")
+        .and_then(|private| to_static_key(&public_bytes, "public").map(|public| (private, public)));
+    private_bytes.zeroize();
+    public_bytes.zeroize();
+    let (private_key, public_key) = keys?;
     let device_id = uuid::Uuid::new_v4().to_string();
     let created_at = unix_millis();
     let display_name = hostname();
@@ -304,20 +300,18 @@ fn create(
     // device.json absent and the secret present, which the next start
     // overwrites; the reverse order would leave a device.json whose key
     // cannot be found (KeyMissing) on a device that never paired.
-    store.set(NOISE_STATIC_SECRET_NAME, &encode_envelope(&private_key))?;
+    let mut envelope = encode_envelope(&private_key);
+    let stored = store.set(NOISE_STATIC_SECRET_NAME, &envelope);
+    envelope.zeroize();
+    stored?;
     let bytes = serde_json::to_vec_pretty(&file)?;
     crate::atomic::atomic_write(&paths.device_file, &bytes)?;
     Ok(DeviceIdentity {
         device_id,
-        created_at,
         display_name,
         public_key,
         key_fingerprint,
         private_key,
-        keyring_username: format!(
-            "{NOISE_STATIC_SECRET_NAME}-{}",
-            crate::paths::runtime_dir_hash(&paths.dir)
-        ),
     })
 }
 
@@ -344,6 +338,14 @@ fn validate_device_file(file: &DeviceFile) -> Result<(), DeviceIdentityError> {
     if uuid::Uuid::parse_str(&file.device_id).is_err() {
         return Err(DeviceIdentityError::DeviceFile(
             "deviceId is not a UUID".to_string(),
+        ));
+    }
+    // `createdAt` is provenance, not a control, but a zero value means the file
+    // was written by something that is not this daemon. Reading it here is what
+    // keeps the field load-bearing instead of decoration.
+    if file.created_at == 0 {
+        return Err(DeviceIdentityError::DeviceFile(
+            "createdAt is zero, which this daemon never writes".to_string(),
         ));
     }
     Ok(())
@@ -437,7 +439,12 @@ mod tests {
         assert_eq!(loaded.device_id, created.device_id);
         assert_eq!(loaded.public_key, created.public_key);
         assert_eq!(loaded.key_fingerprint, created.key_fingerprint);
-        assert_eq!(loaded.created_at, created.created_at);
+
+        // `createdAt` is provenance carried by the file; it is read back by the
+        // validator and must survive the round trip.
+        let raw = std::fs::read(&paths.device_file).expect("device.json");
+        let parsed: DeviceFile = serde_json::from_slice(&raw).expect("json");
+        assert!(parsed.created_at > 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -513,27 +520,84 @@ mod tests {
     }
 
     #[test]
-    fn remote_state_reports_its_word_and_reason() {
-        assert_eq!(RemoteState::KeyMissing.status_word(), "key_missing");
-        assert!(RemoteState::KeyMissing.reason().is_some());
-        let listening = RemoteState::Listening {
+    fn remote_state_projects_onto_the_wire_shape() {
+        let enabled = RemoteState::Enabled {
             addresses: vec!["100.64.0.1".parse().expect("ip")],
             port: 47831,
         };
-        assert_eq!(listening.status_word(), "listening");
-        assert!(listening.reason().is_none());
-        assert_eq!(listening.addresses(), vec!["100.64.0.1".to_string()]);
-        assert_eq!(listening.port(), Some(47831));
         assert_eq!(
-            RemoteState::Disabled("no tailscale".into()).status_word(),
+            serde_json::to_value(enabled.to_wire()).expect("json")["state"],
+            "enabled"
+        );
+        // Addresses and port describe this node's reachability; they belong
+        // to `SelfInfo`, not to the wire `remote` object.
+        assert_eq!(enabled.addresses(), vec!["100.64.0.1".to_string()]);
+        assert_eq!(enabled.port(), Some(47831));
+
+        assert_eq!(
+            serde_json::to_value(RemoteState::Disabled("no tailscale".into()).to_wire())
+                .expect("json")["state"],
             "disabled"
         );
+        assert_eq!(
+            serde_json::to_value(RemoteState::KeyMissing.to_wire()).expect("json")["state"],
+            "key_missing"
+        );
+        assert!(RemoteState::KeyMissing.addresses().is_empty());
+        assert_eq!(RemoteState::KeyMissing.port(), None);
+    }
+
+    #[test]
+    fn a_malformed_envelope_is_not_reported_as_key_missing() {
+        // F4: a truncated or version-shifted secret must fail loudly with the
+        // store kind and the remedy in the message. Mapping it to
+        // `KeyMissing` would make the daemon mint a new identity and orphan
+        // every pairing this device has.
+        for bytes in [vec![], vec![0u8; 33], vec![0x00, 0x09], vec![0xff; 34]] {
+            let error = decode_envelope(&bytes).expect_err("malformed envelope");
+            assert!(matches!(error, DeviceIdentityError::Envelope(_)));
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains("device.json") && rendered.contains("secret"),
+                "the message must name both halves of the state: {rendered}"
+            );
+        }
+
+        let (dir, paths) = tmp_paths();
+        let store = InMemoryStore::default();
+        load_or_create(&paths, &store).expect("create");
+        store
+            .set(NOISE_STATIC_SECRET_NAME, &[0u8; 33])
+            .expect("truncate the stored secret");
+        match load_or_create(&paths, &store) {
+            Err(DeviceIdentityError::Envelope(message)) => {
+                assert!(message.contains("expected 34 bytes, got 33"), "{message}");
+            }
+            Err(other) => panic!("a malformed secret must not be KeyMissing: {other}"),
+            Ok(_) => panic!("a malformed secret must not mint a new identity"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_non_uuid_device_id_is_refused() {
         let file = DeviceFile {
             device_id: "not-a-uuid".to_string(),
+            created_at: 1,
+            display_name: "host".to_string(),
+            public_key: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
+            key_fingerprint: key_fingerprint(&[0u8; 32]),
+        };
+        assert!(matches!(
+            validate_device_file(&file),
+            Err(DeviceIdentityError::DeviceFile(_))
+        ));
+    }
+
+    #[test]
+    fn a_zero_created_at_is_refused_as_not_written_by_this_daemon() {
+        let file = DeviceFile {
+            device_id: uuid::Uuid::new_v4().to_string(),
             created_at: 0,
             display_name: "host".to_string(),
             public_key: base64::engine::general_purpose::STANDARD.encode([0u8; 32]),
