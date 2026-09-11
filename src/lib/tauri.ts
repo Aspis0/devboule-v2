@@ -191,7 +191,11 @@ type CommandResults = {
   devices_list: DevicesReply;
   pairing_start: PairingCode;
   pairing_complete: PairingOutcome;
-  pairing_confirm: PeerRow;
+  /**
+   * `null` is a declined pairing: the daemon answers `pairing_declined`
+   * because the pending row is gone, so this resolves rather than rejects.
+   */
+  pairing_confirm: PeerRow | null;
   peer_revoke: PeerRow;
   peer_set_caps: PeerRow;
 };
@@ -625,7 +629,12 @@ export const pairingStart = (role: PeerRole) => invokeTyped("pairing_start", { r
  */
 export const pairingComplete = (address: string, code: string, role: PeerRole) =>
   invokeTyped("pairing_complete", { address, code, role });
-/** Answers a pending `client` pairing; the daemon returns the row it wrote. */
+/**
+ * Answers a pending `client` pairing. Resolves with the row the daemon wrote on
+ * an accept, and with `null` on a decline — declining is a success, not an
+ * error, so a rejected promise here means the daemon genuinely refused the
+ * request.
+ */
 export const pairingConfirm = (deviceId: string, accept: boolean) =>
   invokeTyped("pairing_confirm", { deviceId, accept });
 /**

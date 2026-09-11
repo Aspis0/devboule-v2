@@ -697,15 +697,23 @@ impl DaemonClient {
         }
     }
 
-    /// Answers a pending `client` pairing and returns the row the daemon wrote.
-    pub fn pairing_confirm(&self, device_id: &str, accept: bool) -> Result<PeerRow, DaemonError> {
+    /// Answers a pending `client` pairing. `Some(row)` is the peer the daemon
+    /// wrote for an accept; `None` is a decline, which is a success too — the
+    /// daemon replies `PairingDeclined` because the parked pairing is gone, not
+    /// because anything failed.
+    pub fn pairing_confirm(
+        &self,
+        device_id: &str,
+        accept: bool,
+    ) -> Result<Option<PeerRow>, DaemonError> {
         let id = self.alloc_id();
         match self.roundtrip(ClientMessage::PairingConfirm {
             id,
             device_id: device_id.to_string(),
             accept,
         })? {
-            DaemonMessage::PeerUpdated { peer, .. } => Ok(peer),
+            DaemonMessage::PeerUpdated { peer, .. } => Ok(Some(peer)),
+            DaemonMessage::PairingDeclined { .. } => Ok(None),
             DaemonMessage::Error(error) => Err(DaemonError::Handshake(error)),
             _ => pairing_reply_mismatch(),
         }

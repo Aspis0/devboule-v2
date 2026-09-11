@@ -99,6 +99,15 @@ const PENDING: PendingPairing = {
   expiresAt: NOW + 60_000,
 };
 
+// A second card, for the decline path: the daemon allows two parked pairings at
+// once, so dropping one must leave the other on screen.
+const SECOND_PENDING: PendingPairing = {
+  ...PENDING,
+  deviceId: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+  displayName: "TABLET-V477JRIG",
+  role: "client",
+};
+
 const CODE: PairingCode = {
   code: "ABCD2345",
   expiresAt: NOW + 300_000,
@@ -110,6 +119,24 @@ function replyWith(overrides: Partial<DevicesReply> = {}): DevicesReply {
     selfInfo: { ...SELF, ...overrides.selfInfo },
     peers: overrides.peers ?? [],
     pending: overrides.pending ?? [],
+  };
+}
+
+/**
+ * A `devicesList` stand-in that answers once and then never settles.
+ *
+ * The decline tests have to prove the panel's own state change, so no later
+ * poll may hand it a fresh list. One wrinkle this encodes: when the first reply
+ * carries a pending pairing, the poll effect re-runs immediately (the cadence
+ * flips from 2 s to 1 s), so the second call comes from the mount, not from the
+ * click.
+ */
+function hangingAfterFirstReply(pending: readonly PendingPairing[]) {
+  let calls = 0;
+  return () => {
+    calls += 1;
+    if (calls === 1) return Promise.resolve(replyWith({ pending: [...pending] }));
+    return new Promise<DevicesReply>(() => undefined);
   };
 }
 
@@ -224,6 +251,19 @@ describe("devices panel", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
+    expect(devicesList).toHaveBeenCalledTimes(2);
+  });
+
+  it("polls again at once when the first reply turns the fast cadence on", async () => {
+    // Documented behaviour, not an accident of the test: the cadence is an
+    // effect dependency, so a first reply that carries a pending pairing flips
+    // it and restarts the loop immediately. The panel is then watching
+    // something the user has to answer, and it says so by asking again now.
+    vi.useFakeTimers();
+    vi.mocked(devicesList).mockResolvedValue(replyWith({ pending: [PENDING] }));
+    await renderPanel();
+
+    expect(container.textContent).toContain("Waiting for your confirmation (1)");
     expect(devicesList).toHaveBeenCalledTimes(2);
   });
 
@@ -507,16 +547,51 @@ describe("devices panel", () => {
     expect(vi.mocked(devicesList).mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("declines a pending confirmation", async () => {
-    vi.mocked(devicesList).mockResolvedValue(replyWith({ pending: [PENDING] }));
+  it("drops the card on a decline, which is a success and not an error", async () => {
+    // The daemon answers a decline with `pairing_declined`, so the wrapper
+    // resolves `null` instead of rejecting. Every poll after the first one is
+    // left hanging on purpose: taking the card off screen is the panel's own
+    // state change, and nothing on screen may suggest the decline failed.
+    vi.mocked(devicesList).mockImplementation(hangingAfterFirstReply([PENDING]));
+    vi.mocked(pairingConfirm).mockResolvedValue(null);
     await renderPanel();
 
+    expect(container.textContent).toContain("Waiting for your confirmation (1)");
     await act(async () => {
       buttonByText("Decline").click();
       await Promise.resolve();
     });
 
     expect(pairingConfirm).toHaveBeenCalledWith(PENDING.deviceId, false);
+    expect(container.textContent).not.toContain("Waiting for your confirmation");
+    expect(container.textContent).not.toContain("Marco's MacBook Pro");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    // The panel asked the daemon again: taking the card off screen is its own
+    // belief, and only the next reply confirms it.
+    expect(vi.mocked(devicesList).mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("drops only the declined card when two are waiting", async () => {
+    vi.mocked(devicesList).mockImplementation(hangingAfterFirstReply([PENDING, SECOND_PENDING]));
+    vi.mocked(pairingConfirm).mockResolvedValue(null);
+    await renderPanel();
+
+    expect(container.textContent).toContain("Waiting for your confirmation (2)");
+    const declineButtons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).filter((button) => (button.textContent ?? "").trim() === "Decline");
+    expect(declineButtons).toHaveLength(2);
+    await act(async () => {
+      // The second card, so the survivor is the first one.
+      declineButtons[1]?.click();
+      await Promise.resolve();
+    });
+
+    expect(pairingConfirm).toHaveBeenCalledWith(SECOND_PENDING.deviceId, false);
+    expect(container.textContent).not.toContain("TABLET-V477JRIG");
+    expect(container.textContent).toContain("Marco's MacBook Pro");
+    expect(container.textContent).toContain("Waiting for your confirmation (1)");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("shows a failed confirmation verbatim on the card it belongs to", async () => {

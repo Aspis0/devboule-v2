@@ -406,13 +406,26 @@ export function DevicesPanel() {
     setConfirmBusy(deviceId);
     setConfirmError(null);
     try {
-      await pairingConfirm(deviceId, accept);
+      const confirmed = await pairingConfirm(deviceId, accept);
+      // `null` is a decline, and a decline succeeded: the parked pairing is
+      // gone. Dropping the card is the whole outcome — an error card here would
+      // tell the user the decline failed when it did not.
+      if (confirmed === null) dropPending(deviceId);
       refresh();
     } catch (cause) {
       setConfirmError({ deviceId, message: reasonFromCause(cause) });
     } finally {
       setConfirmBusy(null);
     }
+  }
+
+  // Drops one card from the pending list without waiting for the next poll.
+  function dropPending(deviceId: string) {
+    setReply((prev) =>
+      prev === null
+        ? prev
+        : { ...prev, pending: prev.pending.filter((pending) => pending.deviceId !== deviceId) },
+    );
   }
 
   function replacePeer(updated: PeerRow) {

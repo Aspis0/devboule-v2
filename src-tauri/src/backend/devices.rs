@@ -117,7 +117,9 @@ pub fn pairing_confirm(
     bridge: State<'_, DaemonBridge>,
     device_id: String,
     accept: bool,
-) -> Result<PeerRow, CommandError> {
+) -> Result<Option<PeerRow>, CommandError> {
+    // `None` is a declined pairing, which the daemon reports as success; it
+    // reaches the frontend as `null`.
     Ok(require_client(&bridge)?.pairing_confirm(&device_id, accept)?)
 }
 

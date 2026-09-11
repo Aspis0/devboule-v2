@@ -699,6 +699,20 @@ describe("device command wrappers", () => {
     });
   });
 
+  it("carries a declined pairing through as null, not as a rejection", async () => {
+    vi.mocked(invoke).mockClear();
+    // The daemon's `pairing_declined` reply is a success: Tauri hands the
+    // Option's None back as null, and the wrapper must not turn that into an
+    // error the panel would show as a failed decline.
+    vi.mocked(invoke).mockResolvedValue(null as never);
+
+    await expect(pairingConfirm("device-1", false)).resolves.toBeNull();
+    expect(invoke).toHaveBeenCalledWith("pairing_confirm", {
+      deviceId: "device-1",
+      accept: false,
+    });
+  });
+
   it("sends the full grant array, never a delta", () => {
     vi.mocked(invoke).mockClear();
     vi.mocked(invoke).mockResolvedValue(PAIRED_PEER as never);
