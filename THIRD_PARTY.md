@@ -1054,7 +1054,7 @@ No unresolved asset provenance remains: the icon is original project artwork car
 | utf8-zero | 0.8.1 | Rust transitive (lockfile) | MIT OR Apache-2.0 |
 | utf8_iter | 1.0.4 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
 | utf8parse | 0.2.2 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
-| uuid | 1.25.0 | Rust transitive (lockfile) | Apache-2.0 OR MIT |
+| uuid | 1.25.0 | Rust direct runtime optional | Apache-2.0 OR MIT |
 | v_frame | 0.3.9 | Rust transitive (lockfile) | BSD-2-Clause |
 | valuable | 0.1.1 | Rust transitive (lockfile) | MIT |
 | vcpkg | 0.2.15 | Rust transitive (lockfile) | MIT/Apache-2.0 |
