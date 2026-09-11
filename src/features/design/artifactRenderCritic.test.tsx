@@ -140,6 +140,12 @@ describe("artifact render critic pure helpers", () => {
     expect(srcDoc).not.toContain("onclick");
   });
 
+  it("measures the page height in the same pass as the findings", () => {
+    const result = runAssembledMeasurement("<main><p>Text</p></main>");
+    expect(typeof result.contentHeight).toBe("number");
+    expect(result.contentHeight).toBeGreaterThanOrEqual(0);
+  });
+
   it("measures native controls with their associated label target", () => {
     const result = runAssembledMeasurement(
       `<main>
@@ -408,6 +414,21 @@ describe("artifact render critic pure helpers", () => {
     expect(isLargeScaleText(18.6666666667, 700)).toBe(true);
     expect(isLargeScaleText(18.666, 700)).toBe(false);
     expect(isLargeScaleText(18.6666666667, 400)).toBe(false);
+  });
+
+  it("keeps a measured page height but drops an invalid one", () => {
+    expect(readArtifactRenderCriticResult({ ...VALID_RESULT, contentHeight: 3600 })).toEqual({
+      ...VALID_RESULT,
+      structure: [],
+      contentHeight: 3600,
+    });
+    // A malformed height degrades to unmeasured; it never hides the findings.
+    expect(
+      readArtifactRenderCriticResult({ ...VALID_RESULT, contentHeight: -1 })?.contentHeight,
+    ).toBeUndefined();
+    expect(
+      readArtifactRenderCriticResult({ ...VALID_RESULT, contentHeight: "tall" })?.contentHeight,
+    ).toBeUndefined();
   });
 
   it("rejects malformed result payloads", () => {

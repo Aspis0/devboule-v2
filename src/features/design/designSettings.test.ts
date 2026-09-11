@@ -11,13 +11,16 @@ vi.mock("../../lib/tauri", () => ({
 }));
 
 import {
+  DEFAULT_DESIGN_OUTPUT_MODE,
   DEFAULT_DESIGN_SKILL_SELECTION,
   DOCTRINE_SETTINGS_SURFACE_ID,
+  loadDesignOutputMode,
   loadDesignProviderId,
   loadDesignSkillSelection,
   loadDesignWorkspaceId,
   loadStoredDesignProviderId,
   loadStoredDesignWorkspaceId,
+  saveDesignOutputMode,
   saveDesignProviderId,
   saveDesignSkillSelection,
   saveDesignWorkspaceId,
@@ -498,6 +501,72 @@ describe("design workspace settings", () => {
       enabledSlugs: [],
       providerId: "grok",
     });
+  });
+});
+
+describe("design output mode settings", () => {
+  it("defaults to page when the surface is empty, unreadable, or predates slides", async () => {
+    expect(DEFAULT_DESIGN_OUTPUT_MODE).toBe("page");
+    // Empty surface (the beforeEach default answers absent).
+    await expect(loadDesignOutputMode()).resolves.toBe("page");
+
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "unreadable",
+      message: "settings unavailable",
+    });
+    await expect(loadDesignOutputMode()).resolves.toBe("page");
+
+    for (const value of [
+      { version: 1, mode: "all", enabledSlugs: [] },
+      { version: 1, mode: "all", enabledSlugs: [], outputMode: "deck" },
+      { version: 1, mode: "all", enabledSlugs: [], outputMode: null },
+    ]) {
+      mocks.surfaceSettingsGet.mockResolvedValueOnce({ status: "value", value });
+      await expect(loadDesignOutputMode()).resolves.toBe("page");
+    }
+  });
+
+  it("round-trips slides through the real write path", async () => {
+    await expect(saveDesignOutputMode("slides")).resolves.toBe(true);
+    await expect(loadDesignOutputMode()).resolves.toBe("slides");
+  });
+
+  it("keeps pre-slides documents byte-identical when the mode is page", async () => {
+    await expect(saveDesignOutputMode("page")).resolves.toBe(true);
+    // The page default stays omitted, like a null provider id: a document
+    // written before slides exists reads exactly as it was written.
+    expect(storedSettings).toEqual({ version: 1, mode: "all", enabledSlugs: [] });
+  });
+
+  it("preserves slides beside a later skill save", async () => {
+    storedSettings = {
+      version: 1,
+      mode: "all",
+      enabledSlugs: [],
+      outputMode: "slides",
+    };
+    const selection: DesignSkillSelection = {
+      version: 1,
+      mode: "manual",
+      enabledSlugs: [KNOWN_SLUGS[0]],
+    };
+
+    await saveDesignSkillSelection(selection);
+
+    expect(mocks.surfaceSettingsSet).toHaveBeenCalledWith(DOCTRINE_SETTINGS_SURFACE_ID, {
+      ...selection,
+      outputMode: "slides",
+    });
+  });
+
+  it("reports false without writing when reading the existing document fails", async () => {
+    mocks.surfaceSettingsGet.mockResolvedValueOnce({
+      status: "unreadable",
+      message: "settings unavailable",
+    });
+
+    await expect(saveDesignOutputMode("slides")).resolves.toBe(false);
+    expect(mocks.surfaceSettingsSet).not.toHaveBeenCalled();
   });
 });
 

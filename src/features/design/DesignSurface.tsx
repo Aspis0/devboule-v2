@@ -14,17 +14,20 @@ import type {
   DesignHost,
   DesignLayer,
   DesignMessage,
+  DesignOutputMode,
   DesignTranscriptItem,
   PendingPermission,
   SectionNote,
 } from "./designHost";
+import { buildStandaloneArtifactHtml } from "./artifactExport";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
 import {
-  getCachedArtifactSections,
+  getCachedArtifactStructure,
   sectionsToLayers,
-  setCachedArtifactSections,
+  setCachedArtifactStructure,
   type ArtifactSection,
+  type ArtifactStructure,
 } from "./artifactStructure";
 import {
   formatSectionNotesScope,
@@ -37,6 +40,10 @@ import {
   ARTIFACT_PAGE_HEIGHT,
   ARTIFACT_PAGE_WIDTH,
   artifactPageHeightForCanvas,
+  clampArtifactScroll,
+  maxArtifactScroll,
+  revealArtifactRect,
+  scrollArtifactBy,
   shouldAdaptArtifactHeight,
 } from "./artifactViewport";
 import {
@@ -53,11 +60,13 @@ import {
 } from "./builtInSkills";
 import {
   DEFAULT_DESIGN_SKILL_SELECTION,
+  loadDesignOutputMode,
   loadDesignProviderId,
   loadDesignSkillSelection,
   loadDesignWorkspaceId,
   loadStoredDesignProviderId,
   loadStoredDesignWorkspaceId,
+  saveDesignOutputMode,
   saveDesignProviderId,
   saveDesignSkillSelection,
   saveDesignWorkspaceId,
@@ -154,6 +163,9 @@ interface DesignToolbarProps {
    */
   folderControl: ReactNode;
   grounded: boolean;
+  outputMode: DesignOutputMode;
+  busy: boolean;
+  onOutputModeChange: (mode: DesignOutputMode) => void;
   canSave: boolean;
   saved: boolean;
   saving: boolean;
@@ -203,6 +215,12 @@ interface CanvasProps {
   artifactError?: string;
   artifactMissingTokens: readonly string[];
   artifactHeight: number;
+  /**
+   * Measured full page height in page CSS px, or undefined when the artifact
+   * has not been measured yet. Undefined keeps the frame unscrollable (today's
+   * behaviour), never a guess.
+   */
+  artifactContentHeight?: number;
   /** World-space highlight for the selected page section, if it is one. */
   sectionHighlight: NodeRect | null;
   /** World-space marks for sections carrying an agent note. */
@@ -226,6 +244,10 @@ interface ZoomControlsProps {
   onZoomOut: () => void;
   onZoomReset: () => void;
   onFit: () => void;
+  /** Current artifact markup; absent when nothing is on screen, so the copy action cannot exist without one. */
+  artifactHtml?: string;
+  /** Title of the assistant message that produced the artifact, for the exported document. */
+  artifactTitle?: string;
 }
 
 interface WorkspaceProject extends Project {
@@ -248,12 +270,13 @@ const WORKSPACE_UNCONFIRMED_NOTICE =
   "The attached folder could not be confirmed because its record failed to load.";
 
 // The persistence calls report a boolean: false means the value never reached disk and will
-// revert on reload. One notice region serves all four callers because they fail the same way,
-// but each message names what was lost, because the four mean different things to the user.
+// revert on reload. One notice region serves all five callers because they fail the same way,
+// but each message names what was lost, because the five mean different things to the user.
 const PERSISTENCE_NOTICE_TEXT = {
   provider: "Your agent choice was not saved.",
   workspace: "Your folder choice was not saved.",
   skill: "Your craft selection was not saved.",
+  output: "Your output choice was not saved.",
   history: "This design was not added to your history.",
 } as const;
 
@@ -670,6 +693,7 @@ type SnapshotChange = (current: DesignSnapshot) => DesignSnapshot | null;
 const EMPTY_DESIGN_MESSAGES: readonly DesignMessage[] = [];
 const EMPTY_TRANSCRIPT: readonly DesignTranscriptItem[] = [];
 const EMPTY_SECTIONS: readonly ArtifactSection[] = [];
+const EMPTY_ARTIFACT_STRUCTURE: ArtifactStructure = { sections: EMPTY_SECTIONS };
 const EMPTY_SECTION_NOTES: readonly SectionNote[] = [];
 const EMPTY_RESOLVED_NOTES: readonly ResolvedSectionNote[] = [];
 const HISTORY_OPEN_MESSAGE_PREFIX = "design-history-open-";
@@ -751,6 +775,9 @@ function promptForMessage(
 const DesignToolbar = memo(function DesignToolbar({
   folderControl,
   grounded,
+  outputMode,
+  busy,
+  onOutputModeChange,
   canSave,
   saved,
   saving,
@@ -893,6 +920,37 @@ const DesignToolbar = memo(function DesignToolbar({
         />
         {grounded ? "Grounded" : "Not grounded"}
       </button>
+      {/*
+        The output shape wears the grounding control's own classes — same pill,
+        same dot, same states, zero new CSS — because it answers the same kind
+        of question (what the next run does) in the same bar. The toggle is
+        disabled while a generation runs, so the visible mode is always the
+        mode of the running generation: a mid-run flip would leave it unclear
+        whether Page or Slides is on its way, and "applies to the next run"
+        is exactly the ambiguity this control refuses. The choice snapshots
+        into generationOptions in startGeneration, like grounded does.
+      */}
+      <button
+        className="design-grounding-toggle"
+        type="button"
+        title={
+          busy
+            ? "A generation is running; the output shape cannot change mid-run."
+            : outputMode === "slides"
+              ? "Slide deck: the next run produces one id-anchored section per slide."
+              : "Page: the next run produces a scrolling page."
+        }
+        aria-label={`Output shape: ${outputMode === "slides" ? "Slides" : "Page"}`}
+        aria-pressed={outputMode === "slides"}
+        disabled={busy}
+        onClick={() => onOutputModeChange(outputMode === "slides" ? "page" : "slides")}
+      >
+        <span
+          className={`design-grounding-dot${outputMode === "slides" ? " design-grounding-dot-on" : ""}`}
+          aria-hidden="true"
+        />
+        {outputMode === "slides" ? "Slides" : "Page"}
+      </button>
       {canSave ? (
         <span className="design-save-actions">
           <button className="design-save-primary" type="button" onClick={onSave} disabled={saving}>
@@ -983,6 +1041,25 @@ const SectionDetails = memo(function SectionDetails({
   );
 });
 
+/**
+ * Scroll position that reveals a target inside a scroller, or the current one
+ * when the target is already fully visible. Positions are in the scroller's own
+ * coordinate space; the caller measures them, so the geometry stays pure and
+ * testable. The bottom is checked first: an expanded row grows downward, and the
+ * content just revealed is what must come into view.
+ */
+export function revealScrollTopFor(
+  scrollTop: number,
+  clientHeight: number,
+  targetTop: number,
+  targetHeight: number,
+): number {
+  const bottom = targetTop + targetHeight;
+  if (bottom > scrollTop + clientHeight) return Math.max(0, bottom - clientHeight);
+  if (targetTop < scrollTop) return Math.max(0, targetTop);
+  return scrollTop;
+}
+
 const LayerPanel = memo(function LayerPanel({
   layers,
   onSelect,
@@ -993,17 +1070,40 @@ const LayerPanel = memo(function LayerPanel({
   selectedSectionNotes,
   onAddNote,
 }: LayerPanelProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const expandedRowRef = useRef<HTMLDivElement>(null);
+  const expandedRow = layers.find((layer) => layer.selected && layer.section !== undefined) ?? null;
+  const expandedRowId = expandedRow?.id ?? null;
+  const expandedRowNoteCount = expandedRow?.section === undefined ? 0 : selectedSectionNotes.length;
+
+  // Selecting a section expands its row inside the scroller; the revealed note
+  // and diagnostics must not stay cut off below the panel. Measured here, after
+  // layout, and only when the disclosure changes, so a manual scroll of a list
+  // whose selection did not move is never fought.
+  useEffect(() => {
+    if (expandedRowId === null) return;
+    const list = listRef.current;
+    const row = expandedRowRef.current;
+    if (list === null || row === null) return;
+    const listRect = list.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const targetTop = rowRect.top - listRect.top + list.scrollTop;
+    const next = revealScrollTopFor(list.scrollTop, list.clientHeight, targetTop, rowRect.height);
+    if (next !== list.scrollTop) list.scrollTop = next;
+  }, [expandedRowId, expandedRowNoteCount]);
+
   return (
     <section className="design-layers-panel" aria-labelledby="design-layers-title">
       <div className="design-overlay-heading">
         <span id="design-layers-title">Layers</span>
         <span className="design-layer-count">{layers.length}</span>
       </div>
-      <div className="design-layer-list">
+      <div className="design-layer-list" ref={listRef}>
         {layers.map((layer) => (
           <div
             className={`design-layer-row${layer.selected ? " design-layer-row-selected" : ""}`}
             key={layer.id}
+            ref={layer.selected && layer.section !== undefined ? expandedRowRef : undefined}
           >
             <button
               className="design-layer-select"
@@ -1118,11 +1218,13 @@ const ZoomControls = memo(function ZoomControls({
   onZoomOut,
   onZoomReset,
   onFit,
+  artifactHtml,
+  artifactTitle,
 }: ZoomControlsProps) {
   const zoomLabel = `${Math.round(zoom * 100)}%`;
 
   return (
-    <div className="design-zoom-controls" aria-label="Canvas zoom">
+    <div className="design-zoom-controls" aria-label="Canvas controls">
       <button
         type="button"
         title="Zoom out"
@@ -1153,6 +1255,14 @@ const ZoomControls = memo(function ZoomControls({
       <button className="design-fit-button" type="button" title="Fit canvas" onClick={onFit}>
         Fit
       </button>
+      {/* The export acts on the artifact on screen, so it lives with the
+          canvas controls, not the session: the 365px assistant header held
+          four items already and cut the fifth ("Copy HTM", live 2026-09-11).
+          The pill sizes to its content and is anchored right, so it cannot
+          overflow its box toward the layer panel in the opposite corner. */}
+      {artifactHtml !== undefined ? (
+        <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
+      ) : null}
     </div>
   );
 });
@@ -1262,6 +1372,7 @@ const DesignCanvas = memo(function DesignCanvas({
   artifactError,
   artifactMissingTokens,
   artifactHeight,
+  artifactContentHeight,
   sectionHighlight,
   noteMarks,
   onSelectLayer,
@@ -1333,6 +1444,44 @@ const DesignCanvas = memo(function DesignCanvas({
     }
     return rects;
   }, [artifactRect, layerRects, sectionLayers, hiddenLayerIds]);
+
+  // The artifact window's page-space scroll offset. It lives here, next to the
+  // frame it moves, because the same number drives the iframe translate and the
+  // parent-side section hit zones: one offset, so the two cannot drift apart.
+  const [artifactScroll, setArtifactScroll] = useState(0);
+  const artifactContentBoxHeight =
+    artifactContentHeight === undefined
+      ? undefined
+      : Math.max(artifactHeight, artifactContentHeight);
+  const artifactScrollOffset =
+    artifactContentHeight === undefined
+      ? 0
+      : clampArtifactScroll(artifactScroll, artifactContentHeight, artifactHeight);
+
+  // A new artifact is a new page: its window starts at the top.
+  useEffect(() => {
+    setArtifactScroll(0);
+  }, [artifactHtml, artifactError]);
+
+  // A stale offset past the end of a re-measured page is harmless: the render,
+  // the wheel, and the reveal all clamp against the current height.
+
+  // Selecting a section must show it: the panel row and the canvas overlay both
+  // land here, so the window scrolls to the section just chosen. A section
+  // already inside the window returns the current offset, so nothing jumps.
+  useEffect(() => {
+    if (artifactRect === null || artifactContentHeight === undefined) return;
+    const section = sectionLayers.find((layer) => layer.id === selectedLayerId);
+    if (section === undefined) return;
+    setArtifactScroll((current) =>
+      revealArtifactRect(
+        current,
+        { top: section.transform.y - artifactRect.y, height: section.transform.height },
+        artifactContentHeight,
+        artifactRect.h,
+      ),
+    );
+  }, [artifactContentHeight, artifactRect, sectionLayers, selectedLayerId]);
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1406,8 +1555,40 @@ const DesignCanvas = memo(function DesignCanvas({
     (event: WheelEvent) => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      event.preventDefault();
       const bounds = canvas.getBoundingClientRect();
+      // Wheel is the established canvas zoom everywhere, including over the
+      // artifact, so the page scroll gets its own modifier instead of taking
+      // that over. Shift is the browser's unused "other axis" modifier; Ctrl is
+      // reserved by the browser's page zoom and Alt can trip menus. Over an
+      // artifact with room to scroll, Shift+wheel scrolls the window; anything
+      // else (including a short page) falls through to zoom, so the gesture is
+      // never dead.
+      if (event.shiftKey && artifactRect !== null && artifactContentHeight !== undefined) {
+        const point = pointerToWorld(
+          event.clientX,
+          event.clientY,
+          { left: bounds.left, top: bounds.top },
+          viewportRef.current,
+        );
+        const overArtifact =
+          point.x >= artifactRect.x &&
+          point.x <= artifactRect.x + artifactRect.w &&
+          point.y >= artifactRect.y &&
+          point.y <= artifactRect.y + artifactRect.h;
+        if (overArtifact && maxArtifactScroll(artifactContentHeight, artifactHeight) > 0) {
+          event.preventDefault();
+          setArtifactScroll((current) =>
+            scrollArtifactBy(
+              current,
+              { deltaY: event.deltaY, deltaMode: event.deltaMode },
+              artifactContentHeight,
+              artifactHeight,
+            ),
+          );
+          return;
+        }
+      }
+      event.preventDefault();
       const next = zoomViewport(
         viewportRef.current,
         { deltaY: event.deltaY, deltaMode: event.deltaMode },
@@ -1418,7 +1599,7 @@ const DesignCanvas = memo(function DesignCanvas({
       applyViewport(next);
       viewportCommitScheduler.schedule(next);
     },
-    [applyViewport, viewportCommitScheduler],
+    [applyViewport, artifactContentHeight, artifactHeight, artifactRect, viewportCommitScheduler],
   );
 
   useEffect(() => {
@@ -1586,7 +1767,18 @@ const DesignCanvas = memo(function DesignCanvas({
                 {artifactError}
               </div>
             ) : (
-              <div className="design-canvas-artifact-content" inert>
+              <div
+                className="design-canvas-artifact-content"
+                inert
+                style={
+                  artifactContentBoxHeight === undefined
+                    ? undefined
+                    : {
+                        height: `${artifactContentBoxHeight}px`,
+                        transform: `translateY(${-artifactScrollOffset}px)`,
+                      }
+                }
+              >
                 {/*
                   WebView2 measurement on 2026-09-05: the parent CSP is not inherited by srcdoc.
                   This policy is therefore delivered inside the frame; the sandbox remains a
@@ -1620,16 +1812,18 @@ const DesignCanvas = memo(function DesignCanvas({
         {/*
           The section highlight is drawn by the parent OVER the closed iframe
           (like CanvasNode), never inside it: page rect + artifact origin, in
-          world coordinates. The artifact box clips its own content but not
-          this sibling, so a section below the fold still highlights at its
-          true composed position under the sheet — declared, not hidden.
+          world coordinates, minus the window's page scroll. The artifact box
+          clips its own content but not this sibling, so a section below the
+          fold still highlights at its true composed position under the sheet —
+          declared, not hidden — and follows the offset the frame content moves
+          by, so the box and the highlight never disagree.
         */}
         {sectionHighlight !== null ? (
           <div
             className="design-canvas-section-highlight"
             style={{
               left: sectionHighlight.x,
-              top: sectionHighlight.y,
+              top: sectionHighlight.y - artifactScrollOffset,
               width: sectionHighlight.w,
               height: sectionHighlight.h,
             }}
@@ -1641,7 +1835,7 @@ const DesignCanvas = memo(function DesignCanvas({
             className="design-canvas-section-highlight design-canvas-section-hover"
             style={{
               left: hoveredHighlight.x,
-              top: hoveredHighlight.y,
+              top: hoveredHighlight.y - artifactScrollOffset,
               width: hoveredHighlight.w,
               height: hoveredHighlight.h,
             }}
@@ -1664,7 +1858,7 @@ const DesignCanvas = memo(function DesignCanvas({
             className="design-canvas-section-overlay"
             style={{
               left: section.transform.x,
-              top: section.transform.y,
+              top: section.transform.y - artifactScrollOffset,
               width: section.transform.width,
               height: section.transform.height,
             }}
@@ -1692,7 +1886,7 @@ const DesignCanvas = memo(function DesignCanvas({
             <span
               key={mark.id}
               className="design-canvas-note-mark"
-              style={{ left: mark.x, top: mark.y }}
+              style={{ left: mark.x, top: mark.y - artifactScrollOffset }}
               title={marked ? `Note on ${marked.name}` : "Section note"}
               aria-hidden="true"
             />
@@ -1753,6 +1947,71 @@ const DesignTranscriptRow = memo(function DesignTranscriptRow({
     </div>
   );
 });
+
+function ArtifactCopyControl({ html, title }: { html: string; title: string | undefined }) {
+  // Same shape as the diagnostics copy in settings: one write, a short
+  // "Copied." on success, a visible failure when the browser blocks the
+  // clipboard. The texts stay short because this lives in the canvas pill;
+  // the cause rides in the tooltip. There is no manual fallback to offer
+  // (the document exists only in memory until copied), so unlike
+  // diagnostics this failure is terminal, not a detour.
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  async function copyHtml(): Promise<void> {
+    if (copyResetTimerRef.current !== null) {
+      clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
+    try {
+      await navigator.clipboard.writeText(buildStandaloneArtifactHtml(html, title));
+      setCopyState("copied");
+      copyResetTimerRef.current = setTimeout(() => {
+        copyResetTimerRef.current = null;
+        setCopyState("idle");
+      }, 2_000);
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  return (
+    <>
+      <button
+        className="design-fit-button"
+        type="button"
+        title="Copy the generated page as a standalone HTML document"
+        aria-label="Copy HTML"
+        onClick={() => void copyHtml()}
+      >
+        Copy HTML
+      </button>
+      {copyState === "copied" ? (
+        <span className="design-generation-label" role="status">
+          Copied.
+        </span>
+      ) : null}
+      {copyState === "failed" ? (
+        <span
+          className="design-provider-unavailable"
+          role="status"
+          title="The browser blocked clipboard access, so nothing was copied."
+        >
+          Copy failed.
+        </span>
+      ) : null}
+    </>
+  );
+}
 
 const DesignMessageCard = memo(function DesignMessageCard({
   canGenerate,
@@ -2525,6 +2784,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     initialViewState.selectedLayerId,
   );
   const [grounded, setGrounded] = useState(document.grounded);
+  // The output shape is surface state like the skill selection, not document
+  // state like grounding: it says what the next run must produce, and it is
+  // remembered in the surface settings beside the craft selection.
+  const [outputMode, setOutputModeState] = useState<DesignOutputMode>("page");
+  const outputModeInteractedRef = useRef(false);
   const [draft, setDraft] = useState(document.initialState.draft);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -2861,6 +3125,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   }, [knownSkillSlugs]);
 
   useEffect(() => {
+    let active = true;
+    void loadDesignOutputMode().then((mode) => {
+      if (active && !outputModeInteractedRef.current) setOutputModeState(mode);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     skillSelectionRef.current = skillSelection;
   }, [skillSelection]);
 
@@ -2876,6 +3150,23 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
         : [],
     [artifactError, artifactHtml],
   );
+  // The export title is the title of the run that produced the artifact on
+  // screen, matched by markup identity so a stale message cannot lend its
+  // name. Absent when the run is unknown; the exporter then falls back.
+  const artifactSourceTitle = useMemo(() => {
+    if (artifactHtml === undefined) return undefined;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (
+        message?.role === "assistant" &&
+        message.status === "done" &&
+        message.artifactHtml === artifactHtml
+      ) {
+        return message.title;
+      }
+    }
+    return undefined;
+  }, [artifactHtml, messages]);
   const artifactRect = useMemo(
     () =>
       artifactHtml !== undefined || artifactError !== undefined
@@ -2887,23 +3178,35 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   // Measured page structure for the current artifact. The critic feeds the
   // module cache once per new artifact (same pass, no second measurement);
   // this state only re-renders the surface when that result lands. A remount
-  // reads straight from the cache, so navigating back keeps the layers.
+  // reads straight from the cache, so navigating back keeps the layers and the
+  // measured page height.
   const [measuredArtifact, setMeasuredArtifact] = useState<{
     html: string;
     sections: readonly ArtifactSection[];
+    contentHeight?: number;
   } | null>(null);
   const handleArtifactMeasured = useCallback((html: string, result: ArtifactRenderCriticResult) => {
     const sections = result.structure ?? EMPTY_SECTIONS;
-    setCachedArtifactSections(html, sections);
-    setMeasuredArtifact({ html, sections });
+    const contentHeight = result.contentHeight;
+    setCachedArtifactStructure(html, {
+      sections,
+      ...(contentHeight === undefined ? {} : { contentHeight }),
+    });
+    setMeasuredArtifact({
+      html,
+      sections,
+      ...(contentHeight === undefined ? {} : { contentHeight }),
+    });
   }, []);
-  const artifactSections: readonly ArtifactSection[] = useMemo(() => {
-    if (artifactHtml === undefined) return EMPTY_SECTIONS;
+  const artifactStructure: ArtifactStructure = useMemo(() => {
+    if (artifactHtml === undefined) return EMPTY_ARTIFACT_STRUCTURE;
     if (measuredArtifact !== null && measuredArtifact.html === artifactHtml) {
-      return measuredArtifact.sections;
+      return measuredArtifact;
     }
-    return getCachedArtifactSections(artifactHtml) ?? EMPTY_SECTIONS;
+    return getCachedArtifactStructure(artifactHtml) ?? EMPTY_ARTIFACT_STRUCTURE;
   }, [artifactHtml, measuredArtifact]);
+  const artifactSections = artifactStructure.sections;
+  const artifactContentHeight = artifactStructure.contentHeight;
   const sectionAnchors = useMemo(
     () => new Set(artifactSections.map((section) => section.anchor)),
     [artifactSections],
@@ -3605,6 +3908,19 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     setGrounded((value) => !value);
   }, [markDocumentDirty]);
 
+  // The toggle is disabled while busy (see the toolbar), so this guard only
+  // covers callers that bypass the button; the visible mode never disagrees
+  // with the running generation.
+  const updateOutputMode = useCallback(
+    (mode: DesignOutputMode) => {
+      if (busy) return;
+      outputModeInteractedRef.current = true;
+      setOutputModeState(mode);
+      void saveDesignOutputMode(mode).then((saved) => reportPersistence("output", saved));
+    },
+    [busy, reportPersistence],
+  );
+
   const openHistoryEntry = useCallback(
     (entry: DesignHistoryEntry) => {
       if (
@@ -3729,10 +4045,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       const folderPath = attachedFolderPath ?? null;
       const generationOptions =
         skillSelection.mode === "auto"
-          ? { skillMode: "auto" as const, grounded, folderPath }
+          ? { skillMode: "auto" as const, grounded, folderPath, outputMode }
           : skillSelection.mode === "manual"
-            ? { skillMode: "manual" as const, skills: selectedSkillSlugs, grounded, folderPath }
-            : { skillMode: "all" as const, grounded, folderPath };
+            ? {
+                skillMode: "manual" as const,
+                skills: selectedSkillSlugs,
+                grounded,
+                folderPath,
+                outputMode,
+              }
+            : { skillMode: "all" as const, grounded, folderPath, outputMode };
       void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
           const currentGeneration = useAppStore.getState().designSession.generation;
@@ -3865,6 +4187,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       generate,
       grounded,
       host,
+      outputMode,
       reportPersistence,
       skillSelection.mode,
       selectedSkillSlugs,
@@ -3974,6 +4297,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           />
         }
         grounded={grounded}
+        outputMode={outputMode}
+        busy={busy}
+        onOutputModeChange={updateOutputMode}
         canSave={canSave}
         saved={saved}
         saving={saving}
@@ -4040,6 +4366,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             artifactError={artifactError}
             artifactMissingTokens={artifactMissingTokens}
             artifactHeight={artifactPageHeight}
+            artifactContentHeight={artifactContentHeight}
             sectionHighlight={sectionHighlight}
             noteMarks={noteMarks}
             onSelectLayer={selectLayer}
@@ -4066,6 +4393,8 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
             onZoomOut={zoomOut}
             onZoomReset={zoomReset}
             onFit={fitCanvas}
+            artifactHtml={artifactHtml}
+            artifactTitle={artifactSourceTitle}
           />
         </div>
 

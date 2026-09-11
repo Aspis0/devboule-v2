@@ -19,6 +19,8 @@ const skillSettingsMocks = vi.hoisted(() => ({
   loadWorkspace: vi.fn(),
   loadStoredWorkspace: vi.fn(),
   saveWorkspace: vi.fn(),
+  loadOutput: vi.fn(),
+  saveOutput: vi.fn(),
 }));
 
 const providerMocks = vi.hoisted(() => ({
@@ -67,6 +69,8 @@ vi.mock("./designSettings", async () => {
     loadDesignWorkspaceId: skillSettingsMocks.loadWorkspace,
     loadStoredDesignWorkspaceId: skillSettingsMocks.loadStoredWorkspace,
     saveDesignWorkspaceId: skillSettingsMocks.saveWorkspace,
+    loadDesignOutputMode: skillSettingsMocks.loadOutput,
+    saveDesignOutputMode: skillSettingsMocks.saveOutput,
   };
 });
 
@@ -411,6 +415,8 @@ beforeEach(() => {
   skillSettingsMocks.loadWorkspace.mockReset();
   skillSettingsMocks.loadStoredWorkspace.mockReset();
   skillSettingsMocks.saveWorkspace.mockReset();
+  skillSettingsMocks.loadOutput.mockReset();
+  skillSettingsMocks.saveOutput.mockReset();
   historyMocks.record.mockReset();
   // The real recordDesignHistoryEntry resolves a boolean (true = reached disk); the mock must
   // honor that contract, otherwise the surface would raise a false persistence notice.
@@ -425,6 +431,8 @@ beforeEach(() => {
   skillSettingsMocks.loadStoredProvider.mockResolvedValue(null);
   skillSettingsMocks.saveProvider.mockResolvedValue(true);
   skillSettingsMocks.loadWorkspace.mockResolvedValue(null);
+  skillSettingsMocks.loadOutput.mockResolvedValue("page");
+  skillSettingsMocks.saveOutput.mockResolvedValue(true);
   skillSettingsMocks.loadStoredWorkspace.mockResolvedValue(null);
   skillSettingsMocks.saveWorkspace.mockResolvedValue(true);
   providerMocks.list.mockReset();
@@ -1903,6 +1911,7 @@ describe("DesignSurface host capabilities", () => {
       skillMode: "all",
       grounded: false,
       folderPath: null,
+      outputMode: "page",
     });
     await act(async () => root.unmount());
   });
@@ -2384,7 +2393,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Make the header quieter.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
     );
     await act(async () => root.unmount());
   });
@@ -2404,6 +2413,7 @@ describe("DesignSurface host capabilities", () => {
       skillMode: "all",
       grounded: true,
       folderPath: null,
+      outputMode: "page",
     });
     await act(async () => root.unmount());
   });
@@ -2432,7 +2442,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       expect.stringContaining("source file: src/components/Header.tsx"),
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
     );
     await act(async () => root.unmount());
   });
@@ -2614,7 +2624,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenLastCalledWith(
       "Refine this artifact.\n\nScope: Editing Generated artifact; the user is refining the artifact the agent just produced.",
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
     );
 
     await act(async () => {
@@ -2882,7 +2892,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
     );
     await act(async () => root.unmount());
   });
@@ -2915,7 +2925,7 @@ describe("DesignSurface host capabilities", () => {
     expect(generate).toHaveBeenCalledWith(
       'Use the real stale count in the header.\n\nScope: Editing Index header (TSX); the user is pointing at the layer named "Index header".',
       expect.any(AbortSignal),
-      { skillMode: "all", grounded: true, folderPath: null },
+      { skillMode: "all", grounded: true, folderPath: null, outputMode: "page" },
     );
     await act(async () => root.unmount());
   });
@@ -3342,6 +3352,7 @@ describe("DesignSurface host capabilities", () => {
       skillMode: "all",
       grounded: true,
       folderPath: null,
+      outputMode: "page",
     });
     await act(async () => root.unmount());
   });
@@ -3488,6 +3499,7 @@ describe("DesignSurface host capabilities", () => {
       skills: [selected.slug],
       grounded: true,
       folderPath: null,
+      outputMode: "page",
     });
     await act(async () => root.unmount());
   });
@@ -3553,6 +3565,28 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the deck section selectable in the manual picker", async () => {
+    // The output-mode narrowing applies to the reasoner only. The manual
+    // picker names its sections explicitly, so it keeps the whole catalogue
+    // including the section that owns the slides output mode.
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await openSkillCraft(container);
+    await chooseSkillMode(container, "manual");
+
+    const slides = builtInSkillIndex().find((entry) => entry.slug === "slides");
+    if (slides === undefined) throw new Error("Expected the slides section in the catalogue");
+    const titles = [...container.querySelectorAll<HTMLElement>(".design-craft-title-row")].map(
+      (row) => row.textContent ?? "",
+    );
+    expect(titles.some((title) => title.includes(slides.title))).toBe(true);
+    expect(
+      container.querySelectorAll('.design-craft-title-row input[type="checkbox"]'),
+    ).toHaveLength(builtInSkillIndex().length);
+    await act(async () => root.unmount());
+  });
+
   it("manual mode with no checked sections sends an empty skill list", async () => {
     const generate = vi
       .fn<NonNullable<DesignHost["generate"]>>()
@@ -3575,6 +3609,7 @@ describe("DesignSurface host capabilities", () => {
       skills: [],
       grounded: true,
       folderPath: null,
+      outputMode: "page",
     });
     await act(async () => root.unmount());
   });
@@ -3664,6 +3699,7 @@ describe("DesignSurface host capabilities", () => {
       skillMode: "auto",
       grounded: true,
       folderPath: null,
+      outputMode: "page",
     });
     await act(async () => Promise.resolve());
     expect(container.textContent).toContain(`Automatic craft: ${selected.slug}`);
@@ -3904,6 +3940,242 @@ describe("Design chrome, composer and folder attachment", () => {
     expect(
       container.querySelector(".design-composer-footer .design-session-end-button"),
     ).toBeNull();
+    await act(async () => root.unmount());
+  });
+});
+
+describe("Design output shape toggle", () => {
+  function outputToggle(container: HTMLDivElement): HTMLButtonElement {
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label^="Output shape"]');
+    if (toggle === null) throw new Error("Output shape toggle missing");
+    return toggle;
+  }
+
+  it("shows Page by default and persists Slides on click", async () => {
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    expect(outputToggle(container).textContent).toContain("Page");
+    await act(async () => outputToggle(container).click());
+
+    expect(outputToggle(container).textContent).toContain("Slides");
+    expect(skillSettingsMocks.saveOutput).toHaveBeenCalledWith("slides");
+    await act(async () => root.unmount());
+  });
+
+  it("restores a remembered Slides choice on mount", async () => {
+    skillSettingsMocks.loadOutput.mockResolvedValueOnce("slides");
+    const { container, root } = await renderDesign(createHost());
+    await act(settle);
+
+    expect(outputToggle(container).textContent).toContain("Slides");
+    await act(async () => root.unmount());
+  });
+
+  it("sends the declared mode with a matched generation", async () => {
+    const generate = vi.fn(async () => GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    await act(async () => outputToggle(container).click());
+    await fillDraft(container, "Make a deck about the release.");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
+    );
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ outputMode: "slides" }),
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("sends the declared mode with a manual generation", async () => {
+    const generate = vi.fn(async () => GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    await chooseSkillMode(container, "manual");
+    await act(async () => outputToggle(container).click());
+    await fillDraft(container, "Make a deck about the release.");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
+    );
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ skillMode: "manual", outputMode: "slides" }),
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("sends page when the toggle was never touched", async () => {
+    const generate = vi.fn(async () => GENERATION_RESULT);
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    await fillDraft(container, "Make the header count dynamic.");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
+    );
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ outputMode: "page" }),
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("locks the toggle while a generation runs", async () => {
+    const generate = vi.fn(() => new Promise<DesignGenerationResult>(() => undefined));
+    const { container, root } = await renderDesign(createHost({ generate }));
+    await act(settle);
+    await act(async () => outputToggle(container).click());
+    await fillDraft(container, "Make a deck about the release.");
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".design-generate-button")?.click(),
+    );
+
+    const locked = outputToggle(container);
+    expect(locked.disabled).toBe(true);
+    // What stays visible is what is running: Slides went in, Slides shows.
+    expect(locked.textContent).toContain("Slides");
+    skillSettingsMocks.saveOutput.mockClear();
+    await act(async () => locked.click());
+    expect(skillSettingsMocks.saveOutput).not.toHaveBeenCalled();
+    expect(outputToggle(container).textContent).toContain("Slides");
+    await act(async () => root.unmount());
+  });
+});
+
+describe("artifact export copy", () => {
+  const clipboardWrites: string[] = [];
+  const realClipboard = navigator.clipboard;
+  let clipboardImpl: (text: string) => Promise<void>;
+
+  function copyButton(container: HTMLDivElement): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>('button[aria-label="Copy HTML"]');
+  }
+
+  async function generateArtifact(container: HTMLDivElement, prompt: string): Promise<void> {
+    await fillDraft(container, prompt);
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => send.click());
+    await act(async () => undefined);
+  }
+
+  beforeEach(() => {
+    clipboardImpl = async (text: string) => {
+      clipboardWrites.push(text);
+    };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: (text: string) => clipboardImpl(text) },
+    });
+    clipboardWrites.length = 0;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: realClipboard });
+    vi.useRealTimers();
+  });
+
+  it("lives in the canvas controls, not the assistant header", async () => {
+    // Regression for the live 2026-09-11 cut ("Copy HTM" in the 365px
+    // header): the pill sizes to its content and is anchored right, so the
+    // action cannot be squeezed by session chrome again.
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const pill = container.querySelector(".design-zoom-controls");
+    if (pill === null) throw new Error("Canvas controls missing");
+    expect(pill.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
+    const header = container.querySelector(".design-assistant-header");
+    if (header === null) throw new Error("Assistant header missing");
+    expect(header.querySelector('button[aria-label="Copy HTML"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("canvas controls do not overflow their box", async () => {
+    // happy-dom reports no layout (0 <= 0); this pins the gate so a real
+    // browser harness or CDP probe can fail it honestly.
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const pill = container.querySelector(".design-zoom-controls");
+    if (pill === null) throw new Error("Canvas controls missing");
+    expect(pill.scrollWidth <= pill.clientWidth).toBe(true);
+    await act(async () => root.unmount());
+  });
+
+  it("shows no copy action while no artifact is on screen", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => GENERATION_RESULT) }),
+    );
+    await generateArtifact(container, "Build the settings page.");
+    expect(copyButton(container)).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("copies the standalone document with the producing run's title", async () => {
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const button = copyButton(container);
+    if (button === null) throw new Error("Copy HTML action missing");
+    await act(async () => button.click());
+    await act(async () => undefined);
+
+    expect(clipboardWrites).toHaveLength(1);
+    const copied = clipboardWrites[0] ?? "";
+    expect(copied).toContain("<!DOCTYPE html>");
+    expect(copied).toContain('<html lang="en">');
+    expect(copied).toContain('<meta charset="utf-8">');
+    expect(copied).toContain('<meta name="viewport"');
+    expect(copied).toContain("<title>Generated result</title>");
+    expect(copied).toContain('<main class="generated-card">Generated</main>');
+    expect(copied.toLowerCase()).not.toContain("content-security-policy");
+    expect(container.textContent).toContain("Copied.");
+    await act(async () => root.unmount());
+  });
+
+  it("reports a blocked clipboard instead of pretending", async () => {
+    clipboardImpl = async () => {
+      throw new DOMException("Denied", "NotAllowedError");
+    };
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const button = copyButton(container);
+    if (button === null) throw new Error("Copy HTML action missing");
+    await act(async () => button.click());
+    await act(async () => undefined);
+
+    expect(clipboardWrites).toHaveLength(0);
+    expect(container.textContent).toContain("Copy failed.");
+    await act(async () => root.unmount());
+  });
+
+  it("clears Copied. after a short delay", async () => {
+    vi.useFakeTimers();
+    const { container, root } = await renderDesign(
+      createHost({ generate: vi.fn(async () => ARTIFACT_RESULT) }),
+    );
+    await generateArtifact(container, "Create the final card.");
+    const button = copyButton(container);
+    if (button === null) throw new Error("Copy HTML action missing");
+    await act(async () => button.click());
+    expect(container.textContent).toContain("Copied.");
+    await act(async () => vi.advanceTimersByTime(2_000));
+    expect(container.textContent).not.toContain("Copied.");
     await act(async () => root.unmount());
   });
 });

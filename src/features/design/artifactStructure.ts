@@ -326,23 +326,46 @@ export function sectionsToLayers(
  */
 const MAX_CACHED_ARTIFACT_STRUCTURES = 8;
 
-const structureCache = new Map<string, readonly ArtifactSection[]>();
+/** What the critic's single measurement pass reports about one artifact. */
+export interface ArtifactStructure {
+  readonly sections: readonly ArtifactSection[];
+  /**
+   * Full page height in CSS px at the canonical page width, from the same
+   * pass. Undefined for entries stored before the height was reported: the
+   * surface then treats the page as unscrollable.
+   */
+  readonly contentHeight?: number;
+}
 
-export function getCachedArtifactSections(html: string): readonly ArtifactSection[] | undefined {
+const structureCache = new Map<string, ArtifactStructure>();
+
+export function getCachedArtifactStructure(html: string): ArtifactStructure | undefined {
   return structureCache.get(html);
 }
 
-export function setCachedArtifactSections(
-  html: string,
-  sections: readonly ArtifactSection[],
-): void {
+export function getCachedArtifactSections(html: string): readonly ArtifactSection[] | undefined {
+  return structureCache.get(html)?.sections;
+}
+
+export function setCachedArtifactStructure(html: string, structure: ArtifactStructure): void {
   if (structureCache.has(html)) structureCache.delete(html);
-  structureCache.set(html, sections);
+  structureCache.set(html, structure);
   while (structureCache.size > MAX_CACHED_ARTIFACT_STRUCTURES) {
     const oldest = structureCache.keys().next();
     if (oldest.done) break;
     structureCache.delete(oldest.value);
   }
+}
+
+export function setCachedArtifactSections(
+  html: string,
+  sections: readonly ArtifactSection[],
+  contentHeight?: number,
+): void {
+  setCachedArtifactStructure(html, {
+    sections,
+    ...(contentHeight === undefined ? {} : { contentHeight }),
+  });
 }
 
 export function clearCachedArtifactSections(): void {

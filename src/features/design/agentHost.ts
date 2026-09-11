@@ -29,13 +29,14 @@ import type {
   DesignGenerationOptions,
   DesignGenerationResult,
   DesignHost,
+  DesignOutputMode,
   DesignTranscriptItem,
   PendingPermission,
 } from "./designHost";
 // These helpers are shared with Workspace for now; they would eventually belong in src/lib/.
 import { sessionCreateFromProvider } from "../workspace/workspaceSessions";
 import {
-  builtInSkillIndex,
+  builtInSkillIndexForOutputMode,
   builtInSkillSlugs,
   builtInSkillSources,
   MAX_AUTOMATIC_SKILL_SECTIONS,
@@ -262,9 +263,18 @@ interface ResolvedSkillChoice {
  * turn. When the ranker reports no strong match it hands back the priority
  * order and the fallback mirrors the automatic one: request every section
  * and let the composed budget keep the priority head.
+ *
+ * `outputMode` has no default. The corpus a request may route over is the
+ * declared output shape, and an omitted mode would silently mean "page" for
+ * a caller that forgot to state it — the same silent substitution this
+ * narrowing exists to remove. A missing mode must be a compile error, not a
+ * plausible answer.
  */
-export function matchSkillChoice(prompt: string): ResolvedSkillChoice {
-  const index = builtInSkillIndex();
+export function matchSkillChoice(
+  prompt: string,
+  outputMode: DesignOutputMode,
+): ResolvedSkillChoice {
+  const index = builtInSkillIndexForOutputMode(outputMode);
   const ranking = rankSkillsForQuery(prompt, index);
   if (ranking.fallback) {
     return { slugs: index.map((entry) => entry.slug), fallback: true };
@@ -412,6 +422,7 @@ export function groundedPrompt(
   oracleResults: readonly OracleResult[],
   composedDoctrine = buildSkillBlock(builtInSkillSources(), builtInSkillSlugs()).text,
   grounded = true,
+  outputMode: DesignOutputMode = "page",
 ): string {
   const doctrine = embedDoctrineBlock(composedDoctrine);
   const promptParts = [
@@ -433,13 +444,27 @@ export function groundedPrompt(
       "Oracle grounding is off for this request: do not search or read repository files, and do not assume any search result.",
     );
   }
-  promptParts.push(
-    "",
-    "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
-    "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
-    "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
-    "If you produce more than one block, only the last one is used.",
-  );
+  if (outputMode === "slides") {
+    promptParts.push(
+      "",
+      'When you produce visual output, include a single self-contained HTML document that renders a slide deck: one <section> per slide, each with a stable id (id="slide-1", id="slide-2", ...).',
+      // The id is the note anchor: without one the anchor falls back to document
+      // position, so a regeneration would detach every note from its slide.
+      "Keep every slide id stable across regenerations of the same deck.",
+      "Size every slide as a fixed 16:9 frame (1280x720 CSS px at the 1280 page width): compose inside that box, one idea per slide, never a scrolling column.",
+      "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
+      "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
+      "If you produce more than one block, only the last one is used.",
+    );
+  } else {
+    promptParts.push(
+      "",
+      "When you produce visual output, include a self-contained HTML fragment that renders the generated design.",
+      "Put it in a single fenced ```html code block. Use inline CSS for all styling.",
+      "Scripts will not run, so do not rely on JavaScript — use only HTML and CSS.",
+      "If you produce more than one block, only the last one is used.",
+    );
+  }
   if (doctrine.length > 0) promptParts.push(doctrine, DESIGN_DOCTRINE_RESTATEMENT);
   return promptParts.join("\n\n");
 }
@@ -1072,15 +1097,26 @@ export function createAgentHost(): DesignHost {
     handle: AgentSessionHandle,
     prompt: string,
     signal: AbortSignal,
+    outputMode: DesignOutputMode,
   ): Promise<ResolvedSkillChoice> => {
-    const index = builtInSkillIndex();
+    // One narrowed corpus for all three places the index appears: the candidate
+    // list offered in the routing prompt, the reply parser that recognises a
+    // slug, and the known-set passed to composeAutomaticSkillSlugs. Restricting
+    // at the source rather than filtering afterwards is what makes an agent
+    // reply of "slides" in page mode a non-slip answer instead of a rejected
+    // one: `slides` is not a choice it was offered, so it never enters the
+    // candidate set the model is answering over.
+    const index = builtInSkillIndexForOutputMode(outputMode);
     const allSlugs = index.map((entry) => entry.slug);
     // Every failure of the agent's own answer lands here: an empty reply, an error turn, a
     // refused send, and the deadline. The replacement is the Matched system for the same
     // prompt — the same relevance ranking the matched mode uses — rather than the whole
     // corpus in fit order. The flag still marks that the agent's answer was replaced, which
     // the ranking alone cannot say: the Matched system reports its own concede separately.
-    const fallback = (): ResolvedSkillChoice => ({ ...matchSkillChoice(prompt), fallback: true });
+    const fallback = (): ResolvedSkillChoice => ({
+      ...matchSkillChoice(prompt, outputMode),
+      fallback: true,
+    });
     throwIfAborted(signal);
 
     let settle: (choice: ResolvedSkillChoice) => void = () => undefined;
@@ -1200,13 +1236,14 @@ export function createAgentHost(): DesignHost {
     throwIfAborted(signal);
 
     const skillMode = options?.skillMode ?? "all";
+    const outputMode = options?.outputMode ?? "page";
     const pinnedSkills = options?.skillMode === "manual" ? options.skills : [];
     const skillChoice =
       skillMode === "auto"
-        ? await automaticSkillChoice(handle, prompt, signal)
+        ? await automaticSkillChoice(handle, prompt, signal, outputMode)
         : skillMode === "manual"
           ? { slugs: pinnedSkills, fallback: false }
-          : matchSkillChoice(prompt);
+          : matchSkillChoice(prompt, outputMode);
     throwIfAborted(signal);
     const skillSlugs = skillChoice.slugs;
 
@@ -1255,7 +1292,7 @@ export function createAgentHost(): DesignHost {
     // Subscribe only after send() so a prior turn cannot settle this run.
     const composedDoctrine = buildSkillBlock(builtInSkillSources(), skillSlugs).text;
     const sendPromise = handle.controller.send(
-      groundedPrompt(prompt, oracleResults, composedDoctrine, promptGrounded),
+      groundedPrompt(prompt, oracleResults, composedDoctrine, promptGrounded, outputMode),
     );
     const settleFromState = (): boolean => {
       if (activeRun !== run || run.settled) return true;
