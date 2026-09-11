@@ -79,6 +79,7 @@ import {
 } from "./designSettings";
 import { DesignFolderControl } from "./DesignFolderControl";
 import {
+  ATTACHMENT_DELIVERY_NOTICE,
   ATTACHMENT_INPUT_ACCEPT,
   collectAttachmentFiles,
   formatAttachmentSize,
@@ -267,9 +268,9 @@ interface CanvasProps {
    * behaviour), never a guess.
    */
   artifactContentHeight?: number;
-  /** World-space highlight for the selected page section, if it is one. */
+  /** Page-space highlight for the selected page section, if it is one. */
   sectionHighlight: NodeRect | null;
-  /** World-space marks for sections carrying an agent note. */
+  /** Page-space marks for sections carrying an agent note. */
   noteMarks: readonly NodeRect[];
   onSelectLayer: (layerId: string) => void;
   onViewportChange: (viewport: DesignViewport) => void;
@@ -1493,6 +1494,12 @@ function sourceDirectory(path: string): string {
  * sections with this same helper first: both paths pick the same id, and both
  * call the shared `onSelectLayer`, so canvas selection and panel selection
  * are one state, not two.
+ *
+ * The point and the rects must describe the same picture. The artifact window
+ * scrolls its page, so the caller passes section layers whose tops already
+ * carry that offset (see `stageSectionTop`); handing over the measured
+ * page-space rects here while the pointer is in stage space is what made a
+ * click on a scrolled page pick the section that would be under it at the top.
  */
 export function smallestSectionAt(
   sections: readonly DesignLayer[],
@@ -1627,6 +1634,61 @@ function artifactSrcDoc(html: string): string {
   return `${ARTIFACT_CSP_META}\n${html}`;
 }
 
+interface ScrollCommitScheduler {
+  schedule(offset: number): void;
+  flush(offset?: number): void;
+  cancel(): void;
+}
+
+/**
+ * One state write per frame for the artifact window's scroll offset.
+ *
+ * Same shape and same frame wiring as `createViewportCommitScheduler`, which
+ * does this job for the canvas viewport; that factory is typed to
+ * `DesignViewport`, so a bare offset cannot travel through it. A trackpad emits
+ * 60-120 wheel events a second, and each one used to write state, re-render the
+ * canvas and reposition every section overlay on a page that can carry
+ * hundreds. Only the last offset of a frame matters, so only the last is kept:
+ * the write that reaches React is the cumulative offset, never a stale step.
+ * `flush` is for the paths that must not wait for a frame (a selection reveal,
+ * a new artifact) and it cancels the pending frame, so a queued wheel commit
+ * cannot land on top of them.
+ */
+function createScrollCommitScheduler(
+  commit: (offset: number) => void,
+  scheduleFrame: (callback: () => void) => number,
+  cancelFrame: (frameId: number) => void,
+): ScrollCommitScheduler {
+  let pending: number | null = null;
+  let frameId: number | null = null;
+
+  const commitPending = () => {
+    frameId = null;
+    const next = pending;
+    pending = null;
+    if (next !== null) commit(next);
+  };
+
+  return {
+    schedule(offset) {
+      pending = offset;
+      if (frameId === null) frameId = scheduleFrame(commitPending);
+    },
+    flush(offset) {
+      if (frameId !== null) cancelFrame(frameId);
+      frameId = null;
+      const next = offset ?? pending;
+      pending = null;
+      if (next !== null) commit(next);
+    },
+    cancel() {
+      if (frameId !== null) cancelFrame(frameId);
+      frameId = null;
+      pending = null;
+    },
+  };
+}
+
 const DesignCanvas = memo(function DesignCanvas({
   layers,
   sectionLayers,
@@ -1681,6 +1743,57 @@ const DesignCanvas = memo(function DesignCanvas({
     applyViewport(createViewport(zoom, appliedPan));
   }, [applyViewport, pan, zoom]);
 
+  // The artifact window's page-space scroll offset. It lives here, next to the
+  // frame it moves, because the same number drives the iframe translate and the
+  // parent-side section hit zones: one offset, so the two cannot drift apart.
+  const [artifactScroll, setArtifactScroll] = useState(0);
+  /**
+   * The latest offset — committed, or still waiting for its frame. The wheel
+   * accumulates against this rather than against the committed state, so two
+   * events inside one frame compose instead of the second replacing the first
+   * with a step measured from a value the first had already moved past.
+   */
+  const artifactScrollRef = useRef(0);
+  const scrollCommitScheduler = useMemo(
+    () =>
+      createScrollCommitScheduler(
+        setArtifactScroll,
+        (callback) => window.requestAnimationFrame(callback),
+        (frameId) => window.cancelAnimationFrame(frameId),
+      ),
+    [],
+  );
+  useEffect(() => () => scrollCommitScheduler.cancel(), [scrollCommitScheduler]);
+  const artifactContentBoxHeight =
+    artifactContentHeight === undefined
+      ? undefined
+      : Math.max(artifactHeight, artifactContentHeight);
+  const artifactScrollOffset =
+    artifactContentHeight === undefined
+      ? 0
+      : clampArtifactScroll(artifactScroll, artifactContentHeight, artifactHeight);
+  /**
+   * The one conversion from a section's page-space top to where it is drawn in
+   * stage coordinates. A measured section's `transform` is page-space (its top
+   * is the page's own, offset by the artifact's origin); the window scrolls that
+   * page up by `artifactScrollOffset`, so every consumer — the overlay buttons,
+   * the selection highlight, the hover highlight, the note marks, and the click
+   * hit test — asks this function instead of subtracting on its own. Drawing and
+   * picking therefore read the same number, which is what keeps a click on a
+   * scrolled page from selecting the section that would sit there unscrolled.
+   */
+  const stageSectionTop = useCallback(
+    (pageTop: number) => pageTop - artifactScrollOffset,
+    [artifactScrollOffset],
+  );
+  const stageSectionLayers = useMemo(
+    () =>
+      sectionLayers.map((section) => ({
+        ...section,
+        transform: { ...section.transform, y: stageSectionTop(section.transform.y) },
+      })),
+    [sectionLayers, stageSectionTop],
+  );
   const layerRects = useMemo<NodeRect[]>(
     () => layerRectsFor(layers).filter((layer) => !hiddenLayerIds.includes(layer.id)),
     [hiddenLayerIds, layers],
@@ -1698,7 +1811,10 @@ const DesignCanvas = memo(function DesignCanvas({
     // selects the section, not the whole page. Same z for all: last in
     // document order wins, which is the deepest element under the pointer.
     const sectionBase = artifactRect === null ? layerRects.length : artifactRect.z + 1;
-    for (const section of sectionLayers) {
+    // Stage-space section rects: the same ones the overlays are drawn with, so a
+    // click that falls through the section search below still cannot land on a
+    // section by its unscrolled position.
+    for (const section of stageSectionLayers) {
       if (hiddenLayerIds.includes(section.id)) continue;
       rects.push({
         id: section.id,
@@ -1710,25 +1826,15 @@ const DesignCanvas = memo(function DesignCanvas({
       });
     }
     return rects;
-  }, [artifactRect, layerRects, sectionLayers, hiddenLayerIds]);
+  }, [artifactRect, layerRects, stageSectionLayers, hiddenLayerIds]);
 
-  // The artifact window's page-space scroll offset. It lives here, next to the
-  // frame it moves, because the same number drives the iframe translate and the
-  // parent-side section hit zones: one offset, so the two cannot drift apart.
-  const [artifactScroll, setArtifactScroll] = useState(0);
-  const artifactContentBoxHeight =
-    artifactContentHeight === undefined
-      ? undefined
-      : Math.max(artifactHeight, artifactContentHeight);
-  const artifactScrollOffset =
-    artifactContentHeight === undefined
-      ? 0
-      : clampArtifactScroll(artifactScroll, artifactContentHeight, artifactHeight);
-
-  // A new artifact is a new page: its window starts at the top.
+  // A new artifact is a new page: its window starts at the top. Committed at
+  // once rather than scheduled, so a wheel commit still in flight cannot leave
+  // the previous page's offset on the new one.
   useEffect(() => {
-    setArtifactScroll(0);
-  }, [artifactHtml, artifactError]);
+    artifactScrollRef.current = 0;
+    scrollCommitScheduler.flush(0);
+  }, [artifactHtml, artifactError, scrollCommitScheduler]);
 
   // A stale offset past the end of a re-measured page is harmless: the render,
   // the wheel, and the reveal all clamp against the current height.
@@ -1740,15 +1846,18 @@ const DesignCanvas = memo(function DesignCanvas({
     if (artifactRect === null || artifactContentHeight === undefined) return;
     const section = sectionLayers.find((layer) => layer.id === selectedLayerId);
     if (section === undefined) return;
-    setArtifactScroll((current) =>
-      revealArtifactRect(
-        current,
-        { top: section.transform.y - artifactRect.y, height: section.transform.height },
-        artifactContentHeight,
-        artifactRect.h,
-      ),
+    const next = revealArtifactRect(
+      artifactScrollRef.current,
+      { top: section.transform.y - artifactRect.y, height: section.transform.height },
+      artifactContentHeight,
+      artifactRect.h,
     );
-  }, [artifactContentHeight, artifactRect, sectionLayers, selectedLayerId]);
+    artifactScrollRef.current = next;
+    // Flushed, not scheduled: a selection has to be on screen in the frame it
+    // was made, and revealing a section that is already visible returns the
+    // current offset, so nothing jumps.
+    scrollCommitScheduler.flush(next);
+  }, [artifactContentHeight, artifactRect, sectionLayers, selectedLayerId, scrollCommitScheduler]);
 
   const handleCanvasClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1767,8 +1876,10 @@ const DesignCanvas = memo(function DesignCanvas({
       );
       // Sections first, smallest-wins (see smallestSectionAt): the overlay
       // buttons below already resolved the same way, so a click agrees with
-      // a hover whatever path it arrived on.
-      const sectionHit = smallestSectionAt(sectionLayers, hiddenLayerIds, point);
+      // a hover whatever path it arrived on. Both compare in stage space:
+      // the point is world coordinates and the rects have the window's scroll
+      // already applied, so they describe the same picture.
+      const sectionHit = smallestSectionAt(stageSectionLayers, hiddenLayerIds, point);
       if (sectionHit !== null) {
         onSelectLayer(sectionHit.id);
         return;
@@ -1786,7 +1897,7 @@ const DesignCanvas = memo(function DesignCanvas({
       }
       onSelectLayer(target?.id ?? "");
     },
-    [hitRects, hiddenLayerIds, onSelectLayer, sectionLayers],
+    [hitRects, hiddenLayerIds, onSelectLayer, stageSectionLayers],
   );
 
   // Direct-on-canvas hover: one id, cleared on leave. The highlight below
@@ -1795,7 +1906,7 @@ const DesignCanvas = memo(function DesignCanvas({
   const [hoveredSectionId, setHoveredSectionId] = useState<string | null>(null);
   const hoveredHighlight = useMemo(() => {
     if (hoveredSectionId === null || hoveredSectionId === selectedLayerId) return null;
-    const hovered = sectionLayers.find((section) => section.id === hoveredSectionId);
+    const hovered = stageSectionLayers.find((section) => section.id === hoveredSectionId);
     if (hovered === undefined || hiddenLayerIds.includes(hovered.id)) return null;
     return {
       x: hovered.transform.x,
@@ -1803,19 +1914,19 @@ const DesignCanvas = memo(function DesignCanvas({
       w: hovered.transform.width,
       h: hovered.transform.height,
     };
-  }, [hoveredSectionId, sectionLayers, selectedLayerId, hiddenLayerIds]);
+  }, [hoveredSectionId, stageSectionLayers, selectedLayerId, hiddenLayerIds]);
   // Largest-first paint order: the smallest (deepest) overlay is on top and
   // receives the pointer, matching smallestSectionAt above.
   const sectionOverlays = useMemo(
     () =>
-      [...sectionLayers]
+      [...stageSectionLayers]
         .filter((section) => !hiddenLayerIds.includes(section.id))
         .sort(
           (left, right) =>
             right.transform.width * right.transform.height -
             left.transform.width * left.transform.height,
         ),
-    [hiddenLayerIds, sectionLayers],
+    [hiddenLayerIds, stageSectionLayers],
   );
 
   const handleWheel = useCallback(
@@ -1844,14 +1955,17 @@ const DesignCanvas = memo(function DesignCanvas({
           point.y <= artifactRect.y + artifactRect.h;
         if (overArtifact && maxArtifactScroll(artifactContentHeight, artifactHeight) > 0) {
           event.preventDefault();
-          setArtifactScroll((current) =>
-            scrollArtifactBy(
-              current,
-              { deltaY: event.deltaY, deltaMode: event.deltaMode },
-              artifactContentHeight,
-              artifactHeight,
-            ),
+          const next = scrollArtifactBy(
+            artifactScrollRef.current,
+            { deltaY: event.deltaY, deltaMode: event.deltaMode },
+            artifactContentHeight,
+            artifactHeight,
           );
+          artifactScrollRef.current = next;
+          // Scheduled, not written: the frame callback commits the last offset
+          // of the burst, exactly like the zoom branch below commits its
+          // viewport.
+          scrollCommitScheduler.schedule(next);
           return;
         }
       }
@@ -1866,7 +1980,14 @@ const DesignCanvas = memo(function DesignCanvas({
       applyViewport(next);
       viewportCommitScheduler.schedule(next);
     },
-    [applyViewport, artifactContentHeight, artifactHeight, artifactRect, viewportCommitScheduler],
+    [
+      applyViewport,
+      artifactContentHeight,
+      artifactHeight,
+      artifactRect,
+      scrollCommitScheduler,
+      viewportCommitScheduler,
+    ],
   );
 
   useEffect(() => {
@@ -2042,7 +2163,10 @@ const DesignCanvas = memo(function DesignCanvas({
                     ? undefined
                     : {
                         height: `${artifactContentBoxHeight}px`,
-                        transform: `translateY(${-artifactScrollOffset}px)`,
+                        // The page itself moves by the window's offset: its top
+                        // is the page origin, so it goes through the same
+                        // conversion the section rects above do.
+                        transform: `translateY(${stageSectionTop(0)}px)`,
                       }
                 }
               >
@@ -2090,7 +2214,7 @@ const DesignCanvas = memo(function DesignCanvas({
             className="design-canvas-section-highlight"
             style={{
               left: sectionHighlight.x,
-              top: sectionHighlight.y - artifactScrollOffset,
+              top: stageSectionTop(sectionHighlight.y),
               width: sectionHighlight.w,
               height: sectionHighlight.h,
             }}
@@ -2102,7 +2226,7 @@ const DesignCanvas = memo(function DesignCanvas({
             className="design-canvas-section-highlight design-canvas-section-hover"
             style={{
               left: hoveredHighlight.x,
-              top: hoveredHighlight.y - artifactScrollOffset,
+              top: hoveredHighlight.y,
               width: hoveredHighlight.w,
               height: hoveredHighlight.h,
             }}
@@ -2125,7 +2249,7 @@ const DesignCanvas = memo(function DesignCanvas({
             className="design-canvas-section-overlay"
             style={{
               left: section.transform.x,
-              top: section.transform.y - artifactScrollOffset,
+              top: section.transform.y,
               width: section.transform.width,
               height: section.transform.height,
             }}
@@ -2153,7 +2277,7 @@ const DesignCanvas = memo(function DesignCanvas({
             <span
               key={mark.id}
               className="design-canvas-note-mark"
-              style={{ left: mark.x, top: mark.y - artifactScrollOffset }}
+              style={{ left: mark.x, top: stageSectionTop(mark.y) }}
               title={marked ? `Note on ${marked.name}` : "Section note"}
               aria-hidden="true"
             />
@@ -2797,33 +2921,45 @@ const DesignAssistant = memo(function DesignAssistant({
             onDrop={handleDrop}
           >
             {attachments.length > 0 ? (
-              <div className="design-attachment-row">
-                {attachments.map((attachment) => (
-                  <span className="design-attachment-pill" key={attachment.id}>
-                    <span className="design-attachment-name" title={attachment.name}>
-                      {attachment.name}
+              <>
+                <div className="design-attachment-row">
+                  {attachments.map((attachment) => (
+                    <span className="design-attachment-pill" key={attachment.id}>
+                      <span className="design-attachment-name" title={attachment.name}>
+                        {attachment.name}
+                      </span>
+                      <span className="design-attachment-kind">
+                        {attachment.kind === "svg"
+                          ? "SVG"
+                          : attachment.mimeType === "image/png"
+                            ? "PNG"
+                            : "JPEG"}
+                      </span>
+                      <span className="design-attachment-size">
+                        {formatAttachmentSize(attachment.bytes)}
+                      </span>
+                      <button
+                        className="design-attachment-remove"
+                        type="button"
+                        aria-label={`Remove ${attachment.name}`}
+                        onClick={() => onRemoveAttachment(attachment.id)}
+                      >
+                        ✕
+                      </button>
                     </span>
-                    <span className="design-attachment-kind">
-                      {attachment.kind === "svg"
-                        ? "SVG"
-                        : attachment.mimeType === "image/png"
-                          ? "PNG"
-                          : "JPEG"}
-                    </span>
-                    <span className="design-attachment-size">
-                      {formatAttachmentSize(attachment.bytes)}
-                    </span>
-                    <button
-                      className="design-attachment-remove"
-                      type="button"
-                      aria-label={`Remove ${attachment.name}`}
-                      onClick={() => onRemoveAttachment(attachment.id)}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-              </div>
+                  ))}
+                </div>
+                {/*
+                  Sits with the pills, not at the foot of the transcript, because the
+                  decision it bears on is the one being made here. It states what the
+                  pills do not: the file is held, and the next run will not carry it.
+                  Plain visible text — an aria-label would say nothing to the designer
+                  reading the composer, and a tooltip would say it only on hover.
+                */}
+                <p className="design-attachment-notice" role="status">
+                  {ATTACHMENT_DELIVERY_NOTICE}
+                </p>
+              </>
             ) : null}
             <div className="design-composer-input">
               <textarea
@@ -3257,6 +3393,17 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
    */
   const attachmentsRef = useRef<readonly DesignAttachment[]>([]);
   const attachQueueRef = useRef<Promise<void>>(Promise.resolve());
+  /**
+   * Bumped by every run that consumes the composer. An import reads a file
+   * asynchronously against the list as it stood when the read began; if a run
+   * empties that list while the read is in flight, the import's result describes
+   * a composer that no longer exists. Without this, the resolved import writes
+   * its files back after `startGeneration` cleared them, so a consumed file
+   * reappears in the composer under a run that did not carry it. The epoch is
+   * captured when the import starts and checked before it writes: an import
+   * started before the consumption cannot write after it.
+   */
+  const attachmentEpochRef = useRef(0);
 
   /**
    * The one place the two are written together. `setAttachments` alone would leave
@@ -4563,7 +4710,10 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       useAppStore.getState().setDesignGeneration(host, { assistantId, controller });
       setDraft("");
       // The run consumed the starting points; a second run must not silently
-      // resend files the user attached for the first one.
+      // resend files the user attached for the first one. The epoch change is
+      // what makes that clear final: an import already reading a file finishes
+      // into this emptied composer and is abandoned rather than re-adding it.
+      attachmentEpochRef.current += 1;
       commitAttachments([]);
       setAttachmentMessages([]);
       setPermissionNotice(null);
@@ -4749,7 +4899,14 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
   const handleAttachFiles = useCallback(
     (files: readonly File[], problem: string | null) => {
       attachQueueRef.current = attachQueueRef.current.then(async () => {
+        // Captured at the start of the read, checked before the write: a run
+        // that consumed the composer in between has moved the epoch, and this
+        // import's result — both the files and the feedback about them —
+        // belongs to the composer it was measured against, not the one the run
+        // left behind.
+        const epoch = attachmentEpochRef.current;
         const result = await importDesignAttachments(files, attachmentsRef.current);
+        if (attachmentEpochRef.current !== epoch) return;
         if (result.attachments.length > 0) {
           commitAttachments([...attachmentsRef.current, ...result.attachments]);
         }

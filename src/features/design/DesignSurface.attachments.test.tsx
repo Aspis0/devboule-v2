@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
-import { ATTACHMENT_INPUT_ACCEPT } from "./designAttachments";
+import { ATTACHMENT_DELIVERY_NOTICE, ATTACHMENT_INPUT_ACCEPT } from "./designAttachments";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationOptions } from "./designHost";
 
@@ -178,6 +178,10 @@ function feedback(container: HTMLDivElement): readonly string[] {
   return Array.from(container.querySelectorAll(".design-attachment-feedback p")).map(
     (element) => element.textContent ?? "",
   );
+}
+
+function notice(container: HTMLDivElement): HTMLElement | null {
+  return container.querySelector<HTMLElement>(".design-attachment-notice");
 }
 
 async function fillDraft(container: HTMLDivElement, prompt: string): Promise<void> {
@@ -392,6 +396,69 @@ describe("a file that is not attached", () => {
   });
 });
 
+describe("the composer says what it will not send", () => {
+  it("shows the delivery notice beside the pills as soon as one file is attached", async () => {
+    const { container } = await renderDesign(createHost());
+    expect(notice(container)).toBeNull();
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [imageFile("hero.png", PNG_BYTES, "image/png")],
+    });
+
+    const element = notice(container);
+    expect(element?.textContent).toBe(ATTACHMENT_DELIVERY_NOTICE);
+    // In the composer, directly after the row of pills: the sentence has to be
+    // read at the moment of attaching, not found after a wasted run.
+    expect(element?.parentElement?.classList.contains("design-composer")).toBe(true);
+    expect(element?.previousElementSibling?.classList.contains("design-attachment-row")).toBe(true);
+    // Visible text, not an accessible name on an invisible node and not a tooltip.
+    expect(element?.hasAttribute("title")).toBe(false);
+    expect(element?.getAttribute("aria-label")).toBeNull();
+    expect(element?.textContent?.length).toBeGreaterThan(0);
+  });
+
+  it("carries the three facts the pills leave out, as a note rather than an error", async () => {
+    // The sentence is the deliverable, so its meaning is asserted directly: it
+    // must say the file is held, that it is not sent, and why. A rewrite that
+    // drops one of the three turns the notice into decoration.
+    expect(ATTACHMENT_DELIVERY_NOTICE).toMatch(/kept here/);
+    expect(ATTACHMENT_DELIVERY_NOTICE).toMatch(/not sent/);
+    expect(ATTACHMENT_DELIVERY_NOTICE).toMatch(/text only/);
+
+    const { container } = await renderDesign(createHost());
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [
+        imageFile("hero.png", PNG_BYTES, "image/png"),
+        imageFile("detail.png", PNG_BYTES, "image/png"),
+      ],
+    });
+
+    const element = notice(container);
+    expect(element?.classList.contains("design-attachment-error")).toBe(false);
+    expect(element?.className).toBe("design-attachment-notice");
+    // role=status: a reader without sight learns it when it appears, not never.
+    expect(element?.getAttribute("role")).toBe("status");
+  });
+
+  it("takes the notice away with the last attachment", async () => {
+    const { container } = await renderDesign(createHost());
+
+    await dispatchTransferEvent(composer(container), "drop", {
+      files: [imageFile("hero.png", PNG_BYTES, "image/png")],
+    });
+    expect(notice(container)).not.toBeNull();
+
+    const remove = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove hero.png"]',
+    );
+    if (remove === null) throw new Error("remove control missing");
+    await act(async () => remove.click());
+
+    expect(pillNames(container)).toEqual([]);
+    expect(notice(container)).toBeNull();
+  });
+});
+
 describe("an attached file reaches the host and then leaves the composer", () => {
   it("carries the attachment on the generation options and clears the pill", async () => {
     // The mock declares the three parameters the host is called with, so the
@@ -427,6 +494,55 @@ describe("an attached file reaches the host and then leaves the composer", () =>
     expect(options?.attachments?.[1]).toMatchObject({ kind: "svg", name: "mark.svg" });
     // Cleared with the draft: a second run must not resend the first run's files.
     expect(pillNames(container)).toEqual([]);
+  });
+
+  it("does not let an import started before a run re-add the files it consumed", async () => {
+    let releaseRead: (() => void) | null = null;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const slowFile = new File([PNG_BYTES], "hero.png", { type: "image/png" });
+    // The read parks until the test lets it finish, which is what puts the
+    // import in flight across the start of the run.
+    Object.defineProperty(slowFile, "arrayBuffer", {
+      value: async () => {
+        await readGate;
+        return PNG_BYTES.buffer.slice(0);
+      },
+    });
+
+    const generateMock = vi.fn(
+      async (_prompt: string, _signal: AbortSignal, _options?: DesignGenerationOptions) => ({
+        ...GENERATION_BASE,
+      }),
+    );
+    const { container } = await renderDesign(createHost({ generate: generateMock }));
+
+    // 1. The import starts and parks on the file read.
+    await dispatchTransferEvent(composer(container), "drop", { files: [slowFile] });
+    expect(pillNames(container)).toEqual([]);
+
+    // 2. The run starts and consumes the composer (the empty list is what it
+    //    carries; the files dropped a moment ago were never attached).
+    await fillDraft(container, "Build the page.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => {
+      send.click();
+      await Promise.resolve();
+    });
+    expect(generateMock.mock.calls[0]?.[2]?.attachments).toEqual([]);
+
+    // 3. The read finishes after the run began: the import measured a composer
+    //    that no longer exists, so its result — the files and the feedback
+    //    about them — belongs to nothing and is dropped.
+    await act(async () => {
+      releaseRead?.();
+      await readGate;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(pillNames(container)).toEqual([]);
+    expect(feedback(container)).toEqual([]);
   });
 
   it("drops one attachment when its remove control is used", async () => {

@@ -11,6 +11,10 @@ function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
+function exportCsp(doc: string): string | null {
+  return doc.match(/<meta http-equiv="content-security-policy" content="([^"]*)"/i)?.[1] ?? null;
+}
+
 describe("artifact export", () => {
   it("wraps a body fragment in a standalone shell with the message title", () => {
     const doc = buildStandaloneArtifactHtml(
@@ -83,16 +87,41 @@ describe("artifact export", () => {
     expect(countOccurrences(doc.toLowerCase(), "<head")).toBe(1);
   });
 
-  it("never ships the app CSP meta, in either shape", () => {
+  it("strips a model-authored CSP meta and writes exactly one, its own", () => {
+    // The model does not dictate the file's policy: every CSP meta it wrote
+    // is removed, then the export's own `script-src 'none'` is added. One
+    // policy survives, and it is not the app's confinement policy.
     const wrapped = buildStandaloneArtifactHtml(`${APP_CSP_META}\n<main>Hi</main>`, "T");
-    expect(wrapped.toLowerCase()).not.toContain("content-security-policy");
+    expect(countOccurrences(wrapped.toLowerCase(), "content-security-policy")).toBe(1);
+    expect(exportCsp(wrapped)).toBe("script-src 'none'");
+    expect(wrapped).not.toContain("default-src");
 
     const upgraded = buildStandaloneArtifactHtml(
       `<!DOCTYPE html><html><head>${APP_CSP_META}</head><body><main>Hi</main></body></html>`,
       "T",
     );
-    expect(upgraded.toLowerCase()).not.toContain("content-security-policy");
+    expect(countOccurrences(upgraded.toLowerCase(), "content-security-policy")).toBe(1);
+    expect(exportCsp(upgraded)).toBe("script-src 'none'");
     expect(upgraded).toContain("<main>Hi</main>");
+  });
+
+  it("keeps an authored script and ships the meta that disables it", () => {
+    // Fidelity, not disarmament: the model's bytes stay in the document, and
+    // the document carries the same script ban the canvas enforces in-frame.
+    // `script-src 'none'` is the only directive, so nothing else is confined.
+    const doc = buildStandaloneArtifactHtml("<main>Hi</main><script>alert(1)</script>", "T");
+    expect(doc).toContain("<script>alert(1)</script>");
+    expect(exportCsp(doc)).toBe("script-src 'none'");
+    expect(doc).not.toContain("default-src");
+    expect(doc).not.toContain("font-src");
+    expect(doc).not.toContain("img-src");
+    expect(doc).not.toContain("style-src");
+  });
+
+  it("puts the script policy in a head it had to fabricate", () => {
+    const doc = buildStandaloneArtifactHtml("<main>Hi</main>", "T");
+    const head = doc.slice(0, doc.indexOf("</head>"));
+    expect(head).toContain("script-src 'none'");
   });
 
   it("leaves a body style block where the model wrote it", () => {

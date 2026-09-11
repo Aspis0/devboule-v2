@@ -1137,6 +1137,107 @@ describe("DesignSurface artifact window scrolling", () => {
     await act(async () => root.unmount());
   });
 
+  it("commits the offset once per frame for a burst of wheel events", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: SCROLL_HTML }));
+    const { container, root } = await generateScrollArtifact(generate);
+    const content = artifactContent(container);
+    const canvas = container.querySelector<HTMLDivElement>(".design-canvas");
+    if (canvas === null) throw new Error("Canvas missing");
+    const point = clientPointForWorld(
+      container,
+      SCROLL_ARTIFACT_ORIGIN.x + 640,
+      SCROLL_ARTIFACT_ORIGIN.y + 400,
+    );
+
+    // The frame the commit waits for is taken over so the whole burst can be
+    // held inside it: nothing writes state until the callback is run.
+    const frames: Array<() => void> = [];
+    const requestFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback) => {
+        frames.push(() => callback(0));
+        return frames.length;
+      });
+    // Every state commit that reaches this offset shows up as a style write on
+    // the element the offset translates, so the writes are the commits.
+    const styleWrites: number[] = [];
+    const observer = new MutationObserver(() => styleWrites.push(1));
+    observer.observe(content, { attributes: true, attributeFilter: ["style"] });
+    try {
+      // A trackpad's events do not arrive in one React tick, so each one gets
+      // its own turn here: that is the shape the per-event state write was
+      // paying for. The frame is held open across all of them.
+      for (let index = 0; index < 24; index += 1) {
+        await act(async () => {
+          canvas.dispatchEvent(wheelEvent({ ...point, deltaY: 40, shiftKey: true }));
+          await Promise.resolve();
+        });
+      }
+
+      // The events were accumulated, not written one by one as they used to
+      // be, and the whole burst asked for a single frame.
+      expect(styleWrites).toHaveLength(0);
+      expect(frames).toHaveLength(1);
+      expect(content.style.transform).toBe("translateY(0px)");
+
+      await act(async () => {
+        frames.shift()?.();
+      });
+      observer.disconnect();
+      // One write for the twenty-four events, and it carries the sum of the
+      // burst rather than the last step alone.
+      expect(styleWrites).toHaveLength(1);
+      expect(content.style.transform).toBe("translateY(-960px)");
+    } finally {
+      observer.disconnect();
+      requestFrame.mockRestore();
+    }
+    await act(async () => root.unmount());
+  });
+
+  it("selects the section drawn under the pointer once the window is scrolled", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: SCROLL_HTML }));
+    const { container, root } = await generateScrollArtifact(generate);
+
+    // Ground truth for "what is drawn there": the overlays carry the applied
+    // offset in their own styles, so the drawn rect is read, not recomputed.
+    const drawnAt = (x: number, y: number): HTMLButtonElement[] =>
+      Array.from(
+        container.querySelectorAll<HTMLButtonElement>(".design-canvas-section-overlay"),
+      ).filter((overlay) => {
+        const left = Number.parseFloat(overlay.style.left);
+        const top = Number.parseFloat(overlay.style.top);
+        const width = Number.parseFloat(overlay.style.width);
+        const height = Number.parseFloat(overlay.style.height);
+        return x >= left && x <= left + width && y >= top && y <= top + height;
+      });
+
+    const point = { x: SCROLL_ARTIFACT_ORIGIN.x + 100, y: SCROLL_ARTIFACT_ORIGIN.y + 100 };
+    const unscrolled = drawnAt(point.x, point.y);
+    expect(unscrolled).toHaveLength(1);
+    expect(unscrolled[0]?.getAttribute("aria-label")).toBe("Select Top");
+
+    await wheelOverArtifact(container, 1400);
+
+    // Scrolled past the first screen, the same world point is over the second
+    // section instead: the drawing moved, so the pick has to move with it.
+    const scrolled = drawnAt(point.x, point.y);
+    expect(scrolled).toHaveLength(1);
+    expect(scrolled[0]?.getAttribute("aria-label")).toBe("Select Far");
+
+    const canvas = container.querySelector<HTMLDivElement>(".design-canvas");
+    if (canvas === null) throw new Error("Canvas missing");
+    const client = clientPointForWorld(container, point.x, point.y);
+    await act(async () => {
+      canvas.dispatchEvent(new MouseEvent("click", { bubbles: true, ...client }));
+      await Promise.resolve();
+    });
+
+    expect(scrolled[0]?.getAttribute("aria-pressed")).toBe("true");
+    expect(selectedAnchor(container)).toBe("body[1]/section[2]");
+    await act(async () => root.unmount());
+  });
+
   it("leaves plain wheel as zoom over the artifact", async () => {
     const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: SCROLL_HTML }));
     const { container, root } = await generateScrollArtifact(generate);

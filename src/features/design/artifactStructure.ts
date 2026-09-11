@@ -624,6 +624,18 @@ export function sectionsToLayers(
  * canvas, inspector, and notes resolve from it until the artifact changes.
  * Bounded to the most recent artifacts; maps keep insertion order, so the
  * oldest entry is evicted first.
+ *
+ * What an entry costs, now that MAX_ARTIFACT_STRUCTURE_ENTRIES is 800 rather
+ * than the 150 this bound was first chosen against: the key is the whole
+ * artifact HTML (up to MAX_ARTIFACT_BYTES, 256 KiB) and the value is the
+ * measured index (a list-heavy reference page measures 572 entries at 93 KiB;
+ * 800 maximal entries would be 332 KiB). So eight entries retain around 1 MiB
+ * on real pages and up to ~4.7 MiB in the worst case either side can produce.
+ *
+ * Eight stays. The alternative to a cache hit is re-running the critic, which
+ * costs ~1.5 s of blocked measurement, and trading a megabyte on a desktop app
+ * for that stall is the worse side of the deal. The number to revisit is this
+ * one, not the entry cap: raise the cap again and re-read this paragraph.
  */
 const MAX_CACHED_ARTIFACT_STRUCTURES = 8;
 

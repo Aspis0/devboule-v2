@@ -254,6 +254,10 @@ export type DesignAttachment = DesignRasterAttachment | DesignSvgAttachment;
  * consumer exists yet — the daemon and the provider wire are a separate slice;
  * the types are declared here so the boundary is stated where the request is
  * built rather than inferred later from a prompt that happens to contain base64.
+ * The composer does not leave that gap for the user to discover by pressing
+ * Generate: the notice declared as `ATTACHMENT_DELIVERY_NOTICE` in
+ * designAttachments.ts is shown while this field has no reader, and it is
+ * deleted by whoever gives this field its first one.
  */
 export type DesignGenerationOptions = (
   | { skillMode: "auto" }

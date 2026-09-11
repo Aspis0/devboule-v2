@@ -29,11 +29,23 @@
  *
  * Two non-goals, both load-bearing for fidelity:
  *
- * - The app CSP meta is NEVER carried into the file. It exists to confine
- *   the canvas iframe inside the app (`default-src 'none'`, `font-src
- *   'none'`, …); on the user's disk that confinement has no attacker to
- *   stop and would only break rendering. Any CSP meta, wherever parsed, is
- *   removed.
+ * - The app's confinement CSP is NEVER carried into the file, but the file
+ *   is not left policy-less either. That policy (`default-src 'none'`,
+ *   `font-src 'none'`, …) exists to confine the canvas iframe inside the
+ *   app; on the user's disk there is no attacker for it to stop, and it
+ *   would only break rendering (fonts, images, styles all fall under
+ *   `default-src`). Every CSP meta the fragment carries, wherever parsed,
+ *   is removed.
+ *
+ *   What is written instead is a single minimal `script-src 'none'`. The
+ *   canvas delivers that same guarantee *inside* the frame
+ *   (`artifactSrcDoc`), so without it the shown page and the delivered page
+ *   would diverge: a `<script>` the model authored is inert in the preview
+ *   and live the moment the saved file is opened in a real browser
+ *   (measured on WebView2, 2026-09-05: the parent CSP is not inherited by a
+ *   `srcdoc` frame, which is why the canvas injects it). The export states
+ *   the one guarantee the surface itself keeps — scripts do not run — and
+ *   nothing beyond it.
  * - No font or base styling is imposed (see module history: the canvas
  *   applies nothing from the outside into the frame, so whatever type the
  *   user sees is already declared by the fragment itself).
@@ -62,12 +74,34 @@ function htmlTitlesUnder(root: ParentNode): Element[] {
   return [...root.querySelectorAll("title")].filter((el) => el.namespaceURI === XHTML_NS);
 }
 
+/**
+ * The one policy the exported file carries, and the only one: scripts do not
+ * run. Deliberately narrower than the canvas policy, which also names
+ * fonts, images, styles and frames — those directives have no purpose on the
+ * user's disk and would only break the page. No `default-src`, so a fragment
+ * that loads a font, an image or a style keeps behaving as it did on screen.
+ */
+const EXPORT_CSP = "script-src 'none'";
+
 function stripCspMetas(doc: Document): void {
   for (const meta of doc.querySelectorAll("meta[http-equiv]")) {
     if (meta.getAttribute("http-equiv")?.toLowerCase() === "content-security-policy") {
       meta.remove();
     }
   }
+}
+
+/**
+ * Add the export's own script policy to `head`, after every model-authored
+ * CSP meta has been stripped, so it is the only policy in the document. The
+ * head always exists after parsing (`DOMParser` fabricates one for a bare
+ * fragment), so a fragment that never wrote a head still receives it.
+ */
+function appendExportCspMeta(doc: Document, head: HTMLHeadElement): void {
+  const meta = doc.createElement("meta");
+  meta.setAttribute("http-equiv", "Content-Security-Policy");
+  meta.setAttribute("content", EXPORT_CSP);
+  head.appendChild(meta);
 }
 
 function headHasCharset(head: HTMLHeadElement): boolean {
@@ -128,6 +162,7 @@ export function buildStandaloneArtifactHtml(fragment: string, title?: string | n
     meta.setAttribute("content", "width=device-width, initial-scale=1");
     head.appendChild(meta);
   }
+  appendExportCspMeta(doc, head);
 
   const resolved = resolveExportTitle(doc, explicit);
   // Exactly one title, in the head. Strays (a folded second `<head>`, a

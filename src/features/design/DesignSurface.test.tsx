@@ -4148,7 +4148,21 @@ describe("artifact export copy", () => {
     expect(copied).toContain('<meta name="viewport"');
     expect(copied).toContain("<title>Generated result</title>");
     expect(copied).toContain('<main class="generated-card">Generated</main>');
-    expect(copied.toLowerCase()).not.toContain("content-security-policy");
+    // The canvas renders the artifact with `script-src 'none'` delivered inside
+    // the frame, so a script written by the model is already inert on screen.
+    // The exported document declares the same guarantee and nothing else — the
+    // two must not behave differently once the file is on the user's disk. One
+    // meta only: a second policy would be an untested addition, and `default-src`
+    // is deliberately absent so fonts, images and styles keep loading.
+    const policyMetas = Array.from(
+      new DOMParser().parseFromString(copied, "text/html").querySelectorAll("meta[http-equiv]"),
+    ).filter(
+      (meta) => meta.getAttribute("http-equiv")?.toLowerCase() === "content-security-policy",
+    );
+    expect(policyMetas).toHaveLength(1);
+    const policy = policyMetas[0]?.getAttribute("content") ?? "";
+    expect(policy).toBe("script-src 'none'");
+    expect(policy).not.toContain("default-src");
     expect(container.textContent).toContain("Copied.");
     await act(async () => root.unmount());
   });
