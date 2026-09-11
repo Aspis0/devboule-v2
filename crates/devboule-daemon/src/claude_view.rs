@@ -12,6 +12,8 @@ use devboule_protocol::{
 };
 use serde_json::Value;
 
+use crate::tool_paths::relativize_tool_path;
+
 /// Stateful mapper: stream-json emits `stream_event` deltas and then a
 /// consolidated `assistant` message. Track streamed length per content block
 /// so the consolidated text is forwarded only as the unstreamed remainder.
@@ -499,7 +501,9 @@ fn tool_title(name: &str, input: &Value, cwd: Option<&Path>) -> String {
 
 fn tool_locations(name: &str, input: &Value, cwd: Option<&Path>) -> Option<Vec<ToolLocation>> {
     let path = match name {
-        "Read" | "Edit" | "Write" | "NotebookEdit" => input.get("file_path"),
+        "Read" | "Edit" | "Write" | "NotebookEdit" => {
+            input.get("file_path").or_else(|| input.get("path"))
+        }
         "Glob" | "Grep" => input.get("path"),
         _ => None,
     }
@@ -645,69 +649,6 @@ fn usage_from_claude(usage: &Value) -> Option<TurnUsage> {
         total_tokens: None,
         thought_tokens,
     })
-}
-
-/// Relativize `path` against `cwd`. Paths that are not under cwd are
-/// returned unchanged (absolute, as received).
-pub(crate) fn relativize_tool_path(path: &str, cwd: Option<&Path>) -> String {
-    let Some(cwd) = cwd else {
-        return path.to_string();
-    };
-    let given = Path::new(path);
-    if !given.is_absolute() {
-        return path.to_string();
-    }
-    if let Ok(stripped) = given.strip_prefix(cwd) {
-        if stripped.as_os_str().is_empty() {
-            return path.to_string();
-        }
-        return stripped.to_string_lossy().into_owned();
-    }
-    #[cfg(windows)]
-    {
-        if let Some(relative) = relativize_windows_case_insensitive(given, cwd) {
-            return relative;
-        }
-    }
-    path.to_string()
-}
-
-#[cfg(windows)]
-fn relativize_windows_case_insensitive(path: &Path, cwd: &Path) -> Option<String> {
-    use std::path::Component;
-    let path_components: Vec<Component<'_>> = path.components().collect();
-    let cwd_components: Vec<Component<'_>> = cwd.components().collect();
-    if path_components.len() <= cwd_components.len() {
-        return None;
-    }
-    for (left, right) in path_components.iter().zip(cwd_components.iter()) {
-        if !windows_components_eq_ignore_case(left, right) {
-            return None;
-        }
-    }
-    let remainder: PathBuf = path_components[cwd_components.len()..].iter().collect();
-    if remainder.as_os_str().is_empty() {
-        return None;
-    }
-    Some(remainder.to_string_lossy().into_owned())
-}
-
-#[cfg(windows)]
-fn windows_components_eq_ignore_case(
-    left: &std::path::Component<'_>,
-    right: &std::path::Component<'_>,
-) -> bool {
-    use std::path::Component;
-    match (*left, *right) {
-        (Component::Prefix(a), Component::Prefix(b)) => {
-            a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
-        }
-        (Component::RootDir, Component::RootDir)
-        | (Component::CurDir, Component::CurDir)
-        | (Component::ParentDir, Component::ParentDir) => true,
-        (Component::Normal(a), Component::Normal(b)) => a.eq_ignore_ascii_case(b),
-        _ => false,
-    }
 }
 
 pub(crate) fn mode_state(current_mode_id: &str) -> SessionModeStateView {
@@ -1430,6 +1371,41 @@ mod tests {
                     PathBuf::from("src").join("lib.rs").to_string_lossy()
                 );
                 assert_eq!(title, &locations[0].path);
+            }
+            other => panic!("expected Read tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_tool_use_falls_back_to_path_for_locations() {
+        // The title (`tool_title`) already falls back from `file_path` to
+        // `path`; the locations must read the same keys.
+        let mut mapper = view();
+        let events = mapper.ingest(&json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg_read_path",
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_read_path",
+                    "name": "Read",
+                    "input": {"path": "src/main.rs"}
+                }]
+            }
+        }));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall {
+                kind,
+                locations,
+                title,
+                ..
+            }] => {
+                assert_eq!(kind.as_deref(), Some("read"));
+                assert_eq!(title, "src/main.rs");
+                let locations = locations.as_ref().expect("locations");
+                assert_eq!(locations.len(), 1);
+                assert_eq!(locations[0].path, "src/main.rs");
             }
             other => panic!("expected Read tool call, got {other:?}"),
         }

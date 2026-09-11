@@ -1503,7 +1503,9 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const rows = container.querySelectorAll("details.workspace-chat-tool");
+    const rows = container.querySelectorAll(
+      "details.workspace-chat-tool:not(.workspace-chat-tool-group)",
+    );
     expect(rows).toHaveLength(2);
     expect(rows[0].classList.contains("is-failed")).toBe(true);
     expect(rows[0].querySelector(".workspace-chat-tool-failed")?.textContent).toBe("×");
@@ -1537,7 +1539,9 @@ describe("AgentChatSurface", () => {
       });
     });
 
-    const rows = container.querySelectorAll("details.workspace-chat-tool");
+    const rows = container.querySelectorAll(
+      "details.workspace-chat-tool:not(.workspace-chat-tool-group)",
+    );
     expect(rows).toHaveLength(2);
     for (const row of rows) {
       expect(row.classList.contains("is-cancelled")).toBe(true);
@@ -1545,5 +1549,140 @@ describe("AgentChatSurface", () => {
       expect(row.classList.contains("is-running")).toBe(false);
       expect(row.querySelector(".workspace-chat-tool-failed")).toBeNull();
     }
+  });
+
+  it("renders three consecutive tools as one collapsed group with the overview summary", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="tool-group-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-cmd",
+        title: "git status",
+        status: "completed",
+        kind: "execute",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-read",
+        title: "src/a.ts",
+        status: "completed",
+        kind: "read",
+        locations: [{ path: "src/a.ts" }],
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-edit",
+        title: "src/b.ts",
+        status: "completed",
+        kind: "edit",
+        locations: [{ path: "src/b.ts" }],
+      });
+    });
+
+    const groups = container.querySelectorAll("details.workspace-chat-tool-group");
+    expect(groups).toHaveLength(1);
+    const group = groups[0];
+    expect(group.hasAttribute("open")).toBe(false);
+    expect(group.querySelector(".workspace-chat-tool-group-summary-text")?.textContent).toBe(
+      "Edited 1 file, ran 1 command, and read 1 file",
+    );
+    expect(group.querySelectorAll("details.workspace-chat-tool")).toHaveLength(3);
+  });
+
+  it("keeps parent and subagent tools in separate runs with the subagent frame", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="tool-depth-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-parent",
+        title: "git status",
+        status: "completed",
+        kind: "execute",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-child-1",
+        title: "src/a.ts",
+        status: "completed",
+        kind: "read",
+        parentToolUseId: "toolu-child",
+        spawnDepth: 1,
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-child-2",
+        title: "src/b.ts",
+        status: "completed",
+        kind: "read",
+        parentToolUseId: "toolu-child",
+        spawnDepth: 1,
+      });
+    });
+
+    const groups = container.querySelectorAll("details.workspace-chat-tool-group");
+    expect(groups).toHaveLength(1);
+    const group = groups[0];
+    // The wrapper carries the same frame the surface gives subagent items.
+    expect(group.classList.contains("workspace-chat-entry")).toBe(true);
+    expect(group.classList.contains("workspace-chat-subagent")).toBe(true);
+    expect((group as HTMLElement).style.marginInlineStart).toBe("16px");
+    expect(group.querySelectorAll("details.workspace-chat-tool")).toHaveLength(2);
+    const plain = container.querySelectorAll(
+      ".workspace-conversation > details.workspace-chat-tool:not(.workspace-chat-tool-group)",
+    );
+    expect(plain).toHaveLength(1);
+  });
+
+  it("marks groups running or failed from their items", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<AgentChatSurface sessionId="tool-state-agent" title="Agent" />);
+    });
+    await act(async () => undefined);
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-done",
+        title: "git status",
+        status: "completed",
+        kind: "execute",
+      });
+      channelHarness.active?.({
+        type: "agent_tool_call",
+        toolCallId: "t-running",
+        title: "cargo test",
+        status: "running",
+        kind: "execute",
+      });
+    });
+
+    const running = container.querySelector("details.workspace-chat-tool-group");
+    expect(running?.classList.contains("is-running")).toBe(true);
+    expect(running?.classList.contains("is-failed")).toBe(false);
+    expect(running?.querySelector(".workspace-chat-tool-failed")).toBeNull();
+
+    await act(async () => {
+      channelHarness.active?.({
+        type: "agent_tool_update",
+        toolCallId: "t-running",
+        status: "failed",
+        text: "boom",
+      });
+    });
+
+    expect(running?.classList.contains("is-running")).toBe(false);
+    expect(running?.classList.contains("is-failed")).toBe(true);
+    expect(running?.querySelector(".workspace-chat-tool-failed")?.textContent).toBe("×");
   });
 });

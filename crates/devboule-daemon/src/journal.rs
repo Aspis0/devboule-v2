@@ -81,7 +81,6 @@ const RPC_WAIT: Duration = Duration::from_secs(10);
 /// session-create path. Warm lookups use SessionRegistry's in-memory cache;
 /// a busy writer must never make a new process wait ten seconds for a cwd.
 const WORKSPACE_LOOKUP_WAIT: Duration = Duration::from_millis(500);
-const JOIN_BUDGET: Duration = Duration::from_millis(500);
 /// Keep room for the degradation, reaped, and ended control records even
 /// while output is arriving faster than SQLite can commit it.
 const CONTROL_RESERVE: usize = 3;
@@ -941,16 +940,63 @@ impl Journal {
         self.rpc(|reply| JournalCmd::FileLen { reply })
     }
 
+    /// Stop the writer thread and wait until it is gone. The join is the
+    /// barrier: on return the writer thread — and with it the SQLite
+    /// connection — no longer exists, so the database directory can be
+    /// removed immediately.
     pub fn shutdown(&self) {
-        let _ = self.send_cmd(JournalCmd::Shutdown, Duration::from_millis(200));
-        let handle = self.join.lock().ok().and_then(|mut guard| guard.take());
-        if let Some(handle) = handle {
-            let deadline = Instant::now() + JOIN_BUDGET;
-            while !handle.is_finished() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
+        // `Shutdown` bypasses the data-queue cap (see `send_shutdown`): a
+        // send error means the writer is already gone, which already
+        // satisfies the barrier, so there is nothing to report — the join
+        // below reaps it either way.
+        let _ = self.send_shutdown();
+        let handle = match self.join.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(error) => {
+                eprintln!("journal shutdown could not take the writer handle: {error}");
+                return;
             }
-            if handle.is_finished() {
-                let _ = handle.join();
+        };
+        // Already shut down: the barrier was met by the earlier call.
+        let Some(handle) = handle else {
+            return;
+        };
+        // Unconditional: a budgeted poll that gives up without joining
+        // leaves the thread alive with the connection open (os error 32
+        // on Windows). Slow drains stay visible instead: report every
+        // two seconds while waiting, then join no matter what. A writer
+        // panic is reported, never swallowed.
+        let start = Instant::now();
+        let mut next_report_at_secs = 2u64;
+        while !handle.is_finished() {
+            std::thread::sleep(Duration::from_millis(50));
+            if start.elapsed().as_secs() >= next_report_at_secs {
+                eprintln!("journal shutdown still waiting for the writer to drain the backlog");
+                next_report_at_secs += 2;
+            }
+        }
+        if let Err(error) = handle.join() {
+            eprintln!("journal writer thread panicked during shutdown: {error:?}");
+        }
+    }
+
+    /// Enqueue `Shutdown` past the data-queue cap. Data producers are
+    /// bounded by `reserve_slot` so a flooded queue degrades instead of
+    /// growing; a control command must not share that fate. `shutdown`
+    /// used to reserve a data slot with a 200 ms budget and discard the
+    /// failure, so a saturated queue meant the command never entered, the
+    /// writer never exited, and `shutdown` returned with the SQLite
+    /// connection still open. The slot counter is still incremented (the
+    /// loop decrements every received command, saturating), only the cap
+    /// check is skipped. Blocking `send` fails solely on disconnect, i.e.
+    /// the writer is already gone.
+    fn send_shutdown(&self) -> Result<(), JournalError> {
+        self.queued.fetch_add(1, Ordering::AcqRel);
+        match self.tx.send(JournalCmd::Shutdown) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                self.release_slot();
+                Err(JournalError::Stopped)
             }
         }
     }
@@ -2260,6 +2306,39 @@ mod tests {
             !reused,
             "reused legacy journal test directory: {selected_display}"
         );
+    }
+
+    #[test]
+    fn shutdown_joins_the_writer_even_with_a_saturated_queue() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        // Saturate the data-queue cap without sending anything. The old
+        // `shutdown` reserved a data slot for `Shutdown` with a 200 ms
+        // budget and silently dropped the failure, so the writer (and its
+        // SQLite connection) stayed alive past `shutdown`.
+        for _ in 0..JOURNAL_QUEUE_CAP {
+            journal.reserve_slot();
+        }
+        assert!(
+            !journal.reserve_slot(),
+            "the queue cap is saturated for the shutdown below"
+        );
+        journal.shutdown();
+        for _ in 0..JOURNAL_QUEUE_CAP {
+            journal.release_slot();
+        }
+        // Barrier, cross-platform proof: the writer thread is gone, so a
+        // blocking append is refused instead of accepted.
+        assert!(
+            matches!(
+                journal.append_blocking(output_record("s.shutdown", 1, 1, b"late")),
+                Err(JournalError::Stopped)
+            ),
+            "append after shutdown must fail: the writer is gone"
+        );
+        // Barrier, Windows proof: with the connection closed the database
+        // directory removes immediately, with no retry.
+        std::fs::remove_dir_all(&dir).expect("writer is joined: immediate removal");
     }
 
     #[test]

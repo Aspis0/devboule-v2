@@ -247,15 +247,15 @@ fn unreadable_reason(probe: &FolderIndexProbe) -> Option<String> {
 /// reports an index — just the wrong one. Naming them at the call site makes
 /// that unexpressible.
 #[derive(Default)]
-struct IndexCounts {
-    indexed_files: usize,
-    total_files: usize,
-    pending_files: usize,
-    stale_files: usize,
-    indexed_chunks: usize,
+pub(super) struct IndexCounts {
+    pub(super) indexed_files: usize,
+    pub(super) total_files: usize,
+    pub(super) pending_files: usize,
+    pub(super) stale_files: usize,
+    pub(super) indexed_chunks: usize,
 }
 
-fn status_from_parts(
+pub(super) fn status_from_parts(
     probe: &FolderIndexProbe,
     state: OracleFolderIndexState,
     counts: IndexCounts,

@@ -8,14 +8,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use oracle_core::{
-    index_file_chunks, CancelFlag, IndexerConfig, LanceStore, OracleDataPaths, SqliteStore,
+    index_file_chunks, strip_verbatim_prefix, CancelFlag, IndexerConfig, LanceStore, Manifest,
+    ManifestFileEntry, OracleDataPaths, RootEntry, SqliteStore,
 };
 
 use super::support::{assert_actionable, SlowTestEmbedder, TestEnvironment, UnreadableDirectory};
 use crate::oracle::commands::oracle_workspace_get_inner;
 use crate::oracle::folder::{
     ensure_folder_index_is_usable, oracle_ask_folder_inner, oracle_folder_status_inner,
-    probe_folder, resolve_folder_root,
+    probe_folder, resolve_folder_root, status_from_parts, IndexCounts,
 };
 use crate::oracle::runtime::OracleRuntime;
 use crate::oracle::OracleFolderIndexState;
@@ -53,6 +54,108 @@ fn index_folder(root: &Path) {
 
 fn canonical(path: &Path) -> std::path::PathBuf {
     fs::canonicalize(path).expect("canonicalize test folder")
+}
+
+#[test]
+fn status_from_parts_maps_each_count_to_its_own_field() {
+    // Five distinct tallies: transposing `total_files` and `pending_files`
+    // (the branch-3 caller passes equal values, so it cannot catch a swap)
+    // must fail this test.
+    let _env = TestEnvironment::new("candle");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let folder = temp.path().join("counts");
+    fs::create_dir(&folder).expect("folder");
+    let root = canonical(&folder);
+    let probe = probe_folder(&root);
+
+    let status = status_from_parts(
+        &probe,
+        OracleFolderIndexState::Partial,
+        IndexCounts {
+            indexed_files: 1,
+            total_files: 2,
+            pending_files: 3,
+            stale_files: 4,
+            indexed_chunks: 5,
+        },
+        None,
+    );
+
+    assert_eq!(status.state, OracleFolderIndexState::Partial);
+    assert_eq!(status.indexed_files, 1);
+    assert_eq!(status.total_files, 2);
+    assert_eq!(status.pending_files, 3);
+    assert_eq!(status.stale_files, 4);
+    assert_eq!(status.indexed_chunks, 5);
+    assert_eq!(status.message, None);
+
+    fs::remove_dir_all(&folder).expect("cleanup");
+}
+
+#[test]
+fn manifest_without_metadata_store_reports_partial_with_manifest_counts() {
+    // Branch 3 (`oracle_folder_status_inner`): manifest present, metadata
+    // store absent, files recorded. No store is opened, so the data
+    // directory holds only the manifest file.
+    let _env = TestEnvironment::new("candle");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let folder = temp.path().join("manifest-only");
+    fs::create_dir(&folder).expect("folder");
+    let root = canonical(&folder);
+    let data = OracleDataPaths::from_root(&root);
+    fs::create_dir_all(&data.root).expect("data dir");
+
+    const RECORDED: usize = 3;
+    let mut files = std::collections::HashMap::new();
+    for index in 0..RECORDED {
+        files.insert(
+            format!("file-{index}.txt"),
+            ManifestFileEntry {
+                size: 10,
+                mtime_ns: 20,
+                updated_at: "2026-09-11T00:00:00Z".to_string(),
+                chunks: None,
+                chunk_profile: None,
+            },
+        );
+    }
+    let manifest = Manifest {
+        version: 1,
+        roots: std::collections::HashMap::from([(
+            strip_verbatim_prefix(&root.to_string_lossy()),
+            RootEntry { files },
+        )]),
+        ..Default::default()
+    };
+    fs::write(
+        &data.manifest,
+        serde_json::to_string(&manifest).expect("manifest json"),
+    )
+    .expect("manifest file");
+    assert!(
+        !data.metadata.exists(),
+        "branch 3 needs the metadata store to be absent"
+    );
+
+    let status = tauri::async_runtime::block_on(oracle_folder_status_inner(root.to_str().unwrap()))
+        .expect("a manifest-only folder is an answer, not an error");
+
+    assert_eq!(status.state, OracleFolderIndexState::Partial);
+    assert_eq!(status.indexed_files, 0);
+    assert_eq!(status.total_files, RECORDED);
+    assert_eq!(status.pending_files, RECORDED);
+    assert_eq!(status.indexed_chunks, 0);
+    let message = status.message.expect("branch 3 explains itself");
+    assert!(
+        message.contains(data.manifest.display().to_string().as_str()),
+        "the message names the manifest: {message}"
+    );
+    assert!(
+        message.contains(data.metadata.display().to_string().as_str()),
+        "the message names the metadata store: {message}"
+    );
+
+    fs::remove_dir_all(&folder).expect("cleanup");
 }
 
 #[test]
