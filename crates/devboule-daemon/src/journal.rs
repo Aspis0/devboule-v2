@@ -664,12 +664,12 @@ enum JournalCmd {
     PeerRevoke {
         device_id: String,
         at: i64,
-        reply: mpsc::Sender<Result<bool, JournalError>>,
+        reply: mpsc::Sender<Result<PeerMutation, JournalError>>,
     },
     PeerSetCaps {
         device_id: String,
         caps: Vec<String>,
-        reply: mpsc::Sender<Result<bool, JournalError>>,
+        reply: mpsc::Sender<Result<PeerMutation, JournalError>>,
     },
     AuditAppend {
         record: AuditRecord,
@@ -1000,7 +1000,9 @@ impl Journal {
 
     /// Mark a peer revoked. `Ok(false)` means there was nothing to revoke
     /// (unknown device, or already revoked).
-    pub fn peer_revoke(&self, device_id: &str, at: i64) -> Result<bool, JournalError> {
+    /// Mark a peer revoked. The outcome distinguishes a row that was revoked
+    /// from one that was already revoked and from one that does not exist (C9).
+    pub fn peer_revoke(&self, device_id: &str, at: i64) -> Result<PeerMutation, JournalError> {
         self.rpc(|reply| JournalCmd::PeerRevoke {
             device_id: device_id.to_string(),
             at,
@@ -1008,7 +1010,12 @@ impl Journal {
         })
     }
 
-    pub fn peer_set_caps(&self, device_id: &str, caps: Vec<String>) -> Result<bool, JournalError> {
+    /// Replace a peer's capability set. A revoked row is refused (C8).
+    pub fn peer_set_caps(
+        &self,
+        device_id: &str,
+        caps: Vec<String>,
+    ) -> Result<PeerMutation, JournalError> {
         self.rpc(|reply| JournalCmd::PeerSetCaps {
             device_id: device_id.to_string(),
             caps,
@@ -1938,26 +1945,72 @@ fn upsert_peer(conn: &Connection, record: &PeerRecord) -> Result<PeerRecord, Jou
     })
 }
 
-fn revoke_peer(conn: &Connection, device_id: &str, at: i64) -> Result<bool, JournalError> {
+/// What one peer mutation did.
+///
+/// `revoke_peer` and `set_peer_caps` both used to answer a bare `bool`, which
+/// made "there is no such row" and "the row is already revoked" the same answer
+/// — and the dispatch site rendered both as "No such peer", which is a lie in
+/// the second case (C9). The caller can now say which happened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerMutation {
+    /// The row was changed.
+    Updated,
+    /// The row exists and is revoked, so it was left alone.
+    Revoked,
+    /// No row with that device id.
+    NotFound,
+}
+
+/// Whether a row exists, so a mutation that changed nothing can say which kind
+/// of nothing it was.
+fn peer_row_exists(conn: &Connection, device_id: &str) -> Result<bool, JournalError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM peers WHERE device_id = ?1",
+        [device_id],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+fn revoke_peer(conn: &Connection, device_id: &str, at: i64) -> Result<PeerMutation, JournalError> {
     let updated = conn.execute(
         "UPDATE peers SET revoked_at = ?2 WHERE device_id = ?1 AND revoked_at IS NULL",
         params![device_id, at],
     )?;
-    Ok(updated > 0)
+    if updated > 0 {
+        return Ok(PeerMutation::Updated);
+    }
+    Ok(if peer_row_exists(conn, device_id)? {
+        PeerMutation::Revoked
+    } else {
+        PeerMutation::NotFound
+    })
 }
 
 fn set_peer_caps(
     conn: &Connection,
     device_id: &str,
     caps: &[String],
-) -> Result<bool, JournalError> {
+) -> Result<PeerMutation, JournalError> {
     let caps = serde_json::to_string(caps)
         .map_err(|error| JournalError::InvalidRequest(error.to_string()))?;
+    // The revoked filter is the point (C8): a revoked row is a device this
+    // daemon no longer trusts, and rewriting its capabilities would leave the
+    // stored state at odds with the panel's "Revoked" story — and would silently
+    // revive the old capability set if the row is ever re-paired without a
+    // fresh `caps` value.
     let updated = conn.execute(
-        "UPDATE peers SET caps = ?2 WHERE device_id = ?1",
+        "UPDATE peers SET caps = ?2 WHERE device_id = ?1 AND revoked_at IS NULL",
         params![device_id, caps],
     )?;
-    Ok(updated > 0)
+    if updated > 0 {
+        return Ok(PeerMutation::Updated);
+    }
+    Ok(if peer_row_exists(conn, device_id)? {
+        PeerMutation::Revoked
+    } else {
+        PeerMutation::NotFound
+    })
 }
 
 fn append_audit(conn: &Connection, record: &AuditRecord, at: i64) -> Result<(), JournalError> {
@@ -3628,23 +3681,46 @@ mod tests {
         assert!(loaded.owns_address(&"100.74.116.126".parse().expect("ip")));
         assert!(!loaded.owns_address(&"100.74.116.127".parse().expect("ip")));
 
-        assert!(journal
-            .peer_set_caps("dev-1", vec!["view".into(), "send".into()])
-            .expect("caps"));
+        assert_eq!(
+            journal
+                .peer_set_caps("dev-1", vec!["view".into(), "send".into()])
+                .expect("caps"),
+            PeerMutation::Updated
+        );
         assert_eq!(
             journal.peer_get("dev-1").expect("get").expect("row").caps,
             vec!["view".to_string(), "send".to_string()]
         );
-        assert!(!journal.peer_set_caps("missing", vec![]).expect("caps"));
+        assert_eq!(
+            journal.peer_set_caps("missing", vec![]).expect("caps"),
+            PeerMutation::NotFound
+        );
 
-        assert!(journal.peer_revoke("dev-1", 42).expect("revoke"));
-        assert!(!journal.peer_revoke("dev-1", 43).expect("revoke twice"));
-        assert!(!journal.peer_revoke("missing", 43).expect("revoke unknown"));
+        assert_eq!(
+            journal.peer_revoke("dev-1", 42).expect("revoke"),
+            PeerMutation::Updated
+        );
+        assert_eq!(
+            journal.peer_revoke("dev-1", 43).expect("revoke twice"),
+            PeerMutation::Revoked,
+            "a second revoke says the row was already revoked, not that it is missing"
+        );
+        assert_eq!(
+            journal.peer_revoke("missing", 43).expect("revoke unknown"),
+            PeerMutation::NotFound
+        );
         assert!(journal
             .peer_get("dev-1")
             .expect("get")
             .expect("row")
             .is_revoked());
+        // And a revoked row's capabilities cannot be rewritten (C8).
+        assert_eq!(
+            journal
+                .peer_set_caps("dev-1", vec!["view".into()])
+                .expect("caps on a revoked row"),
+            PeerMutation::Revoked
+        );
 
         // A re-pair after revoke replaces the row, including cleared
         // revocation, and does not duplicate it.

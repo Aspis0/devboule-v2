@@ -598,6 +598,25 @@ impl PeerTransport for TestTransport {
     }
 }
 
+/// Whether `address` is a tailnet address, or loopback in this crate's own unit
+/// tests.
+///
+/// The single place the test-only loopback allowance lives. Two callers depend on
+/// it: the pairing-target check in `pairing.rs` (the in-process responder listens
+/// on `127.0.0.1`) and the pairing-candidate check in the accept path. Nothing in
+/// a production build admits loopback: `Tailnet` binds only tailnet addresses and
+/// the address a pairing initiator dials comes from `SelfInfo.addresses`.
+pub fn is_tailnet_or_test_loopback(address: &IpAddr) -> bool {
+    if is_tailnet_address(address) {
+        return true;
+    }
+    #[cfg(test)]
+    if address.is_loopback() {
+        return true;
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // The transport trait
 // ---------------------------------------------------------------------------
@@ -836,8 +855,24 @@ pub fn is_tailnet_address(address: &IpAddr) -> bool {
 // that writes it.
 
 pub fn peer_port() -> u16 {
-    std::env::var(PEER_PORT_ENV)
-        .ok()
+    peer_port_from(std::env::var(PEER_PORT_ENV).ok().as_deref())
+}
+
+/// The parsing rule for `DEVBOULE_PEER_PORT`, split out so it can be tested
+/// **without mutating the process environment**.
+///
+/// The test used to `set_var`/`remove_var` a process-global, which is a race
+/// against every other test that reads it: `peer_port()` is on the listener's
+/// path, so any future test that starts a listener would have seen a port it did
+/// not ask for. A pure function removes the race instead of serialising around
+/// it.
+///
+/// A missing value, a value that is not a number, and `0` all mean "use the
+/// default": zero is not a port a listener can bind meaningfully, and silently
+/// binding an arbitrary ephemeral port would make the address the panel shows
+/// unreproducible.
+fn peer_port_from(value: Option<&str>) -> u16 {
+    value
         .and_then(|value| value.trim().parse::<u16>().ok())
         .filter(|port| *port != 0)
         .unwrap_or(DEFAULT_PEER_PORT)
@@ -1113,7 +1148,9 @@ pub fn accept_peers(
             }
         };
 
-        // Step 1.
+        // Step 1. Still on the accept thread: these caps are what keeps a
+        // connect flood from consuming threads at all, so they must run before
+        // anything is spawned.
         let guard = match caps.admit_source(peer_addr.ip(), Instant::now()) {
             Ok(guard) => guard,
             Err(reason) => {
@@ -1123,99 +1160,35 @@ pub fn accept_peers(
             }
         };
 
-        let peers = match PeerTable::load(&state) {
-            Ok(peers) => peers,
-            Err(_) => {
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                drop(guard);
-                continue;
-            }
-        };
-
-        // Step 2: nothing is read from a source that is neither a paired
-        // address nor a pairing candidate.
-        if transport.pre_noise_filter(&peer_addr, &peers).is_ok() {
-            let guard_handshake = match caps.admit_handshake(HandshakeKind::Noise) {
-                Ok(slot) => slot,
-                Err(_) => {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    continue;
-                }
-            };
-            let transport_for_task = Arc::clone(&transport);
-            let state_for_task = Arc::clone(&state);
-            if let Ok(handle) = std::thread::Builder::new()
-                .name("daemon-peer-noise".into())
-                .spawn(move || {
-                    let _guard = guard;
-                    let _handshake = guard_handshake;
-                    if let Err(error) = serve_noise_peer(
-                        transport_for_task.as_ref(),
-                        stream,
-                        peer_addr,
-                        &peers,
-                        &state_for_task,
-                    ) {
-                        // No identity in the line: it is attacker-adjacent
-                        // input on this path.
-                        eprintln!("daemon peer connection ended: {error}");
-                    }
-                })
-            {
-                threads.push(handle);
-            }
-            continue;
+        // Everything from here on runs on the connection's own thread: the
+        // peer-table read, the pre-Noise filter, the `DBP1` peek, and the
+        // decision about which handshake budget to spend. None of it can block
+        // the accept loop, which is the point (M1): a candidate that connects
+        // and never writes used to park this thread inside `peek_magic` for the
+        // whole peek budget, delaying every other accept behind it.
+        let transport_for_task = Arc::clone(&transport);
+        let state_for_task = Arc::clone(&state);
+        let pairing_for_task = Arc::clone(&pairing);
+        let caps_for_task = Arc::clone(&caps);
+        if let Ok(handle) = std::thread::Builder::new()
+            .name("daemon-peer-connection".into())
+            .spawn(move || {
+                let _guard = guard;
+                dispatch_peer_connection(
+                    transport_for_task.as_ref(),
+                    &caps_for_task,
+                    pairing_for_task.as_ref(),
+                    stream,
+                    peer_addr,
+                    &state_for_task,
+                );
+            })
+        {
+            threads.push(handle);
         }
-
-        if pairing.is_active() {
-            // Step 3: only a pairing candidate is ever peeked.
-            let transport_for_task = Arc::clone(&transport);
-            let state_for_task = Arc::clone(&state);
-            let pairing_for_task = Arc::clone(&pairing);
-            let stream = stream;
-            let is_candidate = matches!(
-                peek_magic(&stream, Instant::now() + PAIRING_PEEK_TIMEOUT),
-                Ok(magic) if magic == PAIRING_MAGIC
-            );
-            if !is_candidate {
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                drop(guard);
-                continue;
-            }
-            // The pairing budget is its own: an unpaired source must never be
-            // able to spend a paired peer's Noise slot, and vice versa. It is
-            // taken here, after the peek proved this really is a candidate, so
-            // a random byte cannot occupy a slot either.
-            let guard_handshake = match caps.admit_handshake(HandshakeKind::Pairing) {
-                Ok(slot) => slot,
-                Err(_) => {
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    drop(guard);
-                    continue;
-                }
-            };
-            if let Ok(handle) = std::thread::Builder::new()
-                .name("daemon-peer-pairing".into())
-                .spawn(move || {
-                    let _guard = guard;
-                    pairing_for_task.handle(
-                        transport_for_task.as_ref(),
-                        stream,
-                        peer_addr,
-                        &state_for_task,
-                        guard_handshake,
-                    );
-                })
-            {
-                threads.push(handle);
-            }
-            continue;
-        }
-
-        // Neither paired nor a candidate: close at once, no read, no wait, and
-        // no audit row. An unpaired source must not be able to write one.
-        let _ = stream.shutdown(std::net::Shutdown::Both);
-        drop(guard);
+        // A failed spawn drops the guard with the closure, so the per-source
+        // slot is released either way.
+        continue;
     }
     // Bounded teardown. A parked pairing can wait up to `CONFIRM_WINDOW` for a
     // local answer, so joining every connection thread without a bound would
@@ -1231,6 +1204,96 @@ pub fn accept_peers(
             let _ = handle.join();
         }
     }
+}
+
+/// Steps 2–6 for one accepted connection, on its own thread.
+///
+/// The order is the design's (§7 condition 1, §8 R4) and is deliberately
+/// unchanged from when it ran inline; only the thread it runs on has moved:
+///
+/// 2. the peer table decides whether this source is a peer or a pairing
+///    candidate, **before any read**;
+/// 3. only a candidate is peeked for `DBP1`;
+/// 4. the matching in-flight handshake budget is spent;
+/// 5. an authenticated peer is served, or the pairing exchange is run.
+///
+/// Anything that is neither a peer nor a candidate is closed here, with no
+/// read, no wait and no audit row.
+fn dispatch_peer_connection(
+    transport: &dyn PeerTransport,
+    caps: &Arc<AcceptCaps>,
+    pairing: &dyn PairingHook,
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+    state: &Arc<ServerState>,
+) {
+    // Step 2. The table is cached in the daemon (M1), so this is a mutex read
+    // rather than a journal round trip per accepted socket.
+    let peers = match state.peer_table() {
+        Ok(peers) => peers,
+        Err(_) => {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+    };
+
+    if transport.pre_noise_filter(&peer_addr, &peers).is_ok() {
+        let guard_handshake = match caps.admit_handshake(HandshakeKind::Noise) {
+            Ok(slot) => slot,
+            Err(_) => {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+        };
+        if let Err(error) = serve_noise_peer(transport, stream, peer_addr, &peers, state) {
+            // No identity in the line: it is attacker-adjacent input on this
+            // path.
+            eprintln!("daemon peer connection ended: {error}");
+        }
+        drop(guard_handshake);
+        return;
+    }
+
+    if pairing.is_active() {
+        // Step 2b: a pairing candidate must be a tailnet source too (C11).
+        //
+        // Without this, an off-tailnet source was *peeked* while a code was
+        // active — up to four bytes read and, if it said `DBP1`, a full
+        // SPAKE2+Noise exchange — which is exactly what design §7 condition 1
+        // rules out ("refused before any byte is read"). The gate is here, at
+        // the head of the branch, so the peek below can never be reached from an
+        // address that the design says must be refused unread.
+        if !is_tailnet_or_test_loopback(&peer_addr.ip()) {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        // Step 3: only a pairing candidate is ever peeked.
+        let is_candidate = matches!(
+            peek_magic(&stream, Instant::now() + PAIRING_PEEK_TIMEOUT),
+            Ok(magic) if magic == PAIRING_MAGIC
+        );
+        if !is_candidate {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        // The pairing budget is its own: an unpaired source must never be able
+        // to spend a paired peer's Noise slot, and vice versa. It is taken here,
+        // after the peek proved this really is a candidate, so a random byte
+        // cannot occupy a slot either.
+        let guard_handshake = match caps.admit_handshake(HandshakeKind::Pairing) {
+            Ok(slot) => slot,
+            Err(_) => {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+        };
+        pairing.handle(transport, stream, peer_addr, state, guard_handshake);
+        return;
+    }
+
+    // Neither paired nor a candidate: close at once, no read, no wait, and no
+    // audit row. An unpaired source must not be able to write one.
+    let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
 /// `peek` the four magic bytes without consuming them, under `deadline`.
@@ -1902,18 +1965,15 @@ mod tests {
 
     #[test]
     fn the_peer_port_is_overridable_and_never_zero() {
-        // Set inside one test only; the value is read back immediately.
-        let previous = std::env::var_os(PEER_PORT_ENV);
-        std::env::set_var(PEER_PORT_ENV, "47832");
-        assert_eq!(peer_port(), 47832);
-        std::env::set_var(PEER_PORT_ENV, "0");
-        assert_eq!(peer_port(), DEFAULT_PEER_PORT);
-        std::env::set_var(PEER_PORT_ENV, "not a port");
-        assert_eq!(peer_port(), DEFAULT_PEER_PORT);
-        match previous {
-            Some(value) => std::env::set_var(PEER_PORT_ENV, value),
-            None => std::env::remove_var(PEER_PORT_ENV),
-        }
+        // No process environment is touched: the rule is a pure function, so
+        // this test cannot race another test that reads the variable.
+        assert_eq!(peer_port_from(Some("47832")), 47832);
+        assert_eq!(peer_port_from(Some(" 47832 ")), 47832);
+        assert_eq!(peer_port_from(Some("0")), DEFAULT_PEER_PORT);
+        assert_eq!(peer_port_from(Some("not a port")), DEFAULT_PEER_PORT);
+        assert_eq!(peer_port_from(Some("65536")), DEFAULT_PEER_PORT);
+        assert_eq!(peer_port_from(Some("")), DEFAULT_PEER_PORT);
+        assert_eq!(peer_port_from(None), DEFAULT_PEER_PORT);
     }
 
     #[test]
@@ -2194,11 +2254,321 @@ mod tests {
         while !accept.is_finished() {
             assert!(
                 Instant::now() < deadline,
-                "the accept loop did not stop within {STOP_BUDGET:?} of the flag being raised                 (last tick took {:?})",
+                "the accept loop did not stop within {STOP_BUDGET:?} of the flag being raised\
+                 (last tick took {:?})",
                 raised_at.elapsed()
             );
             std::thread::sleep(Duration::from_millis(5));
         }
         let _ = accept.join();
+    }
+
+    /// A transport that records every `pre_noise_filter` call and refuses, so
+    /// the pairing branch is reachable while the accept path still reads the
+    /// peer table for each connection.
+    #[derive(Default)]
+    struct RefusingTransport {
+        calls: Mutex<Vec<SocketAddr>>,
+    }
+
+    impl RefusingTransport {
+        fn calls(&self) -> Vec<SocketAddr> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone()
+        }
+    }
+
+    impl PeerTransport for RefusingTransport {
+        fn listen(
+            &self,
+            _paths: &crate::paths::RuntimePaths,
+            stop: Arc<AtomicBool>,
+        ) -> io::Result<PeerListener> {
+            Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("ip")], 0, stop)
+        }
+        fn pre_noise_filter(
+            &self,
+            peer: &SocketAddr,
+            _peers: &PeerTable,
+        ) -> Result<(), RejectReason> {
+            self.calls
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(*peer);
+            Err(RejectReason::UnknownSource)
+        }
+        fn binding(&self, _peer: &SocketAddr) -> Result<TransportBinding, BindingError> {
+            Ok(TransportBinding::tailnet("n", "n", "n"))
+        }
+    }
+
+    /// Active, so the pairing branch is reachable, and records each candidate
+    /// the accept path handed to it.
+    struct RecordingPairing {
+        handled: Mutex<Vec<SocketAddr>>,
+    }
+
+    impl PairingHook for RecordingPairing {
+        fn is_active(&self) -> bool {
+            true
+        }
+        fn housekeeping(&self, _now: Instant) {}
+        fn handle(
+            &self,
+            _transport: &dyn PeerTransport,
+            stream: TcpStream,
+            peer_addr: SocketAddr,
+            _state: &Arc<ServerState>,
+            _in_flight: HandshakeGuard,
+        ) {
+            self.handled
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(peer_addr);
+            std::thread::sleep(Duration::from_millis(20));
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// Start an accept loop on loopback with the given transport and hook, and
+    /// return the address plus what is needed to stop it.
+    fn spawn_accept_loop(
+        transport: Arc<dyn PeerTransport>,
+        pairing: Arc<dyn PairingHook>,
+        tag: &str,
+    ) -> (
+        SocketAddr,
+        Arc<crate::server::ServerState>,
+        Arc<AtomicBool>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let state = crate::server::ServerState::new(tag.to_string());
+        let stop = Arc::new(AtomicBool::new(false));
+        let listener =
+            Tailnet::bind_peer_listener(&["127.0.0.1".parse().expect("ip")], 0, Arc::clone(&stop))
+                .expect("bind");
+        let address = listener.addrs()[0];
+        let accept_state = Arc::clone(&state);
+        let accept = std::thread::spawn(move || {
+            accept_peers(listener, transport, accept_state, pairing);
+        });
+        (address, state, stop, accept)
+    }
+
+    fn stop_accept_loop(state: &Arc<crate::server::ServerState>, stop: &Arc<AtomicBool>) {
+        stop.store(true, Ordering::SeqCst);
+        state.stop_flag().store(true, Ordering::SeqCst);
+    }
+
+    /// M1: the peek must not run on the accept thread. A connector that
+    /// completes the TCP handshake and then sends nothing parks inside
+    /// `peek_magic` for the whole peek budget; if that happened inline, a
+    /// second connector would not even be *accepted* until it expired.
+    ///
+    /// The second client writes `DBP1`, so its own peek returns immediately and
+    /// its pairing handler is reached at once. The assertion is the delay: the
+    /// second client must be handled inside `PAIRING_PEEK_TIMEOUT`, which it
+    /// cannot be if the accept thread is parked on the first one.
+    #[test]
+    fn a_silent_connector_does_not_delay_the_next_one() {
+        let transport = Arc::new(RefusingTransport::default());
+        let pairing = Arc::new(RecordingPairing {
+            handled: Mutex::new(Vec::new()),
+        });
+        let (address, state, stop, accept) =
+            spawn_accept_loop(transport.clone(), pairing.clone(), "peer-slowloris");
+
+        // First client: connects and says nothing, forever. It parks inside its
+        // own peek for the whole `PAIRING_PEEK_TIMEOUT`.
+        let silent = connect_bounded(address);
+        std::thread::sleep(Duration::from_millis(150));
+
+        // Second client: a real pairing candidate.
+        let candidate = connect_bounded(address);
+        {
+            use std::io::Write;
+            let mut candidate_writer = &candidate;
+            candidate_writer
+                .write_all(&PAIRING_MAGIC)
+                .expect("write the pairing magic");
+        }
+
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(1);
+        loop {
+            if !pairing
+                .handled
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a second connector was not handled within 1 s while a silent one was parked; \
+                 the accept thread is blocked on the peek ({:?} elapsed)",
+                started.elapsed()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            started.elapsed() < PAIRING_PEEK_TIMEOUT,
+            "the second connector was handled only after the silent one's peek budget expired: \
+             {:?}",
+            started.elapsed()
+        );
+        // The handler saw exactly the candidate, never the silent client.
+        let handled = pairing
+            .handled
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        assert_eq!(handled.len(), 1, "{handled:?}");
+        assert_eq!(
+            handled[0].port(),
+            candidate.local_addr().expect("candidate addr").port(),
+            "the handled connection is the candidate"
+        );
+
+        stop_accept_loop(&state, &stop);
+        drop(silent);
+        drop(candidate);
+        join_bounded(accept, "the peer accept loop");
+    }
+
+    /// M1: the peer table is a cached read, not a journal round trip per
+    /// accepted socket. Every connection below goes through the same path a
+    /// real one does — the accept loop calls the accessor once per connection,
+    /// before the filter — so N filter calls with one load proves the cache.
+    #[test]
+    fn many_connects_share_one_peer_table_load() {
+        // Bounded by the per-source cap, not by a number chosen here: all these
+        // connections come from one address, and `admit_source` closes the ones
+        // past `MAX_REMOTE_CONNECTIONS_PER_SOURCE` before the filter is ever
+        // reached. The cap is the reason the count is what it is, so the
+        // constant is the count — if the cap moves, this exercises the new
+        // value instead of silently testing four connections.
+        const CONNECTIONS: usize = MAX_REMOTE_CONNECTIONS_PER_SOURCE;
+        let transport = Arc::new(RefusingTransport::default());
+        // Inert: with no active code every connection is closed at once, so
+        // nothing but the table read and the filter is exercised.
+        let pairing: Arc<dyn PairingHook> = Arc::new(PairingDisabled);
+        let (address, state, stop, accept) =
+            spawn_accept_loop(transport.clone(), pairing, "peer-table-loads");
+
+        // All the connections are opened first, so the accept loop drains a
+        // queue instead of waiting a tick between each one.
+        let mut clients = Vec::new();
+        for _ in 0..CONNECTIONS {
+            clients.push(connect_bounded(address));
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while transport.calls().len() < CONNECTIONS {
+            assert!(
+                Instant::now() < deadline,
+                "only {} of {CONNECTIONS} connections reached the filter",
+                transport.calls().len()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            state.peer_table_loads(),
+            1,
+            "{CONNECTIONS} connections must load the peer table once"
+        );
+
+        stop_accept_loop(&state, &stop);
+        drop(clients);
+        join_bounded(accept, "the peer accept loop");
+    }
+
+    /// C11: while a code is active, an off-tailnet source must be closed
+    /// **without being peeked**.
+    ///
+    /// The design's §7 condition 1 says a non-tailnet source is refused before
+    /// any byte is read. That held for non-pairing traffic but not for the
+    /// pairing branch, which peeked first and asked about the address only after
+    /// the exchange — so an off-tailnet host could have had four bytes read from
+    /// it, and a `DBP1` from it would have started a full SPAKE2+Noise exchange.
+    ///
+    /// Read as the compiler sees it: `is_tailnet_or_test_loopback` takes
+    /// `&IpAddr` and returns a `bool`, and its `#[cfg(test)]` branch admits
+    /// loopback. A test therefore **cannot** use `127.0.0.1` for the off-tailnet
+    /// case — that address passes in a test build by design, because the crate's
+    /// own pairing tests run a responder there. So `dispatch_peer_connection` is
+    /// called directly with a fabricated off-tailnet `SocketAddr` over a real
+    /// loopback socket, which is the only socket a unit test can make.
+    ///
+    /// "Without a peek" is timed, and the timing is a clean discriminator rather
+    /// than a guess: the client never writes, so `peek_magic` would block for the
+    /// whole `PAIRING_PEEK_TIMEOUT` before giving up. Closing in less than that
+    /// can only mean the peek was never entered.
+    #[test]
+    fn an_off_tailnet_source_with_a_code_active_is_closed_without_a_peek() {
+        let transport = Arc::new(RefusingTransport::default());
+        // Active, so the pairing branch — and therefore the gate — is reached.
+        let pairing = Arc::new(RecordingPairing {
+            handled: Mutex::new(Vec::new()),
+        });
+        let state = crate::server::ServerState::new("peer-off-tailnet".to_string());
+        let caps = Arc::new(AcceptCaps::default());
+
+        let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let client = connect_bounded(address);
+        let (stream, _) = accept_bounded(&listener);
+
+        // A public address: neither a tailnet range nor loopback, so the gate
+        // refuses it in a test build too.
+        let off_tailnet: SocketAddr = "8.8.8.8:47831".parse().expect("addr");
+        assert!(
+            !is_tailnet_or_test_loopback(&off_tailnet.ip()),
+            "the fixture must be off-tailnet for this test to mean anything"
+        );
+        assert!(
+            pairing.is_active(),
+            "a code must be active to reach the branch"
+        );
+
+        let started = Instant::now();
+        dispatch_peer_connection(
+            transport.as_ref(),
+            &caps,
+            pairing.as_ref(),
+            stream,
+            off_tailnet,
+            &state,
+        );
+        let elapsed = started.elapsed();
+
+        // Nothing was read: the peek would have burned the whole budget here.
+        assert!(
+            elapsed < PAIRING_PEEK_TIMEOUT,
+            "an off-tailnet source must be closed before the peek budget is spent, took {elapsed:?}"
+        );
+        // And the pairing exchange was never entered.
+        assert!(
+            pairing
+                .handled
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty(),
+            "an off-tailnet source must never reach the pairing exchange"
+        );
+        // The source sees the close, and never a byte back.
+        let mut sink = [0u8; 1];
+        let read = {
+            use std::io::Read;
+            (&client).read(&mut sink)
+        };
+        assert_eq!(
+            read.expect("a closed socket reads as EOF"),
+            0,
+            "the daemon must close an off-tailnet source, not answer it"
+        );
     }
 }

@@ -40,12 +40,13 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use zeroize::Zeroize;
 
+use crate::device_identity::validate_display_name;
 use crate::journal::PeerRecord;
 use crate::peer_policy::TransportBinding;
 use crate::peer_transport::{
-    initiator_handshake, read_framed, responder_handshake, split_session, write_framed,
-    HandshakeGuard, NoiseReader, NoiseWriter, PairingHook, PeerTransport, PAIRING_MAGIC,
-    PAIR_NOISE_PATTERN, PAIR_PROLOGUE,
+    initiator_handshake, is_tailnet_or_test_loopback, read_framed, responder_handshake,
+    split_session, write_framed, HandshakeGuard, NoiseReader, NoiseWriter, PairingHook,
+    PeerTransport, PAIRING_MAGIC, PAIR_NOISE_PATTERN, PAIR_PROLOGUE,
 };
 use crate::server::ServerState;
 
@@ -219,6 +220,21 @@ pub fn is_well_formed_code(code: &str) -> bool {
     code.len() == CODE_LEN && code.bytes().all(|byte| CODE_ALPHABET.contains(&byte))
 }
 
+/// Whether this daemon may open a pairing connection to `address` (M2).
+///
+/// A tailnet address, always. Loopback is additionally accepted in the crate's
+/// own **unit tests**, which drive a responder on `127.0.0.1`; nothing in a
+/// production build may pair over loopback, because the displayed address comes
+/// from this device's own `self_node()` and is a tailnet address. The
+/// integration test `tests/peer_link.rs` needs no exemption: it pairs over the
+/// real tailnet address, which is the whole point of it.
+///
+/// Shares [`is_tailnet_or_test_loopback`] with the accept path's candidate check
+/// so the two cannot disagree about what counts as a pairing address.
+fn is_permitted_pairing_target(address: &SocketAddr) -> bool {
+    is_tailnet_or_test_loopback(&address.ip())
+}
+
 fn unix_millis() -> i64 {
     i64::try_from(
         SystemTime::now()
@@ -330,6 +346,14 @@ struct PairPayload {
     public_key: String,
 }
 
+/// The name in a pairing payload is attacker-chosen and ends up on the card a
+/// person reads before accepting, so it is checked at the boundary (M3): both
+/// sides call this immediately after reading the payload, before it can be
+/// displayed, parked or stored.
+fn validate_peer_payload(payload: &PairPayload) -> Result<(), PairingError> {
+    validate_display_name(&payload.display_name).map_err(PairingError::Failed)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct PairAnswer {
@@ -400,6 +424,13 @@ struct ActiveCode {
 }
 
 struct PendingEntry {
+    /// Identifies *this* park, not the device. A handler whose entry was
+    /// replaced must remove only its own row on the way out: keying the cleanup
+    /// by `device_id` (the first version) made the older handler delete the
+    /// newer entry for the same device, so the second park vanished and the
+    /// confirmation had nothing to answer. Found by
+    /// `a_second_park_for_the_same_device_replaces_the_first`.
+    token: u64,
     device_id: String,
     display_name: String,
     role: PeerRole,
@@ -426,6 +457,22 @@ impl State {
         self.active
             .as_ref()
             .filter(|active| active.expires_at > now)
+    }
+
+    /// Spend the displayed code (design §8 R8: a code is single use).
+    ///
+    /// Called on the success path, the moment a peer row is written or a
+    /// pending entry is parked. Without this the code stays valid for its whole
+    /// five minutes and pairs every device that presents it, which is the whole
+    /// point of it being single use: one observed code must buy exactly one
+    /// pairing.
+    ///
+    /// Only the code is dropped here. The per-source lockout counters are left
+    /// alone, so a source that guessed wrong on this code is still refused
+    /// while `start` has not been called again; `start` resets them with the new
+    /// code.
+    fn consume(&mut self) {
+        self.active = None;
     }
 
     fn expire(&mut self, now: Instant) {
@@ -480,6 +527,14 @@ impl State {
 /// The pairing service: one per daemon.
 pub struct PairingService {
     state: Mutex<State>,
+    /// Test-only: how many pairings have ever been parked, so a test can tell
+    /// that the *second* park happened before it asserts what the pending list
+    /// looks like. Without it a test can only poll the list, which is already
+    /// non-empty from the first park and therefore proves nothing.
+    #[cfg(test)]
+    parks: std::sync::atomic::AtomicU64,
+    /// Allocates `PendingEntry::token`. Process-unique and never reused.
+    next_pending_token: std::sync::atomic::AtomicU64,
 }
 
 impl Default for PairingService {
@@ -492,7 +547,16 @@ impl PairingService {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(State::default()),
+            #[cfg(test)]
+            parks: std::sync::atomic::AtomicU64::new(0),
+            next_pending_token: std::sync::atomic::AtomicU64::new(1),
         }
+    }
+
+    /// Test-only: total pairings parked by this service.
+    #[cfg(test)]
+    pub fn park_count(&self) -> u64 {
+        self.parks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Display a new code, replacing any previous one: there is exactly one
@@ -594,6 +658,17 @@ impl PairingService {
         let remote_addr: SocketAddr = address
             .parse()
             .map_err(|_| PairingError::Failed(format!("{address} is not an ip:port")))?;
+        // The address is renderer-supplied, so the daemon enforces where it may
+        // connect rather than trusting the panel to have done it (M2). Without
+        // this, a compromised renderer gets the daemon to make a TCP connection
+        // anywhere it likes and to send the pairing magic down it.
+        if !is_permitted_pairing_target(&remote_addr) {
+            return Err(PairingError::Failed(
+                "the other device's address must be a tailnet address (100.64.0.0/10 or \
+                 fd7a:115c:a1e0::/48)"
+                    .to_string(),
+            ));
+        }
         if !is_well_formed_code(code.as_str()) {
             return Err(PairingError::Failed(
                 "the code is not in the expected format".to_string(),
@@ -634,10 +709,12 @@ impl PairingService {
             &initiator_identity,
         );
         write_framed(&stream, &our_message, setup_deadline)?;
-        let spake_key = spake_state
+        let mut spake_key = spake_state
             .finish(&their_message[..their_len])
             .map_err(|error| PairingError::Failed(error.to_string()))?;
         let mut psk = derive_psk(&spake_key, role, responder_role);
+        // The PAKE output is key material too (L1).
+        spake_key.zeroize();
 
         // 3-4: Noise XXpsk3 over the PAKE-derived key. A wrong code derives a
         // different PSK and the handshake fails here.
@@ -679,6 +756,9 @@ impl PairingService {
                     .to_string(),
             ));
         }
+        // Validated before it can be shown on this device's card, parked, or
+        // stored (M3).
+        validate_peer_payload(&peer_payload)?;
 
         // The far side's user answers a `Client` pairing, which can take a
         // minute. Waiting for that here would hold the caller's RPC open for
@@ -857,11 +937,14 @@ impl PairingService {
         write_framed(stream, &our_message, deadline)?;
         let mut their_message = [0u8; 256];
         let their_len = read_framed(stream, &mut their_message, deadline)?;
-        let spake_key = match spake_state.finish(&their_message[..their_len]) {
+        let mut spake_key = match spake_state.finish(&their_message[..their_len]) {
             Ok(key) => key,
             Err(error) => return Err(self.note_wrong(peer_addr.ip(), server, &error.to_string())),
         };
         let mut psk = derive_psk(&spake_key, initiator_role, responder_role);
+        // The PAKE output is key material too: the PSK was wiped already, and
+        // this is the other half of the same secret (L1).
+        spake_key.zeroize();
 
         // 3–4: Noise XXpsk3 over the PAKE-derived key. A wrong code produces a
         // different PSK, and the handshake fails here.
@@ -896,6 +979,11 @@ impl PairingService {
                 server,
                 "payload key does not match the authenticated static key",
             ));
+        }
+        // The name is attacker-chosen and is rendered on the confirmation card,
+        // so it is checked before it can be stored or parked (M3).
+        if let Err(PairingError::Failed(reason)) = validate_peer_payload(&payload) {
+            return Err(self.note_wrong(peer_addr.ip(), server, &reason));
         }
 
         // Our own payload, so the initiator can record who it paired with.
@@ -934,27 +1022,68 @@ impl PairingService {
                 address,
             )?;
             upsert_peer(server, record)?;
+            // The row is written, so the code has done its one job (H1).
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .consume();
             true
         } else {
             let (decision, wait) = mpsc::channel::<bool>();
+            // Allocated before the lock: the token identifies this park, and the
+            // cleanup below uses it to remove only its own entry.
+            let token = self
+                .next_pending_token
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let parked = {
                 let mut guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
                 guard.expire(Instant::now());
                 if guard.pending.len() >= MAX_PENDING_PAIRINGS {
                     false
                 } else {
-                    guard.pending.push(PendingEntry {
-                        device_id: payload.device_id.clone(),
-                        display_name: payload.display_name.clone(),
-                        role: payload.role,
-                        key_fingerprint: key_fingerprint.clone(),
-                        address: address.clone(),
-                        public_key: remote_static.clone(),
-                        binding: binding.clone(),
-                        expires_at: Instant::now() + CONFIRM_WINDOW,
-                        decision,
-                    });
-                    true
+                    // One entry per device (C7). A device cannot be waiting
+                    // twice for the same pairing: a reconnect from the same
+                    // device — the realistic case, since its first socket may
+                    // have died — replaces the older entry instead of parking
+                    // beside it. The dropped entry releases its own parked
+                    // thread, which then answers `pairing busy` to the older
+                    // connection rather than ever being confirmed by a decision
+                    // meant for the newer one.
+                    //
+                    // This runs before the capacity check so a device
+                    // re-parking does not need a second slot.
+                    guard
+                        .pending
+                        .retain(|entry| entry.device_id != payload.device_id);
+                    if guard.pending.len() >= MAX_PENDING_PAIRINGS {
+                        // Nothing was parked, so the code is not spent: the
+                        // person can try again.
+                        false
+                    } else {
+                        guard.pending.push(PendingEntry {
+                            token,
+                            device_id: payload.device_id.clone(),
+                            display_name: payload.display_name.clone(),
+                            role: payload.role,
+                            key_fingerprint: key_fingerprint.clone(),
+                            address: address.clone(),
+                            public_key: remote_static.clone(),
+                            binding: binding.clone(),
+                            expires_at: Instant::now() + CONFIRM_WINDOW,
+                            decision,
+                        });
+                        #[cfg(test)]
+                        self.parks
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // A parked pairing has spent the code: the exchange
+                        // succeeded with this code, and a second candidate must
+                        // not be able to pair from it (H1). The "pairing busy"
+                        // refusal above deliberately does **not** consume it —
+                        // nothing was paired and no entry was written, so the
+                        // person may retry.
+                        guard.consume();
+                        true
+                    }
                 }
             };
             if !parked {
@@ -973,9 +1102,9 @@ impl PairingService {
                 // confirm finds nothing and is refused there.
                 let accepted = wait.recv_timeout(CONFIRM_WINDOW).unwrap_or(false);
                 let mut guard = self.state.lock().unwrap_or_else(|error| error.into_inner());
-                guard
-                    .pending
-                    .retain(|entry| entry.device_id != payload.device_id);
+                // **This** entry, not every entry for this device: a replaced
+                // handler must not delete the entry that replaced it.
+                guard.pending.retain(|entry| entry.token != token);
                 accepted
             }
         };
@@ -1074,16 +1203,38 @@ fn local_peer_record(
             "the peer's static key is not 32 bytes".to_string(),
         ));
     }
-    // Re-pairing an existing device needs a revoke first (design §8 R8).
+    // Checked again here, at the one function that turns a name into a stored
+    // row: the two payload call sites already validated it, and this is what
+    // makes "every stored `display_name` passed validation" an invariant of the
+    // storage path rather than of its callers (M3).
+    if let Err(reason) = validate_display_name(display_name) {
+        return Err(PairingError::Failed(reason));
+    }
+    // Re-pairing an existing device needs a revoke first (design §8 R8) —
+    // **unless the pinned key is the same one**. That exception is what makes a
+    // retry after a half-finished pairing converge instead of wedging (C6):
+    // the row write and the answer are two operations, and whichever side fails
+    // second leaves one device holding a row while the other does not. Without
+    // this, every retry dies here and two perfectly good devices are stuck until
+    // somebody revokes by hand.
+    //
+    // It does not weaken the rule it excepts: the pinned public key is the
+    // credential, so re-pairing with the *same* key is the same pairing being
+    // finished, while a **different** key for a known device id is exactly the
+    // substitution §8 R8 exists to refuse.
     if let Some(existing) = server
         .peer_get(device_id)
         .map_err(PairingError::Failed)?
         .filter(|row| !row.is_revoked())
     {
-        return Err(PairingError::Failed(format!(
-            "{} is already paired; revoke it first",
-            existing.display_name
-        )));
+        if existing.public_key != public_key {
+            return Err(PairingError::Failed(format!(
+                "{} is already paired with a different key; revoke it first",
+                existing.display_name
+            )));
+        }
+        // Same key: finish the pairing. The upsert below refreshes the display
+        // name, address and binding, which is what a retry should do.
     }
     Ok(PeerRecord {
         device_id: device_id.to_string(),
@@ -1155,6 +1306,7 @@ pub fn validate_caps(role: PeerRole, caps: &[String]) -> Result<Vec<String>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device_identity::MAX_DISPLAY_NAME_CHARS;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1914,6 +2066,7 @@ mod tests {
             .expect("lock")
             .pending
             .push(PendingEntry {
+                token: 1,
                 device_id: "6f1e5b7a-0000-4000-8000-00000000c0d2".to_string(),
                 display_name: "Phone".to_string(),
                 role: PeerRole::Client,
@@ -1963,6 +2116,7 @@ mod tests {
             .expect("lock")
             .pending
             .push(PendingEntry {
+                token: 1,
                 device_id: "6f1e5b7a-0000-4000-8000-00000000c0d3".to_string(),
                 display_name: "Phone".to_string(),
                 role: PeerRole::Client,
@@ -2017,6 +2171,7 @@ mod tests {
                 let (decision, wait) = mpsc::channel::<bool>();
                 sends.push(wait);
                 state.pending.push(PendingEntry {
+                    token: u64::try_from(index).unwrap_or(0),
                     device_id: format!("6f1e5b7a-0000-4000-8000-00000000000{index}"),
                     display_name: "Phone".to_string(),
                     role: PeerRole::Client,
@@ -2037,5 +2192,436 @@ mod tests {
         assert_eq!(service.pending_snapshot().len(), MAX_PENDING_PAIRINGS);
         assert_eq!(RejectKind::PairingBusy.reason(), "pairing busy");
         drop(sends);
+    }
+    /// H1: a code is single use (design §8 R8). The first candidate pairs, and
+    /// the same code is refused for a second one — one observed code must not
+    /// pair every device that presents it during the five minutes it is shown.
+    ///
+    /// The ordering is explicit because the initiator's `complete` returns as
+    /// soon as it has both payloads, before the responder has parked: the test
+    /// waits for the park before asserting that the code is spent, so the second
+    /// candidate is testing consumption and not a scheduling race.
+    #[test]
+    fn a_code_pairs_only_once() {
+        let (dir_a, server_a) = server("once-a");
+        let (dir_c, server_c) = server("once-c");
+        let (dir_b, server_b) = server("once-b");
+        let service_a = PairingService::new();
+        let service_c = PairingService::new();
+        let service_b = Arc::new(PairingService::new());
+        let (code, _expires_at) = service_b.start(PeerRole::Client).expect("a code");
+        let transport = Arc::new(crate::peer_transport::TestTransport::default());
+        assert!(server_a.set_peer_transport(transport.clone()).is_ok());
+        assert!(server_c.set_peer_transport(transport.clone()).is_ok());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr").to_string();
+
+        // The responder serves the two candidates in turn, on its own threads,
+        // exactly as the accept loop would.
+        let responder_service = Arc::clone(&service_b);
+        let responder_transport = Arc::clone(&transport);
+        let responder_server = Arc::clone(&server_b);
+        let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+        let responder = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, peer_addr) = accept_bounded(&listener);
+                let slot = caps
+                    .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+                    .expect("a pairing slot");
+                responder_service.handle(
+                    responder_transport.as_ref(),
+                    stream,
+                    peer_addr,
+                    &responder_server,
+                    slot,
+                );
+            }
+        });
+
+        let initiator_id = server_a
+            .device_identity()
+            .as_ref()
+            .expect("A has an identity")
+            .device_id
+            .clone();
+
+        // The first candidate pairs: this device reports it as pending.
+        let first = service_a
+            .complete(&server_a, &address, &code, PeerRole::Client)
+            .expect("the first candidate pairs");
+        assert!(
+            matches!(first, PairingOutcome::Pending(_)),
+            "a Client pairing is reported pending, got {first:?}"
+        );
+
+        // Wait for the responder to park it, which is the moment it spends the
+        // code.
+        let deadline = Instant::now() + bound::THREAD;
+        loop {
+            if service_b.pending_snapshot().len() == 1 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the responder never parked the first pairing"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !service_b.is_active(),
+            "the code must be spent as soon as the first pairing is parked"
+        );
+        {
+            let state = service_b
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            assert!(
+                state.active.is_none(),
+                "the code itself must be gone from the state, not merely expired"
+            );
+            // With no active code, a later candidate takes the `NoActiveCode`
+            // arm — the same refusal a daemon that never showed a code gives.
+            assert!(state.active_if_live(Instant::now()).is_none());
+        }
+
+        // The person at B accepts, which releases the parked responder.
+        let accepted = service_b
+            .confirm(&server_b, &initiator_id, true)
+            .expect("confirm");
+        assert!(matches!(accepted, ConfirmOutcome::Accepted(_)));
+
+        // The second candidate presents the same code and is refused.
+        let second = service_c.complete(&server_c, &address, &code, PeerRole::Client);
+        assert!(
+            second.is_err(),
+            "a second pairing with the same code must fail, got {second:?}"
+        );
+
+        join_bounded(responder, "the two-candidate responder");
+
+        // One pairing, on both sides, and nothing for the refused candidate.
+        assert!(
+            service_b.pending_snapshot().is_empty(),
+            "the parked pairing was resolved by the confirmation"
+        );
+        assert!(
+            server_c.peers().expect("C's rows").is_empty(),
+            "the refused candidate must not write a row"
+        );
+        let deadline = Instant::now() + bound::THREAD;
+        loop {
+            if server_a.peers().expect("A's rows").len() == 1 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "A never wrote its row for B");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let b_rows = server_b.peers().expect("B's rows");
+        assert_eq!(b_rows.len(), 1, "B wrote exactly one peer row");
+        assert_eq!(b_rows[0].device_id, initiator_id, "and it names A");
+
+        drop(service_b);
+        drop(server_a);
+        drop(server_c);
+        drop(server_b);
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        let _ = std::fs::remove_dir_all(&dir_c);
+    }
+
+    /// M2: the daemon refuses to open a pairing connection to anything but a
+    /// tailnet address, so a renderer-supplied address cannot make it probe
+    /// arbitrary hosts.
+    #[test]
+    fn a_pairing_target_must_be_a_tailnet_address() {
+        // In range.
+        assert!(is_permitted_pairing_target(
+            &"100.64.0.1:47831".parse().expect("addr")
+        ));
+        assert!(is_permitted_pairing_target(
+            &"100.127.255.254:47831".parse().expect("addr")
+        ));
+        assert!(is_permitted_pairing_target(
+            &"[fd7a:115c:a1e0::1]:47831".parse().expect("addr")
+        ));
+        // Out of range: a public address, a private LAN address, and a tailnet
+        // address one step outside the range.
+        assert!(!is_permitted_pairing_target(
+            &"8.8.8.8:47831".parse().expect("addr")
+        ));
+        assert!(!is_permitted_pairing_target(
+            &"192.168.1.10:47831".parse().expect("addr")
+        ));
+        assert!(!is_permitted_pairing_target(
+            &"100.128.0.1:47831".parse().expect("addr")
+        ));
+
+        // Loopback is accepted in this crate's own unit tests (the in-process
+        // responder listens on 127.0.0.1) and only there — this whole module is
+        // `#[cfg(test)]`, so the assertion is exactly the test-only branch.
+        // `tests/peer_link.rs` pairs over the real tailnet address, so it needs
+        // no exemption.
+        assert!(is_permitted_pairing_target(
+            &"127.0.0.1:47831".parse().expect("addr")
+        ));
+    }
+
+    /// The end-to-end form of the M2 check: `complete` refuses a non-tailnet
+    /// address without opening a socket at all, with a message a person can act
+    /// on.
+    #[test]
+    fn pairing_complete_refuses_a_non_tailnet_address() {
+        let (dir, server) = server("address");
+        let service = PairingService::new();
+        let (code, _expires_at) = service.start(PeerRole::Daemon).expect("a code");
+        let error = service
+            .complete(&server, "8.8.8.8:47831", &code, PeerRole::Client)
+            .expect_err("a public address must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains("tailnet"),
+            "the refusal must say what is expected: {message}"
+        );
+        assert!(
+            !message.contains(code.as_str()),
+            "the refusal must not carry the code: {message}"
+        );
+        // And a malformed address is still refused, by the earlier parse.
+        assert!(service
+            .complete(&server, "not-an-address", &code, PeerRole::Client)
+            .is_err());
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// M3: a payload whose `display_name` cannot be shown is refused at the
+    /// boundary, before anything is stored or parked.
+    #[test]
+    fn a_payload_name_that_cannot_be_shown_is_refused() {
+        let payload = |name: &str| PairPayload {
+            device_id: "6f1e5b7a-0000-4000-8000-00000000c0d9".to_string(),
+            display_name: name.to_string(),
+            role: PeerRole::Client,
+            public_key: String::new(),
+        };
+        // A normal hostname passes.
+        assert!(validate_peer_payload(&payload("Marcolenovo")).is_ok());
+        for bad in [
+            "",
+            "   ",
+            " leading",
+            "trailing ",
+            "two\nlines",
+            "tab\there",
+            "right-to-left\u{202e}override",
+            "zero\u{200b}width",
+            "byte-order\u{feff}mark",
+        ] {
+            assert!(
+                validate_peer_payload(&payload(bad)).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        // Over the length bound, at the boundary exactly.
+        let just_over = "x".repeat(MAX_DISPLAY_NAME_CHARS + 1);
+        assert!(validate_peer_payload(&payload(&just_over)).is_err());
+        let at_bound = "x".repeat(MAX_DISPLAY_NAME_CHARS);
+        assert!(validate_peer_payload(&payload(&at_bound)).is_ok());
+    }
+
+    /// M3: the storage choke point refuses a bad name too, so "every stored
+    /// `display_name` passed validation" holds even for a caller that skipped
+    /// the payload check.
+    #[test]
+    fn a_peer_record_refuses_a_name_that_cannot_be_shown() {
+        let (dir, server) = server("bad-name");
+        let error = local_peer_record(
+            &server,
+            "6f1e5b7a-0000-4000-8000-00000000c0da",
+            "invisible\u{202e}name",
+            PeerRole::Client,
+            &[5u8; 32],
+            TransportBinding::tailnet("n", "n", "n"),
+            "100.64.0.2:47831".to_string(),
+        )
+        .expect_err("a bad display name must be refused before it is stored");
+        assert!(
+            error.to_string().contains("invisible"),
+            "the reason names the problem: {error}"
+        );
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// C6: finishing a pairing must be idempotent for the device that is
+    /// already half-paired. The responder writes its row and the initiator
+    /// writes its own on a background thread; whichever fails second leaves one
+    /// side holding a row and the other not, and before this fix every retry
+    /// died at "already paired; revoke it first", so two good devices were stuck
+    /// until somebody revoked by hand.
+    ///
+    /// The exception is narrow on purpose: the **same pinned key** is the same
+    /// pairing being finished, while a different key is the substitution the
+    /// revoke-first rule exists to refuse.
+    #[test]
+    fn re_pairing_with_the_same_key_finishes_the_pairing() {
+        let (dir, server) = server("repair-same-key");
+        let id = "6f1e5b7a-0000-4000-8000-00000000c0dc";
+        let key = [6u8; 32];
+        let record = local_peer_record(
+            &server,
+            id,
+            "Peer",
+            PeerRole::Daemon,
+            &key,
+            TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
+            "100.64.0.2:47831".to_string(),
+        )
+        .expect("first pairing");
+        server.peer_upsert(record).expect("store");
+
+        // Same key, same role: the retry completes and refreshes the row.
+        let retry = local_peer_record(
+            &server,
+            id,
+            "Peer Renamed",
+            PeerRole::Daemon,
+            &key,
+            TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
+            "100.64.0.9:47831".to_string(),
+        )
+        .expect("a retry with the same pinned key must finish the pairing");
+        assert_eq!(retry.display_name, "Peer Renamed");
+        assert_eq!(retry.address, "100.64.0.9:47831");
+        let stored = server.peer_upsert(retry).expect("re-store");
+        assert_eq!(stored.display_name, "Peer Renamed");
+        assert_eq!(
+            server.peers().expect("rows").len(),
+            1,
+            "a retry must not duplicate the row"
+        );
+
+        // A different key is still refused: that is the credential changing,
+        // which needs a revoke first (design §8 R8 / F-19).
+        let substituted = local_peer_record(
+            &server,
+            id,
+            "Peer",
+            PeerRole::Daemon,
+            &[7u8; 32],
+            TransportBinding::tailnet("npeer", "peer.", "user@example.com"),
+            "100.64.0.2:47831".to_string(),
+        );
+        let error = substituted.expect_err("a different key must be refused");
+        assert!(
+            error.to_string().contains("different key"),
+            "the refusal says why it is different from an ordinary retry: {error}"
+        );
+
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// C7: at most one pending entry per device. Two parks for the same device
+    /// happened when a second code was shown while the first park was still
+    /// inside its 60 s window, and the panel then rendered two confirm cards for
+    /// one device while `confirm` removed only the first match.
+    ///
+    /// The newer attempt replaces the older: a device cannot be waiting twice
+    /// for one pairing, and dropping the older entry releases its parked thread
+    /// (the answer becomes `pairing busy`) instead of leaving it to consume a
+    /// decision meant for the newer one.
+    #[test]
+    fn a_second_park_for_the_same_device_replaces_the_first() {
+        let (dir_a, server_a) = server("dup-a");
+        let (dir_b, server_b) = server("dup-b");
+        let service_a = PairingService::new();
+        let service_b = Arc::new(PairingService::new());
+        let transport = Arc::new(crate::peer_transport::TestTransport::default());
+        assert!(server_a.set_peer_transport(transport.clone()).is_ok());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr").to_string();
+
+        // Two codes, two connections, both parked by the same device A. The
+        // second code is what makes a second park possible at all: the first is
+        // spent by the first park (H1).
+        let (code_one, _) = service_b.start(PeerRole::Client).expect("code one");
+        let responder_service = Arc::clone(&service_b);
+        let responder_transport = Arc::clone(&transport);
+        let responder_server = Arc::clone(&server_b);
+        let caps = Arc::new(crate::peer_transport::AcceptCaps::default());
+        // One thread per connection, because a `Client`-role park blocks its
+        // handler until it is confirmed: a sequential loop would sit on the
+        // first pairing for the whole 60 s window and never accept the second,
+        // which is what made this test time out on its first run. The real
+        // accept loop spawns a thread per connection for the same reason.
+        let responder = std::thread::spawn(move || {
+            let mut handlers = Vec::new();
+            for _ in 0..2 {
+                let (stream, peer_addr) = accept_bounded(&listener);
+                let slot = caps
+                    .admit_handshake(crate::peer_transport::HandshakeKind::Pairing)
+                    .expect("a pairing slot");
+                let service = Arc::clone(&responder_service);
+                let transport = Arc::clone(&responder_transport);
+                let server = Arc::clone(&responder_server);
+                handlers.push(std::thread::spawn(move || {
+                    service.handle(transport.as_ref(), stream, peer_addr, &server, slot);
+                }));
+            }
+            for handler in handlers {
+                join_bounded(handler, "a parked pairing's handler");
+            }
+        });
+
+        service_a
+            .complete(&server_a, &address, &code_one, PeerRole::Client)
+            .expect("the first pairing");
+        let deadline = Instant::now() + bound::THREAD;
+        while service_b.park_count() < 1 {
+            assert!(Instant::now() < deadline, "the first park never landed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(service_b.pending_snapshot().len(), 1);
+
+        // A second code, and the same device pairs again while the first park is
+        // still waiting for a confirmation.
+        let (code_two, _) = service_b.start(PeerRole::Client).expect("code two");
+        service_a
+            .complete(&server_a, &address, &code_two, PeerRole::Client)
+            .expect("the second pairing");
+        while service_b.park_count() < 2 {
+            assert!(Instant::now() < deadline, "the second park never landed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        let pending = service_b.pending_snapshot();
+        assert_eq!(
+            pending.len(),
+            1,
+            "a second park for the same device must replace the first, not join it: {pending:?}"
+        );
+        assert_eq!(
+            pending[0].device_id,
+            server_a.device_identity().as_ref().expect("A").device_id
+        );
+
+        // Exactly one decision can be delivered: the surviving entry is the one
+        // that answers.
+        let accepted = service_b
+            .confirm(&server_b, &pending[0].device_id, true)
+            .expect("confirm");
+        assert!(matches!(accepted, ConfirmOutcome::Accepted(_)));
+        assert!(service_b.pending_snapshot().is_empty());
+
+        join_bounded(responder, "the two-park responder");
+        drop(service_b);
+        drop(server_a);
+        drop(server_b);
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
     }
 }

@@ -144,20 +144,23 @@ mod tests {
     }
 
     #[test]
-    fn a_remote_owner_gets_a_p_prefixed_token_that_cannot_collide() {
-        // Design §8b A2. The prefix is cosmetic; the point of the test is that
-        // the two namespaces (`process-*`/`app-*` and `peer_*`) cannot produce
-        // the same token, and that the result is a valid session id.
+    /// Design §8b A2: a remote owner's token is `p` + the role name.
+    ///
+    /// The name no longer claims collision-proofness, because the token is not
+    /// collision-proof: it is `p` + up to 16 characters of `client`, and a local
+    /// client label of `pclient` would produce exactly the same token (C15).
+    /// That is harmless — the token only names the owner inside a session id, and
+    /// authority is `OwnerId.user`, which for a remote peer is `peer_<device>`
+    /// and cannot be claimed by a local connection whose identity comes from the
+    /// kernel. The test asserts the spelling and the *distinct namespace claim
+    /// that is actually made*: the remote token is not the bare role name a
+    /// local client would produce.
+    fn a_remote_owner_gets_a_p_prefixed_token() {
         let remote = OwnerId::new("peer_dev-1", "client").expect("remote owner");
         let daemon = OwnerId::new("peer_dev-1", "daemon").expect("remote owner");
         assert_eq!(remote.session_token(), "pclient");
         assert_eq!(daemon.session_token(), "pdaemon");
 
-        // No local client label can produce the same token. Note that the
-        // `p` prefix is *not* a namespace guarantee on its own: the local
-        // label `process-1` legitimately yields the token `process-1`, which
-        // also starts with `p`. What rules out collision is that a remote
-        // token is `p` + a role name, and no local token is.
         let remote_tokens = [remote.session_token(), daemon.session_token()];
         assert_eq!(
             remote_tokens,
@@ -172,6 +175,20 @@ mod tests {
             );
             assert_eq!(owner.session_token(), local);
         }
+
+        // The honest counter-example, asserted rather than left implicit: a
+        // local label that happens to be `pclient` does collide. It is not a
+        // security property, and the doc comment on `session_token` says so.
+        let impostor = OwnerId::new("S-1-5-21-1", "pclient").expect("local owner");
+        assert_eq!(
+            impostor.session_token(),
+            remote.session_token(),
+            "the token is a label, not an authority"
+        );
+        // What actually separates them is `user`.
+        assert_ne!(impostor.user, remote.user);
+        assert!(remote.user.starts_with("peer_"));
+        assert!(impostor.user.starts_with("S-"));
 
         let id = compose_session_id(&remote.session_token(), "00000001").expect("compose");
         assert!(validate_session_id(&id).is_ok(), "{id}");

@@ -333,6 +333,25 @@ const AUDIT_NO_UPDATE_SQL: &str = "
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit
 BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;";
 
+/// The trigger's meaning, as the fragments that must appear in its stored body.
+///
+/// SQLite stores a trigger's `sql` text with its own whitespace, so a byte
+/// comparison against our own literal would fail on a database this daemon
+/// created. What has to hold is the event, the table and the action: a body
+/// that lost any of them is a tampered or neutered trigger and is replaced
+/// (L2). `RAISE(IGNORE)` and an empty body both fail this.
+const AUDIT_TRIGGER_REQUIRED: [&str; 3] = ["on audit", "raise(abort", "audit is append-only"];
+
+/// `stored` is the trigger's own `sql` text; `event` is `"before delete"` or
+/// `"before update"`, which is the one part that differs between the two.
+fn trigger_sql_is_expected(stored: &str, event: &str) -> bool {
+    let stored = stored.to_ascii_lowercase();
+    stored.contains(event)
+        && AUDIT_TRIGGER_REQUIRED
+            .iter()
+            .all(|fragment| stored.contains(fragment))
+}
+
 /// Minimum audit retention. A `const`, never a wire parameter.
 pub(super) const AUDIT_FLOOR_DAYS: i64 = 90;
 /// Per-device ceiling. The age floor alone is a disk sink; the cap wins over
@@ -340,17 +359,28 @@ pub(super) const AUDIT_FLOOR_DAYS: i64 = 90;
 pub(super) const AUDIT_MAX_ROWS_PER_DEVICE: i64 = 20_000;
 
 fn ensure_audit_triggers(conn: &Connection) -> Result<(), JournalError> {
-    for (name, sql) in [
-        ("audit_no_delete", AUDIT_NO_DELETE_SQL),
-        ("audit_no_update", AUDIT_NO_UPDATE_SQL),
+    for (name, sql, event) in [
+        ("audit_no_delete", AUDIT_NO_DELETE_SQL, "before delete"),
+        ("audit_no_update", AUDIT_NO_UPDATE_SQL, "before update"),
     ] {
-        let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
-            [name],
-            |row| row.get(0),
-        )?;
-        if exists == 0 {
-            conn.execute_batch(sql)?;
+        // The **body** is checked, not just the name (L2). A trigger that
+        // exists but whose body was replaced — by a tampered database, or by a
+        // `DROP`+`CREATE` with `RAISE(IGNORE)` or no body at all — would pass a
+        // name-only check while leaving the audit table deletable.
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                [name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let matches = stored
+            .as_deref()
+            .is_some_and(|stored| trigger_sql_is_expected(stored, event));
+        if !matches {
+            // `CREATE TRIGGER IF NOT EXISTS` would leave a wrong body in place,
+            // so the old one goes first. Both statements are idempotent.
+            conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name};\n{}", sql.trim()))?;
         }
     }
     // The age floor is a range scan on `at`; without this index the hourly
@@ -954,5 +984,114 @@ mod tests {
             .expect("audit index");
         assert_eq!(index, 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// L2: the check must be about the trigger's **body**, not its name.
+    ///
+    /// This calls `ensure_audit_triggers` directly rather than going through
+    /// `Journal::open`, because an open also runs `sweep_audit`, which drops and
+    /// recreates both triggers itself — a test at that level would pass whether
+    /// or not the body is compared, and would therefore prove nothing about
+    /// this function.
+    #[test]
+    fn ensure_audit_triggers_replaces_a_neutered_body() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal.flush().expect("flush");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("raw");
+        // Same name, same event, same table — but it no longer aborts.
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS audit_no_delete;
+             CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit
+             BEGIN SELECT RAISE(IGNORE); END;",
+        )
+        .expect("neuter the delete trigger");
+        let neutered: String = stored_trigger(&conn, "audit_no_delete");
+        assert!(
+            !neutered.to_ascii_lowercase().contains("raise(abort"),
+            "the fixture must start neutered: {neutered}"
+        );
+
+        super::ensure_audit_triggers(&conn).expect("re-ensure");
+
+        let restored = stored_trigger(&conn, "audit_no_delete");
+        let lower = restored.to_ascii_lowercase();
+        assert!(
+            lower.contains("raise(abort") && lower.contains("audit is append-only"),
+            "the neutered body must be replaced: {restored}"
+        );
+        assert!(
+            lower.contains("before delete"),
+            "on the same event: {restored}"
+        );
+        assert!(
+            lower.contains("on audit"),
+            "against the same table: {restored}"
+        );
+
+        // The other trigger was intact and is left alone.
+        let update = stored_trigger(&conn, "audit_no_update");
+        assert!(update.to_ascii_lowercase().contains("raise(abort"));
+
+        // The restored trigger really protects again.
+        conn.execute(
+            "INSERT INTO audit (at, device_id, role, action, outcome) VALUES (1, 'd', 'daemon', 'Ping', 'ok')",
+            [],
+        )
+        .expect("seed a row");
+        assert!(
+            conn.execute("DELETE FROM audit", []).is_err(),
+            "the restored trigger must abort a delete"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A healthy database is left untouched: the comparison must not rewrite an
+    /// intact trigger, or a mistake in the required fragments would be invisible
+    /// because the rewrite would succeed anyway.
+    #[test]
+    fn ensure_audit_triggers_leaves_intact_bodies_alone() {
+        let (dir, path) = tmp_journal();
+        let journal = Journal::open(&path).expect("open");
+        journal.flush().expect("flush");
+        journal.shutdown();
+
+        let conn = Connection::open(&path).expect("raw");
+        let before = (
+            stored_trigger(&conn, "audit_no_delete"),
+            stored_trigger(&conn, "audit_no_update"),
+        );
+        super::ensure_audit_triggers(&conn).expect("re-ensure");
+        let after = (
+            stored_trigger(&conn, "audit_no_delete"),
+            stored_trigger(&conn, "audit_no_update"),
+        );
+        assert_eq!(
+            before, after,
+            "an intact trigger body must not be rewritten"
+        );
+
+        // And the two fragments a body must carry are the ones that matter:
+        // a body keeping the event and losing the abort is refused.
+        assert!(super::trigger_sql_is_expected(&before.0, "before delete"));
+        assert!(!super::trigger_sql_is_expected(
+            "CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(IGNORE); END;",
+            "before delete"
+        ));
+        assert!(!super::trigger_sql_is_expected(
+            "CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit BEGIN SELECT RAISE(ABORT, 'audit is append-only'); END;",
+            "before update"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn stored_trigger(conn: &Connection, name: &str) -> String {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+            [name],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|error| panic!("trigger {name} is not in sqlite_master: {error}"))
     }
 }

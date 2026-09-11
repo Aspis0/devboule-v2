@@ -753,34 +753,37 @@ pub enum DaemonMessage {
 pub struct SelfInfo {
     pub device_id: String,
     pub display_name: String,
-    /// The Noise static public key, base64. Omitted when the projection withholds
-    /// it (the `Daemon`-role projection does): an empty string is not the same
-    /// frame as an absent key, and the reader must not be able to mistake one
-    /// for a key of zero length.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// The Noise static public key, base64.
+    ///
+    /// Always present, even when a projection has nothing to put in it (the
+    /// `Daemon`-role projection sends `""`). The 1b wire contract types every
+    /// one of these fields as required, and it is consumed by TypeScript, which
+    /// has no way to check a key that the daemon chose to omit: the panel reads
+    /// `self.addresses.length` unconditionally, so an omitted key is a crash in
+    /// the Devices tab rather than a missing value. Withholding is by **value**
+    /// (empty string, empty array, zero), never by key presence.
     pub public_key: String,
     /// Hex of the first 16 bytes of SHA-256 of that key: the value a person
-    /// reads aloud when confirming a pairing. Omitted with `public_key`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    /// reads aloud when confirming a pairing. Always present, like
+    /// [`SelfInfo::public_key`].
     pub key_fingerprint: String,
-    /// Where this device can be reached. Absent for any peer that is not the
-    /// device's own person: it is the local network position, not identity.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Where this device can be reached. Empty when the listener is down, or
+    /// when a projection withholds the network position. Always present.
     pub addresses: Vec<String>,
-    /// The peer port, absent when it is zero (no listener).
-    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    /// The peer port; `0` when there is no listener. Always present.
     pub port: u16,
     pub daemon_version: String,
     pub protocol_version: u32,
     /// Whether the tailnet listener is up, and why not when it is not. Local
     /// information; a `Daemon` peer is told `Ping` is the liveness answer and
     /// nothing about this device's network position.
+    ///
+    /// This is the one field that stays optional, because its absence is what
+    /// the `Daemon` projection uses to withhold the *state* rather than a value:
+    /// `RemoteState` has no "unknown" variant to send instead. See the note in
+    /// the `Daemon` arm of `server.rs::devices_reply`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteState>,
-}
-
-fn is_zero_u16(value: &u16) -> bool {
-    *value == 0
 }
 
 /// One paired device as the Devices panel sees it.
@@ -1265,10 +1268,19 @@ mod tests {
             serde_json::json!({ "state": "enabled", "reason": null })
         );
 
-        // A projection withholds by **omission**, not by blanking: a
-        // `Daemon` peer's `self_info` must not contain an `addresses` array, a
-        // `port`, a `publicKey` or a `remote` object at all, because an empty
-        // string in any of them still answers a question the peer may not ask.
+        // A projection withholds by **value**, never by key presence.
+        //
+        // This is the C4 fix: `addresses`, `port`, `publicKey` and
+        // `keyFingerprint` are always in the frame, empty when the projection
+        // has nothing to put in them, because the 1b contract types them as
+        // required and TypeScript cannot check a key the daemon chose to omit.
+        // The panel's identity card reads `self.addresses.length` with no
+        // guard, so an omitted key was a crash in the Devices tab whenever
+        // remote was off (the default first-run state).
+        //
+        // `remote` is the exception: it stays absent for the `Daemon`
+        // projection, because `RemoteState` has no "unknown" variant, so its
+        // only way to withhold the listener state is to omit the object.
         let withheld = SelfInfo {
             device_id: "dev-1".to_string(),
             display_name: "MacBook".to_string(),
@@ -1281,12 +1293,28 @@ mod tests {
             remote: None,
         };
         let withheld_json = serde_json::to_value(&withheld).expect("json");
-        for key in ["publicKey", "keyFingerprint", "addresses", "port", "remote"] {
+        assert_eq!(
+            withheld_json["addresses"],
+            serde_json::json!([]),
+            "an empty address list is the empty array, not an absent key: {withheld_json}"
+        );
+        assert_eq!(
+            withheld_json["port"],
+            serde_json::json!(0),
+            "a listener-less self_info carries port 0: {withheld_json}"
+        );
+        assert_eq!(withheld_json["publicKey"], "");
+        assert_eq!(withheld_json["keyFingerprint"], "");
+        for key in ["publicKey", "keyFingerprint", "addresses", "port"] {
             assert!(
-                withheld_json.get(key).is_none(),
-                "a withheld SelfInfo must omit {key}: {withheld_json}"
+                withheld_json.get(key).is_some(),
+                "a withheld SelfInfo must still carry {key}: {withheld_json}"
             );
         }
+        assert!(
+            withheld_json.get("remote").is_none(),
+            "the Daemon projection withholds the listener state by omission: {withheld_json}"
+        );
         for key in [
             "deviceId",
             "displayName",
@@ -1298,6 +1326,22 @@ mod tests {
                 "a withheld SelfInfo keeps {key}: {withheld_json}"
             );
         }
+
+        // The other direction, and the one the panel actually hits: a real
+        // local projection with remote off serialises every contract key with
+        // empty values, so `self.addresses.length` has something to read.
+        let local_off = SelfInfo {
+            remote: Some(RemoteState::disabled("no tailscale")),
+            ..withheld.clone()
+        };
+        let local_json = serde_json::to_value(&local_off).expect("json");
+        assert_eq!(local_json["addresses"], serde_json::json!([]));
+        assert_eq!(local_json["port"], 0);
+        assert_eq!(local_json["remote"]["state"], "disabled");
+        assert!(
+            local_json["addresses"].is_array() && local_json["port"].is_number(),
+            "the panel can read these unconditionally: {local_json}"
+        );
 
         // The reply variants carry exactly the contract's fields.
         let devices = serde_json::to_value(DaemonMessage::Devices {

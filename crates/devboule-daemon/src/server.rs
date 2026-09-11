@@ -21,7 +21,7 @@ use crate::diagnostics::{DiagnosticsInput, DiagnosticsReport};
 use crate::error::DaemonError;
 use crate::framing::Framed;
 use crate::idempotency::{IdempotencyOutcome, IdempotencyStore};
-use crate::journal::{AuditRecord, Journal, PeerRecord, JOURNAL_SCHEMA_VERSION};
+use crate::journal::{AuditRecord, Journal, PeerMutation, PeerRecord, JOURNAL_SCHEMA_VERSION};
 use crate::lock::SingleInstanceLock;
 use crate::login_shell_env::login_shell_capture_outcome;
 use crate::outbound::ConnOut;
@@ -38,6 +38,27 @@ use crate::IDLE_SHUTDOWN_GRACE;
 const JOIN_SLICE: Duration = Duration::from_millis(10);
 const JOIN_BUDGET: Duration = Duration::from_millis(500);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a loaded `peers` table is trusted by the accept path (M1). Every
+/// peer mutation also invalidates it, so this is a backstop for a mutation path
+/// that does not, not the mechanism that keeps the table current.
+const PEER_TABLE_TTL: Duration = Duration::from_secs(10);
+
+/// The accept path's cached `peers` snapshot.
+struct PeerTableView {
+    loaded: Option<(Instant, Arc<crate::peer_transport::PeerTable>)>,
+    ttl: Duration,
+}
+
+impl Default for PeerTableView {
+    fn default() -> Self {
+        Self {
+            loaded: None,
+            // Not `Duration::ZERO`: a default of zero would silently disable
+            // the cache everywhere the view is constructed.
+            ttl: PEER_TABLE_TTL,
+        }
+    }
+}
 
 #[derive(Default)]
 struct Lifecycle {
@@ -107,12 +128,43 @@ pub struct ServerState {
     remote: Mutex<RemoteState>,
     /// Live remote connections, so revocation can close them immediately.
     remote_conns: Mutex<HashMap<u64, (String, Arc<AtomicBool>)>>,
+    /// The `peers` snapshot the accept path filters on, cached (M1).
+    ///
+    /// The previous behaviour loaded the whole table from the journal for every
+    /// accepted socket, so a burst of connects was a burst of journal RPCs on
+    /// the writer thread. The cache is refreshed by every peer mutation and
+    /// expires on its own, so it cannot serve a stale answer after a pairing or
+    /// a revoke, and cannot serve one forever if a mutation path is ever missed.
+    peer_table: Mutex<PeerTableView>,
+    /// Serialises the *load* of the peer table, without being held while the
+    /// journal is queried.
+    ///
+    /// Without it, a burst of connections arriving on a cold cache all miss the
+    /// same check and each performs its own journal read — measured: four
+    /// simultaneous connects produced three loads. `peer_revoke` only ever takes
+    /// `peer_table` (through `invalidate_peer_table`), so a load waiting here
+    /// cannot delay a revocation.
+    peer_table_load: Mutex<()>,
+    /// The tailnet listener's own stop flag and thread, so the listener is a
+    /// process-lifetime resource the state owns (C5): `run_windows` starts it
+    /// through `ensure_remote_listener` and stops it through
+    /// `stop_remote_listener`, and `PairingStart` can start it late.
+    peer_stop: Arc<AtomicBool>,
+    peer_listener: Mutex<Option<JoinHandle<()>>>,
     /// The transport the peer listener uses, and that the initiator side of a
     /// pairing uses for its own `whois` on the responder's address. One
     /// instance for the process: a `Tailnet` on a real daemon is a unit struct,
     /// so this costs nothing and lets a test substitute a stub.
     peer_transport: OnceLock<Arc<dyn crate::peer_transport::PeerTransport>>,
     pairing: Arc<crate::pairing::PairingService>,
+    /// Test-only: real `peers` loads, so a test can prove the cache held.
+    #[cfg(test)]
+    peer_table_loads: AtomicU64,
+    /// Test-only: how many times a tailnet listener was actually started, so a
+    /// test can prove `ensure_remote_listener` is idempotent rather than merely
+    /// returning `true`.
+    #[cfg(test)]
+    listener_starts: AtomicU64,
     #[cfg(test)]
     provider_update_catalog: Mutex<Option<crate::provider_catalog::ProviderDiscovery>>,
     #[cfg(test)]
@@ -216,8 +268,16 @@ impl ServerState {
                 "the remote listener is not running".to_string(),
             )),
             remote_conns: Mutex::new(HashMap::new()),
+            peer_table: Mutex::new(PeerTableView::default()),
+            peer_table_load: Mutex::new(()),
+            peer_stop: Arc::new(AtomicBool::new(false)),
+            peer_listener: Mutex::new(None),
             peer_transport: OnceLock::new(),
             pairing: Arc::new(crate::pairing::PairingService::new()),
+            #[cfg(test)]
+            peer_table_loads: AtomicU64::new(0),
+            #[cfg(test)]
+            listener_starts: AtomicU64::new(0),
             #[cfg(test)]
             provider_update_catalog: Mutex::new(None),
             #[cfg(test)]
@@ -689,6 +749,81 @@ impl ServerState {
         journal.peers_list().map_err(|error| error.to_string())
     }
 
+    /// The cached `peers` table the accept path filters on (M1).
+    ///
+    /// Loaded at most once per [`PEER_TABLE_TTL`], and dropped by every peer
+    /// mutation, so the cost of accepting a connection is a mutex read rather
+    /// than a journal round trip.
+    pub(crate) fn peer_table(&self) -> Result<Arc<crate::peer_transport::PeerTable>, String> {
+        let now = Instant::now();
+        {
+            let cache = self
+                .peer_table
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some((loaded_at, table)) = cache.loaded.as_ref() {
+                if now.saturating_duration_since(*loaded_at) < cache.ttl {
+                    return Ok(Arc::clone(table));
+                }
+            }
+        }
+        // One loader at a time, and the cache is re-checked after acquiring it:
+        // a burst of connections on a cold cache must produce one journal read,
+        // not one each. The cache mutex itself is not held across the journal
+        // call, so a revoke is never blocked behind it.
+        let _loading = self
+            .peer_table_load
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let now = Instant::now();
+        {
+            let cache = self
+                .peer_table
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some((loaded_at, table)) = cache.loaded.as_ref() {
+                if now.saturating_duration_since(*loaded_at) < cache.ttl {
+                    return Ok(Arc::clone(table));
+                }
+            }
+        }
+        let table = Arc::new(crate::peer_transport::PeerTable::load(self)?);
+        #[cfg(test)]
+        self.peer_table_loads.fetch_add(1, Ordering::Relaxed);
+        let mut cache = self
+            .peer_table
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        cache.loaded = Some((now, Arc::clone(&table)));
+        Ok(table)
+    }
+
+    /// Forget the cached peer table. Called by every path that changes the
+    /// `peers` table, so a pairing or a revoke is visible to the next accepted
+    /// connection rather than up to a TTL later.
+    fn invalidate_peer_table(&self) {
+        self.peer_table
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .loaded = None;
+    }
+
+    /// Test-only: how many times the table was really loaded, which is what
+    /// proves the cache is doing something.
+    #[cfg(test)]
+    pub(crate) fn peer_table_loads(&self) -> u64 {
+        self.peer_table_loads.load(Ordering::Relaxed)
+    }
+
+    /// Test-only: drive expiry without waiting for [`PEER_TABLE_TTL`].
+    #[cfg(test)]
+    pub(crate) fn set_peer_table_ttl(&self, ttl: Duration) {
+        self.peer_table
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .ttl = ttl;
+    }
+
     /// This device's identity and Noise static key, loaded at most once.
     ///
     /// Borrowed rather than cloned: the private key is inside, and the value is
@@ -728,9 +863,11 @@ impl ServerState {
             .journal
             .as_ref()
             .ok_or_else(|| "the journal is unavailable".to_string())?;
-        journal
+        let stored = journal
             .peer_upsert(record)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.invalidate_peer_table();
+        Ok(stored)
     }
 
     pub(crate) fn peer_get(&self, device_id: &str) -> Result<Option<PeerRecord>, String> {
@@ -743,24 +880,34 @@ impl ServerState {
             .map_err(|error| error.to_string())
     }
 
-    pub(crate) fn peer_revoke(&self, device_id: &str, at: i64) -> Result<bool, String> {
+    pub(crate) fn peer_revoke(&self, device_id: &str, at: i64) -> Result<PeerMutation, String> {
         let journal = self
             .journal
             .as_ref()
             .ok_or_else(|| "the journal is unavailable".to_string())?;
-        journal
+        let outcome = journal
             .peer_revoke(device_id, at)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        // The next accepted connection must see the revocation, not a cached
+        // row that still owns the address.
+        self.invalidate_peer_table();
+        Ok(outcome)
     }
 
-    pub(crate) fn peer_set_caps(&self, device_id: &str, caps: Vec<String>) -> Result<bool, String> {
+    pub(crate) fn peer_set_caps(
+        &self,
+        device_id: &str,
+        caps: Vec<String>,
+    ) -> Result<PeerMutation, String> {
         let journal = self
             .journal
             .as_ref()
             .ok_or_else(|| "the journal is unavailable".to_string())?;
-        journal
+        let outcome = journal
             .peer_set_caps(device_id, caps)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.invalidate_peer_table();
+        Ok(outcome)
     }
 
     /// Record a live remote connection so a revoke can close it.
@@ -850,6 +997,71 @@ impl ServerState {
         transport: Arc<dyn crate::peer_transport::PeerTransport>,
     ) -> Result<(), Arc<dyn crate::peer_transport::PeerTransport>> {
         self.peer_transport.set(transport)
+    }
+
+    /// Ensure the tailnet listener is running, starting it if it is not.
+    ///
+    /// Idempotent, and safe to call from more than one place: the mutex means
+    /// two concurrent callers cannot both bind (the second would lose the port
+    /// race and overwrite `Enabled` with `Disabled`), and the slot check inside
+    /// means the second finds the first's listener instead of starting another.
+    ///
+    /// Returns whether a listener is up after the call. A failure leaves
+    /// `Status.remote` saying why, which is what the panel renders.
+    pub(crate) fn ensure_remote_listener(self: &Arc<Self>) -> bool {
+        let mut slot = self
+            .peer_listener
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if slot.is_some() {
+            return true;
+        }
+        // Once the listener has been stopped the daemon is on its way down, and
+        // the stop flag would make a fresh loop exit immediately. Starting one
+        // would leave a `listening` state with nothing behind it.
+        if self.peer_stop.load(Ordering::SeqCst) {
+            return false;
+        }
+        match try_start_remote_listener(self) {
+            Some(handle) => {
+                #[cfg(test)]
+                self.listener_starts.fetch_add(1, Ordering::Relaxed);
+                *slot = Some(handle);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Test-only: how many listeners were really started.
+    #[cfg(test)]
+    pub(crate) fn listener_starts(&self) -> u64 {
+        self.listener_starts.load(Ordering::Relaxed)
+    }
+
+    /// Stop the tailnet listener if one is running and join it.
+    ///
+    /// Bounded, like every other join in this file: the accept loop polls its
+    /// stop flag, so this is one `HOUSEKEEPING_TICK` at worst.
+    pub(crate) fn stop_remote_listener(&self) {
+        self.peer_stop.store(true, Ordering::SeqCst);
+        let handle = self
+            .peer_listener
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(handle) = handle {
+            bounded_join(handle, JOIN_BUDGET);
+        }
+    }
+
+    /// Whether a tailnet listener is currently held. Test-only.
+    #[cfg(test)]
+    pub(crate) fn has_remote_listener(&self) -> bool {
+        self.peer_listener
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_some()
     }
 
     /// Replace the remote-listener state. Called by the peer accept loop when
@@ -1078,9 +1290,11 @@ fn run_windows() -> Result<(), DaemonError> {
 
     // The peer listener is best-effort and runs beside the pipe: no Tailscale,
     // no tailnet address, or a missing key leaves the daemon local-only and
-    // says why in `Status.remote` rather than failing to start.
-    let peer_stop = Arc::new(AtomicBool::new(false));
-    let peer_accept = start_peer_listener(&state, &paths, Arc::clone(&peer_stop));
+    // says why in `Status.remote` rather than failing to start. It is no longer
+    // a one-shot attempt (C5): `pairing_address` retries through the same
+    // function, so a user who starts Tailscale and shows a code again gets a
+    // listener rather than the same refusal until the daemon restarts.
+    let _ = state.ensure_remote_listener();
 
     state.wait_until_shutdown();
     // Flush the conversation journal before the listener is torn down so a
@@ -1088,10 +1302,7 @@ fn run_windows() -> Result<(), DaemonError> {
     state.sessions.flush_journal();
     shutdown.shutdown();
     // The peer loop polls, so its stop is a flag rather than a wake-up connect.
-    peer_stop.store(true, Ordering::SeqCst);
-    if let Some(handle) = peer_accept {
-        bounded_join(handle, JOIN_BUDGET);
-    }
+    state.stop_remote_listener();
     let deadline = Instant::now() + JOIN_BUDGET;
     while !accept.is_finished() && Instant::now() < deadline {
         let _ = transport::connect(&paths);
@@ -1105,14 +1316,10 @@ fn run_windows() -> Result<(), DaemonError> {
 
 /// Bind and serve the tailnet listener, or record why it is not up.
 ///
-/// Returns the `daemon-peer-accept` thread when one was started. The caller
-/// stops it with `peer_stop`.
+/// The body of [`ServerState::ensure_remote_listener`], split out so the
+/// idempotence and the join handle live with the state that owns them.
 #[cfg(windows)]
-fn start_peer_listener(
-    state: &Arc<ServerState>,
-    paths: &RuntimePaths,
-    peer_stop: Arc<AtomicBool>,
-) -> Option<JoinHandle<()>> {
+fn try_start_remote_listener(state: &Arc<ServerState>) -> Option<JoinHandle<()>> {
     // A missing key is a refusal, not an environment fact: creating a new one
     // would silently orphan every pairing this device has.
     if let Err(error) = state.device_identity() {
@@ -1123,27 +1330,46 @@ fn start_peer_listener(
         return None;
     }
     let transport = state.peer_transport();
-    let listener = match transport.listen(paths, Arc::clone(&peer_stop)) {
+    // `_fresh` inside `Tailnet::listen` bypasses the LocalAPI `Absent` cache, so
+    // a retry after the user starts Tailscale really probes instead of reading
+    // a cached "not running" for up to the cache TTL.
+    let listener = match transport.listen(&state.paths, Arc::clone(&state.peer_stop)) {
         Ok(listener) => listener,
         Err(error) => {
             state.set_remote_state(RemoteState::Disabled(error.to_string()));
             return None;
         }
     };
-    state.set_remote_state(RemoteState::Enabled {
-        addresses: listener.addrs().iter().map(|addr| addr.ip()).collect(),
-        port: crate::peer_transport::peer_port(),
-    });
     // The pairing service is the same object the RPCs use, so a code shown in
     // the panel is the code this listener accepts, and a parked confirmation
     // is visible to `DevicesList`. Coerced to the trait object here rather than
     // stored as one: the state's field is the concrete type the RPCs call.
     let pairing: Arc<dyn crate::peer_transport::PairingHook> = state.pairing().clone();
+    // Read the bound addresses **before** the listener moves into the accept
+    // thread; `listener.addrs()` is the only thing that knows the real port.
+    let addresses: Vec<std::net::IpAddr> = listener.addrs().iter().map(|addr| addr.ip()).collect();
+    let port = listener
+        .addrs()
+        .first()
+        .map(|addr| addr.port())
+        .unwrap_or_else(crate::peer_transport::peer_port);
     let accept_state = Arc::clone(state);
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name("daemon-peer-accept".into())
         .spawn(move || accept_peers(listener, transport, accept_state, pairing))
-        .ok()
+        .ok()?;
+    // Published only once the thread is actually running, so `Status.remote` can
+    // never say `listening` with nothing behind it.
+    state.set_remote_state(RemoteState::Enabled { addresses, port });
+    Some(handle)
+}
+
+#[cfg(not(windows))]
+fn try_start_remote_listener(state: &Arc<ServerState>) -> Option<JoinHandle<()>> {
+    state.set_remote_state(RemoteState::Disabled(
+        "the daemon does not run on this platform yet".to_string(),
+    ));
+    None
 }
 
 fn accept_loop(mut listener: transport::BoundListener, state: Arc<ServerState>) {
@@ -2369,7 +2595,7 @@ fn dispatch_devices(
         },
         ClientMessage::PeerRevoke { id, device_id } => {
             match state.peer_revoke(&device_id, unix_millis() as i64) {
-                Ok(true) => {
+                Ok(PeerMutation::Updated) => {
                     // Revocation closes live connections under the same lock
                     // that recorded it, so at most one already-decoded frame
                     // is processed afterwards (design §8 R8).
@@ -2383,7 +2609,18 @@ fn dispatch_devices(
                         _ => DaemonMessage::Ok { id },
                     }
                 }
-                Ok(false) => DaemonMessage::Error(
+                // A row that is already revoked is a different fact from a row
+                // that does not exist, and the panel shows this sentence
+                // verbatim (C9: a double click, or a second device's panel,
+                // used to be told the peer did not exist).
+                Ok(PeerMutation::Revoked) => DaemonMessage::Error(
+                    WireError::new(
+                        ErrorCode::InvalidRequest,
+                        "That device is already revoked. Pair it again to use it.",
+                    )
+                    .with_id(id),
+                ),
+                Ok(PeerMutation::NotFound) => DaemonMessage::Error(
                     WireError::new(ErrorCode::InvalidRequest, "No such peer to revoke.")
                         .with_id(id),
                 ),
@@ -2410,14 +2647,26 @@ fn dispatch_devices(
                         WireError::new(ErrorCode::InvalidRequest, message).with_id(id),
                     ),
                     Ok(caps) => match state.peer_set_caps(&device_id, caps) {
-                        Ok(true) => match state.peer_get(&device_id) {
+                        Ok(PeerMutation::Updated) => match state.peer_get(&device_id) {
                             Ok(Some(refreshed)) => DaemonMessage::PeerUpdated {
                                 id,
                                 peer: crate::pairing::peer_row(state, &refreshed),
                             },
                             _ => DaemonMessage::Ok { id },
                         },
-                        Ok(false) => DaemonMessage::Error(
+                        // A revoked device's capabilities cannot be rewritten
+                        // (C8): the stored state would disagree with the
+                        // panel's "Revoked" section, and the old array would
+                        // silently revive if the row is re-paired.
+                        Ok(PeerMutation::Revoked) => DaemonMessage::Error(
+                            WireError::new(
+                                ErrorCode::InvalidRequest,
+                                "That device is revoked; its capabilities cannot be changed. \
+                                 Pair it again to use it.",
+                            )
+                            .with_id(id),
+                        ),
+                        Ok(PeerMutation::NotFound) => DaemonMessage::Error(
                             WireError::new(ErrorCode::InvalidRequest, "No such peer.").with_id(id),
                         ),
                         Err(error) => DaemonMessage::Error(
@@ -2457,8 +2706,9 @@ fn devices_reply(
         .device_identity()
         .as_ref()
         .map_err(|error| WireError::new(ErrorCode::Internal, error.to_string()))?;
-    let pending = state.pairing().pending_snapshot();
-
+    // Computed only for the local projection, below (C16): taking the pairing
+    // mutex and building `PendingPairing` vecs on every remote poll was work the
+    // remote projections then discarded.
     match conn_peer {
         Some(ConnPeer::Remote {
             role: PeerRole::Daemon,
@@ -2493,10 +2743,12 @@ fn devices_reply(
                     port: 0,
                     daemon_version: env!("CARGO_PKG_VERSION").to_string(),
                     protocol_version: PROTOCOL_VERSION,
-                    // Withheld from a machine peer: whether this device's
-                    // listener is up is not its business, and the fields are
-                    // omitted rather than blanked so the frame cannot be read
-                    // as "an empty address".
+                    // Withheld from a machine peer by **value**: the empty
+                    // string, the empty array and `0` in the four fields above,
+                    // and `remote` by omission (the one field `RemoteState`
+                    // cannot express as "unknown"). The keys stay present
+                    // because the 1b contract types them as required and the
+                    // panel reads them unconditionally (C4).
                     remote: None,
                 },
                 peers,
@@ -2513,8 +2765,9 @@ fn devices_reply(
                 display_name: identity.display_name.clone(),
                 public_key: identity.public_key_b64(),
                 key_fingerprint: identity.key_fingerprint.clone(),
-                // No addresses, no port, and no remote state: where this
-                // device sits on the tailnet is not a client's business.
+                // Empty rather than absent, for the same reason as the Daemon
+                // arm: where this device sits on the tailnet is not a client's
+                // business, and the panel must still be able to read the field.
                 addresses: Vec::new(),
                 port: 0,
                 daemon_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -2548,23 +2801,49 @@ fn devices_reply(
                 .iter()
                 .map(|record| crate::pairing::peer_row(state, record))
                 .collect(),
-            pending,
+            pending: state.pairing().pending_snapshot(),
         }),
     }
 }
 
 /// Where this device can be reached, for the code it displays.
 fn pairing_address(state: &Arc<ServerState>) -> Result<String, WireError> {
+    // No address yet? The listener is started at daemon start-up, but Tailscale
+    // may have come up since (or been started precisely because the panel said
+    // to). Try once more before refusing (C5), so the instruction this error
+    // carries — start Tailscale and show a code again — is one the daemon
+    // actually honours.
+    if let Some(address) = remote_address(state) {
+        return Ok(address);
+    }
+    if !state.ensure_remote_listener() {
+        return Err(no_tailnet_address());
+    }
+    match remote_address(state) {
+        Some(address) => Ok(address),
+        None => Err(no_tailnet_address()),
+    }
+}
+
+/// The `ip:port` this device advertises for pairing, when it has one.
+fn remote_address(state: &Arc<ServerState>) -> Option<String> {
     let addresses = state.remote_addresses();
     let port = state.remote_port();
     match (addresses.first(), port) {
-        (Some(address), Some(port)) => Ok(format!("{address}:{port}")),
-        _ => Err(WireError::new(
-            ErrorCode::InvalidRequest,
-            "This device has no tailnet address to pair over.\
-             Start Tailscale, then show a code again.",
-        )),
+        (Some(address), Some(port)) => Some(format!("{address}:{port}")),
+        _ => None,
     }
+}
+
+fn no_tailnet_address() -> WireError {
+    WireError::new(
+        ErrorCode::InvalidRequest,
+        // The remedy is real: showing a code again goes through
+        // `pairing_address`, which retries the listener. Nothing here tells the
+        // user to restart the daemon, which used to be the only thing that
+        // worked.
+        "This device has no tailnet address to pair over. Start Tailscale, then show a code again.",
+    )
 }
 
 fn capability_not_supported(id: Option<u64>, capability: &str) -> DaemonMessage {
@@ -4843,6 +5122,131 @@ mod tests {
             serde_json::to_value(&missing).expect("json")["state"],
             "disabled",
             "a missing key is not the same state as a disabled listener"
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+    /// M1: the accept path must not hit the journal per accepted socket. The
+    /// table is loaded once and reused, and every peer mutation drops it so the
+    /// next connection sees the change.
+    #[test]
+    fn the_peer_table_is_loaded_once_and_refreshed_on_change() {
+        let (path, state) = temp_state("peer-table-cache");
+
+        // First read loads; the next N reads within the TTL do not.
+        let first = state.peer_table().expect("first load");
+        assert!(first.rows().is_empty(), "no peers yet");
+        let loads_after_first = state.peer_table_loads();
+        for _ in 0..16 {
+            state.peer_table().expect("cached read");
+        }
+        assert_eq!(
+            state.peer_table_loads(),
+            loads_after_first,
+            "16 reads within the TTL must not reload the table"
+        );
+
+        // A pairing invalidates it: the next read sees the new row.
+        state
+            .peer_upsert(PeerRecord {
+                device_id: "6f1e5b7a-0000-4000-8000-00000000c0db".to_string(),
+                display_name: "Peer".to_string(),
+                role: "client".to_string(),
+                public_key: vec![7u8; 32],
+                paired_by_user: None,
+                binding_kind: "tailnet".to_string(),
+                binding_stable_id: Some("npeer".to_string()),
+                binding_node_name: None,
+                binding_login_name: None,
+                address: "100.64.0.2:47831".to_string(),
+                paired_at: 1,
+                revoked_at: None,
+                caps: vec!["view".to_string()],
+            })
+            .expect("store a peer");
+        let after_pairing = state.peer_table().expect("reload after pairing");
+        assert_eq!(after_pairing.rows().len(), 1, "the new peer is visible");
+        assert_eq!(
+            state.peer_table_loads(),
+            loads_after_first + 1,
+            "a pairing loads exactly once more"
+        );
+
+        // A revoke invalidates it too: the row stops owning its address.
+        state
+            .peer_revoke("6f1e5b7a-0000-4000-8000-00000000c0db", 2)
+            .expect("revoke");
+        let after_revoke = state.peer_table().expect("reload after revoke");
+        assert_eq!(
+            after_revoke.rows().len(),
+            1,
+            "the revoked row is still listed"
+        );
+        assert!(
+            after_revoke
+                .by_address(&"100.64.0.2".parse().expect("ip"))
+                .is_none(),
+            "a revoked peer's address must no longer pass the filter"
+        );
+        assert_eq!(state.peer_table_loads(), loads_after_first + 2);
+
+        // And the TTL is a backstop for a mutation path that forgets to
+        // invalidate: a zero TTL forces the next read to reload.
+        state.set_peer_table_ttl(Duration::ZERO);
+        state.peer_table().expect("reload after ttl");
+        assert_eq!(state.peer_table_loads(), loads_after_first + 3);
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    /// C5: the listener is a resource the state owns, started idempotently and
+    /// stoppable. This is the machinery `PairingStart` relies on when it retries
+    /// after the user starts Tailscale, exercised here with the stub transport
+    /// (which binds loopback) so it needs no Tailscale.
+    #[test]
+    fn the_remote_listener_starts_once_and_stops() {
+        let (path, state) = temp_state("listener-lifecycle");
+        // `is_ok()`, not `expect`: the error is an `Arc<dyn PeerTransport>`,
+        // which is not `Debug` and so cannot be printed by `expect`.
+        assert!(
+            state
+                .set_peer_transport(Arc::new(crate::peer_transport::TestTransport::default()))
+                .is_ok(),
+            "the stub transport is installed before anything picks the real one"
+        );
+
+        // Starts, and reports `Enabled` with the bound port.
+        assert!(state.ensure_remote_listener(), "the first call starts it");
+        assert_eq!(state.listener_starts(), 1);
+        assert!(state.has_remote_listener());
+        let enabled = state.remote_state();
+        assert_eq!(
+            enabled.state,
+            devboule_protocol::RemoteStateKind::Enabled,
+            "a started listener is reported as enabled"
+        );
+        assert!(enabled.reason.is_none(), "nothing to explain when it is up");
+
+        // Idempotent: further calls do not start a second listener.
+        for _ in 0..3 {
+            assert!(state.ensure_remote_listener());
+        }
+        assert_eq!(
+            state.listener_starts(),
+            1,
+            "ensure_remote_listener must not start a second listener"
+        );
+
+        // Stopping takes it down, and a start afterwards is refused because the
+        // daemon is shutting down (the stop flag would make a new loop exit at
+        // once, so `listening` would be a lie).
+        state.stop_remote_listener();
+        assert!(!state.has_remote_listener());
+        assert!(
+            !state.ensure_remote_listener(),
+            "a listener must not be started after it has been stopped"
         );
 
         drop(state);

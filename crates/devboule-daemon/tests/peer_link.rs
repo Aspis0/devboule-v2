@@ -54,6 +54,29 @@ fn daemon_bin() -> PathBuf {
     )
 }
 
+/// Two ports that nothing is listening on right now.
+///
+/// The default 47831 is usually taken by the developer's own running app, and a
+/// port that is already bound makes the daemon disable its listener and this
+/// test skip — a false green on the only machine it runs on. Binding an
+/// ephemeral port and releasing it gives a number that is free at probe time;
+/// the window between probe and bind is microseconds, and the skip message above
+/// now says which daemon failed to bind if it closes.
+fn two_free_ports() -> (u16, u16) {
+    let probe = || -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("probe a free port");
+        listener.local_addr().expect("probe address").port()
+    };
+    let first = probe();
+    let second = loop {
+        let candidate = probe();
+        if candidate != first {
+            break candidate;
+        }
+    };
+    (first, second)
+}
+
 fn unique_dir(tag: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(1);
     let dir = std::env::temp_dir().join(format!(
@@ -144,9 +167,14 @@ struct Peer {
 }
 
 impl Peer {
-    /// Spawn with a fixed peer port and the file secret store, and drain
+    /// Spawn with the given peer port and the file secret store, and drain
     /// stderr on its own thread so a full pipe buffer can never block the
     /// daemon.
+    ///
+    /// The port is chosen by the caller from a free-port probe rather than a
+    /// fixed number: a developer running the app holds 47831 with a live
+    /// daemon, and a fixed port would make this test skip (or fail) on exactly
+    /// the machine it is meant to prove itself on.
     fn spawn(tag: &'static str, port: u16) -> Self {
         let dir = unique_dir(tag);
         let paths = RuntimePaths::from_dir(&dir);
@@ -218,6 +246,24 @@ impl Peer {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
+    }
+
+    /// What this daemon says about its listener, for a skip message that
+    /// distinguishes "no Tailscale" from "the port was taken".
+    fn remote_label(&self) -> String {
+        let info = self.self_info();
+        if info.addresses.is_empty() {
+            format!(
+                "disabled ({}), port {}",
+                info.remote
+                    .as_ref()
+                    .and_then(|remote| remote.reason.clone())
+                    .unwrap_or_else(|| "no reason reported".to_string()),
+                info.port
+            )
+        } else {
+            format!("{:?} port {}", info.addresses, info.port)
+        }
     }
 
     /// This daemon's long-term Noise static private key, read out of its own
@@ -364,14 +410,22 @@ fn assert_absent_or_empty(json: &serde_json::Value, key: &str, context: &str) {
 fn two_daemons_pair_over_the_tailnet_and_a_peer_is_restricted() {
     let _guard = lock_tests();
 
-    let a = Peer::spawn("a", 47831);
-    let b = Peer::spawn("b", 47832);
+    // Two ports nobody is using, rather than the defaults: the developer's own
+    // app typically holds 47831, and a collided port would make this test skip
+    // on the one machine where it matters.
+    let (port_a, port_b) = two_free_ports();
+    let a = Peer::spawn("a", port_a);
+    let b = Peer::spawn("b", port_b);
 
     let (Some(address_a), Some(address_b)) = (a.peer_address(), b.peer_address()) else {
+        // Not a silent skip: each daemon's own reason is printed, so a port
+        // taken after the probe, a Tailscale that is not running, and a bug in
+        // this test are distinguishable.
         eprintln!(
-            "SKIP peer_link: this machine has no reachable tailnet address (Tailscale not \
-             running), so the remote listener is disabled and only the local-only paths \
-             remain, which the unit suites already cover"
+            "SKIP peer_link: no reachable tailnet address. A said {}; B said {}. Tailscale is \
+             probably not running, and the unit suites cover every path that does not need it.",
+            a.remote_label(),
+            b.remote_label()
         );
         return;
     };
