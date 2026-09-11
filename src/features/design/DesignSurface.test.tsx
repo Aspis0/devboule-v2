@@ -151,13 +151,10 @@ const DOCUMENT: DesignDocument = {
   contextPrefix: "Editing",
   draftPlaceholder: "Describe the change to Index header…",
   noContextPlaceholder: "Describe what to generate…",
-  tokenFooter: "Values snap to design tokens (DTCG)",
   selectedLayerId: "index-header",
   grounded: true,
   initialState: {
     zoom: 1,
-    radius: 14,
-    flat: false,
     saved: false,
     draft: "",
     hiddenLayerIds: [],
@@ -175,12 +172,6 @@ const DOCUMENT: DesignDocument = {
       kind: "TSX",
       transform: { x: 60, y: 46, width: 300, height: 124 },
     },
-  ],
-  radiusOptions: [
-    { token: "none", value: 0 },
-    { token: "sm", value: 8 },
-    { token: "md", value: 14 },
-    { token: "lg", value: 22 },
   ],
   messages: [
     {
@@ -1743,17 +1734,15 @@ describe("DesignSurface host capabilities", () => {
   it("saves the current on-screen snapshot rather than the loaded snapshot", async () => {
     const saveDocument = vi.fn(async (_document: DesignDocument) => undefined);
     const { container, root } = await renderDesign(createHost({ saveDocument }));
-    const radius = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Set radius.sm, 8 pixels"]',
-    );
+    const hide = container.querySelector<HTMLButtonElement>('[aria-label="Hide Stale queue"]');
     const save = container.querySelector<HTMLButtonElement>(".design-save-primary");
-    if (radius === null || save === null) throw new Error("Save controls missing");
+    if (hide === null || save === null) throw new Error("Save controls missing");
 
-    await act(async () => radius.click());
+    await act(async () => hide.click());
     await act(async () => save.click());
 
     const savedDocument = saveDocument.mock.calls[0]?.[0];
-    expect(savedDocument?.initialState.radius).toBe(8);
+    expect(savedDocument?.initialState.hiddenLayerIds).toContain("stale-queue");
     await act(async () => root.unmount());
   });
 
@@ -1766,13 +1755,11 @@ describe("DesignSurface host capabilities", () => {
         }),
     );
     const { container, root } = await renderDesign(createHost({ saveDocument }));
-    const radius = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Set radius.sm, 8 pixels"]',
-    );
+    const hide = container.querySelector<HTMLButtonElement>('[aria-label="Hide Stale queue"]');
     const save = container.querySelector<HTMLButtonElement>(".design-save-primary");
-    if (radius === null || save === null) throw new Error("Save controls missing");
+    if (hide === null || save === null) throw new Error("Save controls missing");
 
-    await act(async () => radius.click());
+    await act(async () => hide.click());
     await act(async () => save.click());
     const undo = container.querySelector<HTMLButtonElement>('[aria-label="Undo"]');
     if (undo === null || resolveSave === undefined) throw new Error("Save race controls missing");
@@ -2507,7 +2494,7 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("does not offer Duplicate for a repository-backed layer", async () => {
+  it("offers no layer editing controls for a canvas layer", async () => {
     const sourceDocument: DesignDocument = {
       ...DOCUMENT,
       layers: [
@@ -2519,12 +2506,21 @@ describe("DesignSurface host capabilities", () => {
       ],
     };
     const { container, root } = await renderDesign(createHost({}, sourceDocument));
+    const select = container.querySelector<HTMLButtonElement>('[aria-label="Select Index header"]');
+    if (select === null) throw new Error("Layer selection control missing");
+    await act(async () => select.click());
 
+    // One panel only: selecting a layer expands its row instead of opening
+    // a second panel, and layers carry no editable properties.
+    expect(container.querySelector(".design-inspector-panel")).toBeNull();
+    expect(container.querySelector(".design-workspace-inspector-open")).toBeNull();
     expect(
       Array.from(container.querySelectorAll("button")).find(
         (button) => button.textContent === "Duplicate",
       ),
     ).toBeUndefined();
+    expect(container.querySelector('[aria-label="Delete layer"]')).toBeNull();
+    expect(container.querySelector(".design-radius-option")).toBeNull();
     await act(async () => root.unmount());
   });
 
@@ -2921,48 +2917,31 @@ describe("DesignSurface host capabilities", () => {
     await act(async () => root.unmount());
   });
 
-  it("restores a deleted layer through undo", async () => {
+  it("restores a hidden layer through undo and redo", async () => {
     const { container, root } = await renderDesign(
       createHost({ saveDocument: vi.fn(async () => {}) }),
     );
-    const staleQueue = container.querySelector<HTMLButtonElement>(
-      '[aria-label="Select Stale queue"]',
-    );
-    const deleteButton = container.querySelector<HTMLButtonElement>('[aria-label="Delete layer"]');
-    if (staleQueue === null || deleteButton === null) throw new Error("Layer controls missing");
+    const hide = container.querySelector<HTMLButtonElement>('[aria-label="Hide Stale queue"]');
+    if (hide === null) throw new Error("Layer visibility control missing");
 
-    await act(async () => staleQueue.click());
-    await act(async () => deleteButton.click());
+    await act(async () => hide.click());
     expect(
-      container.querySelector('.design-layer-select[aria-label="Select Stale queue"]'),
-    ).toBeNull();
-
-    const undo = container.querySelector<HTMLButtonElement>('[aria-label="Undo"]');
-    if (undo === null) throw new Error("Undo control missing");
-    await act(async () => undo.click());
-
-    expect(
-      container.querySelector('.design-layer-select[aria-label="Select Stale queue"]'),
+      container.querySelector<HTMLButtonElement>('[aria-label="Show Stale queue"]'),
     ).not.toBeNull();
-    await act(async () => root.unmount());
-  });
 
-  it("restores a duplicated layer through undo", async () => {
-    const { container, root } = await renderDesign(
-      createHost({ saveDocument: vi.fn(async () => {}) }),
-    );
-    const duplicate = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent === "Duplicate",
-    );
-    if (duplicate === undefined) throw new Error("Duplicate control missing");
-
-    await act(async () => duplicate.click());
-    expect(container.textContent).toContain("Index header copy");
     const undo = container.querySelector<HTMLButtonElement>('[aria-label="Undo"]');
     if (undo === null) throw new Error("Undo control missing");
     await act(async () => undo.click());
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Hide Stale queue"]'),
+    ).not.toBeNull();
 
-    expect(container.textContent).not.toContain("Index header copy");
+    const redo = container.querySelector<HTMLButtonElement>('[aria-label="Redo"]');
+    if (redo === null) throw new Error("Redo control missing");
+    await act(async () => redo.click());
+    expect(
+      container.querySelector<HTMLButtonElement>('[aria-label="Show Stale queue"]'),
+    ).not.toBeNull();
     await act(async () => root.unmount());
   });
 

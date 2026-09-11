@@ -43,12 +43,9 @@
 .design-generate-button,
 .design-composer-context button,
 .design-zoom-controls button,
-.design-inspector-actions button,
-.design-inspector-close,
+.design-layer-details-close,
 .design-layer-select,
-.design-layer-visibility,
-.design-radius-option,
-.design-segmented-control button {
+.design-layer-visibility {
   border: 0;
   cursor: pointer;
 }
@@ -476,20 +473,11 @@
   min-height: 0;
   overflow: hidden;
   background: var(--design-canvas);
-  /* The inspector is an overlay, not a column: it floats at right:14px over a
-     236px body. The canvas gives that width back only while a layer is
-     selected and the panel is really on screen. An artifact never selects a
-     layer, so reserving it always cost the artifact a third of the width. */
-  --design-canvas-reserved-right: 0px;
-}
-
-.design-workspace-inspector-open {
-  --design-canvas-reserved-right: 264px;
 }
 
 .design-canvas {
   position: absolute;
-  inset: 0 var(--design-canvas-reserved-right) 0 0;
+  inset: 0;
   overflow: hidden;
   background: var(--design-canvas);
 }
@@ -750,8 +738,7 @@
   pointer-events: none;
 }
 
-.design-layers-panel,
-.design-inspector-panel {
+.design-layers-panel {
   position: absolute;
   z-index: 2;
   overflow: hidden;
@@ -766,19 +753,19 @@
   width: 204px;
   border-radius: 12px;
   /* An overlay, not a column: it must never outgrow the canvas it floats
-     over. 40px bottom offset + 14px top margin keep it on screen at any
-     canvas height, and the list scrolls inside it so no row is unreachable. */
+     over. The cap is about half a 704px canvas and never more than the
+     40px bottom offset + 14px top margin allow; the list scrolls inside it
+     so no row is unreachable. */
   display: flex;
   flex-direction: column;
-  max-height: calc(100% - 54px);
+  max-height: min(352px, calc(100% - 54px));
 }
 
 .design-layers-panel > .design-overlay-heading {
   flex: none;
 }
 
-.design-overlay-heading,
-.design-inspector-heading {
+.design-overlay-heading {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -816,6 +803,10 @@
 .design-layer-row {
   display: flex;
   align-items: center;
+  /* Rows never compress: in a column flex container the default shrink lets
+     an expanded row's details overflow onto the next row instead of pushing
+     the list into scrolling. */
+  flex: none;
   min-width: 0;
   min-height: 27px;
   border-radius: 8px;
@@ -872,6 +863,72 @@
 .design-layer-row-selected .design-layer-kind,
 .design-layer-row-selected .design-layer-name-hidden {
   color: var(--ink-soft);
+}
+
+/* The selected section row expands in place: its notes and diagnostics live
+   inside the layers panel, so selecting never opens a second panel and the
+   canvas keeps its full width. */
+.design-layer-row-selected {
+  flex-wrap: wrap;
+}
+
+.design-layer-details {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 8px 8px 8px;
+}
+
+.design-layer-diagnostics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.design-layer-measured,
+.design-layer-anchor {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--silence);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+}
+
+/* The measured size is short and never shrinks: it shares its line only with
+   the close control, so it is always fully visible. The anchor takes the
+   line below and truncates; both stay plain text, hence selectable. */
+.design-layer-measured {
+  flex: none;
+}
+
+.design-layer-anchor {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.design-layer-details-close {
+  display: grid;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  margin-left: auto;
+  padding: 0;
+  color: var(--silence);
+  background: transparent;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.design-layer-details-close:hover,
+.design-layer-details-close:focus-visible {
+  color: var(--ink);
+  background: var(--selection);
 }
 
 .design-layer-visibility {
@@ -944,223 +1001,6 @@
   width: auto;
   padding: 0 10px;
   font-size: 11px;
-}
-
-.design-inspector-panel {
-  top: 14px;
-  right: 14px;
-  width: 236px;
-  border-radius: 12px;
-  box-shadow: 0 6px 22px rgba(var(--ink-rgb), 0.13);
-  /* The workspace clips with overflow:hidden, so on a short window a content-sized
-     panel cuts the Delete row and footer with no way to reach them. Cap the panel
-     to the canvas height and scroll its own content instead. */
-  max-height: calc(100% - 28px);
-  overflow-y: auto;
-}
-
-.design-inspector-heading {
-  height: 35px;
-  padding: 0 11px;
-}
-
-.design-inspector-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.design-inspector-kind,
-.design-inspector-close,
-.design-token-value,
-.design-mono-value,
-.design-hug-label {
-  font-family: "JetBrains Mono", monospace;
-}
-
-.design-inspector-kind {
-  color: var(--silence);
-  font-size: 9px;
-  letter-spacing: 0.1em;
-}
-
-.design-inspector-close {
-  display: grid;
-  flex: none;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  margin-left: auto;
-  padding: 0;
-  color: var(--silence);
-  background: transparent;
-  border-radius: 999px;
-  font-size: 11px;
-}
-
-.design-inspector-close:hover,
-.design-inspector-close:focus-visible {
-  color: var(--ink);
-  background: var(--selection);
-}
-
-.design-inspector-section {
-  padding: 10px 11px;
-  border-bottom: 1px solid var(--border);
-}
-
-.design-inspector-label,
-.design-inspector-label-row {
-  color: var(--silence);
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.design-inspector-label-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.design-token-value {
-  margin-left: auto;
-  color: var(--silence);
-  font-size: 9.5px;
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.design-transform-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.design-transform-field {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  height: 26px;
-  padding: 0 9px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-}
-
-.design-field-label {
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.design-mono-value {
-  font-size: 11px;
-}
-
-.design-hug-label {
-  margin-left: auto;
-  color: var(--terracotta-deep);
-  font-size: 8.5px;
-  letter-spacing: 0.08em;
-}
-
-.design-radius-picker {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-
-.design-radius-option {
-  display: grid;
-  flex: 1;
-  height: 28px;
-  place-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-}
-
-.design-radius-option:hover,
-.design-radius-option:focus-visible,
-.design-radius-option-selected {
-  background: var(--selection);
-  border-color: var(--terracotta);
-}
-
-.design-radius-glyph {
-  width: 13px;
-  height: 13px;
-  border-top: 2px solid var(--ink-soft);
-  border-left: 2px solid var(--ink-soft);
-}
-
-.design-segmented-control {
-  display: flex;
-  gap: 2px;
-  margin-top: 8px;
-  padding: 2px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.design-segmented-control button {
-  flex: 1;
-  height: 24px;
-  color: var(--ink-soft);
-  background: transparent;
-  border-radius: 6px;
-  font-size: 11px;
-}
-
-.design-segmented-control button:hover,
-.design-segmented-control button:focus-visible,
-.design-segmented-control .design-segment-selected {
-  color: var(--terracotta-deep);
-  background: var(--selection);
-}
-
-.design-inspector-actions button {
-  display: grid;
-  flex: 1;
-  height: 26px;
-  place-items: center;
-  color: var(--ink-soft);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  font-size: 11px;
-}
-
-.design-inspector-actions button:hover,
-.design-inspector-actions button:focus-visible {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta);
-}
-
-.design-inspector-actions {
-  display: flex;
-  gap: 6px;
-  padding: 10px 11px;
-}
-
-.design-delete-action:hover,
-.design-delete-action:focus-visible {
-  color: var(--danger-deep) !important;
-  border-color: var(--danger) !important;
-}
-
-.design-inspector-footer {
-  padding: 8px 11px;
-  color: var(--silence);
-  border-top: 1px solid var(--border);
-  font-size: 10px;
 }
 
 .design-assistant {
@@ -2436,7 +2276,7 @@
 }
 
 /* One dot per noted section, at its top-left corner. The panel list and the
-   inspector stay the accessible path; these marks are glanceable only. */
+   expanded row stay the accessible path; these marks are glanceable only. */
 .design-canvas-note-mark {
   position: absolute;
   width: 10px;
@@ -2509,43 +2349,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.design-section-meta {
-  display: grid;
-  gap: 4px;
-  margin: 0 0 8px;
-}
-
-.design-section-meta > div {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-}
-
-.design-section-meta dt {
-  flex: none;
-  width: 64px;
-  color: var(--silence);
-  font-size: 10px;
-}
-
-.design-section-meta dd {
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 11px;
-}
-
-.design-section-preview {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 11.5px;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 .design-section-notes {

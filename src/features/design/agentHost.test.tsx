@@ -2182,7 +2182,9 @@ describe("ACP design host", () => {
 
     expect(mocks.sessionCreate).toHaveBeenCalledTimes(1);
     expect(mocks.sessionAttach).toHaveBeenCalledTimes(1);
-    expect(mocks.oracleStatus).toHaveBeenCalledTimes(1);
+    // Host selection never consults the global Oracle index: generation
+    // grounds on the attached folder instead.
+    expect(mocks.oracleStatus).not.toHaveBeenCalled();
     expect(container.querySelectorAll(".design-message, .design-message-card")).toHaveLength(4);
 
     await act(async () => root.unmount());
@@ -3207,7 +3209,7 @@ describe("design disclosure removal", () => {
     await act(async () => root.unmount());
   });
 
-  it("does not render the old disclosure on the demo fallback surface", async () => {
+  it("does not render the old disclosure when Oracle is unreachable", async () => {
     mocks.oracleStatus.mockRejectedValue(new Error("Oracle daemon unavailable"));
     const { container, root } = createRootContainer();
 

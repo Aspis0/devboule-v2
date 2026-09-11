@@ -34,7 +34,6 @@ export type DesignTranscriptItem =
     };
 
 export type DesignLayerKind = "TSX" | "SVG" | "SECTION";
-export type DesignRadiusToken = "none" | "sm" | "md" | "lg";
 export type DesignMessageStatus = "working" | "done" | "error";
 
 export interface DesignTransform {
@@ -59,11 +58,6 @@ export interface DesignLayer {
    * deleting a measured section is meaningless, so those actions stay hidden.
    */
   section?: { tag: string; anchor: string };
-}
-
-export interface DesignRadiusOption {
-  token: DesignRadiusToken;
-  value: number;
 }
 
 /**
@@ -194,8 +188,6 @@ export type DesignGenerationOptions = (
 export interface DesignInitialState {
   // Initial values; zoom seeds the view but is not rewritten by document saves.
   zoom: number;
-  radius: number;
-  flat: boolean;
   saved: boolean;
   draft: string;
   hiddenLayerIds: readonly string[];
@@ -207,7 +199,6 @@ export interface DesignDocument {
   contextPrefix: string;
   draftPlaceholder: string;
   noContextPlaceholder: string;
-  tokenFooter: string;
   initialState: DesignInitialState;
   // Persisted document preferences, kept outside the undo snapshot.
   selectedLayerId: string;
@@ -216,7 +207,6 @@ export interface DesignDocument {
   layerNotice?: string;
   /** Anchored agent notes, in creation order. Absent means none were ever added. */
   sectionNotes?: readonly SectionNote[];
-  radiusOptions: readonly DesignRadiusOption[];
   messages: readonly DesignMessage[];
   workingMessage: Pick<DesignAssistantMessage, "title" | "desc">;
 }

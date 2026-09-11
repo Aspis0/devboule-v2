@@ -106,12 +106,7 @@ export function collectArtifactStructure(): ArtifactSection[] {
 
   function isHeadingTag(tag: string): boolean {
     return (
-      tag === "h1" ||
-      tag === "h2" ||
-      tag === "h3" ||
-      tag === "h4" ||
-      tag === "h5" ||
-      tag === "h6"
+      tag === "h1" || tag === "h2" || tag === "h3" || tag === "h4" || tag === "h5" || tag === "h6"
     );
   }
   function pathFor(element: Element): string {
@@ -197,14 +192,7 @@ export function collectArtifactStructure(): ArtifactSection[] {
     } else {
       const headingText = firstHeadingText(element);
       const role = landmarkRoleName(tag);
-      name =
-        headingText !== ""
-          ? headingText
-          : labelled !== ""
-            ? labelled
-            : id !== ""
-              ? id
-              : role;
+      name = headingText !== "" ? headingText : labelled !== "" ? labelled : id !== "" ? id : role;
     }
     // Depth below <body>: pathFor counts body[1] as the root, so parts minus body.
     const depth = anchor === id ? pathDepth(element) : anchor.split("/").length - 1;

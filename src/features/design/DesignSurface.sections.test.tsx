@@ -81,22 +81,15 @@ const DOCUMENT: DesignDocument = {
   contextPrefix: "Editing",
   draftPlaceholder: "Describe the change…",
   noContextPlaceholder: "Describe what to generate…",
-  tokenFooter: "Surface state only.",
   selectedLayerId: "",
   grounded: true,
   initialState: {
     zoom: 1,
-    radius: 14,
-    flat: false,
     saved: true,
     draft: "",
     hiddenLayerIds: [],
   },
   layers: [],
-  radiusOptions: [
-    { token: "none", value: 0 },
-    { token: "md", value: 14 },
-  ],
   messages: [],
   workingMessage: {
     title: "Generating…",
@@ -351,9 +344,9 @@ describe("DesignSurface direct-on-canvas section selection", () => {
       await Promise.resolve();
     });
 
-    const inspector = container.querySelector(".design-inspector-panel");
-    if (inspector === null) throw new Error("Section inspector missing after overlay click");
-    expect(inspector.textContent).toContain("body[1]/main[1]/section[1]/h2[1]");
+    const details = container.querySelector(".design-layer-details");
+    if (details === null) throw new Error("Section details missing after overlay click");
+    expect(details.textContent).toContain("body[1]/main[1]/section[1]/h2[1]");
     // One state, not two: the panel row for the same section marks selected.
     const selectedRows = container.querySelectorAll(".design-layer-row-selected");
     expect(selectedRows).toHaveLength(1);
@@ -383,8 +376,8 @@ describe("DesignSurface direct-on-canvas section selection", () => {
     const hover = container.querySelector<HTMLElement>(".design-canvas-section-hover");
     if (hover === null) throw new Error("Section hover highlight missing");
     expect(hover.style.width).toBe("600px");
-    // Hover alone selects nothing: no inspector, no marked row.
-    expect(container.querySelector(".design-inspector-panel")).toBeNull();
+    // Hover alone selects nothing: no expanded row, no marked row.
+    expect(container.querySelector(".design-layer-details")).toBeNull();
     expect(container.querySelector(".design-layer-row-selected")).toBeNull();
 
     await act(async () => {
@@ -416,7 +409,7 @@ describe("DesignSurface page sections", () => {
     await act(async () => root.unmount());
   });
 
-  it("selects a section into a section inspector with a canvas highlight", async () => {
+  it("expands the selected section row in place with a canvas highlight", async () => {
     const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
     const host = createHost({ generate });
     const { container, root } = await renderDesign(host);
@@ -427,17 +420,28 @@ describe("DesignSurface page sections", () => {
       await Promise.resolve();
     });
 
-    const inspector = container.querySelector(".design-inspector-panel");
-    if (inspector === null) throw new Error("Section inspector missing");
-    expect(inspector.textContent).toContain("<main>");
-    expect(inspector.textContent).toContain("body[1]/main[1]");
-    expect(inspector.textContent).toContain("1280 × 600 px");
+    // One panel only: the row expands where it is, and the canvas keeps its
+    // full width instead of reserving a second panel's share.
+    expect(container.querySelector(".design-inspector-panel")).toBeNull();
+    expect(container.querySelector(".design-workspace-inspector-open")).toBeNull();
+    const selectedRow = container.querySelector(".design-layer-row-selected");
+    if (selectedRow === null) throw new Error("Selected section row missing");
+    // The tag stays the row badge; the expanded row adds only what the row
+    // does not already say: the anchor and the measured size.
+    expect(selectedRow.querySelector(".design-layer-kind")?.textContent).toBe("main");
+    const details = selectedRow.querySelector(".design-layer-details");
+    if (details === null) throw new Error("Section details missing");
+    expect(details.textContent).toContain("body[1]/main[1]");
+    expect(details.textContent).toContain("1280 × 600 px");
+    expect(
+      details.querySelector('input[aria-label="Note for the agent on this section"]'),
+    ).not.toBeNull();
     // Canvas-node controls are meaningless for a measured section.
-    expect(inspector.querySelector(".design-radius-option")).toBeNull();
-    expect(inspector.textContent).not.toContain("Corners");
-    expect(inspector.textContent).not.toContain("Elevation");
-    expect(inspector.textContent).not.toContain("Duplicate");
-    expect(inspector.textContent).not.toContain("Delete");
+    expect(details.querySelector(".design-radius-option")).toBeNull();
+    expect(details.textContent).not.toContain("Corners");
+    expect(details.textContent).not.toContain("Elevation");
+    expect(details.textContent).not.toContain("Duplicate");
+    expect(details.textContent).not.toContain("Delete");
 
     // World highlight: artifact origin (60, 46) plus the measured page rect.
     const highlight = container.querySelector<HTMLElement>(".design-canvas-section-highlight");
@@ -472,9 +476,143 @@ describe("DesignSurface page sections", () => {
       await Promise.resolve();
     });
 
-    const inspector = container.querySelector(".design-inspector-panel");
-    if (inspector === null) throw new Error("Section inspector missing after canvas click");
-    expect(inspector.textContent).toContain("body[1]/main[1]");
+    const details = container.querySelector(".design-layer-details");
+    if (details === null) throw new Error("Section details missing after canvas click");
+    expect(details.textContent).toContain("body[1]/main[1]");
+    await act(async () => root.unmount());
+  });
+
+  it("deselects the section from its expanded row and restores the full canvas", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
+    const host = createHost({ generate });
+    const { container, root } = await renderDesign(host);
+    await generateArtifact(container, generate, "Build a shop page.");
+
+    await act(async () => {
+      layerRowByName(container, "Deals").click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".design-layer-details")).not.toBeNull();
+
+    const deselect = container.querySelector<HTMLButtonElement>('[aria-label="Deselect section"]');
+    if (deselect === null) throw new Error("Deselect control missing");
+    await act(async () => {
+      deselect.click();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector(".design-layer-row-selected")).toBeNull();
+    expect(container.querySelector(".design-layer-details")).toBeNull();
+    expect(container.querySelector(".design-workspace-inspector-open")).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector(".design-canvas"));
+    await act(async () => root.unmount());
+  });
+
+  it("shows the rounded measured size first, with the anchor below it", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
+    const host = createHost({ generate });
+    const { container, root } = await renderDesign(host);
+    // Own flow instead of generateArtifact: that helper caches the standard
+    // sections, which would overwrite this fractional-measure cache.
+    setCachedArtifactSections(ARTIFACT_HTML, [
+      {
+        anchor: "body[1]/div[1]/div[1]/div[1]/nav[1]",
+        tag: "nav",
+        name: "Nav",
+        depth: 4,
+        rect: { x: 10, y: 10, width: 286.84, height: 21.7 },
+      },
+    ]);
+    await fillDraft(container, "Build a nav.");
+    const send = container.querySelector<HTMLButtonElement>(".design-generate-button");
+    if (send === null) throw new Error("Generate control missing");
+    await act(async () => {
+      send.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(generate).toHaveBeenCalled();
+
+    await act(async () => {
+      layerRowByName(container, "Nav").click();
+      await Promise.resolve();
+    });
+
+    const details = container.querySelector(".design-layer-details");
+    if (details === null) throw new Error("Section details missing");
+    const measured = details.querySelector(".design-layer-measured");
+    const anchor = details.querySelector(".design-layer-anchor");
+    if (measured === null || anchor === null) throw new Error("Diagnostics lines missing");
+    // Rounded to integers: the fractional measure never reaches the user.
+    expect(measured.textContent).toBe("287 × 22 px");
+    expect(details.textContent).not.toContain("286.84");
+    expect(details.textContent).not.toContain("21.7");
+    expect(anchor.textContent).toBe("body[1]/div[1]/div[1]/div[1]/nav[1]");
+    // The size owns the first line; the anchor follows it.
+    expect(
+      measured.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await act(async () => root.unmount());
+  });
+
+  it("lets the note field own the first Escape instead of deselecting", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
+    const host = createHost({ generate });
+    const { container, root } = await renderDesign(host);
+    await generateArtifact(container, generate, "Build a shop page.");
+
+    await act(async () => {
+      layerRowByName(container, "Deals").click();
+      await Promise.resolve();
+    });
+    const field = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Note for the agent on this section"]',
+    );
+    if (field === null) throw new Error("Note field missing");
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (setValue === undefined) throw new Error("input value setter did not exist");
+    await act(async () => {
+      setValue.call(field, "half-written note");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // First Escape with a draft clears the draft and keeps the selection.
+    await act(async () => {
+      field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(field.value).toBe("");
+    expect(container.querySelector(".design-layer-row-selected")).not.toBeNull();
+    expect(container.querySelector(".design-layer-details")).not.toBeNull();
+
+    // Second Escape on the empty field deselects, as before.
+    await act(async () => {
+      field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".design-layer-row-selected")).toBeNull();
+    expect(container.querySelector(".design-layer-details")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("submits the note to the current anchor after a parent re-render", async () => {
+    const generate = vi.fn(async () => ({ ...GENERATION_BASE, artifactHtml: ARTIFACT_HTML }));
+    const host = createHost({ generate });
+    const { container, root } = await renderDesign(host);
+    await generateArtifact(container, generate, "Build a shop page.");
+
+    await act(async () => {
+      layerRowByName(container, "Deals").click();
+      await Promise.resolve();
+    });
+    // Typing in the composer re-renders the surface without touching the
+    // selection: the stabilized submit callback must still close over the
+    // current anchor, not a stale one.
+    await fillDraft(container, "Refine the deals.");
+    await fillNote(container, "Make the CTA louder.");
+
+    const dealsRow = layerRowByName(container, "Deals").closest(".design-layer-row");
+    expect(dealsRow?.querySelector(".design-layer-note-dot")).not.toBeNull();
     await act(async () => root.unmount());
   });
 

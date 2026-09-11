@@ -75,14 +75,11 @@ const DOCUMENT: DesignDocument = {
   contextPrefix: "Editing",
   draftPlaceholder: "Describe the change…",
   noContextPlaceholder: "Describe what to generate…",
-  tokenFooter: "Values snap to design tokens (DTCG)",
   layerNotice: "Some indexed layers may be missing.",
   selectedLayerId: "oracle-panel",
   grounded: true,
   initialState: {
     zoom: 1,
-    radius: 14,
-    flat: false,
     saved: false,
     draft: "",
     hiddenLayerIds: [],
@@ -94,10 +91,6 @@ const DOCUMENT: DesignDocument = {
       kind: "TSX",
       transform: { x: 100, y: 120, width: 300, height: 180 },
     },
-  ],
-  radiusOptions: [
-    { token: "none", value: 0 },
-    { token: "md", value: 14 },
   ],
   messages: [],
   workingMessage: {
@@ -168,57 +161,12 @@ describe("DesignSurface panels", () => {
     expect(bottom).toBeLessThanOrEqual(700 - margin);
   });
 
-  it("closes the inspector with a real keyboard-reachable control", async () => {
+  it("keeps a single panel and deselects with Escape back to the canvas", async () => {
     const { container, root } = await renderDesign();
-    const close = container.querySelector<HTMLButtonElement>(".design-inspector-close");
-    if (close === null) throw new Error("Inspector close control missing");
-
-    expect(close.tagName).toBe("BUTTON");
-    expect(close.getAttribute("aria-label")).toBe("Close inspector");
-    expect(close.getAttribute("aria-hidden")).toBeNull();
-    close.focus();
-    expect(document.activeElement).toBe(close);
-
-    await act(async () => {
-      close.click();
-      await Promise.resolve();
-    });
+    // A selected layer marks its row: no second panel ever opens.
+    expect(container.querySelector(".design-layer-row-selected")).not.toBeNull();
     expect(container.querySelector(".design-inspector-panel")).toBeNull();
-    expect(document.activeElement).toBe(container.querySelector(".design-canvas"));
-
-    await act(async () => root.unmount());
-  });
-
-  it("keeps Escape ownership with the focused inspector, body, History, or craft popover", async () => {
-    const { container, root } = await renderDesign(DOCUMENT, {
-      generate: vi.fn(async () => ({
-        sessionId: "panel-test",
-        peerSessionId: null,
-        createdAtMs: null,
-        prompt: "panel test",
-        title: "Panel test",
-        desc: "Panel test",
-        sources: [],
-        nodeIds: [],
-      })),
-    });
-    const close = container.querySelector<HTMLButtonElement>(".design-inspector-close");
-    if (close === null) throw new Error("Inspector close control missing");
-    expect(container.querySelector(".design-inspector-panel")).not.toBeNull();
-    close.focus();
-
-    await act(async () => {
-      close.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(container.querySelector(".design-inspector-panel")).toBeNull();
-    expect(document.activeElement).toBe(container.querySelector(".design-canvas"));
-
-    const layer = container.querySelector<HTMLButtonElement>(".design-layer-select");
-    if (layer === null) throw new Error("Layer selection control missing");
-    await act(async () => layer.click());
-    expect(container.querySelector(".design-inspector-panel")).not.toBeNull();
+    expect(container.querySelector(".design-workspace-inspector-open")).toBeNull();
 
     const previousBodyTabIndex = document.body.getAttribute("tabindex");
     try {
@@ -235,10 +183,27 @@ describe("DesignSurface panels", () => {
       else document.body.setAttribute("tabindex", previousBodyTabIndex);
     }
 
-    expect(container.querySelector(".design-inspector-panel")).toBeNull();
+    expect(container.querySelector(".design-layer-row-selected")).toBeNull();
     expect(document.activeElement).toBe(container.querySelector(".design-canvas"));
-    await act(async () => layer.click());
-    expect(container.querySelector(".design-inspector-panel")).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps Escape ownership with the body, History, or craft popover", async () => {
+    const { container, root } = await renderDesign(DOCUMENT, {
+      generate: vi.fn(async () => ({
+        sessionId: "panel-test",
+        peerSessionId: null,
+        createdAtMs: null,
+        prompt: "panel test",
+        title: "Panel test",
+        desc: "Panel test",
+        sources: [],
+        nodeIds: [],
+      })),
+    });
+    // The fixture document arrives with its layer selected.
+    expect(container.querySelector(".design-layer-row-selected")).not.toBeNull();
 
     const trigger = container.querySelector<HTMLButtonElement>(
       'button[aria-controls="design-history-popover"]',
@@ -257,7 +222,8 @@ describe("DesignSurface panels", () => {
 
     expect(popover.hidden).toBe(true);
     expect(document.activeElement).toBe(trigger);
-    expect(container.querySelector(".design-inspector-panel")).not.toBeNull();
+    // The popover owned that Escape: the layer stays selected.
+    expect(container.querySelector(".design-layer-row-selected")).not.toBeNull();
 
     const craftTrigger = container.querySelector<HTMLButtonElement>(
       'button[data-design-skill-mode-trigger="true"]',
@@ -278,7 +244,25 @@ describe("DesignSurface panels", () => {
 
     expect(container.querySelector("#design-skill-picker")).toBeNull();
     expect(document.activeElement).toBe(craftTrigger);
-    expect(container.querySelector(".design-inspector-panel")).not.toBeNull();
+    expect(container.querySelector(".design-layer-row-selected")).not.toBeNull();
+
+    const previousBodyTabIndex = document.body.getAttribute("tabindex");
+    try {
+      document.body.setAttribute("tabindex", "-1");
+      document.body.focus();
+      expect(document.activeElement).toBe(document.body);
+
+      await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+        await Promise.resolve();
+      });
+    } finally {
+      if (previousBodyTabIndex === null) document.body.removeAttribute("tabindex");
+      else document.body.setAttribute("tabindex", previousBodyTabIndex);
+    }
+
+    expect(container.querySelector(".design-layer-row-selected")).toBeNull();
+    expect(document.activeElement).toBe(container.querySelector(".design-canvas"));
     await act(async () => root.unmount());
   });
 
