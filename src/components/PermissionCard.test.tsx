@@ -20,6 +20,7 @@ import {
   PermissionCard,
   permissionOriginLabel,
   permissionSubject,
+  shortenDeviceId,
   shortenPermissionTarget,
 } from "./PermissionCard";
 
@@ -114,10 +115,26 @@ describe("shortenPermissionTarget", () => {
 });
 
 describe("permissionOriginLabel", () => {
-  it("labels a peer origin with the device and its role", () => {
-    expect(permissionOriginLabel({ kind: "peer", deviceId: "device-1", role: "daemon" })).toBe(
-      "Device: device-1 · Role: daemon",
+  const peerDeviceId = "9f6b0f2e-6f1c-4a1e-9c62-1e2f7d59a9c3";
+
+  it("names the device through the workspace's device map", () => {
+    expect(
+      permissionOriginLabel(
+        { kind: "peer", deviceId: "device-phone", role: "client" },
+        new Map([["device-phone", "Xiaomi 14"]]),
+      ),
+    ).toBe("Device: Xiaomi 14 · Role: client");
+  });
+
+  it("shows the head of an unknown device id, never the whole UUID", () => {
+    const label = permissionOriginLabel(
+      { kind: "peer", deviceId: peerDeviceId, role: "daemon" },
+      new Map(),
     );
+    expect(label).toBe("Device: 9f6b0f2e… · Role: daemon");
+    expect(label).not.toContain(peerDeviceId);
+    // An id short enough to read is left alone.
+    expect(shortenDeviceId("device-1")).toBe("device-1");
   });
 
   it("has nothing to say about a local or absent origin", () => {
@@ -160,6 +177,7 @@ describe("PermissionCard", () => {
           request={request}
           capabilities={["typed_permissions"]}
           origin={{ kind: "peer", deviceId: "device-1", role: "daemon" }}
+          deviceNames={new Map([["device-1", "Xiaomi 14"]])}
         />,
       );
     });
@@ -168,7 +186,7 @@ describe("PermissionCard", () => {
     if (card === null) throw new Error("permission card did not render");
     const provenance = card.firstElementChild;
     expect(provenance?.className).toBe("permission-card-origin");
-    expect(provenance?.textContent).toBe("Device: device-1 · Role: daemon");
+    expect(provenance?.textContent).toBe("Device: Xiaomi 14 · Role: daemon");
     // The request's own text renders below the provenance, in its own elements:
     // a command that prints a header of its own cannot land in this element.
     expect(card.querySelector(".permission-card-command")?.textContent).toBe(
@@ -179,6 +197,7 @@ describe("PermissionCard", () => {
   });
 
   it("reads the origin the daemon put on the request when the host passes none", async () => {
+    const unknownDeviceId = "9f6b0f2e-6f1c-4a1e-9c62-1e2f7d59a9c3";
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -190,16 +209,17 @@ describe("PermissionCard", () => {
           subscriptionId={41}
           request={{
             ...request,
-            origin: { kind: "peer", deviceId: "device-2", role: "client" },
+            origin: { kind: "peer", deviceId: unknownDeviceId, role: "client" },
           }}
           capabilities={["typed_permissions"]}
         />,
       );
     });
 
-    expect(container.querySelector(".permission-card-origin")?.textContent).toBe(
-      "Device: device-2 · Role: client",
-    );
+    const provenance = container.querySelector(".permission-card-origin")?.textContent ?? "";
+    expect(provenance).toBe("Device: 9f6b0f2e… · Role: client");
+    // No name resolved, and the raw UUID is not what a person is shown.
+    expect(provenance).not.toContain(unknownDeviceId);
 
     await act(async () => root.unmount());
   });

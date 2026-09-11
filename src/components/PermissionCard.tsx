@@ -107,6 +107,22 @@ export function formatPermissionCommand(request: PermissionRequest): string | nu
   return [request.command, ...request.args].map(quotePermissionArg).join(" ");
 }
 
+/** How much of a device id a provenance line shows when no name resolved. */
+export const PERMISSION_DEVICE_ID_LIMIT = 8;
+
+/**
+ * The head of a device id, for a line that has no display name to show.
+ *
+ * A device id is a UUID, and a UUID in a provenance line is noise. The head is
+ * the same idea as a key fingerprint: enough to match against the Devices panel
+ * without reading the whole string aloud. The card never prints the raw id.
+ */
+export function shortenDeviceId(deviceId: string): string {
+  return deviceId.length <= PERMISSION_DEVICE_ID_LIMIT
+    ? deviceId
+    : `${deviceId.slice(0, PERMISSION_DEVICE_ID_LIMIT)}…`;
+}
+
 /**
  * The provenance line for a permission card, or null when the session is not a
  * peer's.
@@ -114,13 +130,21 @@ export function formatPermissionCommand(request: PermissionRequest): string | nu
  * The line is built from the origin alone, never from the request's own text:
  * on a remote-origin turn the tool input is chosen upstream, so a header it
  * prints itself would be indistinguishable from the provenance if the two
- * shared a text run. `unknown` stands in for a field the daemon did not send,
- * matching `sessionStateLabel`'s vocabulary — a peer origin always carries
- * both fields, so this is a guard, not a case in normal use.
+ * shared a text run. The device is named through the workspace's `DevicesList`
+ * map when it has an entry; otherwise the id's head stands in. `unknown` does
+ * for a field the daemon did not send, matching `sessionStateLabel`'s
+ * vocabulary — a peer origin always carries both, so that is a guard, not a
+ * case in normal use.
  */
-export function permissionOriginLabel(origin: SessionOrigin | undefined): string | null {
+export function permissionOriginLabel(
+  origin: SessionOrigin | undefined,
+  deviceNames?: ReadonlyMap<string, string> | null,
+): string | null {
   if (origin?.kind !== "peer") return null;
-  return `Device: ${origin.deviceId ?? "unknown"} · Role: ${origin.role ?? "unknown"}`;
+  const { deviceId } = origin;
+  const name = deviceId === undefined ? undefined : deviceNames?.get(deviceId);
+  const device = name ?? (deviceId === undefined ? "unknown" : shortenDeviceId(deviceId));
+  return `Device: ${device} · Role: ${origin.role ?? "unknown"}`;
 }
 
 export interface PermissionCardProps {
@@ -142,6 +166,12 @@ export interface PermissionCardProps {
    * the `origin` the daemon put on the request itself.
    */
   origin?: SessionOrigin;
+  /**
+   * Device id to display name, the same `DevicesList` map the session badge
+   * resolves against. A peer origin names a device; handed no map, the card has
+   * only the id and prints its head instead of the whole UUID.
+   */
+  deviceNames?: ReadonlyMap<string, string>;
   onRespond?: (outcome: "allow_once" | "deny") => Promise<void>;
   onResolved?: (sessionId: string, toolCallId: string) => void;
 }
@@ -155,6 +185,7 @@ export function PermissionCard({
   daemonState = "connected",
   toolTitle = null,
   origin,
+  deviceNames,
   onRespond,
   onResolved,
 }: PermissionCardProps) {
@@ -185,7 +216,7 @@ export function PermissionCard({
   if (!capabilities.includes("typed_permissions") && daemonState === "connected") return null;
 
   const subject = permissionSubject(request, toolTitle);
-  const provenance = permissionOriginLabel(origin ?? request.origin);
+  const provenance = permissionOriginLabel(origin ?? request.origin, deviceNames);
   const commandLine = formatPermissionCommand(request);
   const daemonReachable = daemonState === "connected";
   const allowSupported = request.options.some((option) => option.kind === "allow_once");

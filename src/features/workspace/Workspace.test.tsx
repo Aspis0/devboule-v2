@@ -343,6 +343,18 @@ function setSearchValue(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+/**
+ * A promise the test resolves itself, so a mocked read lands when the test says
+ * it does instead of when a guessed number of `act` ticks happen to elapse.
+ */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("Workspace sessions", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
@@ -2194,15 +2206,25 @@ describe("Workspace sessions", () => {
   });
 
   it("shows no origin badge on a local session's tab", async () => {
+    const devicesRead = deferred<DevicesReply>();
+    vi.mocked(devicesList).mockReturnValue(devicesRead.promise);
     root = createRoot(container);
     await act(async () => {
       root.render(<Workspace />);
     });
-    await act(async () => undefined);
+    await vi.waitFor(() => {
+      expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
+      expect(devicesList).toHaveBeenCalledTimes(1);
+    });
+    // Assert after the device read has landed, so "no badge" says something
+    // about a local session rather than about a map that has not arrived yet.
+    await act(async () => {
+      devicesRead.resolve(devicesReply);
+    });
 
     const tab = container.querySelector(".workspace-session-tab");
     if (tab === null) throw new Error("session tab did not render");
-    expect(tab.querySelector(".session-origin-badge")).toBeNull();
+    expect(tab.querySelector(".workspace-session-origin-badge")).toBeNull();
   });
 
   it("names the device on a peer session's tab", async () => {
@@ -2212,21 +2234,26 @@ describe("Workspace sessions", () => {
         origin: { kind: "peer", deviceId: "device-phone", role: "client" },
       },
     ]);
+    const devicesRead = deferred<DevicesReply>();
+    vi.mocked(devicesList).mockReturnValue(devicesRead.promise);
     root = createRoot(container);
     await act(async () => {
       root.render(<Workspace />);
     });
-    // Two ticks: the tab renders from the session list, and the badge is named
-    // by the devices read the same connection started.
-    await act(async () => undefined);
-    await act(async () => undefined);
+    await vi.waitFor(() => {
+      expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
+      expect(devicesList).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {
+      devicesRead.resolve(devicesReply);
+    });
 
     const badge = container.querySelector<HTMLElement>(
-      ".workspace-session-tab .session-origin-badge",
+      ".workspace-session-tab .workspace-session-origin-badge",
     );
     expect(badge?.textContent).toBe("from Xiaomi 14");
-    // The name comes from the devices list, which the connection loads once.
-    expect(devicesList).toHaveBeenCalledTimes(1);
+    // The full text survives the tab's truncation, which CSS does.
+    expect(badge?.title).toBe("from Xiaomi 14");
   });
 
   it("falls back to the device id for a device the list does not know", async () => {
@@ -2240,11 +2267,44 @@ describe("Workspace sessions", () => {
     await act(async () => {
       root.render(<Workspace />);
     });
-    await act(async () => undefined);
 
-    const badge = container.querySelector<HTMLElement>(
-      ".workspace-session-tab .session-origin-badge",
-    );
-    expect(badge?.textContent).toBe("from device-unseen");
+    // Poll the DOM instead of guessing how many ticks React needs: the badge is
+    // there exactly when the devices read has been applied.
+    await vi.waitFor(() => {
+      expect(
+        container.querySelector(".workspace-session-tab .workspace-session-origin-badge")
+          ?.textContent,
+      ).toBe("from device-unseen");
+    });
+  });
+
+  it("names the peer device on the permission card's provenance line", async () => {
+    const peerAgent: Session = {
+      ...acpSession("peer-agent", "remote agent"),
+      origin: { kind: "peer", deviceId: "device-phone", role: "client" },
+    };
+    vi.mocked(sessionsList).mockResolvedValue([peerAgent]);
+    const devicesRead = deferred<DevicesReply>();
+    vi.mocked(devicesList).mockReturnValue(devicesRead.promise);
+    root = createRoot(container);
+    await act(async () => {
+      root.render(<Workspace />);
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector(".workspace-session-tab")).not.toBeNull();
+      expect(devicesList).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {
+      devicesRead.resolve(devicesReply);
+    });
+
+    const emit = container.querySelector<HTMLButtonElement>("[data-testid=emit-permission-a]");
+    if (emit === null) throw new Error("permission emitter did not render");
+    await act(async () => emit.click());
+
+    const provenance = container.querySelector(".permission-card-origin");
+    expect(provenance?.textContent).toBe("Device: Xiaomi 14 · Role: client");
+    // The card must never fall back to the raw device id.
+    expect(provenance?.textContent).not.toContain("device-phone");
   });
 });

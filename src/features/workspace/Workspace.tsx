@@ -719,7 +719,9 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                 />
                 <span className="workspace-tab-label">{sessionTitle(session)}</span>
                 {originBadge !== null ? (
-                  <span className="session-origin-badge">{originBadge}</span>
+                  <span className="workspace-session-origin-badge" title={originBadge}>
+                    {originBadge}
+                  </span>
                 ) : null}
                 <span className="workspace-tab-meta">
                   {sessionStateLabel(session.state, session.elapsedMs)}
@@ -789,6 +791,8 @@ export function Workspace({ sidePanelRegistry = SIDE_PANEL_REGISTRY }: Workspace
                       request={selectedPermission.request}
                       capabilities={daemon.capabilities}
                       daemonState={daemon.state}
+                      origin={selectedSession?.origin}
+                      deviceNames={peerNames}
                       onResolved={handlePermissionResolved}
                     />
                   ) : undefined

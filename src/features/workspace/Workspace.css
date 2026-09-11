@@ -536,8 +536,11 @@
 
 /* The peer-origin badge names the device a session belongs to. It is its own
    element beside the title, never part of the tab's text, so the session's own
-   title cannot pass as provenance. */
-.session-origin-badge {
+   title cannot pass as provenance. A long device name truncates inside the tab
+   instead of widening it; the full text stays on the element's `title`. */
+.workspace-session-origin-badge {
+  max-width: 16ch;
+  overflow: hidden;
   padding: 1px 7px;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
@@ -545,6 +548,7 @@
   background: var(--surface-muted);
   font-size: 10px;
   font-weight: 600;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
