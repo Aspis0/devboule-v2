@@ -92,7 +92,7 @@ required-features = ["full"]
 [dependencies]
 fastembed = { version = "6", features = ["qwen3"], optional = true }
 candle-core = { version = "0.11", optional = true }
-lancedb = { version = "0.37", optional = true }
+lancedb = { version = "0.38", optional = true }
 arrow-array = { version = "58.3", optional = true }
 arrow-schema = { version = "58.3", optional = true }
 futures = { version = "0.3", optional = true }
