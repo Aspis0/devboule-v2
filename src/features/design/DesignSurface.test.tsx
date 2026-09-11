@@ -4102,6 +4102,10 @@ describe("artifact export copy", () => {
     const pill = container.querySelector(".design-zoom-controls");
     if (pill === null) throw new Error("Canvas controls missing");
     expect(pill.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
+    // Both export actions, because a control that exists but is never mounted
+    // is indistinguishable from one that was never written: Save HTML shipped
+    // unreachable until this assertion existed.
+    expect(pill.querySelector('button[aria-label="Save HTML"]')).not.toBeNull();
     const header = container.querySelector(".design-assistant-header");
     if (header === null) throw new Error("Assistant header missing");
     expect(header.querySelector('button[aria-label="Copy HTML"]')).toBeNull();

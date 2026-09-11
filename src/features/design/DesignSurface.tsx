@@ -23,6 +23,7 @@ import type {
   SectionNote,
 } from "./designHost";
 import { buildStandaloneArtifactHtml } from "./artifactExport";
+import { ArtifactSaveControl } from "./ArtifactSaveControl";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
 import {
@@ -1427,7 +1428,10 @@ const ZoomControls = memo(function ZoomControls({
           The pill sizes to its content and is anchored right, so it cannot
           overflow its box toward the layer panel in the opposite corner. */}
       {artifactHtml !== undefined ? (
-        <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
+        <>
+          <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
+          <ArtifactSaveControl html={artifactHtml} title={artifactTitle} />
+        </>
       ) : null}
     </div>
   );
