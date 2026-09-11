@@ -22,7 +22,8 @@ import type {
   PendingPermission,
   SectionNote,
 } from "./designHost";
-import { buildStandaloneArtifactHtml } from "./artifactExport";
+import { ARTIFACT_CSP_META } from "./artifactCsp";
+import { ArtifactCopyControl } from "./ArtifactCopyControl";
 import { ArtifactSaveControl } from "./ArtifactSaveControl";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
@@ -1446,9 +1447,6 @@ const ARTIFACT_NODE_WIDTH = ARTIFACT_PAGE_WIDTH;
 const ARTIFACT_NODE_GAP = 32;
 const ARTIFACT_NODE_ID = "generated-artifact";
 const ARTIFACT_CONTEXT_NAME = "Generated artifact";
-const ARTIFACT_CSP =
-  "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; manifest-src 'none'";
-const ARTIFACT_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_CSP}" />`;
 // A gutter, not a frame. The generated page is authored at 1280px and the
 // canvas next to a 366px assistant column is under 900px, so every pixel of
 // margin is a pixel the page does not get: at 80 per side the page fitted at
@@ -2341,71 +2339,6 @@ const DesignTranscriptRow = memo(function DesignTranscriptRow({
     </div>
   );
 });
-
-function ArtifactCopyControl({ html, title }: { html: string; title: string | undefined }) {
-  // Same shape as the diagnostics copy in settings: one write, a short
-  // "Copied." on success, a visible failure when the browser blocks the
-  // clipboard. The texts stay short because this lives in the canvas pill;
-  // the cause rides in the tooltip. There is no manual fallback to offer
-  // (the document exists only in memory until copied), so unlike
-  // diagnostics this failure is terminal, not a detour.
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (copyResetTimerRef.current !== null) {
-        clearTimeout(copyResetTimerRef.current);
-        copyResetTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  async function copyHtml(): Promise<void> {
-    if (copyResetTimerRef.current !== null) {
-      clearTimeout(copyResetTimerRef.current);
-      copyResetTimerRef.current = null;
-    }
-    try {
-      await navigator.clipboard.writeText(buildStandaloneArtifactHtml(html, title));
-      setCopyState("copied");
-      copyResetTimerRef.current = setTimeout(() => {
-        copyResetTimerRef.current = null;
-        setCopyState("idle");
-      }, 2_000);
-    } catch {
-      setCopyState("failed");
-    }
-  }
-
-  return (
-    <>
-      <button
-        className="design-fit-button"
-        type="button"
-        title="Copy the generated page as a standalone HTML document"
-        aria-label="Copy HTML"
-        onClick={() => void copyHtml()}
-      >
-        Copy HTML
-      </button>
-      {copyState === "copied" ? (
-        <span className="design-generation-label" role="status">
-          Copied.
-        </span>
-      ) : null}
-      {copyState === "failed" ? (
-        <span
-          className="design-provider-unavailable"
-          role="status"
-          title="The browser blocked clipboard access, so nothing was copied."
-        >
-          Copy failed.
-        </span>
-      ) : null}
-    </>
-  );
-}
 
 const DesignMessageCard = memo(function DesignMessageCard({
   canGenerate,

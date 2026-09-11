@@ -4,7 +4,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Window as HappyWindow } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ARTIFACT_CSP } from "./artifactCsp";
 import {
+  ARTIFACT_RENDER_CRITIC_CSP,
   ARTIFACT_RENDER_CRITIC_MESSAGE_KIND,
   ARTIFACT_RENDER_CRITIC_SANDBOX,
   ARTIFACT_RENDER_CRITIC_SOURCE,
@@ -80,6 +82,22 @@ afterEach(() => {
 });
 
 describe("artifact render critic pure helpers", () => {
+  it("derives its policy from the canvas one by swapping exactly the script directive", () => {
+    // The critic's policy is built with a `.replace` on ARTIFACT_CSP, and a
+    // `.replace` that matches nothing returns the string unchanged instead of
+    // failing. Were the base ever written so the substring stopped matching,
+    // the critic would silently inherit `script-src 'none'`, its measurement
+    // script would never run, and the failure would surface as a timeout
+    // rather than as a broken build. These assertions are what make that
+    // silence audible.
+    expect(ARTIFACT_RENDER_CRITIC_CSP).not.toBe(ARTIFACT_CSP);
+    expect(ARTIFACT_RENDER_CRITIC_CSP).toContain("script-src 'unsafe-inline'");
+    expect(ARTIFACT_RENDER_CRITIC_CSP).not.toContain("script-src 'none'");
+    expect(
+      ARTIFACT_RENDER_CRITIC_CSP.replace("script-src 'unsafe-inline'", "script-src 'none'"),
+    ).toBe(ARTIFACT_CSP);
+  });
+
   it("strips script elements and on* attributes while preserving other markup", () => {
     const html =
       '<script>window.compromised = true;</script><button data-label="a > b" onclick="bad()" onfocus=bad class="button">Run</button><p onload=bad>Text</p>';

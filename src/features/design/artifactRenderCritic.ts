@@ -1,4 +1,5 @@
 import { createElement, useEffect, useState } from "react";
+import { ARTIFACT_CSP } from "./artifactCsp";
 import { ARTIFACT_PAGE_HEIGHT, ARTIFACT_PAGE_WIDTH } from "./artifactViewport";
 import {
   collectArtifactStructure,
@@ -42,8 +43,19 @@ export const ARTIFACT_RENDER_CRITIC_MESSAGE_KIND = "artifact-render-critic-resul
 export const ARTIFACT_RENDER_CRITIC_VERSION = 1 as const;
 export const ARTIFACT_RENDER_CRITIC_TIMEOUT_MS = 1_500;
 export const ARTIFACT_RENDER_CRITIC_SANDBOX = "allow-scripts";
-export const ARTIFACT_RENDER_CRITIC_CSP =
-  "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; manifest-src 'none'";
+// The canvas and the export both show a document whose scripts do not run
+// (`script-src 'none'`, see `artifactCsp.ts`). The critic cannot measure that
+// document: it gets its numbers by running its own measuring script inside the
+// frame, so it renders the artifact under the canvas policy with exactly one
+// directive swapped — `script-src 'unsafe-inline'` instead of `script-src
+// 'none'`. The difference is real and is written down here rather than
+// discovered later: what the critic sees is a document whose scripts run, and
+// nothing about its verdicts should be read as a statement about the
+// script-free document the user previews and saves.
+export const ARTIFACT_RENDER_CRITIC_CSP = ARTIFACT_CSP.replace(
+  "script-src 'none'",
+  "script-src 'unsafe-inline'",
+);
 export const ARTIFACT_RENDER_CRITIC_CSP_META = `<meta http-equiv="Content-Security-Policy" content="${ARTIFACT_RENDER_CRITIC_CSP}" />`;
 
 interface ParsedTag {

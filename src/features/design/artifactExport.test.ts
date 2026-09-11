@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { describe, expect, it } from "vitest";
+import { ARTIFACT_CSP } from "./artifactCsp";
 import { ARTIFACT_EXPORT_FALLBACK_TITLE, buildStandaloneArtifactHtml } from "./artifactExport";
 
 const APP_CSP_META =
@@ -87,41 +88,72 @@ describe("artifact export", () => {
     expect(countOccurrences(doc.toLowerCase(), "<head")).toBe(1);
   });
 
-  it("strips a model-authored CSP meta and writes exactly one, its own", () => {
+  it("exports under the policy the canvas previewed under", () => {
+    // The guarantee is a relationship, not a value: the exported document's
+    // policy IS the canvas constant, imported rather than restated. A test
+    // that hardcoded the expected string would pass if someone weakened the
+    // canvas and the export together — this one cannot, because there is only
+    // one string to change.
+    const doc = buildStandaloneArtifactHtml("<main>Hi</main>", "T");
+    expect(exportCsp(doc)).toBe(ARTIFACT_CSP);
+  });
+
+  it("strips a model-authored CSP meta and writes exactly one, the canvas's", () => {
     // The model does not dictate the file's policy: every CSP meta it wrote
-    // is removed, then the export's own `script-src 'none'` is added. One
-    // policy survives, and it is not the app's confinement policy.
+    // is removed, then the canvas policy is added. One policy survives, and it
+    // is the one the user's preview ran under.
     const wrapped = buildStandaloneArtifactHtml(`${APP_CSP_META}\n<main>Hi</main>`, "T");
     expect(countOccurrences(wrapped.toLowerCase(), "content-security-policy")).toBe(1);
-    expect(exportCsp(wrapped)).toBe("script-src 'none'");
-    expect(wrapped).not.toContain("default-src");
+    expect(exportCsp(wrapped)).toBe(ARTIFACT_CSP);
 
     const upgraded = buildStandaloneArtifactHtml(
       `<!DOCTYPE html><html><head>${APP_CSP_META}</head><body><main>Hi</main></body></html>`,
       "T",
     );
     expect(countOccurrences(upgraded.toLowerCase(), "content-security-policy")).toBe(1);
-    expect(exportCsp(upgraded)).toBe("script-src 'none'");
+    expect(exportCsp(upgraded)).toBe(ARTIFACT_CSP);
     expect(upgraded).toContain("<main>Hi</main>");
   });
 
-  it("keeps an authored script and ships the meta that disables it", () => {
+  it("keeps an authored script and ships the policy that disables it", () => {
     // Fidelity, not disarmament: the model's bytes stay in the document, and
     // the document carries the same script ban the canvas enforces in-frame.
-    // `script-src 'none'` is the only directive, so nothing else is confined.
+    // The policy is the canvas's whole policy, not a script-only subset — a
+    // document that showed nothing on screen must not load a font, an image
+    // or a stylesheet off the network once it is a file on disk.
     const doc = buildStandaloneArtifactHtml("<main>Hi</main><script>alert(1)</script>", "T");
     expect(doc).toContain("<script>alert(1)</script>");
-    expect(exportCsp(doc)).toBe("script-src 'none'");
-    expect(doc).not.toContain("default-src");
-    expect(doc).not.toContain("font-src");
-    expect(doc).not.toContain("img-src");
-    expect(doc).not.toContain("style-src");
+    expect(exportCsp(doc)).toBe(ARTIFACT_CSP);
   });
 
-  it("puts the script policy in a head it had to fabricate", () => {
+  it("forbids an external reference the preview could not show", () => {
+    // The beacon case, named: a fragment with an external image showed a
+    // broken box in the canvas (its `srcdoc` frame carries the same policy),
+    // so exporting it under a looser policy would fetch that URL from the
+    // user's saved file — a request the preview never made. The export keeps
+    // the markup and relies on the policy to forbid the fetch, so the two
+    // surfaces stay in step.
+    const doc = buildStandaloneArtifactHtml(
+      '<main><img src="https://example.com/p.png" alt=""></main>',
+      "T",
+    );
+    expect(doc).toContain('src="https://example.com/p.png"');
+    const policy = exportCsp(doc);
+    expect(policy).toBe(ARTIFACT_CSP);
+    // Read as directives: the default closes everything not named, and images
+    // are named only as inline data — no scheme, host or wildcard is allowed.
+    expect(policy).toContain("default-src 'none'");
+    expect(policy).toContain("img-src data:");
+    expect(policy).not.toContain("img-src *");
+    expect(policy).not.toContain("https:");
+  });
+
+  it("puts the policy in a head it had to fabricate", () => {
     const doc = buildStandaloneArtifactHtml("<main>Hi</main>", "T");
     const head = doc.slice(0, doc.indexOf("</head>"));
-    expect(head).toContain("script-src 'none'");
+    expect(head).toContain("default-src 'none'");
+    expect(head.toLowerCase()).toContain('http-equiv="content-security-policy"');
+    expect(exportCsp(doc)).toBe(ARTIFACT_CSP);
   });
 
   it("leaves a body style block where the model wrote it", () => {
@@ -202,8 +234,13 @@ describe("artifact export", () => {
   });
 
   it("imposes no font styling the fragment did not declare", () => {
+    // `font-src 'none'` in the policy is confinement, not styling: the
+    // exporter injects no font source, no `<style>` and no style attribute.
     const plain = buildStandaloneArtifactHtml("<main><p>Hi</p></main>", "T");
-    expect(plain.toLowerCase()).not.toContain("font-");
+    const parsed = new DOMParser().parseFromString(plain, "text/html");
+    expect(parsed.querySelectorAll("style, link")).toHaveLength(0);
+    expect(plain).not.toContain("font-family");
+    expect(parsed.body?.firstElementChild?.hasAttribute("style")).toBe(false);
 
     const declared = buildStandaloneArtifactHtml(
       "<style>p{font-family:system-ui}</style><main><p>Hi</p></main>",

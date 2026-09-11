@@ -1,6 +1,6 @@
 /**
  * The canvas pill's "Save HTML" control: the file counterpart of
- * `ArtifactCopyControl` in `DesignSurface.tsx`.
+ * `ArtifactCopyControl` in `ArtifactCopyControl.tsx`.
  *
  * Same shape on purpose — one write, a short success label, a visible failure —
  * with one difference the file flow forces: there are three endings, not two.

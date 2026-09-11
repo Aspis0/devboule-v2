@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
+import { ARTIFACT_CSP, ARTIFACT_CSP_META } from "./artifactCsp";
 import {
   builtInSkillIndex,
   builtInSkillSources,
@@ -233,9 +234,6 @@ const ARTIFACT_ERROR_RESULT = {
   ...GENERATION_RESULT,
   artifactError: "Artifact too large to display (maximum 256 KiB).",
 };
-
-const ARTIFACT_CSP_META =
-  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; worker-src 'none'; manifest-src 'none'\" />";
 
 function createHost(
   overrides: Partial<DesignHost> = {},
@@ -4152,12 +4150,14 @@ describe("artifact export copy", () => {
     expect(copied).toContain('<meta name="viewport"');
     expect(copied).toContain("<title>Generated result</title>");
     expect(copied).toContain('<main class="generated-card">Generated</main>');
-    // The canvas renders the artifact with `script-src 'none'` delivered inside
-    // the frame, so a script written by the model is already inert on screen.
-    // The exported document declares the same guarantee and nothing else — the
-    // two must not behave differently once the file is on the user's disk. One
-    // meta only: a second policy would be an untested addition, and `default-src`
-    // is deliberately absent so fonts, images and styles keep loading.
+    // The canvas renders the artifact under `ARTIFACT_CSP` delivered inside
+    // the frame, so a script written by the model is already inert on screen
+    // and an external reference is already dead. The copied document declares
+    // that same policy, imported from the shared module rather than restated —
+    // the two must not behave differently once the paste is opened as a file.
+    // One meta only: a second policy would be an untested addition. The
+    // relationship, not the string, is what this pins; `artifactExport.test.ts`
+    // owns the named assertions about what the policy forbids.
     const policyMetas = Array.from(
       new DOMParser().parseFromString(copied, "text/html").querySelectorAll("meta[http-equiv]"),
     ).filter(
@@ -4165,8 +4165,7 @@ describe("artifact export copy", () => {
     );
     expect(policyMetas).toHaveLength(1);
     const policy = policyMetas[0]?.getAttribute("content") ?? "";
-    expect(policy).toBe("script-src 'none'");
-    expect(policy).not.toContain("default-src");
+    expect(policy).toBe(ARTIFACT_CSP);
     expect(container.textContent).toContain("Copied.");
     await act(async () => root.unmount());
   });
