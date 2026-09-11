@@ -20,8 +20,65 @@ import {
 } from "./designAttachments";
 import type { DesignAttachment } from "./designHost";
 
-const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01]);
-const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+function asciiBytes(text: string): number[] {
+  return [...text].map((character) => character.charCodeAt(0));
+}
+
+/** One JPEG marker with a payload; the length field counts itself. */
+function jpegSegment(marker: number, payload: readonly number[]): number[] {
+  const length = payload.length + 2;
+  return [0xff, marker, (length >> 8) & 0xff, length & 0xff, ...payload];
+}
+
+/** One PNG chunk; the four trailing bytes stand in for a CRC this code never rebuilds. */
+function pngChunk(type: string, data: readonly number[]): number[] {
+  const length = data.length;
+  return [
+    (length >>> 24) & 0xff,
+    (length >>> 16) & 0xff,
+    (length >>> 8) & 0xff,
+    length & 0xff,
+    ...asciiBytes(type),
+    ...data,
+    0xde,
+    0xad,
+    0xbe,
+    0xef,
+  ];
+}
+
+const JFIF_PAYLOAD = [
+  ...asciiBytes("JFIF\u0000"),
+  0x01,
+  0x01,
+  0x00,
+  0x00,
+  0x01,
+  0x00,
+  0x01,
+  0x00,
+  0x00,
+];
+
+// The fixtures are whole, walkable files because `importDesignAttachments` now
+// walks every raster's segments before carrying it. A signature followed by
+// arbitrary bytes is no longer an acceptable stand-in for a PNG or a JPEG.
+const PNG_BYTES = Uint8Array.from([
+  ...asciiBytes("\u0089PNG\r\n\u001a\n"),
+  ...pngChunk("IHDR", [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]),
+  ...pngChunk("IDAT", [0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]),
+  ...pngChunk("IEND", []),
+]);
+const JPEG_BYTES = Uint8Array.from([
+  0xff,
+  0xd8,
+  ...jpegSegment(0xe0, JFIF_PAYLOAD),
+  ...jpegSegment(0xda, [0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]),
+  0xff,
+  0x00,
+  0xff,
+  0xd9,
+]);
 
 function pad(bytes: Uint8Array, size: number): Uint8Array<ArrayBuffer> {
   const padded = new Uint8Array(size);
@@ -106,6 +163,78 @@ describe("attachment type is measured, never declared", () => {
     if (attachment.kind !== "svg") throw new Error("expected an svg");
     expect(attachment.source.startsWith("<svg")).toBe(true);
     expect(attachment.bytes).toBe(new TextEncoder().encode(attachment.source).length);
+  });
+});
+
+function indexOfBytes(haystack: Uint8Array, needle: readonly number[]): number {
+  outer: for (let start = 0; start + needle.length <= haystack.length; start += 1) {
+    for (let offset = 0; offset < needle.length; offset += 1) {
+      if (haystack[start + offset] !== needle[offset]) continue outer;
+    }
+    return start;
+  }
+  return -1;
+}
+
+describe("identity metadata is stripped on the way in", () => {
+  const EXIF_PAYLOAD = [
+    ...asciiBytes("Exif\u0000\u0000"),
+    ...asciiBytes("GPSLatitude"),
+    0x01,
+    0x02,
+    0x03,
+    0x04,
+  ];
+  // SOI, JFIF, the EXIF APP1 a phone camera would write, then a scan whose
+  // entropy data includes FF 00 stuffing and a bare RST marker.
+  const EXIF_JPEG = Uint8Array.from([
+    0xff,
+    0xd8,
+    ...jpegSegment(0xe0, JFIF_PAYLOAD),
+    ...jpegSegment(0xe1, EXIF_PAYLOAD),
+    ...jpegSegment(0xda, [0x01, 0x01, 0x00, 0x00, 0x3f, 0x00]),
+    0x12,
+    0x34,
+    0xff,
+    0x00,
+    0xff,
+    0xd0,
+    0xff,
+    0xd9,
+  ]);
+
+  it("carries shorter, EXIF-free bytes and says what left the file", async () => {
+    const file = rasterFile("holiday.jpg", EXIF_JPEG, "image/jpeg");
+    const result = await importDesignAttachments([file], []);
+
+    expect(result.rejections).toEqual([]);
+    const attachment = result.attachments[0];
+    expect(attachment.kind).toBe("raster");
+    if (attachment.kind !== "raster") throw new Error("expected a raster");
+
+    const decoded = Uint8Array.from(atob(attachment.base64), (character) =>
+      character.charCodeAt(0),
+    );
+    // Shorter than the file on disk, because the identity segment is gone, and the
+    // recorded size is the carried size the ceilings are checked against.
+    expect(decoded.length).toBeLessThan(file.size);
+    expect(attachment.bytes).toBe(decoded.length);
+    expect(indexOfBytes(decoded, asciiBytes("GPSLatitude"))).toBe(-1);
+    // The pixels and their scan are untouched.
+    expect(indexOfBytes(decoded, [0xff, 0xd0])).toBeGreaterThanOrEqual(0);
+    expect(result.notices).toEqual([
+      "holiday.jpg was stripped of metadata before attaching: the camera, device and GPS location data was removed.",
+    ]);
+  });
+
+  it("refuses a raster it cannot walk rather than attaching it whole", async () => {
+    const broken = rasterFile("broken.jpg", EXIF_JPEG.subarray(0, 8), "image/jpeg");
+    const result = await importDesignAttachments([broken], []);
+
+    expect(result.attachments).toEqual([]);
+    expect(result.rejections[0].name).toBe("broken.jpg");
+    expect(result.rejections[0].reason).toContain("broken.jpg was not added");
+    expect(result.rejections[0].reason).toContain("free of hidden metadata");
   });
 });
 

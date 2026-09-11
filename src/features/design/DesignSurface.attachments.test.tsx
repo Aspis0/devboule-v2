@@ -4,7 +4,11 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAppStore } from "../../store/appStore";
-import { ATTACHMENT_DELIVERY_NOTICE, ATTACHMENT_INPUT_ACCEPT } from "./designAttachments";
+import {
+  ATTACHMENT_DELIVERY_NOTICE,
+  ATTACHMENT_INPUT_ACCEPT,
+  formatAttachmentSize,
+} from "./designAttachments";
 import { DesignSurface, type DesignDocument, type DesignHost } from "./DesignSurface";
 import type { DesignGenerationOptions } from "./designHost";
 
@@ -99,7 +103,35 @@ const GENERATION_BASE = {
   nodeIds: [],
 };
 
-const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
+function asciiBytes(text: string): number[] {
+  return [...text].map((character) => character.charCodeAt(0));
+}
+
+/** One PNG chunk; the four trailing bytes stand in for a CRC this code never rebuilds. */
+function pngChunk(type: string, data: readonly number[]): number[] {
+  const length = data.length;
+  return [
+    (length >>> 24) & 0xff,
+    (length >>> 16) & 0xff,
+    (length >>> 8) & 0xff,
+    length & 0xff,
+    ...asciiBytes(type),
+    ...data,
+    0xde,
+    0xad,
+    0xbe,
+    0xef,
+  ];
+}
+
+// A whole, walkable PNG: `importDesignAttachments` now reads every raster's
+// segments before carrying it, so a bare signature is no longer a valid stand-in.
+const PNG_BYTES = Uint8Array.from([
+  ...asciiBytes("\u0089PNG\r\n\u001a\n"),
+  ...pngChunk("IHDR", [0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0]),
+  ...pngChunk("IDAT", [0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]),
+  ...pngChunk("IEND", []),
+]);
 const CLEAN_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="4" height="4"/></svg>';
 
 function imageFile(name: string, bytes: Uint8Array<ArrayBuffer>, type: string): File {
@@ -260,7 +292,9 @@ describe("a file dropped on the composer", () => {
     expect(pillNames(container)).toEqual(["hero.png"]);
     const pill = container.querySelector(".design-attachment-pill");
     expect(pill?.querySelector(".design-attachment-kind")?.textContent).toBe("PNG");
-    expect(pill?.querySelector(".design-attachment-size")?.textContent).toBe("9 B");
+    expect(pill?.querySelector(".design-attachment-size")?.textContent).toBe(
+      formatAttachmentSize(PNG_BYTES.length),
+    );
   });
 
   it("marks the composer while a file is over it and clears the mark on drop", async () => {

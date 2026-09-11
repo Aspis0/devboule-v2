@@ -1,4 +1,5 @@
 import type { DesignAttachment } from "./designHost";
+import { rasterMetadataNotice, stripRasterMetadata } from "./rasterMetadata";
 
 /**
  * Importing a starting point into the composer.
@@ -621,9 +622,10 @@ export async function importDesignAttachments(
     // Both ceilings and the duplicate check wait until the size that is actually
     // carried is known, and that is not always the file's size on disk: sanitizing
     // an SVG can leave it longer than the file it came from, because the serializer
-    // writes back namespace declarations the parser filled in. Measuring the file
-    // first and carrying something else afterwards is how a limit is passed without
-    // being satisfied.
+    // writes back namespace declarations the parser filled in, and stripping a
+    // raster's metadata leaves it shorter than the file it came from. Measuring the
+    // file first and carrying something else afterwards is how a limit is passed
+    // without being satisfied.
     let attachment: DesignAttachment;
     let carriedBytes: number;
 
@@ -635,14 +637,28 @@ export async function importDesignAttachments(
           `${file.name} declares ${declared}, but its bytes are a ${measured === "image/png" ? "PNG" : "JPEG"}; it was attached as ${measured}.`,
         );
       }
-      carriedBytes = file.size;
+      // The pixels stay; the camera's side channels do not. A file whose segments
+      // cannot be walked is rejected rather than attached whole — the whole point
+      // of the pass is the promise that identity is gone, and that promise cannot
+      // be made about bytes this code could not read.
+      const stripped = stripRasterMetadata(bytes, measured);
+      if (!stripped.ok) {
+        rejections.push({
+          name: file.name,
+          reason: `${file.name} was not added: ${stripped.reason}, so the file could not be verified free of hidden metadata.`,
+        });
+        continue;
+      }
+      const metadataNotice = rasterMetadataNotice(file.name, stripped.removed);
+      if (metadataNotice !== "") notices.push(metadataNotice);
+      carriedBytes = stripped.bytes.length;
       attachment = {
         id,
         kind: "raster",
         name: file.name,
         mimeType: measured,
         bytes: carriedBytes,
-        base64: encodeBase64(bytes),
+        base64: encodeBase64(stripped.bytes),
       };
     } else {
       const text = new TextDecoder().decode(bytes);
