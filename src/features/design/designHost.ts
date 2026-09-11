@@ -51,13 +51,21 @@ export interface DesignLayer {
   transform: DesignTransform;
   source?: { path: string };
   /**
-   * Present only on SECTION layers: a measured landmark or heading of the
-   * generated page. The transform is the artifact origin plus the measured
-   * page rect (canvas world coordinates); `tag`/`anchor` identify the element
-   * inside the page. No source file, no corners, no elevation: duplicating or
-   * deleting a measured section is meaningless, so those actions stay hidden.
+   * Present only on SECTION layers: a measured landmark, heading, text leaf,
+   * control, or media element of the generated page. The transform is the
+   * artifact origin plus the measured page rect (canvas world coordinates);
+   * `tag`/`anchor` identify the element inside the page. No source file, no
+   * corners, no elevation: duplicating or deleting a measured section is
+   * meaningless, so those actions stay hidden.
+   *
+   * `parentId` is the id of the nearest collected ancestor inside the page, or
+   * absent for a root-level element. It is the parent chain the panel walks to
+   * rebuild the page tree from a clicked phrase up to the slide that holds it.
+   * An id, not a position in the measured list: `displayLayers` puts canvas
+   * layers ahead of the measured sections, so an index would desync the tree on
+   * the first filter or reorder.
    */
-  section?: { tag: string; anchor: string };
+  section?: { tag: string; anchor: string; parentId?: string };
 }
 
 /**
@@ -163,6 +171,47 @@ export interface DesignGenerationResult {
 export type DesignOutputMode = "page" | "slides";
 
 /**
+ * One file the user imported into the composer as a starting point. Two shapes,
+ * because they travel as two different things.
+ *
+ * A raster image is bytes: it is carried base64, the form every provider that
+ * accepts an image expects on the wire, matching the `{ data, mimeType }` pair
+ * Paseo sends.
+ *
+ * An SVG is not an image here. It is a text document this surface can embed in
+ * the HTML it generates, so it is carried as sanitized source. That is a
+ * deliberate departure from Paseo, which classifies SVG as a generic file and
+ * sends the agent four lines of metadata; this surface generates HTML, and an
+ * SVG is something it can use directly. `source` has already been through the
+ * sanitizer in `designAttachments.ts` and never travels raw.
+ *
+ * The measured type is the one stored, never the declared one: see the module
+ * comment in `designAttachments.ts` for why the bytes decide.
+ */
+export interface DesignRasterAttachment {
+  id: string;
+  kind: "raster";
+  name: string;
+  mimeType: "image/png" | "image/jpeg";
+  bytes: number;
+  /** The file's bytes, base64, with no `data:` prefix. */
+  base64: string;
+}
+
+export interface DesignSvgAttachment {
+  id: string;
+  kind: "svg";
+  name: string;
+  mimeType: "image/svg+xml";
+  /** UTF-8 length of `source`, not of the file the user picked. */
+  bytes: number;
+  /** Sanitized SVG source: XML prologue stripped, ready to embed in a page. */
+  source: string;
+}
+
+export type DesignAttachment = DesignRasterAttachment | DesignSvgAttachment;
+
+/**
  * Call-time options, never persisted. The skill mode is declared on the wire
  * with the same ids the persisted selection uses (`all` | `manual` | `auto`):
  * the caller knows which mode is active and says so; the host never has to
@@ -195,12 +244,27 @@ export type DesignOutputMode = "page" | "slides";
  * page behaviour. The surface always states it explicitly, so the output
  * switch — which lives beside the surface until its file is free — is the
  * only thing deciding it.
+ *
+ * `attachments` are the files the user imported into the composer for this run,
+ * in the order they appear above the text. They are call-time like every other
+ * field here and are never persisted: a starting point belongs to the request it
+ * was attached to, and the composer clears them the moment the run starts. The
+ * field is optional and its absence means the caller predates importing, which
+ * is the same thing as an empty list to every consumer that has one. No frontend
+ * consumer exists yet — the daemon and the provider wire are a separate slice;
+ * the types are declared here so the boundary is stated where the request is
+ * built rather than inferred later from a prompt that happens to contain base64.
  */
 export type DesignGenerationOptions = (
   | { skillMode: "auto" }
   | { skillMode: "all" }
   | { skillMode: "manual"; skills: readonly string[] }
-) & { grounded?: boolean; folderPath?: string | null; outputMode?: DesignOutputMode };
+) & {
+  grounded?: boolean;
+  folderPath?: string | null;
+  outputMode?: DesignOutputMode;
+  attachments?: readonly DesignAttachment[];
+};
 
 export interface DesignInitialState {
   // Initial values; zoom seeds the view but is not rewritten by document saves.

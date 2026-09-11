@@ -388,10 +388,12 @@ export interface ArtifactRenderCriticResult {
   readonly source: typeof ARTIFACT_RENDER_CRITIC_SOURCE;
   readonly version: typeof ARTIFACT_RENDER_CRITIC_VERSION;
   /**
-   * Measured structural index (landmarks + headings) from the same frame pass.
-   * Absent on messages that predate the index; an empty array means the page
-   * exposed no measurable landmark or heading. An invalid list is dropped to
-   * empty here so a structural problem can never hide the render findings.
+   * Measured structural index (landmarks, headings, text leaves, controls, and
+   * media, with each entry's nearest collected ancestor) from the same frame
+   * pass: one measurement, no second pass on click. Absent on messages that
+   * predate the index; an empty array means the page exposed nothing
+   * measurable. An invalid list is dropped to empty here so a structural
+   * problem can never hide the render findings.
    */
   readonly structure?: readonly ArtifactSection[];
   /**
