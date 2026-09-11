@@ -22,8 +22,8 @@ use devboule_protocol::{ErrorCode, PermissionOption, SessionEvent, WireError};
 use super::acp_host::{AcpHost, RpcError, RpcRespond};
 use crate::acp_view::{
     add_vendor_surface, catalog_from_config_options, classify_line, current_mode_id_from_update,
-    has_standard_modes, merge_handshake_manifest, view_from_envelope_in, AcpLineKind,
-    ConfigOptionSurface, HandshakeManifest, ModelSwitchShape,
+    has_standard_modes, merge_handshake_manifest, unmodeled_content_kind, view_from_envelope_in,
+    AcpLineKind, ConfigOptionSurface, HandshakeManifest, ModelSwitchShape, PromptCapabilities,
 };
 use crate::mcp_broker::McpLaunchConfig;
 use crate::paths::RuntimePaths;
@@ -560,6 +560,7 @@ fn spawn_process_with_load(
     };
     let session_id = transport.session_id();
     transport.set_model_switch_shape(handshake.shape);
+    transport.set_prompt_capabilities(handshake.prompt_capabilities);
     transport.seed_manifest_from_event(handshake.event.as_ref());
     let writer = AcpWriter {
         transport: Arc::clone(&transport),
@@ -678,6 +679,11 @@ struct AcpTransport {
     current_effort: Mutex<Option<String>>,
     last_manifest: Mutex<Option<SessionEvent>>,
     model_switch_shape: Mutex<Option<ModelSwitchShape>>,
+    /// Prompt content types the agent declared in `initialize`. Session-scoped
+    /// negotiated state, kept next to the other handshake results
+    /// (`model_switch_shape`, `remote_modes`). Re-derived on a `session/load`
+    /// handshake like the rest of the negotiated state, never guessed.
+    prompt_capabilities: Mutex<PromptCapabilities>,
 }
 
 impl AcpTransport {
@@ -698,6 +704,7 @@ impl AcpTransport {
             current_effort: Mutex::new(None),
             last_manifest: Mutex::new(None),
             model_switch_shape: Mutex::new(None),
+            prompt_capabilities: Mutex::new(PromptCapabilities::default()),
         }
     }
 
@@ -821,6 +828,24 @@ impl AcpTransport {
         match self.model_switch_shape.lock() {
             Ok(shape) => shape.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn set_prompt_capabilities(&self, capabilities: PromptCapabilities) {
+        let mut slot = match self.prompt_capabilities.lock() {
+            Ok(slot) => slot,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *slot = capabilities;
+    }
+
+    /// The read side for a future image sender. Nothing sends an image yet, so
+    /// in production this is only the precondition this slice installs.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn prompt_capabilities(&self) -> PromptCapabilities {
+        match self.prompt_capabilities.lock() {
+            Ok(capabilities) => *capabilities,
+            Err(poisoned) => *poisoned.into_inner(),
         }
     }
 
@@ -1804,6 +1829,10 @@ struct AcpReader {
     provider_id: Option<String>,
     handshake_manifest: Option<SessionEvent>,
     replay_count: AtomicU64,
+    /// Number of non-text content blocks the view discarded. Without this a
+    /// dropped image and an agent that never sent one look identical from the
+    /// outside; the block is named and counted, never rendered here.
+    unmodeled_content_count: AtomicU64,
 }
 
 impl AcpReader {
@@ -1836,6 +1865,7 @@ impl AcpReader {
             provider_id,
             handshake_manifest,
             replay_count: AtomicU64::new(0),
+            unmodeled_content_count: AtomicU64::new(0),
         }
     }
 
@@ -2059,6 +2089,13 @@ impl ReaderDispatch for AcpReader {
                 self.session_id, replay_count
             );
         }
+        let unmodeled_content = self.unmodeled_content_count.load(Ordering::Relaxed);
+        if unmodeled_content > 0 {
+            eprintln!(
+                "session {} discarded {} non-text ACP content block(s) the view does not model",
+                self.session_id, unmodeled_content
+            );
+        }
         if !self.buffer.is_empty() {
             eprintln!("skipping unterminated ACP output line");
             self.publish(
@@ -2189,6 +2226,17 @@ impl AcpReader {
                         }
                     }
                     self.publish_at_seq(runtime, view, event_seq);
+                } else if let Some(content_type) = unmodeled_content_kind(&value) {
+                    // A text-bearing chunk whose content block is not text: the
+                    // view returned `None`. Count and name it so a discarded
+                    // image is not indistinguishable from an absent one.
+                    let previous = self.unmodeled_content_count.fetch_add(1, Ordering::Relaxed);
+                    if previous == 0 {
+                        eprintln!(
+                            "session {} is discarding a non-text '{}' content block the ACP view does not model",
+                            self.session_id, content_type
+                        );
+                    }
                 }
             }
             None => {}
@@ -3030,7 +3078,7 @@ mod tests {
         ErrorCode, PermissionOutcome, SessionEvent, SessionKind, SessionModel, WireError,
     };
     use std::collections::HashSet;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -3210,6 +3258,44 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn negotiated_prompt_capabilities_are_kept_on_the_session_transport() {
+        use super::{AcpHost, AcpTransport};
+        use crate::acp_view::{PromptCapabilities, PromptCapabilityState};
+        use crate::process_tree::JobObject;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("cmd.exe")
+            .args(["/c", "exit"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("cmd");
+        let stdin = child.stdin.take().expect("stdin");
+        let cwd = std::env::temp_dir();
+        let host = AcpHost::new(cwd.clone(), cwd, Arc::new(JobObject::new().expect("job")));
+        let transport = AcpTransport::new(stdin, host);
+
+        // A session that never declared anything stays absent, not `false`.
+        assert_eq!(
+            transport.prompt_capabilities(),
+            PromptCapabilities::default()
+        );
+
+        transport.set_prompt_capabilities(PromptCapabilities {
+            image: PromptCapabilityState::Supported,
+            audio: PromptCapabilityState::Unsupported,
+            embedded_context: PromptCapabilityState::Absent,
+        });
+        let stored = transport.prompt_capabilities();
+        assert_eq!(stored.image, PromptCapabilityState::Supported);
+        assert_eq!(stored.audio, PromptCapabilityState::Unsupported);
+        assert_eq!(stored.embedded_context, PromptCapabilityState::Absent);
+        let _ = child.wait();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn poisoned_manifest_lock_preserves_the_prior_model_catalog() {
         use super::{AcpHost, AcpTransport};
         use crate::process_tree::JobObject;
@@ -3364,6 +3450,47 @@ mod tests {
         );
         assert_eq!(runtime.current_agent_seq(), 1);
         assert!(conn.pull_events().is_empty());
+    }
+
+    #[test]
+    fn non_text_content_chunk_is_counted_not_silently_dropped() {
+        let (broker, _) = test_broker();
+        let (runtime, conn) = attached_runtime("stub-session", Arc::clone(&broker));
+        let reader = AcpReader::for_test(
+            Arc::new(Mutex::new(HashSet::new())),
+            "stub-session".to_string(),
+            broker,
+        );
+        assert_eq!(reader.unmodeled_content_count.load(Ordering::Relaxed), 0);
+        reader.dispatch_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"image","mimeType":"image/png","data":"AAAA"}}}}
+"#,
+            &runtime,
+        );
+        assert_eq!(
+            reader.unmodeled_content_count.load(Ordering::Relaxed),
+            1,
+            "an image block must be counted, not discarded without trace"
+        );
+        assert!(
+            !conn
+                .pull_events()
+                .iter()
+                .any(|event| matches!(event.envelope.event, SessionEvent::AgentMessage { .. })),
+            "an image block must not be rendered as an empty message"
+        );
+
+        // A text chunk is modeled, so it must not move the counter.
+        reader.dispatch_line(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"stub-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"}}}}
+"#,
+            &runtime,
+        );
+        assert_eq!(reader.unmodeled_content_count.load(Ordering::Relaxed), 1);
+        assert!(conn.pull_events().iter().any(|event| matches!(
+            event.envelope.event,
+            SessionEvent::AgentMessage { ref text, .. } if text == "hello"
+        )));
     }
 
     #[test]

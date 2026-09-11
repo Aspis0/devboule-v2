@@ -415,6 +415,94 @@ pub(crate) fn add_vendor_surface(
     shape
 }
 
+/// One optional prompt content capability an ACP agent may declare in
+/// `agentCapabilities.promptCapabilities`.
+///
+/// ACP's own SDK decodes that object into plain `bool`s with
+/// `serde(default)`, which collapses "the agent said no" and "the agent said
+/// nothing" into the same `false`. Those are not the same answer for a
+/// client deciding whether sending an image is authorized: the first is an
+/// explicit refusal, the second is silence. The handshake keeps the three
+/// states apart so a later sender can tell them apart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PromptCapabilityState {
+    /// The agent did not mention this capability at all. Silence is not
+    /// consent; a sender must not treat it as an explicit refusal either.
+    #[default]
+    Absent,
+    /// The agent explicitly declared the capability present (`true`).
+    Supported,
+    /// The agent explicitly declared the capability absent (`false`).
+    Unsupported,
+}
+
+/// Prompt content capabilities read from an ACP `initialize` result, each in
+/// one of the three [`PromptCapabilityState`] states.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PromptCapabilities {
+    pub image: PromptCapabilityState,
+    pub audio: PromptCapabilityState,
+    pub embedded_context: PromptCapabilityState,
+}
+
+/// Reads `agentCapabilities.promptCapabilities` from an ACP `initialize`
+/// result. A missing `agentCapabilities`, a missing `promptCapabilities`, or
+/// a missing sub-field leaves that capability [`PromptCapabilityState::Absent`];
+/// only an explicit JSON `false` becomes [`PromptCapabilityState::Unsupported`],
+/// and only an explicit JSON `true` becomes [`PromptCapabilityState::Supported`].
+/// A non-boolean value is treated as absent rather than guessed.
+pub(crate) fn prompt_capabilities_from_initialize(
+    initialize_result: &serde_json::Value,
+) -> PromptCapabilities {
+    let prompt = initialize_result
+        .get("agentCapabilities")
+        .and_then(|capabilities| capabilities.get("promptCapabilities"));
+    let read = |field: &str| match prompt.and_then(|prompt| prompt.get(field)) {
+        Some(serde_json::Value::Bool(true)) => PromptCapabilityState::Supported,
+        Some(serde_json::Value::Bool(false)) => PromptCapabilityState::Unsupported,
+        _ => PromptCapabilityState::Absent,
+    };
+    PromptCapabilities {
+        image: read("image"),
+        audio: read("audio"),
+        embedded_context: read("embeddedContext"),
+    }
+}
+
+/// `session/update` kinds whose payload is a single text-bearing content
+/// block. A block of another type on one of these updates is discarded by
+/// [`unmodeled_content_kind`]'s caller; keep the two lists in step.
+const TEXT_CHUNK_UPDATES: [&str; 3] = [
+    "user_message_chunk",
+    "agent_thought_chunk",
+    "agent_message_chunk",
+];
+
+/// Reports a content block the view could not model.
+///
+/// [`view_from_session_update`] returns `None` for a text-bearing chunk whose
+/// content is not text (an image, an audio clip, an embedded resource). From
+/// the outside that is indistinguishable from the agent not having sent the
+/// chunk at all. This names the discarded block so the caller can count it;
+/// it does not model the block.
+pub(crate) fn unmodeled_content_kind(value: &serde_json::Value) -> Option<String> {
+    if value.get("method").and_then(serde_json::Value::as_str) != Some("session/update") {
+        return None;
+    }
+    let update = value.get("params")?.get("update")?;
+    let update_kind = update
+        .get("sessionUpdate")
+        .and_then(serde_json::Value::as_str)?;
+    if !TEXT_CHUNK_UPDATES.contains(&update_kind) {
+        return None;
+    }
+    let content_type = update
+        .get("content")?
+        .get("type")
+        .and_then(serde_json::Value::as_str)?;
+    (content_type != "text").then(|| content_type.to_string())
+}
+
 /// What the handshake parse produced: the manifest to publish plus the shape
 /// that produced it. The shape is a BY-PRODUCT of this parse — there is no
 /// second reader of the raw bytes that could disagree with the manifest
@@ -430,6 +518,10 @@ pub(crate) struct HandshakeManifest {
     /// means no model shape was parsed: switching must fail with an explicit
     /// unsupported-shape error, never fall through to a guessed verb.
     pub shape: Option<ModelSwitchShape>,
+    /// Prompt content types the agent declared in `initialize`, in three
+    /// separate states. Read here so the same parse that produces the
+    /// manifest produces the capabilities; there is no second reader.
+    pub prompt_capabilities: PromptCapabilities,
 }
 
 /// Parses the handshake pair into the manifest to publish plus the switch
@@ -508,6 +600,7 @@ pub(crate) fn merge_handshake_manifest(
     // "this agent offers no model list" stays distinct from "no agent"),
     // but record no switch shape.
     HandshakeManifest {
+        prompt_capabilities: prompt_capabilities_from_initialize(initialize_result),
         event: event.or_else(|| {
             modes.map(|modes| SessionEvent::SessionManifest {
                 provider_id,
@@ -1077,9 +1170,10 @@ pub(crate) fn current_mode_id_from_update(
 mod tests {
     use super::{
         catalog_from_config_options, classify_line, current_mode_id_from_update,
-        merge_handshake_manifest, session_manifest_from_initialize,
-        session_manifest_from_models_update, session_manifest_from_new_session, view_from_envelope,
-        view_from_envelope_in, AcpLineKind,
+        merge_handshake_manifest, prompt_capabilities_from_initialize,
+        session_manifest_from_initialize, session_manifest_from_models_update,
+        session_manifest_from_new_session, unmodeled_content_kind, view_from_envelope,
+        view_from_envelope_in, AcpLineKind, PromptCapabilities, PromptCapabilityState,
     };
     use devboule_protocol::SessionEvent;
 
@@ -1962,5 +2056,100 @@ mod tests {
             }
             other => panic!("expected tool update with empty title, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn prompt_capabilities_keep_absent_false_and_true_apart() {
+        // `false` and a missing field are different answers. ACP's own SDK
+        // would flatten both to `false`; the handshake must not.
+        let declared =
+            parse(r#"{"agentCapabilities":{"promptCapabilities":{"image":true,"audio":false}}}"#);
+        assert_eq!(
+            prompt_capabilities_from_initialize(&declared),
+            PromptCapabilities {
+                image: PromptCapabilityState::Supported,
+                audio: PromptCapabilityState::Unsupported,
+                embedded_context: PromptCapabilityState::Absent,
+            }
+        );
+
+        // A field that is explicitly `false` is a refusal, not silence.
+        let refused = parse(r#"{"agentCapabilities":{"promptCapabilities":{"image":false}}}"#);
+        assert_eq!(
+            prompt_capabilities_from_initialize(&refused).image,
+            PromptCapabilityState::Unsupported
+        );
+
+        // No `promptCapabilities` at all, and no `agentCapabilities` at all,
+        // both leave every capability absent.
+        for absent in [
+            parse(r#"{"agentCapabilities":{}}"#),
+            parse(r#"{"agentInfo":{"name":"x"}}"#),
+        ] {
+            assert_eq!(
+                prompt_capabilities_from_initialize(&absent),
+                PromptCapabilities::default()
+            );
+        }
+
+        // A non-boolean value is not evidence of support.
+        let malformed = parse(r#"{"agentCapabilities":{"promptCapabilities":{"image":"yes"}}}"#);
+        assert_eq!(
+            prompt_capabilities_from_initialize(&malformed).image,
+            PromptCapabilityState::Absent
+        );
+    }
+
+    #[test]
+    fn handshake_parse_records_prompt_capabilities() {
+        // The capabilities come from the same parse that builds the manifest,
+        // so there is no second reader of the raw bytes.
+        let initialize = parse(
+            r#"{"protocolVersion":1,"agentCapabilities":{"promptCapabilities":{"image":true,"embeddedContext":true}}}"#,
+        );
+        let new_session = parse(r#"{"sessionId":"s1"}"#);
+        let handshake = merge_handshake_manifest(&initialize, &new_session, Some("stub".into()));
+        assert_eq!(
+            handshake.prompt_capabilities.image,
+            PromptCapabilityState::Supported
+        );
+        assert_eq!(
+            handshake.prompt_capabilities.embedded_context,
+            PromptCapabilityState::Supported
+        );
+        assert_eq!(
+            handshake.prompt_capabilities.audio,
+            PromptCapabilityState::Absent
+        );
+    }
+
+    #[test]
+    fn non_text_chunk_names_the_discarded_content_type() {
+        let image = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"image","mimeType":"image/png","data":"AAAA"}}}}"#,
+        );
+        assert_eq!(unmodeled_content_kind(&image), Some("image".to_string()));
+        assert!(view_from_envelope(&image, "s").is_none());
+
+        let resource = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"resource"}}}}"#,
+        );
+        assert_eq!(
+            unmodeled_content_kind(&resource),
+            Some("resource".to_string())
+        );
+
+        // A text block is modeled; nothing was discarded.
+        let text = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}"#,
+        );
+        assert_eq!(unmodeled_content_kind(&text), None);
+
+        // A non-text block on an update whose text is optional does not drop
+        // the event, so it is deliberately out of this counter's scope.
+        let tool = parse(
+            r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"c","content":{"type":"image"}}}}"#,
+        );
+        assert_eq!(unmodeled_content_kind(&tool), None);
     }
 }
