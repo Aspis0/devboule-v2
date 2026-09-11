@@ -141,6 +141,29 @@ rasterising the DOM from inside is blocked by the frame's own CSP and taints the
 Re-rendering with a library instead would produce an approximation wearing the costume of a
 measurement, which is worse than the gap.
 
+**Printing is a third frame, and the only one that runs script by permission.**
+`ArtifactPrintControl.tsx` puts the artifact on paper through the WebView's own print pipeline,
+so the sheet is rendered by the engine the user previewed in; neither the daemon nor a PDF
+library re-renders it. The canvas frame cannot do it — `sandbox=""` with `script-src 'none'`
+is exactly what makes `window.print()` impossible from inside and unreachable from outside — so
+the control mounts a short-lived frame at `sandbox="allow-scripts allow-modals"` carrying the
+standalone export (what "Save HTML" writes, with the artifact's own scripts stripped and the
+print stylesheet and trigger appended) under a policy derived from `ARTIFACT_CSP` by swapping
+exactly the script directive, refusing as loudly as the critic when the base stops having that
+shape. `allow-modals` is not optional: the sandboxed modals flag is what gates
+`window.print()`. The exported policy meta is rewritten rather than joined by a second one,
+because policies are additive and the canvas's `script-src 'none'` would still win — which is
+the same reason the artifact's `<script>` elements and `on*` attributes are stripped first;
+under the canvas policy they never ran, so nothing the user previewed is lost. The frame is
+removed when it reports (`afterprint`, which fires for a cancel too) and again in the effect
+teardown, and the control says "Print dialog closed." rather than claiming a copy exists,
+because no engine distinguishes a print from a cancel. The pagination lives in
+`artifactPrint.ts`: a deck of `<section>`s gets landscape and one slide per page
+(`break-before: page`, `break-inside: avoid`, the first section exempted so no blank page
+leads), a document without sections gets portrait and a continuous flow, and both get a
+zero-margin `@page` and `print-color-adjust: exact` so the artifact's own layout and
+backgrounds survive.
+
 ## Design doctrine
 
 `skillLoader.ts` composes craft doctrine into one block of prompt text,

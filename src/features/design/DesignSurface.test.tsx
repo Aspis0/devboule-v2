@@ -4420,10 +4420,12 @@ describe("artifact export copy", () => {
     const pill = container.querySelector(".design-zoom-controls");
     if (pill === null) throw new Error("Canvas controls missing");
     expect(pill.querySelector('button[aria-label="Copy HTML"]')).not.toBeNull();
-    // Both export actions, because a control that exists but is never mounted
+    // All three export actions, because a control that exists but is never mounted
     // is indistinguishable from one that was never written: Save HTML shipped
-    // unreachable until this assertion existed.
+    // unreachable until this assertion existed, and Print / PDF is wired the
+    // same way.
     expect(pill.querySelector('button[aria-label="Save HTML"]')).not.toBeNull();
+    expect(pill.querySelector('button[aria-label="Print / PDF"]')).not.toBeNull();
     const header = container.querySelector(".design-assistant-header");
     if (header === null) throw new Error("Assistant header missing");
     expect(header.querySelector('button[aria-label="Copy HTML"]')).toBeNull();

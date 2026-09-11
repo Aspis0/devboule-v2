@@ -25,6 +25,7 @@ import type {
 import { ARTIFACT_CSP_META } from "./artifactCsp";
 import { artifactSlideNotice, readArtifactSlideShape } from "./artifactSlides";
 import { ArtifactCopyControl } from "./ArtifactCopyControl";
+import { ArtifactPrintControl } from "./ArtifactPrintControl";
 import { ArtifactSaveControl } from "./ArtifactSaveControl";
 import { findUndefinedCustomProperties } from "./artifactTokenLint";
 import { ArtifactRenderCritic, type ArtifactRenderCriticResult } from "./artifactRenderCritic";
@@ -1467,6 +1468,7 @@ const ZoomControls = memo(function ZoomControls({
         <>
           <ArtifactCopyControl html={artifactHtml} title={artifactTitle} />
           <ArtifactSaveControl html={artifactHtml} title={artifactTitle} />
+          <ArtifactPrintControl html={artifactHtml} title={artifactTitle} />
         </>
       ) : null}
     </div>
