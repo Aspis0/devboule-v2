@@ -1,5 +1,6 @@
 import { surfaceSettingsGet, surfaceSettingsSet } from "../../lib/tauri";
 import { MAX_AUTOMATIC_SKILL_SECTIONS } from "./builtInSkills";
+import type { DesignOutputMode } from "./designHost";
 
 export interface DesignSkillSelection {
   version: 1;
@@ -93,6 +94,7 @@ interface StoredDesignSettings {
   selection: DesignSkillSelection;
   providerId: string | null;
   workspaceId: string | null;
+  outputMode: DesignOutputMode;
   history?: readonly unknown[];
 }
 
@@ -121,6 +123,9 @@ function parseStoredDesignSettings(value: unknown): StoredDesignSettings | null 
     selection: parseDoctrineSelection(value) ?? defaultSelection(),
     providerId: typeof value.providerId === "string" ? value.providerId : null,
     workspaceId: typeof value.workspaceId === "string" ? value.workspaceId : null,
+    // Absent or unrecognised means a writer that predates slides: keep the page
+    // behaviour, exactly like an absent skill selection keeps its default.
+    outputMode: value.outputMode === "slides" ? "slides" : "page",
     history: Array.isArray(value.history) ? value.history : undefined,
   };
 }
@@ -164,11 +169,16 @@ function documentWithoutHistory(
   selection: DesignSkillSelection,
   providerId: string | null,
   workspaceId: string | null,
+  outputMode: DesignOutputMode,
 ): Record<string, unknown> {
   return {
     ...selection,
     ...(providerId === null ? {} : { providerId }),
     ...(workspaceId === null ? {} : { workspaceId }),
+    // The page default stays omitted so a document written before slides is
+    // byte-identical to one written now: writers that never heard of slides
+    // neither grow old documents nor drop the key when it is present.
+    ...(outputMode === "page" ? {} : { outputMode }),
   };
 }
 
@@ -177,8 +187,9 @@ function fitHistoryToSettingsBudget(
   providerId: string | null,
   workspaceId: string | null,
   history: readonly unknown[],
+  outputMode: DesignOutputMode,
 ): Record<string, unknown> {
-  const base = documentWithoutHistory(selection, providerId, workspaceId);
+  const base = documentWithoutHistory(selection, providerId, workspaceId, outputMode);
   const retained = [...history];
 
   while (retained.length > 0) {
@@ -198,10 +209,11 @@ async function writeDesignSettings(
   providerId: string | null,
   workspaceId: string | null,
   history: readonly unknown[],
+  outputMode: DesignOutputMode,
 ): Promise<void> {
   await surfaceSettingsSet(
     DOCTRINE_SETTINGS_SURFACE_ID,
-    fitHistoryToSettingsBudget(selection, providerId, workspaceId, history),
+    fitHistoryToSettingsBudget(selection, providerId, workspaceId, history, outputMode),
   );
 }
 
@@ -231,11 +243,48 @@ export async function saveDesignSkillSelection(selection: DesignSkillSelection):
     await queueSettingsWrite(async (stored) => {
       const providerId = stored?.providerId ?? null;
       const workspaceId = stored?.workspaceId ?? null;
-      await writeDesignSettings(selection, providerId, workspaceId, stored?.history ?? []);
+      await writeDesignSettings(
+        selection,
+        providerId,
+        workspaceId,
+        stored?.history ?? [],
+        stored?.outputMode ?? "page",
+      );
     });
     return true;
   } catch {
     // Losing a preference must never take down a design generation; report it instead.
+    return false;
+  }
+}
+
+/** The output shape the surface asks for when nothing was ever chosen: a page. */
+export const DEFAULT_DESIGN_OUTPUT_MODE: DesignOutputMode = "page";
+
+export async function loadDesignOutputMode(): Promise<DesignOutputMode> {
+  const stored = await readStoredDesignSettings();
+  if (stored === null || stored === undefined) return DEFAULT_DESIGN_OUTPUT_MODE;
+  return stored.outputMode;
+}
+
+// The boolean is the report, not an error signal: like the skill selection,
+// a false return means the value never reached disk and will revert on reload.
+export async function saveDesignOutputMode(outputMode: DesignOutputMode): Promise<boolean> {
+  try {
+    await queueSettingsWrite(async (stored) => {
+      const selection = stored?.selection ?? defaultSelection();
+      const providerId = stored?.providerId ?? null;
+      const workspaceId = stored?.workspaceId ?? null;
+      await writeDesignSettings(
+        selection,
+        providerId,
+        workspaceId,
+        stored?.history ?? [],
+        outputMode,
+      );
+    });
+    return true;
+  } catch {
     return false;
   }
 }
@@ -264,7 +313,13 @@ export async function saveDesignProviderId(providerId: string | null): Promise<b
     await queueSettingsWrite(async (stored) => {
       const settings = stored?.selection ?? defaultSelection();
       const workspaceId = stored?.workspaceId ?? null;
-      await writeDesignSettings(settings, providerId, workspaceId, stored?.history ?? []);
+      await writeDesignSettings(
+        settings,
+        providerId,
+        workspaceId,
+        stored?.history ?? [],
+        stored?.outputMode ?? "page",
+      );
     });
     return true;
   } catch {
@@ -291,7 +346,13 @@ export async function saveDesignWorkspaceId(workspaceId: string | null): Promise
     await queueSettingsWrite(async (stored) => {
       const settings = stored?.selection ?? defaultSelection();
       const providerId = stored?.providerId ?? null;
-      await writeDesignSettings(settings, providerId, workspaceId, stored?.history ?? []);
+      await writeDesignSettings(
+        settings,
+        providerId,
+        workspaceId,
+        stored?.history ?? [],
+        stored?.outputMode ?? "page",
+      );
     });
     return true;
   } catch {
@@ -332,6 +393,12 @@ export async function updateStoredDesignHistory(
     const providerId = stored?.providerId ?? null;
     const workspaceId = stored?.workspaceId ?? null;
     const history = update(stored?.history ?? []);
-    await writeDesignSettings(selection, providerId, workspaceId, history);
+    await writeDesignSettings(
+      selection,
+      providerId,
+      workspaceId,
+      history,
+      stored?.outputMode ?? "page",
+    );
   });
 }

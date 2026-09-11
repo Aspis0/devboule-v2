@@ -16,6 +16,8 @@ const settingsMocks = vi.hoisted(() => ({
   loadWorkspace: vi.fn(),
   loadStoredWorkspace: vi.fn(),
   saveWorkspace: vi.fn(),
+  loadOutput: vi.fn(),
+  saveOutput: vi.fn(),
 }));
 
 const providerMocks = vi.hoisted(() => ({
@@ -37,6 +39,8 @@ vi.mock("./designSettings", async () => {
     loadDesignWorkspaceId: settingsMocks.loadWorkspace,
     loadStoredDesignWorkspaceId: settingsMocks.loadStoredWorkspace,
     saveDesignWorkspaceId: settingsMocks.saveWorkspace,
+    loadDesignOutputMode: settingsMocks.loadOutput,
+    saveDesignOutputMode: settingsMocks.saveOutput,
   };
 });
 
@@ -132,6 +136,8 @@ beforeEach(() => {
   settingsMocks.loadStoredProvider.mockResolvedValue(null);
   settingsMocks.saveProvider.mockResolvedValue(true);
   settingsMocks.loadWorkspace.mockResolvedValue(null);
+  settingsMocks.loadOutput.mockResolvedValue("page");
+  settingsMocks.saveOutput.mockResolvedValue(true);
   settingsMocks.loadStoredWorkspace.mockResolvedValue(null);
   settingsMocks.saveWorkspace.mockResolvedValue(true);
   providerMocks.list.mockResolvedValue({ providers: [], unreadableDirs: 0 });

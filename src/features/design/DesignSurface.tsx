@@ -14,6 +14,7 @@ import type {
   DesignHost,
   DesignLayer,
   DesignMessage,
+  DesignOutputMode,
   DesignTranscriptItem,
   PendingPermission,
   SectionNote,
@@ -54,11 +55,13 @@ import {
 } from "./builtInSkills";
 import {
   DEFAULT_DESIGN_SKILL_SELECTION,
+  loadDesignOutputMode,
   loadDesignProviderId,
   loadDesignSkillSelection,
   loadDesignWorkspaceId,
   loadStoredDesignProviderId,
   loadStoredDesignWorkspaceId,
+  saveDesignOutputMode,
   saveDesignProviderId,
   saveDesignSkillSelection,
   saveDesignWorkspaceId,
@@ -155,6 +158,9 @@ interface DesignToolbarProps {
    */
   folderControl: ReactNode;
   grounded: boolean;
+  outputMode: DesignOutputMode;
+  busy: boolean;
+  onOutputModeChange: (mode: DesignOutputMode) => void;
   canSave: boolean;
   saved: boolean;
   saving: boolean;
@@ -253,12 +259,13 @@ const WORKSPACE_UNCONFIRMED_NOTICE =
   "The attached folder could not be confirmed because its record failed to load.";
 
 // The persistence calls report a boolean: false means the value never reached disk and will
-// revert on reload. One notice region serves all four callers because they fail the same way,
-// but each message names what was lost, because the four mean different things to the user.
+// revert on reload. One notice region serves all five callers because they fail the same way,
+// but each message names what was lost, because the five mean different things to the user.
 const PERSISTENCE_NOTICE_TEXT = {
   provider: "Your agent choice was not saved.",
   workspace: "Your folder choice was not saved.",
   skill: "Your craft selection was not saved.",
+  output: "Your output choice was not saved.",
   history: "This design was not added to your history.",
 } as const;
 
@@ -756,6 +763,9 @@ function promptForMessage(
 const DesignToolbar = memo(function DesignToolbar({
   folderControl,
   grounded,
+  outputMode,
+  busy,
+  onOutputModeChange,
   canSave,
   saved,
   saving,
@@ -897,6 +907,37 @@ const DesignToolbar = memo(function DesignToolbar({
           aria-hidden="true"
         />
         {grounded ? "Grounded" : "Not grounded"}
+      </button>
+      {/*
+        The output shape wears the grounding control's own classes — same pill,
+        same dot, same states, zero new CSS — because it answers the same kind
+        of question (what the next run does) in the same bar. The toggle is
+        disabled while a generation runs, so the visible mode is always the
+        mode of the running generation: a mid-run flip would leave it unclear
+        whether Page or Slides is on its way, and "applies to the next run"
+        is exactly the ambiguity this control refuses. The choice snapshots
+        into generationOptions in startGeneration, like grounded does.
+      */}
+      <button
+        className="design-grounding-toggle"
+        type="button"
+        title={
+          busy
+            ? "A generation is running; the output shape cannot change mid-run."
+            : outputMode === "slides"
+              ? "Slide deck: the next run produces one id-anchored section per slide."
+              : "Page: the next run produces a scrolling page."
+        }
+        aria-label={`Output shape: ${outputMode === "slides" ? "Slides" : "Page"}`}
+        aria-pressed={outputMode === "slides"}
+        disabled={busy}
+        onClick={() => onOutputModeChange(outputMode === "slides" ? "page" : "slides")}
+      >
+        <span
+          className={`design-grounding-dot${outputMode === "slides" ? " design-grounding-dot-on" : ""}`}
+          aria-hidden="true"
+        />
+        {outputMode === "slides" ? "Slides" : "Page"}
       </button>
       {canSave ? (
         <span className="design-save-actions">
@@ -2605,6 +2646,11 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     initialViewState.selectedLayerId,
   );
   const [grounded, setGrounded] = useState(document.grounded);
+  // The output shape is surface state like the skill selection, not document
+  // state like grounding: it says what the next run must produce, and it is
+  // remembered in the surface settings beside the craft selection.
+  const [outputMode, setOutputModeState] = useState<DesignOutputMode>("page");
+  const outputModeInteractedRef = useRef(false);
   const [draft, setDraft] = useState(document.initialState.draft);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -2939,6 +2985,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       active = false;
     };
   }, [knownSkillSlugs]);
+
+  useEffect(() => {
+    let active = true;
+    void loadDesignOutputMode().then((mode) => {
+      if (active && !outputModeInteractedRef.current) setOutputModeState(mode);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     skillSelectionRef.current = skillSelection;
@@ -3702,6 +3758,19 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
     setGrounded((value) => !value);
   }, [markDocumentDirty]);
 
+  // The toggle is disabled while busy (see the toolbar), so this guard only
+  // covers callers that bypass the button; the visible mode never disagrees
+  // with the running generation.
+  const updateOutputMode = useCallback(
+    (mode: DesignOutputMode) => {
+      if (busy) return;
+      outputModeInteractedRef.current = true;
+      setOutputModeState(mode);
+      void saveDesignOutputMode(mode).then((saved) => reportPersistence("output", saved));
+    },
+    [busy, reportPersistence],
+  );
+
   const openHistoryEntry = useCallback(
     (entry: DesignHistoryEntry) => {
       if (
@@ -3826,10 +3895,16 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       const folderPath = attachedFolderPath ?? null;
       const generationOptions =
         skillSelection.mode === "auto"
-          ? { skillMode: "auto" as const, grounded, folderPath }
+          ? { skillMode: "auto" as const, grounded, folderPath, outputMode }
           : skillSelection.mode === "manual"
-            ? { skillMode: "manual" as const, skills: selectedSkillSlugs, grounded, folderPath }
-            : { skillMode: "all" as const, grounded, folderPath };
+            ? {
+                skillMode: "manual" as const,
+                skills: selectedSkillSlugs,
+                grounded,
+                folderPath,
+                outputMode,
+              }
+            : { skillMode: "all" as const, grounded, folderPath, outputMode };
       void generate(scopedPrompt, controller.signal, generationOptions)
         .then((result) => {
           const currentGeneration = useAppStore.getState().designSession.generation;
@@ -3962,6 +4037,7 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
       generate,
       grounded,
       host,
+      outputMode,
       reportPersistence,
       skillSelection.mode,
       selectedSkillSlugs,
@@ -4071,6 +4147,9 @@ function DesignSurfaceContent({ host, document }: DesignSurfaceContentProps) {
           />
         }
         grounded={grounded}
+        outputMode={outputMode}
+        busy={busy}
+        onOutputModeChange={updateOutputMode}
         canSave={canSave}
         saved={saved}
         saving={saving}
