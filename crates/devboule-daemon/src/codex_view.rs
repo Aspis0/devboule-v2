@@ -891,8 +891,7 @@ mod tests {
 
     #[test]
     fn measured_handshake_responses_build_the_codex_manifest() {
-        let source =
-            include_str!("../../../../reports/foundations/codex/wire/E1-step1-handshake.jsonl");
+        let source = include_str!("../fixtures/wire/codex/E1-step1-handshake.jsonl");
         let models = response_frame(source, 2);
         let thread = response_frame(source, 3);
         let mut catalog = catalog_from_response(&models["result"]).expect("model/list catalog");
@@ -1044,7 +1043,7 @@ mod tests {
     #[test]
     fn measured_turn_notifications_are_translated_in_order() {
         let frames = fixture_frames(include_str!(
-            "../../../../reports/foundations/codex/wire/E1-step1-handshake.jsonl"
+            "../fixtures/wire/codex/E1-step1-handshake.jsonl"
         ));
         let turn_id = frames
             .iter()

@@ -925,7 +925,7 @@ mod tests {
     #[test]
     fn measured_control_frames_and_turn_modes_keep_the_wire_shapes() {
         let thread = method_frame(
-            include_str!("../../../../reports/foundations/codex/wire/E1-step3-thread.jsonl"),
+            include_str!("../fixtures/wire/codex/E1-step3-thread.jsonl"),
             "thread/start",
         );
         let cwd = thread["params"]["cwd"].as_str().expect("cwd");
@@ -935,7 +935,7 @@ mod tests {
         );
 
         let initialized = method_frame(
-            include_str!("../../../../reports/foundations/codex/wire/E1-step1-handshake.jsonl"),
+            include_str!("../fixtures/wire/codex/E1-step1-handshake.jsonl"),
             "initialized",
         );
         assert_eq!(
@@ -944,7 +944,7 @@ mod tests {
         );
 
         let changed = method_frame(
-            include_str!("../../../../reports/foundations/codex/wire/E1-step6-modechange.jsonl"),
+            include_str!("../fixtures/wire/codex/E1-step6-modechange.jsonl"),
             "turn/start",
         );
         let params = &changed["params"];
@@ -959,7 +959,7 @@ mod tests {
             )
         );
         let interrupt = method_frame(
-            include_str!("../../../../reports/foundations/codex/wire/E1-step6b-interrupt.jsonl"),
+            include_str!("../fixtures/wire/codex/E1-step6b-interrupt.jsonl"),
             "turn/interrupt",
         );
         assert_eq!(

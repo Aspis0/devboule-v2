@@ -1408,7 +1408,7 @@ mod tests {
 
     const CLAUDE_MODE_CAPTURE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../reports/foundations/wire/claude-set-mode.jsonl"
+        "/fixtures/wire/claude-set-mode.jsonl"
     ));
 
     fn drain(conn: &ConnHandle) -> Vec<SessionEvent> {

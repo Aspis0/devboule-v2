@@ -1,0 +1,2 @@
+{"type":"control_response","response":{"subtype":"success","request_id":"measure-acceptEdits","response":{"mode":"acceptEdits"}}}
+{"type":"control_response","response":{"subtype":"error","request_id":"measure-bypassPermissions","error":"Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions"}}

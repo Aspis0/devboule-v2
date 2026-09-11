@@ -1085,11 +1085,11 @@ mod tests {
 
     const GROK_CAPTURE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../reports/foundations/wire/grok-v1.jsonl"
+        "/fixtures/wire/grok-v1.jsonl"
     ));
     const QWEN_CAPTURE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../reports/foundations/wire/qwen-v1.jsonl"
+        "/fixtures/wire/qwen-v1.jsonl"
     ));
 
     fn measured_raw(capture: &str, needle: &str) -> serde_json::Value {
