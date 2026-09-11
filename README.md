@@ -34,8 +34,20 @@ What works today:
   Sessions do not outlive the application yet: on exit, Devboule asks the
   daemon to shut down. Surviving a full restart is the next step, and it is
   what the daemon and the journal were built for.
-- **Agent conversation** — real IPC sessions on the daemon, including ACP
-  conversation events, model selection and permission handling.
+- **Agent conversation** — real IPC sessions on the daemon. Claude, Codex
+  (app-server) and pi run through native adapters; other agents speak ACP.
+  Each provider declares its own permission modes (for Claude: plan, always
+  ask, accept edits, auto, bypass; for Codex: read-only, auto, auto-review,
+  full access) and the session starts in the mode you pick. Permission
+  requests are brokered by the daemon and answered from one card in the chat,
+  which shows the agent's own description of the command, never the
+  provider's internal wording. Tool calls render as rows with an icon, a
+  summary, the files they touched and a failure mark; consecutive tool calls
+  collapse into one row with a summary such as "Edited 1 file, ran 2
+  commands". Known limit, measured on Windows: in Codex's default (sandboxed)
+  mode the shell fails to start inside Codex's own Windows sandbox, so no
+  command runs; full access works. This is Codex-side (the same sandbox fails
+  from the Codex CLI too), and the app does not work around it.
 - **History** — the persisted session journal, with grouping, retention notices,
   deletion, and `Reopen` for resumable ACP sessions.
 - **Provider inventory** — the daemon discovers known agent CLIs from `PATH`;

@@ -6,17 +6,7 @@
 use devboule_protocol::{SessionEvent, TurnUsage};
 use serde_json::Value;
 
-/// Raw pi tool names are not categories; map them the way Paseo's pi
-/// mapper does so the frontend can label the row.
-fn tool_kind(tool_name: &str) -> &'static str {
-    match tool_name.to_ascii_lowercase().as_str() {
-        "bash" | "powershell" => "execute",
-        "read" => "read",
-        "edit" | "write" => "edit",
-        "grep" | "find" | "ls" => "search",
-        _ => "other",
-    }
-}
+use crate::wire_json::{blocks_text, tool_kind_from_name, tool_status};
 
 /// The one field that matters, in the same priority as Claude's fallback:
 /// command, then path, then pattern.
@@ -89,7 +79,7 @@ fn message_update_events(value: &Value) -> Vec<SessionEvent> {
                     tool_call_id: id.to_string(),
                     title: tool_name.to_string(),
                     status: "pending".to_string(),
-                    kind: Some(tool_kind(tool_name).to_string()),
+                    kind: Some(tool_kind_from_name(tool_name).to_string()),
                     locations: None,
                     subagent_type: None,
                     parent_tool_use_id: None,
@@ -113,7 +103,7 @@ fn toolcall_end(value: &Value) -> Option<SessionEvent> {
         text: None,
         // Arguments arrive here, so retitle the row with the summary.
         title: tool_summary(tool_call.get("arguments")),
-        kind: name.map(|name| tool_kind(name).to_string()),
+        kind: name.map(|name| tool_kind_from_name(name).to_string()),
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -129,7 +119,7 @@ fn tool_execution_start(value: &Value) -> Option<SessionEvent> {
         kind: value
             .get("toolName")
             .and_then(Value::as_str)
-            .map(|name| tool_kind(name).to_string()),
+            .map(|name| tool_kind_from_name(name).to_string()),
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -143,17 +133,13 @@ fn tool_execution_end(value: &Value) -> Option<SessionEvent> {
         .unwrap_or(false);
     Some(SessionEvent::AgentToolUpdate {
         tool_call_id: value.get("toolCallId")?.as_str()?.to_string(),
-        status: Some(if failed {
-            "failed".to_string()
-        } else {
-            "completed".to_string()
-        }),
+        status: Some(tool_status(failed).to_string()),
         text: value.get("result").and_then(tool_result_text),
         title: None,
         kind: value
             .get("toolName")
             .and_then(Value::as_str)
-            .map(|name| tool_kind(name).to_string()),
+            .map(|name| tool_kind_from_name(name).to_string()),
         locations: None,
         parent_tool_use_id: None,
         spawn_depth: None,
@@ -161,12 +147,11 @@ fn tool_execution_end(value: &Value) -> Option<SessionEvent> {
 }
 
 fn tool_result_text(value: &Value) -> Option<String> {
-    let content = value.get("content")?.as_array()?;
-    let text = content
-        .iter()
-        .filter_map(|block| block.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("");
+    let content = value.get("content")?;
+    if !content.is_array() {
+        return None;
+    }
+    let text = blocks_text(content);
     (!text.is_empty()).then_some(text)
 }
 

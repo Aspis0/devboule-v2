@@ -12,6 +12,7 @@ use tauri::State;
 use devboule_daemon::{DaemonClient, DiagnosticsReport, SessionStateHandler};
 use devboule_protocol::{
     ErrorCode, PermissionOutcome, Persistence, PersistenceKind, ResumeResult, SubscriptionId,
+    MAX_WRITE_BYTES,
 };
 
 use crate::client::DaemonBridge;
@@ -20,8 +21,6 @@ use super::error::CommandError;
 
 #[cfg(test)]
 use devboule_daemon::SafeText;
-
-const MAX_WRITE_BYTES: usize = 64 * 1024;
 
 pub use devboule_protocol::{
     validate_session_id, Session, SessionEvent, SessionKind, SessionStateSnapshot,

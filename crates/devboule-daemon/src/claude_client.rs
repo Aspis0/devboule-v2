@@ -1142,9 +1142,18 @@ impl ClaudeReader {
             .unwrap_or(request_id)
             .to_string();
         let input = request.get("input").cloned().unwrap_or(Value::Null);
+        // Paseo never shows `decision_reason`: for every tool but
+        // AskUserQuestion the permission summary is empty
+        // (packages/server/src/server/agent/providers/claude/agent.ts:1055-1077
+        // and :4624-4660). `decision_reason` is the permission engine's
+        // internal vocabulary ("Contains simple_expansion"), so it is not
+        // surfaced at all — the daemon has no debug-log facility. The
+        // description is the request-level string when present, else the
+        // input's own `description` when it is a string, else nothing.
         let description = request
-            .get("decision_reason")
+            .get("description")
             .and_then(Value::as_str)
+            .or_else(|| input.get("description").and_then(Value::as_str))
             .map(str::to_string);
         let command = input
             .get("command")
@@ -2320,11 +2329,32 @@ mod tests {
             .feed(format!("{line}\n").as_bytes(), &runtime)
             .expect("feed");
         let events = drain(&conn);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            SessionEvent::PermissionRequest { tool_call_id, .. }
-                if tool_call_id == "toolu_01FgWLJkmeyU9wAGYkx3YFXu"
-        )));
+        let permission = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::PermissionRequest {
+                    tool_call_id,
+                    title,
+                    description,
+                    ..
+                } if tool_call_id == "toolu_01FgWLJkmeyU9wAGYkx3YFXu" => {
+                    Some((title.clone(), description.clone()))
+                }
+                _ => None,
+            })
+            .expect("permission request");
+        // `decision_reason` is the permission engine's internal vocabulary:
+        // the card shows the input's own description, never the reason.
+        assert_eq!(permission.0, "Bash");
+        assert_eq!(
+            permission.1.as_deref(),
+            Some("Delete a nonexistent temp file")
+        );
+        let encoded = serde_json::to_value(&events).expect("events json");
+        assert!(
+            !encoded.to_string().contains("requires approval"),
+            "decision_reason must not reach the event: {encoded}"
+        );
         broker
             .respond(
                 "toolu_01FgWLJkmeyU9wAGYkx3YFXu",
@@ -2365,6 +2395,117 @@ mod tests {
             .expect("deny");
         let frames = captured.lock().expect("captured");
         assert_eq!(frames[0]["response"]["response"]["behavior"], "deny");
+    }
+
+    #[test]
+    fn permission_description_uses_wire_description_never_decision_reason() {
+        // Measured wire (journal, live session): `decision_reason` carries the
+        // permission engine's internal vocabulary and must not reach the card.
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = test_reader(Arc::clone(&broker), Arc::new(Mutex::new(HashMap::new())));
+        let (runtime, conn) = attached(&broker);
+        let line = serde_json::json!({
+            "type": "control_request",
+            "request_id": "live-probe-request",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": {
+                    "command": r#"printf devboule-live-probe > "$TEMP/devboule-live-probe.txt""#,
+                    "description": "Write probe string to a temp file"
+                },
+                "description": "Write probe string to a temp file",
+                "permission_suggestions": [],
+                "decision_reason": "Contains simple_expansion",
+                "decision_reason_type": "other",
+                "tool_use_id": "toolu_live_probe"
+            }
+        });
+        reader
+            .feed(format!("{line}\n").as_bytes(), &runtime)
+            .expect("feed");
+        let events = drain(&conn);
+        let permission = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::PermissionRequest {
+                    tool_call_id,
+                    title,
+                    description,
+                    command,
+                    ..
+                } => Some((
+                    tool_call_id.clone(),
+                    title.clone(),
+                    description.clone(),
+                    command.clone(),
+                )),
+                _ => None,
+            })
+            .expect("permission request");
+        assert_eq!(permission.0, "toolu_live_probe");
+        assert_eq!(permission.1, "Bash");
+        assert_eq!(
+            permission.3.as_deref(),
+            Some(r#"printf devboule-live-probe > "$TEMP/devboule-live-probe.txt""#)
+        );
+        assert_eq!(
+            permission.2.as_deref(),
+            Some("Write probe string to a temp file")
+        );
+        let encoded = serde_json::to_value(&events).expect("events json");
+        assert!(
+            !encoded.to_string().contains("simple_expansion"),
+            "decision_reason must not reach the event: {encoded}"
+        );
+        broker
+            .respond("toolu_live_probe", PermissionOutcome::Deny)
+            .expect("deny");
+    }
+
+    #[test]
+    fn permission_request_level_description_wins_over_input_description() {
+        // Gap audit: the measured frame uses the identical string in both
+        // places, so precedence needs its own frame.
+        let broker = PermissionBroker::for_test(Arc::new(|_, _| Ok(())));
+        let mut reader = test_reader(Arc::clone(&broker), Arc::new(Mutex::new(HashMap::new())));
+        let (runtime, conn) = attached(&broker);
+        let line = serde_json::json!({
+            "type": "control_request",
+            "request_id": "precedence-request",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": {
+                    "command": "echo precedence",
+                    "description": "input-level description"
+                },
+                "description": "request-level description",
+                "permission_suggestions": [],
+                "tool_use_id": "toolu_precedence"
+            }
+        });
+        reader
+            .feed(format!("{line}\n").as_bytes(), &runtime)
+            .expect("feed");
+        let events = drain(&conn);
+        let description = events
+            .iter()
+            .find_map(|event| match event {
+                SessionEvent::PermissionRequest {
+                    tool_call_id,
+                    description,
+                    ..
+                } if tool_call_id == "toolu_precedence" => Some(description.clone()),
+                _ => None,
+            })
+            .expect("permission request");
+        assert_eq!(description.as_deref(), Some("request-level description"));
+        broker
+            .respond("toolu_precedence", PermissionOutcome::Deny)
+            .expect("deny");
     }
 
     #[test]

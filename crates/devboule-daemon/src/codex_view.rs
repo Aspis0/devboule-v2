@@ -13,6 +13,9 @@ use devboule_protocol::{
 };
 use serde_json::Value;
 
+use crate::shell_unwrap::normalize_command_execution_command;
+use crate::tool_paths::relativize_tool_path;
+
 pub(crate) const MAX_LINE_BYTES: usize = 10 * 1024 * 1024;
 
 pub(crate) struct CodexStdout {
@@ -752,11 +755,10 @@ fn item_event(
             } else {
                 vec![SessionEvent::AgentToolCall {
                     tool_call_id: id.to_string(),
-                    title: item
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Command execution")
-                        .to_string(),
+                    title: normalize_command_execution_command(
+                        item.get("command").unwrap_or(&Value::Null),
+                    )
+                    .unwrap_or_else(|| "Command execution".to_string()),
                     status: item
                         .get("status")
                         .and_then(Value::as_str)
@@ -804,18 +806,12 @@ fn item_event(
     }
 }
 
-fn change_path(path: &str, cwd: Option<&std::path::Path>) -> String {
-    cwd.and_then(|cwd| std::path::Path::new(path).strip_prefix(cwd).ok())
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string())
-}
-
 fn first_change_path(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<String> {
     let changes = value?.as_array()?;
     let path = changes
         .iter()
         .find_map(|change| change.get("path")?.as_str())?;
-    Some(change_path(path, cwd))
+    Some(relativize_tool_path(path, cwd))
 }
 
 fn locations(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<Vec<ToolLocation>> {
@@ -825,7 +821,7 @@ fn locations(value: Option<&Value>, cwd: Option<&std::path::Path>) -> Option<Vec
         .filter_map(|change| {
             let path = change.get("path").and_then(Value::as_str)?;
             Some(ToolLocation {
-                path: change_path(path, cwd),
+                path: relativize_tool_path(path, cwd),
                 line: None,
             })
         })
@@ -1145,6 +1141,44 @@ mod tests {
                 model_id: None,
                 usage: None,
             }]
+        );
+    }
+
+    #[test]
+    fn command_execution_title_unwraps_the_shell_wrapper() {
+        // Measured wire: the full pwsh invocation must not become the row title.
+        let mut view = CodexView::new(None);
+        let events = view.ingest(&parse(
+            r#"{"jsonrpc":"2.0","method":"item/started","params":{"item":{"type":"commandExecution","id":"exec-1","status":"inProgress","command":"\"C:\\Users\\gualt\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe\" -Command 'git status'"},"threadId":"th","turnId":"tu"}}"#,
+        ));
+        match events.as_slice() {
+            [SessionEvent::AgentToolCall { title, kind, .. }] => {
+                assert_eq!(title, "git status");
+                assert_eq!(kind.as_deref(), Some("execute"));
+            }
+            other => panic!("expected commandExecution tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn change_path_keeps_the_full_path_when_it_equals_the_cwd() {
+        let cwd = std::path::Path::new(r"C:\w");
+        assert_eq!(
+            crate::tool_paths::relativize_tool_path(r"C:\w", Some(cwd)),
+            r"C:\w"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn change_path_relativizes_despite_drive_letter_case() {
+        let cwd = std::path::Path::new(r"C:\Work");
+        assert_eq!(
+            crate::tool_paths::relativize_tool_path(r"c:\Work\src\lib.rs", Some(cwd)),
+            std::path::PathBuf::from("src")
+                .join("lib.rs")
+                .to_string_lossy()
+                .into_owned()
         );
     }
 }

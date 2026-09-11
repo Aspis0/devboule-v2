@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::claude_view::relativize_tool_path;
+use crate::tool_paths::relativize_tool_path;
 use devboule_protocol::{
     AvailableCommandView, SessionEvent, SessionModeStateView, SessionModeView, SessionModel,
     SessionModelEffort, ToolLocation, TurnUsage,

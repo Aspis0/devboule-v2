@@ -1715,6 +1715,27 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
+    /// One `node` spawner for the Pi tests, so a missing binary fails the
+    /// same way everywhere.
+    fn node_command() -> std::process::Command {
+        std::process::Command::new("node")
+    }
+
+    /// What a `node` spawn failure panics with: the test name, the program
+    /// name, the `io::Error` (kind + OS message), and the `PATH` and cwd the
+    /// test process saw — the context the old "node is required" message
+    /// never gave.
+    fn node_unavailable(test: &str, error: &std::io::Error) -> String {
+        format!(
+            "node is required for the {test}: could not spawn `node` ({error}; kind={:?}; PATH={:?}; cwd={:?})",
+            error.kind(),
+            std::env::var("PATH").unwrap_or_default(),
+            std::env::current_dir()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+        )
+    }
+
     /// `get_available_models` as Pi answered it over `pi --mode rpc` (captured
     /// 2026-09-10). The capture elided each model's `cost` object and the body
     /// of `thinkingLevelMap`; those two omissions are the only difference from
@@ -1778,11 +1799,11 @@ mod tests {
 
     #[test]
     fn handshake_does_not_require_the_ready_signal() {
-        let mut child = std::process::Command::new("node")
+        let mut child = node_command()
             .args(["-e", "setTimeout(() => {}, 10000)"])
             .stdin(std::process::Stdio::piped())
             .spawn()
-            .expect("node is required for the Pi handshake test");
+            .unwrap_or_else(|error| panic!("{}", node_unavailable("Pi handshake test", &error)));
         let stdin = child.stdin.take().expect("node stdin");
         let stdin = std::sync::Mutex::new(Some(stdin));
         let mut stdout = PiStdout::spawn(std::io::Cursor::new(
@@ -1930,7 +1951,7 @@ mod tests {
 
     #[test]
     fn pi_auto_answer_failure_still_denies_the_extension_confirm() {
-        let mut child = std::process::Command::new("node")
+        let mut child = node_command()
             .args([
                 "-e",
                 "process.stdin.on('data', data => process.stdout.write(data))",
@@ -1938,7 +1959,7 @@ mod tests {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
-            .expect("node is required for the Pi auto-answer test");
+            .unwrap_or_else(|error| panic!("{}", node_unavailable("Pi auto-answer test", &error)));
         let stdin = Arc::new(Mutex::new(Some(child.stdin.take().expect("stdin"))));
         let mut stdout = std::io::BufReader::new(child.stdout.take().expect("stdout"));
         let broker = super::PermissionBroker::for_test(Arc::new(|_, _| {
@@ -2052,10 +2073,12 @@ mod tests {
   }
 })().catch((error) => { console.error(error); process.exit(3); });
 "#;
-        let output = std::process::Command::new("node")
+        let output = node_command()
             .args(["-e", script, &path.to_string_lossy()])
             .output()
-            .expect("node is required for the Pi gate behavior test");
+            .unwrap_or_else(|error| {
+                panic!("{}", node_unavailable("Pi gate behavior test", &error))
+            });
         let _ = std::fs::remove_file(&path);
         assert!(
             output.status.success(),

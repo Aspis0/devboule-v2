@@ -49,8 +49,14 @@ mod screen;
 mod server;
 #[cfg(feature = "server")]
 mod session;
+#[cfg(feature = "server")]
+mod shell_unwrap;
 mod spawn;
+#[cfg(feature = "server")]
+mod tool_paths;
 mod transport;
+#[cfg(feature = "server")]
+mod wire_json;
 #[cfg(feature = "server")]
 mod workspace;
 #[cfg(feature = "server")]

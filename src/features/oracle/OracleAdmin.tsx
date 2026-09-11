@@ -7,8 +7,9 @@ import type {
   OracleModelStatus,
   OracleWorkspace,
 } from "../../types/ipc";
-import type { TrackedRequestState } from "./oracleRequests";
-import { fileCount, formatCount, modelStateLabel } from "./oracleUtils";
+import type { TrackedRequestState } from "../../lib/trackedRequest";
+import { formatCount } from "../../lib/format";
+import { fileCount, modelStateLabel } from "./oracleUtils";
 import { RerankerStatus } from "./OracleSearch";
 
 const FILE_TABS: readonly { id: FileTab; label: string }[] = [

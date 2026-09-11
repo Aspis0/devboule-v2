@@ -1,5 +1,4 @@
-import type { Channel } from "@tauri-apps/api/core";
-import { isCommandError } from "../../lib/tauri";
+import { isCommandError, type SessionChannel } from "../../lib/tauri";
 import type {
   Session,
   SessionEvent,
@@ -11,7 +10,7 @@ import type { TerminalViewHandle } from "./createTerminalView";
 import type { TerminalSessionRegistry } from "./terminalRegistry";
 
 export type TerminalEvent = SessionEvent;
-export type TerminalChannel = Channel<TerminalEvent>;
+export type TerminalChannel = SessionChannel;
 
 export type TerminalBanner =
   | {

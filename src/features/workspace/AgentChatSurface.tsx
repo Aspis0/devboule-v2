@@ -2,6 +2,7 @@ import {
   memo,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -32,6 +33,12 @@ import type {
   AgentSubagentStatusCounts,
   AgentSubagentStatus,
 } from "../../lib/agentSession";
+import {
+  groupToolCalls,
+  isToolCallGroup,
+  type ToolCallGroup,
+  type ToolChatItem,
+} from "../../lib/toolCallGroups";
 import { toolRowDisplay } from "./toolRowDisplay";
 import { ToolIcon } from "./ToolIcon";
 import { getPreferredEffort, setPreferredEffort } from "../../lib/modelPrefs";
@@ -462,6 +469,114 @@ function pendingTargetCopy(
   return effort === undefined ? null : `switching to ${effort.label}…`;
 }
 
+function isToolRunningStatus(status: string): boolean {
+  const normalized = status.toLowerCase();
+  return normalized === "running" || normalized === "pending" || normalized === "in_progress";
+}
+
+function isToolFailedStatus(status: string): boolean {
+  return status.toLowerCase() === "failed";
+}
+
+/** The frame (entry base class, subagent class, indent) the surface gives a
+ * tool item. Groups compute it from their first item exactly like
+ * `renderItem` does, so the wrapper aligns with its rows. */
+function entryFrame(item: ToolChatItem): {
+  className: string;
+  style: { marginInlineStart: string } | undefined;
+} {
+  const isSubagent = hasParentToolUseId(item);
+  const measuredDepth =
+    "spawnDepth" in item && typeof item.spawnDepth === "number" ? item.spawnDepth : null;
+  const visibleDepth =
+    measuredDepth === null
+      ? null
+      : Math.min(MAX_VISIBLE_SUBAGENT_DEPTH, Math.max(0, measuredDepth));
+  const className = `workspace-chat-entry workspace-chat-tool${
+    isSubagent ? " workspace-chat-subagent" : ""
+  }${isSubagent && measuredDepth === null ? " workspace-chat-subagent-depth-unknown" : ""}`;
+  const style =
+    isSubagent && visibleDepth !== null
+      ? { marginInlineStart: `${visibleDepth * SUBAGENT_INDENT_PX}px` }
+      : undefined;
+  return { className, style };
+}
+
+function renderToolItem(
+  item: ToolChatItem,
+  className: string,
+  style: { marginInlineStart: string } | undefined,
+) {
+  const model = toolRowDisplay(item);
+  const running = isToolRunningStatus(item.status);
+  const failed = isToolFailedStatus(item.status);
+  const status = item.status.toLowerCase();
+  const cancelled = status === "cancelled" || status === "canceled";
+  const toolClassName = `${className}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}`;
+  return (
+    <details className={toolClassName} key={item.id} style={style}>
+      <summary className="workspace-chat-tool-summary">
+        <ToolIcon name={model.icon} />
+        <span className="workspace-chat-tool-label">{model.displayName}</span>
+        {model.summary !== undefined ? (
+          <span className="workspace-chat-tool-summary-text">{model.summary}</span>
+        ) : null}
+        {failed ? (
+          <span className="workspace-chat-tool-failed" aria-hidden="true">
+            ×
+          </span>
+        ) : null}
+      </summary>
+      <div className="workspace-chat-tool-body">
+        {item.locations !== undefined && item.locations.length > 0 ? (
+          <div className="workspace-chat-tool-locations">
+            {item.locations.map((location, index) => (
+              <span className="workspace-chat-tool-location" key={index}>
+                {location.line !== undefined ? `${location.path}:${location.line}` : location.path}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {item.output ? <div className="workspace-chat-copy">{item.output}</div> : null}
+      </div>
+    </details>
+  );
+}
+
+/** One collapsed row for a run of consecutive tool calls (see `toolCallGroups`).
+ * The wrapper carries the first item's frame, plus `is-running` when any
+ * item is still running (Paseo's `isLoading`: any call running/executing)
+ * and `is-failed` with the failed mark when any item failed. */
+function renderGroupEntry(group: ToolCallGroup) {
+  const first = group.items[0];
+  if (first === undefined) return null;
+  const frame = entryFrame(first);
+  const running = group.items.some((item) => isToolRunningStatus(item.status));
+  const failed = group.items.some((item) => isToolFailedStatus(item.status));
+  const className = `${frame.className} workspace-chat-tool-group${running ? " is-running" : ""}${failed ? " is-failed" : ""}`;
+  return (
+    <details className={className} key={group.id} style={frame.style}>
+      <summary className="workspace-chat-tool-group-summary">
+        <ToolIcon name="wrench" />
+        <span className="workspace-chat-tool-group-summary-text">{group.summary}</span>
+        {failed ? (
+          <span className="workspace-chat-tool-failed" aria-hidden="true">
+            ×
+          </span>
+        ) : null}
+      </summary>
+      <div className="workspace-chat-tool-group-body">
+        {group.items.map((item) => renderItem(item))}
+      </div>
+    </details>
+  );
+}
+
+function renderEntry(entry: AgentChatItem | ToolCallGroup) {
+  if (isToolCallGroup(entry)) return renderGroupEntry(entry);
+  return renderItem(entry);
+}
+
 function renderItem(item: AgentChatItem) {
   const isSubagent = hasParentToolUseId(item);
   const measuredDepth =
@@ -478,42 +593,8 @@ function renderItem(item: AgentChatItem) {
       ? { marginInlineStart: `${visibleDepth * SUBAGENT_INDENT_PX}px` }
       : undefined;
   if (item.role === "tool") {
-    const model = toolRowDisplay(item);
-    const status = item.status.toLowerCase();
-    const running = status === "running" || status === "pending" || status === "in_progress";
-    const failed = status === "failed";
-    const cancelled = status === "cancelled" || status === "canceled";
-    const toolClassName = `${className}${running ? " is-running" : ""}${failed ? " is-failed" : ""}${cancelled ? " is-cancelled" : ""}`;
-    return (
-      <details className={toolClassName} key={item.id} style={style}>
-        <summary className="workspace-chat-tool-summary">
-          <ToolIcon name={model.icon} />
-          <span className="workspace-chat-tool-label">{model.displayName}</span>
-          {model.summary !== undefined ? (
-            <span className="workspace-chat-tool-summary-text">{model.summary}</span>
-          ) : null}
-          {failed ? (
-            <span className="workspace-chat-tool-failed" aria-hidden="true">
-              ×
-            </span>
-          ) : null}
-        </summary>
-        <div className="workspace-chat-tool-body">
-          {item.locations !== undefined && item.locations.length > 0 ? (
-            <div className="workspace-chat-tool-locations">
-              {item.locations.map((location, index) => (
-                <span className="workspace-chat-tool-location" key={index}>
-                  {location.line !== undefined
-                    ? `${location.path}:${location.line}`
-                    : location.path}
-                </span>
-              ))}
-            </div>
-          ) : null}
-          {item.output ? <div className="workspace-chat-copy">{item.output}</div> : null}
-        </div>
-      </details>
-    );
+    const frame = entryFrame(item);
+    return renderToolItem(item, frame.className, frame.style);
   }
 
   if (item.role === "thought") {
@@ -635,6 +716,10 @@ export const AgentChatSurface = memo(function AgentChatSurface({
   const osGone =
     observedType(observedState) === "ended" || observedType(observedState) === "recovered";
   const { copy: statusLabel, tone: statusDot } = toolbarStatus(observedState, elapsedMs, state);
+  // `AgentSession` replaces the items array on every update (copy-on-write),
+  // so this memo recomputes whenever the transcript changes and can never
+  // go stale; it only skips work on re-renders with identical items.
+  const entries = useMemo(() => groupToolCalls(state.items), [state.items]);
   const composerDisabled = osGone || (state.status !== "idle" && state.status !== "running");
   const disabledReason =
     state.status === "initializing" && !osGone
@@ -669,7 +754,7 @@ export const AgentChatSurface = memo(function AgentChatSurface({
         {state.items.length === 0 && state.status === "idle" && !osGone ? (
           <div className="workspace-chat-empty">Start a conversation with the agent.</div>
         ) : null}
-        {state.items.map(renderItem)}
+        {entries.map(renderEntry)}
         {state.streaming && !osGone ? (
           <div className="workspace-chat-typing" role="status">
             Agent is working

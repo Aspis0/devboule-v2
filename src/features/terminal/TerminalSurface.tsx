@@ -1,8 +1,8 @@
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { memo, useEffect, useRef, useState } from "react";
-import type { PermissionRequest, SessionEvent } from "../../types/ipc";
+import type { PermissionRequest } from "../../types/ipc";
 import { TerminalSession, type TerminalBanner } from "./terminalSession";
-import type { SubscriptionId } from "../../lib/tauri";
+import { createSessionChannel, type SubscriptionId } from "../../lib/tauri";
 import { terminalSessionRegistry } from "./terminalRegistry";
 
 interface TerminalSurfaceProps {
@@ -22,10 +22,6 @@ interface TerminalSurfaceProps {
 
 function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   return invoke<T>(command, args);
-}
-
-function createTerminalChannel(onEvent: (event: SessionEvent) => void): Channel<SessionEvent> {
-  return new Channel<SessionEvent>(onEvent);
 }
 
 function humanSize(bytes: number): string {
@@ -119,7 +115,7 @@ export const TerminalSurface = memo(function TerminalSurface({
         return createTerminalView(viewHost, options);
       },
       invoke: invokeCommand,
-      createChannel: createTerminalChannel,
+      createChannel: createSessionChannel,
       registry: terminalSessionRegistry,
       onBanner: (nextBanner) => {
         if (mounted) setBanner(nextBanner);

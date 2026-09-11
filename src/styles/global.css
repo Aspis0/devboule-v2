@@ -298,32 +298,6 @@ button:focus-visible {
   line-height: 1.7;
 }
 
-.settings-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.settings-tab {
-  padding: 7px 11px;
-  color: var(--ink-soft);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.settings-tab:hover,
-.settings-tab:focus-visible,
-.settings-tab-active {
-  color: var(--ink);
-  background: var(--selection);
-  border-color: var(--terracotta);
-}
-
 .placeholder-note {
   margin-top: 5px;
 }
@@ -670,18 +644,6 @@ button:focus-visible {
   }
 }
 
-/* Polis readiness readout — a fact about this machine, not a gate. It sits
-   under the placeholder because the question it answers ("will the isometric
-   view draw here?") is the one that decides whether M5 is worth starting. */
-.polis-readiness {
-  margin-top: 12px;
-  padding: 14px 16px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--silence);
-  border-radius: 12px;
-}
-
 /* The frame owns its document, so plugin DOM cannot be reconciled into the host
    page. It stays a full-size child of the card. */
 .plugin-surface {
@@ -704,77 +666,4 @@ button:focus-visible {
   flex: 1;
   min-height: 280px;
   border: 0;
-}
-
-.polis-readiness-kicker {
-  display: block;
-  margin-bottom: 6px;
-  color: var(--silence);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.polis-readiness p {
-  margin: 0;
-  color: var(--ink);
-  font-size: 13px;
-}
-
-.polis-readiness-note {
-  margin-top: 6px !important;
-  color: var(--ink-soft) !important;
-  font-size: 12px !important;
-}
-
-.polis-readiness-ready {
-  border-left-color: var(--green);
-}
-
-.polis-readiness-degraded {
-  border-left-color: var(--ochre);
-}
-
-.polis-readiness-unknown {
-  border-left-color: var(--silence);
-}
-
-.polis-readiness-blocked {
-  border-left-color: var(--danger);
-}
-
-.polis-readiness-error {
-  color: var(--danger) !important;
-}
-
-.polis-readiness-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* Installing a plugin does not restart the app, so the one readout that can
-   change while the window is open can be asked again. */
-.polis-readiness-button {
-  margin-top: 10px;
-  padding: 0 11px;
-  height: 26px;
-  color: var(--ink-soft);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 11.5px;
-}
-
-.polis-readiness-button:hover:not(:disabled),
-.polis-readiness-button:focus-visible:not(:disabled) {
-  color: var(--terracotta-deep);
-  border-color: var(--terracotta-deep);
-}
-
-.polis-readiness-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.52;
 }

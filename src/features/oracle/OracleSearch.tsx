@@ -6,10 +6,10 @@ import type {
   OracleResult,
   OracleSearchResponse,
 } from "../../types/ipc";
-import type { TrackedRequestState } from "./oracleRequests";
+import type { TrackedRequestState } from "../../lib/trackedRequest";
+import { formatCount } from "../../lib/format";
 import {
   focusLineRange,
-  formatCount,
   resultLineCount,
   splitSnippetAtFocus,
   totalReadLines,

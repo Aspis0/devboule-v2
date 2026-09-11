@@ -1019,7 +1019,8 @@
   text-transform: uppercase;
 }
 
-.workspace-chat-tool.is-running .workspace-chat-tool-label {
+.workspace-chat-tool.is-running .workspace-chat-tool-label,
+.workspace-chat-tool-group.is-running .workspace-chat-tool-group-summary-text {
   opacity: 0.72;
 }
 
@@ -1027,7 +1028,8 @@
   opacity: 0.72;
 }
 
-.workspace-chat-tool-summary-text {
+.workspace-chat-tool-summary-text,
+.workspace-chat-tool-group-summary-text {
   min-width: 0;
   overflow: hidden;
   color: var(--purple-deep);
@@ -1055,12 +1057,26 @@
   border-radius: 999px;
   color: var(--silence);
   font-size: 9.5px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .workspace-chat-tool-body .workspace-chat-copy {
   margin-top: 4px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.workspace-chat-tool summary > svg,
+.workspace-chat-tool-group summary > svg {
+  flex: none;
+}
+
+.workspace-chat-tool-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 .workspace-chat-error {

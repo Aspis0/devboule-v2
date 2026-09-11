@@ -28,14 +28,9 @@ import type {
 import { OracleAdmin, type WatchNotice } from "./OracleAdmin";
 import { OracleSearch } from "./OracleSearch";
 import { OracleSetup } from "./OracleSetup";
-import { useTrackedRequest, type TrackedRequestState } from "./oracleRequests";
-import {
-  commandErrorMessage,
-  formatCount,
-  getOracleStage,
-  isIndexEmpty,
-  type OracleStage,
-} from "./oracleUtils";
+import { useTrackedRequest, type TrackedRequestState } from "../../lib/trackedRequest";
+import { commandErrorMessage, formatCount } from "../../lib/format";
+import { getOracleStage, isIndexEmpty, type OracleStage } from "./oracleUtils";
 import "./oracle.css";
 
 const ORACLE_FILE_PAGE = 0;

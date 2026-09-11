@@ -7,8 +7,8 @@ import {
   sessionsList,
 } from "../../lib/tauri";
 import type { JournalSessionUsage, JournalUsage, Session } from "../../types/ipc";
-import { useTrackedRequest } from "../oracle/oracleRequests";
-import { formatCount } from "../oracle/oracleUtils";
+import { useTrackedRequest } from "../../lib/trackedRequest";
+import { formatCount } from "../../lib/format";
 import { groupByDay, historyRowMatches, relativeTime } from "./historyGrouping";
 import "./history.css";
 

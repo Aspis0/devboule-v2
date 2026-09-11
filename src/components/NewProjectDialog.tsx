@@ -1,9 +1,9 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { projectAdd, reasonFromCause } from "../../lib/tauri";
-import type { Project } from "../../types/ipc";
-import "./Workspace.css";
+import { projectAdd, reasonFromCause } from "../lib/tauri";
+import type { Project } from "../types/ipc";
+import "../features/workspace/Workspace.css";
 
 interface NewProjectDialogProps {
   open: boolean;
