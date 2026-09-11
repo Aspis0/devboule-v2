@@ -26,6 +26,7 @@ use super::{
     write_child_stdin, ModelSwitcher, ReaderDispatch, SessionKiller, SessionRuntime,
     SpawnedSession, StderrSource, StdioWaitableChild,
 };
+use crate::acp_view::PromptCapabilityState;
 use crate::atomic::atomic_write;
 use crate::paths::RuntimePaths;
 use crate::process_tree::{JobObject, ProcessHandle};
@@ -632,12 +633,68 @@ struct PiCatalog {
     current_levels: Vec<String>,
 }
 
+impl PiCatalog {
+    /// The content kinds a model declared in `get_available_models`. The read
+    /// side for a future image sender: nothing sends one yet, so in production
+    /// this is only the precondition this slice installs.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn input_kinds(&self, model_id: &str) -> Option<&PiInputKinds> {
+        self.models.get(model_id).map(|model| &model.input)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PiModel {
     name: String,
     provider: Option<String>,
     context_tokens: Option<u64>,
     efforts: Option<Vec<SessionModelEffort>>,
+    /// Content kinds this model declared in `get_available_models`. Retained so
+    /// a later sender can ask whether the model accepts an image instead of
+    /// guessing from its id.
+    input: PiInputKinds,
+}
+
+/// Content kinds one pi model declared in its `input` array.
+///
+/// `input` is per model, not per session: models in one catalog disagree, and
+/// the captured `get_available_models` reply proves it — `deepseek-v4-flash`
+/// declares only `text` while `minimax-m3` declares `text` and `image`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PiInputKinds {
+    /// Every token the model declared, verbatim and in wire order, including
+    /// kinds this daemon does not model yet. Recognising `image` must not
+    /// discard the rest; that is the same rule the ACP view applies to content
+    /// blocks it cannot render.
+    declared: Vec<String>,
+    /// Whether the model accepts images, in three separate states. Reuses the
+    /// ACP handshake's tri-state so "declared no image" and "declared nothing"
+    /// stay apart here too: a model that never mentioned `input` is not a model
+    /// that refused images.
+    image: PromptCapabilityState,
+}
+
+const IMAGE_INPUT_KIND: &str = "image";
+
+/// Reads a model's `input` array. A missing `input`, or one that is not an
+/// array, leaves every kind absent — silence is not a refusal, and a malformed
+/// value is not evidence either. A present array is a declaration, so its
+/// failure to list `image` is [`PromptCapabilityState::Unsupported`].
+fn input_kinds_from_model(model: &Value) -> PiInputKinds {
+    let Some(entries) = model.get("input").and_then(Value::as_array) else {
+        return PiInputKinds::default();
+    };
+    let declared = entries
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let image = if declared.iter().any(|kind| kind == IMAGE_INPUT_KIND) {
+        PromptCapabilityState::Supported
+    } else {
+        PromptCapabilityState::Unsupported
+    };
+    PiInputKinds { declared, image }
 }
 
 fn catalog_from_responses(
@@ -725,6 +782,7 @@ fn catalog_from_responses(
                     .map(str::to_string),
                 context_tokens: model.get("contextWindow").and_then(Value::as_u64),
                 efforts,
+                input: input_kinds_from_model(model),
             },
         );
     }
@@ -1647,6 +1705,7 @@ mod tests {
         pi_permission_sender, spawn_args, thinking_level_allowed, write_permission_extension,
         PiCatalog, PiControl, PiStdout, PiSwitcher,
     };
+    use crate::acp_view::PromptCapabilityState;
     use crate::pi_view::events_from_line;
     use crate::session::{ModelSwitcher, PtyCommand, ReaderDispatch};
     use devboule_protocol::SessionEvent;
@@ -1655,6 +1714,28 @@ mod tests {
     use std::path::Path;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
+
+    /// `get_available_models` as Pi answered it over `pi --mode rpc` (captured
+    /// 2026-09-10). The capture elided each model's `cost` object and the body
+    /// of `thinkingLevelMap`; those two omissions are the only difference from
+    /// the wire. Per-model `input` is the part under test, and it is verbatim.
+    const PI_MODELS_CAPTURE: &str = r#"{"data":{"models":[
+{"id":"minimax-m3","name":"MiniMax-M3","api":"anthropic-messages","provider":"opencode-go","reasoning":true,"input":["text","image"],"contextWindow":1000000,"maxTokens":131072},
+{"id":"deepseek-v4-flash","name":"DeepSeek V4 Flash","api":"openai-completions","reasoning":true,"input":["text"]},
+{"id":"deepseek-v4-flash-vision-exp","name":"DeepSeek V4 Flash Vision Exp","reasoning":true,"input":["text","image"]}
+]}}"#;
+
+    fn catalog_from_capture(capture: &str) -> PiCatalog {
+        let state = serde_json::json!({
+            "data": {
+                "sessionId": "session-1",
+                "model": {"id": "minimax-m3", "provider": "opencode-go"},
+            }
+        });
+        let models: serde_json::Value = serde_json::from_str(capture).expect("captured models");
+        let levels = serde_json::json!({"data": {"levels": ["high"]}});
+        super::catalog_from_responses(&state, &models, &levels).expect("catalog")
+    }
 
     #[test]
     fn thinking_level_validation_is_against_the_current_model_list() {
@@ -2005,5 +2086,75 @@ mod tests {
             matches!(events_from_line(&text).as_slice(), [SessionEvent::AgentMessage { text, .. }] if text == "OK")
         );
         assert!(events_from_line(&text_end).is_empty());
+    }
+
+    #[test]
+    fn captured_models_keep_image_support_apart_per_model() {
+        // The real reply: two models declare images and one does not, so the
+        // answer is a property of the model, not of the session.
+        let catalog = catalog_from_capture(PI_MODELS_CAPTURE);
+
+        let minimax = catalog.input_kinds("minimax-m3").expect("minimax-m3");
+        assert_eq!(minimax.image, PromptCapabilityState::Supported);
+        assert_eq!(minimax.declared, vec!["text", "image"]);
+
+        let flash = catalog
+            .input_kinds("deepseek-v4-flash")
+            .expect("deepseek-v4-flash");
+        assert_eq!(flash.image, PromptCapabilityState::Unsupported);
+        assert_eq!(flash.declared, vec!["text"]);
+
+        let vision = catalog
+            .input_kinds("deepseek-v4-flash-vision-exp")
+            .expect("deepseek-v4-flash-vision-exp");
+        assert_eq!(vision.image, PromptCapabilityState::Supported);
+    }
+
+    #[test]
+    fn input_array_keeps_kinds_we_do_not_model() {
+        // A future kind must be kept, not dropped and not treated as an error.
+        let capture = r#"{"data":{"models":[
+{"id":"a","name":"A","provider":"p","input":["text","image","audio","video","hologram"]},
+{"id":"b","name":"B","provider":"p","input":["text","audio"]}
+]}}"#;
+        let catalog = catalog_from_capture(capture);
+
+        let a = catalog.input_kinds("a").expect("model a");
+        assert_eq!(
+            a.declared,
+            vec!["text", "image", "audio", "video", "hologram"],
+            "unknown kinds must survive verbatim"
+        );
+        assert_eq!(a.image, PromptCapabilityState::Supported);
+
+        let b = catalog.input_kinds("b").expect("model b");
+        assert_eq!(b.declared, vec!["text", "audio"]);
+        assert_eq!(b.image, PromptCapabilityState::Unsupported);
+    }
+
+    #[test]
+    fn absent_or_malformed_input_is_not_a_refusal() {
+        let capture = r#"{"data":{"models":[
+{"id":"silent","name":"Silent","provider":"p"},
+{"id":"malformed","name":"Malformed","provider":"p","input":"text"},
+{"id":"empty","name":"Empty","provider":"p","input":[]}
+]}}"#;
+        let catalog = catalog_from_capture(capture);
+
+        for model_id in ["silent", "malformed"] {
+            let kinds = catalog.input_kinds(model_id).expect(model_id);
+            assert_eq!(
+                kinds.image,
+                PromptCapabilityState::Absent,
+                "{model_id} never declared anything; silence is not a refusal"
+            );
+            assert!(kinds.declared.is_empty());
+        }
+
+        // A present array is a declaration even when it is empty: it lists no
+        // image, and that is an answer rather than silence.
+        let empty = catalog.input_kinds("empty").expect("empty");
+        assert_eq!(empty.image, PromptCapabilityState::Unsupported);
+        assert!(empty.declared.is_empty());
     }
 }
