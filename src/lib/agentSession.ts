@@ -207,6 +207,15 @@ export class AgentSession {
    * it; omitted, the daemon keeps its interrupt-and-replace default. This is
    * the same path either way — steering is a property of the send, not a
    * second send method.
+   *
+   * A steer does not open a turn: the daemon writes the text into the turn in
+   * flight and publishes the same `AgentUserMessage` echo every send produces
+   * (`session.rs` publishes it for the whole send path, steer included), so the
+   * transcript gains one inline user bubble inside the running turn. Bumping
+   * the turn counter or appending a second bubble here would split the
+   * assistant stream that is still arriving — the sender must not render the
+   * steer twice, and Paseo emits its timeline item when the stream echoes the
+   * steer, not at dispatch.
    */
   async send(
     text: string,
@@ -219,7 +228,10 @@ export class AgentSession {
     const subscriptionId = this.subscriptionId;
     if (subscriptionId === null) return false;
 
-    this.beginTurn();
+    // A steer only joins a turn when one is actually open; with no live turn
+    // the daemon starts a new one, and so does the transcript.
+    const joinsRunningTurn = activeTurnBehavior === "steer" && this.turnOpen;
+    if (!joinsRunningTurn) this.beginTurn();
     this.update({ status: "running", streaming: true });
     try {
       await this.deps.invoke("session_send", {

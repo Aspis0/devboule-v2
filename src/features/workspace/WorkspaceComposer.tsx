@@ -59,6 +59,12 @@ export const WorkspaceComposer = memo(function WorkspaceComposer({
 
   const handleComposerKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      // Enter belongs to an IME while a composition is open: the keystroke
+      // commits the composition, and sending here would submit the text before
+      // the candidate is chosen. `isComposing` is the standard signal; the
+      // legacy `keyCode === 229` covers engines that report the composition
+      // commit without setting it.
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       sendInput();

@@ -82,12 +82,15 @@ function invokeAgentCommand<T>(command: string, args?: Record<string, unknown>):
     const attachments = args?.attachments as readonly PromptAttachment[] | undefined;
     const text = typeof args?.text === "string" ? args.text : "";
     const subscriptionId = args?.subscriptionId as SubscriptionId;
-    // The controller only ever names the two behaviours that differ from the
-    // daemon's default; anything else on the wire is a bug and is dropped here
-    // rather than typed as a behaviour the daemon does not know.
+    // The controller only ever names the one behaviour that differs from the
+    // daemon's default. Anything else is a bug on this side of the wire and is
+    // refused loudly: silently dropping it would turn a misspelling into an
+    // interrupt-and-replace the caller never asked for.
     const behavior = args?.activeTurnBehavior;
-    const activeTurnBehavior: ActiveTurnBehavior | undefined =
-      behavior === "queue" || behavior === "steer" ? behavior : undefined;
+    if (behavior !== undefined && behavior !== "steer") {
+      return Promise.reject(new Error(`Unsupported active turn behavior: ${String(behavior)}`));
+    }
+    const activeTurnBehavior: ActiveTurnBehavior | undefined = behavior;
     if (attachments === undefined && activeTurnBehavior === undefined) {
       return sessionSend(id, subscriptionId, text) as Promise<T>;
     }

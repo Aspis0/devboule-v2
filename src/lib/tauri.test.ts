@@ -460,7 +460,7 @@ describe("create and attach command wrappers", () => {
     expect(invoke).toHaveBeenNthCalledWith(6, "session_detach", { subscriptionId: 41 });
   });
 
-  it("puts the steering behavior on the send only when a turn is joined", async () => {
+  it("sends the steering argument only when asked and pins the send's argument keys", async () => {
     vi.mocked(invoke).mockClear();
     vi.mocked(invoke).mockResolvedValue(undefined as never);
 

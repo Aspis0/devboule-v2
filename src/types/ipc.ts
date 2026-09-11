@@ -35,12 +35,16 @@ export type SendIntent = "interrupt" | "steer" | "queue";
  * What a `session_send` does when the target session already has a turn
  * running: the protocol's `SessionSend.activeTurnBehavior`. Omitting the field
  * is the daemon's default — interrupt the running turn and replace it — so the
- * frontend only ever names the two values that differ from it: `"steer"`
- * delivers the text into the running turn, `"queue"` holds it for the next
- * one. The wider `SendIntent` above spells the same idea including
- * `"interrupt"`; it has no caller and is not this field's type.
+ * only member here is the one value that differs from it: `"steer"` delivers
+ * the text into the running turn. The protocol's third word, `"interrupt"`, is
+ * never sent and is expressed by leaving the field off; the wider `SendIntent`
+ * above spells all three and has no caller.
+ *
+ * `"queue"` is deliberately absent: no daemon branch implements it, and a
+ * value the daemon silently treats as interrupt-and-replace would be a type
+ * that promises behaviour nothing delivers. It can come back with the branch.
  */
-export type ActiveTurnBehavior = "queue" | "steer";
+export type ActiveTurnBehavior = "steer";
 
 export type PermissionOutcome = "allow_once" | "deny";
 
