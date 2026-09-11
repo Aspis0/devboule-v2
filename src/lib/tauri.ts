@@ -100,6 +100,7 @@ export type CommandArgs = {
   oracle_ask_folder: { path: string; query: string };
   surface_settings_get: { surfaceId: string };
   surface_settings_set: { surfaceId: string; value: unknown };
+  artifact_write_file: { path: string; contents: string };
   plugins_list: undefined;
   plugins_rescan: undefined;
   plugin_install: { id: string; source: string };
@@ -157,6 +158,7 @@ type CommandResults = {
   oracle_ask_folder: OracleSearchResponse;
   surface_settings_get: unknown;
   surface_settings_set: void;
+  artifact_write_file: string;
   plugins_list: PluginInventory;
   plugins_rescan: PluginInventory;
   plugin_install: PluginInventory;
@@ -227,6 +229,7 @@ export const COMMAND_ARG_KEYS = {
   oracle_ask_folder: ["path", "query"],
   surface_settings_get: ["surfaceId"],
   surface_settings_set: ["surfaceId", "value"],
+  artifact_write_file: ["path", "contents"],
   plugins_list: [],
   plugins_rescan: [],
   plugin_install: ["id", "source"],
@@ -519,6 +522,14 @@ export async function surfaceSettingsGet(surfaceId: string): Promise<SurfaceSett
 /** Stores `value` verbatim as pretty JSON; rejects surface ids outside `^[a-z0-9-]{1,32}$` and values over the ~64 KB cap. */
 export const surfaceSettingsSet = (surfaceId: string, value: unknown) =>
   invokeTyped("surface_settings_set", { surfaceId, value });
+/**
+ * Writes the standalone artifact document to `path` and resolves with the path
+ * that was written. `path` is always the answer from the OS save dialog, never
+ * a default this side picks. Rejects with a structured `CommandError` naming
+ * the failed operation and the path when the write cannot be completed.
+ */
+export const writeArtifactFile = (path: string, contents: string) =>
+  invokeTyped("artifact_write_file", { path, contents });
 export const pluginsList = () => invokeTyped("plugins_list");
 /** Look at the disk again, for someone who just installed something. */
 export const pluginsRescan = () => invokeTyped("plugins_rescan");
