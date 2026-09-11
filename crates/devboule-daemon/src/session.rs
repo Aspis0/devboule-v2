@@ -4021,6 +4021,7 @@ pub(crate) fn insert_test_live_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::raster_metadata::clean_png;
     use devboule_protocol::{
         MAX_ATTACHMENTS_TOTAL_BYTES, MAX_ATTACHMENT_COUNT, MAX_ATTACHMENT_DATA_BYTES,
     };
@@ -6042,13 +6043,16 @@ mod tests {
             Box::new(RecordingWriter(Arc::clone(&received))),
         );
         let conn = attach_live_agent_for_test(&runtime, "attach-path", 41);
+        // A container the daemon's walk accepts and changes nothing in, so the
+        // name and the bytes asserted below are the ones the client sent.
+        let image = clean_png(0x0b);
 
         registry
             .send_with_subscription(
                 "attach-path",
                 41,
                 "describe this",
-                &[attachment("photo.png", "image/png", b"the png bytes")],
+                &[attachment("photo.png", "image/png", &image)],
                 &owner,
                 &conn,
             )
@@ -6065,11 +6069,12 @@ mod tests {
             path.extension().and_then(|value| value.to_str()),
             Some("png")
         );
+        let digest = crate::attachment_store::sha256_hex(&image);
         assert_eq!(
             path.file_stem().and_then(|value| value.to_str()),
-            Some(crate::attachment_store::sha256_hex(b"the png bytes").as_str())
+            Some(digest.as_str())
         );
-        assert_eq!(std::fs::read(path).expect("read"), b"the png bytes");
+        assert_eq!(std::fs::read(path).expect("read"), image);
 
         let written = String::from_utf8(received.lock().expect("writer").clone()).expect("utf8");
         assert_eq!(
@@ -6100,7 +6105,7 @@ mod tests {
                 42,
                 "two files",
                 &[
-                    attachment("a.png", "image/png", b"first"),
+                    attachment("a.png", "image/png", &clean_png(0x0c)),
                     attachment("b.svg", "image/svg+xml", b"<svg/>"),
                 ],
                 &owner,
@@ -6308,7 +6313,7 @@ mod tests {
             Box::new(RecordingWriter(Arc::clone(&received))),
         );
         let conn = attach_live_agent_for_test(&runtime, "attach-cap", 49);
-        let files = vec![attachment("a.png", "image/png", b"png")];
+        let files = vec![attachment("a.png", "image/png", &clean_png(0x0d))];
 
         // A text exactly at the cap, plus the lines this function adds: the
         // cap governs the user's text, and the lines are not charged to it.
@@ -6326,7 +6331,8 @@ mod tests {
         // the first send's: that file already exists, so the name that must not
         // exist is what a materialize-before-the-cap-check regression creates.
         let over = "x".repeat(MAX_WRITE_BYTES + 1);
-        let unreached = vec![attachment("b.png", "image/png", b"unreached")];
+        let unreached_bytes = clean_png(0x0e);
+        let unreached = vec![attachment("b.png", "image/png", &unreached_bytes)];
         let error = registry
             .send_with_subscription("attach-cap", 49, &over, &unreached, &owner, &conn)
             .expect_err("an oversized text is refused");
@@ -6334,7 +6340,7 @@ mod tests {
         assert!(received.lock().expect("writer").is_empty());
         let refused_file = attachment_folder(&registry, "attach-cap").join(format!(
             "{}.png",
-            crate::attachment_store::sha256_hex(b"unreached")
+            crate::attachment_store::sha256_hex(&unreached_bytes)
         ));
         assert!(
             !refused_file.exists(),
@@ -6350,7 +6356,7 @@ mod tests {
         let (dir, registry, journal) = tmp_delete_registry();
         let owner = test_owner("S-1-5-21-attach-journal", "process-attach");
         let conn = agent_ready_for_attachment(&registry, "attach-journal", &owner, 50);
-        let image = attachment("photo.png", "image/png", b"the png bytes");
+        let image = attachment("photo.png", "image/png", &clean_png(0x0f));
         let encoded = image.data.clone();
         assert!(
             encoded.len() > 8,
@@ -6443,7 +6449,7 @@ mod tests {
                 "attach-terminal",
                 52,
                 "hello",
-                &[attachment("photo.png", "image/png", b"the png bytes")],
+                &[attachment("photo.png", "image/png", &clean_png(0x10))],
                 &owner,
                 &conn,
             )

@@ -44,6 +44,8 @@ pub mod provider_catalog;
 #[cfg(feature = "server")]
 mod provider_update;
 #[cfg(feature = "server")]
+mod raster_metadata;
+#[cfg(feature = "server")]
 mod registry;
 #[cfg(feature = "server")]
 mod screen;
